@@ -13,6 +13,10 @@ const DUMMY_NODE: StableNodeId = match StableNodeId::new(u64::MAX) {
     None => panic!("u64::MAX is a valid stable id"),
 };
 
+/// Where a parked node was built, so the commit error can point at the call
+/// site instead of only naming an id the reader has no way to look up.
+type UnplacedOrigin = (&'static str, &'static std::panic::Location<'static>);
+
 struct Level {
     parent: Option<StableNodeId>,
     seen: Vec<String>,
@@ -33,6 +37,12 @@ pub struct UiBuilder<'a> {
     /// the same tree replaces its handlers instead of stacking new ones.
     on_slots: HashMap<(StableNodeId, TypeId), usize>,
     pending_forget: HashSet<StableNodeId>,
+    /// Nodes this build parked that have not yet been given a placement story.
+    /// [`UiBuilder::adopt`] discharges one by inserting it here;
+    /// [`UiBuilder::place_later`] discharges one by declaring that a parent spec
+    /// or a later assemble step inserts it. Anything still owing at commit is
+    /// an orphan that would never render, so commit fails instead.
+    unplaced: Vec<(StableNodeId, UnplacedOrigin)>,
     lifecycle: Vec<StableNodeId>,
     park_roots: bool,
     error: Option<FrameworkError>,
@@ -106,6 +116,7 @@ impl<'a> UiBuilder<'a> {
             pending_ons: Vec::new(),
             on_slots: HashMap::new(),
             pending_forget: HashSet::new(),
+            unplaced: Vec::new(),
             lifecycle: Vec::new(),
             park_roots,
             error: None,
@@ -248,11 +259,46 @@ impl<'a> UiBuilder<'a> {
         }));
     }
 
-    /// Create a parked node that is not inserted under the current parent.
+    /// Create a node that is parked instead of inserted under the current parent.
     ///
-    /// Use with [`Self::adopt`] when a parent constructor needs the child's id
-    /// (slots, shell regions) before the child can live under that parent.
-    pub fn leaf<C: ComponentView>(&mut self, component: C) -> Entity<C> {
+    /// Parking exists for parents that need a child's id before the child can
+    /// live under them (slots, shell regions): build the child first, hand its
+    /// id to the parent spec, and let the parent place it. A parked node still
+    /// accepts [`Self::nest`] and [`Self::on`] — parking is about placement,
+    /// not about being childless. To insert a child right here, use
+    /// [`Self::child`].
+    ///
+    /// Every parked node owes an [`Self::adopt`] before this build commits;
+    /// commit fails with [`FrameworkError::UnplacedNode`] otherwise, because a
+    /// node that is never placed never renders and leaves no other trace. When
+    /// placement genuinely belongs to a later step, say so with
+    /// [`Self::detached`] instead of parking and never adopting.
+    #[must_use = "parked nodes are not in the tree; adopt it or build it with \
+                  detached, or it never renders"]
+    #[track_caller]
+    pub fn parked<C: ComponentView>(&mut self, component: C) -> Entity<C> {
+        let origin = (std::any::type_name::<C>(), std::panic::Location::caller());
+        if self.error.is_some() {
+            return Entity::from_stable_id(DUMMY_NODE);
+        }
+        let entity = self.spawn(component);
+        self.queue.park_subtree(entity.id);
+        self.unplaced.push((entity.id, origin));
+        entity
+    }
+
+    /// Like [`Self::parked`], but for a node this build deliberately leaves for
+    /// someone else to place.
+    ///
+    /// Use it when the builder cannot see the placement: the id goes into a
+    /// parent spec that a later assemble step resolves (shell regions, settings
+    /// pages), or the host swaps the node into a slot some frames from now.
+    /// Because that promise is unverifiable, the name is the record of it —
+    /// reach for [`Self::parked`] whenever this build does the placing, so the
+    /// obligation is actually checked.
+    #[must_use = "detached nodes are not in the tree; hand the id to whatever \
+                  places it, or it never renders"]
+    pub fn detached<C: ComponentView>(&mut self, component: C) -> Entity<C> {
         if self.error.is_some() {
             return Entity::from_stable_id(DUMMY_NODE);
         }
@@ -270,6 +316,7 @@ impl<'a> UiBuilder<'a> {
             self.fail::<C>(FrameworkError::InvalidInput);
             return;
         };
+        self.unplaced.retain(|(id, _)| *id != child.id);
         let key = self.auto_key("adopt");
         self.current_mut().seen.push(key.clone());
         self.queue.insert(parent, child.id, None);
@@ -390,6 +437,16 @@ impl<'a> UiBuilder<'a> {
         self.finish_level();
         if let Some(error) = self.error.take() {
             return Err(error);
+        }
+        // Nodes despawned during this build are gone, not orphaned.
+        let forgotten = self.pending_forget.clone();
+        if let Some((id, (component, origin))) = self
+            .unplaced
+            .iter()
+            .find(|(id, _)| !forgotten.contains(id))
+            .copied()
+        {
+            return Err(FrameworkError::UnplacedNode(id, component, origin));
         }
         let queue = self.queue;
         let pending_views = self.pending_views;

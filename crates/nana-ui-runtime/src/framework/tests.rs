@@ -425,12 +425,52 @@ fn build_rejects_duplicate_keys_without_committing() {
 }
 
 #[test]
+fn parked_nodes_must_be_adopted_before_commit() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    // A parked node nobody places would render nothing and leave no other
+    // trace, so the build fails instead of committing the orphan.
+    let orphaned = context.build(document, |ui| {
+        let hint = ui.parked(Text::new("hint"));
+        ui.child("root", Stack::column(8.0));
+        // `on` is not placement: a handler on a node outside the tree is
+        // exactly the shape that used to fail silently.
+        ui.on(hint, |_, _: &Activate, _| {});
+    });
+    assert!(matches!(orphaned, Err(FrameworkError::UnplacedNode(..))));
+
+    // Adopting it discharges the obligation.
+    let adopted = context.build(document, |ui| {
+        let hint = ui.parked(Text::new("hint"));
+        let root = ui.child("root", Stack::column(8.0));
+        ui.nest(root, |ui| ui.adopt(hint));
+        (root, hint)
+    });
+    let (root, hint) = adopted.expect("adopted parked node commits");
+    assert_eq!(
+        context.world().node(root.stable_id()).unwrap().children,
+        vec![hint.stable_id()]
+    );
+
+    // `detached` is the opt-out for placement this build cannot see, so it
+    // commits while staying out of the tree.
+    let deferred = context
+        .build(document, |ui| ui.detached(Text::new("slot")))
+        .expect("detached node commits unplaced");
+    assert!(context.world().contains(deferred.stable_id()));
+    assert_ne!(
+        context.world().mount_state(deferred.stable_id()),
+        Some(crate::MountState::Mounted)
+    );
+}
+
+#[test]
 fn build_detached_parks_roots_until_inserted() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let (root, child) = context
         .build_detached(document, |ui| {
-            let child = ui.leaf(Text::new("parked"));
+            let child = ui.parked(Text::new("parked"));
             let root = ui.child("root", Stack::column(8.0));
             ui.nest(root, |ui| ui.adopt(child));
             (root, child)

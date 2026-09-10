@@ -37,7 +37,7 @@ pub(super) fn create_segmented_fixture(
             if let Some(icon) = icon {
                 option = option.icon(*icon);
             }
-            options.push(ui.leaf(option));
+            options.push(ui.parked(option));
         }
         (control, options)
     })?;

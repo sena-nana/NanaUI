@@ -61,7 +61,7 @@ impl Fixture {
         let pending_float_handler = Arc::clone(&pending_float);
         let (dock, name, open_tool, float_preview, preview) =
             document.context_mut().build(document_id, |ui| {
-                let editor = ui.leaf(List::new().label("Editor"));
+                let editor = ui.parked(List::new().label("Editor"));
                 let (name, open_tool, float_preview) = ui.nest(editor, |ui| {
                     let name = ui.child("name", TextInput::new("NanaUI").label("Name"));
                     let open_tool = ui.child("open", Button::new("Open tool"));
@@ -74,7 +74,7 @@ impl Fixture {
                     });
                     (name, open_tool, float_preview)
                 });
-                let preview = ui.leaf(GpuTextureView::new(PREVIEW_SLOT));
+                let preview = ui.parked(GpuTextureView::new(PREVIEW_SLOT));
                 let dock = ui.child(
                     "dock",
                     Dock::new(DockNode::split(
@@ -446,7 +446,7 @@ fn tool_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkEr
 fn floating_preview_document(document_id: DocumentId) -> Result<RuntimeDocument, FrameworkError> {
     let mut document = RuntimeDocument::new(document_id);
     let dock = document.context_mut().build(document_id, |ui| {
-        let preview = ui.leaf(GpuTextureView::new(PREVIEW_SLOT));
+        let preview = ui.parked(GpuTextureView::new(PREVIEW_SLOT));
         let dock = ui.child(
             "dock",
             Dock::new(DockNode::item(PREVIEW_PANE, Some(preview.stable_id())))

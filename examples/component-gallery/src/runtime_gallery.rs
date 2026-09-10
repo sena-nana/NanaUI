@@ -290,24 +290,24 @@ impl GalleryRuntime {
             context_label,
             shell,
         ) = context.build(document_id, |ui| {
-            let sidebar_toggle = ui.leaf(sidebar_toggle_button(sidebar_collapsed));
-            let title_leading = ui.leaf(HostStack::leading_row(0.0));
+            let sidebar_toggle = ui.parked(sidebar_toggle_button(sidebar_collapsed));
+            let title_leading = ui.detached(HostStack::leading_row(0.0));
             ui.nest(title_leading, |ui| ui.adopt(sidebar_toggle));
-            let search_button = ui.leaf(search_command_button());
-            let theme_button = ui.leaf(theme_toggle_button(state.theme));
-            let context_label = ui.leaf(hugging_text(
+            let search_button = ui.parked(search_command_button());
+            let theme_button = ui.parked(theme_toggle_button(state.theme));
+            let context_label = ui.parked(hugging_text(
                 section_label(state.section),
                 SemanticColorRole::Muted,
                 11.0,
                 400,
             ));
-            let title_center = ui.leaf(hugging_text(
+            let title_center = ui.detached(hugging_text(
                 "NanaUI Gallery",
                 SemanticColorRole::Text,
                 13.0,
                 600,
             ));
-            let title_trailing = ui.leaf(HostStack::row(6.0));
+            let title_trailing = ui.detached(HostStack::row(6.0));
             ui.nest(title_trailing, |ui| {
                 ui.adopt(context_label);
                 ui.adopt(search_button);
@@ -949,9 +949,9 @@ impl DockWindowRuntime {
                     .find(|(panel, _, _)| *panel == id.as_ref())
                     .map(|(_, title, hint)| (*title, *hint))
                     .unwrap_or(("Panel", ""));
-                let heading = ui.leaf(styled_text(title, SemanticColorRole::Text, 12.0, 400));
-                let detail = ui.leaf(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
-                let panel = ui.leaf(HostStack::fill_column(5.0).padding(10.0));
+                let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 12.0, 400));
+                let detail = ui.parked(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
+                let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
                 ui.nest(panel, |ui| {
                     ui.adopt(heading);
                     ui.adopt(detail);
@@ -1043,15 +1043,15 @@ fn mount_sidebar(
 ) -> Result<SidebarMount, FrameworkError> {
     context.build_detached(document_id, |ui| {
         let mut spec = SidebarSection::new("Gallery").count(6);
-        let title = ui.leaf(spec.title_label());
+        let title = ui.parked(spec.title_label());
         spec = spec.title_slot(title.stable_id());
-        let header = ui.leaf(spec.header_item());
+        let header = ui.parked(spec.header_item());
         ui.nest(header, |ui| ui.adopt(title));
-        let body = ui.leaf(SidebarSection::body_port());
+        let body = ui.parked(SidebarSection::body_port());
         let mut rows = Vec::with_capacity(6);
         ui.nest(body, |ui| {
             for (index, (target, label, icon)) in SECTIONS.iter().enumerate() {
-                let leading = ui.leaf(SidebarRowIcon::new(*icon));
+                let leading = ui.parked(SidebarRowIcon::new(*icon));
                 let row = ui.child(
                     format!("row-{index}"),
                     SidebarRow::new(*label)
@@ -1070,17 +1070,17 @@ fn mount_sidebar(
                 rows.push(row);
             }
         });
-        let section = ui.leaf(spec.header(header.stable_id()).body(body.stable_id()));
+        let section = ui.parked(spec.header(header.stable_id()).body(body.stable_id()));
         ui.nest(section, |ui| {
             ui.adopt(header);
             ui.adopt(body);
         });
-        let scroll = ui.leaf(SidebarFrame::vertical_body_scroll());
+        let scroll = ui.parked(SidebarFrame::vertical_body_scroll());
         ui.nest(scroll, |ui| ui.adopt(section));
-        let settings = ui.leaf(SidebarFooterButton::new("设置", Icon::Settings));
-        let footer = ui.leaf(SidebarFooter::new());
+        let settings = ui.parked(SidebarFooterButton::new("设置", Icon::Settings));
+        let footer = ui.parked(SidebarFooter::new());
         ui.nest(footer, |ui| ui.adopt(settings));
-        let frame = ui.leaf(
+        let frame = ui.detached(
             SidebarFrame::new()
                 .body(scroll.stable_id())
                 .footer(footer.stable_id()),
@@ -1104,24 +1104,24 @@ fn mount_controls(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<ControlsTree, FrameworkError> {
     let tree = context.build_detached(document_id, |ui| {
-        let small = ui.leaf(
+        let small = ui.parked(
             Button::new("小")
                 .size(ControlSize::Small)
                 .kind(ButtonKind::Subtle),
         );
-        let medium = ui.leaf(
+        let medium = ui.parked(
             Button::new("中")
                 .size(ControlSize::Medium)
                 .kind(ButtonKind::Primary),
         );
-        let large = ui.leaf(
+        let large = ui.parked(
             Button::new("大")
                 .size(ControlSize::Large)
                 .kind(ButtonKind::Subtle),
         );
-        let loading = ui.leaf(loading_button(state));
-        let add = ui.leaf(IconButton::new(Icon::Add, "添加").size(ControlSize::Small));
-        let clicks = ui.leaf(styled_text(
+        let loading = ui.parked(loading_button(state));
+        let add = ui.parked(IconButton::new(Icon::Add, "添加").size(ControlSize::Small));
+        let clicks = ui.parked(styled_text(
             format!("主要操作已触发 {} 次", state.primary_clicks),
             SemanticColorRole::Faint,
             10.0,
@@ -1147,9 +1147,9 @@ fn mount_controls(
         let mut segmented_on = [None; 3];
         let mut segmented_off = [None; 3];
         for (index, size) in sizes.iter().copied().enumerate() {
-            let control = ui.leaf(SegmentedControl::new().size(size));
-            let off = ui.leaf(SegmentedOption::new("关").size(size));
-            let on = ui.leaf(SegmentedOption::new("开").size(size));
+            let control = ui.parked(SegmentedControl::new().size(size));
+            let off = ui.detached(SegmentedOption::new("关").size(size));
+            let on = ui.detached(SegmentedOption::new("开").size(size));
             bind_event_ui(
                 ui,
                 control,
@@ -1165,7 +1165,7 @@ fn mount_controls(
 
         let mut inputs = [None; 3];
         for (index, (placeholder, size)) in ["小", "中", "大"].iter().zip(sizes).enumerate() {
-            let input = ui.leaf(
+            let input = ui.detached(
                 TextInput::new(state.input.clone())
                     .placeholder(*placeholder)
                     .size(size)
@@ -1176,7 +1176,7 @@ fn mount_controls(
             });
             inputs[index] = Some(input);
         }
-        let secure = ui.leaf(
+        let secure = ui.parked(
             TextInput::new(state.input.clone())
                 .placeholder("配对密钥")
                 .secure(true),
@@ -1187,7 +1187,7 @@ fn mount_controls(
 
         let mut dropdowns = [None; 3];
         for (index, (placeholder, size)) in ["小", "中", "大"].iter().zip(sizes).enumerate() {
-            let dropdown = ui.leaf(gallery_dropdown(state, placeholder, size));
+            let dropdown = ui.detached(gallery_dropdown(state, placeholder, size));
             bind_event_ui(
                 ui,
                 dropdown,
@@ -1196,20 +1196,21 @@ fn mount_controls(
             );
             dropdowns[index] = Some(dropdown);
         }
-        let field_status = ui.leaf(field_status_text(state));
+        let field_status = ui.parked(field_status_text(state));
 
-        let checkbox = ui.leaf(Checkbox::new("启用选项", state.checked));
+        let checkbox = ui.parked(Checkbox::new("启用选项", state.checked));
         bind_event_ui(
             ui,
             checkbox,
             Arc::clone(pending),
             |event: &ToggleChanged| GalleryMessage::ToggleCheck(event.checked),
         );
-        let switch = ui.leaf(Switch::new("允许编辑说明", state.switched).disabled(!state.checked));
+        let switch =
+            ui.parked(Switch::new("允许编辑说明", state.switched).disabled(!state.checked));
         bind_event_ui(ui, switch, Arc::clone(pending), |event: &ToggleChanged| {
             GalleryMessage::ToggleSwitch(event.checked)
         });
-        let range = ui.leaf(fill_range_field(
+        let range = ui.detached(fill_range_field(
             nana_ui::runtime::RangeField::new(f64::from(state.slider), 0.0, 100.0, 1.0)
                 .label("强度")
                 .unit("%"),
@@ -1217,7 +1218,7 @@ fn mount_controls(
         bind_event_ui(ui, range, Arc::clone(pending), |event: &RangeChanged| {
             GalleryMessage::SetSlider(event.value.round() as u8)
         });
-        let search = ui.leaf(gallery_search(state));
+        let search = ui.parked(gallery_search(state));
         bind_event_ui(
             ui,
             search,
@@ -1225,16 +1226,16 @@ fn mount_controls(
             |event: &SearchDropdownEvent| map_search_event(event),
         );
 
-        let textarea = ui.leaf(gallery_textarea(state));
+        let textarea = ui.parked(gallery_textarea(state));
         bind_event_ui(ui, textarea, Arc::clone(pending), |event: &TextChanged| {
             GalleryMessage::SetEditorText(event.value.clone())
         });
-        let editor_status = ui.leaf(editor_status_text(state));
-        let xy_pad = ui.leaf(XYPad::new(state.xy_pad).step(0.01));
+        let editor_status = ui.parked(editor_status_text(state));
+        let xy_pad = ui.parked(XYPad::new(state.xy_pad).step(0.01));
         bind_event_ui(ui, xy_pad, Arc::clone(pending), |event: &XYPadEvent| {
             GalleryMessage::SetXYPad(*event)
         });
-        let xy_label = ui.leaf(styled_text(
+        let xy_label = ui.parked(styled_text(
             format!("X {:.2} · Y {:.2}", state.xy_pad.x, state.xy_pad.y),
             SemanticColorRole::Muted,
             11.0,
@@ -1245,17 +1246,17 @@ fn mount_controls(
         let mut list_leads = Vec::new();
         let mut list_labels = Vec::new();
         let mut list_trails = Vec::new();
-        let list = ui.leaf(
+        let list = ui.parked(
             HostStack::column(4.0)
                 .height(LengthSpec::Fill)
                 .min_width(LengthSpec::Px(0.0)),
         );
         for (index, (label, disabled, size)) in LIST_ITEMS.into_iter().enumerate() {
             let selected = state.selected_item == index;
-            let leading = ui.leaf(list_leading_text(selected));
-            let content = ui.leaf(list_label_text(label));
-            let trailing = ui.leaf(list_trailing_text(disabled));
-            let item = ui.leaf(gallery_list_item(
+            let leading = ui.parked(list_leading_text(selected));
+            let content = ui.parked(list_label_text(label));
+            let trailing = ui.parked(list_trailing_text(disabled));
+            let item = ui.parked(gallery_list_item(
                 label, size, selected, disabled, leading, content, trailing,
             ));
             ui.nest(item, |ui| {
@@ -1276,9 +1277,9 @@ fn mount_controls(
             list_trails.push(trailing);
         }
 
-        let buttons_title = ui.leaf(styled_text("三档操作", SemanticColorRole::Muted, 12.0, 400));
+        let buttons_title = ui.parked(styled_text("三档操作", SemanticColorRole::Muted, 12.0, 400));
         let buttons = panel(ui, 6.0, Some(LengthSpec::Px(170.0)), 1.0);
-        let button_row = ui.leaf(HostStack::leading_row(6.0));
+        let button_row = ui.parked(HostStack::leading_row(6.0));
         ui.nest(button_row, |ui| {
             ui.adopt(small);
             ui.adopt(medium);
@@ -1286,7 +1287,7 @@ fn mount_controls(
             ui.adopt(loading);
             ui.adopt(add);
         });
-        let segmented_row = ui.leaf(HostStack::leading_row(6.0));
+        let segmented_row = ui.parked(HostStack::leading_row(6.0));
         ui.nest(segmented_row, |ui| {
             for control in segmented.iter().flatten().copied() {
                 ui.adopt(control);
@@ -1300,17 +1301,17 @@ fn mount_controls(
         });
 
         let fields = panel(ui, 5.0, Some(LengthSpec::Px(208.0)), 1.0);
-        let name = ui.leaf(styled_text(
+        let name = ui.parked(styled_text(
             "字段名称 *",
             SemanticColorRole::Text,
             13.0,
             600,
         ));
-        let input_row = ui.leaf(HostStack::fill_row(6.0));
+        let input_row = ui.parked(HostStack::fill_row(6.0));
         for input in inputs.iter().flatten().copied() {
             append_flex_child(ui, input_row, input);
         }
-        let dropdown_row = ui.leaf(HostStack::fill_row(6.0));
+        let dropdown_row = ui.parked(HostStack::fill_row(6.0));
         for dropdown in dropdowns.iter().flatten().copied() {
             append_flex_child(ui, dropdown_row, dropdown);
         }
@@ -1323,11 +1324,11 @@ fn mount_controls(
         });
 
         let toggles = panel(ui, 8.0, Some(LengthSpec::Px(170.0)), 1.0);
-        let toggle_title = ui.leaf(styled_text("选择控件", SemanticColorRole::Muted, 12.0, 400));
+        let toggle_title = ui.parked(styled_text("选择控件", SemanticColorRole::Muted, 12.0, 400));
         let toggle_row =
-            ui.leaf(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
+            ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
         append_flex_child(ui, toggle_row, range);
-        let search_cell = ui.leaf(
+        let search_cell = ui.parked(
             HostStack::column(0.0)
                 .width(LengthSpec::Px(116.0))
                 .max_width(LengthSpec::Px(116.0))
@@ -1344,7 +1345,7 @@ fn mount_controls(
         });
 
         let text_area = filling_panel(ui, 5.0);
-        let editor_title = ui.leaf(styled_text("多行文本", SemanticColorRole::Text, 13.0, 600));
+        let editor_title = ui.parked(styled_text("多行文本", SemanticColorRole::Text, 13.0, 600));
         ui.nest(text_area, |ui| {
             ui.adopt(editor_title);
             ui.adopt(textarea);
@@ -1352,7 +1353,7 @@ fn mount_controls(
         });
 
         let xy = filling_panel(ui, 8.0);
-        let xy_title = ui.leaf(styled_text("二维参数", SemanticColorRole::Muted, 12.0, 400));
+        let xy_title = ui.parked(styled_text("二维参数", SemanticColorRole::Muted, 12.0, 400));
         ui.nest(xy, |ui| {
             ui.adopt(xy_title);
             ui.adopt(xy_pad);
@@ -1360,8 +1361,8 @@ fn mount_controls(
         });
 
         let list_panel = filling_panel(ui, 8.0);
-        let list_title = ui.leaf(styled_text("列表", SemanticColorRole::Muted, 12.0, 400));
-        let thumb_row = ui.leaf(HostStack::leading_row(8.0));
+        let list_title = ui.parked(styled_text("列表", SemanticColorRole::Muted, 12.0, 400));
+        let thumb_row = ui.parked(HostStack::leading_row(8.0));
         ui.nest(thumb_row, |ui| {
             for thumb in [
                 Thumbnail::empty(),
@@ -1369,30 +1370,30 @@ fn mount_controls(
                 Thumbnail::new("gallery.thumb"),
                 Thumbnail::unavailable(),
             ] {
-                let node = ui.leaf(thumb);
+                let node = ui.parked(thumb);
                 ui.adopt(node);
             }
         });
-        let chip_row = ui.leaf(HostStack::leading_row(8.0));
+        let chip_row = ui.parked(HostStack::leading_row(8.0));
         ui.nest(chip_row, |ui| {
             for chip in [Chip::new("默认"), Chip::new("已选").selected(true)] {
-                let node = ui.leaf(chip);
+                let node = ui.parked(chip);
                 ui.adopt(node);
             }
         });
-        let avatar_row = ui.leaf(HostStack::leading_row(8.0));
+        let avatar_row = ui.parked(HostStack::leading_row(8.0));
         ui.nest(avatar_row, |ui| {
             for avatar in [
                 Avatar::empty().label("空"),
                 Avatar::empty().size(40.0).label("大"),
             ] {
-                let node = ui.leaf(avatar);
+                let node = ui.parked(avatar);
                 ui.adopt(node);
             }
         });
-        let thumb_lead = ui.leaf(Thumbnail::empty());
-        let thumb_label = ui.leaf(list_label_text("缩略图项"));
-        let thumb_item = ui.leaf(ListItem::new("缩略图项").slots(ListItemSlots {
+        let thumb_lead = ui.parked(Thumbnail::empty());
+        let thumb_label = ui.parked(list_label_text("缩略图项"));
+        let thumb_item = ui.parked(ListItem::new("缩略图项").slots(ListItemSlots {
             leading: Some(thumb_lead.stable_id()),
             content: Some(thumb_label.stable_id()),
             trailing: None,
@@ -1410,13 +1411,13 @@ fn mount_controls(
             ui.adopt(list);
         });
 
-        let top = ui.leaf(HostStack::fill_row(10.0));
+        let top = ui.parked(HostStack::fill_row(10.0));
         ui.nest(top, |ui| {
             ui.adopt(buttons);
             ui.adopt(fields);
             ui.adopt(toggles);
         });
-        let bottom = ui.leaf(
+        let bottom = ui.parked(
             HostStack::fill_row(10.0)
                 .height(LengthSpec::Fill)
                 .min_height(LengthSpec::Px(0.0))
@@ -1427,7 +1428,8 @@ fn mount_controls(
             ui.adopt(xy);
             ui.adopt(list_panel);
         });
-        let root = ui.leaf(HostStack::canvas());
+        // Subtree root: returned out of build_detached for the caller to place.
+        let root = ui.detached(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(top);
             ui.adopt(bottom);
@@ -1514,7 +1516,7 @@ fn mount_surfaces(
 ) -> Result<SurfacesTree, FrameworkError> {
     let selected = SurfaceView::from_index(state.surface_selection.selected());
     let tree = context.build_detached(document_id, |ui| {
-        let tabs = ui.leaf(
+        let tabs = ui.parked(
             Tabs::new(if selected == SurfaceView::Cards {
                 "cards"
             } else {
@@ -1543,12 +1545,14 @@ fn mount_surfaces(
             ("抬升表面", "侧栏与工具面板", CardKind::Raised),
             ("选中表面", "当前激活的内容", CardKind::Selected),
         ];
+        // Both sets are built and kept; sync_surfaces reconciles whichever one
+        // is visible into surface_row, so placement happens after this build.
         let mut overview = [None; 3];
         for (index, (title, detail, kind)) in overview_data.into_iter().enumerate() {
             let mut card_view = Card::new().kind(kind).height(96.0).title(title);
             apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
-            let card = ui.leaf(card_view);
-            let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            let card = ui.detached(card_view);
+            let hint = ui.parked(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
             ui.nest(card, |ui| ui.adopt(hint));
             overview[index] = Some(card);
         }
@@ -1559,7 +1563,7 @@ fn mount_surfaces(
         ];
         let mut cards = [None; 3];
         for (index, (title, detail, disabled)) in cards_data.into_iter().enumerate() {
-            let card = ui.leaf(
+            let card = ui.detached(
                 InteractiveCard::new()
                     .selected(state.selected_surface_card == index)
                     .disabled(disabled)
@@ -1569,15 +1573,15 @@ fn mount_surfaces(
                         style
                     }),
             );
-            let heading = ui.leaf(styled_text(title, SemanticColorRole::Text, 13.0, 400));
-            let hint = ui.leaf(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 13.0, 400));
+            let hint = ui.parked(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
             ui.nest(card, |ui| {
                 ui.adopt(heading);
                 ui.adopt(hint);
             });
             cards[index] = Some(card);
         }
-        let surface_row = ui.leaf(HostStack::fill_row(10.0));
+        let surface_row = ui.parked(HostStack::fill_row(10.0));
         ui.nest(surface_row, |ui| {
             if selected == SurfaceView::Cards {
                 for card in cards.iter().flatten().copied() {
@@ -1590,7 +1594,7 @@ fn mount_surfaces(
             }
         });
 
-        let tree = ui.leaf(gallery_tree(state));
+        let tree = ui.parked(gallery_tree(state));
         bind_event_ui(
             ui,
             tree,
@@ -1605,7 +1609,7 @@ fn mount_surfaces(
             },
         );
 
-        let pane_tabs = ui.leaf(hugging_text(
+        let pane_tabs = ui.parked(hugging_text(
             if state.pane_chrome_item_open {
                 "main.rs"
             } else {
@@ -1615,38 +1619,38 @@ fn mount_surfaces(
             11.0,
             400,
         ));
-        let pane_empty = ui.leaf(hugging_text(
+        let pane_empty = ui.detached(hugging_text(
             "Item 已关闭",
             SemanticColorRole::Muted,
             11.0,
             400,
         ));
-        let pane_editor = ui.leaf(hugging_text(
+        let pane_editor = ui.detached(hugging_text(
             "编辑器内容",
             SemanticColorRole::Text,
             11.0,
             400,
         ));
-        let pane_left = ui.leaf(hugging_text(
+        let pane_left = ui.detached(hugging_text(
             "左侧编辑器",
             SemanticColorRole::Text,
             11.0,
             400,
         ));
-        let pane_right = ui.leaf(hugging_text(
+        let pane_right = ui.detached(hugging_text(
             "右侧编辑器",
             SemanticColorRole::Text,
             11.0,
             400,
         ));
-        let pane_tree = ui.leaf(PaneTree::new(pane_tree_node(
+        let pane_tree = ui.parked(PaneTree::new(pane_tree_node(
             state,
             pane_empty,
             pane_editor,
             pane_left,
             pane_right,
         )));
-        let pane_split = ui.leaf(
+        let pane_split = ui.parked(
             Button::new("左右分栏")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
@@ -1655,7 +1659,7 @@ fn mount_surfaces(
             let _ = event;
             GalleryMessage::PaneChrome(PaneChromeActionKind::SplitHorizontal)
         });
-        let pane_close = ui.leaf(
+        let pane_close = ui.parked(
             IconButton::new(Icon::Close, "关闭 Item")
                 .size(ControlSize::Small)
                 .kind(ButtonKind::Text),
@@ -1664,7 +1668,7 @@ fn mount_surfaces(
             let _ = event;
             GalleryMessage::PaneChrome(PaneChromeActionKind::CloseItem)
         });
-        let header = ui.leaf(HostStack::fill_row(6.0));
+        let header = ui.parked(HostStack::fill_row(6.0));
         ui.nest(header, |ui| {
             ui.adopt(pane_tabs);
             if state.pane_chrome_item_open && !state.pane_chrome_split {
@@ -1674,7 +1678,7 @@ fn mount_surfaces(
                 ui.adopt(pane_close);
             }
         });
-        let pane = ui.leaf(
+        let pane = ui.parked(
             PaneChrome::new()
                 .header(header.stable_id())
                 .tabs(pane_tabs.stable_id())
@@ -1690,21 +1694,22 @@ fn mount_surfaces(
             ui.adopt(pane_tree);
         });
 
-        let empty = ui.leaf(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"));
-        let labeled = ui.leaf(LabeledValue::new(
+        let empty = ui.parked(EmptyState::new("没有选中的表面").message("选择一张卡片查看详情"));
+        let labeled = ui.parked(LabeledValue::new(
             "当前卡片",
             format!("{}", state.selected_surface_card),
         ));
-        let heading = ui.leaf(styled_text("表面层级", SemanticColorRole::Text, 14.0, 400));
-        let hint = ui.leaf(styled_text(
+        let heading = ui.parked(styled_text("表面层级", SemanticColorRole::Text, 14.0, 400));
+        let hint = ui.parked(styled_text(
             "基础、抬升与选中状态",
             SemanticColorRole::Muted,
             11.0,
             400,
         ));
-        let tab_label = ui.leaf(hugging_text("表面状态", SemanticColorRole::Text, 12.0, 400));
-        let tab_spacer = ui.leaf(HostStack::spacer());
-        let tab_bar = ui.leaf(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
+        let tab_label = ui.parked(hugging_text("表面状态", SemanticColorRole::Text, 12.0, 400));
+        let tab_spacer = ui.parked(HostStack::spacer());
+        let tab_bar =
+            ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
         ui.nest(tab_bar, |ui| {
             ui.adopt(tab_label);
             ui.adopt(tab_spacer);
@@ -1712,8 +1717,8 @@ fn mount_surfaces(
         });
         let tab_row = panel(ui, 8.0, None, 0.0);
         ui.nest(tab_row, |ui| ui.adopt(tab_bar));
-        let tree_heading = ui.leaf(styled_text("层级树", SemanticColorRole::Text, 14.0, 400));
-        let tree_hint = ui.leaf(styled_text(
+        let tree_heading = ui.parked(styled_text("层级树", SemanticColorRole::Text, 14.0, 400));
+        let tree_hint = ui.parked(styled_text(
             "稳定节点 ID 驱动展开与选择",
             SemanticColorRole::Muted,
             11.0,
@@ -1721,8 +1726,8 @@ fn mount_surfaces(
         ));
         let tree_panel = panel(ui, 8.0, None, 0.0);
         ui.nest(tree_panel, |ui| ui.adopt(tree));
-        let pane_heading = ui.leaf(styled_text("Pane 组合", SemanticColorRole::Text, 14.0, 400));
-        let pane_hint = ui.leaf(styled_text(
+        let pane_heading = ui.parked(styled_text("Pane 组合", SemanticColorRole::Text, 14.0, 400));
+        let pane_hint = ui.parked(styled_text(
             "动作只在具备真实 handler 时出现",
             SemanticColorRole::Muted,
             11.0,
@@ -1730,7 +1735,7 @@ fn mount_surfaces(
         ));
         let pane_panel = panel(ui, 0.0, Some(LengthSpec::Px(140.0)), 0.0);
         ui.nest(pane_panel, |ui| ui.adopt(pane));
-        let root = ui.leaf(HostStack::canvas());
+        let root = ui.detached(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(heading);
             ui.adopt(hint);
@@ -1796,21 +1801,21 @@ fn mount_feedback(
 ) -> Result<FeedbackTree, FrameworkError> {
     let progress_value = if state.loading { 72.0 } else { 0.0 };
     context.build_detached(document_id, |ui| {
-        let progress = ui.leaf(Progress::new(progress_value, 100.0));
-        let spinner = ui.leaf(Spinner::new(if state.loading {
+        let progress = ui.parked(Progress::new(progress_value, 100.0));
+        let spinner = ui.parked(Spinner::new(if state.loading {
             "处理中"
         } else {
             "已完成"
         }));
-        let skeleton = ui.leaf(Skeleton::fill_width(8.0));
-        let meter = ui.leaf(LevelMeter::new(f32::from(state.slider) / 100.0));
-        let badge = ui.leaf(StatusBadge::new(action_status(state), StatusTone::Info));
-        let validation = ui.leaf(ValidationMessage::new(
+        let skeleton = ui.parked(Skeleton::fill_width(8.0));
+        let meter = ui.parked(LevelMeter::new(f32::from(state.slider) / 100.0));
+        let badge = ui.parked(StatusBadge::new(action_status(state), StatusTone::Info));
+        let validation = ui.parked(ValidationMessage::new(
             "等待操作",
             ValidationIntent::Warning,
         ));
-        let toast = ui.leaf(Toast::new(action_status(state), ToastTone::Info));
-        let dialog = ui.leaf(fill_action_button(
+        let toast = ui.parked(Toast::new(action_status(state), ToastTone::Info));
+        let dialog = ui.parked(fill_action_button(
             if state.overlay.contains(&super::GalleryOverlay::Dialog) {
                 "关闭对话框"
             } else {
@@ -1822,17 +1827,17 @@ fn mount_feedback(
             let _ = event;
             GalleryMessage::ToggleDialog
         });
-        let context_btn = ui.leaf(fill_action_button("打开更多操作", ButtonKind::Subtle));
+        let context_btn = ui.parked(fill_action_button("打开更多操作", ButtonKind::Subtle));
         bind_event_ui(ui, context_btn, Arc::clone(pending), |event: &Activate| {
             let _ = event;
             GalleryMessage::ToggleContextMenu
         });
-        let image = ui.leaf(fill_action_button("查看图片", ButtonKind::Subtle));
+        let image = ui.parked(fill_action_button("查看图片", ButtonKind::Subtle));
         bind_event_ui(ui, image, Arc::clone(pending), |event: &Activate| {
             let _ = event;
             GalleryMessage::ToggleImageViewer
         });
-        let popover = ui.leaf(
+        let popover = ui.parked(
             Popover::new()
                 .trigger("查看当前状态")
                 .open(state.popover_open),
@@ -1853,7 +1858,7 @@ fn mount_feedback(
             let _ = event;
             GalleryMessage::ClosePopover
         });
-        let popover_action = ui.leaf(popover_action_button(state.popover_open));
+        let popover_action = ui.parked(popover_action_button(state.popover_open));
         bind_event_ui(
             ui,
             popover_action,
@@ -1864,8 +1869,8 @@ fn mount_feedback(
             },
         );
         ui.nest(popover, |ui| ui.adopt(popover_action));
-        let calendar = ui.leaf(CalendarHeatmap::new(gallery_calendar_data()));
-        let calendar_status = ui.leaf(styled_text(
+        let calendar = ui.parked(CalendarHeatmap::new(gallery_calendar_data()));
+        let calendar_status = ui.parked(styled_text(
             state
                 .calendar_active
                 .as_ref()
@@ -1876,14 +1881,14 @@ fn mount_feedback(
             10.0,
             400,
         ));
-        let action = ui.leaf(styled_text(
+        let action = ui.parked(styled_text(
             action_status(state),
             SemanticColorRole::Muted,
             10.0,
             400,
         ));
-        let heading = ui.leaf(styled_text("反馈", SemanticColorRole::Text, 14.0, 400));
-        let progress_label = ui.leaf(styled_text(
+        let heading = ui.parked(styled_text("反馈", SemanticColorRole::Text, 14.0, 400));
+        let progress_label = ui.parked(styled_text(
             if state.loading {
                 "处理中"
             } else {
@@ -1901,9 +1906,9 @@ fn mount_feedback(
             ui.adopt(skeleton);
             ui.adopt(meter);
         });
-        let row = ui.leaf(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Start));
+        let row = ui.parked(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Start));
         append_flex_child(ui, row, progress_panel);
-        let actions = ui.leaf(
+        let actions = ui.parked(
             HostStack::panel(8.0)
                 .width(LengthSpec::Px(140.0))
                 .max_width(LengthSpec::Px(140.0))
@@ -1916,7 +1921,7 @@ fn mount_feedback(
             ui.adopt(image);
         });
         ui.nest(row, |ui| ui.adopt(actions));
-        let popover_row = ui.leaf(
+        let popover_row = ui.parked(
             HostStack::column(0.0)
                 .width(LengthSpec::Fill)
                 .padding_xy(0.0, 8.0)
@@ -1925,7 +1930,7 @@ fn mount_feedback(
                 .shrink(0.0),
         );
         ui.nest(popover_row, |ui| ui.adopt(popover));
-        let calendar_title = ui.leaf(styled_text(
+        let calendar_title = ui.parked(styled_text(
             "日历热力图",
             SemanticColorRole::Muted,
             12.0,
@@ -1937,7 +1942,7 @@ fn mount_feedback(
             ui.adopt(calendar);
             ui.adopt(calendar_status);
         });
-        let root = ui.leaf(HostStack::canvas());
+        let root = ui.detached(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(heading);
             ui.adopt(row);
@@ -1976,20 +1981,20 @@ fn mount_rich_text(
     _pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<RichTextMount, FrameworkError> {
     let (root, markdown, link_status) = context.build_detached(document_id, |ui| {
-        let heading = ui.leaf(styled_text(
+        let heading = ui.parked(styled_text(
             "原生富文本",
             SemanticColorRole::Text,
             20.0,
             600,
         ));
-        let hint = ui.leaf(styled_text(
+        let hint = ui.parked(styled_text(
             "CommonMark、数学公式与图表共享同一 Runtime Scene 渲染路径。",
             SemanticColorRole::Muted,
             12.0,
             400,
         ));
-        let markdown = ui.leaf(state.markdown.clone());
-        let link_status = ui.leaf(styled_text(
+        let markdown = ui.parked(state.markdown.clone());
+        let link_status = ui.parked(styled_text(
             state
                 .opened_markdown_link
                 .as_ref()
@@ -1998,7 +2003,7 @@ fn mount_rich_text(
             11.0,
             400,
         ));
-        let root = ui.leaf(HostStack::canvas());
+        let root = ui.detached(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(heading);
             ui.adopt(hint);
@@ -2018,14 +2023,14 @@ fn mount_graph(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<GraphMount, FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let title = ui.leaf(hugging_text("节点图", SemanticColorRole::Text, 14.0, 400));
-        let selection = ui.leaf(hugging_text(
+        let title = ui.parked(hugging_text("节点图", SemanticColorRole::Text, 14.0, 400));
+        let selection = ui.parked(hugging_text(
             graph_selection_label(state),
             SemanticColorRole::Muted,
             11.0,
             400,
         ));
-        let reset = ui.leaf(
+        let reset = ui.parked(
             Button::new("重置视图")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
@@ -2034,13 +2039,14 @@ fn mount_graph(
             let _ = event;
             GalleryMessage::ResetGraphViewport
         });
-        let toolbar = ui.leaf(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Center));
+        let toolbar =
+            ui.parked(HostStack::fill_row(10.0).align(nana_ui::runtime::AlignSpec::Center));
         ui.nest(toolbar, |ui| {
             ui.adopt(title);
             ui.adopt(selection);
             ui.adopt(reset);
         });
-        let graph = ui.leaf(
+        let graph = ui.parked(
             GraphCanvas::new("gallery", state.graph.clone())
                 .viewport(state.graph_viewport)
                 .selection(state.graph_selection.clone()),
@@ -2051,7 +2057,7 @@ fn mount_graph(
             Arc::clone(pending),
             |event: &GraphCanvasEvent| GalleryMessage::Graph(event.clone()),
         );
-        let minimap = ui.leaf(
+        let minimap = ui.parked(
             GraphMinimap::new(state.graph.clone())
                 .canvas_size(GraphSize::new(900.0, 560.0))
                 .viewport(state.graph_viewport)
@@ -2063,7 +2069,7 @@ fn mount_graph(
             Arc::clone(pending),
             |event: &GraphMinimapEvent| GalleryMessage::GraphMinimap(event.clone()),
         );
-        let root = ui.leaf(HostStack::canvas());
+        let root = ui.detached(HostStack::canvas());
         ui.nest(root, |ui| {
             ui.adopt(toolbar);
             ui.adopt(graph);
@@ -2098,9 +2104,9 @@ fn mount_workspace(
     let mut contents = std::collections::HashMap::new();
     let tree = context.build_detached(document_id, |ui| {
         for (id, title, hint) in DOCK_PANELS {
-            let heading = ui.leaf(styled_text(title, SemanticColorRole::Text, 12.0, 400));
-            let detail = ui.leaf(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
-            let panel = ui.leaf(HostStack::fill_column(5.0).padding(10.0));
+            let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 12.0, 400));
+            let detail = ui.parked(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
+            let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
             ui.nest(panel, |ui| {
                 ui.adopt(heading);
                 ui.adopt(detail);
@@ -2108,7 +2114,7 @@ fn mount_workspace(
             contents.insert(id.to_owned(), panel.stable_id());
             panels.push((id.to_owned(), panel));
         }
-        let dock = ui.leaf(runtime_dock_from_workspace(state, &contents));
+        let dock = ui.parked(runtime_dock_from_workspace(state, &contents));
         ui.nest(dock, |ui| {
             for (_, panel) in &panels {
                 ui.adopt(*panel);
@@ -2117,12 +2123,12 @@ fn mount_workspace(
 
         let locked = state.dock_locked;
         let hidden_assets = !state.dock_is_visible("gallery.assets");
-        let lock = ui.leaf(
+        let lock = ui.parked(
             Button::new(if locked { "解锁 Dock" } else { "锁定 Dock" })
                 .kind(ButtonKind::Subtle)
                 .size(ControlSize::Small),
         );
-        let hide = ui.leaf(
+        let hide = ui.parked(
             Button::new(if hidden_assets {
                 "恢复 Assets"
             } else {
@@ -2131,7 +2137,7 @@ fn mount_workspace(
             .kind(ButtonKind::Subtle)
             .size(ControlSize::Small),
         );
-        let reset = ui.leaf(
+        let reset = ui.parked(
             Button::new("重置 Dock")
                 .kind(ButtonKind::Subtle)
                 .size(ControlSize::Small),
@@ -2140,26 +2146,26 @@ fn mount_workspace(
             let _ = event;
             GalleryMessage::Dock(GalleryDock::Reset)
         });
-        let status = ui.leaf(workspace_status_text(dock_status(state)));
-        let popup_title = ui.leaf(AppTitleBar::new("弹窗标题"));
-        let popup_heading = ui.leaf(styled_text(
+        let status = ui.parked(workspace_status_text(dock_status(state)));
+        let popup_title = ui.parked(AppTitleBar::new("弹窗标题"));
+        let popup_heading = ui.parked(styled_text(
             "独立弹窗内容",
             SemanticColorRole::Text,
             13.0,
             400,
         ));
-        let popup_hint = ui.leaf(styled_text(
+        let popup_hint = ui.parked(styled_text(
             "快速创建并管理项目",
             SemanticColorRole::Muted,
             11.0,
             400,
         ));
-        let popup_body = ui.leaf(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0));
+        let popup_body = ui.parked(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0));
         ui.nest(popup_body, |ui| {
             ui.adopt(popup_heading);
             ui.adopt(popup_hint);
         });
-        let popup = ui.leaf(
+        let popup = ui.parked(
             AppShell::new()
                 .title_bar(popup_title.stable_id())
                 .body(popup_body.stable_id()),
@@ -2168,7 +2174,7 @@ fn mount_workspace(
             ui.adopt(popup_title);
             ui.adopt(popup_body);
         });
-        let tools = ui.leaf(
+        let tools = ui.parked(
             HostStack::fill_row(8.0)
                 .align(nana_ui::runtime::AlignSpec::Center)
                 .padding_xy(12.0, 8.0)
@@ -2182,7 +2188,7 @@ fn mount_workspace(
             ui.adopt(reset);
             ui.adopt(status);
         });
-        let dock_frame = ui.leaf(
+        let dock_frame = ui.parked(
             HostStack::column(0.0)
                 .height(LengthSpec::Px(WORKSPACE_DOCK_HEIGHT))
                 .min_height(LengthSpec::Px(WORKSPACE_DOCK_HEIGHT))
@@ -2190,7 +2196,7 @@ fn mount_workspace(
                 .shrink(0.0),
         );
         ui.nest(dock_frame, |ui| ui.adopt(dock));
-        let popup_frame = ui.leaf(
+        let popup_frame = ui.parked(
             HostStack::column(0.0)
                 .width(LengthSpec::Px(WORKSPACE_POPUP_WIDTH))
                 .height(LengthSpec::Px(WORKSPACE_POPUP_HEIGHT))
@@ -2200,7 +2206,7 @@ fn mount_workspace(
                 .shrink(0.0),
         );
         ui.nest(popup_frame, |ui| ui.adopt(popup));
-        let root = ui.leaf(
+        let root = ui.detached(
             HostStack::fill_column(WORKSPACE_CANVAS_GAP)
                 .padding(WORKSPACE_CANVAS_PADDING)
                 .background(SemanticColorRole::Background)
@@ -2233,7 +2239,7 @@ fn mount_inspector(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<InspectorTree, FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let collapse = ui.leaf(
+        let collapse = ui.parked(
             Button::new("收起")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
@@ -2243,7 +2249,7 @@ fn mount_inspector(
             GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(RegionId::Inspector))
         });
         let radius = state.appearance.standard_radius().round() as u8;
-        let slider = ui.leaf(fill_range_field(
+        let slider = ui.parked(fill_range_field(
             nana_ui::runtime::RangeField::new(f64::from(radius), 0.0, 24.0, 1.0)
                 .label("标准圆角")
                 .unit("px"),
@@ -2251,16 +2257,16 @@ fn mount_inspector(
         bind_event_ui(ui, slider, Arc::clone(pending), |event: &RangeChanged| {
             GalleryMessage::SetStandardRadius(event.value.round() as u8)
         });
-        let corners = ui.leaf(Switch::new(
+        let corners = ui.parked(Switch::new(
             "主区域圆角",
             state.appearance.workspace_corners_enabled(),
         ));
         bind_event_ui(ui, corners, Arc::clone(pending), |event: &ToggleChanged| {
             GalleryMessage::SetWorkspaceCorners(event.checked)
         });
-        let title = ui.leaf(hugging_text("检查器", SemanticColorRole::Muted, 12.0, 700));
-        let heading_spacer = ui.leaf(HostStack::spacer());
-        let heading = ui.leaf(
+        let title = ui.parked(hugging_text("检查器", SemanticColorRole::Muted, 12.0, 700));
+        let heading_spacer = ui.parked(HostStack::spacer());
+        let heading = ui.parked(
             HostStack::fill_row(8.0)
                 .align(nana_ui::runtime::AlignSpec::Center)
                 .grow(0.0),
@@ -2270,7 +2276,7 @@ fn mount_inspector(
             ui.adopt(heading_spacer);
             ui.adopt(collapse);
         });
-        let root = ui.leaf(
+        let root = ui.detached(
             HostStack::fill_column(10.0)
                 .padding_xy(12.0, 10.0)
                 .grow(0.0),
@@ -2280,7 +2286,7 @@ fn mount_inspector(
             ui.adopt(slider);
             ui.adopt(corners);
         });
-        let slot = ui.leaf(HostStack::region_slot());
+        let slot = ui.detached(HostStack::region_slot());
         ui.nest(slot, |ui| ui.adopt(root));
         InspectorTree {
             slot,
@@ -2298,7 +2304,7 @@ fn mount_bottom(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<(Entity<HostStack>, Entity<Button>), FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let collapse = ui.leaf(
+        let collapse = ui.parked(
             Button::new("收起")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
@@ -2307,14 +2313,14 @@ fn mount_bottom(
             let _ = event;
             GalleryMessage::Workspace(WorkspaceAction::ToggleRegion(RegionId::Diagnostics))
         });
-        let title = ui.leaf(hugging_text(
+        let title = ui.parked(hugging_text(
             "底部面板",
             SemanticColorRole::Muted,
             12.0,
             700,
         ));
-        let heading_spacer = ui.leaf(HostStack::spacer());
-        let heading = ui.leaf(
+        let heading_spacer = ui.parked(HostStack::spacer());
+        let heading = ui.parked(
             HostStack::fill_row(8.0)
                 .align(nana_ui::runtime::AlignSpec::Center)
                 .grow(0.0),
@@ -2324,13 +2330,13 @@ fn mount_bottom(
             ui.adopt(heading_spacer);
             ui.adopt(collapse);
         });
-        let status = ui.leaf(StatusBadge::new("布局就绪", StatusTone::Success));
-        let root = ui.leaf(HostStack::fill_column(8.0).padding_xy(12.0, 8.0).grow(0.0));
+        let status = ui.parked(StatusBadge::new("布局就绪", StatusTone::Success));
+        let root = ui.detached(HostStack::fill_column(8.0).padding_xy(12.0, 8.0).grow(0.0));
         ui.nest(root, |ui| {
             ui.adopt(heading);
             ui.adopt(status);
         });
-        let slot = ui.leaf(HostStack::region_slot());
+        let slot = ui.detached(HostStack::region_slot());
         ui.nest(slot, |ui| ui.adopt(root));
         (slot, collapse)
     })
@@ -2342,7 +2348,7 @@ fn mount_toolbar(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<(Entity<HostStack>, Entity<Button>), FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let reset = ui.leaf(
+        let reset = ui.parked(
             Button::new("恢复默认")
                 .kind(ButtonKind::Text)
                 .size(ControlSize::Small),
@@ -2351,9 +2357,9 @@ fn mount_toolbar(
             let _ = event;
             GalleryMessage::ResetWorkspaceLayout
         });
-        let title = ui.leaf(hugging_text("工作区", SemanticColorRole::Text, 13.0, 700));
-        let spacer = ui.leaf(HostStack::spacer());
-        let root = ui.leaf(
+        let title = ui.parked(hugging_text("工作区", SemanticColorRole::Text, 13.0, 700));
+        let spacer = ui.parked(HostStack::spacer());
+        let root = ui.detached(
             HostStack::fill_row(8.0)
                 .align(nana_ui::runtime::AlignSpec::Center)
                 .height(LengthSpec::Fill)
@@ -2365,7 +2371,7 @@ fn mount_toolbar(
             ui.adopt(spacer);
             ui.adopt(reset);
         });
-        let slot = ui.leaf(HostStack::region_slot());
+        let slot = ui.detached(HostStack::region_slot());
         ui.nest(slot, |ui| ui.adopt(root));
         (slot, reset)
     })
@@ -2652,13 +2658,13 @@ fn append_flex_child<C: View>(
     parent: Entity<HostStack>,
     child: Entity<C>,
 ) {
-    let cell = ui.leaf(HostStack::flex_child());
+    let cell = ui.parked(HostStack::flex_child());
     ui.nest(cell, |ui| ui.adopt(child));
     ui.nest(parent, |ui| ui.adopt(cell));
 }
 
 fn filling_panel(ui: &mut nana_ui::runtime::UiBuilder<'_>, gap: f32) -> Entity<HostStack> {
-    ui.leaf(
+    ui.parked(
         HostStack::panel(gap)
             .height(LengthSpec::Fill)
             .min_height(LengthSpec::Px(0.0))
@@ -2820,7 +2826,7 @@ fn panel(
     if let Some(height) = height {
         stack = stack.height(height);
     }
-    ui.leaf(stack)
+    ui.parked(stack)
 }
 
 fn loading_button(state: &GalleryState) -> Button {

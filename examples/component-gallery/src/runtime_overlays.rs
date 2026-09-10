@@ -105,14 +105,14 @@ impl GalleryOverlaysRuntime {
             }
             GalleryOverlay::Dialog => {
                 let overlay = context.build_child(host, |ui| {
-                    let body = ui.leaf(dialog_body_text());
-                    let close = ui.leaf(
+                    let body = ui.detached(dialog_body_text());
+                    let close = ui.detached(
                         IconButton::new(Icon::Close, "关闭")
                             .size(ControlSize::Small)
                             .kind(ButtonKind::Text),
                     );
-                    let cancel = ui.leaf(Button::new("取消").kind(ButtonKind::Ghost));
-                    let confirm = ui.leaf(Button::new("确认").kind(ButtonKind::Primary));
+                    let cancel = ui.detached(Button::new("取消").kind(ButtonKind::Ghost));
+                    let confirm = ui.detached(Button::new("确认").kind(ButtonKind::Primary));
                     let overlay = ui.child(
                         "overlay",
                         ConfirmDialog::new(DIALOG_TITLE, DIALOG_DESCRIPTION),
@@ -794,21 +794,21 @@ fn mount_image_preview(
     document_id: DocumentId,
 ) -> Result<Entity<HostStack>, FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let top = ui.leaf(HostStack::spacer());
-        let title = ui.leaf(hugging_text(
+        let top = ui.parked(HostStack::spacer());
+        let title = ui.parked(hugging_text(
             IMAGE_PREVIEW_TITLE,
             SemanticColorRole::AccentText,
             48.0,
             600,
         ));
-        let caption = ui.leaf(hugging_text(
+        let caption = ui.parked(hugging_text(
             IMAGE_PREVIEW_CAPTION,
             SemanticColorRole::AccentText,
             14.0,
             400,
         ));
-        let bottom = ui.leaf(HostStack::spacer());
-        let preview = ui.leaf(
+        let bottom = ui.parked(HostStack::spacer());
+        let preview = ui.parked(
             HostStack::fill_column(6.0)
                 .align(AlignSpec::Center)
                 .background(SemanticColorRole::AccentStrong),
@@ -819,7 +819,7 @@ fn mount_image_preview(
             ui.adopt(caption);
             ui.adopt(bottom);
         });
-        let stage = ui.leaf(HostStack::fill_column(0.0).padding(IMAGE_PREVIEW_INSET));
+        let stage = ui.detached(HostStack::fill_column(0.0).padding(IMAGE_PREVIEW_INSET));
         ui.nest(stage, |ui| ui.adopt(preview));
         stage
     })

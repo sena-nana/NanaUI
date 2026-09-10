@@ -93,52 +93,52 @@ impl GallerySettingsRuntime {
             title_trailing,
             shell,
         ) = context.build(document_id, |ui| {
-            let sidebar = ui.leaf(SettingsSidebar::new(
+            let sidebar = ui.detached(SettingsSidebar::new(
                 state.settings_model.clone(),
                 state.settings.clone(),
             ));
-            let appearance = ui.leaf(
+            let appearance = ui.detached(
                 AppearanceSection::new(state.theme, state.appearance)
                     .platform_hint(nana_ui::hosted_platform_material_support().hint())
                     .available_materials(nana_ui::hosted_window_material_modes())
                     .material_status(state.material_outcome.status_label()),
             );
-            let about = ui.leaf(AboutSection::new(settings_view::gallery_about_metadata()));
-            let summary_title = ui.leaf(styled_text(
+            let about = ui.detached(AboutSection::new(settings_view::gallery_about_metadata()));
+            let summary_title = ui.parked(styled_text(
                 settings_view::WORKSPACE_SETTINGS_TITLE,
                 SemanticColorRole::Text,
                 13.0,
                 400,
             ));
-            let summary_hint = ui.leaf(styled_text(
+            let summary_hint = ui.parked(styled_text(
                 settings_view::WORKSPACE_SETTINGS_HINT,
                 SemanticColorRole::Muted,
                 11.0,
                 400,
             ));
-            let summary = ui.leaf(HostStack::column(2.0));
+            let summary = ui.detached(HostStack::column(2.0));
             ui.nest(summary, |ui| {
                 ui.adopt(summary_title);
                 ui.adopt(summary_hint);
             });
-            let details_copy = ui.leaf(styled_text(
+            let details_copy = ui.parked(styled_text(
                 settings_view::WORKSPACE_SETTINGS_DETAILS,
                 SemanticColorRole::Muted,
                 12.0,
                 400,
             ));
-            let reset_workspace = ui.leaf(workspace_reset_button());
-            let details = ui.leaf(HostStack::column(10.0));
+            let reset_workspace = ui.parked(workspace_reset_button());
+            let details = ui.detached(HostStack::column(10.0));
             ui.nest(details, |ui| {
                 ui.adopt(details_copy);
                 ui.adopt(reset_workspace);
             });
-            let workspace_card = ui.leaf(
+            let workspace_card = ui.detached(
                 SettingsCollapsibleCard::new(state.workspace_settings_expanded)
                     .summary(summary.stable_id())
                     .details(details.stable_id()),
             );
-            let page = ui.leaf(
+            let page = ui.detached(
                 SettingsPage::new(state.settings_model.clone(), state.settings.clone()).content(
                     page_content_id(
                         &state.settings,
@@ -148,23 +148,24 @@ impl GallerySettingsRuntime {
                     ),
                 ),
             );
-            let sidebar_toggle = ui.leaf(sidebar_toggle_button(sidebar_collapsed));
-            let search_button = ui.leaf(
+            let sidebar_toggle = ui.parked(sidebar_toggle_button(sidebar_collapsed));
+            let search_button = ui.parked(
                 IconButton::new(Icon::Search, "搜索命令")
                     .size(ControlSize::Small)
                     .kind(ButtonKind::Text),
             );
-            let theme_button = ui.leaf(theme_toggle_button(state.theme));
-            let context_label = ui.leaf(hugging_text("设置", SemanticColorRole::Muted, 11.0, 400));
-            let title_center = ui.leaf(hugging_text(
+            let theme_button = ui.parked(theme_toggle_button(state.theme));
+            let context_label =
+                ui.parked(hugging_text("设置", SemanticColorRole::Muted, 11.0, 400));
+            let title_center = ui.detached(hugging_text(
                 "NanaUI Gallery",
                 SemanticColorRole::Text,
                 13.0,
                 600,
             ));
-            let title_leading = ui.leaf(HostStack::leading_row(0.0));
+            let title_leading = ui.detached(HostStack::leading_row(0.0));
             ui.nest(title_leading, |ui| ui.adopt(sidebar_toggle));
-            let title_trailing = ui.leaf(HostStack::row(6.0));
+            let title_trailing = ui.detached(HostStack::row(6.0));
             ui.nest(title_trailing, |ui| {
                 ui.adopt(context_label);
                 ui.adopt(search_button);

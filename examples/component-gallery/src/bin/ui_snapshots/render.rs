@@ -1067,18 +1067,18 @@ fn titlebar_document(
     let mut document = RuntimeDocument::new(document_id);
     document.context_mut().set_theme(theme)?;
     let title = document.context_mut().build(document_id, |ui| {
-        let leading = ui.leaf(labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600));
-        let center = ui.leaf(labeled_text(
+        let leading = ui.parked(labeled_text("NANA", SemanticColorRole::Accent, 12.0, 600));
+        let center = ui.parked(labeled_text(
             "LiliaCode › 恢复 Native 侧边栏交互与主界面布局",
             SemanticColorRole::Text,
             13.0,
             400,
         ));
-        let trailing = ui.leaf(labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400));
-        let minimize = ui.leaf(window_control(Icon::Minimize, "Minimize"));
-        let maximize = ui.leaf(window_control(Icon::Maximize, "Maximize"));
-        let close = ui.leaf(window_control(Icon::Close, "Close"));
-        let controls = ui.leaf(
+        let trailing = ui.parked(labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400));
+        let minimize = ui.parked(window_control(Icon::Minimize, "Minimize"));
+        let maximize = ui.parked(window_control(Icon::Maximize, "Maximize"));
+        let close = ui.parked(window_control(Icon::Close, "Close"));
+        let controls = ui.parked(
             AppTitleBarControls::new(false)
                 .minimize(minimize.stable_id())
                 .maximize(maximize.stable_id())
@@ -1155,8 +1155,8 @@ fn dock_window_document(
         .title("output", "输出")
         .title("editor", "Editor");
     let (shell, dock) = document.context_mut().build(document_id, |ui| {
-        let dock = ui.leaf(dock);
-        let title = ui.leaf(
+        let dock = ui.parked(dock);
+        let title = ui.parked(
             AppTitleBar::new("NanaUI Gallery")
                 .leading_inset(chrome.leading_inset)
                 .trailing_inset(chrome.trailing_inset)

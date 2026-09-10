@@ -311,12 +311,12 @@ fn remount(
         }
         Case::Workspace => {
             let workspace = document.context_mut().build(document_id, |ui| {
-                let nav = ui.leaf(runtime_slot_text("Nav"));
-                let files = ui.leaf(runtime_slot_text("Files"));
-                let toolbar = ui.leaf(runtime_slot_text("Toolbar"));
-                let primary = ui.leaf(runtime_slot_text("Primary"));
-                let inspector = ui.leaf(runtime_slot_text("Inspector"));
-                let diagnostics = ui.leaf(runtime_slot_text("Diagnostics"));
+                let nav = ui.parked(runtime_slot_text("Nav"));
+                let files = ui.parked(runtime_slot_text("Files"));
+                let toolbar = ui.parked(runtime_slot_text("Toolbar"));
+                let primary = ui.parked(runtime_slot_text("Primary"));
+                let inspector = ui.parked(runtime_slot_text("Inspector"));
+                let diagnostics = ui.parked(runtime_slot_text("Diagnostics"));
                 let workspace = ui.child(
                     "workspace",
                     Workspace::from_model(
@@ -349,9 +349,9 @@ fn remount(
         }
         Case::Dock => {
             let dock = document.context_mut().build(document_id, |ui| {
-                let nav = ui.leaf(runtime_slot_text("Nav"));
-                let files = ui.leaf(runtime_slot_text("Files"));
-                let primary = ui.leaf(runtime_slot_text("Primary"));
+                let nav = ui.parked(runtime_slot_text("Nav"));
+                let files = ui.parked(runtime_slot_text("Files"));
+                let primary = ui.parked(runtime_slot_text("Primary"));
                 let dock = ui.child(
                     "dock",
                     Dock::new(DockNode::split(
@@ -383,7 +383,7 @@ fn remount(
         }
         Case::DockPanel => {
             let panel = document.context_mut().build(document_id, |ui| {
-                let body = ui.leaf(RuntimeText::new("Inspector"));
+                let body = ui.parked(RuntimeText::new("Inspector"));
                 let panel = ui.child(
                     "panel",
                     DockPanel::new().padding(10.0).content(body.stable_id()),
@@ -395,8 +395,8 @@ fn remount(
         }
         Case::SplitPane => {
             let pane = document.context_mut().build(document_id, |ui| {
-                let first = ui.leaf(runtime_slot_text("First"));
-                let second = ui.leaf(runtime_slot_text("Second"));
+                let first = ui.parked(runtime_slot_text("First"));
+                let second = ui.parked(runtime_slot_text("Second"));
                 let pane = ui.child(
                     "pane",
                     SplitPane::from_model(
@@ -416,10 +416,10 @@ fn remount(
         }
         Case::PaneChrome => {
             let chrome = document.context_mut().build(document_id, |ui| {
-                let header = ui.leaf(RuntimeText::new(""));
-                let tabs = ui.leaf(RuntimeText::new("editor.rs"));
-                let body = ui.leaf(RuntimeText::new("Body"));
-                let close = ui.leaf(RuntimeText::new("关闭"));
+                let header = ui.parked(RuntimeText::new(""));
+                let tabs = ui.parked(RuntimeText::new("editor.rs"));
+                let body = ui.parked(RuntimeText::new("Body"));
+                let close = ui.parked(RuntimeText::new("关闭"));
                 ui.nest(header, |ui| {
                     ui.adopt(tabs);
                     ui.adopt(close);
@@ -445,8 +445,8 @@ fn remount(
         }
         Case::PaneTree => {
             let tree = document.context_mut().build(document_id, |ui| {
-                let left = ui.leaf(runtime_slot_text("left"));
-                let right = ui.leaf(runtime_slot_text("right"));
+                let left = ui.parked(runtime_slot_text("left"));
+                let right = ui.parked(runtime_slot_text("right"));
                 let tree = ui.child(
                     "tree",
                     PaneTree::new(PaneTreeNode::split(
@@ -467,8 +467,8 @@ fn remount(
         }
         Case::AppShell => {
             let shell = document.context_mut().build(document_id, |ui| {
-                let title = ui.leaf(AppTitleBar::new("NanaUI"));
-                let body = ui.leaf(RuntimeText::new("Workspace"));
+                let title = ui.parked(AppTitleBar::new("NanaUI"));
+                let body = ui.parked(RuntimeText::new("Workspace"));
                 let shell = ui.child(
                     "shell",
                     AppShell::new()
@@ -493,7 +493,7 @@ fn remount(
         Case::SettingsPage => {
             let (model, state) = ab_settings();
             let page = document.context_mut().build(document_id, |ui| {
-                let content = ui.leaf(RuntimeText::new("Appearance content"));
+                let content = ui.parked(RuntimeText::new("Appearance content"));
                 let page = ui.child(
                     "page",
                     SettingsPage::new(model.clone(), state.clone()).content(content.stable_id()),

@@ -518,8 +518,8 @@ fn runtime_fixture(
         let activations = Arc::new(Mutex::new(0));
         let observed = Arc::clone(&activations);
         let (action, replacement) = document.context_mut().build_detached(document_id, |ui| {
-            let action = ui.leaf(RuntimeButton::new(label).kind(kind));
-            let replacement = ui.leaf(RuntimeButton::new(replacement_label).kind(kind));
+            let action = ui.detached(RuntimeButton::new(label).kind(kind));
+            let replacement = ui.detached(RuntimeButton::new(replacement_label).kind(kind));
             ui.on(action, move |_button, _event: &Activate, _context| {
                 *observed.lock().expect("feedback activation count") += 1;
             });
@@ -790,7 +790,7 @@ fn runtime_fixture(
             }
             set_full_width(&mut component.style);
             document.context_mut().build(document_id, |ui| {
-                let body = ui.leaf(RuntimeText::new(if fixture.state == "long-content" {
+                let body = ui.parked(RuntimeText::new(if fixture.state == "long-content" {
                     "A deliberately long body that must remain inside the card content region even when space is constrained."
                 } else {
                     "Build status: ready"
@@ -813,9 +813,9 @@ fn runtime_fixture(
             set_full_width(&mut component.style);
             if fixture.state == "three-slots" {
                 let item = document.context_mut().build(document_id, |ui| {
-                    let leading = ui.leaf(RuntimeText::new("●"));
-                    let content = ui.leaf(RuntimeText::new("Camera source"));
-                    let trailing = ui.leaf(RuntimeText::new("⌘1"));
+                    let leading = ui.parked(RuntimeText::new("●"));
+                    let content = ui.detached(RuntimeText::new("Camera source"));
+                    let trailing = ui.detached(RuntimeText::new("⌘1"));
                     let item = ui.child("item", component);
                     (item, leading, content, trailing)
                 })?;
@@ -970,7 +970,7 @@ fn runtime_fixture(
         }
         Component::FormField => {
             let (field, control) = document.context_mut().build(document_id, |ui| {
-                let control = ui.leaf(
+                let control = ui.detached(
                     RuntimeTextInput::new("name@studio.local").placeholder("name@studio.local"),
                 );
                 let field = ui.child("field", RuntimeFormField::new("Email").error("Required"));
@@ -982,7 +982,7 @@ fn runtime_fixture(
             field.stable_id()
         }
         Component::InteractiveCard => document.context_mut().build(document_id, |ui| {
-            let label = ui.leaf(RuntimeText::new("Interactive surface"));
+            let label = ui.parked(RuntimeText::new("Interactive surface"));
             let card = ui.child("card", RuntimeInteractiveCard::new().selected(true));
             ui.nest(card, |ui| ui.adopt(label));
             card.stable_id()
@@ -997,8 +997,8 @@ fn runtime_fixture(
         }
         Component::Dialog => {
             let (dialog, body, close) = document.context_mut().build(document_id, |ui| {
-                let body = ui.leaf(RuntimeText::new("Camera A"));
-                let close = ui.leaf(RuntimeIconButton::new(Icon::Close, "Close"));
+                let body = ui.parked(RuntimeText::new("Camera A"));
+                let close = ui.detached(RuntimeIconButton::new(Icon::Close, "Close"));
                 let dialog = ui.child(
                     "dialog",
                     RuntimeDialog::new("Rename scene")
@@ -1023,8 +1023,8 @@ fn runtime_fixture(
             confirm.busy = fixture.state == "busy";
             let (confirm, cancel, accept, close) =
                 document.context_mut().build(document_id, |ui| {
-                    let cancel = ui.leaf(RuntimeButton::new("取消"));
-                    let accept = ui.leaf(
+                    let cancel = ui.detached(RuntimeButton::new("取消"));
+                    let accept = ui.detached(
                         RuntimeButton::new(if fixture.state == "busy" {
                             "处理中"
                         } else {
@@ -1038,7 +1038,7 @@ fn runtime_fixture(
                         .loading(fixture.state == "busy"),
                     );
                     let close = (fixture.state != "busy")
-                        .then(|| ui.leaf(RuntimeIconButton::new(Icon::Close, "Close")));
+                        .then(|| ui.parked(RuntimeIconButton::new(Icon::Close, "Close")));
                     let confirm = ui.child("confirm", confirm);
                     (confirm, cancel, accept, close)
                 })?;
@@ -1056,8 +1056,8 @@ fn runtime_fixture(
         }
         Component::Drawer => {
             let (drawer, body, close) = document.context_mut().build(document_id, |ui| {
-                let body = ui.leaf(RuntimeText::new("Properties"));
-                let close = ui.leaf(RuntimeIconButton::new(Icon::Close, "Close"));
+                let body = ui.parked(RuntimeText::new("Properties"));
+                let close = ui.detached(RuntimeIconButton::new(Icon::Close, "Close"));
                 let drawer = ui.child(
                     "drawer",
                     RuntimeDrawer::new("Inspector").side(if fixture.state == "left" {
@@ -1132,7 +1132,7 @@ fn runtime_fixture(
             )?
             .stable_id(),
         Component::Popover => document.context_mut().build(document_id, |ui| {
-            let body = ui.leaf(RuntimeText::new("Inspector content"));
+            let body = ui.parked(RuntimeText::new("Inspector content"));
             let popover = ui.child(
                 "popover",
                 RuntimePopover::new().trigger("Details").open(true),
@@ -1141,8 +1141,8 @@ fn runtime_fixture(
             popover.stable_id()
         })?,
         Component::ActionMenu => document.context_mut().build(document_id, |ui| {
-            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
-            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let rename = ui.parked(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.parked(RuntimeActionMenuItem::new("Delete").danger(true));
             let menu = ui.child(
                 "menu",
                 RuntimeActionMenu::new().trigger("Actions").open(true),
@@ -1161,8 +1161,8 @@ fn runtime_fixture(
             )?
             .stable_id(),
         Component::AnchoredActionMenu => document.context_mut().build(document_id, |ui| {
-            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
-            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let rename = ui.parked(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.parked(RuntimeActionMenuItem::new("Delete").danger(true));
             let menu = ui.child(
                 "menu",
                 RuntimeAnchoredActionMenu::new(24.0, 36.0)
@@ -1176,8 +1176,8 @@ fn runtime_fixture(
             menu.stable_id()
         })?,
         Component::ContextMenu => document.context_mut().build(document_id, |ui| {
-            let rename = ui.leaf(RuntimeActionMenuItem::new("Rename"));
-            let delete = ui.leaf(RuntimeActionMenuItem::new("Delete").danger(true));
+            let rename = ui.parked(RuntimeActionMenuItem::new("Rename"));
+            let delete = ui.parked(RuntimeActionMenuItem::new("Delete").danger(true));
             let menu = ui.child(
                 "menu",
                 RuntimeContextMenu::new(24.0, 36.0)
@@ -1202,8 +1202,8 @@ fn runtime_fixture(
         )?,
         Component::SidebarFooter => document.context_mut().build(document_id, |ui| {
             let settings =
-                ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
-            let search = ui.leaf(RuntimeSidebarFooterButton::new("搜索", Icon::Search));
+                ui.parked(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
+            let search = ui.parked(RuntimeSidebarFooterButton::new("搜索", Icon::Search));
             let footer = ui.child("footer", RuntimeSidebarFooter::new());
             ui.nest(footer, |ui| {
                 ui.adopt(settings);
@@ -1238,8 +1238,8 @@ fn runtime_fixture(
         }
         Component::SettingsCollapsibleCard => {
             let card = document.context_mut().build(document_id, |ui| {
-                let summary = ui.leaf(RuntimeText::new("高级选项"));
-                let details = ui.leaf(RuntimeText::new("折叠后应隐藏这段说明。"));
+                let summary = ui.detached(RuntimeText::new("高级选项"));
+                let details = ui.detached(RuntimeText::new("折叠后应隐藏这段说明。"));
                 ui.child(
                     "card",
                     RuntimeSettingsCollapsibleCard::new(fixture.state != "collapsed")
@@ -1266,7 +1266,7 @@ fn runtime_fixture(
             )?
             .stable_id(),
         Component::OverlayHost => document.context_mut().build(document_id, |ui| {
-            let base = ui.leaf(RuntimeText::new("Base surface"));
+            let base = ui.parked(RuntimeText::new("Base surface"));
             let host = ui.child("host", RuntimeOverlayHost::new());
             ui.nest(host, |ui| ui.adopt(base));
             host.stable_id()
@@ -1315,7 +1315,7 @@ fn runtime_fixture(
             )?
             .stable_id(),
         Component::SidebarRow => document.context_mut().build(document_id, |ui| {
-            let leading = ui.leaf(nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace));
+            let leading = ui.parked(nana_ui::runtime::SidebarRowIcon::new(Icon::Workspace));
             let row = ui.child(
                 "row",
                 RuntimeSidebarRow::new("工作区")
@@ -1332,7 +1332,7 @@ fn runtime_fixture(
         Component::Settings => {
             let control = document
                 .context_mut()
-                .build_detached(document_id, |ui| ui.leaf(RuntimeText::new("暗色")))?;
+                .build_detached(document_id, |ui| ui.parked(RuntimeText::new("暗色")))?;
             let row = document.context_mut().mount_settings_leaf_row(
                 document_id,
                 "主题",
@@ -1350,8 +1350,8 @@ fn runtime_fixture(
         Component::Workspace => mount_runtime_workspace(&mut document)?,
         Component::Dock => mount_runtime_dock(&mut document)?,
         Component::DockPanel => document.context_mut().build(document_id, |ui| {
-            let title = ui.leaf(RuntimeText::new("Inspector"));
-            let hint = ui.leaf(RuntimeText::new("Selection").style({
+            let title = ui.parked(RuntimeText::new("Inspector"));
+            let hint = ui.parked(RuntimeText::new("Selection").style({
                 let mut style = NodeStyle {
                     foreground: Some(SemanticColorRole::Muted),
                     ..NodeStyle::default()
@@ -1365,7 +1365,7 @@ fn runtime_fixture(
                 layout.direction = Some(nana_ui_core::FlexDirection::Column);
                 layout.gap = Some(LengthSpec::Px(4.0));
             }
-            let body = ui.leaf(RuntimeList::new().style(body_style));
+            let body = ui.parked(RuntimeList::new().style(body_style));
             ui.nest(body, |ui| {
                 ui.adopt(title);
                 ui.adopt(hint);

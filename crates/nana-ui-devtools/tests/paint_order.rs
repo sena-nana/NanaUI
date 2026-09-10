@@ -11,7 +11,7 @@ fn covered_text_pixels(text: &str) -> Vec<u8> {
     document
         .context_mut()
         .build(id, |ui| {
-            let root = ui.leaf(
+            let root = ui.detached(
                 Stack::column(0.0)
                     .width(LengthSpec::Px(256.0))
                     .height(LengthSpec::Px(128.0)),

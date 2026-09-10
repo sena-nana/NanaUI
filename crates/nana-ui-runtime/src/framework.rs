@@ -23,6 +23,7 @@ use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -680,6 +681,7 @@ pub enum FrameworkError {
         key: String,
     },
     DuplicateActivation,
+    UnplacedNode(StableNodeId, &'static str, &'static Location<'static>),
 }
 
 impl fmt::Display for FrameworkError {
@@ -785,6 +787,13 @@ impl fmt::Display for FrameworkError {
             Self::FrameDidNotSettle => {
                 formatter.write_str("runtime frame did not settle within the bounded pass limit")
             }
+            Self::UnplacedNode(id, component, origin) => write!(
+                formatter,
+                "{component} view {} parked at {origin} and never adopted; adopt \
+                 it, or build it with `detached` if something after this build \
+                 places it",
+                id.get()
+            ),
             Self::DuplicateAssemblyKey { parent, key } => write!(
                 formatter,
                 "assembly key `{key}` is duplicated under view {}",

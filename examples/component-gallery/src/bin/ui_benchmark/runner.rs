@@ -609,7 +609,7 @@ fn workspace_document(state: &WorkspaceBenchmarkState) -> RuntimeDocument {
             let mut slots = Vec::with_capacity(state.region_ids.len());
             let mut contents = Vec::with_capacity(state.region_ids.len());
             for (index, id) in state.region_ids.iter().enumerate() {
-                let content = ui.leaf(Text::new(format!("区域 {}", index + 1)));
+                let content = ui.parked(Text::new(format!("区域 {}", index + 1)));
                 slots.push(WorkspaceRegionSlot::new(id.clone(), content.stable_id()));
                 contents.push(content);
             }

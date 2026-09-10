@@ -1009,10 +1009,13 @@ mod tests {
         let (primary, _first, second, shell) = runtime
             .context_mut()
             .build(document, |ui| {
-                let navigation = ui.leaf(SidebarFrame::new());
-                let primary = ui.leaf(Text::new("stage"));
-                let first = ui.leaf(Text::new("inspector-a"));
-                let second = ui.leaf(Text::new("inspector-b"));
+                // Shell regions: the ids go into the DesktopShell spec and
+                // assemble_desktop_shell places them; `second` waits even longer,
+                // for the set_desktop_slots swap two flushes from now.
+                let navigation = ui.detached(SidebarFrame::new());
+                let primary = ui.detached(Text::new("stage"));
+                let first = ui.detached(Text::new("inspector-a"));
+                let second = ui.detached(Text::new("inspector-b"));
                 let shell = ui.child(
                     "shell",
                     DesktopShell::new()
@@ -1154,9 +1157,10 @@ mod tests {
         let (inspector, shell) = runtime
             .context_mut()
             .build(document, |ui| {
-                let navigation = ui.leaf(SidebarFrame::new());
-                let primary = ui.leaf(Text::new("stage"));
-                let inspector = ui.leaf(Text::new("inspector"));
+                // Shell regions, placed by assemble_desktop_shell after this build.
+                let navigation = ui.detached(SidebarFrame::new());
+                let primary = ui.detached(Text::new("stage"));
+                let inspector = ui.detached(Text::new("inspector"));
                 let shell = ui.child(
                     "shell",
                     DesktopShell::new()

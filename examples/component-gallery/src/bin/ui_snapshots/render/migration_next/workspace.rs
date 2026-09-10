@@ -13,9 +13,9 @@ pub(super) fn mount_runtime_sidebar_section(
         .collapsible(collapsible)
         .expanded(expanded);
     Ok(document.context_mut().build(document_id, |ui| {
-        let disclosure = collapsible.then(|| ui.leaf(spec.disclosure_mark()));
-        let title = ui.leaf(spec.title_label());
-        let count = ui.leaf(spec.count_label());
+        let disclosure = collapsible.then(|| ui.parked(spec.disclosure_mark()));
+        let title = ui.parked(spec.title_label());
+        let count = ui.parked(spec.count_label());
         let spec = spec
             .title_slot(title.stable_id())
             .count_slot(count.stable_id());
@@ -23,7 +23,7 @@ pub(super) fn mount_runtime_sidebar_section(
             Some(disclosure) => spec.disclosure(disclosure.stable_id()),
             None => spec,
         };
-        let header = ui.leaf(spec.header_item());
+        let header = ui.parked(spec.header_item());
         ui.nest(header, |ui| {
             if let Some(disclosure) = disclosure {
                 ui.adopt(disclosure);
@@ -31,7 +31,7 @@ pub(super) fn mount_runtime_sidebar_section(
             ui.adopt(title);
             ui.adopt(count);
         });
-        let body = ui.leaf(RuntimeSidebarSection::body_port());
+        let body = ui.parked(RuntimeSidebarSection::body_port());
         ui.nest(body, |ui| {
             for (index, label) in labels.iter().enumerate() {
                 ui.child(format!("row-{index}"), RuntimeSidebarRow::new(*label));
@@ -54,12 +54,12 @@ pub(super) fn mount_runtime_workspace(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let workspace = document.context_mut().build(document_id, |ui| {
-        let nav = ui.leaf(RuntimeText::new("Nav").style(slot_label_style()));
-        let files = ui.leaf(RuntimeText::new("Files").style(slot_label_style()));
-        let toolbar = ui.leaf(RuntimeText::new("Toolbar").style(slot_label_style()));
-        let primary = ui.leaf(RuntimeText::new("Primary").style(slot_label_style()));
-        let inspector = ui.leaf(RuntimeText::new("Inspector").style(slot_label_style()));
-        let diagnostics = ui.leaf(RuntimeText::new("Diagnostics").style(slot_label_style()));
+        let nav = ui.parked(RuntimeText::new("Nav").style(slot_label_style()));
+        let files = ui.parked(RuntimeText::new("Files").style(slot_label_style()));
+        let toolbar = ui.parked(RuntimeText::new("Toolbar").style(slot_label_style()));
+        let primary = ui.parked(RuntimeText::new("Primary").style(slot_label_style()));
+        let inspector = ui.parked(RuntimeText::new("Inspector").style(slot_label_style()));
+        let diagnostics = ui.parked(RuntimeText::new("Diagnostics").style(slot_label_style()));
         let workspace = ui.child(
             "workspace",
             RuntimeWorkspace::from_model(
@@ -93,9 +93,9 @@ pub(super) fn mount_runtime_dock(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let dock = document.context_mut().build(document_id, |ui| {
-        let nav = ui.leaf(RuntimeText::new("Nav").style(slot_label_style()));
-        let files = ui.leaf(RuntimeText::new("Files").style(slot_label_style()));
-        let primary = ui.leaf(RuntimeText::new("Primary").style(slot_label_style()));
+        let nav = ui.parked(RuntimeText::new("Nav").style(slot_label_style()));
+        let files = ui.parked(RuntimeText::new("Files").style(slot_label_style()));
+        let primary = ui.parked(RuntimeText::new("Primary").style(slot_label_style()));
         let dock = ui.child(
             "dock",
             RuntimeDock::new(RuntimeDockNode::split(
@@ -131,10 +131,10 @@ pub(super) fn mount_runtime_split_pane(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let pane = document.context_mut().build(document_id, |ui| {
-        let first = ui.leaf(RuntimeText::new("First").style(slot_label_style()));
-        let second = ui.leaf(RuntimeText::new("Second").style(slot_label_style()));
-        let indicator = ui.leaf(RuntimeText::new(""));
-        let handle = ui.leaf(RuntimeText::new(""));
+        let first = ui.parked(RuntimeText::new("First").style(slot_label_style()));
+        let second = ui.parked(RuntimeText::new("Second").style(slot_label_style()));
+        let indicator = ui.parked(RuntimeText::new(""));
+        let handle = ui.parked(RuntimeText::new(""));
         ui.nest(handle, |ui| ui.adopt(indicator));
         let pane = ui.child(
             "pane",
@@ -161,10 +161,10 @@ pub(super) fn mount_runtime_pane_chrome(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        let header = ui.leaf(RuntimeText::new(""));
-        let tabs = ui.leaf(RuntimeText::new("editor.rs"));
-        let body = ui.leaf(RuntimeText::new("Body"));
-        let close = ui.leaf(RuntimeText::new("关闭"));
+        let header = ui.parked(RuntimeText::new(""));
+        let tabs = ui.parked(RuntimeText::new("editor.rs"));
+        let body = ui.parked(RuntimeText::new("Body"));
+        let close = ui.parked(RuntimeText::new("关闭"));
         ui.nest(header, |ui| {
             ui.adopt(tabs);
             ui.adopt(close);
@@ -195,8 +195,8 @@ pub(super) fn mount_runtime_pane_tree(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        let left = ui.leaf(RuntimeText::new("left").style(slot_label_style()));
-        let right = ui.leaf(RuntimeText::new("right").style(slot_label_style()));
+        let left = ui.parked(RuntimeText::new("left").style(slot_label_style()));
+        let right = ui.parked(RuntimeText::new("right").style(slot_label_style()));
         let tree = ui.child(
             "tree",
             RuntimePaneTree::new(RuntimePaneTreeNode::split(
@@ -220,8 +220,8 @@ pub(super) fn mount_runtime_app_shell(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        let title = ui.leaf(RuntimeAppTitleBar::new("NanaUI"));
-        let body = ui.leaf(RuntimeText::new("Workspace"));
+        let title = ui.parked(RuntimeAppTitleBar::new("NanaUI"));
+        let body = ui.parked(RuntimeText::new("Workspace"));
         let shell = ui.child(
             "shell",
             RuntimeAppShell::new()
@@ -288,7 +288,7 @@ pub(super) fn mount_runtime_appearance_section(
 ) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.leaf(RuntimeAppearanceSection::new(
+        ui.parked(RuntimeAppearanceSection::new(
             theme,
             AppearanceSettings::default(),
         ))
@@ -304,7 +304,7 @@ pub(super) fn mount_runtime_about_section(
 ) -> Result<nana_ui::runtime::Entity<RuntimeAboutSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.leaf(RuntimeAboutSection::new(
+        ui.parked(RuntimeAboutSection::new(
             RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
                 .description("Injected product metadata for the about card."),
         ))
@@ -365,12 +365,12 @@ pub(super) fn mount_runtime_desktop_shell(
     let model = snapshot_settings_model().clone();
     let state = snapshot_settings_state().clone();
     let sidebar = document.context_mut().build_detached(document_id, |ui| {
-        ui.leaf(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
+        ui.parked(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
     })?;
     document.context_mut().assemble_settings_sidebar(sidebar)?;
     let content = mount_runtime_appearance_section(document, theme)?;
     let page = document.context_mut().build_detached(document_id, |ui| {
-        ui.leaf(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
+        ui.parked(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
     })?;
     document.context_mut().assemble_settings_page(page)?;
     let shell = document.context_mut().build(document_id, |ui| {
@@ -400,14 +400,14 @@ pub(super) fn mount_runtime_sidebar_frame(
         false,
     )?;
     Ok(document.context_mut().build(document_id, |ui| {
-        let top = ui.leaf(RuntimeSidebarRow::new("返回"));
-        let body = ui.leaf(RuntimeSidebarFrame::vertical_body_scroll());
+        let top = ui.parked(RuntimeSidebarRow::new("返回"));
+        let body = ui.parked(RuntimeSidebarFrame::vertical_body_scroll());
         ui.nest(body, |ui| {
             ui.adopt(Entity::<RuntimeSidebarSection>::from_stable_id(section));
         });
         let settings =
-            ui.leaf(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
-        let footer = ui.leaf(RuntimeSidebarFooter::new());
+            ui.parked(RuntimeSidebarFooterButton::new("设置", Icon::Settings).selected(true));
+        let footer = ui.parked(RuntimeSidebarFooter::new());
         ui.nest(footer, |ui| ui.adopt(settings));
         let frame = ui.child(
             "frame",
