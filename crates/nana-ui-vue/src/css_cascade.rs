@@ -487,6 +487,42 @@ pub struct StylesheetParseReport {
     pub imported_sheets: usize,
 }
 
+/// Used-value declarations the layout engine refused, counted per node whose
+/// resolved [`LayoutStyle`] still carries the flag.
+///
+/// [`StylesheetParseReport`] covers what the *parser* dropped (bad blocks,
+/// unknown selectors, skipped at-rules). This covers declarations that parsed
+/// fine but name something the layout engine does not implement, which is
+/// otherwise only observable as a box that silently did not move.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnsupportedCssReport {
+    /// Nodes whose `grid-template-columns` / `rows` hit [`GridTrackListUnsupported`].
+    pub grid_track_lists: usize,
+    /// Nodes carrying `writing-mode: sideways-*`.
+    pub writing_modes: usize,
+    /// Nodes with a `font-variation-settings` axis other than `"wght"`.
+    pub font_variations: usize,
+}
+
+impl UnsupportedCssReport {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Count a resolved style. Called once per node per cascade rebuild.
+    pub fn observe(&mut self, layout: &LayoutStyle) {
+        if layout.grid_columns_unsupported.is_some() || layout.grid_rows_unsupported.is_some() {
+            self.grid_track_lists += 1;
+        }
+        if layout.unsupported_writing_mode {
+            self.writing_modes += 1;
+        }
+        if layout.unsupported_font_variation {
+            self.font_variations += 1;
+        }
+    }
+}
+
 impl StylesheetParseReport {
     /// Sum two reports (accumulated across stylesheet injections).
     pub fn combine(self, other: Self) -> Self {
@@ -3256,6 +3292,51 @@ mod tests {
         let radii = layout.paint.border_radii.expect("corners");
         assert_eq!(radii[0], LengthSpec::Px(10.0));
         assert!(layout.border_radius.is_none());
+    }
+
+    #[test]
+    fn unsupported_css_report_counts_declarations_layout_ignores() {
+        let mut report = UnsupportedCssReport::default();
+        assert!(report.is_empty());
+
+        // `sideways-*` parses but layout has no sideways glyph orientation.
+        let mut sideways = LayoutStyle::default();
+        sideways.apply_css_text("writing-mode: sideways-rl", None, None);
+        assert!(sideways.unsupported_writing_mode);
+        report.observe(&sideways);
+
+        // Nested auto-fit parses but the track list cannot be expanded.
+        let mut nested = LayoutStyle::default();
+        nested.apply_css_text(
+            "display:grid;grid-template-columns:repeat(2, repeat(auto-fit, 1fr))",
+            None,
+            None,
+        );
+        assert!(nested.grid_columns_unsupported.is_some());
+        report.observe(&nested);
+
+        // A non-`wght` variation axis fails closed on that declaration only.
+        let mut variation = LayoutStyle::default();
+        variation.apply_css_text(r#"font-variation-settings: "BEVL" 40"#, None, None);
+        assert!(variation.unsupported_font_variation);
+        report.observe(&variation);
+
+        assert_eq!(report.grid_track_lists, 1);
+        assert_eq!(report.writing_modes, 1);
+        assert_eq!(report.font_variations, 1);
+        assert!(!report.is_empty());
+
+        // A fully supported style must not be counted, or the diagnostic fires
+        // on every page.
+        let mut ok = LayoutStyle::default();
+        ok.apply_css_text(
+            "display:grid;grid-template-columns:repeat(auto-fit, 1fr);writing-mode: vertical-rl",
+            None,
+            None,
+        );
+        let before = report;
+        report.observe(&ok);
+        assert_eq!(report, before, "supported declarations must not be counted");
     }
 
     #[test]

@@ -60,7 +60,7 @@ const hostOps = {
   },
 };
 
-// Run reactive jobs synchronously so QuickJS/V8 probes need no browser event loop.
+// Run reactive jobs synchronously so the probe needs no browser event loop.
 const { createApp } = createRenderer({
   ...hostOps,
   scheduleJob(job) {

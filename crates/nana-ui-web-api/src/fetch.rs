@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use nana_ui_platform::{
-    FetchCancellation, FetchError, FetchRequest, FetchResponse, SharedFetchHost,
+    FetchCancellation, FetchError, FetchHead, FetchRequest, FetchSink, SharedFetchHost,
 };
 
 use crate::SharedWebApiState;
@@ -16,77 +16,126 @@ struct FetchJob {
     cancellation: FetchCancellation,
 }
 
+/// One step of a response's delivery.
+///
+/// `Head` arrives once and resolves the `fetch()` promise, then zero or more
+/// `Chunk`s, then exactly one `End`. A transport failure before the head is an
+/// `End` with no preceding `Head`.
 #[derive(Debug)]
-pub(crate) struct FetchCompletion {
-    pub id: u64,
-    pub result: Result<FetchResponse, FetchError>,
+pub(crate) enum FetchEvent {
+    Head { id: u64, head: FetchHead },
+    Chunk { id: u64, bytes: Vec<u8> },
+    End { id: u64, error: Option<FetchError> },
 }
 
-impl FetchCompletion {
+impl FetchEvent {
+    pub fn id(&self) -> u64 {
+        match self {
+            Self::Head { id, .. } | Self::Chunk { id, .. } | Self::End { id, .. } => *id,
+        }
+    }
+
+    pub fn is_end(&self) -> bool {
+        matches!(self, Self::End { .. })
+    }
+
     pub fn into_host_value(self) -> HostValue {
         let mut value = BTreeMap::new();
-        value.insert("id".into(), HostValue::Number(self.id as f64));
-        match self.result {
-            Ok(response) => {
-                value.insert("ok".into(), HostValue::Bool(true));
-                value.insert("response".into(), response_to_host_value(response));
-            }
-            Err(error) => {
-                value.insert("ok".into(), HostValue::Bool(false));
+        value.insert("id".into(), HostValue::Number(self.id() as f64));
+        match self {
+            Self::Head { head, .. } => {
+                value.insert("kind".into(), HostValue::String("head".into()));
+                value.insert("url".into(), HostValue::String(head.url));
+                value.insert("status".into(), HostValue::Number(head.status as f64));
+                value.insert("statusText".into(), HostValue::String(head.status_text));
                 value.insert(
-                    "error".into(),
-                    HostValue::Object(
-                        [
-                            (
-                                "kind".into(),
-                                HostValue::String(format!("{:?}", error.kind)),
-                            ),
-                            ("message".into(), HostValue::String(error.message)),
-                        ]
-                        .into_iter()
-                        .collect(),
+                    "headers".into(),
+                    HostValue::Array(
+                        head.headers
+                            .into_iter()
+                            .map(|(name, value)| {
+                                HostValue::Array(vec![
+                                    HostValue::String(name),
+                                    HostValue::String(value),
+                                ])
+                            })
+                            .collect(),
                     ),
                 );
+                value.insert("redirected".into(), HostValue::Bool(head.redirected));
+            }
+            Self::Chunk { bytes, .. } => {
+                value.insert("kind".into(), HostValue::String("chunk".into()));
+                value.insert("bytes".into(), HostValue::Bytes(bytes));
+            }
+            Self::End { error, .. } => {
+                value.insert("kind".into(), HostValue::String("end".into()));
+                match error {
+                    None => {
+                        value.insert("ok".into(), HostValue::Bool(true));
+                    }
+                    Some(error) => {
+                        value.insert("ok".into(), HostValue::Bool(false));
+                        value.insert(
+                            "error".into(),
+                            HostValue::Object(
+                                [
+                                    (
+                                        "kind".into(),
+                                        HostValue::String(format!("{:?}", error.kind)),
+                                    ),
+                                    ("message".into(), HostValue::String(error.message)),
+                                ]
+                                .into_iter()
+                                .collect(),
+                            ),
+                        );
+                    }
+                }
             }
         }
         HostValue::Object(value)
     }
 }
 
-fn response_to_host_value(response: FetchResponse) -> HostValue {
-    HostValue::Object(
-        [
-            ("url".into(), HostValue::String(response.url)),
-            ("status".into(), HostValue::Number(response.status as f64)),
-            ("statusText".into(), HostValue::String(response.status_text)),
-            (
-                "headers".into(),
-                HostValue::Array(
-                    response
-                        .headers
-                        .into_iter()
-                        .map(|(name, value)| {
-                            HostValue::Array(vec![
-                                HostValue::String(name),
-                                HostValue::String(value),
-                            ])
-                        })
-                        .collect(),
-                ),
-            ),
-            ("body".into(), HostValue::Bytes(response.body)),
-            ("redirected".into(), HostValue::Bool(response.redirected)),
-        ]
-        .into_iter()
-        .collect(),
-    )
+/// Forwards a streaming response onto the completion channel.
+///
+/// A send failure means the engine side is gone; reporting it as an error stops
+/// the worker reading a body nobody will receive.
+struct ChannelSink<'a> {
+    id: u64,
+    events: &'a Sender<FetchEvent>,
+}
+
+impl FetchSink for ChannelSink<'_> {
+    fn head(&mut self, head: FetchHead) -> Result<(), FetchError> {
+        self.send(FetchEvent::Head { id: self.id, head })
+    }
+
+    fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+        self.send(FetchEvent::Chunk {
+            id: self.id,
+            bytes: bytes.to_vec(),
+        })
+    }
+}
+
+impl ChannelSink<'_> {
+    fn send(&self, event: FetchEvent) -> Result<(), FetchError> {
+        self.events.send(event).map_err(|_| {
+            FetchError::new(
+                nana_ui_platform::FetchErrorKind::Cancelled,
+                "fetch consumer went away",
+            )
+        })
+    }
 }
 
 /// Bounded blocking worker pool. Only [`Self::drain_completions`] exposes
 /// results, so JS callbacks remain on the engine/UI thread.
 pub(crate) struct FetchRuntime {
     jobs: Sender<FetchJob>,
-    completions: Receiver<FetchCompletion>,
+    completions: Receiver<FetchEvent>,
     cancelled: BTreeSet<u64>,
     cancellations: BTreeMap<u64, FetchCancellation>,
     next_id: u64,
@@ -155,15 +204,25 @@ impl FetchRuntime {
         self.cancelled.insert(id);
     }
 
-    pub fn drain_completions(&mut self) -> Vec<FetchCompletion> {
+    pub fn drain_completions(&mut self) -> Vec<FetchEvent> {
         let mut due = Vec::new();
-        while let Ok(completion) = self.completions.try_recv() {
-            self.active -= 1;
-            self.cancellations.remove(&completion.id);
-            let cancelled = self.cancelled.remove(&completion.id);
-            if !cancelled {
-                due.push(completion);
+        while let Ok(event) = self.completions.try_recv() {
+            let id = event.id();
+            // Only the terminating event retires the request; head and chunk
+            // events for the same id arrive before it.
+            if event.is_end() {
+                self.active -= 1;
+                self.cancellations.remove(&id);
             }
+            // A cancelled request keeps draining so its worker can finish, but
+            // nothing reaches JS: its promise was already rejected.
+            if self.cancelled.contains(&id) {
+                if event.is_end() {
+                    self.cancelled.remove(&id);
+                }
+                continue;
+            }
+            due.push(event);
         }
         due
     }
@@ -185,15 +244,18 @@ impl FetchRuntime {
     }
 }
 
-fn fetch_worker(
-    host: SharedFetchHost,
-    jobs: Receiver<FetchJob>,
-    completions: Sender<FetchCompletion>,
-) {
+fn fetch_worker(host: SharedFetchHost, jobs: Receiver<FetchJob>, completions: Sender<FetchEvent>) {
     while let Ok(job) = jobs.recv() {
-        let result = host.fetch_cancellable(job.request, job.cancellation);
+        let mut sink = ChannelSink {
+            id: job.id,
+            events: &completions,
+        };
+        let result = host.fetch_streaming(job.request, job.cancellation, &mut sink);
         if completions
-            .send(FetchCompletion { id: job.id, result })
+            .send(FetchEvent::End {
+                id: job.id,
+                error: result.err(),
+            })
             .is_err()
         {
             break;
@@ -292,7 +354,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use nana_ui_platform::{
-        FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, shared_fetch_host,
+        FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchResponse,
+        shared_fetch_host,
     };
 
     use super::*;
@@ -311,16 +374,21 @@ mod tests {
         .unwrap();
         assert_eq!(request.body, vec![0, 1, 127, 255]);
 
-        let value = response_to_host_value(FetchResponse {
-            url: "https://example.test/upload".into(),
-            status: 200,
-            status_text: "OK".into(),
-            headers: Vec::new(),
-            body: vec![255, 0, 128],
-            redirected: false,
-        });
-        let body = value.as_object().and_then(|response| response.get("body"));
-        assert_eq!(body, Some(&HostValue::Bytes(vec![255, 0, 128])));
+        let value = FetchEvent::Chunk {
+            id: 1,
+            bytes: vec![255, 0, 128],
+        }
+        .into_host_value();
+        let object = value.as_object().unwrap();
+        assert_eq!(
+            object.get("kind").and_then(HostValue::as_str),
+            Some("chunk")
+        );
+        assert_eq!(
+            object.get("bytes"),
+            Some(&HostValue::Bytes(vec![255, 0, 128])),
+            "body bytes stay on the binary channel, not base64"
+        );
     }
 
     #[derive(Debug)]
@@ -382,16 +450,36 @@ mod tests {
 
         released.store(true, Ordering::Release);
         let deadline = Instant::now() + Duration::from_secs(1);
+        // A buffered host still arrives as head -> chunk -> end, because the
+        // default `fetch_streaming` delivers its whole body as one chunk.
+        let mut kinds = Vec::new();
+        let mut body = Vec::new();
         loop {
-            let completions = runtime.drain_completions();
-            if let Some(completion) = completions.into_iter().next() {
-                assert_eq!(completion.id, id);
-                assert_eq!(completion.result.unwrap().body, b"done");
+            for event in runtime.drain_completions() {
+                assert_eq!(event.id(), id);
+                match &event {
+                    FetchEvent::Head { head, .. } => {
+                        assert_eq!(head.status, 200);
+                        kinds.push("head");
+                    }
+                    FetchEvent::Chunk { bytes, .. } => {
+                        body.extend_from_slice(bytes);
+                        kinds.push("chunk");
+                    }
+                    FetchEvent::End { error, .. } => {
+                        assert!(error.is_none());
+                        kinds.push("end");
+                    }
+                }
+            }
+            if kinds.last() == Some(&"end") {
                 break;
             }
             assert!(Instant::now() < deadline, "fetch worker did not complete");
             std::thread::yield_now();
         }
+        assert_eq!(kinds, vec!["head", "chunk", "end"]);
+        assert_eq!(body, b"done");
     }
 
     #[test]

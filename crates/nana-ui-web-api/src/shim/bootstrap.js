@@ -122,30 +122,42 @@
     };
   }
 
+  // Bare V8 has no TextEncoder/TextDecoder -- they are Web APIs, not
+  // ECMAScript -- so these are the real implementations for every Nana page,
+  // not a rarely-taken fallback. Both work in batches: the obvious
+  // byte-at-a-time versions build one rope node (decode) or one JS array slot
+  // (encode) per character, which measured ~1.8 s for a 16 MiB `response.text()`
+  // and dominated everything else on that path by two orders of magnitude.
+  const TEXT_BATCH = 8192;
   if (typeof globalThis.TextEncoder === "undefined") {
     globalThis.TextEncoder = function TextEncoder() {
       this.encode = function (str) {
         const s = String(str ?? "");
-        const bytes = [];
+        // UTF-8 never needs more than 3 bytes per UTF-16 code unit (a surrogate
+        // pair is 2 units for 4 bytes), so one allocation is always enough.
+        const out = new Uint8Array(s.length * 3);
+        let at = 0;
         for (let i = 0; i < s.length; i++) {
-          let code = s.charCodeAt(i);
-          if (code < 0x80) bytes.push(code);
-          else if (code < 0x800) {
-            bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+          const code = s.charCodeAt(i);
+          if (code < 0x80) {
+            out[at++] = code;
+          } else if (code < 0x800) {
+            out[at++] = 0xc0 | (code >> 6);
+            out[at++] = 0x80 | (code & 0x3f);
           } else if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
             const next = s.charCodeAt(++i);
             const cp = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
-            bytes.push(
-              0xf0 | (cp >> 18),
-              0x80 | ((cp >> 12) & 0x3f),
-              0x80 | ((cp >> 6) & 0x3f),
-              0x80 | (cp & 0x3f),
-            );
+            out[at++] = 0xf0 | (cp >> 18);
+            out[at++] = 0x80 | ((cp >> 12) & 0x3f);
+            out[at++] = 0x80 | ((cp >> 6) & 0x3f);
+            out[at++] = 0x80 | (cp & 0x3f);
           } else {
-            bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+            out[at++] = 0xe0 | (code >> 12);
+            out[at++] = 0x80 | ((code >> 6) & 0x3f);
+            out[at++] = 0x80 | (code & 0x3f);
           }
         }
-        return Uint8Array.from(bytes);
+        return out.slice(0, at);
       };
     };
   }
@@ -153,26 +165,49 @@
     globalThis.TextDecoder = function TextDecoder() {
       this.decode = function (input) {
         const bytes = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+        const length = bytes.length;
+        if (length === 0) return "";
         let out = "";
-        for (let i = 0; i < bytes.length; ) {
+        let ascii = true;
+        for (let i = 0; i < length; i++) {
+          if (bytes[i] >= 0x80) { ascii = false; break; }
+        }
+        if (ascii) {
+          // The common case for JSON and text bodies: hand whole slices of the
+          // byte view straight to fromCharCode.
+          for (let i = 0; i < length; i += TEXT_BATCH) {
+            const end = i + TEXT_BATCH < length ? i + TEXT_BATCH : length;
+            out += String.fromCharCode.apply(null, bytes.subarray(i, end));
+          }
+          return out;
+        }
+        const units = [];
+        let i = 0;
+        while (i < length) {
           const b = bytes[i++];
-          if (b < 0x80) out += String.fromCharCode(b);
-          else if (b < 0xe0) {
+          if (b < 0x80) {
+            units.push(b);
+          } else if (b < 0xe0) {
             const b2 = bytes[i++];
-            out += String.fromCharCode(((b & 0x1f) << 6) | (b2 & 0x3f));
+            units.push(((b & 0x1f) << 6) | (b2 & 0x3f));
           } else if (b < 0xf0) {
             const b2 = bytes[i++];
             const b3 = bytes[i++];
-            out += String.fromCharCode(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
+            units.push(((b & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
           } else {
             const b2 = bytes[i++];
             const b3 = bytes[i++];
             const b4 = bytes[i++];
             let cp = ((b & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f);
             cp -= 0x10000;
-            out += String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+            units.push(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+          }
+          if (units.length >= TEXT_BATCH) {
+            out += String.fromCharCode.apply(null, units);
+            units.length = 0;
           }
         }
+        if (units.length) out += String.fromCharCode.apply(null, units);
         return out;
       };
     };

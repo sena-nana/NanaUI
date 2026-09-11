@@ -38,8 +38,10 @@
 //! `display: contents` → [`DisplaySpec::Contents`]（不生成盒，亦非 `omits_box`）。
 //! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
 //! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
-//! Style Model（`grid_*_repeat`），由布局展开。`subgrid`、嵌套 auto-fit / auto-fill
-//! 或无法展开的语法才置 [`GridTrackListUnsupported`]（不假装继承父轨）。
+//! Style Model（`grid_*_repeat`），由布局展开。整值 `subgrid` 置 `grid_*_subgrid`，
+//! 由布局继承父轨。嵌套 `repeat()`（CSS 文法不允许）、同一轨列表里多于一个
+//! auto-repeat、轨道列表 token 形式的 `subgrid`，或无法展开的语法才置
+//! [`GridTrackListUnsupported`]。
 //!
 //! ## margin / padding / gap
 //! 边长与 gap 存 [`LengthSpec`]（px / `%` / `calc()` AST，简单 `%±px` 仍走 Copy 变体）。margin/padding `%`
@@ -57,7 +59,9 @@
 //! `direction: rtl` 把 **inline** 的 start/end 对调到 right/left
 //!（`padding-inline-start` → `padding-right`）。block 轴仍是 top/bottom。
 //! `text-align: start | end` 随 `direction`；`left` / `right` 保持物理边。
-//! **不**翻转 flex/grid 主轴 / 交叉轴起点或 item 序（不是完整 rtl 映射）。
+//! 映射层**不**改写 `flex-direction` / `flex-reverse` / `justify-content` 字段。
+//! 轴与 item 序的翻转（flex 行主轴、grid 列序、column flex 交叉轴）都发生在
+//! 布局层，见 `layout_engine::placement` 与 `layout_engine::grid`。
 //! `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 写入
 //! [`LayoutStyle::writing_mode`]（`horizontal-tb` 清除 unsupported；竖排不再 fail-closed）。
 //! `sideways-*` 置 [`LayoutStyle::unsupported_writing_mode`]。`unicode-bidi` 隔离 /
@@ -3749,6 +3753,15 @@ fn parse_grid_track_list(raw: &str, percent_base: Option<f32>) -> GridTrackListP
             let Some((count_raw, pattern)) = inner.split_once(',') else {
                 return GridTrackListParse::Invalid;
             };
+            // CSS Grid L1 gives `<track-repeat>` a `<track-size>` body and
+            // `<auto-repeat>` a `<fixed-size>` body — neither is a
+            // `<track-list>`, so `repeat()` does not nest and browsers drop the
+            // whole declaration. Reject before parsing the pattern: the inner
+            // list parses fine on its own, so `repeat(3, repeat(2, 1fr))` would
+            // otherwise expand to six tracks that only NanaUI accepts.
+            if contains_repeat_token(pattern) {
+                return GridTrackListParse::Unsupported(GridTrackListUnsupported::NestedRepeat);
+            }
             let count_raw = count_raw.trim();
             if count_raw.eq_ignore_ascii_case("auto-fit")
                 || count_raw.eq_ignore_ascii_case("auto-fill")
@@ -3949,6 +3962,38 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+/// Does this track pattern contain a `repeat(` function token?
+///
+/// Used to reject nested `repeat()`, which CSS Grid L1's grammar does not admit.
+/// Line names cannot contain `(`, so bracketed `[...]` sections are skipped only
+/// to keep a name like `[repeat]` from matching once a `(` follows it.
+fn contains_repeat_token(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    let mut index = 0usize;
+    let mut in_line_names = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'[' => in_line_names = true,
+            b']' => in_line_names = false,
+            _ if !in_line_names => {
+                // Only a `repeat` that starts a token is the function; `xrepeat(`
+                // is a different (invalid) ident and not our concern here.
+                let starts_token = index == 0 || !is_ident_byte(bytes[index - 1]);
+                if starts_token && strip_prefix_ci(&pattern[index..], "repeat(").is_some() {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_'
 }
 
 fn is_subgrid_track_token(rest: &str) -> bool {
@@ -5789,7 +5834,12 @@ mod tests {
     }
 
     #[test]
-    fn direction_rtl_does_not_reverse_flex_or_grid_start() {
+    // This asserts the **style mapping** contract only: `direction: rtl` must not
+    // rewrite `flex-direction` / `flex-reverse` / `justify-content`. The axis and
+    // item-order flips happen in the layout engine — see the `rtl_*` tests in
+    // `nana-ui-runtime`'s `layout_engine`. Reading this test as "rtl does not
+    // flip anything" is what let `docs/layout.md` claim that for months.
+    fn direction_rtl_does_not_rewrite_flex_or_grid_style_fields() {
         let mut flex = LayoutStyle::default();
         flex.apply_css_text(
             "display:flex; flex-direction:row; direction:rtl; justify-content:start",
@@ -6488,7 +6538,69 @@ mod tests {
     }
 
     #[test]
-    fn subgrid_is_explicit_grid_track_unsupported() {
+    fn nested_repeat_is_rejected_like_css_rejects_it() {
+        // CSS Grid L1: `<track-repeat>` takes `<track-size>`, `<auto-repeat>`
+        // takes `<fixed-size>` — `repeat()` never nests, and a track list holds
+        // at most one auto-repeat. All four spellings are invalid in a browser,
+        // so none may produce tracks here.
+        for value in [
+            "repeat(2, repeat(auto-fit, 1fr))",
+            "repeat(3, repeat(2, 1fr))",
+            "repeat(auto-fit, repeat(2, 1fr))",
+            "80px repeat(2, repeat(2, 1fr))",
+        ] {
+            let parsed = parse_grid_track_list_result(value, None);
+            assert!(
+                matches!(parsed, GridTrackListParse::Unsupported(_)),
+                "{value} must not expand into tracks, got {parsed:?}"
+            );
+        }
+
+        // Two auto-repeats in one list is the other arm of the same rule.
+        assert!(matches!(
+            parse_grid_track_list_result("repeat(auto-fit, 1fr) repeat(auto-fill, 2fr)", None),
+            GridTrackListParse::Unsupported(_)
+        ));
+
+        // The rejection must clear the axis and record why, so the declaration
+        // shows up in `UnsupportedCssReport` instead of silently keeping the
+        // previous template.
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "display:grid;grid-template-columns:repeat(2, 1fr)",
+            None,
+            None,
+        );
+        assert!(layout.grid_columns.is_some(), "baseline template applied");
+        layout.apply_css_text(
+            "grid-template-columns:repeat(3, repeat(2, 1fr))",
+            None,
+            None,
+        );
+        assert_eq!(
+            layout.grid_columns_unsupported,
+            Some(GridTrackListUnsupported::NestedRepeat)
+        );
+        assert!(
+            layout.grid_columns.is_none(),
+            "a rejected value must not leave the previous tracks in place"
+        );
+
+        // The legal shapes still work: one auto-repeat, optionally with fixed
+        // tracks around it.
+        let ok = parse_grid_track_list_result("80px repeat(auto-fit, 1fr) 40px", None);
+        assert!(
+            matches!(ok, GridTrackListParse::RepeatAuto(_)),
+            "got {ok:?}"
+        );
+        assert!(matches!(
+            parse_grid_track_list_result("repeat(3, minmax(100px, 1fr))", None),
+            GridTrackListParse::Tracks(_)
+        ));
+    }
+
+    #[test]
+    fn whole_value_subgrid_parses_to_subgrid_not_unsupported() {
         assert_eq!(
             parse_grid_track_list_result("subgrid", None),
             GridTrackListParse::Subgrid

@@ -2907,6 +2907,192 @@ fn writing_mode_vertical_flex_row_uses_inline_axis() {
 }
 
 #[test]
+fn rtl_row_flex_reverses_item_order_and_flips_justify() {
+    // Characterisation: this already worked before RTL grid support, but no
+    // test held it and `docs/layout.md` claimed the opposite. Lock it down so
+    // the contract is readable from the layout layer, not just the CSS mapping.
+    let item = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: vec![item("a"), item("b")],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 20.0);
+    assert!(
+        (boxes["a"].x - 160.0).abs() < 0.5,
+        "first item sits at inline-start, which rtl puts on the right, got {:?}",
+        boxes["a"]
+    );
+    assert!(
+        (boxes["b"].x - 120.0).abs() < 0.5,
+        "second item runs leftwards from the first, got {:?}",
+        boxes["b"]
+    );
+}
+
+#[test]
+fn rtl_grid_mirrors_column_order_and_justify_self() {
+    let cell = |id: &str, justify: AlignSpec| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(30.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            justify_self: Some(justify),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("a", AlignSpec::Start), cell("b", AlignSpec::Start)],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 20.0);
+    // Column 1 (80px) is the rightmost track: 200 - 80 = 120.
+    // `justify-self: start` inside it means that track's right edge: 200 - 30.
+    assert!(
+        (boxes["a"].x - 170.0).abs() < 0.5,
+        "grid column 1 is the rightmost track in rtl, and start means its right edge, got {:?}",
+        boxes["a"]
+    );
+    // Column 2 (120px) occupies 0..120; start is its right edge: 120 - 30.
+    assert!(
+        (boxes["b"].x - 90.0).abs() < 0.5,
+        "grid column 2 sits to the left of column 1 in rtl, got {:?}",
+        boxes["b"]
+    );
+}
+
+#[test]
+fn rtl_grid_keeps_ltr_geometry_when_direction_is_default() {
+    let cell = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(30.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            justify_self: Some(AlignSpec::Start),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            grid_columns: Some(vec![GridTrack::Px(80.0), GridTrack::Px(120.0)]),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("a"), cell("b")],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 20.0);
+    assert!((boxes["a"].x - 0.0).abs() < 0.5, "got {:?}", boxes["a"]);
+    assert!((boxes["b"].x - 80.0).abs() < 0.5, "got {:?}", boxes["b"]);
+}
+
+#[test]
+fn rtl_column_flex_puts_cross_start_on_the_right() {
+    let item = |id: &str, width: f32| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(width)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Column),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(60.0)),
+            align_items: AlignSpec::Start,
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: vec![item("a", 40.0), item("b", 60.0)],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 60.0);
+    // Column flex: the cross axis is the inline axis, so rtl `align-items:
+    // start` is the right edge. The main (block) axis is untouched.
+    assert!(
+        (boxes["a"].x - 160.0).abs() < 0.5 && (boxes["a"].y - 0.0).abs() < 0.5,
+        "got {:?}",
+        boxes["a"]
+    );
+    assert!(
+        (boxes["b"].x - 140.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        "got {:?}",
+        boxes["b"]
+    );
+}
+
+#[test]
+fn rtl_row_flex_cross_axis_stays_block_axis() {
+    // A row container's cross axis is vertical; rtl must not touch it.
+    let item = |id: &str, height: f32| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(height)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(60.0)),
+            align_items: AlignSpec::Start,
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: vec![item("a", 20.0), item("b", 30.0)],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 60.0);
+    assert!((boxes["a"].y - 0.0).abs() < 0.5, "got {:?}", boxes["a"]);
+    assert!((boxes["b"].y - 0.0).abs() < 0.5, "got {:?}", boxes["b"]);
+}
+
+#[test]
 fn writing_mode_vertical_rtl_skips_inline_reverse() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
