@@ -38,7 +38,7 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 
 - Fetch 只有缓冲式正文；流式 body、`FormData`、cookie、cache、CORS/preflight 未做，非默认 Request 选项明确拒绝。
 - WebSocket 只留接口与 shim，需宿主注入 socket host，框架不带默认传输。
-- CSS：RTL 不翻转 flex/grid 轴（只映射逻辑 inline padding/text-align）；嵌套 `repeat(auto-fit/auto-fill)` 与 subgrid 未做。`position: sticky` 与整表 `repeat(auto-fit)` 已交付。
+- CSS：RTL 只翻转 flex **行**主轴的 item 序与 `justify-content`；grid 列序、column flex 的交叉轴起点仍不翻转。嵌套 `repeat(auto-fit/auto-fill)` 未做。`position: sticky`、整表 `repeat(auto-fit)` 与整值 `subgrid` 已交付。
 - 完整浏览器 DOM/CSSOM、未经 Nana 入口的 `@vue/runtime-dom` 生产 bundle、WebGL、真实 WebView 明确不做。
 
 ## 查阅
@@ -49,6 +49,15 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 | L3 组成式建树（`build` / `mount`） | [L3 组成式建树](l3-authoring.md) |
 | crate 分层、所有权（改框架时） | [架构](architecture.md) |
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
+| Markdown 绘制与图像合同 | [Markdown 渲染](markdown-rendering.md) |
 | Android（实验，非产品目标） | [Android](android.md) |
+
+## 工作记录
+
+有日期的过程记录，描述某一轮改动当时的状态，不是现行合同；和正文冲突时以上面的文档为准。
+
+- [架构重构与迁移记录](architecture-refactor.md)
+- [四应用消费迁移与发布验收（2026-09-09）](consumer-upgrade-2026-09-09.md)
+- [LiliaCode 组件恢复（2026-09-10）](liliacode-component-restoration-2026-09-10.md)
 
 [待重录的快照](pending-snapshot-bless.md)：本轮改动待在录制基线的机器上 `--bless` 的 40 张，做完即删。

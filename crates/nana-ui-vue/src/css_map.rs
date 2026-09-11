@@ -38,8 +38,9 @@
 //! `display: contents` → [`DisplaySpec::Contents`]（不生成盒，亦非 `omits_box`）。
 //! `grid-column` / `grid-row` / `grid-area` 写入 [`GridPlacement`]。
 //! `grid-auto-*` 与整表 / 混写 `repeat(auto-fit|auto-fill, <track-list>)` 存入
-//! Style Model（`grid_*_repeat`），由布局展开。`subgrid`、嵌套 auto-fit / auto-fill
-//! 或无法展开的语法才置 [`GridTrackListUnsupported`]（不假装继承父轨）。
+//! Style Model（`grid_*_repeat`），由布局展开。整值 `subgrid` 置 `grid_*_subgrid`，
+//! 由布局继承父轨。嵌套 auto-fit / auto-fill、轨道列表 token 形式的 `subgrid`
+//! 或无法展开的语法才置 [`GridTrackListUnsupported`]。
 //!
 //! ## margin / padding / gap
 //! 边长与 gap 存 [`LengthSpec`]（px / `%` / `calc()` AST，简单 `%±px` 仍走 Copy 变体）。margin/padding `%`
@@ -57,7 +58,9 @@
 //! `direction: rtl` 把 **inline** 的 start/end 对调到 right/left
 //!（`padding-inline-start` → `padding-right`）。block 轴仍是 top/bottom。
 //! `text-align: start | end` 随 `direction`；`left` / `right` 保持物理边。
-//! **不**翻转 flex/grid 主轴 / 交叉轴起点或 item 序（不是完整 rtl 映射）。
+//! 映射层**不**改写 `flex-direction` / `flex-reverse` / `justify-content` 字段；
+//! flex 行主轴的 item 序与 justify 翻转发生在布局层（`layout_engine::placement`）。
+//! grid 列序与 column flex 的交叉轴起点两层都不翻转（不是完整 rtl 映射）。
 //! `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 写入
 //! [`LayoutStyle::writing_mode`]（`horizontal-tb` 清除 unsupported；竖排不再 fail-closed）。
 //! `sideways-*` 置 [`LayoutStyle::unsupported_writing_mode`]。`unicode-bidi` 隔离 /
@@ -6488,7 +6491,7 @@ mod tests {
     }
 
     #[test]
-    fn subgrid_is_explicit_grid_track_unsupported() {
+    fn whole_value_subgrid_parses_to_subgrid_not_unsupported() {
         assert_eq!(
             parse_grid_track_list_result("subgrid", None),
             GridTrackListParse::Subgrid

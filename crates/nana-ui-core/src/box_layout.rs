@@ -370,15 +370,17 @@ pub enum ClearSpec {
 /// Track-list syntax the grid resolver will not pretend to honor.
 ///
 /// Successful `repeat(auto-fit|auto-fill)` is stored on [`GridRepeatAuto`] and
-/// expanded at layout; those variants remain as the repeat *kind*. [`Self::Subgrid`]
-/// is an actual gap: nested grids do not inherit parent tracks.
+/// expanded at layout; those variants remain as the repeat *kind*. Whole-value
+/// `subgrid` is not here either — it sets `grid_*_subgrid` and inherits parent
+/// tracks at layout. [`Self::Subgrid`] only tags `subgrid` written as one token
+/// inside a track list, which has no meaning to inherit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GridTrackListUnsupported {
     /// `repeat(auto-fit, …)` (repeat kind; layout expands it).
     RepeatAutoFit,
     /// `repeat(auto-fill, …)` (repeat kind; layout expands it).
     RepeatAutoFill,
-    /// `subgrid` — needs parent tracks in the grid resolver; not faked.
+    /// `subgrid` as a track-list token (e.g. `subgrid 80px`) — not a whole value.
     Subgrid,
 }
 

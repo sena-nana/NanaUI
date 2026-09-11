@@ -1242,7 +1242,7 @@ pub mod probe {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    /// Pre-bundled `@vue/runtime-core` probe used by both engines (stub host ops).
+    /// Pre-bundled `@vue/runtime-core` probe for the V8 engine (stub host ops).
     #[cfg(feature = "probe-fixtures")]
     pub const VUE_RUNTIME_PROBE_JS: &str =
         include_str!("../fixtures/vue-runtime-probe/dist/vue-runtime-probe.iife.js");
