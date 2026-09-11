@@ -9,7 +9,7 @@ use nana_ui_core::{
     MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, path_looks_network,
     percent_decode_bytes, read_bytes_within_jail, resolve_filesystem_href,
 };
-use nana_ui_platform::{FetchRequest, SharedFetchHost};
+use nana_ui_platform::{FetchCancellation, FetchRequest, SharedFetchHost};
 
 static BACKGROUND_IMAGE_URL_BASE: OnceLock<PathBuf> = OnceLock::new();
 
@@ -78,9 +78,21 @@ fn resource_fetch_host() -> Option<SharedFetchHost> {
 /// redirect hop, on any transport error, on a non-2xx status, or on a body
 /// above `max_bytes`. The effective cap is the smaller of `max_bytes` and the
 /// policy's `max_response_bytes`, which is what bounds the peak allocation.
-fn fetch_resource_bytes(url: &str, max_bytes: usize) -> Option<Vec<u8>> {
+///
+/// `cancellation` goes through [`FetchHost::fetch_cancellable`], so cancelling
+/// it shuts the socket down mid-read instead of leaving the worker parked until
+/// the policy timeout. It ends the *network* wait only: bytes already received
+/// are decoded to completion, since neither `image` nor `resvg` has a
+/// cancellation point.
+fn fetch_resource_bytes(
+    url: &str,
+    max_bytes: usize,
+    cancellation: &FetchCancellation,
+) -> Option<Vec<u8>> {
     let host = resource_fetch_host()?;
-    let response = host.fetch(FetchRequest::get(url)).ok()?;
+    let response = host
+        .fetch_cancellable(FetchRequest::get(url), cancellation.clone())
+        .ok()?;
     if !(200..300).contains(&response.status) {
         return None;
     }
@@ -167,12 +179,22 @@ fn join_relative(rel: &str) -> Option<String> {
 /// SVG bytes (inline `data:image/svg+xml`, `url(.svg)`, or sniffed markup) share
 /// this path with raster images so the quad URL cache keys by URL/id.
 pub(super) fn decode_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
+    // The synchronous path has no one to cancel it: the caller is blocked on
+    // this very call. Workers use `decode_url_rgba_with` and keep the token.
+    decode_url_rgba_with(url, &FetchCancellation::new())
+}
+
+/// [`decode_url_rgba`] with a cancellation token for the `"nana-image"` worker.
+pub(super) fn decode_url_rgba_with(
+    url: &str,
+    cancellation: &FetchCancellation,
+) -> Option<(u32, u32, Vec<u8>)> {
     let resolved = resolve_background_image_url(url)?;
     if resolved.starts_with("data:") {
         return decode_data_url_rgba(&resolved);
     }
     if resolved.starts_with("http://") || resolved.starts_with("https://") {
-        return decode_http_rgba(&resolved);
+        return decode_http_rgba(&resolved, cancellation);
     }
     let jail = url_base();
     let bytes = read_bytes_within_jail(url, &jail, MAX_LOCAL_URL_BYTES)?;
@@ -195,8 +217,8 @@ fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
     decode_image_bytes_with_hint(&bytes, meta_l.contains("svg"))
 }
 
-fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let bytes = fetch_resource_bytes(url, MAX_LOCAL_URL_BYTES as usize)?;
+fn decode_http_rgba(url: &str, cancellation: &FetchCancellation) -> Option<(u32, u32, Vec<u8>)> {
+    let bytes = fetch_resource_bytes(url, MAX_LOCAL_URL_BYTES as usize, cancellation)?;
     decode_image_bytes_with_hint(&bytes, looks_like_svg_url(url))
 }
 
@@ -319,6 +341,24 @@ impl nana_ui_platform::FetchHost for LoopbackFetchHost {
         nana_ui_platform::NativeFetchHost::new(policy).fetch(request)
     }
 
+    /// Forwarded, not inherited: the default trait implementation only checks
+    /// the token once at the boundary, so inheriting it would leave the real
+    /// socket-shutdown path untested.
+    fn fetch_cancellable(
+        &self,
+        request: FetchRequest,
+        cancellation: nana_ui_platform::FetchCancellation,
+    ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+        let origin = loopback_origin(&request.url).ok_or_else(|| {
+            nana_ui_platform::FetchError::new(
+                nana_ui_platform::FetchErrorKind::Policy,
+                format!("test host serves loopback only: `{}`", request.url),
+            )
+        })?;
+        let policy = nana_ui_platform::FetchPolicy::default().with_allowed_origin(&origin)?;
+        nana_ui_platform::NativeFetchHost::new(policy).fetch_cancellable(request, cancellation)
+    }
+
     fn policy(&self) -> &nana_ui_platform::FetchPolicy {
         &self.policy
     }
@@ -399,6 +439,23 @@ mod tests {
             decode_url_rgba(&url).is_none(),
             "no fetch host must mean no remote image"
         );
+        assert_never_connected(&listener);
+    }
+
+    #[test]
+    fn a_cancelled_token_refuses_an_allowlisted_http_image_before_connecting() {
+        install_loopback_fetch_host();
+        let (listener, url) = silent_listener();
+        let cancellation = FetchCancellation::new();
+        cancellation.cancel();
+
+        assert!(
+            decode_url_rgba_with(&url, &cancellation).is_none(),
+            "a cancelled request must not load, even from an allowed origin"
+        );
+        // Pre-cancelled rather than raced: `register_socket` rejects an already
+        // cancelled token, so this asserts the token reaches the socket layer
+        // without depending on timing.
         assert_never_connected(&listener);
     }
 

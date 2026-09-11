@@ -207,8 +207,8 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 /// without depending on `nana-ui-platform` directly.
 #[cfg(feature = "gpu")]
 pub use nana_ui_platform::{
-    FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
-    NativeFetchHost, SharedFetchHost, shared_fetch_host,
+    FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
+    FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
 };
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{
