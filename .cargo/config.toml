@@ -1,5 +1,5 @@
 # Android ARM64 linker defaults for this workspace.
-# Prefer `source scripts/android-env.sh` which also sets CC/AR/bindgen for QuickJS.
+# Prefer `source scripts/android-env.sh` which also sets CC/AR/bindgen for C deps.
 # Absolute linker path is resolved at build time via CARGO_TARGET_* env when set;
 # the wrapper below is a fallback when only PATH/NDK is available.
 

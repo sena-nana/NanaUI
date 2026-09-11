@@ -802,10 +802,12 @@ impl GpuTexturePrimitive {
         let texture = self.layer.texture.snapshot();
         let key = TextureKey::new(self.presentation, texture.id);
         let (slot, viewport_rect) = slot_for_bounds(texture.id, bounds, scale_factor);
-        let clip = self
-            .layer
-            .clip
-            .map(|clip| RenderSlot::new(texture.id, clip, scale_factor).physical);
+        // `layer.clip` is pre-affine (same space as dest / the sibling Quad).
+        // The pass scissor is paint-space; scrolling would otherwise place
+        // this rect below the target and the draw would scissor to nothing.
+        let clip = self.layer.clip.map(|clip| {
+            RenderSlot::new(texture.id, affine_aabb(clip, affine, persp), scale_factor).physical
+        });
         let mask_url = match self.layer.mask.as_ref() {
             Some(nana_ui_core::MaskImage::Url(url))
                 if pipeline.url_cache.load(device, queue, url).is_some() =>
@@ -1398,6 +1400,42 @@ fn finite_opacity(opacity: f32) -> f32 {
     }
 }
 
+/// Axis-aligned bounds of a pre-affine rect after the paint transform.
+fn affine_aabb(rect: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalRect {
+    let map = |x: f32, y: f32| {
+        let xp = affine[0] * x + affine[2] * y + affine[4];
+        let yp = affine[1] * x + affine[3] * y + affine[5];
+        let w = persp[0] * x + persp[1] * y + 1.0;
+        if w.abs() >= 1e-8 {
+            (xp / w, yp / w)
+        } else {
+            (xp, yp)
+        }
+    };
+    let corners = [
+        map(rect.x, rect.y),
+        map(rect.x + rect.width, rect.y),
+        map(rect.x, rect.y + rect.height),
+        map(rect.x + rect.width, rect.y + rect.height),
+    ];
+    let min_x = corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min);
+    let min_y = corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|p| p.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_y = corners
+        .iter()
+        .map(|p| p.1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    LogicalRect::new(
+        min_x,
+        min_y,
+        (max_x - min_x).max(0.0),
+        (max_y - min_y).max(0.0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc, thread};
@@ -1408,9 +1446,25 @@ mod tests {
     use super::{
         GpuTexturePipeline, HostTexture, HostTextureAlphaMode, HostTextureLayer,
         HostTextureRegistry, PresentationIdentity, TextureFingerprint, TextureKey,
-        VersionedResource, make_layer_uniform, texture_needs_rebind, trim_unused,
+        VersionedResource, affine_aabb, make_layer_uniform, texture_needs_rebind, trim_unused,
     };
     use crate::geometry::LogicalRect;
+    use crate::gpu_view::RenderSlot;
+
+    #[test]
+    fn scrolled_pre_affine_clip_scissors_in_paint_space() {
+        let clip = LogicalRect::new(0.0, 384.0, 96.0, 96.0);
+        let scrolled = affine_aabb(clip, [1.0, 0.0, 0.0, 1.0, 0.0, -384.0], [0.0, 0.0]);
+        assert_eq!(scrolled, LogicalRect::new(0.0, 0.0, 96.0, 96.0));
+        let physical = RenderSlot::new(1, scrolled, 1.0).physical;
+        assert_eq!(physical.y, 0);
+        assert_eq!(physical.height, 96);
+        let untransformed = RenderSlot::new(1, clip, 1.0).physical;
+        assert!(
+            untransformed.y >= 96,
+            "content-space clip must not be used as a pass scissor after scroll"
+        );
+    }
 
     #[test]
     fn scene_identity_is_stable_across_frames_and_distinct_across_primitives() {

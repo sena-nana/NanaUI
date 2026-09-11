@@ -122,8 +122,10 @@
   globalThis.setInterval = setIntervalShim;
   globalThis.clearInterval = clearIntervalShim;
   globalThis.Headers = HeadersShim;
+  globalThis.FormData = FormDataShim;
   globalThis.Request = RequestShim;
   globalThis.Response = ResponseShim;
+  globalThis.ReadableStream = ReadableStreamShim;
   globalThis.AbortSignal = AbortSignalShim;
   globalThis.AbortController = AbortControllerShim;
   globalThis.fetch = fetchShim;
@@ -193,8 +195,10 @@
     };
   }
   win.Headers = HeadersShim;
+  win.FormData = FormDataShim;
   win.Request = RequestShim;
   win.Response = ResponseShim;
+  win.ReadableStream = ReadableStreamShim;
   win.AbortSignal = AbortSignalShim;
   win.AbortController = AbortControllerShim;
   win.fetch = fetchShim;

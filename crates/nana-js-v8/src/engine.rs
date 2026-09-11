@@ -1016,6 +1016,9 @@ fn host_to_v8<'s>(
             .ok_or_else(|| JsEngineError::new("failed to allocate host string")),
         HostValue::Bytes(bytes) => {
             let backing = v8::ArrayBuffer::new_backing_store(scope, bytes.len());
+            // Measured: in release this loop is already vectorised, and a 16 MiB
+            // body shows no difference against a raw `copy_nonoverlapping` into
+            // the backing store. Keep the safe version.
             for (target, source) in backing.iter().zip(bytes) {
                 target.set(*source);
             }
@@ -2166,6 +2169,606 @@ mod tests {
     }
 
     #[test]
+    fn text_codec_round_trips_every_utf8_width_across_batch_boundaries() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(64, 64, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "codec.js",
+                    r#"
+                globalThis.__nanaCodecResult = null;
+                globalThis.__nanaCodec = { read: () => globalThis.__nanaCodecResult };
+                (function () {
+                  const encoder = new TextEncoder();
+                  const decoder = new TextDecoder();
+                  const roundTrip = (s) => decoder.decode(encoder.encode(s)) === s;
+
+                  // One-, two-, three- and four-byte sequences, plus strings
+                  // long enough to cross the internal 8192-unit batch so a
+                  // multi-byte sequence straddling a batch would corrupt.
+                  const cases = [
+                    "",
+                    "plain ascii",
+                    "café ünïcode",
+                    "日本語テキスト",
+                    "emoji 🎉🚀 mix",
+                    "a".repeat(20000),
+                    "日本語🎉".repeat(5000),
+                    ("xé日🎉").repeat(4000),
+                  ];
+                  const failures = [];
+                  for (let i = 0; i < cases.length; i++) {
+                    if (!roundTrip(cases[i])) failures.push(i);
+                  }
+
+                  globalThis.__nanaCodecResult = {
+                    failures,
+                    // Byte-level spot checks against known UTF-8 encodings.
+                    eAcute: Array.from(encoder.encode("é")),
+                    nihon: Array.from(encoder.encode("日")),
+                    party: Array.from(encoder.encode("🎉")),
+                    decoded: decoder.decode(new Uint8Array([0xf0, 0x9f, 0x8e, 0x89])),
+                    longLength: decoder.decode(encoder.encode("日".repeat(10000))).length,
+                    emptyDecode: decoder.decode(new Uint8Array(0)),
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaCodec.read").unwrap();
+            engine.run_microtasks().unwrap();
+            let result = engine.invoke(read, &[]).unwrap();
+            let result = result.as_object().expect("codec probe produced no result");
+
+            let failures = result
+                .get("failures")
+                .and_then(HostValue::as_array)
+                .unwrap();
+            assert!(
+                failures.is_empty(),
+                "these round-trip cases corrupted: {failures:?}"
+            );
+            let bytes = |key: &str| -> Vec<u8> {
+                result
+                    .get(key)
+                    .and_then(HostValue::as_array)
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as u8)
+                    .collect()
+            };
+            assert_eq!(bytes("eAcute"), vec![0xc3, 0xa9]);
+            assert_eq!(bytes("nihon"), vec![0xe6, 0x97, 0xa5]);
+            assert_eq!(bytes("party"), vec![0xf0, 0x9f, 0x8e, 0x89]);
+            assert_eq!(
+                result.get("decoded").and_then(HostValue::as_str),
+                Some("\u{1f389}")
+            );
+            assert_eq!(
+                result.get("longLength").and_then(HostValue::as_f64),
+                Some(10000.0),
+                "a batched decode must not drop or duplicate characters"
+            );
+            assert_eq!(
+                result.get("emptyDecode").and_then(HostValue::as_str),
+                Some("")
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn cancelling_a_stream_mid_body_rejects_the_reader_and_stops_the_transfer() {
+        with_serial_v8_tests(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::time::{Duration, Instant};
+
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost, FetchPolicy,
+                FetchRequest, FetchResponse, FetchSink, shared_fetch_host,
+            };
+
+            /// Sends a head and one chunk, then blocks until the request is
+            /// cancelled — so JS can abort with the body half-delivered.
+            #[derive(Debug)]
+            struct StallingFetch {
+                policy: FetchPolicy,
+                cancels_observed: Arc<AtomicUsize>,
+            }
+
+            impl FetchHost for StallingFetch {
+                fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                    unreachable!("the streaming path must be preferred")
+                }
+
+                fn fetch_streaming(
+                    &self,
+                    request: FetchRequest,
+                    cancellation: FetchCancellation,
+                    sink: &mut dyn FetchSink,
+                ) -> Result<(), FetchError> {
+                    sink.head(FetchHead {
+                        url: request.url,
+                        status: 200,
+                        status_text: "OK".into(),
+                        headers: Vec::new(),
+                        redirected: false,
+                    })?;
+                    sink.chunk(b"first")?;
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !cancellation.is_cancelled() {
+                        assert!(
+                            Instant::now() < deadline,
+                            "never cancelled: the fix is absent"
+                        );
+                        std::thread::yield_now();
+                    }
+                    self.cancels_observed.fetch_add(1, Ordering::Release);
+                    Err(FetchError::new(FetchErrorKind::Cancelled, "cancelled"))
+                }
+
+                fn policy(&self) -> &FetchPolicy {
+                    &self.policy
+                }
+            }
+
+            let cancels_observed = Arc::new(AtomicUsize::new(0));
+            let mut host = mount_vue_as_nana(MountOptions {
+                width: 320,
+                height: 200,
+                fetch_host: Some(shared_fetch_host(StallingFetch {
+                    policy: FetchPolicy::default(),
+                    cancels_observed: Arc::clone(&cancels_observed),
+                })),
+                ..MountOptions::default()
+            });
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "abort-stream.js",
+                    r#"
+                globalThis.__nanaFireEvent = function () {};
+                globalThis.__nanaAbortResult = null;
+                globalThis.__nanaAbort = { read: () => globalThis.__nanaAbortResult };
+                (async function () {
+                  // (1) Abort while the body is still arriving.
+                  const controller = new AbortController();
+                  const response = await fetch("/stall", { signal: controller.signal });
+                  const reader = response.body.getReader();
+                  const first = await reader.read();
+                  const parked = reader.read();
+                  controller.abort();
+                  let abortName = "";
+                  try { await parked; } catch (error) { abortName = error.name; }
+
+                  // (2) Cancelling the body stream must stop the transfer too.
+                  const second = await fetch("/stall");
+                  const secondReader = second.body.getReader();
+                  await secondReader.read();
+                  await secondReader.cancel();
+                  const afterCancel = await secondReader.read().catch(() => ({ done: "rejected" }));
+
+                  globalThis.__nanaAbortResult = {
+                    first: new TextDecoder().decode(first.value),
+                    abortName,
+                    afterCancelDone: afterCancel.done,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            host.bind_event_bridge(&mut engine).unwrap();
+
+            let read = engine.resolve_function("__nanaAbort.read").unwrap();
+            // The deadline is the point of this test: before the fix the parked
+            // read never settles, which must FAIL rather than hang CI.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let result = loop {
+                host.pump_frame(&mut engine).unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "a mid-stream abort left the reader parked forever"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("first").and_then(HostValue::as_str),
+                Some("first")
+            );
+            assert_eq!(
+                result.get("abortName").and_then(HostValue::as_str),
+                Some("AbortError"),
+                "aborting mid-body must reject the parked read, not hang it"
+            );
+            assert_eq!(
+                result.get("afterCancelDone").and_then(HostValue::as_bool),
+                Some(true),
+                "a cancelled body reads as done, not as a pending promise"
+            );
+            // The counter is bumped on a fetch worker thread, and JS does not
+            // wait for it: aborting settles the parked read from the JS side
+            // immediately. So poll rather than sampling once -- reading it here
+            // unsynchronised is a race the slower runner loses.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while cancels_observed.load(Ordering::Acquire) < 2 {
+                assert!(
+                    Instant::now() < deadline,
+                    "only {} of 2 cancellations reached the transfer: the signal \
+                     abort and body.cancel() must both stop the worker",
+                    cancels_observed.load(Ordering::Acquire)
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn an_author_readable_stream_is_pulled_on_demand() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "pull.js",
+                    r#"
+                globalThis.__nanaPullResult = null;
+                globalThis.__nanaPull = { read: () => globalThis.__nanaPullResult };
+                (async function () {
+                  // A pull-driven source produces nothing up front: if `pull`
+                  // is never called this stream yields zero chunks.
+                  const encoder = new TextEncoder();
+                  let pulls = 0;
+                  let produced = 0;
+                  const sizes = [];
+                  const stream = new ReadableStream({
+                    start(controller) { sizes.push(controller.desiredSize); },
+                    pull(controller) {
+                      pulls += 1;
+                      if (produced >= 3) { controller.close(); return; }
+                      produced += 1;
+                      controller.enqueue(encoder.encode("chunk" + produced));
+                    },
+                  });
+
+                  const reader = stream.getReader();
+                  const seen = [];
+                  for (;;) {
+                    const step = await reader.read();
+                    if (step.done) break;
+                    seen.push(new TextDecoder().decode(step.value));
+                  }
+
+                  let cancelled = false;
+                  const cancellable = new ReadableStream({
+                    pull(controller) { controller.enqueue(new Uint8Array([1])); },
+                    cancel() { cancelled = true; },
+                  });
+                  const other = cancellable.getReader();
+                  await other.read();
+                  await other.cancel();
+
+                  globalThis.__nanaPullResult = {
+                    pulls,
+                    seen,
+                    startDesiredSize: sizes[0],
+                    cancelled,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaPull.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "pull test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            let seen = result.get("seen").and_then(HostValue::as_array).unwrap();
+            assert_eq!(
+                seen.len(),
+                3,
+                "a pull-driven source must actually be pulled, got {seen:?}"
+            );
+            assert_eq!(seen[0].as_str(), Some("chunk1"));
+            assert_eq!(seen[2].as_str(), Some("chunk3"));
+            assert_eq!(
+                result.get("pulls").and_then(HostValue::as_f64),
+                Some(4.0),
+                "three producing pulls plus the one that closes the stream"
+            );
+            assert_eq!(
+                result.get("startDesiredSize").and_then(HostValue::as_f64),
+                Some(1.0),
+                "desiredSize reports the outstanding count, not a constant"
+            );
+            assert_eq!(
+                result.get("cancelled").and_then(HostValue::as_bool),
+                Some(true),
+                "cancelling the reader reaches the author's cancel()"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn a_locked_or_drained_body_stream_refuses_the_buffered_readers() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "body-lock.js",
+                    r#"
+                globalThis.__nanaLockResult = null;
+                globalThis.__nanaLock = { read: () => globalThis.__nanaLockResult };
+                (async function () {
+                  const locked = new Response("payload");
+                  locked.body.getReader();
+                  let lockedText = "";
+                  try { await locked.text(); } catch (error) { lockedText = error.name; }
+                  let lockedClone = "";
+                  try { locked.clone(); } catch (error) { lockedClone = error.name; }
+
+                  // Draining through the stream marks the body used, so the
+                  // buffered readers must refuse afterwards too.
+                  const drained = new Response("payload");
+                  const reader = drained.body.getReader();
+                  for (;;) { const step = await reader.read(); if (step.done) break; }
+                  reader.releaseLock();
+                  const drainedUsed = drained.bodyUsed;
+                  let drainedText = "";
+                  try { await drained.text(); } catch (error) { drainedText = error.name; }
+
+                  // clone() shares the arrived chunks, but each copy owns its
+                  // own stream: reading one must NOT mark the other used.
+                  const original = new Response("shared");
+                  const copy = original.clone();
+                  const originalText = await original.text();
+                  const copyText = await copy.text();
+
+                  globalThis.__nanaLockResult = {
+                    lockedText,
+                    lockedClone,
+                    drainedUsed,
+                    drainedText,
+                    originalText,
+                    copyText,
+                    nullBody204: new Response(null, { status: 204 }).body,
+                    nullBodyEmpty: new Response().body,
+                    streamBody: typeof new Response("x").body.getReader,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaLock.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "body-lock test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            assert_eq!(
+                result.get("lockedText").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "text() on a locked stream must refuse, as a browser does"
+            );
+            assert_eq!(
+                result.get("lockedClone").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "clone() of a locked stream must refuse"
+            );
+            assert_eq!(
+                result.get("drainedUsed").and_then(HostValue::as_bool),
+                Some(true),
+                "draining the stream marks bodyUsed"
+            );
+            assert_eq!(
+                result.get("drainedText").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "a drained body cannot be re-read through text()"
+            );
+            assert_eq!(
+                result.get("originalText").and_then(HostValue::as_str),
+                Some("shared")
+            );
+            assert_eq!(
+                result.get("copyText").and_then(HostValue::as_str),
+                Some("shared"),
+                "a clone reads the same body independently of the original"
+            );
+            assert_eq!(
+                result.get("nullBody204"),
+                Some(&HostValue::Null),
+                "a 204 has a null body, not an always-empty stream"
+            );
+            assert_eq!(result.get("nullBodyEmpty"), Some(&HostValue::Null));
+            assert_eq!(
+                result.get("streamBody").and_then(HostValue::as_str),
+                Some("function"),
+                "a response WITH a body still exposes a stream"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn streaming_response_body_reaches_js_chunk_by_chunk() {
+        with_serial_v8_tests(|| {
+            use std::time::{Duration, Instant};
+
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                FetchCancellation, FetchError, FetchHead, FetchHost, FetchPolicy, FetchRequest,
+                FetchResponse, FetchSink, shared_fetch_host,
+            };
+
+            /// Emits three chunks so the test can prove the reader sees them
+            /// separately rather than one reassembled body.
+            #[derive(Debug)]
+            struct ChunkedFetch {
+                policy: FetchPolicy,
+            }
+
+            impl FetchHost for ChunkedFetch {
+                fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                    unreachable!("the streaming path must be preferred over the buffered one");
+                }
+
+                fn fetch_streaming(
+                    &self,
+                    request: FetchRequest,
+                    _cancellation: FetchCancellation,
+                    sink: &mut dyn FetchSink,
+                ) -> Result<(), FetchError> {
+                    sink.head(FetchHead {
+                        url: request.url,
+                        status: 200,
+                        status_text: "OK".into(),
+                        headers: vec![("content-type".into(), "text/plain".into())],
+                        redirected: false,
+                    })?;
+                    sink.chunk(b"one-")?;
+                    sink.chunk(b"two-")?;
+                    sink.chunk(b"three")?;
+                    Ok(())
+                }
+
+                fn policy(&self) -> &FetchPolicy {
+                    &self.policy
+                }
+            }
+
+            let mut host = mount_vue_as_nana(MountOptions {
+                width: 320,
+                height: 200,
+                fetch_host: Some(shared_fetch_host(ChunkedFetch {
+                    policy: FetchPolicy::default(),
+                })),
+                ..MountOptions::default()
+            });
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "stream.js",
+                    r#"
+                // `bind_event_bridge` requires this; the Vue runtime normally
+                // supplies it. Nothing here dispatches DOM events.
+                globalThis.__nanaFireEvent = function () {};
+                globalThis.__nanaStreamResult = null;
+                globalThis.__nanaStream = { read: () => globalThis.__nanaStreamResult };
+                (async function () {
+                  const response = await fetch("/stream");
+                  // Resolving at the head means the body has not arrived yet.
+                  const bodyIsStream = typeof response.body.getReader === "function";
+                  const reader = response.body.getReader();
+                  const chunks = [];
+                  for (;;) {
+                    const step = await reader.read();
+                    if (step.done) break;
+                    chunks.push(new TextDecoder().decode(step.value));
+                  }
+                  let secondReader = "";
+                  try { response.body.getReader(); }
+                  catch (error) { secondReader = error.name; }
+
+                  // A separate buffered fetch still reads whole, as before.
+                  const buffered = await (await fetch("/stream")).text();
+
+                  globalThis.__nanaStreamResult = {
+                    bodyIsStream,
+                    chunks,
+                    joined: chunks.join(""),
+                    secondReader,
+                    buffered,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            // `drain_fetch` is resolved here; without it nothing pumps chunks.
+            host.bind_event_bridge(&mut engine).unwrap();
+
+            let read = engine.resolve_function("__nanaStream.read").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let result = loop {
+                // Chunks only cross into JS through the frame pump, which is the
+                // contract that keeps JS callbacks on the engine thread.
+                host.pump_frame(&mut engine).unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(Instant::now() < deadline, "streaming fetch never settled");
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("bodyIsStream").and_then(HostValue::as_bool),
+                Some(true),
+                "response.body must be a ReadableStream, not undefined"
+            );
+            let chunks = result.get("chunks").and_then(HostValue::as_array).unwrap();
+            assert_eq!(
+                chunks.len(),
+                3,
+                "the reader must see the host's three chunks separately, got {chunks:?}"
+            );
+            assert_eq!(
+                result.get("joined").and_then(HostValue::as_str),
+                Some("one-two-three")
+            );
+            assert_eq!(
+                result.get("secondReader").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "a locked stream refuses a second reader"
+            );
+            assert_eq!(
+                result.get("buffered").and_then(HostValue::as_str),
+                Some("one-two-three"),
+                "text() still resolves with the whole body"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn vue_sfc_fetch_updates_semantic_tree_on_v8() {
         with_serial_v8_tests(|| {
             use std::time::{Duration, Instant};
@@ -2329,6 +2932,164 @@ mod tests {
                 }
             }
             panic!("navigator.clipboard promise did not settle");
+        });
+    }
+
+    #[test]
+    fn form_data_bodies_encode_as_multipart_with_a_generated_boundary() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "form-data.js",
+                    r#"
+                globalThis.__nanaFormResult = null;
+                globalThis.__nanaForm = { read: () => globalThis.__nanaFormResult };
+                (async function () {
+                  const form = new FormData();
+                  form.append("field", "plain value");
+                  form.append("field", "second");
+                  form.append("file", new Blob(["FILEBYTES"], { type: "text/plain" }), "a.txt");
+
+                  const accessors = {
+                    get: form.get("field"),
+                    getAll: form.getAll("field"),
+                    has: form.has("field"),
+                    entries: Array.from(form.entries()).length,
+                  };
+                  form.set("field", "only one");
+                  const afterSet = form.getAll("field");
+
+                  const request = new Request("https://example.test/upload", {
+                    method: "POST",
+                    body: form,
+                  });
+                  const contentType = request.headers.get("content-type");
+                  const bytes = new Uint8Array(await request.arrayBuffer());
+                  const text = new TextDecoder().decode(bytes);
+
+                  // An author-set content-type must not be replaced, even though
+                  // the boundary then will not match; that is the author's call.
+                  const explicit = new Request("https://example.test/upload", {
+                    method: "POST",
+                    body: new FormData(),
+                    headers: { "content-type": "text/plain" },
+                  });
+
+                  let fromFormElement = "";
+                  try { new FormData(globalThis.document.createElement("form")); }
+                  catch (error) { fromFormElement = error.name; }
+
+                  globalThis.__nanaFormResult = {
+                    accessors,
+                    afterSet,
+                    contentType,
+                    text,
+                    explicitType: explicit.headers.get("content-type"),
+                    fromFormElement,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaForm.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "FormData test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            let accessors = result
+                .get("accessors")
+                .and_then(HostValue::as_object)
+                .unwrap();
+            assert_eq!(
+                accessors.get("get").and_then(HostValue::as_str),
+                Some("plain value"),
+                "get() returns the first entry"
+            );
+            assert_eq!(
+                accessors
+                    .get("getAll")
+                    .and_then(HostValue::as_array)
+                    .map(|items| items.len()),
+                Some(2)
+            );
+            assert_eq!(
+                accessors.get("has").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                accessors.get("entries").and_then(HostValue::as_f64),
+                Some(3.0)
+            );
+            assert_eq!(
+                result
+                    .get("afterSet")
+                    .and_then(HostValue::as_array)
+                    .map(|items| items.len()),
+                Some(1),
+                "set() collapses the duplicates it replaces"
+            );
+
+            let content_type = result
+                .get("contentType")
+                .and_then(HostValue::as_str)
+                .unwrap();
+            assert!(
+                content_type.starts_with("multipart/form-data; boundary=----NanaFormBoundary"),
+                "the body names its own content-type, got {content_type}"
+            );
+            let boundary = content_type.split("boundary=").nth(1).unwrap();
+
+            let text = result.get("text").and_then(HostValue::as_str).unwrap();
+            assert!(
+                text.contains(r#"Content-Disposition: form-data; name="field""#),
+                "string part carries its disposition, got {text}"
+            );
+            assert!(text.contains("only one"), "string part carries its value");
+            assert!(
+                text.contains(r#"name="file"; filename="a.txt""#),
+                "blob part carries a filename"
+            );
+            assert!(
+                text.contains("Content-Type: text/plain"),
+                "blob part carries the blob's own type"
+            );
+            assert!(
+                text.contains("FILEBYTES"),
+                "blob bytes travel through the host resource channel"
+            );
+            assert!(
+                text.ends_with(&format!("--{boundary}--\r\n")),
+                "body closes with the terminating boundary"
+            );
+            assert!(
+                !text.contains(&format!("--{boundary}\r\n--{boundary}")),
+                "no empty part between delimiters"
+            );
+
+            assert_eq!(
+                result.get("explicitType").and_then(HostValue::as_str),
+                Some("text/plain"),
+                "an author-set content-type is not overwritten"
+            );
+            assert_eq!(
+                result.get("fromFormElement").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "new FormData(form) fails closed instead of sending an empty body"
+            );
+            engine.shutdown();
         });
     }
 

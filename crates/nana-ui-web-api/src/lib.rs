@@ -21,7 +21,7 @@ pub use canvas::{
     CanvasBitmap, CanvasError, CanvasId, CanvasResourceKind, CanvasRuntime, CanvasUpload,
     SharedCanvasRuntime, shared_canvas_runtime,
 };
-use fetch::{FetchCompletion, FetchRuntime};
+use fetch::{FetchEvent, FetchRuntime};
 pub use media::{
     MediaCaptureMode, MediaError, MediaId, MediaKind, MediaLiveSets, MediaRuntime, MediaStreamId,
     MediaTreeRef, MediaUpload, SharedMediaRuntime, media_live_sets_from_tree,
@@ -37,10 +37,11 @@ const RAF_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 #[cfg(not(target_os = "android"))]
 pub use nana_ui_platform::OsClipboard;
 pub use nana_ui_platform::{
-    ClipboardHost, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest, FetchResponse,
-    MemoryClipboard, NativeFetchHost, SharedClipboardHost, SharedFetchHost, SharedWebSocketHost,
-    SocketPolicy, UnsupportedClipboard, WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage,
-    WsOpenRequest, WsSink, default_shared_clipboard, shared_clipboard, shared_fetch_host,
+    ClipboardHost, FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost,
+    FetchPolicy, FetchRequest, FetchResponse, FetchSink, MemoryClipboard, NativeFetchHost,
+    SharedClipboardHost, SharedFetchHost, SharedWebSocketHost, SocketPolicy, UnsupportedClipboard,
+    WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage, WsOpenRequest, WsSink,
+    default_shared_clipboard, shared_clipboard, shared_fetch_host,
 };
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
@@ -320,7 +321,7 @@ impl WebApiState {
         self.fetch
             .drain_completions()
             .into_iter()
-            .map(FetchCompletion::into_host_value)
+            .map(FetchEvent::into_host_value)
             .collect()
     }
 

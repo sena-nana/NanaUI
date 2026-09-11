@@ -1,5 +1,5 @@
   function DatasetProxy(target) {
-    // Avoid Proxy — keep QuickJS/V8 surface identical for dataset writes.
+    // Avoid Proxy — keep the dataset write surface plain and engine-agnostic.
     return {
       get theme() {
         return target._dataset.theme;

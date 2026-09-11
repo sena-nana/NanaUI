@@ -114,6 +114,28 @@ jobs:
       - name: Enforce NanaUI and Gallery Clippy
         run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
 
+  android-arm64-cross:
+    # `scripts/check-android-arm64.sh` was only reachable from the
+    # workflow_dispatch-only Package V8 workflow, so a break in the Android
+    # ARM64 cross-compile stayed invisible until someone ran it by hand.
+    # Check-only and without RUSTY_V8_ARCHIVE: the script then takes its
+    # V8-stub branch, which needs no multi-hour GN build.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+          add-to-path: false
+      - name: Cross-check Android ARM64 crates
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: bash scripts/check-android-arm64.sh
+
   runtime-work-invariants:
     # Issue #8 PR gate: named cargo tests plus --evaluate-invariants on Nana
     # fixture envelopes. Live release benches stay in runtime-performance.yml.

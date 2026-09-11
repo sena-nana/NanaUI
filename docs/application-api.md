@@ -123,6 +123,19 @@ slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组
 
 不支持动态 dylib。
 
+## JavaScript 产物形态
+
+Vue / JS 入口交给宿主的是一份 `RuntimeArtifact`，两种形态：
+
+| 形态 | 构造 | 说明 |
+| --- | --- | --- |
+| 源码 | `RuntimeArtifact::from_source(name, source)` | UTF-8 JavaScript（通常是你 Vite 打出的 IIFE）。框架在加载前用 `compose_runtime_artifact` 把 Web API shim 拼到前面。 |
+| Binary Release | `RuntimeArtifact::from_v8_snapshot(name, bytes)` | V8 `SnapshotCreator::create_blob` 的快照。`is_binary_release()` 为真，**原样加载**，框架不再拼 shim。 |
+
+因此快照必须在 `compose_runtime_artifact` **之后**编译：shim 要一起进快照，否则运行时找不到 `__nanaWebApi`。源码形态下框架会检测 `__nanaWebApi` 是否已存在，已拼过的不会重复拼。
+
+`name` 同时是样式表解析的基准：相对 `@import` 与 `url()` 都相对它兑现（见[布局](layout.md)的 `stylesheet_base`）。
+
 ## 性能上你不用手写的
 
 `build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。

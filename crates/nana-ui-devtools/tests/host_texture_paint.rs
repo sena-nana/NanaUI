@@ -182,6 +182,123 @@ fn thumbnail_bound_after_mount_reaches_the_screen() {
     );
 }
 
+#[test]
+fn thumbnail_bound_after_scroll_reaches_the_screen() {
+    use nana_ui::runtime::{
+        LengthSpec, NodeStyle, OverflowSpec, ScrollAxes, ScrollOffset, ScrollView, Stack,
+    };
+    use std::sync::Arc;
+
+    let Some(mut gpu) = offscreen::optional() else {
+        return;
+    };
+    let registry = HostTextureRegistry::new();
+    register_fill(&gpu, &registry);
+
+    let id = DocumentId::new(1).unwrap();
+    let mut document = RuntimeDocument::new(id);
+    let (scroll, thumb) = {
+        let cx = document.context_mut();
+        let mut scroll_style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut scroll_style.layout);
+            layout.width = Some(nana_ui::runtime::LengthSpec::Px(W as f32));
+            layout.height = Some(nana_ui::runtime::LengthSpec::Px(H as f32));
+            layout.overflow_y = OverflowSpec::Scroll;
+        }
+        let scroll = cx
+            .create_component(
+                id,
+                ScrollView::new(ScrollAxes::Vertical).style(scroll_style),
+            )
+            .unwrap();
+        let content = cx
+            .create_detached_component(
+                id,
+                Stack::column(0.0)
+                    .width(LengthSpec::Px(W as f32))
+                    .height(LengthSpec::Px(H as f32 * 6.0)),
+            )
+            .unwrap();
+        cx.append_child(scroll, content).unwrap();
+        let spacer = cx
+            .create_detached_component(
+                id,
+                Stack::column(0.0)
+                    .width(LengthSpec::Px(W as f32))
+                    .height(LengthSpec::Px(H as f32 * 4.0)),
+            )
+            .unwrap();
+        cx.append_child(content, spacer).unwrap();
+        let mut thumb = Thumbnail::loading();
+        {
+            let layout = Arc::make_mut(&mut thumb.style.layout);
+            layout.width = Some(LengthSpec::Px(W as f32));
+            layout.height = Some(LengthSpec::Px(H as f32));
+        }
+        let thumb = cx.create_detached_component(id, thumb).unwrap();
+        cx.append_child(content, thumb).unwrap();
+        (scroll, thumb)
+    };
+    let mut session =
+        nana_ui_devtools::agent::RuntimeAgentSession::new(document, W, H).expect("session");
+    session
+        .document_mut()
+        .context_mut()
+        .scroll_to(
+            scroll,
+            ScrollOffset {
+                x: 0.0,
+                y: H as f32 * 4.0,
+            },
+        )
+        .unwrap();
+    session.flush().expect("flush");
+    session
+        .document_mut()
+        .context_mut()
+        .update_component(thumb, |view, _| {
+            view.resource = SLOT.into();
+            view.state = nana_ui::runtime::ThumbnailState::Ready;
+            view.replace_view(1);
+            view.version = 0;
+        })
+        .unwrap();
+    session.flush().expect("flush");
+
+    let state = session
+        .document()
+        .context()
+        .read(thumb, |view| (view.state, view.resource.to_string()))
+        .unwrap();
+    assert_eq!(state.0, nana_ui::runtime::ThumbnailState::Ready);
+    assert_eq!(state.1, SLOT);
+    assert!(
+        session
+            .document()
+            .context()
+            .world()
+            .custom_render(thumb.stable_id())
+            .is_some()
+    );
+    let bounds = session
+        .document()
+        .scene()
+        .draw_node_bounds(thumb.stable_id())
+        .expect("scrolled thumbnail bounds");
+    assert!(
+        bounds.y < H as f32 && bounds.y + bounds.height > 0.0,
+        "late-bound cover must sit in the viewport, got {bounds:?}"
+    );
+
+    let after = paint_with(&mut gpu, &session.document().scene().clone(), &registry);
+    assert!(
+        fill_ratio(&after) > 0.05,
+        "a thumbnail bound after scrolling into view must reach the screen (fill={}, bounds={bounds:?})",
+        fill_ratio(&after)
+    );
+}
+
 /// The revision is the scene's conflict key: every view of one host-texture
 /// slot in a frame must carry the same one, or `frame_graph` rejects the whole
 /// frame with `ConflictingExternalResource` and nothing paints. A component

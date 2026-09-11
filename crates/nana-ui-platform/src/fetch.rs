@@ -50,6 +50,63 @@ pub struct FetchResponse {
     pub redirected: bool,
 }
 
+/// Everything about a response except its body.
+///
+/// Split out so a streaming host can hand the response line and headers to the
+/// consumer before any body byte has arrived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchHead {
+    pub url: String,
+    pub status: u16,
+    pub status_text: String,
+    pub headers: Vec<(String, String)>,
+    pub redirected: bool,
+}
+
+impl FetchHead {
+    /// Rejoin a head and a fully-read body.
+    pub fn with_body(self, body: Vec<u8>) -> FetchResponse {
+        FetchResponse {
+            url: self.url,
+            status: self.status,
+            status_text: self.status_text,
+            headers: self.headers,
+            body,
+            redirected: self.redirected,
+        }
+    }
+}
+
+/// Incremental receiver for a streaming fetch.
+///
+/// [`FetchSink::head`] is called exactly once, before any [`FetchSink::chunk`].
+/// Returning an error from either aborts the transfer, so a consumer that has
+/// gone away (or that enforces its own limit) stops the read rather than paying
+/// for bytes nobody will take.
+pub trait FetchSink {
+    fn head(&mut self, head: FetchHead) -> Result<(), FetchError>;
+    fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError>;
+}
+
+/// Collects a streamed response back into one buffered [`FetchResponse`].
+#[derive(Debug, Default)]
+struct BufferingSink {
+    head: Option<FetchHead>,
+    body: Vec<u8>,
+}
+
+impl FetchSink for BufferingSink {
+    fn head(&mut self, head: FetchHead) -> Result<(), FetchError> {
+        self.head = Some(head);
+        Ok(())
+    }
+
+    fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+        self.body.extend_from_slice(bytes);
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FetchErrorKind {
     Policy,
@@ -242,6 +299,44 @@ pub trait FetchHost: Send + Sync + fmt::Debug {
     ) -> Result<FetchResponse, FetchError> {
         cancellation.check()?;
         self.fetch(request)
+    }
+
+    /// Stream a response into `sink`.
+    ///
+    /// The default buffers through [`Self::fetch_cancellable`] and delivers the
+    /// whole body as a single chunk, so an application host that only knows how
+    /// to return a complete response keeps working — it simply does not stream.
+    ///
+    /// The response cap still applies, taken from [`Self::policy`] — the host's
+    /// own declared limit, not somebody else's. Without this a host that
+    /// implements only `fetch` would hand JS an unbounded body while its own
+    /// `FetchPolicy` says otherwise.
+    fn fetch_streaming(
+        &self,
+        request: FetchRequest,
+        cancellation: FetchCancellation,
+        sink: &mut dyn FetchSink,
+    ) -> Result<(), FetchError> {
+        let response = self.fetch_cancellable(request, cancellation)?;
+        let max = self.policy().max_response_bytes;
+        if response.body.len() > max {
+            return Err(FetchError::new(
+                FetchErrorKind::ResponseTooLarge,
+                format!("fetch response body exceeds {max} bytes"),
+            ));
+        }
+        let body = response.body;
+        sink.head(FetchHead {
+            url: response.url,
+            status: response.status,
+            status_text: response.status_text,
+            headers: response.headers,
+            redirected: response.redirected,
+        })?;
+        if !body.is_empty() {
+            sink.chunk(&body)?;
+        }
+        Ok(())
     }
 
     fn policy(&self) -> &FetchPolicy;
@@ -574,6 +669,23 @@ impl NativeFetchHost {
         request: FetchRequest,
         cancellation: &FetchCancellation,
     ) -> Result<FetchResponse, FetchError> {
+        let mut sink = BufferingSink::default();
+        self.stream_impl(request, cancellation, &mut sink)?;
+        let head = sink.head.ok_or_else(|| {
+            FetchError::new(FetchErrorKind::Network, "fetch produced no response head")
+        })?;
+        Ok(head.with_body(sink.body))
+    }
+
+    /// The one transport path. Buffered fetches run it with a collecting sink,
+    /// so redirect re-authorization, header stripping and the size caps cannot
+    /// drift between the two modes.
+    fn stream_impl(
+        &self,
+        request: FetchRequest,
+        cancellation: &FetchCancellation,
+        sink: &mut dyn FetchSink,
+    ) -> Result<(), FetchError> {
         cancellation.check()?;
         if request.body.len() > self.policy.max_request_bytes {
             return Err(FetchError::new(
@@ -682,7 +794,23 @@ impl NativeFetchHost {
                     )
                 })
                 .collect();
-            let mut bytes = Vec::new();
+            let status_text = response
+                .status()
+                .canonical_reason()
+                .unwrap_or_default()
+                .to_string();
+            // Hand over the head before reading any body byte: that is the whole
+            // point of streaming, and the buffered sink does not care when it
+            // arrives.
+            sink.head(FetchHead {
+                url: url.to_string(),
+                status,
+                status_text,
+                headers: response_headers,
+                redirected: redirects > 0,
+            })?;
+
+            let mut total = 0usize;
             let mut reader = response.body_mut().as_reader();
             let mut chunk = [0_u8; 64 * 1024];
             loop {
@@ -696,7 +824,10 @@ impl NativeFetchHost {
                 if read == 0 {
                     break;
                 }
-                if bytes.len().saturating_add(read) > self.policy.max_response_bytes {
+                total = total.saturating_add(read);
+                // The cap stays cumulative across chunks, so streaming cannot be
+                // used to slip past a limit the buffered path enforces.
+                if total > self.policy.max_response_bytes {
                     return Err(FetchError::new(
                         FetchErrorKind::ResponseTooLarge,
                         format!(
@@ -705,22 +836,10 @@ impl NativeFetchHost {
                         ),
                     ));
                 }
-                bytes.extend_from_slice(&chunk[..read]);
+                sink.chunk(&chunk[..read])?;
             }
             cancellation.check()?;
-            let status_text = response
-                .status()
-                .canonical_reason()
-                .unwrap_or_default()
-                .to_string();
-            return Ok(FetchResponse {
-                url: url.to_string(),
-                status,
-                status_text,
-                headers: response_headers,
-                body: bytes,
-                redirected: redirects > 0,
-            });
+            return Ok(());
         }
     }
 }
@@ -736,6 +855,15 @@ impl FetchHost for NativeFetchHost {
         cancellation: FetchCancellation,
     ) -> Result<FetchResponse, FetchError> {
         self.fetch_impl(request, &cancellation)
+    }
+
+    fn fetch_streaming(
+        &self,
+        request: FetchRequest,
+        cancellation: FetchCancellation,
+        sink: &mut dyn FetchSink,
+    ) -> Result<(), FetchError> {
+        self.stream_impl(request, &cancellation, sink)
     }
 
     fn policy(&self) -> &FetchPolicy {
@@ -831,6 +959,171 @@ mod tests {
             policy
                 .authorize(&Url::parse("https://api.example.com/path").unwrap())
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn the_default_streaming_fallback_still_applies_the_hosts_own_cap() {
+        /// Implements only `fetch`, so it takes the trait's buffered fallback.
+        #[derive(Debug)]
+        struct BufferedOnlyHost {
+            policy: FetchPolicy,
+            body: Vec<u8>,
+        }
+        impl FetchHost for BufferedOnlyHost {
+            fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                Ok(FetchResponse {
+                    url: request.url,
+                    status: 200,
+                    status_text: "OK".into(),
+                    headers: Vec::new(),
+                    body: self.body.clone(),
+                    redirected: false,
+                })
+            }
+            fn policy(&self) -> &FetchPolicy {
+                &self.policy
+            }
+        }
+        struct NullSink(usize);
+        impl FetchSink for NullSink {
+            fn head(&mut self, _head: FetchHead) -> Result<(), FetchError> {
+                Ok(())
+            }
+            fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+                self.0 += bytes.len();
+                Ok(())
+            }
+        }
+
+        let host = BufferedOnlyHost {
+            policy: FetchPolicy {
+                max_response_bytes: 1_000,
+                ..FetchPolicy::default()
+            },
+            body: vec![b'z'; 4_000],
+        };
+        let mut sink = NullSink(0);
+        let error = host
+            .fetch_streaming(
+                FetchRequest::get("https://example.test/big"),
+                FetchCancellation::new(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, FetchErrorKind::ResponseTooLarge);
+        assert_eq!(sink.0, 0, "an over-cap body must not reach the sink at all");
+
+        // Under the cap the same host streams normally, as one chunk.
+        let host = BufferedOnlyHost {
+            policy: FetchPolicy {
+                max_response_bytes: 1_000,
+                ..FetchPolicy::default()
+            },
+            body: vec![b'z'; 900],
+        };
+        let mut sink = NullSink(0);
+        host.fetch_streaming(
+            FetchRequest::get("https://example.test/ok"),
+            FetchCancellation::new(),
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(sink.0, 900);
+    }
+
+    #[test]
+    fn streaming_delivers_head_before_body_and_keeps_the_cap_cumulative() {
+        #[derive(Default)]
+        struct RecordingSink {
+            head: Option<FetchHead>,
+            chunks: Vec<Vec<u8>>,
+            head_seen_before_first_chunk: bool,
+        }
+        impl FetchSink for RecordingSink {
+            fn head(&mut self, head: FetchHead) -> Result<(), FetchError> {
+                assert!(self.chunks.is_empty(), "head must precede every chunk");
+                self.head_seen_before_first_chunk = true;
+                self.head = Some(head);
+                Ok(())
+            }
+            fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+                self.chunks.push(bytes.to_vec());
+                Ok(())
+            }
+        }
+
+        let body = vec![b'x'; 200_000];
+        let mut raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(&body);
+        let (origin, _request_rx, join) = one_response_server(raw);
+        let policy = FetchPolicy::default().with_allowed_origin(&origin).unwrap();
+        let host = NativeFetchHost::new(policy);
+
+        let mut sink = RecordingSink::default();
+        host.fetch_streaming(
+            FetchRequest::get(format!("{origin}/big")),
+            FetchCancellation::new(),
+            &mut sink,
+        )
+        .unwrap();
+        join.join().unwrap();
+
+        assert!(sink.head_seen_before_first_chunk);
+        assert_eq!(sink.head.as_ref().map(|head| head.status), Some(200));
+        assert!(
+            sink.chunks.len() > 1,
+            "a 200 KB body must arrive in several 64 KiB reads, got {} chunk(s)",
+            sink.chunks.len()
+        );
+        assert_eq!(
+            sink.chunks.iter().map(Vec::len).sum::<usize>(),
+            body.len(),
+            "streamed chunks must reassemble into the whole body"
+        );
+    }
+
+    #[test]
+    fn streaming_enforces_the_same_response_cap_as_the_buffered_path() {
+        struct CountingSink(usize);
+        impl FetchSink for CountingSink {
+            fn head(&mut self, _head: FetchHead) -> Result<(), FetchError> {
+                Ok(())
+            }
+            fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+                self.0 += bytes.len();
+                Ok(())
+            }
+        }
+
+        // No Content-Length, so the cap can only be caught while reading: the
+        // limit has to be cumulative across chunks, not per chunk.
+        let body = vec![b'y'; 300_000];
+        let mut raw = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+        raw.extend_from_slice(&body);
+        let (origin, _request_rx, join) = one_response_server(raw);
+        let mut policy = FetchPolicy::default().with_allowed_origin(&origin).unwrap();
+        policy.max_response_bytes = 100_000;
+        let host = NativeFetchHost::new(policy);
+
+        let mut sink = CountingSink(0);
+        let error = host
+            .fetch_streaming(
+                FetchRequest::get(format!("{origin}/big")),
+                FetchCancellation::new(),
+                &mut sink,
+            )
+            .unwrap_err();
+        let _ = join.join();
+        assert_eq!(error.kind, FetchErrorKind::ResponseTooLarge);
+        assert!(
+            sink.0 <= 100_000 + 64 * 1024,
+            "the read must stop at the cap, not drain the whole body: {} bytes",
+            sink.0
         );
     }
 
