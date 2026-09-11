@@ -76,6 +76,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<crate::DatePicker>()?;
         registrar.register_component::<crate::Toolbar>()?;
         registrar.register_component::<crate::StatusBar>()?;
+        registrar.register_component::<crate::MediaTransportBar>()?;
         registrar.register_component::<Avatar>()?;
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;

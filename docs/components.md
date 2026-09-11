@@ -55,7 +55,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `dismiss_overlay` 先关闭交互并恢复焦点，再保留菜单/对话框绘制到退出动画结束。宿主通过 `OverlayClosing { root }` 同步业务打开状态，通过 `OverlayChanged { active: None }` 处理最终释放；排队的关闭通知应在下一次投影前消费，并核对浮层身份，避免覆盖快速重开。退出期间保留父子关系和 `DesktopShell.overlays` 中的节点；直接 `remove_view` 会立即释放并跳过退出动画。
 
-**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
+**壳层。** `AppShell` / `DesktopShell`、`AppTitleBar`、`Toolbar`、`StatusBar`、`MediaTransportBar`、`Workspace`、`SidebarFrame` / `SidebarSection` / `SidebarRow`、设置行和设置页、`Dock`、`SplitPane`、`PaneChrome`。壳是通用桌面结构；每个区域里放什么由应用决定，见 [工作区](workspace.md)。
 
 `SettingsRow::stack_below(480.0)` 可选开启按**该行实际布局宽度**的响应式排列：小于阈值时标签与控件上下排列，等于或大于时同行。默认未开启，`stacked(true)` 始终上下排列；无效阈值视为未开启。控件节点不重建，容器调整宽度由 Runtime 布局回流处理，应用不需要每帧扫描行。Vue 对应 `NanaSettingsRow` 的 `stackBelow` 属性。
 
@@ -97,6 +97,10 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 ### OverlayVisibility
 
 媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。宿主喂时钟与锁标志；不要当成 Button / Chip 往树上挂。
+
+### MediaTransportBar
+
+画面上的播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态并折叠空第二行。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏仍由宿主喂 `OverlayVisibility`。
 
 `ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 

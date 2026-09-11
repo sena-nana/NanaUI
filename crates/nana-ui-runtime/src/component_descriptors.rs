@@ -39,6 +39,7 @@ descriptors! {
     DATE_PICKER => { type_id: "nana.date-picker", tags: &["date-picker"] },
     TOOLBAR => { type_id: "nana.toolbar", tags: &["toolbar"] },
     STATUS_BAR => { type_id: "nana.status-bar", tags: &["status-bar"] },
+    MEDIA_TRANSPORT_BAR => { type_id: "nana.media-transport-bar", tags: &["media-transport-bar"] },
     AVATAR => { type_id: "nana.avatar", tags: &["avatar"] },
     TEXT_INPUT => { type_id: "nana.text-input", tags: &["text-input"] },
     TEXT_AREA => { type_id: "nana.textarea", tags: &["textarea"] },

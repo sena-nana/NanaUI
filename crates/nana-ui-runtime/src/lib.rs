@@ -54,6 +54,7 @@ mod native_content;
 pub use browser_view::BrowserView;
 #[cfg(feature = "rich-text")]
 mod markdown_drawing;
+mod media_transport;
 mod overlay_surfaces;
 mod overlay_visibility;
 mod pane;
@@ -200,6 +201,9 @@ pub use key_layers::{
 };
 pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
+};
+pub use media_transport::{
+    MediaTransportBar, MediaTransportEvent, MediaTransportIcons, MediaTransportSlots,
 };
 pub use menus::{
     ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,
