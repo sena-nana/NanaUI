@@ -4307,6 +4307,63 @@ fn component_size_kind_and_fallback_geometry_preserve_design_contracts() {
 }
 
 #[test]
+fn range_field_can_hide_the_value_readout_and_still_expose_the_numeric_value() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(300.0));
+        layout.height = Some(LengthSpec::Px(32.0));
+    }
+    let range = context
+        .create_component(
+            document,
+            RangeField::new(40.0, 0.0, 100.0, 1.0)
+                .label("Seek")
+                .show_value(false)
+                .style(style),
+        )
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(640.0, 480.0))
+        .unwrap();
+    let bounds = context.world().layout_box(range.stable_id()).unwrap();
+    let crate::ComponentGeometry::Range {
+        value, unit, track, ..
+    } = context
+        .world()
+        .component_geometry(range.stable_id())
+        .unwrap()
+    else {
+        panic!("range geometry expected");
+    };
+    assert!(value.content.is_empty());
+    assert!(unit.is_none());
+    assert!(
+        track.width > bounds.width * 0.5,
+        "track={track:?} bounds={bounds:?}"
+    );
+    assert_eq!(
+        context.world().standard_visual(range.stable_id()),
+        Some(StandardVisual::Range {
+            label: Some(Arc::from("Seek")),
+            value: Arc::from(""),
+            unit: None,
+            size: nana_ui_core::ControlSize::Medium,
+            ratio: 0.4,
+            invalid: false,
+        })
+    );
+    let accessibility = context.world().project_accessibility(document);
+    let slider = accessibility
+        .iter()
+        .find(|node| node.id == range.stable_id())
+        .unwrap();
+    assert_eq!(slider.numeric_value, Some(40.0));
+}
+
+#[test]
 fn observer_view_receives_source_event_and_owns_nested_events() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

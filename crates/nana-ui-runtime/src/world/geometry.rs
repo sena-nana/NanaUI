@@ -1428,8 +1428,17 @@ impl UiWorld {
                 let label_width = label
                     .as_ref()
                     .map_or(0.0, |_| 84.0_f32.min(content.width * 0.28));
-                let unit_width = unit.as_ref().map_or(0.0, |_| 32.0_f32.min(content.width));
-                let value_width = 60.0_f32.min((content.width - unit_width).max(0.0));
+                let show_value = !value.is_empty();
+                let unit_width = if show_value {
+                    unit.as_ref().map_or(0.0, |_| 32.0_f32.min(content.width))
+                } else {
+                    0.0
+                };
+                let value_width = if show_value {
+                    60.0_f32.min((content.width - unit_width).max(0.0))
+                } else {
+                    0.0
+                };
                 let trailing_width = value_width + unit_width;
                 let track_x = content.x + label_width + if label.is_some() { gap } else { 0.0 };
                 let track_right = content.x + content.width

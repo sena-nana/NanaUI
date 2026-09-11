@@ -594,6 +594,12 @@ impl RegisterableComponent for RangeField {
         if let Some(unit) = spec.attr("unit").filter(|value| !value.is_empty()) {
             component = component.unit(Arc::<str>::from(unit));
         }
+        if spec
+            .attr("show-value")
+            .is_some_and(|value| matches!(value, "false" | "0" | "off"))
+        {
+            component = component.show_value(false);
+        }
         overlay_l2_css_size(&mut component.style.layout, spec.layout.as_ref());
         component
     }
@@ -3519,6 +3525,17 @@ mod tests {
         let field = RangeField::from_semantic(&spec);
         assert_l2_css_size_overlaid(&field.style.layout);
         assert_eq!(field.size, nana_ui_core::ControlSize::Medium);
+        assert!(field.show_value);
+    }
+
+    #[test]
+    fn range_field_from_semantic_can_hide_the_value_readout() {
+        let type_id = ComponentTypeId::new("nana.range-field").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [("show-value", "false")];
+        let spec = spec_with(&type_id, &layout, &attrs, &[], &[], "", "Seek");
+        let field = RangeField::from_semantic(&spec);
+        assert!(!field.show_value);
     }
 
     #[test]

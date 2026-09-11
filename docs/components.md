@@ -23,7 +23,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 ## 目录
 
-**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。
+**操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位；`.show_value(false)`（Vue `showValue`）只留轨道，读屏仍能读到数值。
 
 **布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。
 

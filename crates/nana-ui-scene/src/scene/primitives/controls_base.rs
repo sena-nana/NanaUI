@@ -86,18 +86,20 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     node_order,
                 ));
             }
-            emit(component_text_primitive(
-                id,
-                6,
-                value,
-                TextHorizontalAlignment::End,
-                true,
-                node,
-                transform,
-                clips.clone(),
-                opacity,
-                node_order,
-            ));
+            if !value.content.is_empty() {
+                emit(component_text_primitive(
+                    id,
+                    6,
+                    value,
+                    TextHorizontalAlignment::End,
+                    true,
+                    node,
+                    transform,
+                    clips.clone(),
+                    opacity,
+                    node_order,
+                ));
+            }
             if let Some(unit) = unit {
                 emit(component_text_primitive(
                     id,

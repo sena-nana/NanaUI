@@ -3390,6 +3390,9 @@ pub struct RangeField {
     pub page_step: f64,
     pub label: Option<Arc<str>>,
     pub unit: Option<Arc<str>>,
+    /// When false, the current-value (and unit) readout is omitted so the track
+    /// can fill the control. Accessibility still exposes the numeric value.
+    pub show_value: bool,
     pub size: nana_ui_core::ControlSize,
     pub disabled: bool,
     pub invalid: bool,
@@ -3449,6 +3452,7 @@ impl RangeField {
             page_step: step * 10.0,
             label: None,
             unit: None,
+            show_value: true,
             size: nana_ui_core::ControlSize::Medium,
             disabled: false,
             invalid: false,
@@ -3465,6 +3469,10 @@ impl RangeField {
     }
     pub fn unit(mut self, unit: impl Into<Arc<str>>) -> Self {
         self.unit = Some(unit.into());
+        self
+    }
+    pub fn show_value(mut self, show_value: bool) -> Self {
+        self.show_value = show_value;
         self
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
@@ -3509,8 +3517,16 @@ impl ComponentView for RangeField {
         let value = format_range_value(self.value, self.step);
         let visual = StandardVisual::Range {
             label: self.label.clone(),
-            value: Arc::clone(&value),
-            unit: self.unit.clone(),
+            value: if self.show_value {
+                Arc::clone(&value)
+            } else {
+                Arc::from("")
+            },
+            unit: if self.show_value {
+                self.unit.clone()
+            } else {
+                None
+            },
             size: self.size,
             ratio: self.ratio(),
             invalid: self.invalid,
