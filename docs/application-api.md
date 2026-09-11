@@ -136,6 +136,81 @@ Vue / JS 入口交给宿主的是一份 `RuntimeArtifact`，两种形态：
 
 `name` 同时是样式表解析的基准：相对 `@import` 与 `url()` 都相对它兑现（见[布局](layout.md)的 `stylesheet_base`）。
 
+## Fetch 宿主
+
+网络权限属于宿主，不属于页面。页面作者那一侧（`response.body` 怎么读、`text()` / `json()`、`FormData`、`ReadableStream` 的限制）见 [Vue](vue.md) 的「它提供的 Web 面」与「网络与宿主命令」，这里只说嵌入方要实现和配置的那一半。
+
+`WebApiState::new()` 默认装的是 `NativeFetchHost::new(FetchPolicy::default())`，而默认策略**一个源都不放行**。不配白名单就是全拒——没有宿主点头，页面碰不到网络。
+
+### FetchHost
+
+| 方法 | 合同 |
+| --- | --- |
+| `fetch` | 必须实现。收 `FetchRequest`（url / method / headers / 完整正文），还 `FetchResponse` 或 `FetchError` |
+| `fetch_cancellable` | 多收一个 `FetchCancellation`。默认实现先 `check()` 再调 `fetch`；后端可中断就应该在连接、跟随重定向和读正文的循环里都观察它 |
+| `fetch_streaming` | 把响应写进 `FetchSink`。默认实现回落到 `fetch_cancellable`，整份正文当成一块发出——只实现了 `fetch` 的宿主照常能用，只是不会流 |
+| `policy` | 必须实现。上限、超时、重定向次数和 worker 数都从这里读 |
+
+`FetchSink` 两个回调：`head(FetchHead)` 恰好调用一次，且在任何 `chunk(&[u8])` 之前；任一返回 `Err` 就地中止这次传输——消费方已经走了（或者它自己有上限），就不必再为没人要的字节付钱。`FetchHead` 是除正文外的全部响应信息，`FetchHead::with_body` 把它和读完的正文合回 `FetchResponse`。
+
+响应上限取自**执行这次请求的宿主自己声明的 `policy()`**，`fetch_streaming` 的默认回落实现也照它判：超了报 `ResponseTooLarge`，一块都不进 sink。否则只实现 `fetch` 的宿主会把自己 `FetchPolicy` 里写的上限整个漏掉。
+
+### FetchPolicy
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| 允许的源 | 空集 = 全拒 | 精确 **origin** 比较，不是路径前缀 |
+| `timeout` | 30 秒 | 一次请求的总预算，跨重定向共享，不是每跳一份 |
+| `max_request_bytes` | 16 MiB | 请求正文，发出前查 |
+| `max_response_bytes` | 16 MiB | 响应正文；流式下按**累计**字节算，不因为分块就放行更大的正文 |
+| `max_redirects` | 5 | 超过报 `Redirect` |
+| `worker_count` | 4 | 见下面的 worker 边界 |
+
+源用 `allow_origin` / `with_allowed_origin` 登记，格式 `scheme://host[:port]`，按 URL origin 的 ascii 序列化存：带路径、query 或 fragment 的写法报 `InvalidRequest`，非 http/https 报 `Policy`。放行 `https://example.com` 就放行了它下面的所有路径，但**不**包括 `https://api.example.com`——子域名是另一个 origin，要单独登记。`authorize(&Url)` 是执行点，`allowed_origins()` 可回读。
+
+### 内置 NativeFetchHost 做了什么
+
+阻塞式 `ureq` 实现，必须跑在 UI / JS 线程之外（`nana-ui-web-api` 提供这条 worker 边界）。它在每一跳之前执行策略：
+
+- 请求正文超 `max_request_bytes` → `RequestTooLarge`，不发。
+- 响应先看 `Content-Length`，超了直接 `ResponseTooLarge`，正文一个字节都不进 sink；读的过程中再按累计字节判一次，超了当场断流。
+- 每一跳都重新 `authorize`，重定向目标不在白名单里照样拒。跨源时 `authorization` / `proxy-authorization` 被摘掉；303 以及 POST 的 301 / 302 转成 GET，清空正文与 `content-length` / `content-type`。
+- `set-cookie` 不会出现在交给 JS 的响应头里。
+- 超时是整次请求的总预算：每跳按已用时间扣减，扣光报 `Timeout`。
+
+错误按 `FetchErrorKind` 分类：`Policy`、`InvalidRequest`、`Network`、`Timeout`、`RequestTooLarge`、`ResponseTooLarge`、`Redirect`、`Cancelled`、`Unsupported`。
+
+### worker 边界
+
+`worker_count`（至少 1）条阻塞线程调 `fetch_streaming`，任务队列长 `worker_count * 2`；队列满时 `fetchStart` 抛「fetch worker queue is full」，不会阻塞发起请求的那条线程。响应头、分块和错误都只在帧泵里回到引擎线程，`FetchHost` 实现不碰 JS。
+
+### 装上去
+
+| 入口 | 用法 |
+| --- | --- |
+| `MountOptions.fetch_host` | Vue 宿主的常规入口；`mount_vue_as_nana` 用它建带该 host 的 web-api 状态 |
+| `shared_fetch_host(host)` | 把自己的 `FetchHost` 实现包成 `SharedFetchHost`（`Arc<dyn FetchHost>`） |
+| `WebApiState::with_fetch_host` / `with_fetch_host_and_local_storage` / `shared_web_api_state_with_fetch` | 自己管 web-api 状态的嵌入式宿主 |
+
+```rust
+let policy = FetchPolicy::default().with_allowed_origin("https://api.example.com")?;
+let app = mount_vue_as_nana(MountOptions {
+    fetch_host: Some(shared_fetch_host(NativeFetchHost::new(policy))),
+    ..MountOptions::default()
+});
+```
+
+自己实现 `FetchHost` 最少写 `fetch` 和 `policy`；要让页面能边到边读，再实现 `fetch_streaming`。
+
+### 这条路上明确没有的
+
+- **cookie**：JS 侧带 `cookie` / `set-cookie` 请求头直接 `TypeError`，响应里的 `set-cookie` 被丢弃。没有 cookie jar。
+- **CORS / preflight**：没有浏览器同源模型，也不会发 `OPTIONS` 预检。唯一的门是宿主白名单。
+- **cache**：没有 HTTP 缓存层，`cache` 选项在 JS 侧被拒。
+- **请求侧流式正文**：正文在发给宿主之前已经是完整字节，`duplex` 在 JS 的拒绝列表里。响应侧的流式见上面的 `FetchSink`。
+
+`fetch_bytes_blocking` 不是这条路：它是引擎内部加载字体和图片用的阻塞 GET，不过 origin 策略、不可取消，别拿它当应用的网络出口。
+
 ## 性能上你不用手写的
 
 `build` 把整棵子树收成一次 commit。mutation 提交后 Runtime 自己调度脏工作。无变更不刷帧。大列表走 `materialize_virtual_*`。GPU 换纹理升 generation，不重建布局。
