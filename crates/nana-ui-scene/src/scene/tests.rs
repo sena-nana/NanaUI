@@ -53,6 +53,66 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
 }
 
 #[test]
+fn unlabeled_spinner_centers_in_the_node_labeled_spinner_stays_leading() {
+    let mut cover = node(1, None, &[]);
+    cover.layout = LayoutBox {
+        x: 10.0,
+        y: 20.0,
+        width: 160.0,
+        height: 90.0,
+    };
+    cover.standard_visual = Some(StandardVisual::Spinner {
+        label: Arc::from(""),
+        size: 28.0,
+        phase: 0.0,
+    });
+    let mut caption = node(2, None, &[]);
+    caption.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 120.0,
+        height: 14.0,
+    };
+    caption.standard_visual = Some(StandardVisual::Spinner {
+        label: Arc::from("Loading"),
+        size: 14.0,
+        phase: 0.0,
+    });
+    let mut scene = UiScene::new();
+    scene.apply_delta([cover, caption], []);
+    assert_eq!(
+        scene
+            .primitive(PrimitiveId {
+                node: id(1),
+                slot: 3
+            })
+            .unwrap()
+            .bounds,
+        SceneRect {
+            x: 76.0,
+            y: 51.0,
+            width: 28.0,
+            height: 28.0,
+        }
+    );
+    assert_eq!(
+        scene
+            .primitive(PrimitiveId {
+                node: id(2),
+                slot: 3
+            })
+            .unwrap()
+            .bounds,
+        SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 14.0,
+            height: 14.0,
+        }
+    );
+}
+
+#[test]
 fn hidden_nodes_skip_scene_primitives() {
     let mut hidden = node(1, None, &[]);
     style_mut(&mut hidden).visible = false;
