@@ -451,8 +451,46 @@ mod tests {
         check_layered_snapshot(true);
     }
 
+    /// Test double authorizing any `127.0.0.1` origin: each test binds port 0,
+    /// and the process fetch host is first-set-wins, so they cannot each install
+    /// an exact-match policy of their own. Mirrors the one in `nana-ui`, which
+    /// is `cfg(test)`-only and therefore not reachable from here.
+    #[derive(Debug)]
+    struct LoopbackFetchHost {
+        policy: nana_ui::FetchPolicy,
+    }
+
+    impl nana_ui::FetchHost for LoopbackFetchHost {
+        fn fetch(
+            &self,
+            request: nana_ui::FetchRequest,
+        ) -> Result<nana_ui::FetchResponse, nana_ui::FetchError> {
+            let authority = request
+                .url
+                .strip_prefix("http://")
+                .and_then(|rest| rest.split('/').next())
+                .filter(|authority| authority.split(':').next() == Some("127.0.0.1"))
+                .ok_or_else(|| {
+                    nana_ui::FetchError::new(
+                        nana_ui::FetchErrorKind::Policy,
+                        format!("test host serves loopback only: `{}`", request.url),
+                    )
+                })?;
+            let policy = nana_ui::FetchPolicy::default()
+                .with_allowed_origin(&format!("http://{authority}"))?;
+            nana_ui::NativeFetchHost::new(policy).fetch(request)
+        }
+
+        fn policy(&self) -> &nana_ui::FetchPolicy {
+            &self.policy
+        }
+    }
+
     fn check_layered_snapshot(no_clear: bool) {
         use std::io::{Read, Write};
+        nana_ui::set_resource_fetch_host(nana_ui::shared_fetch_host(LoopbackFetchHost {
+            policy: nana_ui::FetchPolicy::default(),
+        }));
         let mut png = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(
             8,

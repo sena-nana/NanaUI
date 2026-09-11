@@ -35,6 +35,7 @@ use crate::{
 
 pub use image_url::{
     resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
+    set_resource_fetch_host,
 };
 use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};

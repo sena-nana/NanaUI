@@ -5382,6 +5382,7 @@ fn background_image_file_url_paints_fixture_png() {
 
 #[test]
 fn background_image_http_url_paints_fixture_png() {
+    super::image_url::install_loopback_fetch_host();
     let (_fixture_dir, png_path) = blue_tile_fixture_png();
     let png = std::fs::read(&png_path).expect("read fixture png");
     let server = LocalPngServer::serve(png);
@@ -5454,6 +5455,7 @@ fn more_http_images_than_fetch_slots_eventually_paint() {
 
 #[test]
 fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_completion() {
+    super::image_url::install_loopback_fetch_host();
     use std::{
         io::{Read, Write},
         sync::mpsc,
@@ -5553,6 +5555,7 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
 
 #[test]
 fn async_http_image_rebinds_each_render_target_after_shared_completion() {
+    super::image_url::install_loopback_fetch_host();
     use std::{
         io::{Read, Write},
         sync::mpsc,
