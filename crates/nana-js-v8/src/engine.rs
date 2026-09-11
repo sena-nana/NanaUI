@@ -2166,6 +2166,117 @@ mod tests {
     }
 
     #[test]
+    fn a_locked_or_drained_body_stream_refuses_the_buffered_readers() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "body-lock.js",
+                    r#"
+                globalThis.__nanaLockResult = null;
+                globalThis.__nanaLock = { read: () => globalThis.__nanaLockResult };
+                (async function () {
+                  const locked = new Response("payload");
+                  locked.body.getReader();
+                  let lockedText = "";
+                  try { await locked.text(); } catch (error) { lockedText = error.name; }
+                  let lockedClone = "";
+                  try { locked.clone(); } catch (error) { lockedClone = error.name; }
+
+                  // Draining through the stream marks the body used, so the
+                  // buffered readers must refuse afterwards too.
+                  const drained = new Response("payload");
+                  const reader = drained.body.getReader();
+                  for (;;) { const step = await reader.read(); if (step.done) break; }
+                  reader.releaseLock();
+                  const drainedUsed = drained.bodyUsed;
+                  let drainedText = "";
+                  try { await drained.text(); } catch (error) { drainedText = error.name; }
+
+                  // clone() shares the arrived chunks, but each copy owns its
+                  // own stream: reading one must NOT mark the other used.
+                  const original = new Response("shared");
+                  const copy = original.clone();
+                  const originalText = await original.text();
+                  const copyText = await copy.text();
+
+                  globalThis.__nanaLockResult = {
+                    lockedText,
+                    lockedClone,
+                    drainedUsed,
+                    drainedText,
+                    originalText,
+                    copyText,
+                    nullBody204: new Response(null, { status: 204 }).body,
+                    nullBodyEmpty: new Response().body,
+                    streamBody: typeof new Response("x").body.getReader,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaLock.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "body-lock test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            assert_eq!(
+                result.get("lockedText").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "text() on a locked stream must refuse, as a browser does"
+            );
+            assert_eq!(
+                result.get("lockedClone").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "clone() of a locked stream must refuse"
+            );
+            assert_eq!(
+                result.get("drainedUsed").and_then(HostValue::as_bool),
+                Some(true),
+                "draining the stream marks bodyUsed"
+            );
+            assert_eq!(
+                result.get("drainedText").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "a drained body cannot be re-read through text()"
+            );
+            assert_eq!(
+                result.get("originalText").and_then(HostValue::as_str),
+                Some("shared")
+            );
+            assert_eq!(
+                result.get("copyText").and_then(HostValue::as_str),
+                Some("shared"),
+                "a clone reads the same body independently of the original"
+            );
+            assert_eq!(
+                result.get("nullBody204"),
+                Some(&HostValue::Null),
+                "a 204 has a null body, not an always-empty stream"
+            );
+            assert_eq!(result.get("nullBodyEmpty"), Some(&HostValue::Null));
+            assert_eq!(
+                result.get("streamBody").and_then(HostValue::as_str),
+                Some("function"),
+                "a response WITH a body still exposes a stream"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn streaming_response_body_reaches_js_chunk_by_chunk() {
         with_serial_v8_tests(|| {
             use std::time::{Duration, Instant};

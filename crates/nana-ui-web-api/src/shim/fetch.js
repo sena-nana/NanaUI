@@ -388,6 +388,9 @@
 
   function ReadableStreamShim(underlying) {
     this._locked = false;
+    // "disturbed" in WHATWG terms. It lives on the stream, not on the shared
+    // BodySource, so one clone reading its body does not mark the other used.
+    this._disturbed = false;
     if (underlying instanceof BodySource) {
       this._source = underlying;
       return;
@@ -419,6 +422,7 @@
     }
     if (this._locked) throw new TypeError("ReadableStream is already locked");
     this._locked = true;
+    this._disturbed = true;
     const stream = this;
     const reader = new BodyReader(this._source);
     reader.releaseLock = function () {
@@ -428,6 +432,7 @@
     reader.cancel = function () {
       reader._released = true;
       stream._locked = false;
+      stream._disturbed = true;
       if (stream._underlying && typeof stream._underlying.cancel === "function") {
         try { stream._underlying.cancel(); } catch (_err) {}
       }
@@ -446,6 +451,7 @@
     return reader;
   };
   ReadableStreamShim.prototype.cancel = function () {
+    this._disturbed = true;
     this._source.close();
     return Promise.resolve();
   };
@@ -476,7 +482,8 @@
   }
 
   function consumeBody(owner, kind) {
-    if (owner.bodyUsed) return Promise.reject(new TypeError("Body has already been consumed"));
+    const unusable = bodyUnusableReason(owner);
+    if (unusable) return Promise.reject(new TypeError(unusable));
     owner.bodyUsed = true;
     // A Request always holds complete bytes; a Response may still be streaming,
     // so read its source to the end. Either way these resolve with the whole
@@ -491,6 +498,9 @@
       return text;
     });
   }
+
+  // WHATWG: these statuses are defined to have a null body.
+  const NULL_BODY_STATUS = [101, 204, 205, 304];
 
   function ResponseShim(body, init) {
     init = init || {};
@@ -507,16 +517,38 @@
     this.url = String(init.url || "");
     this.redirected = !!init.redirected;
     this.type = "basic";
-    this.bodyUsed = false;
+    this._consumed = false;
+    // `body` is null for a bodyless response, so `response.body.getReader()`
+    // fails loudly on a 204 instead of handing back an always-empty stream.
+    this._nullBody =
+      NULL_BODY_STATUS.indexOf(this.status) >= 0 ||
+      (!(body instanceof BodySource) && body == null);
   }
   Object.defineProperty(ResponseShim.prototype, "ok", {
     get: function () { return this.status >= 200 && this.status <= 299; },
   });
+  // Reading through `body` disturbs the source, and that is what `bodyUsed`
+  // reports — so draining the stream also marks the body used.
+  Object.defineProperty(ResponseShim.prototype, "bodyUsed", {
+    get: function () {
+      return this._consumed || !!(this._bodyStream && this._bodyStream._disturbed);
+    },
+    set: function (value) { this._consumed = !!value; },
+  });
+
+  /// Reject a body read that a browser would reject: already consumed, or a
+  /// stream someone else holds a reader on.
+  function bodyUnusableReason(owner) {
+    if (owner.bodyUsed) return "Body has already been consumed";
+    if (owner._bodyStream && owner._bodyStream.locked) return "Body stream is locked";
+    return null;
+  }
   ResponseShim.prototype.text = function () { return consumeBody(this, "text"); };
   ResponseShim.prototype.json = function () { return consumeBody(this, "json"); };
   ResponseShim.prototype.arrayBuffer = function () { return consumeBody(this, "arrayBuffer"); };
   ResponseShim.prototype.blob = function () {
-    if (this.bodyUsed) return Promise.reject(new TypeError("Body has already been consumed"));
+    const unusable = bodyUnusableReason(this);
+    if (unusable) return Promise.reject(new TypeError(unusable));
     this.bodyUsed = true;
     const type = this.headers.get("content-type") || "";
     return drainSource(this._source).then(function (complete) {
@@ -527,12 +559,14 @@
   // second `getReader()` throws, as it does in a browser.
   Object.defineProperty(ResponseShim.prototype, "body", {
     get: function () {
+      if (this._nullBody) return null;
       if (!this._bodyStream) this._bodyStream = new ReadableStreamShim(this._source);
       return this._bodyStream;
     },
   });
   ResponseShim.prototype.clone = function () {
-    if (this.bodyUsed) throw new TypeError("Response body has already been consumed");
+    const unusable = bodyUnusableReason(this);
+    if (unusable) throw new TypeError(unusable);
     // Share the source: retained chunks let both copies read the same body
     // independently, including one that is still arriving.
     const copy = new ResponseShim(this._source, {
