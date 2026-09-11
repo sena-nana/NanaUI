@@ -43,7 +43,7 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_captio
 
 ### 实时缩放
 
-客户区拖动边框时，指针移动直接改窗口矩形，事件循环继续跑，`SurfaceResized` 同步几何并请求下一帧。画帧时若物理尺寸或 present 策略变了才 `surface.configure`；同尺寸跳过。Windows 系统边框缩放仍可能走 `WM_ENTERSIZEMOVE`；`LiveSizeMove` 在那段时间用 `Mailbox`/`Immediate` present。透明窗口走同一条路径。
+客户区拖动边框时，指针移动直接改窗口矩形，事件循环继续跑，`SurfaceResized` 同步几何并请求下一帧。画帧时若物理尺寸或 present 策略变了才 `surface.configure`；同尺寸跳过。Windows 系统边框缩放仍可能走 `WM_ENTERSIZEMOVE`。稳态帧使用 `Mailbox`（没有则 `Immediate`，再回 `AutoVsync`），避免混合刷新下 FIFO 跟主屏合成钟；`LiveSizeMove` 保持同一 present 模式并把 frame latency 提到 2。透明窗口走同一条路径。
 
 DPI 与多显示器：指针、拖拽与缩放都用逻辑坐标；物理像素只用于 Surface。窗口位置由宿主记录，创建前按当前显示器工作区 clamp（原屏断开则主屏居中）。模态辅助窗在 Windows 上 `with_owner_window` 绑定父 HWND。
 

@@ -303,6 +303,7 @@ impl HostedGpuSurface {
             self.want_transparent,
         )?;
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
+        self.configuration.present_mode = self.live_present_mode;
         self.surface = surface;
         self.reconfigure(resources);
         self.commit_target()?;
@@ -700,7 +701,7 @@ fn configure_surface(
         color_space: wgpu::SurfaceColorSpace::Srgb,
         width: size.width.max(1),
         height: size.height.max(1),
-        present_mode: wgpu::PresentMode::AutoVsync,
+        present_mode: preferred_live_present_mode(&capabilities.present_modes),
         alpha_mode: surface_alpha(target.mode(), &capabilities.alpha_modes, want_transparent)?,
         view_formats: vec![],
         desired_maximum_frame_latency: 1,
@@ -815,24 +816,19 @@ fn live_resize_frame_latency(live: bool) -> u32 {
 }
 
 /// Present configuration a surface must move to for the next frame's live
-/// state, or `None` when the current configuration already matches. Entering
-/// live switches to the surface's unblocked present mode with one extra frame
-/// of queue headroom; leaving live restores the steady `AutoVsync` setup.
-/// Resolving this once per frame keeps steady frames reconfigure-free.
+/// state, or `None` when the current configuration already matches. Steady
+/// frames use the surface's preferred unblocked mode (`Mailbox`, then
+/// `Immediate`, then `AutoVsync`). Entering live keeps that mode and adds one
+/// extra frame of queue headroom; leaving live restores latency 1. Resolving
+/// this once per frame keeps steady frames reconfigure-free.
 fn live_resize_policy_change(
     current_present_mode: wgpu::PresentMode,
     current_frame_latency: u32,
     live_present_mode: wgpu::PresentMode,
     live: bool,
 ) -> Option<(wgpu::PresentMode, u32)> {
-    let (present_mode, frame_latency) = if live {
-        (live_present_mode, live_resize_frame_latency(true))
-    } else {
-        (
-            wgpu::PresentMode::AutoVsync,
-            live_resize_frame_latency(false),
-        )
-    };
+    let present_mode = live_present_mode;
+    let frame_latency = live_resize_frame_latency(live);
     if present_mode == current_present_mode && frame_latency == current_frame_latency {
         None
     } else {
@@ -1002,9 +998,8 @@ mod tests {
     fn live_resize_policy_reconfigures_once_per_session_and_back() {
         use wgpu::PresentMode;
 
-        // Entering live switches the steady AutoVsync setup to the cached
-        // unblocked mode; this is the reconfigure the resize gesture start
-        // must pay before the first moved frame, not during it.
+        // Entering live from a stale AutoVsync configuration switches to the
+        // cached unblocked mode and extra latency before the first moved frame.
         assert_eq!(
             live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, true),
             Some((PresentMode::Mailbox, 2))
@@ -1015,14 +1010,18 @@ mod tests {
             live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, true),
             None
         );
-        // Leaving live restores the steady setup exactly once.
+        // Leaving live keeps Mailbox and restores latency 1 exactly once.
         assert_eq!(
             live_resize_policy_change(PresentMode::Mailbox, 2, PresentMode::Mailbox, false),
-            Some((PresentMode::AutoVsync, 1))
+            Some((PresentMode::Mailbox, 1))
+        );
+        assert_eq!(
+            live_resize_policy_change(PresentMode::Mailbox, 1, PresentMode::Mailbox, false),
+            None
         );
         assert_eq!(
             live_resize_policy_change(PresentMode::AutoVsync, 1, PresentMode::Mailbox, false),
-            None
+            Some((PresentMode::Mailbox, 1))
         );
         // A surface without an unblocked present mode keeps AutoVsync; only
         // the latency changes, once per side of the gesture.

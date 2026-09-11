@@ -967,10 +967,10 @@ impl FrameSchedule {
         let due = self.deadline.is_some_and(|deadline| deadline <= now);
         if due {
             self.deadline = match demand {
-                FrameDemand::Continuous(fps) => now.checked_add(
-                    std::time::Duration::from_secs_f64(1.0 / f64::from(fps.get()))
-                        .max(std::time::Duration::from_nanos(1)),
-                ),
+                FrameDemand::Continuous(fps) => {
+                    let hit = self.deadline.expect("due continuous deadline");
+                    next_continuous_deadline(hit, now, continuous_period(fps))
+                }
                 _ => None,
             };
         }
@@ -978,9 +978,31 @@ impl FrameSchedule {
     }
 }
 
+fn continuous_period(fps: std::num::NonZeroU32) -> std::time::Duration {
+    std::time::Duration::from_secs_f64(1.0 / f64::from(fps.get()))
+        .max(std::time::Duration::from_nanos(1))
+}
+
+/// Keep the 1/fps phase. A late frame shortens the next wait instead of
+/// pushing `now + period`, so present-to-present stays on the cadence.
+/// Missed ticks are skipped so a hitch does not burst catch-up frames.
+fn next_continuous_deadline(
+    hit: Instant,
+    now: Instant,
+    period: std::time::Duration,
+) -> Option<Instant> {
+    let mut next = hit.checked_add(period)?;
+    while next <= now {
+        next = next.checked_add(period)?;
+    }
+    Some(next)
+}
+
 #[cfg(test)]
 mod frame_schedule_tests {
     use super::*;
+    use std::time::Duration;
+
     #[test]
     fn continuous_skips_missed_ticks_and_deadline_fires_once() {
         let now = Instant::now();
@@ -988,7 +1010,7 @@ mod frame_schedule_tests {
         let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(120).unwrap());
         assert!(schedule.update(demand, now).0);
         assert!(!schedule.update(demand, now).0);
-        let later = now + std::time::Duration::from_secs(1);
+        let later = now + Duration::from_secs(1);
         let (due, next) = schedule.update(demand, later);
         assert!(due);
         assert!(next.unwrap() > later);
@@ -996,6 +1018,23 @@ mod frame_schedule_tests {
         assert!(schedule.update(FrameDemand::At(later), later).0);
         assert!(!schedule.update(FrameDemand::At(later), later).0);
         assert_eq!(schedule.update(FrameDemand::OnDemand, later), (false, None));
+    }
+
+    #[test]
+    fn continuous_keeps_phase_when_a_frame_runs_late() {
+        let start = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(120).unwrap());
+        assert!(schedule.update(demand, start).0);
+        let first_deadline = schedule.update(demand, start).1.expect("period deadline");
+        let period = first_deadline.saturating_duration_since(start);
+        let late = first_deadline + Duration::from_micros(250);
+        let (due, next) = schedule.update(demand, late);
+        assert!(due);
+        let next = next.expect("phase-locked deadline");
+        assert_eq!(next, first_deadline + period);
+        assert!(next > late);
+        assert!(next < late + period);
     }
 }
 
