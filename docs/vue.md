@@ -70,7 +70,9 @@ for (;;) {
 
 `ReadableStream` 也装成全局，`new ReadableStream({ start, pull, cancel })` 三个回调都接着，`controller` 有 `enqueue` / `close` / `error` / `desiredSize`。两点限制说在前面：**没有真正的背压**——`BodySource` 会留着全部分块好让 clone 各读各的，所以 `desiredSize` 报的是「还没被读走多少」，不会反过来卡住生产；**BYOB reader 不支持**，`getReader({ mode: "byob" })` 直接报错，它需要调用方自己的缓冲区，宿主通道没有这条路。
 
-流式是为了**早点开工**，不是为了绕开上限：响应 16 MiB 的上限按累计字节算，超了就在中途以 `ResponseTooLarge` 中断这条流，不会因为分块就放行更大的正文。宿主侧的对应接口是 `FetchHost::fetch_streaming`，默认实现回落到缓冲式并把整份正文当成一块发出，所以只实现了 `fetch` 的应用宿主不受影响，只是不会流。
+流式是为了**早点开工**，不是为了绕开上限：上限按**累计**字节算，超了就在中途以 `ResponseTooLarge` 中断这条流，不会因为分块就放行更大的正文。
+
+上限的具体数值来自**执行这次请求的宿主自己的** `FetchPolicy`（内置 `NativeFetchHost` 是 16 MiB）。宿主侧的对应接口是 `FetchHost::fetch_streaming`，默认实现回落到缓冲式并把整份正文当成一块发出——所以只实现了 `fetch` 的应用宿主照常能用，只是不会流；默认实现同样会按该宿主 `policy()` 声明的上限裁剪，不会因为它没实现流式就把上限漏掉。
 
 `FormData` 可以直接当 `fetch` 的正文：`append` / `set` / `get` / `getAll` / `has` / `delete` / 迭代都在，编码为 `multipart/form-data`，boundary 由框架生成并写进 `content-type`（你自己写了 `content-type` 就不覆盖）。文件项传 `Blob`，字节走已有的资源对象通道。`new FormData(formElement)` 不支持——它要走真实表单控件，直接报错而不是发一个空正文。
 

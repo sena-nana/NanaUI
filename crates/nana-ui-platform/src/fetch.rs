@@ -324,6 +324,11 @@ pub trait FetchHost: Send + Sync + fmt::Debug {
     /// The default buffers through [`Self::fetch_cancellable`] and delivers the
     /// whole body as a single chunk, so an application host that only knows how
     /// to return a complete response keeps working — it simply does not stream.
+    ///
+    /// The response cap still applies, taken from [`Self::policy`] — the host's
+    /// own declared limit, not somebody else's. Without this a host that
+    /// implements only `fetch` would hand JS an unbounded body while its own
+    /// `FetchPolicy` says otherwise.
     fn fetch_streaming(
         &self,
         request: FetchRequest,
@@ -331,6 +336,13 @@ pub trait FetchHost: Send + Sync + fmt::Debug {
         sink: &mut dyn FetchSink,
     ) -> Result<(), FetchError> {
         let response = self.fetch_cancellable(request, cancellation)?;
+        let max = self.policy().max_response_bytes;
+        if response.body.len() > max {
+            return Err(FetchError::new(
+                FetchErrorKind::ResponseTooLarge,
+                format!("fetch response body exceeds {max} bytes"),
+            ));
+        }
         let body = response.body;
         sink.head(FetchHead {
             url: response.url,
@@ -966,6 +978,74 @@ mod tests {
                 .authorize(&Url::parse("https://api.example.com/path").unwrap())
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_default_streaming_fallback_still_applies_the_hosts_own_cap() {
+        /// Implements only `fetch`, so it takes the trait's buffered fallback.
+        #[derive(Debug)]
+        struct BufferedOnlyHost {
+            policy: FetchPolicy,
+            body: Vec<u8>,
+        }
+        impl FetchHost for BufferedOnlyHost {
+            fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                Ok(FetchResponse {
+                    url: request.url,
+                    status: 200,
+                    status_text: "OK".into(),
+                    headers: Vec::new(),
+                    body: self.body.clone(),
+                    redirected: false,
+                })
+            }
+            fn policy(&self) -> &FetchPolicy {
+                &self.policy
+            }
+        }
+        struct NullSink(usize);
+        impl FetchSink for NullSink {
+            fn head(&mut self, _head: FetchHead) -> Result<(), FetchError> {
+                Ok(())
+            }
+            fn chunk(&mut self, bytes: &[u8]) -> Result<(), FetchError> {
+                self.0 += bytes.len();
+                Ok(())
+            }
+        }
+
+        let mut policy = FetchPolicy::default();
+        policy.max_response_bytes = 1_000;
+        let host = BufferedOnlyHost {
+            policy,
+            body: vec![b'z'; 4_000],
+        };
+        let mut sink = NullSink(0);
+        let error = host
+            .fetch_streaming(
+                FetchRequest::get("https://example.test/big"),
+                FetchCancellation::new(),
+                &mut sink,
+            )
+            .unwrap_err();
+        assert_eq!(error.kind, FetchErrorKind::ResponseTooLarge);
+        assert_eq!(sink.0, 0, "an over-cap body must not reach the sink at all");
+
+        // Under the cap the same host streams normally, as one chunk.
+        let mut policy = FetchPolicy::default();
+        policy.max_response_bytes = 1_000;
+        let host = BufferedOnlyHost {
+            policy,
+            body: vec![b'z'; 900],
+        };
+        let mut sink = NullSink(0);
+        host.fetch_streaming(
+            FetchRequest::get("https://example.test/ok"),
+            FetchCancellation::new(),
+            &mut sink,
+        )
+        .unwrap();
+        assert_eq!(sink.0, 900);
     }
 
     #[test]
