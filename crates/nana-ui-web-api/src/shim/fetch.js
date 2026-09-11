@@ -336,6 +336,10 @@
     this.chunks = completeChunks || [];
     this.done = !!completeChunks;
     this.error = null;
+    // Set for a body the host is still sending, so cancelling the stream can
+    // stop the transfer instead of letting the worker finish downloading a body
+    // nobody will read.
+    this.onCancel = null;
     this._waiters = [];
   }
   BodySource.prototype._wake = function () {
@@ -358,6 +362,16 @@
     this.error = error;
     this.done = true;
     this._wake();
+  };
+  /// Stop the transfer feeding this body, then close it.
+  ///
+  /// Closing (rather than failing) matches the browser: cancelling a body is a
+  /// deliberate act, so readers see a clean end, not an error.
+  BodySource.prototype.cancelTransfer = function () {
+    const onCancel = this.onCancel;
+    this.onCancel = null;
+    if (onCancel) onCancel();
+    this.close();
   };
   BodySource.prototype.waitForMore = function () {
     const self = this;
@@ -476,12 +490,15 @@
       stream._locked = false;
     };
     reader.cancel = function () {
-      reader._released = true;
-      stream._locked = false;
+      // WHATWG: cancel() does NOT release the lock. The reader stays usable and
+      // its next read() reports `done`, so releasing here would turn a spec-legal
+      // read into "Reader has been released".
       stream._disturbed = true;
       if (stream._underlying && typeof stream._underlying.cancel === "function") {
         try { stream._underlying.cancel(); } catch (_err) {}
       }
+      // Closes the source too, so `reader.closed` settles rather than hanging.
+      stream._source.cancelTransfer();
       return Promise.resolve();
     };
     Object.defineProperty(reader, "closed", {
@@ -498,7 +515,10 @@
   };
   ReadableStreamShim.prototype.cancel = function () {
     this._disturbed = true;
-    this._source.close();
+    if (this._underlying && typeof this._underlying.cancel === "function") {
+      try { this._underlying.cancel(); } catch (_err) {}
+    }
+    this._source.cancelTransfer();
     return Promise.resolve();
   };
   ReadableStreamShim.prototype[Symbol.asyncIterator] = function () {
@@ -638,10 +658,20 @@
       }]);
       return new Promise(function (resolve, reject) {
         const abort = function () {
-          if (!pendingFetches.has(id)) return;
+          const pending = pendingFetches.get(id);
+          if (!pending) return;
           pendingFetches.delete(id);
           try { hostCall("fetchCancel", [id]); } catch (_err) {}
-          reject(request.signal.reason || abortError());
+          const reason = request.signal.reason || abortError();
+          if (pending.source) {
+            // The head already resolved this promise, so rejecting it now would
+            // be a no-op and the body stream would hang forever waiting for an
+            // `end` the host will never deliver for a cancelled id. The abort
+            // has to surface on the stream instead.
+            pending.source.fail(reason);
+          } else {
+            reject(reason);
+          }
         };
         pendingFetches.set(id, {
           resolve: resolve,
@@ -668,6 +698,14 @@
         // Resolve at the head, like a browser: the body keeps arriving through
         // later chunk events and the page can start reading it now.
         pending.source = new BodySource();
+        pending.source.onCancel = function () {
+          if (!pendingFetches.has(event.id)) return;
+          pendingFetches.delete(event.id);
+          if (pending.signal && typeof pending.signal.removeEventListener === "function") {
+            pending.signal.removeEventListener("abort", pending.abort);
+          }
+          try { hostCall("fetchCancel", [event.id]); } catch (_err) {}
+        };
         withWindowContext(pending.windowId, function () {
           pending.resolve(new ResponseShim(pending.source, {
             status: event.status,

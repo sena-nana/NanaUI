@@ -2166,6 +2166,152 @@ mod tests {
     }
 
     #[test]
+    fn cancelling_a_stream_mid_body_rejects_the_reader_and_stops_the_transfer() {
+        with_serial_v8_tests(|| {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            use std::time::{Duration, Instant};
+
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost, FetchPolicy,
+                FetchRequest, FetchResponse, FetchSink, shared_fetch_host,
+            };
+
+            /// Sends a head and one chunk, then blocks until the request is
+            /// cancelled — so JS can abort with the body half-delivered.
+            #[derive(Debug)]
+            struct StallingFetch {
+                policy: FetchPolicy,
+                cancels_observed: Arc<AtomicUsize>,
+            }
+
+            impl FetchHost for StallingFetch {
+                fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                    unreachable!("the streaming path must be preferred")
+                }
+
+                fn fetch_streaming(
+                    &self,
+                    request: FetchRequest,
+                    cancellation: FetchCancellation,
+                    sink: &mut dyn FetchSink,
+                ) -> Result<(), FetchError> {
+                    sink.head(FetchHead {
+                        url: request.url,
+                        status: 200,
+                        status_text: "OK".into(),
+                        headers: Vec::new(),
+                        redirected: false,
+                    })?;
+                    sink.chunk(b"first")?;
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while !cancellation.is_cancelled() {
+                        assert!(
+                            Instant::now() < deadline,
+                            "never cancelled: the fix is absent"
+                        );
+                        std::thread::yield_now();
+                    }
+                    self.cancels_observed.fetch_add(1, Ordering::Release);
+                    Err(FetchError::new(FetchErrorKind::Cancelled, "cancelled"))
+                }
+
+                fn policy(&self) -> &FetchPolicy {
+                    &self.policy
+                }
+            }
+
+            let cancels_observed = Arc::new(AtomicUsize::new(0));
+            let mut host = mount_vue_as_nana(MountOptions {
+                width: 320,
+                height: 200,
+                fetch_host: Some(shared_fetch_host(StallingFetch {
+                    policy: FetchPolicy::default(),
+                    cancels_observed: Arc::clone(&cancels_observed),
+                })),
+                ..MountOptions::default()
+            });
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "abort-stream.js",
+                    r#"
+                globalThis.__nanaFireEvent = function () {};
+                globalThis.__nanaAbortResult = null;
+                globalThis.__nanaAbort = { read: () => globalThis.__nanaAbortResult };
+                (async function () {
+                  // (1) Abort while the body is still arriving.
+                  const controller = new AbortController();
+                  const response = await fetch("/stall", { signal: controller.signal });
+                  const reader = response.body.getReader();
+                  const first = await reader.read();
+                  const parked = reader.read();
+                  controller.abort();
+                  let abortName = "";
+                  try { await parked; } catch (error) { abortName = error.name; }
+
+                  // (2) Cancelling the body stream must stop the transfer too.
+                  const second = await fetch("/stall");
+                  const secondReader = second.body.getReader();
+                  await secondReader.read();
+                  await secondReader.cancel();
+                  const afterCancel = await secondReader.read().catch(() => ({ done: "rejected" }));
+
+                  globalThis.__nanaAbortResult = {
+                    first: new TextDecoder().decode(first.value),
+                    abortName,
+                    afterCancelDone: afterCancel.done,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            host.bind_event_bridge(&mut engine).unwrap();
+
+            let read = engine.resolve_function("__nanaAbort.read").unwrap();
+            // The deadline is the point of this test: before the fix the parked
+            // read never settles, which must FAIL rather than hang CI.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let result = loop {
+                host.pump_frame(&mut engine).unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "a mid-stream abort left the reader parked forever"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("first").and_then(HostValue::as_str),
+                Some("first")
+            );
+            assert_eq!(
+                result.get("abortName").and_then(HostValue::as_str),
+                Some("AbortError"),
+                "aborting mid-body must reject the parked read, not hang it"
+            );
+            assert_eq!(
+                result.get("afterCancelDone").and_then(HostValue::as_bool),
+                Some(true),
+                "a cancelled body reads as done, not as a pending promise"
+            );
+            assert_eq!(
+                cancels_observed.load(Ordering::Acquire),
+                2,
+                "both the signal abort and body.cancel() must reach the transfer"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn an_author_readable_stream_is_pulled_on_demand() {
         with_serial_v8_tests(|| {
             use nana_ui_vue::VueHost;
