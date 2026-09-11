@@ -50,9 +50,25 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 为了让熟悉的写法落到桌面窗口，而不是复刻浏览器：
 
-有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、缓冲式 `fetch`（读完整响应再交给你）。
+有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）。
 
-没有：完整 DOM / CSSOM、流式请求体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议。未实现的 `fetch` 选项会报错，不会假装成功。
+没有：完整 DOM / CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议。未实现的 `fetch` 选项会报错，不会假装成功（`duplex` 仍在拒绝之列——请求侧流式正文需要分块上传，宿主协议还没有这条路）。
+
+`fetch()` 在响应**头**到达时就 resolve，和浏览器一样；正文随后分块到达，每一块在 `pump_frame` 里交给 JS，回调不离开引擎线程。`response.body` 是 `ReadableStream`：
+
+```js
+const response = await fetch(url);
+const reader = response.body.getReader();
+for (;;) {
+  const { value, done } = await reader.read();
+  if (done) break;
+  // value 是 Uint8Array，这一块现在就能用
+}
+```
+
+`text()` / `json()` / `arrayBuffer()` / `blob()` 仍然读完整份再 resolve，写法不用改。`clone()` 也照旧——已到达的分块会留着，两份可以各读各的。
+
+流式是为了**早点开工**，不是为了绕开上限：响应 16 MiB 的上限按累计字节算，超了就在中途以 `ResponseTooLarge` 中断这条流，不会因为分块就放行更大的正文。宿主侧的对应接口是 `FetchHost::fetch_streaming`，默认实现回落到缓冲式并把整份正文当成一块发出，所以只实现了 `fetch` 的应用宿主不受影响，只是不会流。
 
 `FormData` 可以直接当 `fetch` 的正文：`append` / `set` / `get` / `getAll` / `has` / `delete` / 迭代都在，编码为 `multipart/form-data`，boundary 由框架生成并写进 `content-type`（你自己写了 `content-type` 就不覆盖）。文件项传 `Blob`，字节走已有的资源对象通道。`new FormData(formElement)` 不支持——它要走真实表单控件，直接报错而不是发一个空正文。
 

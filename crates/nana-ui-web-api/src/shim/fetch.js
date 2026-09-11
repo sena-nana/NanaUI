@@ -325,21 +325,182 @@
   RequestShim.prototype.json = function () { return consumeBody(this, "json"); };
   RequestShim.prototype.arrayBuffer = function () { return consumeBody(this, "arrayBuffer"); };
 
+  // A body's bytes as they arrive from the host.
+  //
+  // Chunks are retained rather than handed off, so `clone()` can replay them and
+  // a second reader sees the same body. That is the same peak memory the fully
+  // buffered path always held, and the host's cumulative response cap still
+  // bounds it — Nana streams so a page can start work before the last byte
+  // lands, not so it can exceed that cap.
+  function BodySource(completeChunks) {
+    this.chunks = completeChunks || [];
+    this.done = !!completeChunks;
+    this.error = null;
+    this._waiters = [];
+  }
+  BodySource.prototype._wake = function () {
+    const waiters = this._waiters;
+    this._waiters = [];
+    for (let i = 0; i < waiters.length; i++) waiters[i]();
+  };
+  BodySource.prototype.push = function (bytes) {
+    if (this.done) return;
+    this.chunks.push(bytes);
+    this._wake();
+  };
+  BodySource.prototype.close = function () {
+    if (this.done) return;
+    this.done = true;
+    this._wake();
+  };
+  BodySource.prototype.fail = function (error) {
+    if (this.done) return;
+    this.error = error;
+    this.done = true;
+    this._wake();
+  };
+  BodySource.prototype.waitForMore = function () {
+    const self = this;
+    return new Promise(function (resolve) { self._waiters.push(resolve); });
+  };
+
+  // One independent read cursor over a BodySource.
+  function BodyReader(source) {
+    this._source = source;
+    this._index = 0;
+    this._released = false;
+  }
+  BodyReader.prototype.read = function () {
+    const self = this;
+    if (this._released) return Promise.reject(new TypeError("Reader has been released"));
+    function step() {
+      if (self._index < self._source.chunks.length) {
+        return { value: self._source.chunks[self._index++], done: false };
+      }
+      // The error surfaces only after every chunk that did arrive, so a partial
+      // body is readable up to the point the transfer broke.
+      if (self._source.error) throw self._source.error;
+      if (self._source.done) return { value: undefined, done: true };
+      return self._source.waitForMore().then(step);
+    }
+    return Promise.resolve().then(step);
+  };
+
+  function ReadableStreamShim(underlying) {
+    this._locked = false;
+    if (underlying instanceof BodySource) {
+      this._source = underlying;
+      return;
+    }
+    // `new ReadableStream({ start, pull, cancel })` — the author-facing form.
+    this._source = new BodySource();
+    const source = this._source;
+    const controller = {
+      enqueue: function (chunk) { source.push(asUint8Array(chunk)); },
+      close: function () { source.close(); },
+      error: function (reason) { source.fail(reason || new TypeError("Stream errored")); },
+      get desiredSize() { return 1; },
+    };
+    this._underlying = underlying || {};
+    this._controller = controller;
+    if (typeof this._underlying.start === "function") {
+      Promise.resolve()
+        .then(function () { return controller && underlying.start(controller); })
+        .catch(function (reason) { source.fail(reason); });
+    }
+  }
+  Object.defineProperty(ReadableStreamShim.prototype, "locked", {
+    get: function () { return this._locked; },
+  });
+  ReadableStreamShim.prototype.getReader = function (options) {
+    if (options && options.mode) {
+      // BYOB needs caller-owned buffers the host channel does not expose.
+      throw new TypeError("Only a default ReadableStream reader is supported by Nana");
+    }
+    if (this._locked) throw new TypeError("ReadableStream is already locked");
+    this._locked = true;
+    const stream = this;
+    const reader = new BodyReader(this._source);
+    reader.releaseLock = function () {
+      reader._released = true;
+      stream._locked = false;
+    };
+    reader.cancel = function () {
+      reader._released = true;
+      stream._locked = false;
+      if (stream._underlying && typeof stream._underlying.cancel === "function") {
+        try { stream._underlying.cancel(); } catch (_err) {}
+      }
+      return Promise.resolve();
+    };
+    Object.defineProperty(reader, "closed", {
+      get: function () {
+        const self = reader;
+        return (function drain() {
+          return self._source.done
+            ? (self._source.error ? Promise.reject(self._source.error) : Promise.resolve())
+            : self._source.waitForMore().then(drain);
+        })();
+      },
+    });
+    return reader;
+  };
+  ReadableStreamShim.prototype.cancel = function () {
+    this._source.close();
+    return Promise.resolve();
+  };
+  ReadableStreamShim.prototype[Symbol.asyncIterator] = function () {
+    const reader = this.getReader();
+    return {
+      next: function () { return reader.read(); },
+      return: function () {
+        reader.releaseLock();
+        return Promise.resolve({ value: undefined, done: true });
+      },
+      [Symbol.asyncIterator]: function () { return this; },
+    };
+  };
+
+  /// Read every remaining chunk of `source` into one Uint8Array.
+  function drainSource(source) {
+    const reader = new BodyReader(source);
+    const chunks = [];
+    function pump() {
+      return reader.read().then(function (step) {
+        if (step.done) return concatBytes(chunks);
+        chunks.push(step.value);
+        return pump();
+      });
+    }
+    return pump();
+  }
+
   function consumeBody(owner, kind) {
     if (owner.bodyUsed) return Promise.reject(new TypeError("Body has already been consumed"));
     owner.bodyUsed = true;
-    const copy = new Uint8Array(owner._body);
-    if (kind === "arrayBuffer") return Promise.resolve(copy.buffer);
-    const text = new TextDecoder().decode(copy);
-    if (kind === "json") {
-      return Promise.resolve().then(function () { return JSON.parse(text); });
-    }
-    return Promise.resolve(text);
+    // A Request always holds complete bytes; a Response may still be streaming,
+    // so read its source to the end. Either way these resolve with the whole
+    // body, exactly as before streaming existed.
+    const bytes = owner._source
+      ? drainSource(owner._source)
+      : Promise.resolve(new Uint8Array(owner._body));
+    return bytes.then(function (complete) {
+      if (kind === "arrayBuffer") return complete.buffer;
+      const text = new TextDecoder().decode(complete);
+      if (kind === "json") return JSON.parse(text);
+      return text;
+    });
   }
 
   function ResponseShim(body, init) {
     init = init || {};
-    this._body = body instanceof Uint8Array ? new Uint8Array(body) : bodyBytes(body);
+    if (body instanceof BodySource) {
+      // Streaming: `fetch()` resolves at the head, and chunks keep arriving.
+      this._source = body;
+    } else {
+      const bytes = body instanceof Uint8Array ? new Uint8Array(body) : bodyBytes(body);
+      this._source = new BodySource(bytes.length ? [bytes] : []);
+    }
     this.status = Number(init.status == null ? 200 : init.status);
     this.statusText = String(init.statusText || "");
     this.headers = new HeadersShim(init.headers);
@@ -357,19 +518,31 @@
   ResponseShim.prototype.blob = function () {
     if (this.bodyUsed) return Promise.reject(new TypeError("Body has already been consumed"));
     this.bodyUsed = true;
-    return Promise.resolve(new BlobShim([this._body], {
-      type: this.headers.get("content-type") || "",
-    }));
+    const type = this.headers.get("content-type") || "";
+    return drainSource(this._source).then(function (complete) {
+      return new BlobShim([complete], { type: type });
+    });
   };
+  // `body` is the same stream every time, and taking a reader locks it — so a
+  // second `getReader()` throws, as it does in a browser.
+  Object.defineProperty(ResponseShim.prototype, "body", {
+    get: function () {
+      if (!this._bodyStream) this._bodyStream = new ReadableStreamShim(this._source);
+      return this._bodyStream;
+    },
+  });
   ResponseShim.prototype.clone = function () {
     if (this.bodyUsed) throw new TypeError("Response body has already been consumed");
-    return new ResponseShim(this._body, {
+    // Share the source: retained chunks let both copies read the same body
+    // independently, including one that is still arriving.
+    const copy = new ResponseShim(this._source, {
       status: this.status,
       statusText: this.statusText,
       headers: this.headers,
       url: this.url,
       redirected: this.redirected,
     });
+    return copy;
   };
 
   const pendingFetches = new Map();
@@ -404,31 +577,55 @@
     });
   }
 
-  globalThis.__nanaDrainFetch = function __nanaDrainFetch(completions) {
-    const list = Array.isArray(completions) ? completions : [];
+  globalThis.__nanaDrainFetch = function __nanaDrainFetch(events) {
+    const list = Array.isArray(events) ? events : [];
     for (let i = 0; i < list.length; i++) {
-      const completion = list[i] || {};
-      const pending = pendingFetches.get(completion.id);
+      const event = list[i] || {};
+      const pending = pendingFetches.get(event.id);
       if (!pending) continue;
-      pendingFetches.delete(completion.id);
-      if (pending.signal && typeof pending.signal.removeEventListener === "function") {
-        pending.signal.removeEventListener("abort", pending.abort);
-      }
-      if (!completion.ok) {
+
+      if (event.kind === "head") {
+        // Resolve at the head, like a browser: the body keeps arriving through
+        // later chunk events and the page can start reading it now.
+        pending.source = new BodySource();
         withWindowContext(pending.windowId, function () {
-          pending.reject(new TypeError((completion.error && completion.error.message) || "Fetch failed"));
+          pending.resolve(new ResponseShim(pending.source, {
+            status: event.status,
+            statusText: event.statusText,
+            headers: event.headers,
+            url: event.url,
+            redirected: event.redirected,
+          }));
         });
         continue;
       }
-      const raw = completion.response || {};
+
+      if (event.kind === "chunk") {
+        if (pending.source) pending.source.push(asUint8Array(event.bytes));
+        continue;
+      }
+
+      // "end": the request is over either way, so stop tracking it.
+      pendingFetches.delete(event.id);
+      if (pending.signal && typeof pending.signal.removeEventListener === "function") {
+        pending.signal.removeEventListener("abort", pending.abort);
+      }
+      const failure = event.ok
+        ? null
+        : new TypeError((event.error && event.error.message) || "Fetch failed");
       withWindowContext(pending.windowId, function () {
-        pending.resolve(new ResponseShim(asUint8Array(raw.body), {
-          status: raw.status,
-          statusText: raw.statusText,
-          headers: raw.headers,
-          url: raw.url,
-          redirected: raw.redirected,
-        }));
+        if (!pending.source) {
+          // Failed before any head arrived, so the fetch promise is still open.
+          pending.reject(failure || new TypeError("Fetch produced no response"));
+          return;
+        }
+        if (failure) {
+          // The head already resolved the promise; a mid-body failure can only
+          // surface on the stream.
+          pending.source.fail(failure);
+        } else {
+          pending.source.close();
+        }
       });
     }
     return list.length;

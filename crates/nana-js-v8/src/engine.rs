@@ -2166,6 +2166,148 @@ mod tests {
     }
 
     #[test]
+    fn streaming_response_body_reaches_js_chunk_by_chunk() {
+        with_serial_v8_tests(|| {
+            use std::time::{Duration, Instant};
+
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                FetchCancellation, FetchError, FetchHead, FetchHost, FetchPolicy, FetchRequest,
+                FetchResponse, FetchSink, shared_fetch_host,
+            };
+
+            /// Emits three chunks so the test can prove the reader sees them
+            /// separately rather than one reassembled body.
+            #[derive(Debug)]
+            struct ChunkedFetch {
+                policy: FetchPolicy,
+            }
+
+            impl FetchHost for ChunkedFetch {
+                fn fetch(&self, _request: FetchRequest) -> Result<FetchResponse, FetchError> {
+                    unreachable!("the streaming path must be preferred over the buffered one");
+                }
+
+                fn fetch_streaming(
+                    &self,
+                    request: FetchRequest,
+                    _cancellation: FetchCancellation,
+                    sink: &mut dyn FetchSink,
+                ) -> Result<(), FetchError> {
+                    sink.head(FetchHead {
+                        url: request.url,
+                        status: 200,
+                        status_text: "OK".into(),
+                        headers: vec![("content-type".into(), "text/plain".into())],
+                        redirected: false,
+                    })?;
+                    sink.chunk(b"one-")?;
+                    sink.chunk(b"two-")?;
+                    sink.chunk(b"three")?;
+                    Ok(())
+                }
+
+                fn policy(&self) -> &FetchPolicy {
+                    &self.policy
+                }
+            }
+
+            let mut host = mount_vue_as_nana(MountOptions {
+                width: 320,
+                height: 200,
+                fetch_host: Some(shared_fetch_host(ChunkedFetch {
+                    policy: FetchPolicy::default(),
+                })),
+                ..MountOptions::default()
+            });
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "stream.js",
+                    r#"
+                // `bind_event_bridge` requires this; the Vue runtime normally
+                // supplies it. Nothing here dispatches DOM events.
+                globalThis.__nanaFireEvent = function () {};
+                globalThis.__nanaStreamResult = null;
+                globalThis.__nanaStream = { read: () => globalThis.__nanaStreamResult };
+                (async function () {
+                  const response = await fetch("/stream");
+                  // Resolving at the head means the body has not arrived yet.
+                  const bodyIsStream = typeof response.body.getReader === "function";
+                  const reader = response.body.getReader();
+                  const chunks = [];
+                  for (;;) {
+                    const step = await reader.read();
+                    if (step.done) break;
+                    chunks.push(new TextDecoder().decode(step.value));
+                  }
+                  let secondReader = "";
+                  try { response.body.getReader(); }
+                  catch (error) { secondReader = error.name; }
+
+                  // A separate buffered fetch still reads whole, as before.
+                  const buffered = await (await fetch("/stream")).text();
+
+                  globalThis.__nanaStreamResult = {
+                    bodyIsStream,
+                    chunks,
+                    joined: chunks.join(""),
+                    secondReader,
+                    buffered,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            // `drain_fetch` is resolved here; without it nothing pumps chunks.
+            host.bind_event_bridge(&mut engine).unwrap();
+
+            let read = engine.resolve_function("__nanaStream.read").unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let result = loop {
+                // Chunks only cross into JS through the frame pump, which is the
+                // contract that keeps JS callbacks on the engine thread.
+                host.pump_frame(&mut engine).unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(Instant::now() < deadline, "streaming fetch never settled");
+                std::thread::sleep(Duration::from_millis(2));
+            };
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("bodyIsStream").and_then(HostValue::as_bool),
+                Some(true),
+                "response.body must be a ReadableStream, not undefined"
+            );
+            let chunks = result.get("chunks").and_then(HostValue::as_array).unwrap();
+            assert_eq!(
+                chunks.len(),
+                3,
+                "the reader must see the host's three chunks separately, got {chunks:?}"
+            );
+            assert_eq!(
+                result.get("joined").and_then(HostValue::as_str),
+                Some("one-two-three")
+            );
+            assert_eq!(
+                result.get("secondReader").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "a locked stream refuses a second reader"
+            );
+            assert_eq!(
+                result.get("buffered").and_then(HostValue::as_str),
+                Some("one-two-three"),
+                "text() still resolves with the whole body"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn vue_sfc_fetch_updates_semantic_tree_on_v8() {
         with_serial_v8_tests(|| {
             use std::time::{Duration, Instant};
