@@ -382,6 +382,10 @@ pub enum GridTrackListUnsupported {
     RepeatAutoFill,
     /// `subgrid` as a track-list token (e.g. `subgrid 80px`) — not a whole value.
     Subgrid,
+    /// `repeat()` inside another `repeat()`. CSS Grid L1 gives `<track-repeat>`
+    /// a `<track-size>` body and `<auto-repeat>` a `<fixed-size>` body, so
+    /// neither nests; browsers drop the whole declaration.
+    NestedRepeat,
 }
 
 impl GridTrackListUnsupported {
@@ -390,6 +394,7 @@ impl GridTrackListUnsupported {
             Self::RepeatAutoFit => "repeat(auto-fit)",
             Self::RepeatAutoFill => "repeat(auto-fill)",
             Self::Subgrid => "subgrid",
+            Self::NestedRepeat => "nested repeat()",
         }
     }
 

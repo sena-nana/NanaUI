@@ -579,6 +579,8 @@ pub struct VueHost {
     media: SharedMediaRuntime,
     diagnostics: DiagnosticBindings,
     /// Last counts handed to the diagnostics sink; only the growth is reported.
+    /// Only `scene-view` flushes frames, so only it reads this.
+    #[cfg(feature = "scene-view")]
     reported_unsupported_css: crate::css_cascade::UnsupportedCssReport,
     input: Arc<Mutex<input::InputState>>,
     #[cfg(feature = "scene-view")]
@@ -713,6 +715,7 @@ impl VueHost {
             video: video::shared_video_runtime(),
             media,
             diagnostics: DiagnosticBindings::default(),
+            #[cfg(feature = "scene-view")]
             reported_unsupported_css: crate::css_cascade::UnsupportedCssReport::default(),
             input_projection: host::input_projection::State::default(),
             callbacks: host::callbacks::State::default(),
