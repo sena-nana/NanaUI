@@ -191,6 +191,7 @@ Vue / JS 入口交给宿主的是一份 `RuntimeArtifact`，两种形态：
 | `MountOptions.fetch_host` | Vue 宿主的常规入口；`mount_vue_as_nana` 用它建带该 host 的 web-api 状态 |
 | `shared_fetch_host(host)` | 把自己的 `FetchHost` 实现包成 `SharedFetchHost`（`Arc<dyn FetchHost>`） |
 | `WebApiState::with_fetch_host` / `with_fetch_host_and_local_storage` / `shared_web_api_state_with_fetch` | 自己管 web-api 状态的嵌入式宿主 |
+| `nana_ui::set_resource_fetch_host` | 引擎资源出口（`url()` 图片等）。`mount_vue_as_nana` 会用 `MountOptions.fetch_host` 自动装上；纯 Rust 宿主要自己调。首次设置生效且不可撤销 |
 
 ```rust
 let policy = FetchPolicy::default().with_allowed_origin("https://api.example.com")?;
@@ -209,7 +210,7 @@ let app = mount_vue_as_nana(MountOptions {
 - **cache**：没有 HTTP 缓存层，`cache` 选项在 JS 侧被拒。
 - **请求侧流式正文**：正文在发给宿主之前已经是完整字节，`duplex` 在 JS 的拒绝列表里。响应侧的流式见上面的 `FetchSink`。
 
-`fetch_bytes_blocking` 不是这条路：它是引擎内部加载字体和图片用的阻塞 GET，不过 origin 策略、不可取消，别拿它当应用的网络出口。
+引擎自己的资源出口走的也是这条路。`url()` 图片、`<img src>`、`mask-image`、`border-image` 与 JS `fetch()` 共用同一个 `FetchHost` 和同一份 `FetchPolicy`：同样的 origin 白名单、同样逐跳复核重定向、同样跨源摘授权头。**没装 host 就一张远程图都不取**——`data:`、`file:` 与 jail 内的相对路径不受影响。取消在 painter 析构与图片连续 120 帧无人引用时触发，终结的是网络等待，不是已经开始的解码。`@font-face` 没有网络传输，只认 `local()`、`data:` 和 jail 内的本机文件。
 
 ## 性能上你不用手写的
 

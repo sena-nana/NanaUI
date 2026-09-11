@@ -21,27 +21,6 @@ pub const DEFAULT_FETCH_REDIRECTS: usize = 5;
 pub const DEFAULT_FETCH_WORKERS: usize = 4;
 const FETCH_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Blocking GET for engine-internal resource loads (fonts, images). Not the
-/// JS `fetch()` path: no origin policy and no cancellation. Returns `None`
-/// on any transport error, non-2xx status, or body above `max_bytes`.
-pub fn fetch_bytes_blocking(url: &str, timeout: Duration, max_bytes: u64) -> Option<Vec<u8>> {
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(timeout))
-        .http_status_as_error(false)
-        .build();
-    let agent = ureq::Agent::new_with_config(config);
-    let mut response = agent.get(url).call().ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    response
-        .body_mut()
-        .with_config()
-        .limit(max_bytes)
-        .read_to_vec()
-        .ok()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRequest {
     pub url: String,
@@ -230,6 +209,9 @@ impl FetchCancellation {
 }
 
 /// Security and resource limits applied by the host before every network hop.
+///
+/// One policy covers all HTTP(S) egress: the JS `fetch()` path and the engine's
+/// own resource loads (`url(...)` images) share this host.
 ///
 /// Origins use URL origin serialization (`scheme://host[:port]`) and are
 /// matched exactly. The default policy authorizes nothing.

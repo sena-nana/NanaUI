@@ -9,8 +9,16 @@ use nana_ui_core::{
     MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, path_looks_network,
     percent_decode_bytes, read_bytes_within_jail, resolve_filesystem_href,
 };
+use nana_ui_platform::{FetchCancellation, FetchRequest, SharedFetchHost};
 
 static BACKGROUND_IMAGE_URL_BASE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Host-owned, policy-gated egress for `url(...)` resource loads.
+///
+/// Read by the detached `nana-image` worker, so it must be the process global:
+/// the `cfg(test)` override below is thread-local and does not cross that
+/// boundary.
+static RESOURCE_FETCH_HOST: OnceLock<SharedFetchHost> = OnceLock::new();
 
 // Per-test-thread override. Cargo libtest runs each test on one thread, so
 // parallel tests cannot see each other's base. Hosts still first-set
@@ -18,6 +26,11 @@ static BACKGROUND_IMAGE_URL_BASE: OnceLock<PathBuf> = OnceLock::new();
 #[cfg(test)]
 thread_local! {
     static TEST_URL_BASE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    // Outer `Some` means "this thread overrides the global"; the inner option is
+    // the host itself, so a test can assert the no-host (fail-closed) path even
+    // after another test in the same binary has first-set the global.
+    static TEST_FETCH_HOST: std::cell::RefCell<Option<Option<SharedFetchHost>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Document or workspace base for relative `url(...)` paths.
@@ -30,6 +43,60 @@ pub fn set_background_image_url_base(base: PathBuf) {
         TEST_URL_BASE.with(|slot| *slot.borrow_mut() = Some(base.clone()));
     }
     let _ = BACKGROUND_IMAGE_URL_BASE.set(base);
+}
+
+/// Host-owned HTTP(S) egress for `url(...)` images.
+///
+/// First call wins, and it cannot be revoked: a process that mounts twice with
+/// different policies keeps the first. Without a host, remote `url(...)` loads
+/// are refused before any socket is opened — `data:`, `file:` and jailed
+/// relative paths are unaffected.
+pub fn set_resource_fetch_host(host: SharedFetchHost) {
+    #[cfg(test)]
+    {
+        TEST_FETCH_HOST.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(Some(host.clone()));
+            }
+        });
+    }
+    let _ = RESOURCE_FETCH_HOST.set(host);
+}
+
+fn resource_fetch_host() -> Option<SharedFetchHost> {
+    #[cfg(test)]
+    if let Some(host) = TEST_FETCH_HOST.with(|slot| slot.borrow().clone()) {
+        return host;
+    }
+    RESOURCE_FETCH_HOST.get().cloned()
+}
+
+/// Blocking GET through the host's policy-gated transport.
+///
+/// `None` when no host is installed, when the policy refuses the origin or a
+/// redirect hop, on any transport error, on a non-2xx status, or on a body
+/// above `max_bytes`. The effective cap is the smaller of `max_bytes` and the
+/// policy's `max_response_bytes`, which is what bounds the peak allocation.
+///
+/// `cancellation` goes through [`FetchHost::fetch_cancellable`], so cancelling
+/// it shuts the socket down mid-read instead of leaving the worker parked until
+/// the policy timeout. It ends the *network* wait only: bytes already received
+/// are decoded to completion, since neither `image` nor `resvg` has a
+/// cancellation point.
+fn fetch_resource_bytes(
+    url: &str,
+    max_bytes: usize,
+    cancellation: &FetchCancellation,
+) -> Option<Vec<u8>> {
+    let host = resource_fetch_host()?;
+    let response = host
+        .fetch_cancellable(FetchRequest::get(url), cancellation.clone())
+        .ok()?;
+    if !(200..300).contains(&response.status) {
+        return None;
+    }
+    (response.body.len() <= max_bytes).then_some(response.body)
 }
 
 fn fallback_cwd() -> PathBuf {
@@ -52,15 +119,16 @@ fn url_base() -> PathBuf {
 
 /// Whether a resolved fetch key may be loaded for `@font-face` (and similar).
 ///
-/// `data:` / `http(s):` pass. Filesystem paths must stay under the document
-/// URL base (cwd when unset) so `file:` / `..` cannot escape.
+/// `data:` passes. `http(s):` does not: `@font-face` has no remote transport,
+/// matching the Vue stylesheet path. Filesystem paths must stay under the
+/// document URL base (cwd when unset) so `file:` / `..` cannot escape.
 pub fn resolved_resource_is_allowed(resolved: &str) -> bool {
     let resolved = resolved.trim();
-    if resolved.starts_with("data:")
-        || resolved.starts_with("http://")
-        || resolved.starts_with("https://")
-    {
+    if resolved.starts_with("data:") {
         return true;
+    }
+    if resolved.starts_with("http://") || resolved.starts_with("https://") {
+        return false;
     }
     if resolved.is_empty() {
         return false;
@@ -75,8 +143,10 @@ pub fn resolved_resource_is_allowed(resolved: &str) -> bool {
 
 /// Resolve a parsed CSS URL to a fetch/load key (absolute URL or filesystem path).
 ///
-/// `http(s)` / `data:` stay fetchable. Non-local `file:` hosts, protocol-relative
-/// `//`, and UNC are refused (same helper as stylesheet / `@font-face` jail).
+/// Resolution is not authorization: `http(s)` keys come back intact and are
+/// judged later by the host's `FetchPolicy` (see [`fetch_resource_bytes`]);
+/// `data:` stays loadable. Non-local `file:` hosts, protocol-relative `//`, and
+/// UNC are refused here (same helper as stylesheet / `@font-face` jail).
 pub fn resolve_background_image_url(url: &str) -> Option<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() || href_is_protocol_relative_or_unc(trimmed) {
@@ -109,12 +179,22 @@ fn join_relative(rel: &str) -> Option<String> {
 /// SVG bytes (inline `data:image/svg+xml`, `url(.svg)`, or sniffed markup) share
 /// this path with raster images so the quad URL cache keys by URL/id.
 pub(super) fn decode_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
+    // The synchronous path has no one to cancel it: the caller is blocked on
+    // this very call. Workers use `decode_url_rgba_with` and keep the token.
+    decode_url_rgba_with(url, &FetchCancellation::new())
+}
+
+/// [`decode_url_rgba`] with a cancellation token for the `"nana-image"` worker.
+pub(super) fn decode_url_rgba_with(
+    url: &str,
+    cancellation: &FetchCancellation,
+) -> Option<(u32, u32, Vec<u8>)> {
     let resolved = resolve_background_image_url(url)?;
     if resolved.starts_with("data:") {
         return decode_data_url_rgba(&resolved);
     }
     if resolved.starts_with("http://") || resolved.starts_with("https://") {
-        return decode_http_rgba(&resolved);
+        return decode_http_rgba(&resolved, cancellation);
     }
     let jail = url_base();
     let bytes = read_bytes_within_jail(url, &jail, MAX_LOCAL_URL_BYTES)?;
@@ -137,12 +217,8 @@ fn decode_data_url_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
     decode_image_bytes_with_hint(&bytes, meta_l.contains("svg"))
 }
 
-fn decode_http_rgba(url: &str) -> Option<(u32, u32, Vec<u8>)> {
-    let bytes = nana_ui_platform::fetch_bytes_blocking(
-        url,
-        nana_ui_platform::DEFAULT_FETCH_TIMEOUT,
-        MAX_LOCAL_URL_BYTES,
-    )?;
+fn decode_http_rgba(url: &str, cancellation: &FetchCancellation) -> Option<(u32, u32, Vec<u8>)> {
+    let bytes = fetch_resource_bytes(url, MAX_LOCAL_URL_BYTES as usize, cancellation)?;
     decode_image_bytes_with_hint(&bytes, looks_like_svg_url(url))
 }
 
@@ -224,11 +300,203 @@ pub(super) fn reset_test_url_base() {
     TEST_URL_BASE.with(|slot| *slot.borrow_mut() = None);
 }
 
+/// Override the process fetch host for this test thread. `None` asserts the
+/// fail-closed path even when another test has already first-set the global.
+#[cfg(test)]
+pub(super) fn set_test_fetch_host(host: Option<SharedFetchHost>) {
+    TEST_FETCH_HOST.with(|slot| *slot.borrow_mut() = Some(host));
+}
+
+/// Test double authorizing any `127.0.0.1` origin.
+///
+/// Loopback tests bind port 0 and each gets a different port, so they cannot
+/// share one exact-match [`FetchPolicy`]; the process host is first-set-wins, so
+/// they cannot each install their own either. This resolves both by authorizing
+/// per request, and it keeps the tests going through the real `FetchHost` seam.
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct LoopbackFetchHost {
+    policy: nana_ui_platform::FetchPolicy,
+}
+
+#[cfg(test)]
+fn loopback_origin(url: &str) -> Option<String> {
+    let authority = url.strip_prefix("http://")?.split('/').next()?;
+    (authority.split(':').next()? == "127.0.0.1").then(|| format!("http://{authority}"))
+}
+
+#[cfg(test)]
+impl nana_ui_platform::FetchHost for LoopbackFetchHost {
+    fn fetch(
+        &self,
+        request: FetchRequest,
+    ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+        let origin = loopback_origin(&request.url).ok_or_else(|| {
+            nana_ui_platform::FetchError::new(
+                nana_ui_platform::FetchErrorKind::Policy,
+                format!("test host serves loopback only: `{}`", request.url),
+            )
+        })?;
+        let policy = nana_ui_platform::FetchPolicy::default().with_allowed_origin(&origin)?;
+        nana_ui_platform::NativeFetchHost::new(policy).fetch(request)
+    }
+
+    /// Forwarded, not inherited: the default trait implementation only checks
+    /// the token once at the boundary, so inheriting it would leave the real
+    /// socket-shutdown path untested.
+    fn fetch_cancellable(
+        &self,
+        request: FetchRequest,
+        cancellation: nana_ui_platform::FetchCancellation,
+    ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+        let origin = loopback_origin(&request.url).ok_or_else(|| {
+            nana_ui_platform::FetchError::new(
+                nana_ui_platform::FetchErrorKind::Policy,
+                format!("test host serves loopback only: `{}`", request.url),
+            )
+        })?;
+        let policy = nana_ui_platform::FetchPolicy::default().with_allowed_origin(&origin)?;
+        nana_ui_platform::NativeFetchHost::new(policy).fetch_cancellable(request, cancellation)
+    }
+
+    fn policy(&self) -> &nana_ui_platform::FetchPolicy {
+        &self.policy
+    }
+}
+
+/// Install the loopback double as the process host. First-set-wins, so every
+/// loopback test may call it unconditionally.
+#[cfg(test)]
+pub(super) fn install_loopback_fetch_host() {
+    set_resource_fetch_host(nana_ui_platform::shared_fetch_host(LoopbackFetchHost {
+        policy: nana_ui_platform::FetchPolicy::default(),
+    }));
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io::{Read as _, Write as _};
+    use std::net::{Ipv4Addr, TcpListener};
     use std::path::Path;
 
     use super::*;
+
+    fn png_1x1() -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([7, 8, 9, 255]))
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .expect("encode png");
+        bytes.into_inner()
+    }
+
+    /// Binds a port nothing ever answers on. A later `accept` reporting
+    /// `WouldBlock` is the assertion that no connection was attempted.
+    fn silent_listener() -> (TcpListener, String) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}/a.png", listener.local_addr().expect("addr"));
+        (listener, url)
+    }
+
+    fn assert_never_connected(listener: &TcpListener) {
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "policy must refuse before a socket is opened"
+        );
+    }
+
+    /// Serves one canned response, then closes.
+    fn one_response_server(status: &str, body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        let url = format!("http://{}/a.png", listener.local_addr().expect("addr"));
+        let status = status.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 256];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&chunk[..read]),
+                }
+            }
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+        (url, handle)
+    }
+
+    #[test]
+    fn http_image_without_a_fetch_host_is_refused() {
+        set_test_fetch_host(None);
+        let (listener, url) = silent_listener();
+        assert!(
+            decode_url_rgba(&url).is_none(),
+            "no fetch host must mean no remote image"
+        );
+        assert_never_connected(&listener);
+    }
+
+    #[test]
+    fn a_cancelled_token_refuses_an_allowlisted_http_image_before_connecting() {
+        install_loopback_fetch_host();
+        let (listener, url) = silent_listener();
+        let cancellation = FetchCancellation::new();
+        cancellation.cancel();
+
+        assert!(
+            decode_url_rgba_with(&url, &cancellation).is_none(),
+            "a cancelled request must not load, even from an allowed origin"
+        );
+        // Pre-cancelled rather than raced: `register_socket` rejects an already
+        // cancelled token, so this asserts the token reaches the socket layer
+        // without depending on timing.
+        assert_never_connected(&listener);
+    }
+
+    #[test]
+    fn http_image_from_a_non_allowlisted_origin_is_refused_before_connecting() {
+        let (listener, url) = silent_listener();
+        let policy = nana_ui_platform::FetchPolicy::default()
+            .with_allowed_origin("http://allowed.example")
+            .expect("origin");
+        set_test_fetch_host(Some(nana_ui_platform::shared_fetch_host(
+            nana_ui_platform::NativeFetchHost::new(policy),
+        )));
+        assert!(
+            decode_url_rgba(&url).is_none(),
+            "an origin outside the allowlist must not load"
+        );
+        assert_never_connected(&listener);
+    }
+
+    #[test]
+    fn http_image_from_an_allowlisted_origin_decodes() {
+        install_loopback_fetch_host();
+        let (url, server) = one_response_server("200 OK", png_1x1());
+        let decoded = decode_url_rgba(&url);
+        server.join().expect("server");
+        let (width, height, rgba) = decoded.expect("allowlisted origin must decode");
+        assert_eq!((width, height), (1, 1));
+        assert_eq!(&rgba[..4], &[7, 8, 9, 255]);
+    }
+
+    #[test]
+    fn http_image_with_a_non_2xx_status_is_refused() {
+        install_loopback_fetch_host();
+        let (url, server) = one_response_server("404 Not Found", b"<html>nope</html>".to_vec());
+        let decoded = decode_url_rgba(&url);
+        server.join().expect("server");
+        assert!(
+            decoded.is_none(),
+            "an error page must not be fed to the image decoder"
+        );
+    }
 
     #[test]
     fn relative_url_joins_cwd_when_no_base() {

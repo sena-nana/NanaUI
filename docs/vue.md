@@ -82,6 +82,8 @@ for (;;) {
 
 网络默认全关。应用必须列出允许的源，格式 `scheme://host[:port]`。localhost 不会自动放行。跨源跳转时，即使目标在白名单里，授权类请求头仍会被拿掉。默认超时 30 秒，请求和响应各 16 MiB，最多 5 次重定向。
 
+受管的不只是 JS：同一个 `fetch_host` 也是引擎自己那条资源出口——`url()` 图片、`<img src>`、`mask-image`、`border-image` 走的是同一份 `FetchPolicy`，同样逐跳复核重定向，也同样可取消——painter 拆掉或图片不再被引用时，在飞的请求会被 shutdown，不会挂到超时才收场。没注入 host 就一张远程图都不取，`data:`、`file:` 与相对路径不受影响。`@font-face` 不取远程，只认 `local()`、`data:` 和 jail 内的本机文件。
+
 NanaUI 不内置登录、设置存储或任何产品业务。你在宿主里注册自己的命令（`HostApiRegistry`），再交给 Vue 调用。框架自带的接口名和你注册的名字不能冲突，冲突时启动失败。
 
 ## 扩展控件

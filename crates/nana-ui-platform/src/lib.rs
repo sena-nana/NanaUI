@@ -21,7 +21,7 @@ pub use clipboard::{
 pub use fetch::{
     DEFAULT_FETCH_TIMEOUT, FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost,
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, NativeFetchHost, SharedFetchHost,
-    fetch_bytes_blocking, shared_fetch_host,
+    shared_fetch_host,
 };
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};

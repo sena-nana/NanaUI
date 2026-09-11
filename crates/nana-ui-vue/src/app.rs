@@ -19,7 +19,9 @@ pub struct MountOptions {
     pub height: u32,
     pub scale_factor: f32,
     pub theme: ThemeMode,
-    /// Optional application-owned, policy-gated HTTP(S) backend.
+    /// Optional application-owned, policy-gated HTTP(S) backend. Governs both
+    /// the JS `fetch()` path and the engine's `url(...)` image loads; without
+    /// one, no remote image is fetched.
     pub fetch_host: Option<SharedFetchHost>,
     /// Optional application-owned WebSocket transport. The framework reserves
     /// the interface only — without a host here, the JS `WebSocket` constructor
@@ -51,6 +53,12 @@ impl Default for MountOptions {
 /// let snap = app.semantic_snapshot();
 /// ```
 pub fn mount_vue_as_nana(options: MountOptions) -> NanaVueApp {
+    // One policy for both egress paths: the same host also gates `url(...)`
+    // images, which paint below the web-api layer.
+    #[cfg(feature = "scene-view")]
+    if let Some(host) = options.fetch_host.as_ref() {
+        nana_ui::set_resource_fetch_host(std::sync::Arc::clone(host));
+    }
     let mut app = match options.fetch_host {
         Some(fetch_host) => NanaVueApp::with_web_api_state(
             options.width,

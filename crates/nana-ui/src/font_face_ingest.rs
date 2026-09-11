@@ -1,16 +1,15 @@
 //! Load `@font-face` `url(...)` srcs into the process FontSystem.
 //!
 //! Called from stylesheet **inject**, not parse. Reuses
-//! [`resolve_background_image_url`] / document URL base.
+//! [`resolve_background_image_url`] / document URL base. Local and `data:` only:
+//! remote srcs never reach the network.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
 
 use crate::nana_text::{HostFontStyle, register_host_font_face};
 use crate::scene_paint::{resolve_background_image_url, resolved_resource_is_allowed};
 
-const FONT_FACE_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const FONT_FACE_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// One parsed `@font-face` ready for host ingest (no CSSOM).
@@ -54,10 +53,12 @@ fn mark_loaded(key: String) {
     }
 }
 
-/// Fetch each face's first usable `url(...)` and register it with CSS aliases.
+/// Load each face's first usable `url(...)` and register it with CSS aliases.
 ///
 /// Already-loaded keys are skipped. Failed srcs drop that face (no system-font
-/// stand-in). HTTP uses a 5s timeout and 8 MiB cap.
+/// stand-in). Remote `http(s)` srcs are refused — `@font-face` has no network
+/// transport, matching the Vue stylesheet path. `data:` and jailed filesystem
+/// srcs read up to 8 MiB.
 pub fn ingest_host_font_faces(specs: &[HostFontFaceSpec]) -> usize {
     let mut loaded = 0usize;
     for spec in specs {
@@ -103,9 +104,6 @@ fn load_font_src_bytes(resolved: &str) -> Option<Vec<u8>> {
         }
         return Some(bytes);
     }
-    if resolved.starts_with("http://") || resolved.starts_with("https://") {
-        return fetch_http_bytes(resolved);
-    }
     let meta = std::fs::metadata(resolved).ok()?;
     if meta.len() > FONT_FACE_MAX_BYTES as u64 {
         return None;
@@ -127,6 +125,30 @@ fn decode_data_url_bytes(url: &str) -> Option<Vec<u8>> {
         .ok()
 }
 
-fn fetch_http_bytes(url: &str) -> Option<Vec<u8>> {
-    nana_ui_platform::fetch_bytes_blocking(url, FONT_FACE_FETCH_TIMEOUT, FONT_FACE_MAX_BYTES as u64)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_font_face_src_is_not_fetched() {
+        let listener =
+            std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let url = format!("http://{}/a.woff2", listener.local_addr().expect("addr"));
+        let spec = HostFontFaceSpec {
+            family: Some("Remote".into()),
+            urls: vec![url],
+            weight: None,
+            style: None,
+        };
+        assert_eq!(
+            ingest_host_font_faces(&[spec]),
+            0,
+            "@font-face has no network transport"
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "a remote src must not open a socket"
+        );
+    }
 }

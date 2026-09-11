@@ -32,7 +32,7 @@ Vue + JS 是一等 L1/L2 消费入口，新应用和已有 Vue 界面均可使�
 | --- | --- |
 | Vue 怎么进这棵树 | [Vue](vue.md) |
 | Vue 的 CSS 支持范围 | [布局](layout.md) |
-| 宿主 API / Fetch 安全边界 | [应用 API](application-api.md) |
+| 宿主 API / Fetch 安全边界（JS 与 `url()` 资源同一份 policy） | [应用 API](application-api.md#fetch-宿主) |
 
 L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 

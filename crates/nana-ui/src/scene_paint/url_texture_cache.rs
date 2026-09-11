@@ -9,7 +9,9 @@ use std::{
     },
 };
 
-use super::image_url::decode_url_rgba;
+use nana_ui_platform::FetchCancellation;
+
+use super::image_url::{decode_url_rgba, decode_url_rgba_with};
 
 const MAX_FETCHES: usize = 4;
 const RETAINED_BYTES: u64 = 64 * 1024 * 1024;
@@ -31,12 +33,34 @@ struct Entry {
     used: Cell<u64>,
 }
 
+/// An in-flight fetch, with the token that can stop it.
+///
+/// `used` is the same liveness stamp `Entry` carries: [`UrlTextureCache::load`]
+/// refreshes it on every frame that still wants this URL, so a stale stamp means
+/// nobody is waiting for the result any more.
+struct Pending {
+    receiver: mpsc::Receiver<Decoded>,
+    cancellation: FetchCancellation,
+    used: Cell<u64>,
+}
+
+#[cfg(test)]
+impl Pending {
+    fn for_test(receiver: mpsc::Receiver<Decoded>, used: u64) -> Self {
+        Self {
+            receiver,
+            cancellation: FetchCancellation::new(),
+            used: Cell::new(used),
+        }
+    }
+}
+
 /// Retains the current working set plus a bounded LRU of inactive textures.
 /// HTTP work is limited to four concurrent requests per painter pipeline.
 #[derive(Default)]
 pub(crate) struct UrlTextureCache {
     entries: HashMap<String, Entry>,
-    pending: HashMap<String, mpsc::Receiver<Decoded>>,
+    pending: HashMap<String, Pending>,
     ready: Arc<AtomicBool>,
     wake: Option<ImageWake>,
     frame: u64,
@@ -94,7 +118,8 @@ impl UrlTextureCache {
         if let Some(cached) = self.get(url) {
             return cached.as_ref().map(|entry| (entry.width, entry.height));
         }
-        if self.pending.contains_key(url) {
+        if let Some(pending) = self.pending.get(url) {
+            pending.used.set(self.frame);
             return None;
         }
         if url.trim().starts_with("http://") || url.trim().starts_with("https://") {
@@ -106,11 +131,13 @@ impl UrlTextureCache {
             let key = url.to_owned();
             let ready = self.ready.clone();
             let wake = self.wake.clone();
+            let cancellation = FetchCancellation::new();
+            let worker_cancellation = cancellation.clone();
             // Workers own only CPU bytes. Texture creation/upload stays on the host.
             let spawned = std::thread::Builder::new()
                 .name("nana-image".into())
                 .spawn(move || {
-                    let decoded = decode_url_rgba(&key);
+                    let decoded = decode_url_rgba_with(&key, &worker_cancellation);
                     if tx.send(decoded).is_ok() {
                         ready.store(true, Ordering::Release);
                         if let Some(wake) = wake {
@@ -119,7 +146,14 @@ impl UrlTextureCache {
                     }
                 });
             if spawned.is_ok() {
-                self.pending.insert(url.to_owned(), rx);
+                self.pending.insert(
+                    url.to_owned(),
+                    Pending {
+                        receiver: rx,
+                        cancellation,
+                        used: Cell::new(self.frame),
+                    },
+                );
             } else {
                 self.insert(url.to_owned(), None);
             }
@@ -139,7 +173,7 @@ impl UrlTextureCache {
         self.ready.store(false, Ordering::Release);
         let mut complete = Vec::new();
         self.pending
-            .retain(|key, receiver| match receiver.try_recv() {
+            .retain(|key, pending| match pending.receiver.try_recv() {
                 Ok(decoded) => {
                     complete.push((key.clone(), decoded));
                     false
@@ -164,7 +198,29 @@ impl UrlTextureCache {
         changed
     }
 
+    /// Drop in-flight fetches nobody has asked for in `IDLE_FRAMES`.
+    ///
+    /// The threshold is deliberately generous: an image scrolled out of view for
+    /// a few frames is cheaper to let finish than to cancel and re-request when
+    /// it scrolls back. Two seconds of nobody asking means it was abandoned.
+    ///
+    /// Cancelled entries are removed outright rather than left for [`Self::poll`]
+    /// to reap, because `poll` records a dead receiver as `None` — a permanent
+    /// "this URL failed" in `entries`. A cancellation is not a failure: dropping
+    /// the entry returns the URL to "never loaded", so a node that comes back
+    /// re-requests it.
+    fn cancel_unreferenced_fetches(&mut self) {
+        self.pending.retain(|_, pending| {
+            if self.frame.saturating_sub(pending.used.get()) <= IDLE_FRAMES {
+                return true;
+            }
+            pending.cancellation.cancel();
+            false
+        });
+    }
+
     pub(crate) fn trim(&mut self) {
+        self.cancel_unreferenced_fetches();
         let mut inactive = Vec::new();
         let mut bytes = 0;
         for (key, entry) in &self.entries {
@@ -195,6 +251,23 @@ impl UrlTextureCache {
             self.entries.remove(&key);
             count -= 1;
             bytes -= size;
+        }
+    }
+}
+
+/// Stop in-flight fetches when the pipeline goes away.
+///
+/// The worker threads are detached, so without this a closed window leaves them
+/// parked on a socket until the policy timeout with nobody left to receive the
+/// result. Cancelling shuts the socket down; the worker's `send` then fails
+/// against the dropped receiver and it exits.
+///
+/// This ends the network wait, not an in-progress decode — `image` and `resvg`
+/// have no cancellation point, so a worker already decoding runs to completion.
+impl Drop for UrlTextureCache {
+    fn drop(&mut self) {
+        for pending in self.pending.values() {
+            pending.cancellation.cancel();
         }
     }
 }
@@ -283,7 +356,10 @@ mod tests {
         cache.begin_frame();
         for id in 0..5 {
             let (sender, receiver) = mpsc::channel();
-            cache.pending.insert(format!("old:{id}"), receiver);
+            cache.pending.insert(
+                format!("old:{id}"),
+                Pending::for_test(receiver, cache.frame),
+            );
             sender
                 .send(Some((2048, 2048, vec![255; 2048 * 2048 * 4])))
                 .unwrap();
@@ -299,5 +375,76 @@ mod tests {
             .map(|(_, _, bytes)| bytes.len())
             .sum();
         assert!(bytes <= RETAINED_BYTES as usize);
+    }
+
+    #[test]
+    fn dropping_the_cache_cancels_in_flight_fetches() {
+        let (_sender, receiver) = mpsc::channel();
+        let mut cache = UrlTextureCache::default();
+        cache.begin_frame();
+        let pending = Pending::for_test(receiver, cache.frame);
+        // The clone outlives the cache, which is what makes the assertion
+        // observable after the drop.
+        let token = pending.cancellation.clone();
+        cache
+            .pending
+            .insert("http://example.invalid/a.png".into(), pending);
+
+        assert!(
+            !token.is_cancelled(),
+            "not cancelled while the cache is alive"
+        );
+        drop(cache);
+        assert!(
+            token.is_cancelled(),
+            "tearing the pipeline down must stop the in-flight request"
+        );
+    }
+
+    #[test]
+    fn unreferenced_pending_fetches_are_cancelled_and_stay_retryable() {
+        let url = "http://example.invalid/b.png";
+        let (_sender, receiver) = mpsc::channel();
+        let mut cache = UrlTextureCache::default();
+        cache.begin_frame();
+        let pending = Pending::for_test(receiver, cache.frame);
+        let token = pending.cancellation.clone();
+        cache.pending.insert(url.into(), pending);
+
+        for _ in 0..=IDLE_FRAMES {
+            cache.begin_frame();
+            cache.trim();
+        }
+
+        assert!(token.is_cancelled(), "an abandoned fetch must be cancelled");
+        assert!(cache.pending.is_empty(), "and must stop occupying a slot");
+        assert!(
+            !cache.contains_retained(url),
+            "cancelling is not failing: the URL must stay re-requestable, not be              cached as a permanent miss"
+        );
+    }
+
+    #[test]
+    fn a_pending_fetch_still_wanted_each_frame_is_not_cancelled() {
+        let url = "http://example.invalid/c.png";
+        let (_sender, receiver) = mpsc::channel();
+        let mut cache = UrlTextureCache::default();
+        cache.begin_frame();
+        let pending = Pending::for_test(receiver, cache.frame);
+        let token = pending.cancellation.clone();
+        cache.pending.insert(url.into(), pending);
+
+        for _ in 0..IDLE_FRAMES * 3 {
+            cache.begin_frame();
+            // What `load` does for a URL that is still painted this frame.
+            cache.pending.get(url).unwrap().used.set(cache.frame);
+            cache.trim();
+        }
+
+        assert!(
+            !token.is_cancelled(),
+            "a live request must not be cancelled"
+        );
+        assert_eq!(cache.pending.len(), 1);
     }
 }
