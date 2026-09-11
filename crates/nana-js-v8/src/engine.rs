@@ -2399,11 +2399,20 @@ mod tests {
                 Some(true),
                 "a cancelled body reads as done, not as a pending promise"
             );
-            assert_eq!(
-                cancels_observed.load(Ordering::Acquire),
-                2,
-                "both the signal abort and body.cancel() must reach the transfer"
-            );
+            // The counter is bumped on a fetch worker thread, and JS does not
+            // wait for it: aborting settles the parked read from the JS side
+            // immediately. So poll rather than sampling once -- reading it here
+            // unsynchronised is a race the slower runner loses.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while cancels_observed.load(Ordering::Acquire) < 2 {
+                assert!(
+                    Instant::now() < deadline,
+                    "only {} of 2 cancellations reached the transfer: the signal \
+                     abort and body.cancel() must both stop the worker",
+                    cancels_observed.load(Ordering::Acquire)
+                );
+                std::thread::sleep(Duration::from_millis(2));
+            }
             engine.shutdown();
         });
     }
