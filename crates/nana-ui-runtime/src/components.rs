@@ -3024,6 +3024,16 @@ pub struct ExtractedNode {
     pub component_geometry: Option<Box<ComponentGeometry>>,
     pub standard_visual_foreground: Option<[f32; 4]>,
     pub custom_render: Option<CustomRenderNode>,
+    /// File-drop hover overlay resolved from the theme. Scene paints this as a
+    /// fill + border on the target box; it is not the node's own background.
+    pub drop_hover: Option<DropHoverOverlay>,
+}
+
+/// Theme-resolved drop-target hover overlay.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropHoverOverlay {
+    pub fill: [f32; 4],
+    pub border: [f32; 4],
 }
 
 /// Theme-resolved committed-text span ready for Scene paint.

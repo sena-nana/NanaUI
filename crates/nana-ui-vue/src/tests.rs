@@ -834,6 +834,34 @@ fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
     let mut host = VueHost::new();
     host.callbacks.fire_event = Some(JsFunctionId(1));
     let (first, second) = install_input_nodes(&mut host);
+    {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.set_attribute(first, "drop-accepts", "files");
+        doc.set_attribute(second, "drop-accepts", "files");
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.write_layout(
+            nana_ui_runtime::StableNodeId::try_from(first).expect("first id"),
+            nana_ui_runtime::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+        mutations.write_layout(
+            nana_ui_runtime::StableNodeId::try_from(second).expect("second id"),
+            nana_ui_runtime::LayoutBox {
+                x: 100.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+        doc.context_mut()
+            .commit_mutations(mutations)
+            .expect("layout");
+    }
     let mut engine = RecordingEngine::default();
     let paths = vec![
         PathBuf::from("C:/drop/avatar.png"),
@@ -870,11 +898,15 @@ fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
             .collect::<Vec<_>>(),
         [
             (first.0, "dragenter"),
+            (first.0, "filehover"),
             (first.0, "dragover"),
             (first.0, "dragleave"),
+            (first.0, "fileleave"),
             (second.0, "dragenter"),
+            (second.0, "filehover"),
             (second.0, "dragover"),
             (second.0, "drop"),
+            (second.0, "filedrop"),
         ]
     );
     let files = events
@@ -899,6 +931,190 @@ fn file_drag_tracks_hit_target_and_exposes_file_descriptors() {
             .and_then(HostValue::as_str),
         Some("background.jpg")
     );
+}
+
+#[test]
+fn window_blur_cancels_file_drag() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let (first, _) = install_input_nodes(&mut host);
+    {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.set_attribute(first, "drop-accepts", "files");
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.write_layout(
+            nana_ui_runtime::StableNodeId::try_from(first).expect("first id"),
+            nana_ui_runtime::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 40.0,
+            },
+        );
+        doc.context_mut()
+            .commit_mutations(mutations)
+            .expect("layout");
+    }
+    let mut engine = RecordingEngine::default();
+    let paths = vec![PathBuf::from("/tmp/note.md")];
+    host.dispatch_file_drag(
+        &mut engine,
+        FileDragEventKind::Hover,
+        &paths,
+        Some((10.0, 12.0)),
+    )
+    .expect("hover");
+    host.pump_lifecycle(&mut engine, WindowLifecycleEvent::Blur)
+        .expect("blur");
+    let names: Vec<_> = fired_events(&engine)
+        .into_iter()
+        .filter(|(target, _, _)| *target == first.0)
+        .map(|(_, name, _)| name)
+        .collect();
+    assert!(names.contains(&"dragleave".to_string()));
+    assert!(names.contains(&"fileleave".to_string()));
+    assert!(
+        host.document()
+            .lock()
+            .expect("document")
+            .context()
+            .drop_hover()
+            .is_none()
+    );
+}
+
+#[test]
+fn vue_terminal_keys_emit_input_bytes() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let terminal = {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let node = doc.create_element("nana-terminal");
+        let root = doc.mount_root();
+        doc.insert(node, root, None);
+        node
+    };
+    {
+        let bridge = host.bridge();
+        let mut bridge = bridge.lock().expect("bridge");
+        let mut props = WidgetProps {
+            element_tag: "nana-terminal".into(),
+            ..WidgetProps::default()
+        };
+        props.attrs.insert("columns".into(), "8".into());
+        props.attrs.insert("rows".into(), "2".into());
+        bridge.register(terminal.0, WidgetKind::Terminal, props);
+    }
+    {
+        let snapshot = host.bridge().lock().expect("bridge").snapshot();
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.sync_semantic_styles(&snapshot);
+        let id = nana_ui_runtime::StableNodeId::try_from(terminal).expect("id");
+        let mut mutations = nana_ui_runtime::MutationQueue::new();
+        mutations.write_layout(
+            id,
+            nana_ui_runtime::LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 36.0,
+            },
+        );
+        doc.context_mut()
+            .commit_mutations(mutations)
+            .expect("layout");
+        doc.set_focus(terminal);
+    }
+    let mut engine = RecordingEngine::default();
+    host.dispatch_keyboard(
+        &mut engine,
+        &KeyboardInput::key_down("Enter", "Enter"),
+        Some(terminal),
+    )
+    .expect("enter");
+    assert!(fired_events(&engine).iter().any(|(target, name, detail)| {
+        *target == terminal.0
+            && name == "input"
+            && matches!(
+                detail.get("data").and_then(HostValue::as_array).map(Vec::as_slice),
+                Some([HostValue::Number(n)]) if (*n - 13.0).abs() < f64::EPSILON
+            )
+    }));
+}
+
+#[test]
+fn vue_diff_button_activation_fires_hunk_accept() {
+    let mut host = VueHost::new();
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let diff = {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let node = doc.create_element("nana-diff");
+        let root = doc.mount_root();
+        doc.insert(node, root, None);
+        node
+    };
+    {
+        let bridge = host.bridge();
+        let mut bridge = bridge.lock().expect("bridge");
+        let mut props = WidgetProps {
+            element_tag: "nana-diff".into(),
+            ..WidgetProps::default()
+        };
+        props.attrs.insert(
+            "hunks".into(),
+            r#"[{"header":"@@","lines":[{"kind":"added","text":"x","new":1}]}]"#.into(),
+        );
+        bridge.register(diff.0, WidgetKind::Diff, props);
+    }
+    let click = {
+        let snapshot = host.bridge().lock().expect("bridge").snapshot();
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.sync_semantic_styles(&snapshot);
+        let runtime_document = doc.runtime_document().document();
+        doc.context_mut()
+            .layout_document(
+                runtime_document,
+                nana_ui_runtime::LayoutViewport::new(320.0, 200.0),
+            )
+            .expect("layout");
+        let accept = doc
+            .context()
+            .world()
+            .document_order(runtime_document)
+            .into_iter()
+            .find(|id| doc.context().world().text(*id) == Some("接受块0"))
+            .expect("hunk accept");
+        let bounds = doc
+            .context()
+            .world()
+            .layout_box(accept)
+            .expect("accept bounds");
+        (
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        )
+    };
+    let mut engine = RecordingEngine::default();
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Down, click.0, click.1),
+    )
+    .expect("down");
+    host.dispatch_pointer(
+        &mut engine,
+        PointerInput::mouse(PointerEventKind::Up, click.0, click.1),
+    )
+    .expect("up");
+    assert!(fired_events(&engine).iter().any(|(target, name, detail)| {
+        *target == diff.0
+            && name == "hunk-accept"
+            && detail.get("hunk").and_then(HostValue::as_f64) == Some(0.0)
+    }));
 }
 
 #[test]

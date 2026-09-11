@@ -276,13 +276,60 @@ impl ComponentView for TerminalRow {
 }
 
 impl RegisterableComponent for TerminalView {
-    const TYPE_ID: &'static str = "nana.terminal";
-    const TAGS: &'static [&'static str] = &["terminal"];
+    const TYPE_ID: &'static str = crate::component_descriptors::TERMINAL.type_id;
+    const TAGS: &'static [&'static str] = crate::component_descriptors::TERMINAL.tags;
     const RETAIN_SEMANTIC_STATE: bool = true;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let mut view = Self::new(TerminalScreen::blank(1, 1));
+        let columns = spec
+            .attr("columns")
+            .or_else(|| spec.attr("cols"))
+            .and_then(|value| value.trim().parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        let rows = spec
+            .attr("rows")
+            .and_then(|value| value.trim().parse().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(1);
+        let mut view = Self::new(TerminalScreen::blank(columns, rows));
         view.disabled = spec.disabled;
+        view.read_only = spec.read_only
+            || spec
+                .attr("read-only")
+                .or_else(|| spec.attr("readOnly"))
+                .is_some_and(|value| {
+                    let value = value.trim();
+                    !(value.eq_ignore_ascii_case("false") || value == "0")
+                });
         view
+    }
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut view = Self::from_semantic(spec);
+        let Some(previous) = previous else {
+            return view;
+        };
+        // PTY cells are application-owned. Vue rebinds every semantic pass;
+        // keep the live grid unless the author actually changed columns×rows.
+        let size_changed = view.screen.columns != previous.screen.columns
+            || view.screen.rows != previous.screen.rows;
+        if !size_changed {
+            view.screen = previous.screen.clone();
+        }
+        view.selection = previous.selection;
+        view.viewport = previous.viewport;
+        view.cell_width = previous.cell_width;
+        view.cell_height = previous.cell_height;
+        view.font_size = previous.font_size;
+        view.font_family = previous.font_family.clone();
+        view.preedit = previous.preedit.clone();
+        view.dragging = previous.dragging;
+        view
+    }
+    fn finish_semantic(
+        context: &mut AppContext,
+        entity: Entity<Self>,
+    ) -> Result<(), FrameworkError> {
+        context.refresh_terminal_view(entity)
     }
 }
 
@@ -936,5 +983,28 @@ mod tests {
             terminal_key_bytes("ArrowLeft", None, true, false, false, false),
             b"\x1b[1;5D"
         );
+    }
+
+    #[test]
+    fn semantic_rebind_keeps_pty_cells_when_grid_size_is_unchanged() {
+        use crate::component_registry::ComponentTypeId;
+        use nana_ui_core::LayoutStyle;
+
+        let type_id = ComponentTypeId::new("nana.terminal").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [("columns", "3"), ("rows", "2")];
+        let spec = SemanticSpec {
+            attrs: &attrs,
+            ..SemanticSpec::from_parts(&type_id, &layout)
+        };
+        let mut previous = TerminalView::from_semantic(&spec);
+        Arc::make_mut(&mut previous.screen.cells)[0].text = Arc::from("a");
+        previous.selection = Some(TerminalSelection {
+            anchor: TerminalPosition { row: 0, column: 0 },
+            focus: TerminalPosition { row: 0, column: 1 },
+        });
+        let rebound = TerminalView::reconcile_semantic(&spec, Some(&previous));
+        assert_eq!(rebound.screen.cells[0].text.as_ref(), "a");
+        assert_eq!(rebound.selection, previous.selection);
     }
 }

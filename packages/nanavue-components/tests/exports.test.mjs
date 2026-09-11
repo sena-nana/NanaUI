@@ -29,6 +29,9 @@ const L2_OVERLAY_EXPORTS = [
   "NanaDropdown",
   "NanaSearch",
   "NanaTextarea",
+  "NanaDropTarget",
+  "NanaTerminal",
+  "NanaDiff",
 ];
 
 const HOST_TAGS = {
@@ -45,6 +48,9 @@ const HOST_TAGS = {
   NanaDropdown: "nana-dropdown",
   NanaSearch: "search-dropdown",
   NanaTextarea: "textarea",
+  NanaDropTarget: "nana-drop-target",
+  NanaTerminal: "nana-terminal",
+  NanaDiff: "nana-diff",
   NanaCommandPalette: "nana-command-palette",
   NanaTreeView: "nana-tree-view",
   NanaCalendar: "nana-calendar-heatmap",

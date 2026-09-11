@@ -201,6 +201,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 

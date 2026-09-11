@@ -137,6 +137,12 @@ pub enum WidgetKind {
     /// Host-fed video surface → Runtime `Video` (`nana.video`); frames are
     /// pushed by the host through the video surface API.
     Video,
+    /// File drop surface → Runtime `Stack` alias `nana.drop-target`.
+    DropTarget,
+    /// Retained terminal grid → Runtime `TerminalView`.
+    Terminal,
+    /// Structured diff review → Runtime `DiffView`.
+    Diff,
 }
 
 /// Single source of truth for [`WidgetKind`]'s three string projections.
@@ -261,6 +267,9 @@ widget_kind_table! {
     GpuTextureView => { aliases: [], as_str: "gpu", tag: "nana-gpu" },
     GpuView => { aliases: [], as_str: "gpu-view", tag: "nana-gpu-view" },
     Video => { aliases: [], as_str: "video", tag: "nana-video" },
+    DropTarget => { aliases: [], as_str: "drop-target", tag: "nana-drop-target" },
+    Terminal => { aliases: [], as_str: "terminal", tag: "nana-terminal" },
+    Diff => { aliases: [], as_str: "diff", tag: "nana-diff" },
 }
 
 impl WidgetKind {
@@ -286,6 +295,7 @@ impl WidgetKind {
                 | Self::PaneChrome
                 | Self::SettingsCard
                 | Self::SettingsCollapsibleCard
+                | Self::DropTarget
         )
     }
 

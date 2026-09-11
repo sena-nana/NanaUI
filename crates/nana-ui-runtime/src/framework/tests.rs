@@ -2826,6 +2826,115 @@ fn a_drop_target_covers_its_subtree_and_only_the_kinds_it_accepts() {
     );
 }
 
+#[test]
+fn file_drag_resolves_hover_and_drop_onto_the_registered_target() {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use nana_ui_core::{DropAccepts, DropEffect, FileDragKind};
+
+    use crate::FileDropEvent;
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut panel_style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut panel_style.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(100.0));
+    }
+    let panel = context
+        .create_component(document, Stack::column(0.0).style(panel_style))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    context
+        .set_drop_target(panel, DropAccepts::files().effect(DropEffect::Copy))
+        .unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&events);
+    context
+        .on(panel, move |_, event: &FileDropEvent, _| {
+            log.lock().unwrap().push(event.clone());
+        })
+        .unwrap();
+
+    let paths = [PathBuf::from("/tmp/note.md")];
+    assert!(
+        context
+            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)),)
+            .unwrap()
+    );
+    assert_eq!(
+        context.drop_hover(),
+        Some((panel.stable_id(), DropEffect::Copy))
+    );
+    assert!(
+        context
+            .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((20.0, 20.0)),)
+            .unwrap()
+    );
+    assert!(context.drop_hover().is_none());
+    assert!(
+        !context
+            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((380.0, 280.0)),)
+            .unwrap()
+    );
+
+    let log = events.lock().unwrap();
+    assert_eq!(log.len(), 2);
+    assert!(matches!(
+        &log[0],
+        FileDropEvent::Hovered { effect, .. } if *effect == DropEffect::Copy
+    ));
+    assert!(matches!(&log[1], FileDropEvent::Dropped { .. }));
+}
+
+#[test]
+fn file_drag_drop_miss_redraws_so_hover_chrome_clears() {
+    use std::path::PathBuf;
+
+    use nana_ui_core::{DropAccepts, DropEffect, FileDragKind};
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut panel_style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut panel_style.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(100.0));
+    }
+    let panel = context
+        .create_component(document, Stack::column(0.0).style(panel_style))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    context
+        .set_drop_target(panel, DropAccepts::files().effect(DropEffect::Copy))
+        .unwrap();
+
+    let paths = [PathBuf::from("/tmp/note.md")];
+    assert!(
+        context
+            .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)))
+            .unwrap()
+    );
+    assert_eq!(
+        context.drop_hover(),
+        Some((panel.stable_id(), DropEffect::Copy))
+    );
+    assert!(
+        context
+            .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((380.0, 280.0)))
+            .unwrap(),
+        "a drop miss must still request a redraw so hover chrome clears"
+    );
+    assert!(context.drop_hover().is_none());
+}
+
 fn overflowing_scroll_view(
     context: &mut AppContext,
     document: DocumentId,

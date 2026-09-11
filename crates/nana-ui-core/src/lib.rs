@@ -67,7 +67,7 @@ pub use box_layout::{
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
-pub use drag::{DropAccepts, DropEffect, DropKind};
+pub use drag::{DropAccepts, DropEffect, DropKind, FileDragKind};
 pub use expansion::ExpansionState;
 pub use file_dialog::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,

@@ -2682,6 +2682,143 @@ fn highlighted_textarea_binds_language_and_restores_input() {
 }
 
 #[test]
+fn terminal_diff_and_drop_target_bind_from_semantic() {
+    let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+    let terminal = doc.create_element("nana-terminal");
+    let diff = doc.create_element("nana-diff");
+    let drop = doc.create_element("nana-drop-target");
+    doc.insert(terminal, doc.mount_root(), None);
+    doc.insert(diff, doc.mount_root(), None);
+    doc.insert(drop, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    let mut terminal_props = crate::WidgetProps {
+        element_tag: "nana-terminal".into(),
+        ..Default::default()
+    };
+    terminal_props.attrs.insert("columns".into(), "8".into());
+    terminal_props.attrs.insert("rows".into(), "3".into());
+    bridge.register(terminal.0, crate::WidgetKind::Terminal, terminal_props);
+    let mut diff_props = crate::WidgetProps {
+        element_tag: "nana-diff".into(),
+        ..Default::default()
+    };
+    diff_props.attrs.insert(
+        "hunks".into(),
+        r#"[{"header":"@@","lines":[{"kind":"added","text":"x","new":1}]}]"#.into(),
+    );
+    bridge.register(diff.0, crate::WidgetKind::Diff, diff_props);
+    bridge.register(
+        drop.0,
+        crate::WidgetKind::DropTarget,
+        crate::WidgetProps {
+            element_tag: "nana-drop-target".into(),
+            ..Default::default()
+        },
+    );
+    doc.sync_semantic_styles(&bridge.snapshot());
+
+    let terminal_id = StableNodeId::try_from(terminal).unwrap();
+    assert_eq!(
+        doc.runtime
+            .component_type(terminal_id)
+            .map(ComponentTypeId::as_str),
+        Some("nana.terminal")
+    );
+    assert_eq!(
+        doc.context()
+            .read(
+                nana_ui_runtime::Entity::<nana_ui_runtime::TerminalView>::from_stable_id(
+                    terminal_id
+                ),
+                |view| (view.screen.columns, view.screen.rows)
+            )
+            .unwrap(),
+        (8, 3)
+    );
+    let diff_id = StableNodeId::try_from(diff).unwrap();
+    assert_eq!(
+        doc.runtime
+            .component_type(diff_id)
+            .map(ComponentTypeId::as_str),
+        Some("nana.diff")
+    );
+    assert!(
+        doc.context()
+            .read(
+                nana_ui_runtime::Entity::<nana_ui_runtime::DiffView>::from_stable_id(diff_id),
+                |view| !view.hunks.is_empty()
+            )
+            .unwrap()
+    );
+    let drop_id = StableNodeId::try_from(drop).unwrap();
+    assert_eq!(
+        doc.runtime
+            .component_type(drop_id)
+            .map(ComponentTypeId::as_str),
+        Some("nana.drop-target")
+    );
+}
+
+#[test]
+fn drop_accepts_registers_after_the_world_commit() {
+    let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+    let node = doc.create_element("div");
+    doc.set_attribute(node, "drop-accepts", "files");
+    let id = StableNodeId::try_from(node).unwrap();
+    let document = doc.runtime_document().document();
+    assert!(
+        doc.context()
+            .drop_target_at(document, 10.0, 10.0, &nana_ui_core::DropKind::Files)
+            .is_none()
+    );
+    doc.insert(node, doc.mount_root(), None);
+    doc.flush_host_frame();
+    let mut mutations = MutationQueue::new();
+    mutations.write_layout(
+        id,
+        nana_ui_runtime::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 40.0,
+        },
+    );
+    doc.context_mut()
+        .commit_mutations(mutations)
+        .expect("layout");
+    assert_eq!(
+        doc.context()
+            .drop_target_at(document, 10.0, 10.0, &nana_ui_core::DropKind::Files)
+            .map(|(target, _)| target),
+        Some(id)
+    );
+}
+
+#[test]
+fn highlighted_textarea_binds_gutter_attrs() {
+    let mut doc = NanaTreeDocument::new(320, 200, 1.0);
+    let area = doc.create_element("textarea");
+    doc.insert(area, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    let mut props = crate::WidgetProps {
+        value: "fn main() {}".into(),
+        ..Default::default()
+    };
+    props.attrs.insert("language".into(), "rs".into());
+    props.attrs.insert("line-numbers".into(), "".into());
+    bridge.register(area.0, crate::WidgetKind::Textarea, props);
+    doc.sync_semantic_styles(&bridge.snapshot());
+    let area_id = StableNodeId::try_from(area).unwrap();
+    assert!(matches!(
+        doc.runtime.standard_visual(area_id),
+        Some(nana_ui_runtime::StandardVisual::TextInput {
+            line_numbers: true,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn segmented_and_tabs_bind_parent_and_project_child_options() {
     let mut doc = NanaTreeDocument::new(320, 200, 1.0);
     let tabs = doc.create_element("nana-tabs");

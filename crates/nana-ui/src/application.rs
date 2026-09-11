@@ -4,6 +4,7 @@ use crate::{
     FrameDemand, HostTextureRegistry, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
     SceneGpuRendererRegistry, SceneResourceProducerRegistry, ThemeMode,
 };
+use nana_ui_core::FileDragKind;
 use nana_ui_platform::{WindowEvent, WindowId};
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 use std::collections::HashMap;
@@ -85,6 +86,29 @@ pub trait ApplicationState: Sized + 'static {
 pub struct RuntimeApplication<State: ApplicationState> {
     pub state: State,
     pub windows: HashMap<WindowId, ApplicationWindow>,
+}
+
+impl<State: ApplicationState> RuntimeApplication<State> {
+    fn dispatch_file_drag(
+        &mut self,
+        id: WindowId,
+        kind: FileDragKind,
+        paths: &[std::path::PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> RuntimeProgramUpdate {
+        let Some(window) = self.windows.get_mut(&id) else {
+            return RuntimeProgramUpdate::default();
+        };
+        let document = window.document.document();
+        match window
+            .document
+            .context_mut()
+            .dispatch_file_drag(document, kind, paths, position)
+        {
+            Ok(true) => RuntimeProgramUpdate::redraw(id),
+            _ => RuntimeProgramUpdate::default(),
+        }
+    }
 }
 
 impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
@@ -199,6 +223,19 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
                 window_commands: vec![nana_ui_platform::WindowCommand::Close(id)],
                 ..Default::default()
             },
+            WindowEvent::FileHovered {
+                id,
+                paths,
+                position,
+            } => self.dispatch_file_drag(id, FileDragKind::Hover, &paths, position),
+            WindowEvent::FileDropped {
+                id,
+                paths,
+                position,
+            } => self.dispatch_file_drag(id, FileDragKind::Drop, &paths, position),
+            WindowEvent::FileHoverCancelled { id } => {
+                self.dispatch_file_drag(id, FileDragKind::Cancel, &[], None)
+            }
             _ => RuntimeProgramUpdate::default(),
         }
     }

@@ -160,6 +160,7 @@ mod tests {
             component_geometry: None,
             standard_visual_foreground: None,
             custom_render: None,
+            drop_hover: None,
         }
     }
 

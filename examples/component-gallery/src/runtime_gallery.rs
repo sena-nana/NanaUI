@@ -3,18 +3,19 @@ use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
-    CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DockFloatingSurface, DocumentId,
-    Dropdown, DropdownEvent, DropdownOption, EmptyState, Entity, FrameworkError, GraphCanvas,
-    GraphCanvasEvent, GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard,
-    LabeledValue, LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown,
-    NodeStyle, OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree,
-    PaneTreeNode, Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged,
-    RichTextEvent, RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, SemanticColorRole,
-    SidebarFooter, SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState,
-    SidebarSection, Skeleton, Spinner, StableNodeId, StatusBadge, Switch, TabOption, Tabs,
-    TabsEvent, TextArea, TextChanged, TextInput, Thumbnail, Toast, ToggleChanged, TreeNode,
-    TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
+    CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
+    DockFloatingSurface, DocumentId, DropAccepts, Dropdown, DropdownEvent, DropdownOption,
+    EmptyState, Entity, FrameworkError, GraphCanvas, GraphCanvasEvent, GraphMinimap,
+    GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue, LayoutViewport,
+    LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle, OverlayHost,
+    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, Popover,
+    PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged, RichTextEvent,
+    RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, SemanticColorRole, SidebarFooter,
+    SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection,
+    Skeleton, Spinner, StableNodeId, StatusBadge, Switch, TabOption, Tabs, TabsEvent,
+    TerminalScreen, TerminalView, TextArea, TextChanged, TextInput, Thumbnail, Toast,
+    ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
@@ -1980,40 +1981,97 @@ fn mount_rich_text(
     state: &GalleryState,
     _pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<RichTextMount, FrameworkError> {
-    let (root, markdown, link_status) = context.build_detached(document_id, |ui| {
-        let heading = ui.parked(styled_text(
-            "原生富文本",
-            SemanticColorRole::Text,
-            20.0,
-            600,
-        ));
-        let hint = ui.parked(styled_text(
-            "CommonMark、数学公式与图表共享同一 Runtime Scene 渲染路径。",
-            SemanticColorRole::Muted,
-            12.0,
-            400,
-        ));
-        let markdown = ui.parked(state.markdown.clone());
-        let link_status = ui.parked(styled_text(
-            state
-                .opened_markdown_link
-                .as_ref()
-                .map_or(String::new(), |link| format!("已选择链接：{link}")),
-            SemanticColorRole::Accent,
-            11.0,
-            400,
-        ));
-        let root = ui.detached(HostStack::canvas());
-        ui.nest(root, |ui| {
-            ui.adopt(heading);
-            ui.adopt(hint);
-            ui.adopt(markdown);
-            ui.adopt(link_status);
-        });
-        (root, markdown, link_status)
-    })?;
+    let (root, markdown, link_status, drop, diff, terminal) =
+        context.build_detached(document_id, |ui| {
+            let heading = ui.parked(styled_text(
+                "原生富文本",
+                SemanticColorRole::Text,
+                20.0,
+                600,
+            ));
+            let hint = ui.parked(styled_text(
+                "CommonMark、数学公式与图表共享同一 Runtime Scene 渲染路径。",
+                SemanticColorRole::Muted,
+                12.0,
+                400,
+            ));
+            let markdown = ui.parked(state.markdown.clone());
+            let link_status = ui.parked(styled_text(
+                state
+                    .opened_markdown_link
+                    .as_ref()
+                    .map_or(String::new(), |link| format!("已选择链接：{link}")),
+                SemanticColorRole::Accent,
+                11.0,
+                400,
+            ));
+            let editor_title = ui.parked(styled_text(
+                "代码编辑器",
+                SemanticColorRole::Text,
+                13.0,
+                600,
+            ));
+            let editor = ui.parked(gallery_code_editor(state));
+            let terminal_title = ui.parked(styled_text("终端", SemanticColorRole::Text, 13.0, 600));
+            let terminal = ui.parked(TerminalView::new(gallery_terminal_screen()));
+            let diff_title = ui.parked(styled_text("差异", SemanticColorRole::Text, 13.0, 600));
+            let diff = ui.parked(DiffView::new(gallery_diff_hunks()));
+            let drop_title = ui.parked(styled_text("拖入文件", SemanticColorRole::Text, 13.0, 600));
+            let drop = ui.parked(HostStack::column(8.0));
+            let drop_hint = ui.parked(styled_text(
+                "把文件拖到这里",
+                SemanticColorRole::Muted,
+                12.0,
+                400,
+            ));
+            ui.nest(drop, |ui| {
+                ui.adopt(drop_hint);
+            });
+            let root = ui.detached(HostStack::canvas());
+            ui.nest(root, |ui| {
+                ui.adopt(heading);
+                ui.adopt(hint);
+                ui.adopt(markdown);
+                ui.adopt(link_status);
+                ui.adopt(editor_title);
+                ui.adopt(editor);
+                ui.adopt(terminal_title);
+                ui.adopt(terminal);
+                ui.adopt(diff_title);
+                ui.adopt(diff);
+                ui.adopt(drop_title);
+                ui.adopt(drop);
+            });
+            (root, markdown, link_status, drop, diff, terminal)
+        })?;
+    context.set_drop_target(drop, DropAccepts::files())?;
+    context.assemble_diff_view(diff)?;
+    context.refresh_terminal_view(terminal)?;
     context.assemble_markdown(markdown)?;
     Ok((root, markdown, link_status))
+}
+
+fn gallery_terminal_screen() -> TerminalScreen {
+    let mut screen = TerminalScreen::blank(32, 6);
+    let hello = "nana@host ~ % echo hi";
+    let cells = Arc::make_mut(&mut screen.cells);
+    for (index, ch) in hello.chars().enumerate() {
+        if let Some(cell) = cells.get_mut(index) {
+            cell.text = Arc::from(ch.to_string());
+        }
+    }
+    screen
+}
+
+fn gallery_diff_hunks() -> Arc<[DiffHunk]> {
+    Arc::from([DiffHunk::new(
+        "@@ -1,2 +1,2 @@",
+        vec![
+            DiffLine::context(1, 1, "fn main() {"),
+            DiffLine::removed(2, "    println!(\"a\");"),
+            DiffLine::added(2, "    println!(\"b\");"),
+        ],
+    )])
 }
 
 fn mount_graph(
@@ -2865,6 +2923,27 @@ fn gallery_textarea(state: &GalleryState) -> TextArea {
         .placeholder("输入说明")
         .height(96.0)
         .invalid(state.editor.trim().chars().count() < 4)
+        .disabled(!state.editor_enabled())
+}
+
+fn gallery_code_editor(state: &GalleryState) -> TextArea {
+    TextArea::new(state.editor.as_str())
+        .placeholder("fn main() {}")
+        .height(120.0)
+        .line_numbers(true)
+        .minimap(true)
+        .diagnostics(std::sync::Arc::from([
+            nana_ui::runtime::TextDiagnosticSpan::new(
+                0,
+                2,
+                nana_ui::runtime::TextDiagnosticSeverity::Error,
+            )
+            .with_message("示例诊断"),
+        ]))
+        .git_gutter(std::sync::Arc::from([nana_ui::runtime::TextGitMark::new(
+            1,
+            nana_ui::runtime::TextGitMarkKind::Modified,
+        )]))
         .disabled(!state.editor_enabled())
 }
 

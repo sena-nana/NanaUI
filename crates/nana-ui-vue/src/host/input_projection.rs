@@ -87,9 +87,11 @@ impl VueHost {
     }
     /// Resolve the topmost node under `(x, y)` for native input routing.
     ///
-    /// Scene paint boxes in [`LayoutBoxStore`] win when present so file drag
-    /// and early-frame probes match painted geometry. Runtime hit-test is the
-    /// fallback when no paint box covers the point.
+    /// Scene paint boxes in [`LayoutBoxStore`] win when present so early-frame
+    /// probes match painted geometry. Runtime hit-test is the fallback when no
+    /// paint box covers the point. File drag uses registered drop targets
+    /// instead of this pointer hit.
+    #[allow(dead_code)]
     pub(crate) fn hit_test_client_point(&self, x: f32, y: f32) -> Option<NodeHandle> {
         let doc = self.document.lock().expect("vue doc");
         if !self.layout_boxes.snapshot().is_empty() {
@@ -110,8 +112,10 @@ impl VueHost {
         doc.hit_test(x, y)
     }
     /// Dispatch a native file hover/drop lifecycle through the same Vue event
-    /// tree as pointer input. Dropped files are descriptors with an absolute
-    /// path; reading their contents remains an application Host API decision.
+    /// tree as pointer input. Only nodes registered with `drop-accepts` receive
+    /// events; hit-testing uses Runtime layout boxes, not pointer-event hits.
+    /// Dropped files are descriptors with an absolute path; reading their
+    /// contents remains an application Host API decision.
     pub fn dispatch_file_drag<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
@@ -119,37 +123,99 @@ impl VueHost {
         paths: &[PathBuf],
         position: Option<(f32, f32)>,
     ) -> Result<bool, JsEngineError> {
-        let target_at_position = position.and_then(|(x, y)| self.hit_test_client_point(x, y));
-        let mount_root = self.document.lock().expect("vue doc").mount_root();
-        let target = target_at_position
-            .or(self.input_projection.file_drag_target)
-            .unwrap_or(mount_root);
+        let runtime_kind = match kind {
+            FileDragEventKind::Hover => nana_ui_core::FileDragKind::Hover,
+            FileDragEventKind::Drop => nana_ui_core::FileDragKind::Drop,
+            FileDragEventKind::Cancel => nana_ui_core::FileDragKind::Cancel,
+        };
+        let drop_at = {
+            let mut doc = self.document.lock().expect("vue doc");
+            let document = doc.runtime_document().document();
+            let target = position.and_then(|(x, y)| {
+                doc.context()
+                    .drop_target_at(document, x, y, &nana_ui_core::DropKind::Files)
+                    .map(|(id, _)| NodeHandle::from(id))
+            });
+            doc.context_mut()
+                .dispatch_file_drag(document, runtime_kind, paths, position)
+                .map_err(|error| JsEngineError::new(error.to_string()))?;
+            target
+        };
         let detail = file_drag_detail(paths, position);
         let mut allowed = true;
+        let previous = self.input_projection.file_drag_target;
 
         match kind {
             FileDragEventKind::Hover => {
-                if self.input_projection.file_drag_target != Some(target) {
-                    if let Some(previous) = self.input_projection.file_drag_target {
-                        allowed &=
-                            self.fire_dom_event(engine, previous, "dragleave", detail.clone())?;
+                if previous != drop_at {
+                    if let Some(previous) = previous {
+                        allowed &= self.fire_file_drag_event(
+                            engine,
+                            previous,
+                            &["dragleave", "fileleave"],
+                            detail.clone(),
+                        )?;
                     }
-                    allowed &= self.fire_dom_event(engine, target, "dragenter", detail.clone())?;
-                    self.input_projection.file_drag_target = Some(target);
+                    if let Some(target) = drop_at {
+                        allowed &= self.fire_file_drag_event(
+                            engine,
+                            target,
+                            &["dragenter", "filehover"],
+                            detail.clone(),
+                        )?;
+                    }
+                    self.input_projection.file_drag_target = drop_at;
                 }
-                allowed &= self.fire_dom_event(engine, target, "dragover", detail)?;
+                if let Some(target) = drop_at {
+                    allowed &= self.fire_dom_event(engine, target, "dragover", detail)?;
+                }
             }
             FileDragEventKind::Drop => {
-                allowed &= self.fire_dom_event(engine, target, "drop", detail)?;
-                self.input_projection.file_drag_target = None;
+                if let Some(target) = drop_at {
+                    allowed &= self.fire_file_drag_event(
+                        engine,
+                        target,
+                        &["drop", "filedrop"],
+                        detail.clone(),
+                    )?;
+                }
+                if let Some(previous) = self.input_projection.file_drag_target.take()
+                    && drop_at != Some(previous)
+                {
+                    allowed &= self.fire_file_drag_event(
+                        engine,
+                        previous,
+                        &["dragleave", "fileleave"],
+                        detail,
+                    )?;
+                }
             }
             FileDragEventKind::Cancel => {
                 if let Some(previous) = self.input_projection.file_drag_target.take() {
-                    allowed &= self.fire_dom_event(engine, previous, "dragleave", detail)?;
+                    allowed &= self.fire_file_drag_event(
+                        engine,
+                        previous,
+                        &["dragleave", "fileleave"],
+                        detail,
+                    )?;
                 }
             }
         }
         engine.run_microtasks()?;
+        Ok(allowed)
+    }
+
+    fn fire_file_drag_event<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+        target: NodeHandle,
+        names: &[&str],
+        detail: BTreeMap<String, HostValue>,
+    ) -> Result<bool, JsEngineError> {
+        let mut allowed = true;
+        for name in names {
+            allowed &= self.fire_dom_event(engine, target, name, detail.clone())?;
+        }
         Ok(allowed)
     }
     /// Route a Runtime/bridge action into the queue and JS event listeners.
@@ -332,6 +398,95 @@ impl VueHost {
         };
         let result = engine.invoke(fire, &args)?;
         Ok(result.as_bool().unwrap_or(true))
+    }
+    pub(crate) fn drain_native_dom_events<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        if self.callbacks.fire_event.is_none() {
+            return Ok(());
+        }
+        let events = self.document.lock().expect("vue doc").take_native_events();
+        for event in events {
+            self.fire_dom_event(engine, NodeHandle(event.id), event.name, event.detail)?;
+        }
+        Ok(())
+    }
+    fn dispatch_terminal_key(&mut self, input: &KeyboardInput) -> Result<bool, JsEngineError> {
+        let mut doc = self.document.lock().expect("vue doc");
+        let document = doc.runtime_document().document();
+        if doc.context().focused_terminal(document).is_none() {
+            return Ok(false);
+        }
+        let text = (input.key.chars().count() == 1).then_some(input.key.as_str());
+        doc.context_mut()
+            .terminal_key(
+                document,
+                &input.key,
+                text,
+                input.modifiers.control,
+                input.modifiers.alt,
+                input.modifiers.shift,
+            )
+            .map_err(|error| JsEngineError::new(error.to_string()))
+    }
+    fn dispatch_terminal_pointer(
+        &mut self,
+        hit: Option<NodeHandle>,
+        input: &PointerInput,
+        phase: u8,
+    ) -> Result<bool, JsEngineError> {
+        let mut doc = self.document.lock().expect("vue doc");
+        let document = doc.runtime_document().document();
+        let target = hit.and_then(|handle| {
+            let mut id = nana_ui_runtime::StableNodeId::try_from(handle).ok()?;
+            loop {
+                if doc
+                    .context()
+                    .view_entity::<nana_ui_runtime::TerminalView>(id)
+                    .is_some()
+                {
+                    return Some(id);
+                }
+                id = doc.context().world().node(id)?.parent?;
+            }
+        });
+        doc.context_mut()
+            .terminal_pointer(
+                document,
+                target,
+                input.pointer_id,
+                phase,
+                input.client_x,
+                input.client_y,
+            )
+            .map_err(|error| JsEngineError::new(error.to_string()))
+    }
+    fn activate_runtime_at(
+        &mut self,
+        x: f32,
+        y: f32,
+        skip: Option<NodeHandle>,
+    ) -> Result<bool, JsEngineError> {
+        let mut doc = self.document.lock().expect("vue doc");
+        let document = doc.runtime_document().document();
+        let mut id = doc.context().world().hit_test(document, x, y);
+        while let Some(current) = id {
+            if skip != Some(NodeHandle::from(current))
+                && doc
+                    .context_mut()
+                    .activate_node_at(current, x, y)
+                    .unwrap_or(false)
+            {
+                return Ok(true);
+            }
+            id = doc
+                .context()
+                .world()
+                .node(current)
+                .and_then(|node| node.parent);
+        }
+        Ok(false)
     }
     pub(crate) fn focus_target_at(
         &self,
@@ -794,6 +949,13 @@ impl VueHost {
                                 detail.clone(),
                             )?;
                         }
+                        if commit_runtime && !default_prevented {
+                            consumed |= self.activate_runtime_at(
+                                input.client_x,
+                                input.client_y,
+                                is_semantic.then_some(click_target),
+                            )?;
+                        }
                     }
                 }
             }
@@ -807,6 +969,15 @@ impl VueHost {
                 }
             }
             PointerEventKind::Move => {}
+        }
+        if commit_runtime {
+            let phase = match input.kind {
+                PointerEventKind::Down => 0,
+                PointerEventKind::Move => 1,
+                PointerEventKind::Up => 2,
+                PointerEventKind::Cancel => 3,
+            };
+            let _ = self.dispatch_terminal_pointer(target, &input, phase)?;
         }
 
         self.flush_pointer_capture_events(engine)?;
@@ -827,6 +998,7 @@ impl VueHost {
             }
             self.flush_pointer_capture_events(engine)?;
         }
+        self.drain_native_dom_events(engine)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(HostedInputResult {
@@ -1007,6 +1179,13 @@ impl VueHost {
             detail.insert("repeat".into(), HostValue::Bool(true));
         }
         let mut allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
+        if allowed
+            && commit_runtime
+            && input.kind == KeyboardEventKind::Down
+            && self.dispatch_terminal_key(input)?
+        {
+            allowed = false;
+        }
         if allowed && input.kind == KeyboardEventKind::Down {
             let key = input.key.to_ascii_lowercase();
             let activate_key =
@@ -1094,6 +1273,7 @@ impl VueHost {
         } else if !commit_runtime {
             self.input_projection.js_focus = self.document.lock().expect("vue doc").focused();
         }
+        self.drain_native_dom_events(engine)?;
         engine.run_microtasks()?;
         let _ = self.pump_frame(engine)?;
         Ok(allowed)

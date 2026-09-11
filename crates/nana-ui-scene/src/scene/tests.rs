@@ -49,6 +49,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 

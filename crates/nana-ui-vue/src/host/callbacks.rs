@@ -265,6 +265,7 @@ impl VueHost {
             engine.invoke(notify, &[])?;
             engine.run_microtasks()?;
         }
+        self.drain_native_dom_events(engine)?;
         Ok(fired)
     }
     pub(crate) fn flush_motion_complete<E: JsEngine + ?Sized>(
@@ -356,12 +357,9 @@ impl VueHost {
         engine: &mut E,
         event: WindowLifecycleEvent,
     ) -> Result<bool, JsEngineError> {
-        let Some(pump) = self.callbacks.lifecycle_pump else {
-            return Ok(false);
-        };
         if event == WindowLifecycleEvent::Blur {
-            if let Some(target) = self.input_projection.file_drag_target.take() {
-                self.fire_dom_event(engine, target, "dragleave", file_drag_detail(&[], None))?;
+            if self.input_projection.file_drag_target.is_some() {
+                self.dispatch_file_drag(engine, FileDragEventKind::Cancel, &[], None)?;
             }
             self.input.lock().expect("input state").clear();
             {
@@ -375,6 +373,9 @@ impl VueHost {
             }
             self.flush_pointer_capture_events(engine)?;
         }
+        let Some(pump) = self.callbacks.lifecycle_pump else {
+            return Ok(event == WindowLifecycleEvent::Blur);
+        };
         let args = match self.callbacks.event_window_id {
             Some(window_id) => vec![HostValue::Number(window_id as f64), event.to_host_value()],
             None => vec![event.to_host_value()],

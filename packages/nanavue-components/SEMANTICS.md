@@ -115,6 +115,24 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | 加载 | `loading` | `.loading(bool)` |
 | 触发 | `@press` | `.on_press(Message)` |
 
+## NanaTextarea gutter
+
+| Prop | Runtime |
+| --- | --- |
+| `lineNumbers` | `TextArea::line_numbers` |
+| `relativeLineNumbers` | `TextArea::relative_line_numbers` |
+| `minimap` | `TextArea::minimap` |
+| `diagnostics` | `TextArea::diagnostics`（JSON span，应用拥有 LSP） |
+| `gitGutter` | `TextArea::git_gutter`（JSON 行标记，应用拥有 git） |
+
+## NanaDropTarget / NanaTerminal / NanaDiff
+
+| Vue | Runtime |
+| --- | --- |
+| `<nana-drop-target drop-accepts="files">` | `set_drop_target` + `FileDropEvent` |
+| `<nana-terminal>` | `TerminalView`；PTY 归应用 |
+| `<nana-diff :hunks :layout>` | `DiffView`；接受/拒绝不改 buffer |
+
 ## NanaChip ↔ `Chip`
 
 | Prop / 行为 | Vue `NanaChip` | Rust `nana_ui::Chip` |

@@ -44,6 +44,8 @@ descriptors! {
     TEXT_INPUT => { type_id: "nana.text-input", tags: &["text-input"] },
     TEXT_AREA => { type_id: "nana.textarea", tags: &["textarea"] },
     HOSTED_TEXTAREA => { type_id: "nana.hosted-textarea", tags: &["hosted-textarea"] },
+    TERMINAL => { type_id: "nana.terminal", tags: &["terminal"] },
+    DIFF => { type_id: "nana.diff", tags: &["diff"] },
     RANGE_FIELD => { type_id: "nana.range-field", tags: &["range-field"] },
     PROGRESS => { type_id: "nana.progress", tags: &["progress"] },
     SPINNER => { type_id: "nana.spinner", tags: &["spinner"] },

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::{
@@ -1339,6 +1340,23 @@ pub struct SecondaryPress {
     pub target: StableNodeId,
     pub x: f32,
     pub y: f32,
+}
+
+/// Platform file drag resolved onto a registered drop target.
+///
+/// The framework picks the innermost accepting node and paints hover chrome.
+/// Opening, attaching, or rejecting the paths stays the application's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileDropEvent {
+    Hovered {
+        paths: Arc<[PathBuf]>,
+        effect: nana_ui_core::DropEffect,
+    },
+    Dropped {
+        paths: Arc<[PathBuf]>,
+        effect: nana_ui_core::DropEffect,
+    },
+    Left,
 }
 
 /// Enter submission from an editable single-line input, excluding IME preedit.

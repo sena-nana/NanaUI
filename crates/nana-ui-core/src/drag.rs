@@ -1,10 +1,10 @@
 //! Vocabulary for dropping something onto a node.
 //!
-//! The framework answers *where* a drop would land: an application registers
-//! which nodes accept which kinds, and asks what sits under a point. What a
-//! drop then means — opening the file, moving the record, rejecting it — stays
-//! the application's, the same way `SecondaryPress` reports a right-click
-//! without deciding what menu to show.
+//! The framework answers *where* a drop would land and, for platform file
+//! drags, which registered target is hovered. An application registers which
+//! nodes accept which kinds. What a drop then means — opening the file, moving
+//! the record, rejecting it — stays the application's, the same way
+//! `SecondaryPress` reports a right-click without deciding what menu to show.
 //!
 //! Dragging a tab, a dock pane or a `ReorderList` row keeps its own typed
 //! contract: those move framework-owned structure and the framework does
@@ -12,6 +12,14 @@
 //! families, the platform's file drops above all.
 
 use std::sync::Arc;
+
+/// Platform file-drag phase. Hosts map window hover/drop/cancel onto this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FileDragKind {
+    Hover,
+    Drop,
+    Cancel,
+}
 
 /// What a drop carries.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

@@ -13,10 +13,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     hash::{Hash, Hasher},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
+use nana_js_engine::HostValue;
 #[cfg(any(test, feature = "hosted"))]
 use nana_ui_runtime::AccessibilityUpdate;
 #[cfg(feature = "graph-canvas")]
@@ -30,11 +31,12 @@ use nana_ui_runtime::RegisterableComponent;
 use nana_ui_runtime::{
     AccessibilityDelta, AccessibilityRole, AccessibilityState, AppContext,
     AppShell as RuntimeAppShell, AppTitleBar as RuntimeAppTitleBar, ComponentBindKind,
-    ComponentTypeId, ComponentView, CustomRenderNode, Dock as RuntimeDock, DockAxis, DockNode,
-    Entity, HOST_TEXTURE_RENDERER, ImeComposition, InteractionState, LayoutBox as RuntimeLayoutBox,
-    LayoutViewport, MutationQueue, NodeKind, NodeStyle, SegmentedOption as RuntimeSegmentedOption,
-    SelectionChrome, SemanticOption, SemanticSpec, SettingsPage as RuntimeSettingsPage,
-    SidebarFrame as RuntimeSidebarFrame, SplitPane as RuntimeSplitPane, StableNodeId, TextContent,
+    ComponentTypeId, ComponentView, CustomRenderNode, DiffEvent, DiffLayout, DiffView,
+    Dock as RuntimeDock, DockAxis, DockNode, Entity, HOST_TEXTURE_RENDERER, ImeComposition,
+    InteractionState, LayoutBox as RuntimeLayoutBox, LayoutViewport, MutationQueue, NodeKind,
+    NodeStyle, SegmentedOption as RuntimeSegmentedOption, SelectionChrome, SemanticOption,
+    SemanticSpec, SettingsPage as RuntimeSettingsPage, SidebarFrame as RuntimeSidebarFrame,
+    SplitPane as RuntimeSplitPane, StableNodeId, TerminalEvent, TerminalView, TextContent,
     TextInputState, UiMutation, UiWorld, Workspace as RuntimeWorkspace, WorkspaceRegionSlot,
 };
 use nana_ui_scene::{RuntimeDocument, UiScene};
@@ -77,6 +79,13 @@ impl From<nana_ui_runtime::StableNodeId> for NodeHandle {
     fn from(id: nana_ui_runtime::StableNodeId) -> Self {
         Self(id.get())
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NativeDomEvent {
+    pub id: u64,
+    pub name: &'static str,
+    pub detail: BTreeMap<String, HostValue>,
 }
 
 /// Vue window document id for diagnostics.
@@ -297,10 +306,14 @@ pub(crate) struct PendingAssembly {
 }
 
 impl PendingAssembly {
-    fn apply(self, context: &mut AppContext) {
+    fn apply(self, context: &mut AppContext, native_events: &Arc<Mutex<Vec<NativeDomEvent>>>) {
         for binding in self.bindings {
             // The matching projection has already been committed.
-            let _ = context.finish_semantic_binding(binding);
+            let id = binding.id();
+            let type_id = binding.type_id().as_str().to_owned();
+            if context.finish_semantic_binding(binding).is_ok() {
+                wire_vue_native_events(context, id, &type_id, native_events);
+            }
         }
         for (id, component) in self.title_bars {
             if let Ok(entity) = context.bind_component(id, component) {
@@ -376,6 +389,8 @@ pub struct NanaTreeDocument {
     /// Facade nodes that currently expose a host-texture slot. Flush stamps
     /// only these instead of scanning the whole Vue node map.
     host_texture_nodes: HashSet<u64>,
+    pending_drop_accepts: HashSet<u64>,
+    native_events: Arc<Mutex<Vec<NativeDomEvent>>>,
     /// Every `<svg>` element in the document.
     ///
     /// `sync_svg_rasters` runs up to four times per window frame, and without
@@ -500,6 +515,8 @@ impl NanaTreeDocument {
             accessibility_full_required: false,
             commit_rejections: Vec::new(),
             host_texture_nodes: HashSet::new(),
+            pending_drop_accepts: HashSet::new(),
+            native_events: Arc::new(Mutex::new(Vec::new())),
             svg_root_nodes: HashSet::new(),
             svg_rasters: HashMap::new(),
             #[cfg(feature = "scene-view")]
@@ -829,6 +846,7 @@ impl NanaTreeDocument {
     /// entire frame's host ops disappearing.
     fn commit_pending_queue(&mut self) -> Result<(), nana_ui_runtime::UiWorldError> {
         if self.pending.mutations.is_empty() {
+            self.flush_pending_drop_accepts();
             return Ok(());
         }
         let outcome = self.runtime.commit_ref(&self.pending.mutations);
@@ -847,9 +865,11 @@ impl NanaTreeDocument {
                 }
             }
             self.pending.clear();
+            self.flush_pending_drop_accepts();
             return Err(first_error.expect("batch rejection sets the first error"));
         }
         self.pending.clear();
+        self.flush_pending_drop_accepts();
         Ok(())
     }
 
@@ -1589,7 +1609,7 @@ impl NanaTreeDocument {
             self.component_owned_layout.extend(component_owned_layout);
         }
         self.commit_extra(mutations).ok();
-        pending.apply(self.runtime.context_mut());
+        pending.apply(self.runtime.context_mut(), &self.native_events);
         self.adopt_runtime_allocated_ids();
         self.flush_runtime_systems();
         self.synced_semantic_revision = Some(revision);
@@ -2270,6 +2290,9 @@ impl NanaTreeDocument {
         } else if changed && is_host_texture_fit_attr(name) {
             self.sync_surface_custom_render(el);
         }
+        if is_drop_accepts_attr(name) {
+            self.sync_drop_accepts(el);
+        }
     }
 
     /// Paint-only CSS `transform` overlay (TransitionGroup FLIP).
@@ -2292,6 +2315,42 @@ impl NanaTreeDocument {
         let layout = Arc::make_mut(&mut style.layout);
         layout.transform = transform;
         self.pending.mutations.set_style(id, style);
+    }
+
+    fn sync_drop_accepts(&mut self, el: NodeHandle) {
+        let Ok(id) = StableNodeId::try_from(el) else {
+            return;
+        };
+        if !self.runtime.contains(id) {
+            self.pending_drop_accepts.insert(el.0);
+            return;
+        }
+        self.pending_drop_accepts.remove(&el.0);
+        let value = self
+            .get_attribute(el, "drop-accepts")
+            .or_else(|| self.get_attribute(el, "dropAccepts"));
+        match parse_drop_accepts(value.as_deref()) {
+            Some(accepts) => {
+                let _ = self.runtime.context_mut().set_drop_target_node(id, accepts);
+            }
+            None => {
+                self.runtime.context_mut().clear_drop_target_node(id);
+            }
+        }
+    }
+
+    fn flush_pending_drop_accepts(&mut self) {
+        let pending: Vec<u64> = self.pending_drop_accepts.iter().copied().collect();
+        for id in pending {
+            self.sync_drop_accepts(NodeHandle(id));
+        }
+    }
+
+    pub(crate) fn take_native_events(&self) -> Vec<NativeDomEvent> {
+        self.native_events
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
     }
 
     pub fn get_attribute(&self, el: NodeHandle, name: &str) -> Option<String> {
@@ -2318,6 +2377,9 @@ impl NanaTreeDocument {
             self.sync_surface_custom_render(el);
         } else if removed && is_host_texture_fit_attr(name) {
             self.sync_surface_custom_render(el);
+        }
+        if removed && is_drop_accepts_attr(name) {
+            self.sync_drop_accepts(el);
         }
     }
 
@@ -3247,6 +3309,149 @@ fn is_host_texture_slot_attr(name: &str) -> bool {
 
 fn is_host_texture_fit_attr(name: &str) -> bool {
     name.eq_ignore_ascii_case("style") || name.eq_ignore_ascii_case("object-fit")
+}
+
+fn is_drop_accepts_attr(name: &str) -> bool {
+    name.eq_ignore_ascii_case("drop-accepts") || name.eq_ignore_ascii_case("dropAccepts")
+}
+
+fn parse_drop_accepts(raw: Option<&str>) -> Option<nana_ui_core::DropAccepts> {
+    let value = raw.map(str::trim)?;
+    if value.eq_ignore_ascii_case("false")
+        || value == "0"
+        || value.eq_ignore_ascii_case("none")
+        || value.eq_ignore_ascii_case("off")
+    {
+        return None;
+    }
+    Some(nana_ui_core::DropAccepts::files())
+}
+
+fn wire_vue_native_events(
+    context: &mut AppContext,
+    id: StableNodeId,
+    type_id: &str,
+    sink: &Arc<Mutex<Vec<NativeDomEvent>>>,
+) {
+    match type_id {
+        "nana.diff" => {
+            let sink = Arc::clone(sink);
+            let _ = context.on_keyed(
+                Entity::<DiffView>::from_stable_id(id),
+                "vue.dom",
+                move |_, event: &DiffEvent, _| {
+                    let (name, detail) = diff_dom(event);
+                    enqueue_native(&sink, id.get(), name, detail);
+                },
+            );
+        }
+        "nana.terminal" => {
+            let sink = Arc::clone(sink);
+            let _ = context.on_keyed(
+                Entity::<TerminalView>::from_stable_id(id),
+                "vue.dom",
+                move |_, event: &TerminalEvent, _| {
+                    let (name, detail) = terminal_dom(event);
+                    enqueue_native(&sink, id.get(), name, detail);
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+fn enqueue_native(
+    sink: &Arc<Mutex<Vec<NativeDomEvent>>>,
+    id: u64,
+    name: &'static str,
+    detail: BTreeMap<String, HostValue>,
+) {
+    if let Ok(mut queue) = sink.lock() {
+        queue.push(NativeDomEvent { id, name, detail });
+    }
+}
+
+fn diff_dom(event: &DiffEvent) -> (&'static str, BTreeMap<String, HostValue>) {
+    match event {
+        DiffEvent::HunkAccepted { hunk } => (
+            "hunk-accept",
+            BTreeMap::from([("hunk".into(), HostValue::Number(*hunk as f64))]),
+        ),
+        DiffEvent::HunkRejected { hunk } => (
+            "hunk-reject",
+            BTreeMap::from([("hunk".into(), HostValue::Number(*hunk as f64))]),
+        ),
+        DiffEvent::LineAccepted { hunk, line } => (
+            "line-accept",
+            BTreeMap::from([
+                ("hunk".into(), HostValue::Number(*hunk as f64)),
+                ("line".into(), HostValue::Number(*line as f64)),
+            ]),
+        ),
+        DiffEvent::LineRejected { hunk, line } => (
+            "line-reject",
+            BTreeMap::from([
+                ("hunk".into(), HostValue::Number(*hunk as f64)),
+                ("line".into(), HostValue::Number(*line as f64)),
+            ]),
+        ),
+        DiffEvent::LayoutChanged { layout } => (
+            "layout-change",
+            BTreeMap::from([(
+                "layout".into(),
+                HostValue::string(match layout {
+                    DiffLayout::Split => "split",
+                    DiffLayout::Unified => "unified",
+                }),
+            )]),
+        ),
+    }
+}
+
+fn terminal_dom(event: &TerminalEvent) -> (&'static str, BTreeMap<String, HostValue>) {
+    match event {
+        TerminalEvent::Input(bytes) => (
+            "input",
+            BTreeMap::from([(
+                "data".into(),
+                HostValue::Array(
+                    bytes
+                        .iter()
+                        .map(|byte| HostValue::Number(f64::from(*byte)))
+                        .collect(),
+                ),
+            )]),
+        ),
+        TerminalEvent::Resize { columns, rows } => (
+            "resize",
+            BTreeMap::from([
+                ("columns".into(), HostValue::Number(f64::from(*columns))),
+                ("rows".into(), HostValue::Number(f64::from(*rows))),
+            ]),
+        ),
+        TerminalEvent::SelectionChanged(selection) => {
+            let mut detail = BTreeMap::new();
+            if let Some(selection) = selection {
+                detail.insert(
+                    "anchorRow".into(),
+                    HostValue::Number(f64::from(selection.anchor.row)),
+                );
+                detail.insert(
+                    "anchorColumn".into(),
+                    HostValue::Number(f64::from(selection.anchor.column)),
+                );
+                detail.insert(
+                    "focusRow".into(),
+                    HostValue::Number(f64::from(selection.focus.row)),
+                );
+                detail.insert(
+                    "focusColumn".into(),
+                    HostValue::Number(f64::from(selection.focus.column)),
+                );
+            }
+            ("selectionchange", detail)
+        }
+    }
 }
 
 fn background_image_fit_to_content(

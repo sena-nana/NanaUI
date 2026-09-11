@@ -270,6 +270,9 @@ pub(crate) fn can_bind_from_semantic(widget: &SemanticWidgetView<'_>) -> bool {
                 | crate::WidgetKind::TimeSeriesChart
                 | crate::WidgetKind::GpuTextureView
                 | crate::WidgetKind::GpuView
+                | crate::WidgetKind::DropTarget
+                | crate::WidgetKind::Terminal
+                | crate::WidgetKind::Diff
         )
 }
 

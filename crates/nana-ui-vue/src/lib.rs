@@ -1290,6 +1290,7 @@ fn is_focusable_tag(tag: &str) -> bool {
             | "range-field"
             | "nana-list-item"
             | "nana-scroll-view"
+            | "nana-terminal"
     )
 }
 

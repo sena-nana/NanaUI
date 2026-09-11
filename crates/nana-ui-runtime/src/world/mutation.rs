@@ -1245,6 +1245,9 @@ impl UiWorld {
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
                     self.drop_targets.remove(&id);
+                    if self.drop_hover.is_some_and(|(hover, _)| hover == id) {
+                        self.drop_hover = None;
+                    }
                     self.detached.remove(&id);
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);

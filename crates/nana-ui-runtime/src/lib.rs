@@ -25,6 +25,7 @@ pub mod component_descriptors;
 mod component_registry;
 mod components;
 mod date_picker;
+mod diff_view;
 mod dock;
 mod dropdown;
 mod feedback;
@@ -138,22 +139,23 @@ pub use components::{
     AccessibilityAction, AccessibilityActionRequest, AccessibilityDelta, AccessibilityNode,
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
-    ComputedStyle, CustomRenderNode, EventListeners, EventRoute, ExtractedNode, ExtractedTextSpan,
-    ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel,
-    MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers,
-    OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset,
-    ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint,
-    StandardVisual, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan,
-    TextCompletion, TextCompletionEdit, TextCompletionPopup, TextCompletionRow,
-    TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
-    TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
-    TextGitMarkKind, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay, TextInputState,
-    TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry, TextSelection,
-    TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp, TextSignaturePopup,
-    TextSnippet, TextStickyLineGeometry, TextVerticalAlignment, TextWhitespaceKind, TooltipVisual,
-    TriggeredMenuOverlay,
+    ComputedStyle, CustomRenderNode, DropHoverOverlay, EventListeners, EventRoute, ExtractedNode,
+    ExtractedTextSpan, ImeComposition, InteractionState, InteractionStyle, LayoutBox, LayoutInput,
+    LineLabel, MeasureTextShaper, MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle,
+    NumberSteppers, OverlayHostState, PointerCaptureChange, RadioIndicator, ScrollMetrics,
+    ScrollOffset, ScrollbarBar, SelectMenuGeometry, SelectOptionData, SelectOptionGeometry,
+    SemanticPaint, StandardVisual, TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold,
+    TextColorSwatchSpan, TextCompletion, TextCompletionEdit, TextCompletionPopup,
+    TextCompletionRow, TextCompletionSnapshot, TextContent, TextDiagnosticSeverity,
+    TextDiagnosticSpan, TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter,
+    TextGitGutterGeometry, TextGitMark, TextGitMarkKind, TextHorizontalAlignment, TextHover,
+    TextHoverPopup, TextInlay, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
 pub use date_picker::{DateChanged, DateCursorMoved, DatePicker, DatePickerSlots};
+pub use diff_view::{DiffEvent, DiffHunk, DiffLayout, DiffLine, DiffLineKind, DiffView};
 pub use dock::{
     DOCK_DIVIDER_HIT_SIZE, DOCK_SPLIT_KEYBOARD_STEP, Dock, DockAxis, DockBoundsPersist,
     DockCommand, DockCommandOutcome, DockDropZone, DockFloatingPersist, DockFloatingSurface,
@@ -300,10 +302,10 @@ pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;
 pub use video::Video;
 pub use view_components::{
-    Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, HostedTextarea,
-    IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots, NumberChanged,
-    NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment, RangeChanged,
-    RangeDragState, RangeField, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollView,
+    Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, FileDropEvent,
+    HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots,
+    NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment,
+    RangeChanged, RangeDragState, RangeField, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollView,
     ScrollbarDragState, SecondaryPress, Stack, Switch, Table, TableCell, TableCellFocused,
     TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted, ToggleChanged, Tooltip,
     UserScroll,

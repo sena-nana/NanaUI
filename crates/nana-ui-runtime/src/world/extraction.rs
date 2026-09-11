@@ -261,6 +261,12 @@ impl UiWorld {
             component_geometry,
             standard_visual_foreground,
             custom_render: self.nodes.custom_render(id).cloned(),
+            drop_hover: (self.drop_hover.map(|(hover, _)| hover) == Some(id)).then(|| {
+                crate::DropHoverOverlay {
+                    fill: self.style_model.palette.accent_soft.as_rgba_array(),
+                    border: self.style_model.palette.accent.as_rgba_array(),
+                }
+            }),
         })
     }
 }

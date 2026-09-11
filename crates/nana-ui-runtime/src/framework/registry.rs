@@ -199,6 +199,13 @@ impl AppContext {
                     })
                 })
             });
+        self.file_drops.entry(TypeId::of::<C>()).or_insert_with(|| {
+            Arc::new(|context: &mut AppContext, id, event| {
+                context.update_component(Entity::<C>::from_stable_id(id), |_, cx| {
+                    cx.emit(event);
+                })
+            })
+        });
     }
 
     pub(super) fn allocate_id(&mut self) -> StableNodeId {

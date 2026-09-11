@@ -14,14 +14,15 @@ use crate::NativeMarkdown;
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Avatar, Button, Card, Checkbox, Chip,
     ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
-    Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState,
+    DiffView, Divider, Dock, DockAxis, DockNode, Drawer, Dropdown, DropdownOption, EmptyState,
     ExtensionRegistrar, FormField, FrameworkError, GpuTextureView, GpuView, HostedTextarea,
     IconButton, IconGlyph, InteractiveCard, LabeledValue, LevelMeter, List, ListItem,
     ListItemSlots, ModalSurface, NodeStyle, NumberInput, PaneChrome, PathField, Popover, Progress,
     QrCode, RangeField, ScrollView, SearchDropdown, SearchDropdownOption, SegmentedControl, Select,
     SettingsCard, SettingsCollapsibleCard, SettingsPage, SettingsRow, SidebarFooter, SidebarFrame,
     SidebarRow, SidebarRowState, SidebarRowTone, SidebarSection, Skeleton, Spinner, SplitPane,
-    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea, TextInput,
+    Stack, StatusBadge, Switch, Table, TableCell, TableRow, Tabs, Text, TextArea,
+    TextDiagnosticSeverity, TextDiagnosticSpan, TextGitMark, TextGitMarkKind, TextInput,
     TextInputState, Thumbnail, ThumbnailState, Toast, ToastTone, Tooltip, TreeView, UiExtension,
     ValidationMessage, ValueEmphasis, Video, Workspace, WorkspaceRegionSlot, XYPad, XYPadValue,
     component_registry::{RegisterableComponent, SemanticSpec},
@@ -61,6 +62,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component_alias::<Stack>("nana.column", &["column"])?;
         registrar.register_component_alias::<Stack>("nana.row", &["row"])?;
         registrar.register_component_alias::<Stack>("nana.box", &["box"])?;
+        registrar.register_component_alias::<Stack>("nana.drop-target", &["drop-target"])?;
         registrar.register_component::<Text>()?;
         registrar.register_component::<Button>()?;
         registrar.register_component::<IconButton>()?;
@@ -81,6 +83,7 @@ impl UiExtension for NanaBuiltinComponents {
         registrar.register_component::<TextInput>()?;
         registrar.register_component::<TextArea>()?;
         registrar.register_component::<crate::TerminalView>()?;
+        registrar.register_component::<DiffView>()?;
         registrar.register_component::<crate::NativeContent>()?;
         registrar.register_component::<crate::BrowserView>()?;
         registrar.register_component::<HostedTextarea>()?;
@@ -544,6 +547,7 @@ impl RegisterableComponent for TextArea {
         }
         component.state = TextInputState::new(spec.value);
         overlay_l2_css_size(&mut component.style.layout, spec.layout.as_ref());
+        apply_textarea_gutter_from_spec(&mut component, spec);
         component
     }
 }
@@ -565,6 +569,7 @@ impl RegisterableComponent for HostedTextarea {
             component = component.label(Arc::<str>::from(spec.label));
         }
         component.state = TextInputState::new(spec.value);
+        apply_textarea_gutter_from_spec(&mut component, spec);
         component
     }
 }
@@ -1951,6 +1956,79 @@ fn highlight_language_from_spec<'a>(spec: &'a SemanticSpec<'_>) -> Option<&'a st
         .or_else(|| spec.attr("syntax"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
+}
+
+fn apply_textarea_gutter_from_spec(area: &mut TextArea, spec: &SemanticSpec<'_>) {
+    area.line_numbers = flag_attr(spec, &["line-numbers", "lineNumbers"]);
+    area.relative_line_numbers = flag_attr(spec, &["relative-line-numbers", "relativeLineNumbers"]);
+    area.minimap = flag_attr(spec, &["minimap"]);
+    area.diagnostics = diagnostics_from_spec(spec);
+    area.git_gutter = git_gutter_from_spec(spec);
+}
+
+fn json_objects(
+    spec: &SemanticSpec<'_>,
+    names: &[&str],
+) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    let Some(raw) = names.iter().find_map(|name| spec.attr(name)) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return Vec::new();
+    };
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_object)
+        .cloned()
+        .collect()
+}
+
+fn diagnostics_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextDiagnosticSpan]> {
+    json_objects(spec, &["diagnostics"])
+        .into_iter()
+        .filter_map(|object| {
+            let offset = object.get("offset")?.as_u64()? as usize;
+            let length = object
+                .get("length")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0) as usize;
+            let severity = match object
+                .get("severity")
+                .and_then(|value| value.as_str())
+                .unwrap_or("error")
+            {
+                "warning" | "warn" => TextDiagnosticSeverity::Warning,
+                "information" | "info" => TextDiagnosticSeverity::Information,
+                "hint" => TextDiagnosticSeverity::Hint,
+                _ => TextDiagnosticSeverity::Error,
+            };
+            let message = object
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_owned();
+            Some(TextDiagnosticSpan::new(offset, length, severity).with_message(message))
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn git_gutter_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextGitMark]> {
+    json_objects(spec, &["git-gutter", "gitGutter"])
+        .into_iter()
+        .filter_map(|object| {
+            let line = object.get("line")?.as_u64()? as u32;
+            let kind = match object.get("kind").and_then(|value| value.as_str()) {
+                Some("added" | "add") => TextGitMarkKind::Added,
+                Some("deleted" | "removed") => TextGitMarkKind::Deleted,
+                _ => TextGitMarkKind::Modified,
+            };
+            Some(TextGitMark::new(line, kind))
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 fn truthy_attr(value: &str) -> bool {
@@ -3909,6 +3987,37 @@ mod tests {
             Some("nana.video")
         );
     }
+
+    #[test]
+    fn hosted_textarea_from_semantic_applies_gutter_attrs() {
+        let ty = ComponentTypeId::new("nana.hosted-textarea").unwrap();
+        let layout = Arc::new(LayoutStyle::default());
+        let attrs = [
+            ("language", "rs"),
+            ("line-numbers", ""),
+            ("relative-line-numbers", "true"),
+            ("minimap", "1"),
+            (
+                "diagnostics",
+                r#"[{"offset":0,"length":2,"severity":"warning","message":"unused"}]"#,
+            ),
+            ("git-gutter", r#"[{"line":1,"kind":"added"}]"#),
+        ];
+        let spec = spec_with(&ty, &layout, &attrs, &[], &[], "fn", "Editor");
+        let area = HostedTextarea::from_semantic(&spec);
+        assert!(area.line_numbers);
+        assert!(area.relative_line_numbers);
+        assert!(area.minimap);
+        assert_eq!(area.diagnostics.len(), 1);
+        assert_eq!(
+            area.diagnostics[0].severity,
+            TextDiagnosticSeverity::Warning
+        );
+        assert_eq!(
+            area.git_gutter,
+            Arc::from([TextGitMark::new(1, TextGitMarkKind::Added)])
+        );
+    }
 }
 
 #[cfg(test)]
@@ -4027,7 +4136,13 @@ mod stack_direction_tests {
     #[test]
     fn the_child_spec_flag_reaches_every_alias_and_defaults_to_yes() {
         let context = AppContext::new();
-        for slotless in ["nana.stack", "nana.column", "nana.row", "nana.box"] {
+        for slotless in [
+            "nana.stack",
+            "nana.column",
+            "nana.row",
+            "nana.box",
+            "nana.drop-target",
+        ] {
             let id = ComponentTypeId::new(slotless).unwrap();
             assert!(
                 !context.component_reads_child_derived_spec(&id),

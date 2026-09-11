@@ -162,6 +162,14 @@ pub struct PreparedSemanticBinding {
 }
 
 impl PreparedSemanticBinding {
+    pub fn id(&self) -> StableNodeId {
+        self.id
+    }
+
+    pub fn type_id(&self) -> &ComponentTypeId {
+        &self.type_id
+    }
+
     pub fn kind(&self) -> ComponentBindKind {
         self.kind
     }

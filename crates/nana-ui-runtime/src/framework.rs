@@ -46,17 +46,17 @@ use crate::component_registry::{
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, BreadcrumbSegment, Button, Checkbox, Chip, CodeEditing, CommandPalette,
-    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileTab,
-    FormField, FrameProfile, FrameProfiler, FrameStage, IconButton, LabeledValue, List, ListItem,
-    ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind, NumberChanged,
-    NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed, PopoverToggled, Progress,
-    ProgressCancelled, RangeAdjustment, RangeChanged, RangeField, RovingFocusIntent, ScrollAxes,
-    ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView, SearchDropdown, SearchDropdownEvent,
-    SecondaryPress, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Select,
-    SettingsCollapsibleCard, SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch,
-    Table, TableCell, TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState,
-    TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError,
-    Workspace, XYPad, XYPadDragState, XYPadEvent,
+    ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
+    FileTab, FormField, FrameProfile, FrameProfiler, FrameStage, IconButton, LabeledValue, List,
+    ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
+    NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed,
+    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField,
+    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
+    SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
+    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
+    SidebarSection, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged,
+    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
+    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
 };
 
 mod assemble;
@@ -501,6 +501,14 @@ type SecondaryPressFn = Arc<
         + Sync,
 >;
 
+/// Emit [`FileDropEvent`] on a node whose concrete component type the caller
+/// no longer knows. Registered per type when a component is created.
+type FileDropFn = Arc<
+    dyn Fn(&mut AppContext, StableNodeId, FileDropEvent) -> Result<(), FrameworkError>
+        + Send
+        + Sync,
+>;
+
 /// Reproject a component view whose concrete type the scheduler no longer
 /// knows, via the typed `update_component` pipeline captured at stamp time.
 type ChildReprojectFn = fn(&mut AppContext, StableNodeId) -> Result<(), FrameworkError>;
@@ -835,6 +843,7 @@ pub struct AppContext {
     components: ComponentRegistry,
     activations: HashMap<TypeId, ActivationFn>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn>,
+    file_drops: HashMap<TypeId, FileDropFn>,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
@@ -1016,6 +1025,7 @@ impl AppContext {
             components: ComponentRegistry::default(),
             activations: HashMap::new(),
             secondary_presses: HashMap::new(),
+            file_drops: HashMap::new(),
             assembled: HashMap::new(),
             assembling: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
@@ -2529,6 +2539,7 @@ fn component_assembler(
         crate::ColorField => assemble_color_field,
         crate::PathField => assemble_path_field,
         crate::FileTab => assemble_file_tab,
+        crate::DiffView => assemble_diff_view,
     }
     None
 }

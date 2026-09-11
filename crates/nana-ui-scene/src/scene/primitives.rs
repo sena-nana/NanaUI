@@ -1661,6 +1661,20 @@ impl UiScene {
                 Some(StandardVisual::ImageViewer { .. }) => {}
                 None => {}
             }
+            if let Some(overlay) = node.drop_hover {
+                let radius = corner_radii(style.border_radius.unwrap_or(0.0));
+                self.insert_primitive(visual_quad(
+                    &visual_context,
+                    240,
+                    bounds,
+                    VisualQuadStyle {
+                        background: Some(overlay.fill),
+                        border_color: Some(overlay.border),
+                        border_width: 2.0,
+                        corner_radius: radius,
+                    },
+                ));
+            }
         }
         self.primitives.len() - before
     }

@@ -3035,6 +3035,7 @@ fn overflow_parent(
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 
@@ -3084,6 +3085,7 @@ fn translucent_parent(
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 
@@ -3127,6 +3129,7 @@ fn overflowing_text_child(
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 
@@ -3178,6 +3181,7 @@ fn host_texture_child(
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: Some(CustomRenderNode::new("nana.host-texture", resource, 1)),
+        drop_hover: None,
     }
 }
 
@@ -3242,6 +3246,7 @@ fn extracted_div(
         component_geometry: None,
         standard_visual_foreground: None,
         custom_render: None,
+        drop_hover: None,
     }
 }
 

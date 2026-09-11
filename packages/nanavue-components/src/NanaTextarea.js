@@ -16,6 +16,13 @@ export const NanaTextarea = {
     height: { type: [Number, String], default: undefined },
     /** Runtime syntax language (`rs`, `js`, …). Empty keeps solid committed text. */
     language: { type: String, default: "" },
+    lineNumbers: { type: Boolean, default: false },
+    relativeLineNumbers: { type: Boolean, default: false },
+    minimap: { type: Boolean, default: false },
+    /** `{ offset, length, severity, message }[]` — application-owned diagnostics. */
+    diagnostics: { type: Array, default: () => [] },
+    /** `{ line, kind }[]` — application-owned git gutter marks. */
+    gitGutter: { type: Array, default: () => [] },
   },
   emits: ["update:modelValue", "input"],
   setup(props, { emit, attrs }) {
@@ -38,6 +45,17 @@ export const NanaTextarea = {
         invalid: props.invalid,
         size: props.size,
         language: props.language || undefined,
+        "line-numbers": props.lineNumbers ? "" : undefined,
+        "relative-line-numbers": props.relativeLineNumbers ? "" : undefined,
+        minimap: props.minimap ? "" : undefined,
+        diagnostics:
+          props.diagnostics && props.diagnostics.length
+            ? JSON.stringify(props.diagnostics)
+            : undefined,
+        "git-gutter":
+          props.gitGutter && props.gitGutter.length
+            ? JSON.stringify(props.gitGutter)
+            : undefined,
         "data-agent-id": attrs["data-agent-id"] || "nana.textarea",
         onInput: (ev) => {
           const value = ev?.value ?? ev ?? "";

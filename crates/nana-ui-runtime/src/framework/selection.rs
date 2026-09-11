@@ -35,16 +35,24 @@ impl AppContext {
         entity: Entity<V>,
         accepts: nana_ui_core::DropAccepts,
     ) -> Result<(), FrameworkError> {
-        if !self.world.contains(entity.id) {
-            return Err(FrameworkError::MissingView(entity.id));
-        }
-        self.world.set_drop_target(entity.id, accepts);
-        Ok(())
+        self.set_drop_target_node(entity.id, accepts)
     }
 
     /// Stops a node accepting drops. Returns whether it was accepting any.
     pub fn clear_drop_target<V: View>(&mut self, entity: Entity<V>) -> bool {
-        self.world.clear_drop_target(entity.id)
+        self.clear_drop_target_node(entity.id)
+    }
+
+    /// Stops a node accepting drops by id. Clears hover if this node was it.
+    pub fn clear_drop_target_node(&mut self, id: StableNodeId) -> bool {
+        if self
+            .world
+            .drop_hover()
+            .is_some_and(|(hover, _)| hover == id)
+        {
+            self.world.set_drop_hover(None);
+        }
+        self.world.clear_drop_target(id)
     }
 
     /// Innermost node whose box contains `(x, y)` and that accepts `kind`,
@@ -54,6 +62,7 @@ impl AppContext {
     /// every descendant. Matching is by layout box rather than by hit-test: a
     /// drop surface is usually a plain container that takes no pointer events,
     /// and refusing files over it because it is not clickable would be wrong.
+    /// Hidden overlay branches (`box_visible == false`) are skipped.
     /// Returns `None` when nothing there accepts the payload — reject the drop
     /// then rather than guessing a target.
     pub fn drop_target_at(
@@ -80,6 +89,11 @@ impl AppContext {
             })
             .filter(|id| {
                 self.world
+                    .computed_style(*id)
+                    .is_some_and(|style| style.box_visible)
+            })
+            .filter(|id| {
+                self.world
                     .drop_target(*id)
                     .is_some_and(|accepts| accepts.accepts(kind))
             })
@@ -97,6 +111,124 @@ impl AppContext {
                     .drop_target(id)
                     .map(|accepts| (id, accepts.declared_effect()))
             })
+    }
+
+    /// Current file-drop hover target, if any.
+    pub fn drop_hover(&self) -> Option<(StableNodeId, nana_ui_core::DropEffect)> {
+        self.world.drop_hover()
+    }
+
+    /// Register a drop target by node id. Vue and other hosts that do not hold
+    /// a typed [`Entity`] use this; dropping the node still releases it.
+    pub fn set_drop_target_node(
+        &mut self,
+        id: StableNodeId,
+        accepts: nana_ui_core::DropAccepts,
+    ) -> Result<(), FrameworkError> {
+        if !self.world.contains(id) {
+            return Err(FrameworkError::MissingView(id));
+        }
+        self.world.set_drop_target(id, accepts);
+        Ok(())
+    }
+
+    /// Resolve a platform file drag onto the registered drop target under the
+    /// point, update hover chrome, and emit [`crate::FileDropEvent`].
+    pub fn dispatch_file_drag(
+        &mut self,
+        document: DocumentId,
+        kind: nana_ui_core::FileDragKind,
+        paths: &[std::path::PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> Result<bool, FrameworkError> {
+        match kind {
+            nana_ui_core::FileDragKind::Cancel => self.clear_file_drag(document),
+            nana_ui_core::FileDragKind::Hover | nana_ui_core::FileDragKind::Drop => {
+                let Some((x, y)) = position else {
+                    return self.clear_file_drag(document);
+                };
+                if !x.is_finite() || !y.is_finite() {
+                    return Err(FrameworkError::InvalidInput);
+                }
+                let target = self.drop_target_at(document, x, y, &nana_ui_core::DropKind::Files);
+                match kind {
+                    nana_ui_core::FileDragKind::Hover => {
+                        self.set_file_drag_hover(document, target, paths)
+                    }
+                    nana_ui_core::FileDragKind::Drop => {
+                        let cleared = self.world.set_drop_hover(None);
+                        if let Some((id, effect)) = target {
+                            self.emit_file_drop(
+                                id,
+                                crate::FileDropEvent::Dropped {
+                                    paths: paths.iter().cloned().collect(),
+                                    effect,
+                                },
+                            )?;
+                            Ok(true)
+                        } else {
+                            Ok(cleared)
+                        }
+                    }
+                    nana_ui_core::FileDragKind::Cancel => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn set_file_drag_hover(
+        &mut self,
+        _document: DocumentId,
+        target: Option<(StableNodeId, nana_ui_core::DropEffect)>,
+        paths: &[std::path::PathBuf],
+    ) -> Result<bool, FrameworkError> {
+        let previous = self.world.drop_hover();
+        if previous == target {
+            return Ok(false);
+        }
+        if let Some((id, _)) =
+            previous.filter(|_| previous.map(|(id, _)| id) != target.map(|(id, _)| id))
+        {
+            self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+        }
+        self.world.set_drop_hover(target);
+        if let Some((id, effect)) =
+            target.filter(|_| previous.map(|(id, _)| id) != target.map(|(id, _)| id))
+        {
+            self.emit_file_drop(
+                id,
+                crate::FileDropEvent::Hovered {
+                    paths: paths.iter().cloned().collect(),
+                    effect,
+                },
+            )?;
+        }
+        Ok(true)
+    }
+
+    fn clear_file_drag(&mut self, _document: DocumentId) -> Result<bool, FrameworkError> {
+        let Some((id, _)) = self.world.drop_hover() else {
+            return Ok(false);
+        };
+        self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+        self.world.set_drop_hover(None);
+        Ok(true)
+    }
+
+    fn emit_file_drop(
+        &mut self,
+        id: StableNodeId,
+        event: crate::FileDropEvent,
+    ) -> Result<(), FrameworkError> {
+        let Some(emit) = self
+            .views
+            .get(&id)
+            .and_then(|view| self.file_drops.get(&view.as_ref().type_id()))
+            .cloned()
+        else {
+            return Ok(());
+        };
+        emit(self, id, event)
     }
 
     /// Collects the invalid fields under `root`, in document order.

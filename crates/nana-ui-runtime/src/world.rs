@@ -456,6 +456,8 @@ pub struct UiWorld {
     /// Nodes that accept a drop, and what they accept. A sparse index rather
     /// than a field on every node: almost no tree has drop targets.
     drop_targets: HashMap<StableNodeId, nana_ui_core::DropAccepts>,
+    /// Innermost file-drop hover target, if any. Scene paints overlay chrome.
+    drop_hover: Option<(StableNodeId, nana_ui_core::DropEffect)>,
     /// Viewport each document was last laid out against.
     ///
     /// Geometry projection runs on `&UiWorld` with no window context, but
@@ -556,6 +558,7 @@ impl UiWorld {
             viewport_basis: HashMap::new(),
             document_viewports: HashMap::new(),
             drop_targets: HashMap::new(),
+            drop_hover: None,
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
@@ -1512,6 +1515,27 @@ impl UiWorld {
 
     pub(crate) fn drop_target(&self, id: StableNodeId) -> Option<&nana_ui_core::DropAccepts> {
         self.drop_targets.get(&id)
+    }
+
+    pub(crate) fn drop_hover(&self) -> Option<(StableNodeId, nana_ui_core::DropEffect)> {
+        self.drop_hover
+    }
+
+    pub(crate) fn set_drop_hover(
+        &mut self,
+        hover: Option<(StableNodeId, nana_ui_core::DropEffect)>,
+    ) -> bool {
+        if self.drop_hover == hover {
+            return false;
+        }
+        if let Some((id, _)) = self.drop_hover {
+            self.mark(id, DirtyMask::RENDER);
+        }
+        if let Some((id, _)) = hover {
+            self.mark(id, DirtyMask::RENDER);
+        }
+        self.drop_hover = hover;
+        true
     }
 
     /// Records the viewport a document was laid out against.
