@@ -70,14 +70,14 @@ Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 - Widget strip: Nana Runtime `Button` / `Text` / `TextInput` / `Switch`.
   `desktop_shell_available()` stays `false`.
 - Pointer: NativeActivity `MotionEvent` → `RuntimeInputAdapter`.
-- Keyboard: NativeActivity `KeyEvent` → Runtime text (US-QWERTY subset + Backspace /
+- Keyboard: NativeActivity `KeyEvent` → Runtime (US-QWERTY subset + Backspace /
   arrows). The soft keyboard is shown/hidden from the Runtime focus mirror
-  (`SlotRuntime::text_input_focused` / `HostState::sync_soft_input`); committed text
-  arrives as hardware-style KeyEvents — NativeActivity has no InputConnection, so no
-  composition/preedit.
+  (`SlotRuntime::text_input_focused` / `HostState::sync_soft_input`). Printable
+  commits map to `ImeEvent::Commit` via `dispatch_ime` — NativeActivity has no
+  InputConnection, so no composition/preedit.
 - Accessibility: phase one publishes the control-slot tree (name/role/value) via
-  `slot_ax.rs` / `accesskit_android::InjectingAdapter`; reader actions are not
-  mapped back into Runtime yet.
+  `slot_ax.rs` / `accesskit_android::InjectingAdapter`; TalkBack actions drain
+  through `project_action` into Runtime. Scroll / virtual lists are later.
 - Clipboard: Android does not compile `arboard` / `OsClipboard`. Hosts use
   `UnsupportedClipboard`; `PlatformCapabilities::clipboard` stays false.
 
@@ -86,8 +86,8 @@ Requires SDK `build-tools` (e.g. `build-tools;34.0.0`).
 | Prerequisite | Status |
 |--------------|--------|
 | NDK + `.so` + debug APK script | Buildable (cross-check, not device acceptance) |
-| Soft IME (`ime=true`) | Soft keyboard shown/hidden from the focus mirror; committed text as KeyEvents. No composition/preedit (NativeActivity has no InputConnection) |
-| Accessibility | Phase one publishes name/role/value (`slot_ax.rs`); reader actions pending |
+| Soft IME (`ime=true`) | Stays false. Soft keyboard shown/hidden from the focus mirror; printable commits as `ImeEvent::Commit`. No composition/preedit (NativeActivity has no InputConnection) |
+| Accessibility | Phase one publishes name/role/value (`slot_ax.rs`); TalkBack actions map back into Runtime. Scroll later |
 
 Reproduce (emulator; not claimed as current acceptance):
 

@@ -9,7 +9,7 @@ Android 是实验路径，**不是当前产品目标**。不要把它写进应�
 控制槽的输入边界（NativeActivity 没有 InputConnection，`PlatformCapabilities::android_mvp().ime` 仍为 `false`）：
 
 - 点按控制槽输入框会唤起软键盘（`show_soft_input`），焦点移开或窗口销毁会收回（`hide_soft_input`）；见 `SlotRuntime::text_input_focused` 与 `HostState::sync_soft_input`。
-- 软键盘提交的文本以硬件风格 KeyEvent 走既有键盘路径（US-QWERTY 子集）；没有 composition/preedit，CJK 候选框不可用。要完整 IME 需要 GameActivity / GameTextInput 或自定义 Activity 的 InputConnection，那会换掉 NativeActivity 后端，当前不做。
+- 软键盘提交的可打印字符映射为 `ImeEvent::Commit`，经 `RuntimeInputAdapter::dispatch_ime` 写入 Runtime `TextInput`（与桌面 composition 路径同一套，不另造 Android 文本状态机）。NativeActivity 没有 InputConnection，因此没有 composition/preedit，CJK 候选框不可用。要完整 IME 需要 GameActivity / GameTextInput 或自定义 Activity 的 InputConnection，那会换掉 NativeActivity 后端，当前不做。
 - 无障碍树第一期已发布：`accesskit_android::InjectingAdapter`（embedded-dex）把委托注入 Activity decor view，`AccessTreeProjector` 复用桌面投影器发布控制槽根与 Button/Switch/TextInput 的 name/role/value。`SlotActions` 将 TalkBack 请求排队，宿主在发布周期调用 `project_action` 并送入 Runtime 的 typed action；滚动与虚拟列表留第二期。
 
 没有 V8 预编译库时，宿主可以先不链引擎，只验证能编过。要在设备上跑 Vue，需要自行准备对应架构的 V8 档案。网络仍然默认全关。剪贴板没有真实后端，明确说不支持。
@@ -37,8 +37,8 @@ dev 档会把约 390 MB 的 DWARF 和约 46 MB 的符号表内嵌进 `.so`（曾
 
 编过只说明依赖和接口能对上。平台工程笔记在 `platform/android/README.md`。
 
-桌面 host 配置下的 Android host 回归当前为 39 项通过；这只验证 Rust 侧动作队列、
-输入和投影合同，不能替代 Android 真机 TalkBack 验收。
+桌面 host 配置下的 Android host 回归当前为 49 项通过；这只验证 Rust 侧动作队列、
+输入、IME 映射和无障碍投影合同，不能替代 Android 真机 TalkBack 或 CJK IME 验收。
 
 配置 Android NDK 28.2 的 LLVM clang 后，`cargo check --locked --no-default-features
 --target aarch64-linux-android` 已通过（包括 `nana-android-host`）。构建需设置

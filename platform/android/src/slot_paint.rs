@@ -4,10 +4,11 @@
 //! strip on the **full window viewport** — **not** [`nana_ui::DesktopShell`].
 //! Hit-testing must use [`crate::control_slot::control_slot_paint_bounds`].
 //! Pointer + KeyEvent input is applied through [`crate::slot_runtime::SlotRuntime`].
-//! The soft keyboard is shown/hidden from [`Self::text_input_focused`]; committed
-//! text arrives as hardware-style KeyEvents (NativeActivity has no InputConnection,
-//! so no composition/preedit). Accessibility publication lives in [`crate::slot_ax`]
-//! (phase one: name/role/value; reader actions are not driven back into Runtime).
+//! The soft keyboard is shown/hidden from [`Self::text_input_focused`]; printable
+//! commits map to [`nana_ui_platform::ImeEvent::Commit`] (NativeActivity has no
+//! InputConnection, so no composition/preedit). Accessibility publication lives
+//! in [`crate::slot_ax`] (phase one: name/role/value; reader actions drain back
+//! into Runtime).
 
 use nana_ui::{ScenePaintViewport, SceneWgpuPainter};
 use nana_ui_core::PhysicalRect;

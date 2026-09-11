@@ -3,8 +3,9 @@
 //! [`accesskit_android::InjectingAdapter`] injects an accessibility delegate
 //! into the Activity's decor view through an embedded dex, so screen readers
 //! walk the same Runtime tree as desktop hosts via [`AccessTreeProjector`].
-//! The adapter publishes name/role/value and queues reader actions for the
-//! Runtime typed accessibility contract.
+//! The adapter publishes name/role/value and queues reader actions; the host
+//! drains them through [`SlotRuntime::apply_accessibility_action`]. Scroll and
+//! virtual-list coverage is a later phase.
 
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,6 @@ use accesskit_android::jni;
 use accesskit_android::jni::objects::JObject;
 use android_activity::AndroidApp;
 use nana_ui::AccessTreeProjector;
-use nana_ui::AccessibilityNode;
 
 use crate::slot_runtime::SlotRuntime;
 
@@ -40,14 +40,6 @@ impl ActionHandler for SlotActions {
             pending.push(request);
         }
     }
-}
-
-fn slot_accessibility_nodes(runtime: &SlotRuntime) -> Vec<AccessibilityNode> {
-    let document = runtime.document();
-    document
-        .context()
-        .world()
-        .project_accessibility(document.document())
 }
 
 /// Owns the Android accessibility delegate for the control slot.
@@ -80,7 +72,7 @@ impl SlotAccessibility {
             .map_err(|error| format!("a11y decor view: {error}"))?;
 
         let projector =
-            AccessTreeProjector::new(slot_accessibility_nodes(runtime), true, runtime.scale());
+            AccessTreeProjector::new(runtime.accessibility_nodes(), true, runtime.scale());
         let initial = projector.full_update();
         let actions = SlotActions::default();
         let adapter = InjectingAdapter::new(
@@ -99,7 +91,7 @@ impl SlotAccessibility {
     /// Publish the current slot tree. Cheap no-op while TalkBack has not
     /// initialized the tree.
     pub fn push(&mut self, runtime: &SlotRuntime) {
-        let nodes = slot_accessibility_nodes(runtime);
+        let nodes = runtime.accessibility_nodes();
         if let Some(update) = self.projector.synchronize_full(nodes, runtime.scale()) {
             self.adapter.update_if_active(|| update);
         }
@@ -118,11 +110,7 @@ impl SlotAccessibility {
             let Some(request) = self.projector.project_action(request) else {
                 continue;
             };
-            let document = runtime.document().document();
-            let _ = runtime
-                .document_mut()
-                .context_mut()
-                .apply_accessibility_action(document, request);
+            let _ = runtime.apply_accessibility_action(request);
         }
     }
 }

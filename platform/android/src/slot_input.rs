@@ -1,18 +1,20 @@
 //! NativeActivity pointer / key → NanaUI Runtime control-slot (host-testable).
 //!
 //! - Touch samples → platform [`InputEvent::Pointer`] in **logical** px.
-//! - Key samples → platform [`InputEvent::Keyboard`]
+//! - Editing keys → platform [`InputEvent::Keyboard`]
 //!   (US-QWERTY subset + named editing keys).
+//! - Printable commits while the slot text input is focused →
+//!   [`ImeEvent::Commit`], so NativeActivity KeyEvents reuse the desktop IME
+//!   path. There is no InputConnection, so no composition/preedit.
 //!
 //! Hit-testing uses the same viewport-bottom rect as [`crate::control_slot`].
-//! The soft keyboard is driven by the activity loop's focus mirror (no
-//! InputConnection, so no composition/preedit); accessibility publication
-//! lives in [`crate::slot_ax`].
+//! The soft keyboard is driven by the activity loop's focus mirror;
+//! accessibility publication lives in [`crate::slot_ax`].
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
 use nana_ui_core::PhysicalRect;
-use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
+use nana_ui_platform::{ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType};
 
 /// Touch / pointer phase from the host (Android MotionAction subset).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +199,37 @@ pub fn touch_to_pointer_event(
         activation_click: false,
         modifiers,
     }
+}
+
+/// Where a control-slot key sample should go.
+///
+/// Printable commits while the slot text input is focused become
+/// [`ImeEvent::Commit`] so NativeActivity KeyEvents reuse
+/// [`nana_ui::RuntimeInputAdapter::dispatch_ime`]. Editing keys and shortcuts
+/// stay [`InputEvent::Keyboard`]. There is no second Android text buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SlotKeyDispatch {
+    Keyboard(InputEvent),
+    Ime(ImeEvent),
+}
+
+/// Map one key sample onto the desktop keyboard or IME contract.
+pub fn slot_key_to_dispatch(
+    down: bool,
+    key: SlotLogicalKey,
+    mods: SlotKeyMods,
+    repeat: bool,
+    text_input_focused: bool,
+) -> SlotKeyDispatch {
+    let shortcut = mods.ctrl || mods.alt || mods.logo;
+    if down
+        && text_input_focused
+        && !shortcut
+        && let Some(text) = key.committed_text()
+    {
+        return SlotKeyDispatch::Ime(ImeEvent::Commit(text));
+    }
+    SlotKeyDispatch::Keyboard(key_to_input_event(down, key, mods.to_input(), repeat))
 }
 
 /// Map one key sample to a platform keyboard event.
@@ -601,5 +634,87 @@ mod tests {
         assert!(android_keycode_is_modifier(59)); // SHIFT_LEFT
         assert!(android_keycode_is_modifier(113)); // CTRL_LEFT
         assert!(!android_keycode_is_modifier(29)); // A
+    }
+
+    #[test]
+    fn focused_printable_key_becomes_ime_commit() {
+        let dispatch = slot_key_to_dispatch(
+            true,
+            SlotLogicalKey::Character('h'),
+            SlotKeyMods::default(),
+            false,
+            true,
+        );
+        assert_eq!(dispatch, SlotKeyDispatch::Ime(ImeEvent::Commit("h".into())));
+    }
+
+    #[test]
+    fn unfocused_printable_key_stays_keyboard() {
+        let dispatch = slot_key_to_dispatch(
+            true,
+            SlotLogicalKey::Character('h'),
+            SlotKeyMods::default(),
+            false,
+            false,
+        );
+        match dispatch {
+            SlotKeyDispatch::Keyboard(InputEvent::Keyboard {
+                pressed: true,
+                text: Some(text),
+                ..
+            }) => assert_eq!(text, "h"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shortcut_printable_key_stays_keyboard() {
+        let mods = SlotKeyMods {
+            ctrl: true,
+            ..SlotKeyMods::default()
+        };
+        let dispatch =
+            slot_key_to_dispatch(true, SlotLogicalKey::Character('c'), mods, false, true);
+        match dispatch {
+            SlotKeyDispatch::Keyboard(InputEvent::Keyboard { key, .. }) => {
+                assert_eq!(key, "c");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn editing_key_stays_keyboard_while_focused() {
+        let dispatch = slot_key_to_dispatch(
+            true,
+            SlotLogicalKey::Backspace,
+            SlotKeyMods::default(),
+            false,
+            true,
+        );
+        match dispatch {
+            SlotKeyDispatch::Keyboard(InputEvent::Keyboard {
+                key,
+                text: None,
+                pressed: true,
+                ..
+            }) => assert_eq!(key, "Backspace"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn printable_key_up_does_not_commit() {
+        let dispatch = slot_key_to_dispatch(
+            false,
+            SlotLogicalKey::Character('h'),
+            SlotKeyMods::default(),
+            false,
+            true,
+        );
+        match dispatch {
+            SlotKeyDispatch::Keyboard(InputEvent::Keyboard { pressed: false, .. }) => {}
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

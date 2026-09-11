@@ -4,8 +4,10 @@
 //! same contract `run_runtime` uses on desktop. The Android Activity still owns
 //! the window and event loop; this type does not call `run_runtime` (winit).
 //! Soft keyboard show/hide is driven by the host from [`Self::text_input_focused`];
-//! committed text arrives as hardware-style KeyEvents. NativeActivity has no
-//! InputConnection, so there is no composition/preedit and no AccessKit tree yet.
+//! printable commits map to [`ImeEvent::Commit`] via
+//! [`RuntimeInputAdapter::dispatch_ime`]. NativeActivity has no InputConnection,
+//! so there is no composition/preedit. Accessibility name/role/value is the
+//! same Runtime projection desktop hosts publish.
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
@@ -13,16 +15,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use nana_ui::runtime::{
-    Activate, Button, DocumentId, Entity, FrameworkError, LayoutViewport, List, NodeStyle,
-    RuntimeDocument, Switch, Text, TextChanged, TextInput, ToggleChanged,
+    AccessibilityActionRequest, Activate, Button, DocumentId, Entity, FrameworkError,
+    LayoutViewport, List, NodeStyle, RuntimeDocument, Switch, Text, TextChanged, TextInput,
+    ToggleChanged,
 };
-use nana_ui::{NanaTextShaper, RuntimeAnimationClock, RuntimeInputAdapter};
+use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock, RuntimeInputAdapter};
 use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec, PhysicalRect};
+use nana_ui_platform::ImeEvent;
 
 use crate::control_slot::{CONTROL_SLOT_INSET, CONTROL_SLOT_LOGICAL_HEIGHT};
 use crate::slot_input::{
-    SlotInputGate, SlotKeyMods, SlotLogicalKey, SlotTouchKind, key_to_input_event, logical_point,
-    pointer_in_slot, touch_to_pointer_event,
+    SlotInputGate, SlotKeyDispatch, SlotKeyMods, SlotLogicalKey, SlotTouchKind, logical_point,
+    pointer_in_slot, slot_key_to_dispatch, touch_to_pointer_event,
 };
 
 const SLOT_BUTTON_LABEL: &str = "Nana";
@@ -56,6 +60,7 @@ pub struct SlotRuntime {
     state: Arc<Mutex<SlotStripState>>,
     gate: SlotInputGate,
     last_touch_in_slot: bool,
+    ime_enabled: bool,
     #[cfg_attr(not(test), allow(dead_code))]
     button: Entity<Button>,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -107,6 +112,7 @@ impl SlotRuntime {
             state,
             gate: SlotInputGate::default(),
             last_touch_in_slot: false,
+            ime_enabled: false,
             button,
             field,
         };
@@ -168,10 +174,6 @@ impl SlotRuntime {
         &self.document
     }
 
-    pub(crate) fn document_mut(&mut self) -> &mut RuntimeDocument {
-        &mut self.document
-    }
-
     pub fn flush(&mut self) -> Result<(), FrameworkError> {
         let (logical_w, logical_h) = self.logical_size();
         self.document
@@ -207,6 +209,11 @@ impl SlotRuntime {
         {
             return Ok(false);
         }
+        if kind == SlotTouchKind::Down && !self.pointer_hits_text_input(physical_x, physical_y) {
+            // Disable IME while the field still has Runtime focus so leftover
+            // preedit commits through the desktop Disabled path.
+            self.commit_ime_on_blur()?;
+        }
         let logical = logical_point(physical_x, physical_y, self.scale);
         let event = touch_to_pointer_event(
             kind,
@@ -215,15 +222,17 @@ impl SlotRuntime {
             nana_ui_platform::InputModifiers::default(),
         );
         self.dispatch(&event)?;
+        self.sync_ime_lifecycle()?;
         Ok(true)
     }
 
     /// Queue a keyboard sample (Android KeyEvent → Runtime).
     ///
     /// Returns `false` when the slot does not hold keyboard focus so the host
-    /// does not swallow whole-window keys. Soft-keyboard commits reach this
-    /// path as hardware-style KeyEvents (there is no InputConnection on
-    /// NativeActivity); when `key` is `None`, only modifier state is recorded.
+    /// does not swallow whole-window keys. Printable soft-keyboard commits
+    /// become [`ImeEvent::Commit`] while the text input is focused; editing
+    /// keys stay on the keyboard path. When `key` is `None`, only modifier
+    /// state is recorded.
     pub fn push_key(
         &mut self,
         down: bool,
@@ -237,9 +246,55 @@ impl SlotRuntime {
         let Some(key) = key else {
             return Ok(true);
         };
-        let event = key_to_input_event(down, key, mods.to_input(), repeat);
-        self.dispatch(&event)?;
+        let focused = self.text_input_focused();
+        match slot_key_to_dispatch(down, key, mods, repeat, focused) {
+            SlotKeyDispatch::Keyboard(event) => self.dispatch(&event)?,
+            SlotKeyDispatch::Ime(event) => self.dispatch_ime_event(&event)?,
+        }
+        self.sync_ime_lifecycle()?;
         Ok(true)
+    }
+
+    /// Inject a desktop IME event into the focused Runtime editor.
+    ///
+    /// NativeActivity never synthesizes Preedit; tests (and a future
+    /// InputConnection host) call this so composition still uses
+    /// [`RuntimeInputAdapter::dispatch_ime`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn push_ime(&mut self, event: &ImeEvent) -> Result<bool, FrameworkError> {
+        if !self.gate.accept_key() {
+            return Ok(false);
+        }
+        self.dispatch_ime_event(event)?;
+        self.sync_ime_lifecycle()?;
+        Ok(true)
+    }
+
+    /// Runtime accessibility nodes for the slot tree (name/role/value/focus).
+    pub fn accessibility_nodes(&self) -> Vec<AccessibilityNode> {
+        let document = self.document();
+        document
+            .context()
+            .world()
+            .project_accessibility(document.document())
+    }
+
+    /// Apply a typed accessibility action and republish IME focus.
+    pub fn apply_accessibility_action(
+        &mut self,
+        request: AccessibilityActionRequest,
+    ) -> Result<bool, FrameworkError> {
+        if request.target != self.field.stable_id() {
+            self.commit_ime_on_blur()?;
+        }
+        let document = self.document.document();
+        let applied = self
+            .document
+            .context_mut()
+            .apply_accessibility_action(document, request)?;
+        self.flush()?;
+        self.sync_ime_lifecycle()?;
+        Ok(applied)
     }
 
     fn dispatch(&mut self, event: &nana_ui_platform::InputEvent) -> Result<(), FrameworkError> {
@@ -248,6 +303,49 @@ impl SlotRuntime {
         self.adapter
             .dispatch_at(self.document.context_mut(), document_id, event, now)?;
         self.flush()
+    }
+
+    fn dispatch_ime_event(&mut self, event: &ImeEvent) -> Result<(), FrameworkError> {
+        let document_id = self.document.document();
+        self.adapter
+            .dispatch_ime(self.document.context_mut(), document_id, event)?;
+        self.flush()
+    }
+
+    fn sync_ime_lifecycle(&mut self) -> Result<(), FrameworkError> {
+        let focused = self.text_input_focused();
+        if focused && !self.ime_enabled {
+            self.ime_enabled = true;
+            self.dispatch_ime_event(&ImeEvent::Enabled)?;
+        } else if !focused && self.ime_enabled {
+            self.commit_ime_on_blur()?;
+        }
+        Ok(())
+    }
+
+    fn commit_ime_on_blur(&mut self) -> Result<(), FrameworkError> {
+        if !self.ime_enabled || !self.text_input_focused() {
+            self.ime_enabled = false;
+            return Ok(());
+        }
+        self.ime_enabled = false;
+        self.dispatch_ime_event(&ImeEvent::Disabled)
+    }
+
+    fn pointer_hits_text_input(&self, physical_x: f32, physical_y: f32) -> bool {
+        let Some(layout) = self
+            .document
+            .context()
+            .world()
+            .layout_box(self.field.stable_id())
+        else {
+            return false;
+        };
+        let [x, y] = logical_point(physical_x, physical_y, self.scale);
+        x >= layout.x
+            && x < layout.x + layout.width
+            && y >= layout.y
+            && y < layout.y + layout.height
     }
 }
 
@@ -296,9 +394,46 @@ fn slot_text_input() -> TextInput {
 mod tests {
     use super::*;
     use crate::control_slot::control_slot_paint_bounds;
+    use nana_ui::runtime::{AccessibilityAction, AccessibilityRole};
 
     fn runtime() -> SlotRuntime {
         SlotRuntime::new((1080, 1920), 2.0).expect("slot runtime")
+    }
+
+    fn field_id(slot: &SlotRuntime) -> nana_ui::runtime::StableNodeId {
+        slot.field.stable_id()
+    }
+
+    fn button_id(slot: &SlotRuntime) -> nana_ui::runtime::StableNodeId {
+        slot.button.stable_id()
+    }
+
+    fn tap_entity(slot: &mut SlotRuntime, id: nana_ui::runtime::StableNodeId) {
+        let layout = slot
+            .document()
+            .context()
+            .world()
+            .layout_box(id)
+            .expect("layout");
+        let scale = slot.scale();
+        let x = (layout.x + layout.width * 0.5) * scale;
+        let y = (layout.y + layout.height * 0.5) * scale;
+        let bounds = control_slot_paint_bounds(slot.physical_size(), scale);
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Down, x, y, 0)
+                .expect("down")
+        );
+        assert!(
+            slot.push_touch(bounds, SlotTouchKind::Up, x, y, 0)
+                .expect("up")
+        );
+    }
+
+    fn node_with_role(nodes: &[AccessibilityNode], role: AccessibilityRole) -> &AccessibilityNode {
+        nodes
+            .iter()
+            .find(|node| node.role == role)
+            .unwrap_or_else(|| panic!("missing {role:?}"))
     }
 
     #[test]
@@ -447,5 +582,110 @@ mod tests {
         );
         assert_eq!(slot.press_count(), 0);
         assert!(!slot.last_touch_in_slot());
+    }
+
+    #[test]
+    fn ime_commit_writes_cjk_without_keycode_table() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(slot.text_input_focused());
+        assert!(
+            slot.push_ime(&ImeEvent::Commit("你好".into()))
+                .expect("commit")
+        );
+        assert_eq!(slot.input_value(), "你好");
+    }
+
+    #[test]
+    fn ime_preedit_then_commit_uses_desktop_composition_path() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(
+            slot.push_ime(&ImeEvent::Preedit {
+                text: "你".into(),
+                selection: Some((0, "你".len())),
+            })
+            .expect("preedit")
+        );
+        assert!(
+            slot.input_value().is_empty(),
+            "preedit must not commit the editor value"
+        );
+        assert!(
+            slot.push_ime(&ImeEvent::Commit("你好".into()))
+                .expect("commit")
+        );
+        assert_eq!(slot.input_value(), "你好");
+    }
+
+    #[test]
+    fn leaving_text_input_commits_leftover_preedit() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(
+            slot.push_ime(&ImeEvent::Preedit {
+                text: "世".into(),
+                selection: Some((0, "世".len())),
+            })
+            .expect("preedit")
+        );
+        let button = button_id(&slot);
+        tap_entity(&mut slot, button);
+        assert!(
+            !slot.text_input_focused(),
+            "leaving the field must disable IME"
+        );
+        assert_eq!(slot.input_value(), "世");
+    }
+
+    #[test]
+    fn accessibility_nodes_publish_slot_name_role_value() {
+        let mut slot = runtime();
+        let nodes = slot.accessibility_nodes();
+        assert!(
+            nodes.iter().any(|node| node.parent.is_none()),
+            "slot tree must publish a root"
+        );
+        let button = node_with_role(&nodes, AccessibilityRole::Button);
+        assert_eq!(button.label.as_deref(), Some(SLOT_BUTTON_LABEL));
+        let switch = node_with_role(&nodes, AccessibilityRole::Switch);
+        assert_eq!(switch.label.as_deref(), Some(SLOT_SWITCH_LABEL));
+        let field = node_with_role(&nodes, AccessibilityRole::TextInput);
+        assert!(!field.focused);
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        let nodes = slot.accessibility_nodes();
+        let field = node_with_role(&nodes, AccessibilityRole::TextInput);
+        assert!(field.focused);
+        assert!(
+            slot.push_key(
+                true,
+                Some(SlotLogicalKey::Character('h')),
+                SlotKeyMods::default(),
+                false,
+            )
+            .expect("type")
+        );
+        let nodes = slot.accessibility_nodes();
+        let field = node_with_role(&nodes, AccessibilityRole::TextInput);
+        assert_eq!(field.value.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn accessibility_click_activates_slot_button() {
+        let mut slot = runtime();
+        let nodes = slot.accessibility_nodes();
+        let target = node_with_role(&nodes, AccessibilityRole::Button).id;
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::Click,
+            })
+            .expect("click")
+        );
+        assert_eq!(slot.press_count(), 1);
     }
 }

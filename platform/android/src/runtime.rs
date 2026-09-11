@@ -196,10 +196,9 @@ impl HostState {
 
     /// Mirror Runtime text-input focus onto the soft keyboard.
     ///
-    /// Committed text then flows through the existing hardware-style KeyEvent
-    /// path — NativeActivity has no InputConnection, so there is no
-    /// composition/preedit and no `TextEvent`; this is deliberately not a
-    /// second text protocol.
+    /// Printable commits then flow through `ImeEvent::Commit` on the slot
+    /// Runtime. NativeActivity has no InputConnection, so there is no
+    /// composition/preedit; this is deliberately not a second text protocol.
     fn sync_soft_input(&mut self, app: &AndroidApp) {
         let Some(painter) = self.slot.as_ref() else {
             self.ime_shown = false;
@@ -243,12 +242,13 @@ impl HostState {
         painter.push_touch(slot, kind, physical_x, physical_y, pointer_id)
     }
 
-    /// NativeActivity KeyEvent → Runtime keyboard (US-QWERTY subset + editing keys).
+    /// NativeActivity KeyEvent → Runtime keyboard / IME (US-QWERTY subset +
+    /// editing keys).
     ///
     /// System keys (Back, …) stay `Unhandled`. NativeActivity has no
     /// InputConnection: soft-keyboard commits arrive here as hardware-style
-    /// KeyEvents, so this path doubles as the soft-keyboard text route. Keys
-    /// are Handled only while the slot holds keyboard focus (last Down was
+    /// KeyEvents and the slot maps printable downs to [`nana_ui_platform::ImeEvent::Commit`].
+    /// Keys are Handled only while the slot holds keyboard focus (last Down was
     /// inside the slot); otherwise they remain available to VueHost.
     fn handle_key(
         &mut self,
