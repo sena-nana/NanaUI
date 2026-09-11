@@ -87,6 +87,7 @@ pub(super) struct State {
     /// Document `@layer` order (first declared is weaker).
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     pub(super) stylesheet_skips: StylesheetParseReport,
+    pub(super) unsupported_css: crate::css_cascade::UnsupportedCssReport,
     /// Unflattened author sheets (imports already merged; `@media` kept conditional).
     pub(super) authored_sheets: Vec<AuthoredSheet>,
     /// Shared relative forest for the current recascade pass.
@@ -604,6 +605,11 @@ impl MessageBridge {
             layout.transform = Some(overlay);
         }
 
+        // Count declarations that parsed but name something layout does not
+        // implement. Without this they are only visible as a box that silently
+        // did not move.
+        self.cascade.unsupported_css.observe(&layout);
+
         if let Some(widget) = self.widgets.get_mut(&id) {
             if widget.props.layout != layout {
                 widget.props.layout = layout;
@@ -1104,6 +1110,10 @@ impl MessageBridge {
     /// dropped rules/selectors instead of styles silently going missing.
     pub fn stylesheet_skips(&self) -> StylesheetParseReport {
         self.cascade.stylesheet_skips
+    }
+
+    pub fn unsupported_css(&self) -> crate::css_cascade::UnsupportedCssReport {
+        self.cascade.unsupported_css
     }
 }
 

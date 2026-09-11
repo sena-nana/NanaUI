@@ -578,6 +578,8 @@ pub struct VueHost {
     video: video::SharedVideoRuntime,
     media: SharedMediaRuntime,
     diagnostics: DiagnosticBindings,
+    /// Last counts handed to the diagnostics sink; only the growth is reported.
+    reported_unsupported_css: crate::css_cascade::UnsupportedCssReport,
     input: Arc<Mutex<input::InputState>>,
     #[cfg(feature = "scene-view")]
     components: NativeComponentRegistry,
@@ -711,6 +713,7 @@ impl VueHost {
             video: video::shared_video_runtime(),
             media,
             diagnostics: DiagnosticBindings::default(),
+            reported_unsupported_css: crate::css_cascade::UnsupportedCssReport::default(),
             input_projection: host::input_projection::State::default(),
             callbacks: host::callbacks::State::default(),
             input: Arc::new(Mutex::new(input::InputState::default())),
@@ -769,6 +772,13 @@ impl VueHost {
         self.bridge.lock().expect("vue bridge").stylesheet_skips()
     }
 
+    /// Declarations that parsed but name something the layout engine does not
+    /// implement, counted per node. Unlike [`Self::stylesheet_skips`] these
+    /// survived parsing, so they are invisible without this counter.
+    pub fn unsupported_css(&self) -> crate::css_cascade::UnsupportedCssReport {
+        self.bridge.lock().expect("vue bridge").unsupported_css()
+    }
+
     #[cfg(feature = "scene-view")]
     fn report_diagnostic(
         &self,
@@ -785,6 +795,52 @@ impl VueHost {
                 stack,
             });
         }
+    }
+
+    /// Report newly-observed unsupported CSS to the diagnostics sink.
+    ///
+    /// Counters only grow, so the diff against the last report is what appeared
+    /// this frame. Silent when nothing new showed up, so a page that keeps a
+    /// permanently-unsupported declaration reports it once, not every frame.
+    #[cfg(feature = "scene-view")]
+    fn report_unsupported_css(&mut self) {
+        if self.diagnostics.sink.is_none() {
+            return;
+        }
+        let current = self.unsupported_css();
+        let last = self.reported_unsupported_css;
+        if current == last {
+            return;
+        }
+        self.reported_unsupported_css = current;
+        let mut parts = Vec::new();
+        if current.grid_track_lists > last.grid_track_lists {
+            parts.push(format!(
+                "{} grid track list(s)",
+                current.grid_track_lists - last.grid_track_lists
+            ));
+        }
+        if current.writing_modes > last.writing_modes {
+            parts.push(format!(
+                "{} writing-mode(s)",
+                current.writing_modes - last.writing_modes
+            ));
+        }
+        if current.font_variations > last.font_variations {
+            parts.push(format!(
+                "{} font-variation-settings axis/axes",
+                current.font_variations - last.font_variations
+            ));
+        }
+        if parts.is_empty() {
+            return;
+        }
+        self.report_diagnostic(
+            "nana.css",
+            JsDiagnosticLevel::Warning,
+            format!("unsupported CSS ignored by layout: {}", parts.join(", ")),
+            None,
+        );
     }
 
     /// Forward host-op commit rejections recorded by [`NanaTreeDocument`]

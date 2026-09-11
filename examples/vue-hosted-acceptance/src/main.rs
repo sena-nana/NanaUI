@@ -63,6 +63,39 @@ impl NativeComponentFactory for AcceptanceProbe {
 
 struct AcceptanceProgram {
     inner: VueRuntimeProgram<nana_js_v8::V8Engine>,
+    input_probe: bool,
+    composition: Option<CompositionProbe>,
+}
+
+/// One IME composition, accumulated so `--input-probe` can print a single
+/// acceptance line instead of leaving the reader to stitch together the
+/// per-event `nana ime ...` lines.
+#[derive(Debug, Default)]
+struct CompositionProbe {
+    steps: usize,
+    preedits: Vec<String>,
+}
+
+/// Keep a long composition from growing the probe without bound; `steps` still
+/// counts every preedit.
+const COMPOSITION_PROBE_PREEDIT_CAP: usize = 32;
+
+impl CompositionProbe {
+    fn push(&mut self, text: &str) {
+        self.steps += 1;
+        if self.preedits.len() < COMPOSITION_PROBE_PREEDIT_CAP {
+            self.preedits.push(text.to_string());
+        }
+    }
+
+    fn summary(&self) -> String {
+        let shown = format!("{:?}", self.preedits);
+        if self.steps > self.preedits.len() {
+            format!("{shown}+{} more", self.steps - self.preedits.len())
+        } else {
+            shown
+        }
+    }
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
@@ -152,6 +185,43 @@ fn build_runtime(
     Ok(runtime)
 }
 
+impl AcceptanceProgram {
+    /// Emit one line per composition for `--input-probe`.
+    ///
+    /// Includes the focused field's layout box so #20 can check the candidate
+    /// window position against the field it belongs to. Windows never plumbs an
+    /// IME cursor area, so this box is the closest caret anchor the host knows.
+    fn report_composition(&mut self, id: WindowId, outcome: &str, commit: Option<&str>) {
+        let Some(probe) = self.composition.take() else {
+            return;
+        };
+        let focused = self
+            .inner
+            .with_document(id, |document| {
+                let world = document.context().world();
+                let node = world.focused(document.document())?;
+                Some((node, world.layout_box(node)?))
+            })
+            .ok()
+            .flatten()
+            .flatten();
+        let field = match focused {
+            Some((node, layout)) => format!(
+                "field={node:?} box=({:.1},{:.1},{:.1}x{:.1})",
+                layout.x, layout.y, layout.width, layout.height
+            ),
+            None => "field=none".to_string(),
+        };
+        eprintln!(
+            "nana ime-probe window={} outcome={outcome} steps={} preedits={} commit={:?} {field}",
+            id.0,
+            probe.steps,
+            probe.summary(),
+            commit.unwrap_or("")
+        );
+    }
+}
+
 impl RuntimeProgram for AcceptanceProgram {
     type Message = VueMessage;
     type Error = nana_js_engine::JsEngineError;
@@ -179,6 +249,8 @@ impl RuntimeProgram for AcceptanceProgram {
         Ok((
             Self {
                 inner: VueRuntimeProgram::from_runtime(runtime),
+                input_probe,
+                composition: None,
             },
             Vec::new(),
         ))
@@ -249,6 +321,7 @@ impl RuntimeProgram for AcceptanceProgram {
             x,
             y,
             pressure,
+            tangential_pressure,
             tilt_x,
             tilt_y,
             twist,
@@ -258,7 +331,7 @@ impl RuntimeProgram for AcceptanceProgram {
         } = event
         {
             eprintln!(
-                "nana pen window={} phase={phase:?} id={pointer_id} xy=({x:.1},{y:.1}) pressure={pressure:.3} tilt=({tilt_x},{tilt_y}) twist={twist} button={button} buttons={buttons}",
+                "nana pen window={} phase={phase:?} id={pointer_id} xy=({x:.1},{y:.1}) pressure={pressure:.3} tangential={tangential_pressure:.3} tilt=({tilt_x},{tilt_y}) twist={twist} button={button} buttons={buttons}",
                 id.0
             );
         }
@@ -285,11 +358,27 @@ impl RuntimeProgram for AcceptanceProgram {
                         "nana ime window={} preedit={text:?} selection={selection:?}",
                         id.0
                     );
+                    if self.input_probe {
+                        self.composition
+                            .get_or_insert_with(CompositionProbe::default)
+                            .push(text);
+                    }
                 }
                 ImeEvent::Commit(text) => {
                     eprintln!("nana ime window={} commit={text:?}", id.0);
+                    if self.input_probe {
+                        self.report_composition(*id, "commit", Some(text));
+                    }
                 }
-                other => eprintln!("nana ime window={} {other:?}", id.0),
+                other => {
+                    eprintln!("nana ime window={} {other:?}", id.0);
+                    // Disabled / DeleteSurrounding while composing means the
+                    // composition ended without a commit; report it rather than
+                    // leaving the probe waiting for one that never arrives.
+                    if self.input_probe && self.composition.is_some() {
+                        self.report_composition(*id, "ended-without-commit", None);
+                    }
+                }
             },
             _ => {}
         }

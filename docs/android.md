@@ -18,6 +18,9 @@ Android 是实验路径，**不是当前产品目标**。不要把它写进应�
 ./scripts/check-android-arm64.sh
 ```
 
+这条 check 现在也挂在 push / PR 的 `android-arm64-cross` job 上（V8 stub 分支，
+不做多小时的 GN 构建），所以交叉编译断掉会在 PR 上直接红，而不是等到有人手动跑。
+
 要出可安装的 APK，必须走 `dist` 档：
 
 ```bash

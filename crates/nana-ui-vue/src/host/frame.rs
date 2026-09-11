@@ -23,6 +23,7 @@ impl VueHost {
             doc.flush_host_frame();
             self.report_commit_rejections(&mut doc);
         }
+        self.report_unsupported_css();
         self.flush_runtime_scene(logical_width, logical_height)?;
 
         // Re-recording every painted box is a full-tree walk plus one `record`

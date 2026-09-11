@@ -1,13 +1,17 @@
 name: Package V8
 
-# Source-build v8 150.4.0 for aarch64-linux-android. Official rusty_v8
-# releases omit this target. Manual only — GN+V8 is multi-hour.
+# Source-build the workspace's pinned v8 for aarch64-linux-android. Official
+# rusty_v8 releases omit this target. Manual only — GN+V8 is multi-hour.
+#
+# The version is read from Cargo.lock rather than written here: the previous
+# hard-coded 150.4.0 outlived the workspace bump to 152.2.0, so the release tag
+# named a version the job had not built.
 
 on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Attach archives to release rusty-v8-v150.4.0
+        description: Attach archives to the rusty-v8 release matching Cargo.lock
         type: boolean
         default: false
 
@@ -28,6 +32,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+      - name: Resolve pinned V8 version
+        id: v8ver
+        run: |
+          version="$(python3 scripts/locked-crate-version.py v8)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "building v8 ${version} (from Cargo.lock)"
       - name: Host deps
         run: |
           sudo apt-get update
@@ -56,7 +66,7 @@ jobs:
         if: ${{ inputs.publish_release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: rusty-v8-v150.4.0
+          tag_name: rusty-v8-v${{ steps.v8ver.outputs.version }}
           files: dist/v8/*
 
   verify:
