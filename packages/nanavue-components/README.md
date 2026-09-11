@@ -24,7 +24,8 @@ import "@nanaui/nanavue-components/controls.css";
 | `NanaButton` | `Button` |
 | `NanaIconButton` | `IconButton` |
 | `NanaIcon` | `IconGlyph` |
-| `NanaChip` | Button Selected/Subtle 变体 |
+| `NanaChip` | `Chip`（`@press`/`@click` ↔ `Activate`，`@dismiss` ↔ `ChipDismissed`） |
+| `NanaAvatar` | `Avatar`（Cover-fit HostTexture 槽；无点击） |
 | `NanaInput` | `TextInput` |
 | `NanaNumberInput` | `NumberInput` |
 | `NanaTextarea` | `TextArea` |

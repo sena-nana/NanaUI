@@ -264,6 +264,49 @@ impl VueHost {
         let _ = self.bridge.lock().expect("vue bridge").drain_events();
         Ok(true)
     }
+    fn dispatch_chip_dismiss<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        target: NodeHandle,
+    ) -> Result<bool, JsEngineError> {
+        let outcome = {
+            let doc = self.document.lock().expect("vue doc");
+            let Ok(id) = nana_ui_runtime::StableNodeId::try_from(target) else {
+                return Ok(false);
+            };
+            let Some(chip) = doc.context().chip_dismiss_target(id) else {
+                return Ok(false);
+            };
+            let disabled = doc
+                .context()
+                .read(chip, |chip| chip.disabled)
+                .unwrap_or(true);
+            (NodeHandle::from(chip.stable_id()), disabled)
+        };
+        let (chip, disabled) = outcome;
+        if disabled {
+            return Ok(true);
+        }
+        self.fire_dom_event(engine, chip, "dismiss", BTreeMap::new())?;
+        Ok(true)
+    }
+
+    fn dispatch_chip_dismiss_at<E: JsEngine + ?Sized>(
+        &mut self,
+        engine: &mut E,
+        x: f32,
+        y: f32,
+    ) -> Result<bool, JsEngineError> {
+        let hit = {
+            let doc = self.document.lock().expect("vue doc");
+            doc.hit_test(x, y)
+        };
+        match hit {
+            Some(target) => self.dispatch_chip_dismiss(engine, target),
+            None => Ok(false),
+        }
+    }
+
     pub(crate) fn fire_dom_event<E: JsEngine + ?Sized>(
         &self,
         engine: &mut E,
@@ -724,26 +767,33 @@ impl VueHost {
                     && let Some(click_target) = pressed
                     && physical_hit == Some(click_target)
                 {
-                    let is_semantic = self
-                        .bridge
-                        .lock()
-                        .expect("vue bridge")
-                        .contains(click_target.0);
-                    if is_semantic {
-                        let requested_value =
-                            self.pointer_range_value(click_target, input.client_x);
-                        let result = self.semantic_default_action(
-                            engine,
-                            click_target,
-                            requested_value,
-                            Some(detail.clone()),
-                        )?;
-                        default_prevented |= result.default_prevented;
-                        consumed = result.handled;
-                    } else {
-                        default_prevented |=
-                            !self.fire_dom_event(engine, click_target, "click", detail.clone())?;
+                    if self.dispatch_chip_dismiss_at(engine, input.client_x, input.client_y)? {
                         consumed = true;
+                    } else {
+                        let is_semantic = self
+                            .bridge
+                            .lock()
+                            .expect("vue bridge")
+                            .contains(click_target.0);
+                        if is_semantic {
+                            let requested_value =
+                                self.pointer_range_value(click_target, input.client_x);
+                            let result = self.semantic_default_action(
+                                engine,
+                                click_target,
+                                requested_value,
+                                Some(detail.clone()),
+                            )?;
+                            default_prevented |= result.default_prevented;
+                            consumed = result.handled;
+                        } else {
+                            default_prevented |= !self.fire_dom_event(
+                                engine,
+                                click_target,
+                                "click",
+                                detail.clone(),
+                            )?;
+                        }
                     }
                 }
             }
@@ -958,60 +1008,64 @@ impl VueHost {
         }
         let mut allowed = self.fire_dom_event(engine, target, input.kind.as_str(), detail)?;
         if allowed && input.kind == KeyboardEventKind::Down {
-            let widget = self
-                .bridge
-                .lock()
-                .expect("vue bridge")
-                .get(target.0)
-                .cloned();
-            if let Some(widget) = widget {
-                let key = input.key.to_ascii_lowercase();
-                let requested_value = match widget.kind {
-                    WidgetKind::Range => match key.as_str() {
-                        "arrowleft" | "arrowdown" => {
-                            Some(f64::from(widget.props.number - widget.props.step))
-                        }
-                        "arrowright" | "arrowup" => {
-                            Some(f64::from(widget.props.number + widget.props.step))
-                        }
-                        "pagedown" => {
-                            Some(f64::from(widget.props.number - widget.props.step * 10.0))
-                        }
-                        "pageup" => Some(f64::from(widget.props.number + widget.props.step * 10.0)),
-                        "home" => Some(f64::from(widget.props.min)),
-                        "end" => Some(f64::from(widget.props.max)),
+            let key = input.key.to_ascii_lowercase();
+            let activate_key =
+                !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar");
+            if activate_key && self.dispatch_chip_dismiss(engine, target)? {
+                allowed = false;
+            } else {
+                let widget = self
+                    .bridge
+                    .lock()
+                    .expect("vue bridge")
+                    .get(target.0)
+                    .cloned();
+                if let Some(widget) = widget {
+                    let requested_value = match widget.kind {
+                        WidgetKind::Range => match key.as_str() {
+                            "arrowleft" | "arrowdown" => {
+                                Some(f64::from(widget.props.number - widget.props.step))
+                            }
+                            "arrowright" | "arrowup" => {
+                                Some(f64::from(widget.props.number + widget.props.step))
+                            }
+                            "pagedown" => {
+                                Some(f64::from(widget.props.number - widget.props.step * 10.0))
+                            }
+                            "pageup" => {
+                                Some(f64::from(widget.props.number + widget.props.step * 10.0))
+                            }
+                            "home" => Some(f64::from(widget.props.min)),
+                            "end" => Some(f64::from(widget.props.max)),
+                            _ => None,
+                        },
                         _ => None,
-                    },
-                    _ => None,
-                };
-                let activates = match widget.kind {
-                    WidgetKind::Button
-                    | WidgetKind::IconButton
-                    | WidgetKind::Chip
-                    | WidgetKind::ListItem
-                    | WidgetKind::SidebarRow
-                    | WidgetKind::InteractiveCard
-                    | WidgetKind::TableRow => {
-                        !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
-                    }
-                    WidgetKind::Switch | WidgetKind::Checkbox | WidgetKind::Radio => {
-                        !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
-                    }
-                    WidgetKind::SettingsCollapsibleCard => {
-                        !repeated && matches!(key.as_str(), "enter" | " " | "space" | "spacebar")
-                    }
-                    WidgetKind::Range => commit_runtime && requested_value.is_some(),
-                    _ => false,
-                };
-                if activates {
-                    let result = self.semantic_default_action(
-                        engine,
-                        target,
-                        requested_value,
-                        Some(BTreeMap::new()),
-                    )?;
-                    if result.handled {
-                        allowed = false;
+                    };
+                    let activates = match widget.kind {
+                        WidgetKind::Button
+                        | WidgetKind::IconButton
+                        | WidgetKind::Chip
+                        | WidgetKind::ListItem
+                        | WidgetKind::SidebarRow
+                        | WidgetKind::InteractiveCard
+                        | WidgetKind::TableRow => activate_key,
+                        WidgetKind::Switch | WidgetKind::Checkbox | WidgetKind::Radio => {
+                            !repeated && matches!(key.as_str(), " " | "space" | "spacebar")
+                        }
+                        WidgetKind::SettingsCollapsibleCard => activate_key,
+                        WidgetKind::Range => commit_runtime && requested_value.is_some(),
+                        _ => false,
+                    };
+                    if activates {
+                        let result = self.semantic_default_action(
+                            engine,
+                            target,
+                            requested_value,
+                            Some(BTreeMap::new()),
+                        )?;
+                        if result.handled {
+                            allowed = false;
+                        }
                     }
                 }
             }

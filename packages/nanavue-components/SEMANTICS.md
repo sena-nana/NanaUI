@@ -38,7 +38,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | 来源 | Nana `WidgetKind` | Runtime 类型 |
 |------|-------------------|--------------|
 | `<button>` / role=button | Button | `nana_ui::Button` |
-| `nana-chip` / class `nana-chip` | Chip | Button Selected/Subtle 变体（非独立 catalog 身份） |
+| `nana-chip` / class `nana-chip` | Chip | Runtime `Chip`（`nana.chip`） |
 | `nana-switch` / role=switch | Switch | `nana_ui::Switch` |
 | `input[type=checkbox]` | Checkbox | `nana_ui::Checkbox` |
 | `<input>` | Input | `nana_ui::TextInput` |
@@ -115,12 +115,15 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | 加载 | `loading` | `.loading(bool)` |
 | 触发 | `@press` | `.on_press(Message)` |
 
-## NanaChip ↔ Button 变体
+## NanaChip ↔ `Chip`
 
-| Prop | Vue | Rust |
-|------|-----|------|
-| 选中 | `selected` | `ButtonKind::Selected` |
-| 触发 | `@select` | `BridgeEvent::Select` |
+| Prop / 行为 | Vue `NanaChip` | Rust `nana_ui::Chip` |
+|-------------|----------------|----------------------|
+| 选中 | `selected` | `Chip::selected` |
+| 禁用 | `disabled` | `Chip::disabled` |
+| 可关闭 | `dismissible` | `Chip::dismissible`（写入时 `assemble_chip`） |
+| 本体触发 | `@press` / `@click` | `Activate` |
+| 关闭 | `@dismiss` | `ChipDismissed` |
 
 ## NanaSwitch / NanaCheckbox / NanaInput
 

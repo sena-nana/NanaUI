@@ -76,7 +76,27 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `GraphMinimap` 是图画布的概览小地图：按 `GraphModel::bounds` 等比缩放画节点矩形和视口指示框，点击/拖拽发 `GraphMinimapEvent::ViewportRequested`，由应用写回 `GraphCanvas::set_viewport`。它自己是普通组件——`canvas_size` 传图画布的可见尺寸，位置尺寸由应用布局给定（通常是画布角落的 `PositionSpec::Absolute`）。
 
-`Chip` 是紧凑可选 token（pill），`selected` 走 Selected 底，`dismissible` 经 `assemble_chip` 挂关闭钮并发 `ChipDismissed`。`Avatar` 是圆形 Cover-fit `HostTexture` 槽，默认不参与命中；空槽画 Subtle 占位。媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` 策略对象（idle / hover dwell / 焦点·拖拽·菜单锁），不是叶子控件。
+### Chip
+
+`Chip` 是紧凑可选 token（pill），身份 `nana.chip` / Vue `<nana-chip>`。叶子复合件：写 `dismissible` 时 `update_component` 自己跑 `assemble_chip`，不必再记一次。`selected` 走 Selected 底，否则 Subtle。
+
+| 操作 | Runtime | Vue `NanaChip` |
+| --- | --- | --- |
+| 点本体 / Enter / 空格 | `Activate` | `@press` / `@click` |
+| 点关闭钮 | `ChipDismissed` | `@dismiss` |
+| `disabled` | 不发事件、不可焦点 | 吞掉 press 与 dismiss |
+
+关闭是请求，移除由应用做。关闭命中不得再给 Chip 发 `Activate` / `press`。默认关闭无障碍名是「移除」（`close_label`）。AccessKit：本体一个可激活 Button（`selected` 映射 selected 状态）；关闭钮另一个独立可焦点的 Button。不是 list item。
+
+相对 `Button`：Button 是动作，没有 token 的 `selected` / `dismissible`。相对 `StatusBadge`：Badge 只展示，不激活、不关闭。
+
+### Avatar
+
+`Avatar` 是圆形 Cover-fit `HostTexture` 槽（`nana.avatar` / `<nana-avatar>`，采样 `nana.host-texture`），默认不参与命中、不可焦点。空 `resource`、宿主清空、加载失败都走 Subtle 占位，**不**自绘产品字母。加载失败由宿主把 `resource` 清成空；不改缺槽拒绝帧的 GPU 合同。有 `label` 时 AccessKit 为 Image 且有名；无名则为 Image 无 name。无点击事件。与 `Thumbnail` 的区分见 rustdoc（Cover、圆形、固定边长）。
+
+### OverlayVisibility
+
+媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。宿主喂时钟与锁标志；不要当成 Button / Chip 往树上挂。
 
 `ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 

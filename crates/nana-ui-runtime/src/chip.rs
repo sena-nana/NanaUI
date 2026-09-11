@@ -1,5 +1,6 @@
-//! Compact selectable token. Visual language is a pill `Button`; dismiss is a
-//! trailing close control assembled by [`AppContext::assemble_chip`].
+//! Compact selectable token (`nana.chip`). Visual language is a pill `Button`;
+//! dismiss is a trailing close control assembled by [`AppContext::assemble_chip`].
+//! Body emits [`crate::Activate`]; close emits [`ChipDismissed`]. Disabled emits neither.
 
 use std::sync::Arc;
 
@@ -215,6 +216,14 @@ impl AppContext {
         self.append_child(chip, close)?;
         Ok(created)
     }
+
+    /// If `id` is a Chip's assembled close control, return that Chip.
+    pub fn chip_dismiss_target(&self, id: StableNodeId) -> Option<Entity<Chip>> {
+        let parent = self.world().node(id)?.parent?;
+        let chip = self.view_entity::<Chip>(parent)?;
+        let close = self.read(chip, |chip| chip.close).ok().flatten()?;
+        (close == id).then_some(chip)
+    }
 }
 
 #[cfg(test)]
@@ -308,6 +317,83 @@ mod tests {
         assert!(!context.activate_chip(chip).unwrap());
         assert!(!context.activate_node(chip.stable_id()).unwrap());
         assert_eq!(*fired.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn body_emits_activate_and_close_emits_dismissed_without_crosstalk() {
+        let mut context = AppContext::new();
+        let chip = context
+            .create_component(document(), Chip::new("Plan"))
+            .unwrap();
+        context
+            .update_component(chip, |chip, _| chip.dismissible = true)
+            .unwrap();
+        let close = Entity::<IconButton>::from_stable_id(
+            context
+                .read(chip, |chip| chip.close)
+                .unwrap()
+                .expect("dismissible chip assembles a close button"),
+        );
+        assert_eq!(context.chip_dismiss_target(close.stable_id()), Some(chip));
+        assert_eq!(context.chip_dismiss_target(chip.stable_id()), None);
+
+        let chip_a11y = context.world().accessibility(chip.stable_id()).unwrap();
+        assert_eq!(chip_a11y.role, AccessibilityRole::Button);
+        assert_ne!(chip_a11y.role, AccessibilityRole::ListItem);
+        let close_a11y = context.world().accessibility(close.stable_id()).unwrap();
+        assert_eq!(close_a11y.role, AccessibilityRole::Button);
+        assert!(
+            context
+                .world()
+                .interaction(close.stable_id())
+                .unwrap()
+                .focusable
+        );
+
+        let activates = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let dismissed = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let activate_count = std::sync::Arc::clone(&activates);
+        let dismiss_count = std::sync::Arc::clone(&dismissed);
+        context
+            .on(chip, move |_, _: &Activate, _| {
+                *activate_count.lock().unwrap() += 1;
+            })
+            .unwrap();
+        context
+            .on(chip, move |_, _: &ChipDismissed, _| {
+                *dismiss_count.lock().unwrap() += 1;
+            })
+            .unwrap();
+
+        assert!(context.activate_chip(chip).unwrap());
+        assert_eq!(*activates.lock().unwrap(), 1);
+        assert_eq!(*dismissed.lock().unwrap(), 0);
+
+        assert!(context.activate_icon_button(close).unwrap());
+        assert_eq!(*activates.lock().unwrap(), 1);
+        assert_eq!(*dismissed.lock().unwrap(), 1);
+
+        context
+            .update_component(chip, |chip, _| chip.disabled = true)
+            .unwrap();
+        assert!(!context.activate_chip(chip).unwrap());
+        assert!(!context.activate_icon_button(close).unwrap());
+        assert_eq!(*activates.lock().unwrap(), 1);
+        assert_eq!(*dismissed.lock().unwrap(), 1);
+        assert!(
+            !context
+                .world()
+                .interaction(chip.stable_id())
+                .unwrap()
+                .focusable
+        );
+        assert!(
+            !context
+                .world()
+                .interaction(close.stable_id())
+                .unwrap()
+                .focusable
+        );
     }
 
     #[test]

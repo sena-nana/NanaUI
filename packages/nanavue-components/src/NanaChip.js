@@ -1,6 +1,6 @@
 /**
  * NanaChip — compact selectable token. Semantic peer of Runtime `Chip`
- * (`nana-chip`).
+ * (`nana-chip`). `@press`/`@click` ↔ `Activate`; `@dismiss` ↔ `ChipDismissed`.
  */
 import { computed, h } from "@vue/runtime-core";
 
@@ -12,7 +12,7 @@ export const NanaChip = {
     dismissible: { type: Boolean, default: false },
     label: { type: String, default: "" },
   },
-  emits: ["select", "dismiss"],
+  emits: ["press", "click", "dismiss"],
   setup(props, { slots, emit, attrs }) {
     const resolvedLabel = computed(() => {
       if (props.label) return props.label;
@@ -22,12 +22,13 @@ export const NanaChip = {
         .map((vnode) => (typeof vnode.children === "string" ? vnode.children : ""))
         .join("");
     });
-    function onSelect(ev) {
+    function onPress(ev) {
       if (props.disabled) {
         ev?.preventDefault?.();
         return;
       }
-      emit("select", ev);
+      emit("press", ev);
+      emit("click", ev);
     }
     function onDismiss(ev) {
       if (props.disabled) {
@@ -55,9 +56,8 @@ export const NanaChip = {
         dismissible: props.dismissible,
         "aria-pressed": props.selected ? "true" : "false",
         "data-agent-id": attrs["data-agent-id"] || "nana.chip",
-        onSelect,
-        onClick: onSelect,
-        onPress: onSelect,
+        onPress,
+        onClick: onPress,
         onDismiss,
       });
   },

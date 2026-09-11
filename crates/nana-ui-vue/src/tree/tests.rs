@@ -1982,6 +1982,46 @@ fn nana_chip_projects_runtime_chip() {
 }
 
 #[test]
+fn nana_chip_dismissible_assembles_close_and_keeps_roles() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let node = doc.create_element("nana-chip");
+    doc.insert(node, doc.mount_root(), None);
+    let mut bridge = crate::MessageBridge::new();
+    let mut props = crate::WidgetProps {
+        label: "Beta".into(),
+        ..Default::default()
+    };
+    props.attrs.insert("dismissible".into(), String::new());
+    bridge.register(node.0, crate::WidgetKind::Chip, props);
+    doc.sync_semantic_styles(&bridge.snapshot());
+    let id = StableNodeId::try_from(node).unwrap();
+    let chip = nana_ui_runtime::Entity::<nana_ui_runtime::Chip>::from_stable_id(id);
+    let close = doc
+        .world()
+        .node(id)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&child| doc.context().chip_dismiss_target(child).is_some())
+        .expect("dismissible nana-chip assembles a close control");
+    assert_eq!(doc.context().chip_dismiss_target(close), Some(chip));
+    assert_eq!(doc.context().chip_dismiss_target(id), None);
+    let snapshot = doc.accessibility_snapshot();
+    assert_eq!(
+        snapshot.iter().find(|entry| entry.id == id).unwrap().role,
+        AccessibilityRole::Button
+    );
+    assert_eq!(
+        snapshot
+            .iter()
+            .find(|entry| entry.id == close)
+            .unwrap()
+            .role,
+        AccessibilityRole::Button
+    );
+    assert!(doc.runtime.interaction(close).unwrap().focusable);
+}
+
+#[test]
 fn migrated_controls_project_one_retained_visual_and_accessibility_state() {
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);
     let button = doc.create_element("button");

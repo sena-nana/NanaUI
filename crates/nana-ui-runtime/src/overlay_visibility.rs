@@ -1,5 +1,6 @@
 //! Time-based overlay show/hide policy. Hosts supply clocks and lock flags;
-//! the policy does not own windows, media, or pointer routing.
+//! the policy does not own windows, media, or pointer routing, and is not a
+//! leaf control.
 
 use std::time::{Duration, Instant};
 
@@ -39,7 +40,7 @@ impl Default for OverlayVisibilityConfig {
     }
 }
 
-/// Auto-hide machine for media chrome and stage HUDs.
+/// Auto-hide machine for media chrome and stage HUDs. Not a leaf control.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayVisibility {
     config: OverlayVisibilityConfig,

@@ -1,6 +1,7 @@
 //! Circular cover-fit host-texture slot. Distinct from [`crate::Thumbnail`]:
 //! Cover mapping, host-owned pixel size, circular clip. NanaUI never stores
-//! pixels or codecs.
+//! pixels or codecs. Empty or cleared slots use the Subtle placeholder; do not
+//! paint initials.
 
 use std::sync::Arc;
 
@@ -208,6 +209,44 @@ mod tests {
         let box_ = context.world().layout_box(avatar.stable_id()).unwrap();
         assert!((box_.width - 40.0).abs() < 0.5);
         assert!((box_.height - 40.0).abs() < 0.5);
+        assert_eq!(context.world().text(avatar.stable_id()), Some(""));
+        let a11y = context.world().accessibility(avatar.stable_id()).unwrap();
+        assert_eq!(a11y.role, AccessibilityRole::Image);
+        assert_eq!(a11y.label.as_deref(), Some("用户"));
+        assert!(
+            !context
+                .world()
+                .interaction(avatar.stable_id())
+                .unwrap()
+                .focusable
+        );
+        assert!(
+            !context
+                .world()
+                .interaction(avatar.stable_id())
+                .unwrap()
+                .pointer_events
+        );
+    }
+
+    #[test]
+    fn unlabeled_empty_is_an_unnamed_image_placeholder() {
+        let mut context = AppContext::new();
+        let avatar = context
+            .create_component(document(), Avatar::empty())
+            .unwrap();
+        let a11y = context.world().accessibility(avatar.stable_id()).unwrap();
+        assert_eq!(a11y.role, AccessibilityRole::Image);
+        assert!(a11y.label.is_none());
+        assert_eq!(context.world().text(avatar.stable_id()), Some(""));
+        assert_eq!(
+            context
+                .world()
+                .node_style(avatar.stable_id())
+                .unwrap()
+                .background,
+            Some(SemanticColorRole::Subtle)
+        );
     }
 
     #[test]

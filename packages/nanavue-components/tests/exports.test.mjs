@@ -62,6 +62,7 @@ const HOST_TAGS = {
   NanaDivider: "hr",
   NanaThumbnail: "nana-thumbnail",
   NanaAvatar: "nana-avatar",
+  NanaChip: "nana-chip",
   NanaCard: "nana-card",
   NanaList: "ul",
   NanaListItem: "li",
@@ -211,6 +212,12 @@ describe("L2 overlay / form exports", () => {
     assert.match(src, /mathRenderer/);
     assert.match(src, /mermaid-renderer/);
     assert.match(src, /math-renderer/);
+  });
+
+  test("NanaChip emits press, click, and dismiss", () => {
+    const src = readFileSync(join(root, "src/NanaChip.js"), "utf8");
+    assert.match(src, /emits:\s*\["press",\s*"click",\s*"dismiss"\]/);
+    assert.match(src, /h\(\s*["']nana-chip["']/);
   });
 
   test("NanaSplitPane forwards axis and numeric size props", () => {

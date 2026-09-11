@@ -426,6 +426,7 @@ impl RegisterableComponent for crate::DatePicker {
 impl RegisterableComponent for Chip {
     const TYPE_ID: &'static str = crate::component_descriptors::CHIP.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::CHIP.tags;
+    const RETAIN_SEMANTIC_STATE: bool = true;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let selected = spec.active
             || spec.toggled
@@ -435,6 +436,20 @@ impl RegisterableComponent for Chip {
             .disabled(spec.disabled)
             .dismissible(flag_attr(spec, &["dismissible", "dismiss"]))
             .size(spec.size)
+    }
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let mut chip = Self::from_semantic(spec);
+        if let Some(previous) = previous {
+            chip.close = previous.close;
+            chip.close_label = Arc::clone(&previous.close_label);
+        }
+        chip
+    }
+    fn finish_semantic(
+        context: &mut crate::AppContext,
+        entity: crate::Entity<Self>,
+    ) -> Result<(), crate::FrameworkError> {
+        context.assemble_chip(entity).map(|_| ())
     }
 }
 

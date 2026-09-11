@@ -217,6 +217,157 @@ fn semantic_switch_pointer_default_action_updates_once_and_honors_prevent_defaul
     );
 }
 
+fn chip_close_id(
+    doc: &NanaTreeDocument,
+    chip: nana_ui_runtime::StableNodeId,
+) -> nana_ui_runtime::StableNodeId {
+    doc.world()
+        .node(chip)
+        .into_iter()
+        .flat_map(|node| node.children)
+        .find(|&id| doc.context().chip_dismiss_target(id).is_some())
+        .expect("dismissible chip assembles a close control")
+}
+
+fn install_dismissible_chip(
+    host: &mut VueHost,
+    disabled: bool,
+) -> (
+    NodeHandle,
+    nana_ui_runtime::StableNodeId,
+    nana_ui_runtime::LayoutBox,
+    nana_ui_runtime::LayoutBox,
+) {
+    host.callbacks.fire_event = Some(JsFunctionId(1));
+    let node = {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        let node = doc.create_element("nana-chip");
+        let root = doc.mount_root();
+        doc.insert(node, root, None);
+        node
+    };
+    let mut props = WidgetProps {
+        label: "Beta".into(),
+        disabled,
+        ..Default::default()
+    };
+    props.attrs.insert("dismissible".into(), String::new());
+    host.bridge
+        .lock()
+        .expect("bridge")
+        .register(node.0, WidgetKind::Chip, props);
+    let snapshot = host.bridge.lock().expect("bridge").snapshot();
+    let (close, chip_box, close_box) = {
+        let document = host.document();
+        let mut doc = document.lock().expect("document");
+        doc.sync_semantic_styles(&snapshot);
+        let document_id = doc.runtime_document().document();
+        doc.context_mut()
+            .layout_document(
+                document_id,
+                nana_ui_runtime::LayoutViewport::new(400.0, 80.0),
+            )
+            .unwrap();
+        let id = nana_ui_runtime::StableNodeId::try_from(node).unwrap();
+        let close = chip_close_id(&doc, id);
+        let chip_box = doc.world().layout_box(id).unwrap();
+        let close_box = doc.world().layout_box(close).unwrap();
+        (close, chip_box, close_box)
+    };
+    let store = host.layout_box_store();
+    store.begin_frame();
+    store.record(
+        node,
+        chip_box.x,
+        chip_box.y,
+        chip_box.width,
+        chip_box.height,
+    );
+    host.sync_scene_layout_boxes();
+    (node, close, chip_box, close_box)
+}
+
+#[test]
+fn chip_body_and_close_emit_distinct_events() {
+    let mut host = VueHost::new();
+    let (chip, close, chip_box, close_box) = install_dismissible_chip(&mut host, false);
+    let mut engine = RecordingEngine::default();
+    host.pointer_click(
+        &mut engine,
+        close_box.x + close_box.width / 2.0,
+        close_box.y + close_box.height / 2.0,
+    )
+    .unwrap();
+    let events = fired_events(&engine);
+    assert!(
+        events
+            .iter()
+            .any(|(id, name, _)| *id == chip.0 && name == "dismiss")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|(id, name, _)| !(*id == chip.0 && name == "press"))
+    );
+
+    let mut body = RecordingEngine::default();
+    host.pointer_click(
+        &mut body,
+        chip_box.x + 8.0,
+        chip_box.y + chip_box.height / 2.0,
+    )
+    .unwrap();
+    let body_events = fired_events(&body);
+    assert!(
+        body_events
+            .iter()
+            .any(|(id, name, _)| *id == chip.0 && (name == "press" || name == "click"))
+    );
+    assert!(
+        body_events
+            .iter()
+            .all(|(id, name, _)| !(*id == chip.0 && name == "dismiss"))
+    );
+
+    let mut keys = RecordingEngine::default();
+    host.dispatch_keyboard(
+        &mut keys,
+        &KeyboardInput::key_down("Enter", "Enter"),
+        Some(NodeHandle::from(close)),
+    )
+    .unwrap();
+    let key_events = fired_events(&keys);
+    assert!(
+        key_events
+            .iter()
+            .any(|(id, name, _)| *id == chip.0 && name == "dismiss")
+    );
+
+    let mut disabled = VueHost::new();
+    let (chip, _, chip_box, close_box) = install_dismissible_chip(&mut disabled, true);
+    let mut silent = RecordingEngine::default();
+    disabled
+        .pointer_click(
+            &mut silent,
+            close_box.x + close_box.width / 2.0,
+            close_box.y + close_box.height / 2.0,
+        )
+        .unwrap();
+    disabled
+        .pointer_click(
+            &mut silent,
+            chip_box.x + 8.0,
+            chip_box.y + chip_box.height / 2.0,
+        )
+        .unwrap();
+    assert!(
+        fired_events(&silent)
+            .iter()
+            .all(|(id, name, _)| !(*id == chip.0 && (name == "press" || name == "dismiss")))
+    );
+}
+
 #[test]
 fn range_keyboard_and_accessibility_share_quantized_change_action() {
     let mut host = VueHost::new();
