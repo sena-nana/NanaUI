@@ -1014,10 +1014,11 @@ mod tests {
             }
         }
 
-        let mut policy = FetchPolicy::default();
-        policy.max_response_bytes = 1_000;
         let host = BufferedOnlyHost {
-            policy,
+            policy: FetchPolicy {
+                max_response_bytes: 1_000,
+                ..FetchPolicy::default()
+            },
             body: vec![b'z'; 4_000],
         };
         let mut sink = NullSink(0);
@@ -1032,10 +1033,11 @@ mod tests {
         assert_eq!(sink.0, 0, "an over-cap body must not reach the sink at all");
 
         // Under the cap the same host streams normally, as one chunk.
-        let mut policy = FetchPolicy::default();
-        policy.max_response_bytes = 1_000;
         let host = BufferedOnlyHost {
-            policy,
+            policy: FetchPolicy {
+                max_response_bytes: 1_000,
+                ..FetchPolicy::default()
+            },
             body: vec![b'z'; 900],
         };
         let mut sink = NullSink(0);

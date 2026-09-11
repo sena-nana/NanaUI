@@ -1016,6 +1016,9 @@ fn host_to_v8<'s>(
             .ok_or_else(|| JsEngineError::new("failed to allocate host string")),
         HostValue::Bytes(bytes) => {
             let backing = v8::ArrayBuffer::new_backing_store(scope, bytes.len());
+            // Measured: in release this loop is already vectorised, and a 16 MiB
+            // body shows no difference against a raw `copy_nonoverlapping` into
+            // the backing store. Keep the safe version.
             for (target, source) in backing.iter().zip(bytes) {
                 target.set(*source);
             }
@@ -2161,6 +2164,100 @@ mod tests {
             assert!(guard.increment >= 1, "{guard:?}");
             assert_eq!(guard.last_count, 2);
             drop(guard);
+            engine.shutdown();
+        });
+    }
+
+    #[test]
+    fn text_codec_round_trips_every_utf8_width_across_batch_boundaries() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(64, 64, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "codec.js",
+                    r#"
+                globalThis.__nanaCodecResult = null;
+                globalThis.__nanaCodec = { read: () => globalThis.__nanaCodecResult };
+                (function () {
+                  const encoder = new TextEncoder();
+                  const decoder = new TextDecoder();
+                  const roundTrip = (s) => decoder.decode(encoder.encode(s)) === s;
+
+                  // One-, two-, three- and four-byte sequences, plus strings
+                  // long enough to cross the internal 8192-unit batch so a
+                  // multi-byte sequence straddling a batch would corrupt.
+                  const cases = [
+                    "",
+                    "plain ascii",
+                    "café ünïcode",
+                    "日本語テキスト",
+                    "emoji 🎉🚀 mix",
+                    "a".repeat(20000),
+                    "日本語🎉".repeat(5000),
+                    ("xé日🎉").repeat(4000),
+                  ];
+                  const failures = [];
+                  for (let i = 0; i < cases.length; i++) {
+                    if (!roundTrip(cases[i])) failures.push(i);
+                  }
+
+                  globalThis.__nanaCodecResult = {
+                    failures,
+                    // Byte-level spot checks against known UTF-8 encodings.
+                    eAcute: Array.from(encoder.encode("é")),
+                    nihon: Array.from(encoder.encode("日")),
+                    party: Array.from(encoder.encode("🎉")),
+                    decoded: decoder.decode(new Uint8Array([0xf0, 0x9f, 0x8e, 0x89])),
+                    longLength: decoder.decode(encoder.encode("日".repeat(10000))).length,
+                    emptyDecode: decoder.decode(new Uint8Array(0)),
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaCodec.read").unwrap();
+            engine.run_microtasks().unwrap();
+            let result = engine.invoke(read, &[]).unwrap();
+            let result = result.as_object().expect("codec probe produced no result");
+
+            let failures = result
+                .get("failures")
+                .and_then(HostValue::as_array)
+                .unwrap();
+            assert!(
+                failures.is_empty(),
+                "these round-trip cases corrupted: {failures:?}"
+            );
+            let bytes = |key: &str| -> Vec<u8> {
+                result
+                    .get(key)
+                    .and_then(HostValue::as_array)
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as u8)
+                    .collect()
+            };
+            assert_eq!(bytes("eAcute"), vec![0xc3, 0xa9]);
+            assert_eq!(bytes("nihon"), vec![0xe6, 0x97, 0xa5]);
+            assert_eq!(bytes("party"), vec![0xf0, 0x9f, 0x8e, 0x89]);
+            assert_eq!(
+                result.get("decoded").and_then(HostValue::as_str),
+                Some("\u{1f389}")
+            );
+            assert_eq!(
+                result.get("longLength").and_then(HostValue::as_f64),
+                Some(10000.0),
+                "a batched decode must not drop or duplicate characters"
+            );
+            assert_eq!(
+                result.get("emptyDecode").and_then(HostValue::as_str),
+                Some("")
+            );
             engine.shutdown();
         });
     }
