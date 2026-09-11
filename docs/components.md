@@ -172,7 +172,7 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。
 
-`Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
+`Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Loading 态的 spinner 居中绘制，边长 28（紧凑 `Spinner` 的两倍）；带标签的独立 `Spinner` 仍贴左，作为文字的前置槽。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
 
 ### 图表与带图标按钮
 

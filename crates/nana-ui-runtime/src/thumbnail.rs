@@ -22,7 +22,8 @@ use crate::{
 /// Width ÷ height when the host does not declare an aspect.
 pub const DEFAULT_ASPECT: f32 = 1.0;
 
-const SPINNER_SIZE: f32 = 14.0;
+/// Loading glyph: twice the compact [`crate::Spinner`] (14 → 28). Scene clamps to the box.
+const SPINNER_SIZE: f32 = 28.0;
 
 /// Presentation of a [`Thumbnail`] box. All four states keep the same size.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -331,6 +332,13 @@ mod tests {
             Some(StandardVisual::Spinner { .. })
         ));
         assert!(world.accessibility(id).unwrap().busy);
+        match world.standard_visual(id) {
+            Some(StandardVisual::Spinner { size, label, .. }) => {
+                assert_eq!(size, SPINNER_SIZE);
+                assert!(label.is_empty());
+            }
+            other => panic!("loading thumbnail must project a spinner, got {other:?}"),
+        }
         let (world, id) = mount(Thumbnail::unavailable());
         assert!(world.accessibility(id).unwrap().invalid);
         assert_eq!(

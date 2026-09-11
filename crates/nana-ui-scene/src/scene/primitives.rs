@@ -1585,13 +1585,21 @@ impl UiScene {
                         });
                     }
                 }
-                Some(StandardVisual::Spinner { size, phase, .. }) => {
+                Some(StandardVisual::Spinner { size, phase, label }) => {
                     let extent = size.max(0.0).min(bounds.width).min(bounds.height);
+                    // Unlabeled spinners (Thumbnail loading) sit in the box
+                    // center. A labeled Spinner keeps the glyph in the leading
+                    // padding lane so it does not cover the caption.
+                    let x = if label.trim().is_empty() {
+                        bounds.x + (bounds.width - extent) / 2.0
+                    } else {
+                        bounds.x
+                    };
                     self.insert_primitive(ScenePrimitive {
                         id: PrimitiveId { node: id, slot: 3 },
                         node: id,
                         bounds: SceneRect {
-                            x: bounds.x,
+                            x,
                             y: bounds.y + (bounds.height - extent) / 2.0,
                             width: extent,
                             height: extent,

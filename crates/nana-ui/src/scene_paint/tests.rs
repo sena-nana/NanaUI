@@ -1333,20 +1333,20 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
         [64, 64],
         1.0,
     );
-    let tick = pixel(&pixels, 64, 20, 32);
+    let tick = pixel(&pixels, 64, 40, 32);
     assert!(
         tick[0] > 120,
-        "phase-0 east tick midline (20,32) must ink, got {tick:?}"
+        "phase-0 east tick midline (40,32) must ink, got {tick:?}"
     );
-    let hub = pixel(&pixels, 64, 12, 32);
+    let hub = pixel(&pixels, 64, 32, 32);
     assert!(
         is_blue_slot(hub),
         "spinner hub is inside the ring, not a tick, got {hub:?}"
     );
-    let far = pixel(&pixels, 64, 48, 16);
+    let far = pixel(&pixels, 64, 8, 16);
     assert!(
         is_blue_slot(far),
-        "pixels outside the 24px spinner must stay the sibling fill, got {far:?}"
+        "pixels outside the centered 24px spinner must stay the sibling fill, got {far:?}"
     );
 }
 
