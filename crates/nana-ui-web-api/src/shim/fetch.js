@@ -63,6 +63,164 @@
   };
   HeadersShim.prototype[Symbol.iterator] = HeadersShim.prototype.entries;
 
+  function FormDataShim(form) {
+    if (form !== undefined) {
+      // `new FormData(formElement)` would have to walk a real form's controls.
+      // Fail closed rather than silently producing an empty body.
+      throw new TypeError("new FormData(form) is not supported by Nana; append entries instead");
+    }
+    this._entries = [];
+  }
+  function formDataEntry(name, value, filename) {
+    if (value instanceof BlobShim) {
+      return {
+        name: String(name),
+        value: value,
+        filename: filename === undefined ? "blob" : String(filename),
+      };
+    }
+    if (filename !== undefined) {
+      throw new TypeError("FormData filename is only meaningful for a Blob value");
+    }
+    return { name: String(name), value: String(value), filename: null };
+  }
+  FormDataShim.prototype.append = function (name, value, filename) {
+    this._entries.push(formDataEntry(name, value, filename));
+  };
+  FormDataShim.prototype.set = function (name, value, filename) {
+    const entry = formDataEntry(name, value, filename);
+    const index = this._entries.findIndex(function (item) { return item.name === entry.name; });
+    if (index < 0) {
+      this._entries.push(entry);
+      return;
+    }
+    this._entries[index] = entry;
+    this._entries = this._entries.filter(function (item, at) {
+      return at <= index || item.name !== entry.name;
+    });
+  };
+  FormDataShim.prototype.has = function (name) {
+    const key = String(name);
+    return this._entries.some(function (item) { return item.name === key; });
+  };
+  FormDataShim.prototype.get = function (name) {
+    const key = String(name);
+    const found = this._entries.find(function (item) { return item.name === key; });
+    return found ? found.value : null;
+  };
+  FormDataShim.prototype.getAll = function (name) {
+    const key = String(name);
+    return this._entries
+      .filter(function (item) { return item.name === key; })
+      .map(function (item) { return item.value; });
+  };
+  FormDataShim.prototype.delete = function (name) {
+    const key = String(name);
+    this._entries = this._entries.filter(function (item) { return item.name !== key; });
+  };
+  FormDataShim.prototype.entries = function () {
+    return this._entries
+      .map(function (item) { return [item.name, item.value]; })
+      [Symbol.iterator]();
+  };
+  FormDataShim.prototype.keys = function () {
+    return this._entries.map(function (item) { return item.name; })[Symbol.iterator]();
+  };
+  FormDataShim.prototype.values = function () {
+    return this._entries.map(function (item) { return item.value; })[Symbol.iterator]();
+  };
+  FormDataShim.prototype.forEach = function (callback, thisArg) {
+    for (let i = 0; i < this._entries.length; i++) {
+      callback.call(thisArg, this._entries[i].value, this._entries[i].name, this);
+    }
+  };
+  FormDataShim.prototype[Symbol.iterator] = FormDataShim.prototype.entries;
+
+  // RFC 7578 quotes these three in `name` / `filename`; everything else is
+  // passed through as UTF-8, which is what browsers send.
+  function escapeFormDataName(value) {
+    return String(value)
+      .replace(/\r/g, "%0D")
+      .replace(/\n/g, "%0A")
+      .replace(/"/g, "%22");
+  }
+
+  function concatBytes(chunks) {
+    let total = 0;
+    for (let i = 0; i < chunks.length; i++) total += chunks[i].length;
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      out.set(chunks[i], at);
+      at += chunks[i].length;
+    }
+    return out;
+  }
+
+  function encodeMultipart(formData) {
+    const encoder = new TextEncoder();
+    const parts = [];
+    for (let i = 0; i < formData._entries.length; i++) {
+      const entry = formData._entries[i];
+      let header = 'Content-Disposition: form-data; name="' + escapeFormDataName(entry.name) + '"';
+      let bytes;
+      if (entry.value instanceof BlobShim) {
+        if (!entry.value.__nanaResource) {
+          throw new TypeError("FormData Blob entry has been released");
+        }
+        header += '; filename="' + escapeFormDataName(entry.filename) + '"';
+        header += "\r\nContent-Type: " + (entry.value.type || "application/octet-stream");
+        bytes = asUint8Array(hostCall("resourceBytes", [entry.value.__nanaResource.id]));
+      } else {
+        bytes = encoder.encode(entry.value);
+      }
+      parts.push({ header: encoder.encode(header + "\r\n\r\n"), bytes: bytes });
+    }
+
+    // The boundary must not occur in any part. Browsers rely on a wide random
+    // range; check anyway, because a collision silently truncates the body.
+    let boundary = "";
+    for (let attempt = 0; attempt < 8; attempt++) {
+      boundary =
+        "----NanaFormBoundary" +
+        Math.random().toString(36).slice(2) +
+        Math.random().toString(36).slice(2);
+      const needle = encoder.encode(boundary);
+      if (!parts.some(function (part) { return bytesContain(part.bytes, needle); })) break;
+    }
+
+    const delimiter = encoder.encode("--" + boundary + "\r\n");
+    const chunks = [];
+    for (let i = 0; i < parts.length; i++) {
+      chunks.push(delimiter, parts[i].header, parts[i].bytes, encoder.encode("\r\n"));
+    }
+    chunks.push(encoder.encode("--" + boundary + "--\r\n"));
+    return {
+      bytes: concatBytes(chunks),
+      contentType: "multipart/form-data; boundary=" + boundary,
+    };
+  }
+
+  function bytesContain(haystack, needle) {
+    if (needle.length === 0 || haystack.length < needle.length) return false;
+    outer: for (let i = 0; i <= haystack.length - needle.length; i++) {
+      for (let j = 0; j < needle.length; j++) {
+        if (haystack[i + j] !== needle[j]) continue outer;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /// Encode a request body, and say whether the body itself names a
+  /// Content-Type. Only multipart does: its boundary is generated here, so the
+  /// author cannot write that header themselves. Every other body type keeps
+  /// the existing behaviour of not implying a Content-Type.
+  function encodeBody(body) {
+    if (body instanceof FormDataShim) return encodeMultipart(body);
+    return { bytes: bodyBytes(body), contentType: null };
+  }
+
   function bodyBytes(body) {
     if (body == null) return new Uint8Array(0);
     if (typeof body === "string") return new TextEncoder().encode(body);
@@ -75,6 +233,8 @@
     }
     const name = body && body.constructor && body.constructor.name;
     if (name === "Blob" || name === "FormData" || name === "URLSearchParams") {
+      // A foreign implementation, not the Nana one: its bytes are not reachable
+      // through the host resource channel.
       throw new TypeError(name + " request bodies are not supported by Nana fetch");
     }
     throw new TypeError("Nana fetch only supports string, ArrayBuffer, or typed-array bodies");
@@ -140,9 +300,18 @@
     }
     this.signal = init.signal || (source && source.signal) || new AbortSignalShim();
     this.redirect = init.redirect || (source && source.redirect) || "follow";
-    this._body = Object.prototype.hasOwnProperty.call(init, "body")
-      ? bodyBytes(init.body)
-      : source ? new Uint8Array(source._body) : new Uint8Array(0);
+    if (Object.prototype.hasOwnProperty.call(init, "body")) {
+      const encoded = encodeBody(init.body);
+      this._body = encoded.bytes;
+      // Only multipart implies a type, and only when the author left it unset:
+      // the boundary is generated during encoding, so a hand-written
+      // `content-type` would not match the body we just built.
+      if (encoded.contentType && !this.headers.has("content-type")) {
+        this.headers.set("content-type", encoded.contentType);
+      }
+    } else {
+      this._body = source ? new Uint8Array(source._body) : new Uint8Array(0);
+    }
     this.bodyUsed = false;
     if ((this.method === "GET" || this.method === "HEAD") && this._body.length) {
       throw new TypeError("GET/HEAD requests cannot have a body");

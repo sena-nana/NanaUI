@@ -2333,6 +2333,164 @@ mod tests {
     }
 
     #[test]
+    fn form_data_bodies_encode_as_multipart_with_a_generated_boundary() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "form-data.js",
+                    r#"
+                globalThis.__nanaFormResult = null;
+                globalThis.__nanaForm = { read: () => globalThis.__nanaFormResult };
+                (async function () {
+                  const form = new FormData();
+                  form.append("field", "plain value");
+                  form.append("field", "second");
+                  form.append("file", new Blob(["FILEBYTES"], { type: "text/plain" }), "a.txt");
+
+                  const accessors = {
+                    get: form.get("field"),
+                    getAll: form.getAll("field"),
+                    has: form.has("field"),
+                    entries: Array.from(form.entries()).length,
+                  };
+                  form.set("field", "only one");
+                  const afterSet = form.getAll("field");
+
+                  const request = new Request("https://example.test/upload", {
+                    method: "POST",
+                    body: form,
+                  });
+                  const contentType = request.headers.get("content-type");
+                  const bytes = new Uint8Array(await request.arrayBuffer());
+                  const text = new TextDecoder().decode(bytes);
+
+                  // An author-set content-type must not be replaced, even though
+                  // the boundary then will not match; that is the author's call.
+                  const explicit = new Request("https://example.test/upload", {
+                    method: "POST",
+                    body: new FormData(),
+                    headers: { "content-type": "text/plain" },
+                  });
+
+                  let fromFormElement = "";
+                  try { new FormData(globalThis.document.createElement("form")); }
+                  catch (error) { fromFormElement = error.name; }
+
+                  globalThis.__nanaFormResult = {
+                    accessors,
+                    afterSet,
+                    contentType,
+                    text,
+                    explicitType: explicit.headers.get("content-type"),
+                    fromFormElement,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaForm.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "FormData test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            let accessors = result
+                .get("accessors")
+                .and_then(HostValue::as_object)
+                .unwrap();
+            assert_eq!(
+                accessors.get("get").and_then(HostValue::as_str),
+                Some("plain value"),
+                "get() returns the first entry"
+            );
+            assert_eq!(
+                accessors
+                    .get("getAll")
+                    .and_then(HostValue::as_array)
+                    .map(|items| items.len()),
+                Some(2)
+            );
+            assert_eq!(
+                accessors.get("has").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(
+                accessors.get("entries").and_then(HostValue::as_f64),
+                Some(3.0)
+            );
+            assert_eq!(
+                result
+                    .get("afterSet")
+                    .and_then(HostValue::as_array)
+                    .map(|items| items.len()),
+                Some(1),
+                "set() collapses the duplicates it replaces"
+            );
+
+            let content_type = result
+                .get("contentType")
+                .and_then(HostValue::as_str)
+                .unwrap();
+            assert!(
+                content_type.starts_with("multipart/form-data; boundary=----NanaFormBoundary"),
+                "the body names its own content-type, got {content_type}"
+            );
+            let boundary = content_type.split("boundary=").nth(1).unwrap();
+
+            let text = result.get("text").and_then(HostValue::as_str).unwrap();
+            assert!(
+                text.contains(r#"Content-Disposition: form-data; name="field""#),
+                "string part carries its disposition, got {text}"
+            );
+            assert!(text.contains("only one"), "string part carries its value");
+            assert!(
+                text.contains(r#"name="file"; filename="a.txt""#),
+                "blob part carries a filename"
+            );
+            assert!(
+                text.contains("Content-Type: text/plain"),
+                "blob part carries the blob's own type"
+            );
+            assert!(
+                text.contains("FILEBYTES"),
+                "blob bytes travel through the host resource channel"
+            );
+            assert!(
+                text.ends_with(&format!("--{boundary}--\r\n")),
+                "body closes with the terminating boundary"
+            );
+            assert!(
+                !text.contains(&format!("--{boundary}\r\n--{boundary}")),
+                "no empty part between delimiters"
+            );
+
+            assert_eq!(
+                result.get("explicitType").and_then(HostValue::as_str),
+                Some("text/plain"),
+                "an author-set content-type is not overwritten"
+            );
+            assert_eq!(
+                result.get("fromFormElement").and_then(HostValue::as_str),
+                Some("TypeError"),
+                "new FormData(form) fails closed instead of sending an empty body"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn buffered_fetch_classes_enforce_body_and_abort_contracts() {
         with_serial_v8_tests(|| {
             use nana_ui_vue::VueHost;

@@ -36,7 +36,7 @@ Vue + JS 是一等 L1/L2 消费入口，新应用和已有 Vue 界面均可使�
 
 L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 
-- Fetch 只有缓冲式正文；流式 body、`FormData`、cookie、cache、CORS/preflight 未做，非默认 Request 选项明确拒绝。
+- Fetch 只有缓冲式正文；`FormData` 正文已支持（multipart/form-data，文件项走 Blob 资源对象）。流式 body、cookie、cache、CORS/preflight 未做，非默认 Request 选项明确拒绝。
 - WebSocket 只留接口与 shim，需宿主注入 socket host，框架不带默认传输。
 - CSS：RTL 只翻转 flex **行**主轴的 item 序与 `justify-content`；grid 列序、column flex 的交叉轴起点仍不翻转。`repeat()` 按 CSS 不可嵌套，一个轨列表至多一个 auto-repeat；写了整轴 fail closed 并计入未支持 CSS 诊断（非目标，不是延期项）。`position: sticky`、整表 `repeat(auto-fit)` 与整值 `subgrid` 已交付。
 - 完整浏览器 DOM/CSSOM、未经 Nana 入口的 `@vue/runtime-dom` 生产 bundle、WebGL、真实 WebView 明确不做。
