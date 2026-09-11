@@ -59,9 +59,9 @@
 //! `direction: rtl` 把 **inline** 的 start/end 对调到 right/left
 //!（`padding-inline-start` → `padding-right`）。block 轴仍是 top/bottom。
 //! `text-align: start | end` 随 `direction`；`left` / `right` 保持物理边。
-//! 映射层**不**改写 `flex-direction` / `flex-reverse` / `justify-content` 字段；
-//! flex 行主轴的 item 序与 justify 翻转发生在布局层（`layout_engine::placement`）。
-//! grid 列序与 column flex 的交叉轴起点两层都不翻转（不是完整 rtl 映射）。
+//! 映射层**不**改写 `flex-direction` / `flex-reverse` / `justify-content` 字段。
+//! 轴与 item 序的翻转（flex 行主轴、grid 列序、column flex 交叉轴）都发生在
+//! 布局层，见 `layout_engine::placement` 与 `layout_engine::grid`。
 //! `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 写入
 //! [`LayoutStyle::writing_mode`]（`horizontal-tb` 清除 unsupported；竖排不再 fail-closed）。
 //! `sideways-*` 置 [`LayoutStyle::unsupported_writing_mode`]。`unicode-bidi` 隔离 /
@@ -5834,7 +5834,12 @@ mod tests {
     }
 
     #[test]
-    fn direction_rtl_does_not_reverse_flex_or_grid_start() {
+    // This asserts the **style mapping** contract only: `direction: rtl` must not
+    // rewrite `flex-direction` / `flex-reverse` / `justify-content`. The axis and
+    // item-order flips happen in the layout engine — see the `rtl_*` tests in
+    // `nana-ui-runtime`'s `layout_engine`. Reading this test as "rtl does not
+    // flip anything" is what let `docs/layout.md` claim that for months.
+    fn direction_rtl_does_not_rewrite_flex_or_grid_style_fields() {
         let mut flex = LayoutStyle::default();
         flex.apply_css_text(
             "display:flex; flex-direction:row; direction:rtl; justify-content:start",

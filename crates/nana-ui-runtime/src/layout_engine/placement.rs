@@ -522,6 +522,10 @@ pub(super) fn place_node_scoped(
     let mut plan_entries: Option<Vec<PlannedChild>> =
         cacheable.then(|| Vec::with_capacity(flow.len()));
     // Narrowed to false by anything the suffix replay cannot express.
+    // The sequential replay pins children to cross-start and only accepts
+    // Start/Stretch alignment, so it cannot express an rtl column container
+    // whose cross-start is the right edge. (An rtl *row* container already
+    // fails the `justify == Start` check below, because rtl flips justify.)
     let mut plan_sequential = cacheable && !reverse_main;
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
@@ -549,6 +553,7 @@ pub(super) fn place_node_scoped(
         place_grid_2d_items(
             &grid,
             content_origin,
+            content,
             style,
             viewport,
             child_font_px,
@@ -582,7 +587,9 @@ pub(super) fn place_node_scoped(
         if reverse_main {
             justify = flip_justify_for_reverse(justify);
         }
-        plan_sequential &= justify == JustifySpec::Start && grid_tracks.is_none();
+        plan_sequential &= justify == JustifySpec::Start
+            && grid_tracks.is_none()
+            && !(rtl_inline && direction.is_column());
         let full_main = main_extent(content, direction);
         let mut line_slots = if wrapping {
             if ifc && style.resolved_writing_mode().is_horizontal() {
@@ -819,7 +826,18 @@ pub(super) fn place_node_scoped(
                     line_box_cross,
                     child_size,
                 );
-                let align = child_style.resolved_align_self(style.align_items);
+                let align = {
+                    let specified = child_style.resolved_align_self(style.align_items);
+                    // On a column flex container the cross axis IS the inline
+                    // axis, so `direction: rtl` moves cross-start to the right.
+                    // A row container's cross axis is the block axis, which rtl
+                    // does not touch.
+                    if rtl_inline && direction.is_column() {
+                        flip_inline_align(specified)
+                    } else {
+                        specified
+                    }
+                };
                 let cross_available = line_box_cross - cross_margin(margin, direction);
                 if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
                     set_cross_extent(&mut child_size, direction, cross_available.max(0.0));

@@ -784,9 +784,21 @@ pub(super) fn align_in_grid_cell(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Mirror an inline-axis start/end pair. `direction: rtl` makes inline-start the
+/// physical right edge, so `justify-*: start` must resolve rightwards. Center,
+/// stretch and baseline have no side to swap.
+pub(super) fn flip_inline_align(align: AlignSpec) -> AlignSpec {
+    match align {
+        AlignSpec::Start => AlignSpec::End,
+        AlignSpec::End => AlignSpec::Start,
+        other => other,
+    }
+}
+
 pub(super) fn place_grid_2d_items(
     grid: &Grid2DLayout,
     content_origin: Point,
+    content: Size,
     style: &LayoutStyle,
     viewport: LayoutViewport,
     child_font_px: f32,
@@ -797,16 +809,27 @@ pub(super) fn place_grid_2d_items(
 ) -> Result<(), UiWorldError> {
     let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
     let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
+    // `direction: rtl` puts inline-start on the right: column 1 is the rightmost
+    // track, and a track block narrower than the content box packs to the right.
+    // Mirroring the resolved offsets keeps one track-sizing pass rather than a
+    // second RTL-only placement path. Vertical writing modes make the inline
+    // axis vertical, and RTL is skipped there (see `docs/layout.md`).
+    let rtl_inline = style.is_rtl() && !style.resolved_writing_mode().is_vertical();
     for item in &grid.items {
         let Some(child_style) = nodes.style(item.id) else {
             continue;
         };
         let child_style = child_style.as_ref();
         let child_fonts = fonts_of(child_style, child_font_px);
-        let cell_x = col_off.get(item.col).copied().unwrap_or(0.0);
         let cell_y = row_off.get(item.row).copied().unwrap_or(0.0);
         let cell_w = grid_span_extent(&grid.col_sizes, item.col, item.col_span, grid.col_gap);
         let cell_h = grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
+        let inline_x = col_off.get(item.col).copied().unwrap_or(0.0);
+        let cell_x = if rtl_inline {
+            (content.width - inline_x - cell_w).max(0.0)
+        } else {
+            inline_x
+        };
         let cell = Size::new(cell_w, cell_h);
         // Final tracks are the containing block for item padding and descendants.
         let measured = intrinsic_size_scoped(
@@ -822,7 +845,14 @@ pub(super) fn place_grid_2d_items(
         let margin = child_style.resolved_margin_against_fonts(Some(cell_w), child_fonts);
         let inner_w = (cell_w - margin.left - margin.right).max(0.0);
         let inner_h = (cell_h - margin.top - margin.bottom).max(0.0);
-        let justify = child_style.resolved_justify_self(style.justify_items);
+        let justify = {
+            let specified = child_style.resolved_justify_self(style.justify_items);
+            if rtl_inline {
+                flip_inline_align(specified)
+            } else {
+                specified
+            }
+        };
         let align = child_style.resolved_align_self(style.align_items);
         let stretch_x = justify == AlignSpec::Stretch && size_is_indefinite(child_style.width);
         let ratio_filled_height = aspect_ratio_is_usable(child_style)
