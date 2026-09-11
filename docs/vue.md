@@ -66,7 +66,9 @@ for (;;) {
 }
 ```
 
-`text()` / `json()` / `arrayBuffer()` / `blob()` 仍然读完整份再 resolve，写法不用改。`clone()` 也照旧——已到达的分块会留着，两份可以各读各的。
+`text()` / `json()` / `arrayBuffer()` / `blob()` 仍然读完整份再 resolve，写法不用改。`clone()` 也照旧——已到达的分块会留着，两份可以各读各的。但**拿了 reader 就不能再走缓冲读法**：`getReader()` 之后 `text()` / `clone()` 抛 `TypeError`，和浏览器一致；读干净之后也一样（`bodyUsed` 会变真）。101/204/205/304 与无正文的 `new Response()` 的 `body` 是 `null`，不是一个永远空的流。
+
+`ReadableStream` 也装成全局，`new ReadableStream({ start, pull, cancel })` 三个回调都接着，`controller` 有 `enqueue` / `close` / `error` / `desiredSize`。两点限制说在前面：**没有真正的背压**——`BodySource` 会留着全部分块好让 clone 各读各的，所以 `desiredSize` 报的是「还没被读走多少」，不会反过来卡住生产；**BYOB reader 不支持**，`getReader({ mode: "byob" })` 直接报错，它需要调用方自己的缓冲区，宿主通道没有这条路。
 
 流式是为了**早点开工**，不是为了绕开上限：响应 16 MiB 的上限按累计字节算，超了就在中途以 `ResponseTooLarge` 中断这条流，不会因为分块就放行更大的正文。宿主侧的对应接口是 `FetchHost::fetch_streaming`，默认实现回落到缓冲式并把整份正文当成一块发出，所以只实现了 `fetch` 的应用宿主不受影响，只是不会流。
 

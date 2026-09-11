@@ -365,8 +365,11 @@
   };
 
   // One independent read cursor over a BodySource.
-  function BodyReader(source) {
+  function BodyReader(source, stream) {
     this._source = source;
+    // Set only for a reader handed out by a stream: an author-supplied source
+    // has to be pulled when this reader runs dry.
+    this._stream = stream || null;
     this._index = 0;
     this._released = false;
   }
@@ -375,43 +378,86 @@
     if (this._released) return Promise.reject(new TypeError("Reader has been released"));
     function step() {
       if (self._index < self._source.chunks.length) {
+        if (self._stream) self._stream._noteRead(self._index + 1);
         return { value: self._source.chunks[self._index++], done: false };
       }
       // The error surfaces only after every chunk that did arrive, so a partial
       // body is readable up to the point the transfer broke.
       if (self._source.error) throw self._source.error;
       if (self._source.done) return { value: undefined, done: true };
+      // Nothing buffered and not finished: ask the source for more before
+      // parking, or a pull-driven stream would never produce anything.
+      if (self._stream) self._stream._pump();
       return self._source.waitForMore().then(step);
     }
     return Promise.resolve().then(step);
   };
 
-  function ReadableStreamShim(underlying) {
+  function ReadableStreamShim(underlying, strategy) {
     this._locked = false;
     // "disturbed" in WHATWG terms. It lives on the stream, not on the shared
     // BodySource, so one clone reading its body does not mark the other used.
     this._disturbed = false;
+    // Highest chunk index any of this stream's readers has taken, so
+    // `desiredSize` can report what is actually outstanding.
+    this._read = 0;
+    this._pulling = false;
+    this._highWaterMark =
+      strategy && strategy.highWaterMark != null ? Number(strategy.highWaterMark) : 1;
     if (underlying instanceof BodySource) {
+      // Host-fed (a response body): the host decides when chunks arrive, so
+      // there is nothing to pull.
       this._source = underlying;
+      this._underlying = null;
       return;
     }
     // `new ReadableStream({ start, pull, cancel })` — the author-facing form.
     this._source = new BodySource();
+    const stream = this;
     const source = this._source;
-    const controller = {
+    this._underlying = underlying || {};
+    this._controller = {
       enqueue: function (chunk) { source.push(asUint8Array(chunk)); },
       close: function () { source.close(); },
       error: function (reason) { source.fail(reason || new TypeError("Stream errored")); },
-      get desiredSize() { return 1; },
+      get desiredSize() { return stream._desiredSize(); },
     };
-    this._underlying = underlying || {};
-    this._controller = controller;
     if (typeof this._underlying.start === "function") {
+      const underlyingSource = this._underlying;
+      const controller = this._controller;
       Promise.resolve()
-        .then(function () { return controller && underlying.start(controller); })
+        .then(function () { return underlyingSource.start(controller); })
         .catch(function (reason) { source.fail(reason); });
     }
   }
+  ReadableStreamShim.prototype._desiredSize = function () {
+    return this._highWaterMark - (this._source.chunks.length - this._read);
+  };
+  ReadableStreamShim.prototype._noteRead = function (index) {
+    if (index > this._read) this._read = index;
+  };
+  /// Ask an author-supplied source for more, one `pull` at a time.
+  ///
+  /// Only the author-facing form has anything to pull; a response body is fed
+  /// by the host. There is no real backpressure here — `BodySource` retains
+  /// every chunk so clones can replay it — so `desiredSize` reports what is
+  /// outstanding rather than gating production.
+  ReadableStreamShim.prototype._pump = function () {
+    const stream = this;
+    const underlying = this._underlying;
+    if (this._pulling || this._source.done) return;
+    if (!underlying || typeof underlying.pull !== "function") return;
+    this._pulling = true;
+    Promise.resolve()
+      .then(function () { return underlying.pull(stream._controller); })
+      .then(
+        function () { stream._pulling = false; },
+        function (reason) {
+          stream._pulling = false;
+          stream._source.fail(reason);
+        },
+      );
+  };
   Object.defineProperty(ReadableStreamShim.prototype, "locked", {
     get: function () { return this._locked; },
   });
@@ -424,7 +470,7 @@
     this._locked = true;
     this._disturbed = true;
     const stream = this;
-    const reader = new BodyReader(this._source);
+    const reader = new BodyReader(this._source, this);
     reader.releaseLock = function () {
       reader._released = true;
       stream._locked = false;

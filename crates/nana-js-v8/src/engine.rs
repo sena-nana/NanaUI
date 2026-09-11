@@ -2166,6 +2166,104 @@ mod tests {
     }
 
     #[test]
+    fn an_author_readable_stream_is_pulled_on_demand() {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::VueHost;
+
+            let mut host = VueHost::with_viewport(320, 200, 1.0);
+            let mut engine = V8Engine::new();
+            host.initialize_with_web_api(
+                &mut engine,
+                RuntimeArtifact::from_source(
+                    "pull.js",
+                    r#"
+                globalThis.__nanaPullResult = null;
+                globalThis.__nanaPull = { read: () => globalThis.__nanaPullResult };
+                (async function () {
+                  // A pull-driven source produces nothing up front: if `pull`
+                  // is never called this stream yields zero chunks.
+                  const encoder = new TextEncoder();
+                  let pulls = 0;
+                  let produced = 0;
+                  const sizes = [];
+                  const stream = new ReadableStream({
+                    start(controller) { sizes.push(controller.desiredSize); },
+                    pull(controller) {
+                      pulls += 1;
+                      if (produced >= 3) { controller.close(); return; }
+                      produced += 1;
+                      controller.enqueue(encoder.encode("chunk" + produced));
+                    },
+                  });
+
+                  const reader = stream.getReader();
+                  const seen = [];
+                  for (;;) {
+                    const step = await reader.read();
+                    if (step.done) break;
+                    seen.push(new TextDecoder().decode(step.value));
+                  }
+
+                  let cancelled = false;
+                  const cancellable = new ReadableStream({
+                    pull(controller) { controller.enqueue(new Uint8Array([1])); },
+                    cancel() { cancelled = true; },
+                  });
+                  const other = cancellable.getReader();
+                  await other.read();
+                  await other.cancel();
+
+                  globalThis.__nanaPullResult = {
+                    pulls,
+                    seen,
+                    startDesiredSize: sizes[0],
+                    cancelled,
+                  };
+                })();
+                "#,
+                ),
+            )
+            .unwrap();
+            let read = engine.resolve_function("__nanaPull.read").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let result = loop {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let HostValue::Object(_) = value {
+                    break value;
+                }
+                assert!(std::time::Instant::now() < deadline, "pull test hung");
+            };
+            let result = result.as_object().unwrap();
+
+            let seen = result.get("seen").and_then(HostValue::as_array).unwrap();
+            assert_eq!(
+                seen.len(),
+                3,
+                "a pull-driven source must actually be pulled, got {seen:?}"
+            );
+            assert_eq!(seen[0].as_str(), Some("chunk1"));
+            assert_eq!(seen[2].as_str(), Some("chunk3"));
+            assert_eq!(
+                result.get("pulls").and_then(HostValue::as_f64),
+                Some(4.0),
+                "three producing pulls plus the one that closes the stream"
+            );
+            assert_eq!(
+                result.get("startDesiredSize").and_then(HostValue::as_f64),
+                Some(1.0),
+                "desiredSize reports the outstanding count, not a constant"
+            );
+            assert_eq!(
+                result.get("cancelled").and_then(HostValue::as_bool),
+                Some(true),
+                "cancelling the reader reaches the author's cancel()"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn a_locked_or_drained_body_stream_refuses_the_buffered_readers() {
         with_serial_v8_tests(|| {
             use nana_ui_vue::VueHost;
