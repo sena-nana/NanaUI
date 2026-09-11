@@ -318,10 +318,10 @@ impl HitIndex {
         while let Some((id, parent)) = pending.pop() {
             // A preceding patch can already have moved this entry elsewhere.
             // Old sibling slots must never delete the new owner's projection.
-            if !self
+            if self
                 .entries
                 .get(&id)
-                .is_some_and(|node| node.parent == Some(parent))
+                .is_none_or(|node| node.parent != Some(parent))
             {
                 continue;
             }

@@ -107,6 +107,16 @@ fn writes_under_an_ignored_directory_never_reach_the_application() {
     let config = DevConfig::new(&js);
     let (_watcher, rx) = watch(&config);
 
+    // Reach a known-live, drained watcher before asserting silence. Two reasons,
+    // both of which this test got wrong: FSEvents reports writes made just
+    // before the stream opened, so the seed above could land inside the quiet
+    // window and be read as a leaked vendored write; and without a batch that
+    // must arrive, a watcher that never registered would satisfy `expect_quiet`
+    // vacuously and the test would pass for the wrong reason.
+    std::fs::write(&js, b"globalThis.x = 2;").expect("edit");
+    assert_eq!(next_batch(&rx), [ReloadRequest::Full]);
+    expect_quiet(&rx);
+
     std::fs::write(vendored.join("index.js"), b"module.exports = {};").expect("vendored write");
     expect_quiet(&rx);
 }

@@ -345,9 +345,9 @@ impl crate::AppContext {
             return Ok(false);
         };
         self.update_component(entity, |minimap, cx| {
-            if !minimap
+            if minimap
                 .dragging
-                .is_some_and(|drag| drag.pointer_id == pointer_id)
+                .is_none_or(|drag| drag.pointer_id != pointer_id)
             {
                 return false;
             }

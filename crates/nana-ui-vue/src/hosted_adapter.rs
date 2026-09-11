@@ -568,6 +568,12 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
             WindowEvent::MousePassthroughChanged { .. } => {}
+            // File dialogs are owned by the application, not the framework:
+            // `PathField` emits `BrowseRequested`, the application answers with
+            // `WindowCommand::OpenFileDialog` and consumes the outcome. The Vue
+            // host never sends that command, so it has no request to settle
+            // here and no JS channel to deliver one to.
+            WindowEvent::FileDialogRejected { .. } | WindowEvent::FileDialogCompleted { .. } => {}
             // The Vue host has no appearance channel: theme reaches JS through
             // the application's own state, not a lifecycle event. Rust programs
             // read it from `RuntimeProgram::window_event`.

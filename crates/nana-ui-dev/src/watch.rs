@@ -176,7 +176,14 @@ impl DevWatcher {
             })?;
 
         for root in &roots {
-            watcher.watch(root, RecursiveMode::Recursive)?;
+            // notify only attaches the path on some backends: inotify reports a
+            // bare `PathNotFound`, so a missing root would name nothing on
+            // Linux while naming itself on macOS. The path is the whole content
+            // of this error, so attach it here rather than depend on which
+            // backend `recommended_watcher` picked.
+            watcher
+                .watch(root, RecursiveMode::Recursive)
+                .map_err(|error| error.add_path(root.clone()))?;
         }
 
         let stop = Arc::new(AtomicBool::new(false));

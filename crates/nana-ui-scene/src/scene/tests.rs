@@ -580,8 +580,15 @@ fn adjacent_custom_nodes_share_one_graph_pass_and_keep_operation_order() {
         .filter(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Custom { .. }))
         .map(|primitive| primitive.id)
         .collect::<Vec<_>>();
-    assert_eq!(invoked, expected, "custom invocations must stay in scene order");
-    assert_eq!(many.resources.len(), 33, "each slot is still its own external resource");
+    assert_eq!(
+        invoked, expected,
+        "custom invocations must stay in scene order"
+    );
+    assert_eq!(
+        many.resources.len(),
+        33,
+        "each slot is still its own external resource"
+    );
 }
 
 #[test]

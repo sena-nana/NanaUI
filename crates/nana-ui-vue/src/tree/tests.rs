@@ -1969,6 +1969,9 @@ fn nana_chip_projects_runtime_chip() {
         doc.runtime.standard_visual(id),
         Some(nana_ui_runtime::StandardVisual::Button {
             label: std::sync::Arc::from("Beta"),
+            icon: None,
+            icon_size: nana_ui_core::ControlSize::Medium.icon_size(),
+            icon_gap: 6.0,
             kind: nana_ui_core::ButtonKind::Selected,
             size: nana_ui_core::ControlSize::Medium,
             loading: false,

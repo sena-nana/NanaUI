@@ -269,6 +269,11 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "grid, area and line stay inside the 148px chart box",
     ),
     f(
+        Component::DonutChart,
+        "slices",
+        "ring sectors share one center and keep the authored cutout",
+    ),
+    f(
         Component::ReorderList,
         "rows",
         "selected row uses the selected surface; labels stay left aligned",
