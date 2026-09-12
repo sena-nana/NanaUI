@@ -1222,6 +1222,7 @@ struct WindowsSceneChrome {
     decorations: bool,
     undecorated_shadow: bool,
     no_redirection_bitmap: bool,
+    rounded_corners: bool,
 }
 
 #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
@@ -1231,8 +1232,10 @@ fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsScene
         // winit's undecorated-shadow path insets the client by 1px on the top
         // so DWM can attach a drop shadow. That leaves a strip the title bar
         // cannot paint. Windows 11 rounded corners already provide a shadow.
+        // Transparent overlays skip rounding so DWM does not stroke a rectangle.
         undecorated_shadow: false,
         no_redirection_bitmap: transparent,
+        rounded_corners: !system_caption && !transparent,
     }
 }
 
@@ -1253,7 +1256,7 @@ fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
     if settings.system_caption {
         return;
     }
-    let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT));
+    let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT), !settings.transparent);
     if suppress_caption_after_create(settings.system_caption, settings.transparent) {
         let _ = suppress_system_caption(window);
     }
@@ -1289,7 +1292,11 @@ fn apply_scene_window_chrome(
                 .with_no_redirection_bitmap(chrome.no_redirection_bitmap)
                 .with_undecorated_shadow(chrome.undecorated_shadow);
             if !chrome.decorations {
-                win = win.with_corner_preference(CornerPreference::Round);
+                win = win.with_corner_preference(if chrome.rounded_corners {
+                    CornerPreference::Round
+                } else {
+                    CornerPreference::DoNotRound
+                });
             }
             if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
                 win = win.with_taskbar_icon(Some(icon));
@@ -1322,7 +1329,11 @@ fn scene_aux_window_attributes(
                 .with_undecorated_shadow(chrome.undecorated_shadow)
                 .with_owner_window(handle.hwnd.get() as _);
             if !chrome.decorations {
-                win = win.with_corner_preference(CornerPreference::Round);
+                win = win.with_corner_preference(if chrome.rounded_corners {
+                    CornerPreference::Round
+                } else {
+                    CornerPreference::DoNotRound
+                });
             }
             if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
                 win = win.with_taskbar_icon(Some(icon));
@@ -2313,11 +2324,13 @@ mod tests {
         assert!(!transparent_client.decorations);
         assert!(!transparent_client.undecorated_shadow);
         assert!(transparent_client.no_redirection_bitmap);
+        assert!(!transparent_client.rounded_corners);
 
         let opaque_client = windows_scene_chrome(false, false);
         assert!(!opaque_client.decorations);
         assert!(!opaque_client.undecorated_shadow);
         assert!(!opaque_client.no_redirection_bitmap);
+        assert!(opaque_client.rounded_corners);
         assert!(!suppress_caption_after_create(false, false));
         assert!(suppress_caption_after_create(false, true));
         assert!(!suppress_caption_after_create(true, true));

@@ -6,14 +6,21 @@ const WS_CAPTION: isize = 0x00C0_0000;
 
 /// Prepares native titlebar dragging and client-chrome window shape for a
 /// custom titlebar `titlebar_height` logical points tall.
+///
+/// Opaque frameless windows pass `rounded_corners: true` so Windows 11 keeps a
+/// DWM round clip and shadow. Transparent overlays pass `false` so DWM does
+/// not stroke or round-clip the HWND rectangle.
 pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
     window: &W,
     titlebar_height: f64,
+    rounded_corners: bool,
 ) -> bool {
     let prepared = prepare_custom_title_bar(window);
     let prepared = center_traffic_lights(window, titlebar_height) && prepared;
     #[cfg(target_os = "windows")]
-    let prepared = apply_rounded_corners(window) && prepared;
+    let prepared = apply_window_shape(window, rounded_corners) && prepared;
+    #[cfg(not(target_os = "windows"))]
+    let _ = rounded_corners;
     prepared
 }
 
@@ -541,12 +548,33 @@ fn drag<W: HasWindowHandle + ?Sized>(_window: &W) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn apply_rounded_corners<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+const DWMWA_BORDER_COLOR: u32 = 34;
+#[cfg(target_os = "windows")]
+const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const fn dwm_corner_preference(rounded_corners: bool) -> i32 {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Dwm::{DWMWCP_DONOTROUND, DWMWCP_ROUND};
+        if rounded_corners {
+            DWMWCP_ROUND
+        } else {
+            DWMWCP_DONOTROUND
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        i32::from(rounded_corners)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_window_shape<W: HasWindowHandle + ?Sized>(window: &W, rounded_corners: bool) -> bool {
     use raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::Graphics::Dwm::{
-        DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-        DwmSetWindowAttribute,
+        DWM_WINDOW_CORNER_PREFERENCE, DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute,
     };
 
     let Ok(handle) = window.window_handle() else {
@@ -556,16 +584,28 @@ fn apply_rounded_corners<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
         return false;
     };
     let hwnd = handle.hwnd.get() as HWND;
-    let preference: DWM_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND;
-    let status = unsafe {
+    let preference: DWM_WINDOW_CORNER_PREFERENCE = dwm_corner_preference(rounded_corners);
+    let corner_ok = unsafe {
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE as u32,
             std::ptr::from_ref(&preference).cast(),
             std::mem::size_of_val(&preference) as u32,
         )
-    };
-    status >= 0
+    } >= 0;
+    if rounded_corners {
+        return corner_ok;
+    }
+    let color = DWMWA_COLOR_NONE;
+    let border_ok = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&color).cast(),
+            std::mem::size_of_val(&color) as u32,
+        )
+    } >= 0;
+    corner_ok && border_ok
 }
 
 #[cfg(target_os = "windows")]
@@ -606,8 +646,8 @@ fn clear_caption_style<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameResizeEdge, WS_CAPTION, client_chrome_style_without_caption, hit_test_for_edge,
-        live_frame_after_delta,
+        FrameResizeEdge, WS_CAPTION, client_chrome_style_without_caption, dwm_corner_preference,
+        hit_test_for_edge, live_frame_after_delta,
     };
 
     const WS_BORDER: isize = 0x0080_0000;
@@ -615,6 +655,21 @@ mod tests {
     const WS_SYSMENU: isize = 0x0008_0000;
     const WS_THICKFRAME: isize = 0x0004_0000;
     const WS_VISIBLE: isize = 0x1000_0000;
+
+    #[test]
+    fn overlay_shape_requests_square_corners() {
+        #[cfg(target_os = "windows")]
+        {
+            use windows_sys::Win32::Graphics::Dwm::{DWMWCP_DONOTROUND, DWMWCP_ROUND};
+            assert_eq!(dwm_corner_preference(true), DWMWCP_ROUND);
+            assert_eq!(dwm_corner_preference(false), DWMWCP_DONOTROUND);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            assert_eq!(dwm_corner_preference(true), 1);
+            assert_eq!(dwm_corner_preference(false), 0);
+        }
+    }
 
     #[test]
     fn client_chrome_style_clears_caption_and_keeps_frame_bits() {
