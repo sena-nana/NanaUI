@@ -135,6 +135,7 @@ impl AppContext {
         self.bind_activation::<Chip>(Self::activate_chip);
         self.bind_activation::<IconButton>(Self::activate_icon_button);
         self.bind_activation::<ListItem>(Self::activate_list_item);
+        self.bind_activation::<crate::HoverCard>(Self::activate_hover_card);
         self.bind_activation::<SidebarRow>(Self::activate_sidebar_row);
         self.bind_activation::<FileTab>(Self::activate_file_tab);
         self.bind_activation::<BreadcrumbSegment>(Self::activate_breadcrumb_segment);

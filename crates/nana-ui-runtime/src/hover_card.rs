@@ -220,12 +220,8 @@ impl ComponentView for HoverCard {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let open = world.project_menu_presence(id, self.open, mutations);
-        let trigger_image = self
-            .trigger_image
-            .as_ref()
-            .filter(|resource| !resource.trim().is_empty())
-            .cloned();
-        let trigger = (self.trigger_icon.is_none() && trigger_image.is_none())
+        // Empty image still uses avatar chrome; do not fall back to a text trigger.
+        let trigger = (self.trigger_icon.is_none() && self.trigger_image.is_none())
             .then(|| Arc::clone(&self.trigger))
             .filter(|label| !label.is_empty());
         let visual = StandardVisual::MenuSurface {
@@ -233,7 +229,7 @@ impl ComponentView for HoverCard {
             open,
             trigger: trigger.clone(),
             trigger_icon: self.trigger_icon,
-            trigger_image,
+            trigger_image: self.trigger_image.clone(),
             gap: self.gap,
             overlay: Some(TriggeredMenuOverlay {
                 placement: self.placement,

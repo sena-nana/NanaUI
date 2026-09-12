@@ -933,14 +933,6 @@ fn attr_enabled(spec: &SemanticSpec<'_>, keys: &[&str]) -> bool {
         })
 }
 
-fn place_px(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32, width: f32, height: f32) {
-    layout.position = PositionSpec::Absolute;
-    layout.offset_left = Some(LengthSpec::Px(x));
-    layout.offset_top = Some(LengthSpec::Px(y));
-    layout.width = Some(LengthSpec::Px(width));
-    layout.height = Some(LengthSpec::Px(height));
-}
-
 fn terminal_key_bytes(
     key: &str,
     text: Option<&str>,
@@ -1281,6 +1273,7 @@ mod tests {
         assert_eq!(changed.screen.rows, 2);
     }
 
+    #[test]
     fn from_semantic_reads_screen_json_and_reconcile_keeps_host_feed_without_it() {
         let type_id = crate::component_registry::ComponentTypeId::new("nana.terminal").unwrap();
         let layout_style = Arc::new(nana_ui_core::LayoutStyle::default());

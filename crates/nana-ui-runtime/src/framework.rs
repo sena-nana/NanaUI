@@ -47,16 +47,17 @@ use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, BreadcrumbSegment, Button, Checkbox, Chip, CodeEditing, CommandPalette,
     ComponentView, ContextMenu, ContextMenuEvent, DocumentId, Dropdown, EmptyState, FileDropEvent,
-    FileTab, FormField, FrameProfile, FrameProfiler, FrameStage, IconButton, LabeledValue, List,
-    ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState, MutationQueue, NodeKind,
-    NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover, PopoverClosed,
-    PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged, RangeField,
-    RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset, ScrollView,
-    SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl, SegmentedOption,
-    SegmentedSelectionRequested, Select, SettingsCollapsibleCard, SidebarFooterButton, SidebarRow,
-    SidebarSection, StableNodeId, Switch, Table, TableCell, TableRow, Tabs, TextArea, TextChanged,
-    TextInput, TextInputState, TextPresenter, TextSelection, ToggleChanged, Tooltip, TreeView,
-    UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState, XYPadEvent,
+    FileTab, FormField, FrameProfile, FrameProfiler, FrameStage, HoverCard, IconButton,
+    LabeledValue, List, ListItem, ListItemSlots, ModalSlots, ModalSurface, MountState,
+    MutationQueue, NodeKind, NumberChanged, NumberInput, OverlayChanged, OverlayHost, Popover,
+    PopoverClosed, PopoverToggled, Progress, ProgressCancelled, RangeAdjustment, RangeChanged,
+    RangeField, RovingFocusIntent, ScrollAxes, ScrollChanged, ScrollMetrics, ScrollOffset,
+    ScrollView, SearchDropdown, SearchDropdownEvent, SecondaryPress, SegmentedControl,
+    SegmentedOption, SegmentedSelectionRequested, Select, SettingsCollapsibleCard,
+    SidebarFooterButton, SidebarRow, SidebarSection, StableNodeId, Switch, Table, TableCell,
+    TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter, TextSelection,
+    ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
+    XYPadEvent,
 };
 
 mod assemble;
@@ -1406,6 +1407,13 @@ impl AppContext {
 
     pub fn activate_list_item(&mut self, entity: Entity<ListItem>) -> Result<bool, FrameworkError> {
         self.activate_component(entity, |item| item.disabled)
+    }
+
+    pub fn activate_hover_card(
+        &mut self,
+        entity: Entity<HoverCard>,
+    ) -> Result<bool, FrameworkError> {
+        self.activate_component(entity, |_| false)
     }
 
     pub fn activate_sidebar_row(

@@ -923,15 +923,25 @@ impl UiWorld {
             if let Some((x, y, w, h)) =
                 node_style.overflow_clip_box(layout.x, layout.y, layout.width, layout.height)
             {
-                child_clips.push((
-                    LayoutBox {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    transform,
-                ));
+                let overlay_menu = matches!(
+                    self.nodes.visual(id),
+                    Some(StandardVisual::MenuSurface {
+                        open: true,
+                        overlay: Some(_),
+                        ..
+                    })
+                );
+                if !overlay_menu {
+                    child_clips.push((
+                        LayoutBox {
+                            x,
+                            y,
+                            width: w,
+                            height: h,
+                        },
+                        transform,
+                    ));
+                }
             }
             if self.clip_visuals != 0 {
                 if matches!(

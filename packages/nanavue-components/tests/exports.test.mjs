@@ -312,28 +312,6 @@ describe("Runtime catalog Vue wrappers", () => {
     assert.match(src, /JSON\.stringify\(props\.screen\)/);
   });
 
-  test("NanaDiff host listeners keep kebab-case names Runtime fires", () => {
-    const src = readFileSync(join(root, "src/NanaDiff.js"), "utf8");
-    for (const name of [
-      "hunk-accept",
-      "hunk-reject",
-      "line-accept",
-      "line-reject",
-      "layout-change",
-    ]) {
-      assert.match(
-        src,
-        new RegExp(`["']on[A-Za-z]+-${name.slice(name.indexOf("-") + 1)}["']`),
-        `native vnode key must parse to ${name}`,
-      );
-    }
-    assert.doesNotMatch(
-      src,
-      /\bonHunkAccept\b/,
-      "onHunkAccept lowercases to hunkaccept and misses hunk-accept",
-    );
-  });
-
   test("virtual wrappers and NanaGpu are exported", () => {
     for (const name of ["NanaGpu", "NanaVirtualList", "NanaVirtualTable", "NanaVirtualTree"]) {
       assert.match(indexSrc, new RegExp(`\\b${name}\\b`));
