@@ -39,6 +39,8 @@ mod graph_canvas;
 #[cfg(feature = "graph-canvas")]
 mod graph_minimap;
 mod hover_card;
+mod json_num;
+pub(crate) use json_num::json_u64;
 #[cfg(feature = "image-viewer")]
 mod image_viewer;
 mod key_layers;

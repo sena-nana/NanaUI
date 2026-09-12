@@ -9,6 +9,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
+use crate::json_u64;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AppContext, ComponentView, DocumentId, Entity,
@@ -756,18 +757,6 @@ fn parse_terminal_screen(raw: &str) -> Option<TerminalScreen> {
             || json_flag(object, "bracketed_paste"),
     };
     screen.valid().then_some(screen)
-}
-
-fn json_u64(value: &serde_json::Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        let number = value.as_f64()?;
-        if number.is_finite() && number >= 0.0 && number.fract() == 0.0 && number <= u64::MAX as f64
-        {
-            Some(number as u64)
-        } else {
-            None
-        }
-    })
 }
 
 fn json_u16(value: Option<&serde_json::Value>) -> Option<u16> {

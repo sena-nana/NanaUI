@@ -39,8 +39,8 @@ use nana_ui::runtime::{
     FormField as RuntimeFormField, GpuTextureView as RuntimeGpuTextureView,
     GpuView as RuntimeGpuView, GpuViewPalette as RuntimeGpuViewPalette,
     GraphCanvas as RuntimeGraphCanvas, HOST_TEXTURE_RENDERER,
-    HostedTextarea as RuntimeHostedTextarea,
-    IconButton as RuntimeIconButton, ImageViewer as RuntimeImageViewer, ImageViewerContent,
+    HostedTextarea as RuntimeHostedTextarea, IconButton as RuntimeIconButton,
+    ImageViewer as RuntimeImageViewer, ImageViewerContent,
     InteractiveCard as RuntimeInteractiveCard, KeyCaptureLayer as RuntimeKeyCaptureLayer,
     KeymapLayer as RuntimeKeymapLayer, LabeledValue as RuntimeLabeledValue, LayoutViewport,
     LevelMeter as RuntimeLevelMeter, List as RuntimeList, ListItem as RuntimeListItem,
@@ -169,8 +169,6 @@ enum Component {
     GpuTextureView,
     GpuView,
     Thumbnail,
-    Chip,
-    Avatar,
 }
 
 impl Component {
@@ -252,8 +250,6 @@ impl Component {
             Self::GpuTextureView => component_ids::GPU_TEXTURE_VIEW,
             Self::GpuView => component_ids::GPU_VIEW,
             Self::Thumbnail => component_ids::THUMBNAIL,
-            Self::Chip => component_ids::CHIP,
-            Self::Avatar => component_ids::AVATAR,
         }
     }
 }
@@ -437,8 +433,6 @@ fn fixture_size(fixture: Fixture) -> Size<u32> {
         (Component::Avatar, _) => Size::new(56, 56),
         (Component::Thumbnail, "wide") => Size::new(80, 40),
         (Component::Thumbnail, _) => Size::new(40, 40),
-        (Component::Chip, _) => Size::new(180, 68),
-        (Component::Avatar, _) => Size::new(72, 72),
         _ => SIZE,
     }
 }
@@ -895,16 +889,17 @@ fn runtime_fixture(
                 ),
             )?
             .stable_id(),
-        Component::Chip => document
-            .context_mut()
-            .create_component(
+        Component::Chip => {
+            let chip = document.context_mut().create_component(
                 document_id,
                 RuntimeChip::new("Design review")
                     .selected(fixture.state == "selected")
                     .disabled(fixture.state == "disabled")
                     .dismissible(matches!(fixture.state, "dismissible" | "disabled")),
-            )?
-            .stable_id(),
+            )?;
+            document.context_mut().assemble_chip(chip)?;
+            chip.stable_id()
+        }
         Component::Avatar => document
             .context_mut()
             .create_component(
@@ -913,7 +908,6 @@ fn runtime_fixture(
                     "ready" => RuntimeAvatar::new(gpu::SNAPSHOT_GPU_SLOT),
                     _ => RuntimeAvatar::empty(),
                 }
-                .size(40.0)
                 .label("Sena"),
             )?
             .stable_id(),
@@ -1435,27 +1429,6 @@ fn runtime_fixture(
             document
                 .context_mut()
                 .create_component(document_id, thumb)?
-                .stable_id()
-        }
-        Component::Chip => {
-            let chip = document.context_mut().create_component(
-                document_id,
-                RuntimeChip::new("标签")
-                    .selected(fixture.state == "selected")
-                    .disabled(fixture.state == "disabled")
-                    .dismissible(fixture.state == "dismissible"),
-            )?;
-            document.context_mut().assemble_chip(chip)?;
-            chip.stable_id()
-        }
-        Component::Avatar => {
-            let avatar = match fixture.state {
-                "ready" => RuntimeAvatar::new(gpu::SNAPSHOT_GPU_SLOT).label("封面"),
-                _ => RuntimeAvatar::empty().label("空"),
-            };
-            document
-                .context_mut()
-                .create_component(document_id, avatar)?
                 .stable_id()
         }
         Component::GpuView => {

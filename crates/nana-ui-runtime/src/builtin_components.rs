@@ -11,6 +11,7 @@ use nana_ui_core::{
 
 #[cfg(feature = "rich-text")]
 use crate::NativeMarkdown;
+use crate::json_u64;
 use crate::{
     ActionMenu, ActionMenuItem, AppShell, AppTitleBar, Avatar, Button, Card, Checkbox, Chip,
     ColorField, CommandPalette, ConfirmDialog, ContextMenu, ContextMenuItem, DesktopShell, Dialog,
@@ -1983,18 +1984,6 @@ fn json_objects(
         .filter_map(serde_json::Value::as_object)
         .cloned()
         .collect()
-}
-
-fn json_u64(value: &serde_json::Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        let number = value.as_f64()?;
-        if number.is_finite() && number >= 0.0 && number.fract() == 0.0 && number <= u64::MAX as f64
-        {
-            Some(number as u64)
-        } else {
-            None
-        }
-    })
 }
 
 fn diagnostics_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextDiagnosticSpan]> {

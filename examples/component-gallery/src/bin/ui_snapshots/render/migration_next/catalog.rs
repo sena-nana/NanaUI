@@ -333,36 +333,6 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "wide",
         "host-declared 16:9 aspect widens the shared box",
     ),
-    f(
-        Component::Chip,
-        "idle",
-        "unselected chip uses the subtle pill surface",
-    ),
-    f(
-        Component::Chip,
-        "selected",
-        "selected chip uses the selected pill surface",
-    ),
-    f(
-        Component::Chip,
-        "dismissible",
-        "dismissible chip assembles a trailing close control",
-    ),
-    f(
-        Component::Chip,
-        "disabled",
-        "disabled chip is visibly inert and cannot activate",
-    ),
-    f(
-        Component::Avatar,
-        "empty",
-        "empty avatar keeps the circular subtle placeholder without a host-texture node",
-    ),
-    f(
-        Component::Avatar,
-        "ready",
-        "ready avatar samples nana.host-texture with cover and circular clip",
-    ),
     // Platform IME events cannot be injected into the compatibility widget by
     // this headless harness. Preedit remains a real Hosted acceptance gate.
     f(

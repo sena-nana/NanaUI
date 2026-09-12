@@ -518,7 +518,6 @@ pub(super) fn write_evidence(
         fixture.component,
         Component::Card
             | Component::Text
-            | Component::Avatar
             | Component::StatusBadge
             | Component::ValidationMessage
             | Component::EmptyState
