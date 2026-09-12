@@ -54,9 +54,6 @@ use winit::monitor::Fullscreen;
 use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 #[cfg(target_os = "windows")]
 use winit::platform::windows::{CornerPreference, WindowAttributesWindows, WindowExtWindows};
-// `apply_client_chrome_after_create` is called from the un-gated `initialize`,
-// so the trait bound is needed on every platform; only `RawWindowHandle` is
-// Windows-only.
 use winit::raw_window_handle::HasWindowHandle;
 #[cfg(target_os = "windows")]
 use winit::raw_window_handle::RawWindowHandle;
@@ -493,7 +490,7 @@ fn initialize<Program: RuntimeProgram>(
     let mut material = apply_window_surface(
         window.as_ref(),
         last_theme,
-        settings.transparent,
+        &settings,
         last_material_mode,
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
     );
@@ -532,7 +529,7 @@ fn initialize<Program: RuntimeProgram>(
     material = apply_window_surface(
         graphics.window().as_ref(),
         last_theme,
-        settings.transparent,
+        &settings,
         last_material_mode,
         program.appearance_backdrop_opacity_for(WindowId::PRIMARY),
     );
@@ -617,6 +614,7 @@ fn initialize<Program: RuntimeProgram>(
     }
     if !event_loop.exiting() {
         ready.graphics.window().set_visible(true);
+        apply_client_chrome_after_create(ready.graphics.window().as_ref(), &ready.settings);
         ready.graphics.window().request_redraw();
     }
     Ok(ready)
@@ -944,13 +942,14 @@ fn apply_window_transparency(window: &dyn winit::window::Window, requested: crat
 fn apply_window_surface(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
-    settings_transparent: bool,
+    settings: &RuntimeWindowSettings,
     appearance: crate::MaterialEffect,
     backdrop_opacity: f32,
 ) -> MaterialOutcome {
-    let requested = window_surface_effect(settings_transparent, appearance);
+    let requested = window_surface_effect(settings.transparent, appearance);
     let material = apply_scene_material(window, theme, requested, backdrop_opacity);
     apply_window_transparency(window, requested);
+    apply_client_chrome_after_create(window, settings);
     material
 }
 
@@ -1249,6 +1248,7 @@ fn suppress_caption_after_create(system_caption: bool, transparent: bool) -> boo
     !system_caption && transparent
 }
 
+/// Re-apply after any winit call that rewrites native window style.
 fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
     window: &W,
     settings: &RuntimeWindowSettings,
@@ -2345,6 +2345,25 @@ mod tests {
         let opaque_caption = windows_scene_chrome(true, false);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
+    }
+
+    #[test]
+    fn native_style_mutations_restore_client_chrome() {
+        let windows = include_str!("scene_host/windows.rs");
+        let helper = windows
+            .split("fn mutate_native_style")
+            .nth(1)
+            .and_then(|rest| rest.split("fn restore_client_chrome").next())
+            .expect("mutate_native_style");
+        assert!(helper.contains("restore_client_chrome("));
+
+        let host = include_str!("scene_host.rs");
+        let surface = host
+            .split("fn apply_window_surface")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("apply_window_surface");
+        assert!(surface.contains("apply_client_chrome_after_create("));
     }
 
     #[test]

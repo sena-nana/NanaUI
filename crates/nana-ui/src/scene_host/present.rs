@@ -272,7 +272,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let _ = apply_window_surface(
             window.as_ref(),
             self.last_theme,
-            self.settings.transparent,
+            &self.settings,
             self.last_material_mode,
             self.program
                 .appearance_backdrop_opacity_for(WindowId::PRIMARY),
@@ -299,7 +299,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     host.material = apply_window_surface(
                         window.as_ref(),
                         self.last_theme,
-                        host.settings.transparent,
+                        &host.settings,
                         self.program.window_material_mode_for(id),
                         self.program.appearance_backdrop_opacity_for(id),
                     );

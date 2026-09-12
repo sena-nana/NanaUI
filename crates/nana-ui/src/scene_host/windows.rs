@@ -15,13 +15,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     return;
                 };
                 let result = self
-                    .window(id)
-                    .ok_or_else(|| "window does not exist".to_string())
-                    .and_then(|window| {
+                    .mutate_native_style(id, |window| {
                         window
                             .set_cursor_hittest(!enabled)
                             .map_err(|error| error.to_string())
-                    });
+                    })
+                    .unwrap_or_else(|| Err("window does not exist".to_string()));
                 let update = self.program.window_event(
                     WindowEvent::MousePassthroughChanged {
                         id,
@@ -73,54 +72,55 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 let WindowCommand::SetFullscreen { fullscreen, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id) {
+                self.mutate_native_style(id, |window| {
                     window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
-                }
+                });
             }
             RoutedWindowCommand::SetSimpleFullscreen(id) => {
                 let WindowCommand::SetSimpleFullscreen { fullscreen, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id) {
+                self.mutate_native_style(id, |window| {
                     #[cfg(target_os = "macos")]
                     window.set_simple_fullscreen(fullscreen);
                     #[cfg(not(target_os = "macos"))]
                     window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
-                }
+                });
             }
             RoutedWindowCommand::SetMinimized(id) => {
                 let WindowCommand::SetMinimized { minimized, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id) {
-                    window.set_minimized(minimized);
-                }
+                self.mutate_native_style(id, |window| window.set_minimized(minimized));
             }
             RoutedWindowCommand::SetMaximized(id) => {
                 let WindowCommand::SetMaximized { maximized, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id).cloned() {
-                    window.set_maximized(maximized);
-                    self.resize_window(id);
-                    self.sync_geometry(id);
-                    let update = self.program.window_event(
-                        WindowEvent::Resized {
-                            id,
-                            geometry: self.geometry_of(id),
-                        },
-                        &self.context_for(id),
-                    );
-                    self.apply_update(event_loop, update, None);
+                if self
+                    .mutate_native_style(id, |window| window.set_maximized(maximized))
+                    .is_none()
+                {
+                    return;
                 }
+                self.resize_window(id);
+                self.sync_geometry(id);
+                let update = self.program.window_event(
+                    WindowEvent::Resized {
+                        id,
+                        geometry: self.geometry_of(id),
+                    },
+                    &self.context_for(id),
+                );
+                self.apply_update(event_loop, update, None);
             }
             RoutedWindowCommand::SetAlwaysOnTop(id) => {
                 let WindowCommand::SetAlwaysOnTop { always_on_top, .. } = command else {
                     return;
                 };
-                if let Some(window) = self.window(id) {
+                self.mutate_native_style(id, |window| {
                     window.set_window_level(window_level(always_on_top));
-                }
+                });
             }
             RoutedWindowCommand::SetIcon(id) => {
                 let WindowCommand::SetIcon { icon, .. } = command else {
@@ -215,7 +215,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let material = apply_window_surface(
             window.as_ref(),
             self.last_theme,
-            settings.transparent,
+            &settings,
             self.program.window_material_mode_for(id),
             self.program.appearance_backdrop_opacity_for(id),
         );
@@ -265,6 +265,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             parent.set_enable(false);
         }
         window.set_visible(true);
+        self.restore_client_chrome(id);
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         Ok(WindowEvent::Ready { id, geometry })
@@ -320,29 +321,30 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
     pub(super) fn focus_window(&self, id: WindowId) {
+        self.mutate_native_style(id, |window| window.set_visible(true));
         if let Some(window) = self.window(id) {
-            window.set_visible(true);
             window.focus_window();
         }
     }
     pub(super) fn move_window(&self, id: WindowId, position: (f32, f32)) {
-        let Some(window) = self.window(id) else {
-            return;
-        };
-        window.set_outer_position(winit::dpi::Position::Logical(
-            winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-        ));
+        self.mutate_native_style(id, |window| {
+            window.set_outer_position(winit::dpi::Position::Logical(
+                winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
+            ));
+        });
     }
     pub(super) fn set_window_bounds(&self, id: WindowId, position: (f32, f32), size: (f32, f32)) {
-        let Some(window) = self.window(id) else {
-            return;
-        };
-        window.set_outer_position(winit::dpi::Position::Logical(
-            winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-        ));
-        let _ = window.request_surface_size(winit::dpi::Size::Logical(
-            winit::dpi::LogicalSize::new(f64::from(size.0.max(1.0)), f64::from(size.1.max(1.0))),
-        ));
+        self.mutate_native_style(id, |window| {
+            window.set_outer_position(winit::dpi::Position::Logical(
+                winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
+            ));
+            let _ = window.request_surface_size(winit::dpi::Size::Logical(
+                winit::dpi::LogicalSize::new(
+                    f64::from(size.0.max(1.0)),
+                    f64::from(size.1.max(1.0)),
+                ),
+            ));
+        });
     }
     pub(super) fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
         self.auxiliary.iter().find_map(|(id, host)| {
@@ -379,7 +381,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.material = apply_window_surface(
             self.graphics.window().as_ref(),
             self.last_theme,
-            self.settings.transparent,
+            &self.settings,
             self.program.window_material_mode_for(WindowId::PRIMARY),
             self.program
                 .appearance_backdrop_opacity_for(WindowId::PRIMARY),
@@ -397,7 +399,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             host.material = apply_window_surface(
                 host.surface.window().as_ref(),
                 self.last_theme,
-                host.settings.transparent,
+                &host.settings,
                 mode,
                 self.program.appearance_backdrop_opacity_for(*id),
             );
@@ -686,6 +688,29 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .map(|host| &host.settings)
                 .unwrap_or(&self.settings)
         }
+    }
+
+    fn mutate_native_style<R>(
+        &self,
+        id: WindowId,
+        mutate: impl FnOnce(&dyn winit::window::Window) -> R,
+    ) -> Option<R> {
+        let result = self.window(id).map(|window| mutate(window.as_ref()));
+        if result.is_some() {
+            self.restore_client_chrome(id);
+        }
+        result
+    }
+
+    fn restore_client_chrome(&self, id: WindowId) {
+        if id == WindowId::PRIMARY {
+            apply_client_chrome_after_create(self.graphics.window().as_ref(), &self.settings);
+            return;
+        }
+        let Some(host) = self.auxiliary.get(&id) else {
+            return;
+        };
+        apply_client_chrome_after_create(host.surface.window().as_ref(), &host.settings);
     }
     pub(super) fn scale_factor(&self, id: WindowId) -> f32 {
         self.window(id)
