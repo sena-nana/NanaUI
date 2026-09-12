@@ -2321,6 +2321,7 @@ dependencies = [
  "serde_json",
  "two-face",
  "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

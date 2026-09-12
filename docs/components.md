@@ -129,6 +129,14 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 右键（button 2）派发 `SecondaryPress`，从命中节点往上找到第一个注册了该事件的节点，事件里带命中节点与坐标。框架不开菜单、不塞默认项：要不要弹、弹什么，由应用在 handler 里决定（通常是 `ContextMenu`）。没人注册就什么都不发生。
 
+平台 `FileHovered` / `FileDropped` / `FileHoverCancelled` 由宿主交给 `dispatch_file_drag`，命中目标发 `FileDropEvent::{Hovered, Dropped, Left}` 并画 hover chrome。Vue 用 `<nana-drop-target drop-accepts="files">` / `NanaDropTarget`；未登记节点不接收文件拖放。
+
+`TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。Vue `NanaTextarea` 对应 `lineNumbers`、`diagnostics`、`minimap`、`gitGutter`。
+
+`TerminalView` 是保留式网格：应用喂 `TerminalScreen` 单元格与样式，框架发 `TerminalEvent::Input` / `Resize` / `SelectionChanged`。PTY、submit、interrupt 归应用（通常把 Enter / Ctrl+C 解释成对 PTY 的写入）。Vue tag 是 `nana-terminal`；`screen` JSON 与 Runtime `TerminalScreen` 同形。`cells` 可以是 grapheme 串（宽字符自动占两列），或字符串/对象数组（省略 `width` 时按第一个 grapheme 的显示宽度 0/1/2）。`foreground` / `background` 是 `[r,g,b]` 或 `[r,g,b,a]`：0–1，任一 RGB 通道 `> 1` 则按 0–255。省略 `screen` 时保留宿主 `sync_terminal_screen` 喂入的画面，高频 PTY 帧仍走那条 Runtime API。
+
+`DiffView` 展示应用喂入的 hunk：`DiffEvent` 的接受/拒绝只是请求，不改 buffer。`assemble_diff_view` 用现有 `ScrollView` + `Button` + `Text` 装配。Vue tag 是 `nana-diff`。
+
 需要开窗、换 GPU、写盘时，在闭包里 `cx.dispatch_program(msg)`，下一帧进入 `RuntimeProgram::update`。不要在指针处理里做重活。
 
 ## 表单校验

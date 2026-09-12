@@ -486,7 +486,9 @@ impl WidgetProps {
             "data" | "nodes" | "edges" | "model" | "source" | "markdown" | "tree" | "items"
             | "values" | "series" | "viewport" | "selection" | "layout" | "root" | "axis"
             | "size" | "default-size" | "min" | "max" | "settings" | "tab" | "hide-header"
-            | "content-padding" | "content-gap" => {
+            | "content-padding" | "content-gap" | "hunks" | "columns" | "rows" | "cols"
+            | "screen" | "line-numbers" | "relative-line-numbers" | "minimap" | "diagnostics"
+            | "git-gutter" => {
                 self.persist_native_payload(&key, value);
             }
             "options" => {

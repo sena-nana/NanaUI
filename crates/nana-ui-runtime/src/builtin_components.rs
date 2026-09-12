@@ -1985,15 +1985,24 @@ fn json_objects(
         .collect()
 }
 
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        let number = value.as_f64()?;
+        if number.is_finite() && number >= 0.0 && number.fract() == 0.0 && number <= u64::MAX as f64
+        {
+            Some(number as u64)
+        } else {
+            None
+        }
+    })
+}
+
 fn diagnostics_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextDiagnosticSpan]> {
     json_objects(spec, &["diagnostics"])
         .into_iter()
         .filter_map(|object| {
-            let offset = object.get("offset")?.as_u64()? as usize;
-            let length = object
-                .get("length")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0) as usize;
+            let offset = json_u64(object.get("offset")?)? as usize;
+            let length = object.get("length").and_then(json_u64).unwrap_or(0) as usize;
             let severity = match object
                 .get("severity")
                 .and_then(|value| value.as_str())
@@ -2019,7 +2028,7 @@ fn git_gutter_from_spec(spec: &SemanticSpec<'_>) -> Arc<[TextGitMark]> {
     json_objects(spec, &["git-gutter", "gitGutter"])
         .into_iter()
         .filter_map(|object| {
-            let line = object.get("line")?.as_u64()? as u32;
+            let line = json_u64(object.get("line")?)? as u32;
             let kind = match object.get("kind").and_then(|value| value.as_str()) {
                 Some("added" | "add") => TextGitMarkKind::Added,
                 Some("deleted" | "removed") => TextGitMarkKind::Deleted,

@@ -505,6 +505,15 @@ pub(super) fn write_evidence(
                     })
             })
         }
+    } else if fixture.component == Component::Chip {
+        if expects_hit {
+            hit == Some(runtime.target)
+                || hit.is_some_and(|id| {
+                    world.node(id).and_then(|node| node.parent) == Some(runtime.target)
+                })
+        } else {
+            hit != Some(runtime.target)
+        }
     } else if matches!(
         fixture.component,
         Component::Card
@@ -532,6 +541,7 @@ pub(super) fn write_evidence(
             | Component::AppTitleBar
             | Component::GpuTextureView
             | Component::Thumbnail
+            | Component::Avatar
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -539,6 +549,28 @@ pub(super) fn write_evidence(
     } else {
         hit != Some(runtime.target)
     };
+    let avatar_slot_ok = if fixture.component != Component::Avatar {
+        true
+    } else {
+        let slot = world.custom_render(runtime.target);
+        match fixture.state {
+            "ready" => slot.is_some_and(|node| {
+                node.renderer.as_ref() == HOST_TEXTURE_RENDERER && node.fit == ContentFit::Cover
+            }),
+            _ => slot.is_none(),
+        }
+    };
+    let chip_close_ok = fixture.component != Component::Chip
+        || fixture.state != "dismissible"
+        || world.node(runtime.target).is_some_and(|node| {
+            node.children.iter().any(|child| {
+                matches!(
+                    world.standard_visual(*child),
+                    Some(nana_ui::runtime::StandardVisual::Icon { icon, .. })
+                        if icon == Icon::Close
+                )
+            })
+        });
     let action_state = (fixture.component == Component::TextInput && fixture.state == "invalid")
         || (fixture.component == Component::Textarea
             && matches!(
@@ -635,6 +667,10 @@ pub(super) fn write_evidence(
             let extent = ControlSize::Small.height();
             (bounds.width - extent).abs() < 0.01 && (bounds.height - extent).abs() < 0.01
         }
+        Component::Avatar => {
+            (bounds.width - 32.0).abs() < 0.01 && (bounds.height - 32.0).abs() < 0.01
+        }
+        Component::Chip => bounds.height + 0.01 >= UI_METRICS.compact_control_height,
         Component::Dialog | Component::ConfirmDialog | Component::Drawer => {
             matches!(
                 geometry,
@@ -658,6 +694,8 @@ pub(super) fn write_evidence(
         && runtime.segmented_contract_ok
         && runtime.idle
         && hit_ok
+        && avatar_slot_ok
+        && chip_close_ok
         && (!action_state || runtime.action_applied)
         && (fixture.state != "loading"
             || fixture.component == Component::TextInput
@@ -811,6 +849,14 @@ pub(super) fn review_result(fixture: Fixture) -> (&'static str, &'static str) {
         (Component::Thumbnail, _) => (
             "manual-required",
             "Review the compact list-row box, four shared-geometry states, and ready host-texture contain",
+        ),
+        (Component::Chip, _) => (
+            "pass",
+            "Runtime chip keeps the compact pill, selected/subtle surfaces, assembled close control and disabled inertness",
+        ),
+        (Component::Avatar, _) => (
+            "pass",
+            "Runtime avatar keeps the 32px circular box, empty subtle placeholder and cover-fit host-texture sampling",
         ),
         (Component::Tooltip, _) => (
             "manual-required",
@@ -1001,6 +1047,12 @@ pub(super) fn intentional_divergence(fixture: Fixture) -> &'static str {
         }
         (Component::Thumbnail, _) => {
             "intentional: Runtime Thumbnail is a compact HostTexture slot with empty/loading/unavailable chrome; Iced has no list-row thumbnail primitive"
+        }
+        (Component::Chip, _) => {
+            "intentional: Runtime Chip is a pill Button with optional assembled close; no Iced chip primitive"
+        }
+        (Component::Avatar, _) => {
+            "intentional: Runtime Avatar is a circular Cover HostTexture slot; Iced has no avatar primitive"
         }
         _ => fixture.divergence,
     }

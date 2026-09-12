@@ -59,6 +59,11 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Last `mount` key for `parent`; omitted keys disappear after remount.
+    pub fn assembled_child(&self, parent: StableNodeId, key: &str) -> Option<StableNodeId> {
+        self.assembled.get(&parent)?.get(key).map(|child| child.id)
+    }
+
     /// Reconcile keyed children of `parent` without rebuilding the tree.
     pub fn mount<P: View>(
         &mut self,

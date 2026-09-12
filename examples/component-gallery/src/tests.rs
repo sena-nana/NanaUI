@@ -6,6 +6,7 @@ use crate::runtime_host::RuntimeSceneInput;
 use crate::runtime_settings::SettingsRuntimeInput;
 use nana_ui::LogicalPoint;
 use nana_ui::PaneChromeActionKind;
+use nana_ui::runtime::FileDragKind;
 use nana_ui::window_chrome::{WindowChromeAction, WindowChromeEvent, WindowChromeState};
 use nana_ui::{
     ActionId, ActionPickerNavigation, AppearanceSettings, BackdropTarget, CommandPaletteEvent,
@@ -13,6 +14,7 @@ use nana_ui::{
     SettingsTabId, SplitPaneAction, ThemeMode, TreeViewEvent, WindowMaterialMode, WorkspaceAction,
 };
 use nana_ui_platform::WindowCommand;
+use std::path::PathBuf;
 
 #[test]
 fn gallery_interactions_update_real_state() {
@@ -463,6 +465,47 @@ fn gallery_runtime_assembles_markdown_fence_children() {
     assert!(state.gallery_runtime_markdown_has_mermaid_presenter());
     state.update(GalleryMessage::SelectSection(GallerySection::RichText));
     assert!(state.gallery_runtime_markdown_has_mermaid_presenter());
+}
+
+#[test]
+fn gallery_rich_text_surfaces_cover_issue31_examples() {
+    let mut state = GalleryState::new();
+    state.update(GalleryMessage::SelectSection(GallerySection::RichText));
+
+    let gutters = state
+        .gallery_code_editor_gutters()
+        .expect("code editor is mounted");
+    assert_eq!(gutters, (true, true, 1, 1));
+
+    let prompt = state
+        .gallery_terminal_prompt()
+        .expect("terminal is mounted");
+    assert!(
+        prompt.contains("echo hi"),
+        "gallery terminal must show the application-fed screen, got {prompt:?}"
+    );
+    assert!(
+        state.gallery_diff_has_review_actions(),
+        "assembled DiffView must expose accept/reject"
+    );
+
+    let (x, y) = state
+        .gallery_drop_target_center()
+        .expect("drop target is laid out");
+    let paths = [PathBuf::from("C:/drop/note.md")];
+    assert!(state.gallery_dispatch_file_drag(FileDragKind::Hover, &paths, Some((x, y))));
+    assert!(state.gallery_dispatch_file_drag(FileDragKind::Drop, &paths, Some((x, y))));
+    assert_eq!(
+        state.gallery_drop_hint_text().as_deref(),
+        Some("已放入：note.md")
+    );
+    assert!(state.gallery_dispatch_file_drag(FileDragKind::Hover, &paths, Some((x, y))));
+    assert!(state.gallery_dispatch_file_drag(FileDragKind::Cancel, &[], None));
+    assert_eq!(
+        state.gallery_drop_hint_text().as_deref(),
+        Some("已放入：note.md"),
+        "hover leave must not clear a completed drop"
+    );
 }
 
 #[test]

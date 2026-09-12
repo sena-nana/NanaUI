@@ -5,6 +5,8 @@ use std::sync::Arc;
 use nana_ui_core::{
     LengthSpec, LineHeightSpec, OverflowSpec, PositionSpec, SemanticColorRole, TextDecorationLine,
 };
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::project_common;
@@ -280,39 +282,16 @@ impl RegisterableComponent for TerminalView {
     const TAGS: &'static [&'static str] = crate::component_descriptors::TERMINAL.tags;
     const RETAIN_SEMANTIC_STATE: bool = true;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        let columns = spec
-            .attr("columns")
-            .or_else(|| spec.attr("cols"))
-            .and_then(|value| value.trim().parse().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(1);
-        let rows = spec
-            .attr("rows")
-            .and_then(|value| value.trim().parse().ok())
-            .filter(|value| *value > 0)
-            .unwrap_or(1);
-        let mut view = Self::new(TerminalScreen::blank(columns, rows));
-        view.disabled = spec.disabled;
-        view.read_only = spec.read_only
-            || spec
-                .attr("read-only")
-                .or_else(|| spec.attr("readOnly"))
-                .is_some_and(|value| {
-                    let value = value.trim();
-                    !(value.eq_ignore_ascii_case("false") || value == "0")
-                });
-        view
+        view_from_spec(spec, authored_screen(spec).flatten())
     }
     fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
-        let mut view = Self::from_semantic(spec);
+        let authored = authored_screen(spec);
+        let keep_host = authored.is_none();
+        let mut view = view_from_spec(spec, authored.flatten());
         let Some(previous) = previous else {
             return view;
         };
-        // PTY cells are application-owned. Vue rebinds every semantic pass;
-        // keep the live grid unless the author actually changed columns×rows.
-        let size_changed = view.screen.columns != previous.screen.columns
-            || view.screen.rows != previous.screen.rows;
-        if !size_changed {
+        if keep_host {
             view.screen = previous.screen.clone();
         }
         view.selection = previous.selection;
@@ -726,6 +705,242 @@ impl AppContext {
     }
 }
 
+fn view_from_spec(spec: &SemanticSpec<'_>, screen: Option<TerminalScreen>) -> TerminalView {
+    let columns = spec_u16(spec, &["columns", "cols"], 1);
+    let rows = spec_u16(spec, &["rows"], 1);
+    let mut view =
+        TerminalView::new(screen.unwrap_or_else(|| TerminalScreen::blank(columns, rows)));
+    view.disabled = spec.disabled;
+    view.read_only = spec.read_only || attr_enabled(spec, &["read-only", "readOnly"]);
+    Arc::make_mut(&mut view.style.layout).overlay_css_size_overrides(spec.layout.as_ref());
+    view
+}
+
+fn authored_screen(spec: &SemanticSpec<'_>) -> Option<Option<TerminalScreen>> {
+    spec.attr("screen").map(parse_terminal_screen)
+}
+
+fn parse_terminal_screen(raw: &str) -> Option<TerminalScreen> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let object = value.as_object()?;
+    let columns = json_u16(object.get("columns"))?;
+    let rows = json_u16(object.get("rows"))?;
+    let count = usize::from(columns).checked_mul(usize::from(rows))?;
+    if count == 0 || count > MAX_TERMINAL_CELLS {
+        return None;
+    }
+    let mut cells = vec![TerminalCell::default(); count];
+    match object.get("cells")? {
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().take(count).enumerate() {
+                cells[index] = match item {
+                    serde_json::Value::String(text) => cell_from_text(text),
+                    serde_json::Value::Object(_) => parse_terminal_cell(item)?,
+                    _ => return None,
+                };
+            }
+        }
+        serde_json::Value::String(text) => {
+            place_packed_cells(&mut cells, usize::from(columns), text);
+        }
+        _ => return None,
+    }
+    let screen = TerminalScreen {
+        columns,
+        rows,
+        cells: cells.into(),
+        cursor: object.get("cursor").and_then(parse_terminal_cursor),
+        application_cursor: json_flag(object, "applicationCursor")
+            || json_flag(object, "application_cursor"),
+        bracketed_paste: json_flag(object, "bracketedPaste")
+            || json_flag(object, "bracketed_paste"),
+    };
+    screen.valid().then_some(screen)
+}
+
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        let number = value.as_f64()?;
+        if number.is_finite() && number >= 0.0 && number.fract() == 0.0 && number <= u64::MAX as f64
+        {
+            Some(number as u64)
+        } else {
+            None
+        }
+    })
+}
+
+fn json_u16(value: Option<&serde_json::Value>) -> Option<u16> {
+    u16::try_from(json_u64(value?)?)
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn parse_terminal_cell(value: &serde_json::Value) -> Option<TerminalCell> {
+    let object = value.as_object()?;
+    let text = object
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(" ");
+    Some(TerminalCell {
+        text: Arc::from(text),
+        width: object
+            .get("width")
+            .and_then(json_u64)
+            .and_then(|width| u8::try_from(width).ok())
+            .filter(|width| *width <= 2)
+            .unwrap_or_else(|| cell_display_width(text)),
+        foreground: object.get("foreground").and_then(parse_cell_color),
+        background: object.get("background").and_then(parse_cell_color),
+        bold: json_flag(object, "bold"),
+        underline: json_flag(object, "underline"),
+        dim: json_flag(object, "dim"),
+        italic: json_flag(object, "italic"),
+        inverse: json_flag(object, "inverse"),
+    })
+}
+
+fn place_packed_cells(cells: &mut [TerminalCell], columns: usize, text: &str) {
+    let count = cells.len();
+    if columns == 0 || count == 0 {
+        return;
+    }
+    let mut index = 0usize;
+    for grapheme in text.graphemes(true) {
+        if index >= count {
+            break;
+        }
+        if cell_display_width(grapheme) == 2 && columns >= 2 && index % columns + 1 >= columns {
+            index += 1;
+            if index >= count {
+                break;
+            }
+        }
+        let mut cell = cell_from_text(grapheme);
+        let fits = cell.width == 2 && index % columns + 1 < columns && index + 1 < count;
+        if cell.width == 2 && !fits {
+            cell.width = 1;
+        }
+        cells[index] = cell;
+        if fits {
+            cells[index + 1] = TerminalCell {
+                text: Arc::from(""),
+                width: 0,
+                ..TerminalCell::default()
+            };
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+}
+
+fn cell_from_text(text: &str) -> TerminalCell {
+    TerminalCell {
+        text: Arc::from(text),
+        width: cell_display_width(text),
+        ..TerminalCell::default()
+    }
+}
+
+fn cell_display_width(text: &str) -> u8 {
+    match text.graphemes(true).next().map(UnicodeWidthStr::width) {
+        None | Some(0) => 0,
+        Some(1) => 1,
+        Some(_) => 2,
+    }
+}
+
+fn json_flag(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn parse_cell_color(value: &serde_json::Value) -> Option<[f32; 4]> {
+    let values = value.as_array()?;
+    if values.len() < 3 {
+        return None;
+    }
+    let r = values[0].as_f64()?;
+    let g = values[1].as_f64()?;
+    let b = values[2].as_f64()?;
+    let a = values
+        .get(3)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(1.0);
+    if ![r, g, b, a].iter().all(|channel| channel.is_finite()) {
+        return None;
+    }
+    // Host dumps mix 0–1 and 0–255; any RGB channel > 1 selects the 255 scale.
+    let scale = if r > 1.0 || g > 1.0 || b > 1.0 {
+        255.0
+    } else {
+        1.0
+    };
+    let rgb = |channel: f64| (channel / scale).clamp(0.0, 1.0) as f32;
+    let alpha = if scale > 1.0 && a > 1.0 {
+        (a / 255.0).clamp(0.0, 1.0) as f32
+    } else {
+        a.clamp(0.0, 1.0) as f32
+    };
+    Some([rgb(r), rgb(g), rgb(b), alpha])
+}
+
+fn parse_terminal_cursor(value: &serde_json::Value) -> Option<TerminalCursor> {
+    let object = value.as_object()?;
+    let (row, column) = if let Some(position) = object.get("position") {
+        let position = position.as_object()?;
+        (position.get("row"), position.get("column"))
+    } else {
+        (object.get("row"), object.get("column"))
+    };
+    let row = row
+        .and_then(json_u64)
+        .and_then(|row| u16::try_from(row).ok())?;
+    let column = column
+        .and_then(json_u64)
+        .and_then(|column| u16::try_from(column).ok())?;
+    Some(TerminalCursor {
+        position: TerminalPosition { row, column },
+        shape: match object.get("shape").and_then(serde_json::Value::as_str) {
+            Some("bar") => TerminalCursorShape::Bar,
+            Some("underline") => TerminalCursorShape::Underline,
+            _ => TerminalCursorShape::Block,
+        },
+        visible: object
+            .get("visible")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    })
+}
+
+fn spec_u16(spec: &SemanticSpec<'_>, keys: &[&str], fallback: u16) -> u16 {
+    keys.iter()
+        .find_map(|key| spec.attr(key))
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
+
+fn attr_enabled(spec: &SemanticSpec<'_>, keys: &[&str]) -> bool {
+    keys.iter()
+        .find_map(|key| spec.attr(key))
+        .is_some_and(|value| {
+            let value = value.trim();
+            !(value.eq_ignore_ascii_case("false") || value == "0")
+        })
+}
+
+fn place_px(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32, width: f32, height: f32) {
+    layout.position = PositionSpec::Absolute;
+    layout.offset_left = Some(LengthSpec::Px(x));
+    layout.offset_top = Some(LengthSpec::Px(y));
+    layout.width = Some(LengthSpec::Px(width));
+    layout.height = Some(LengthSpec::Px(height));
+}
+
 fn terminal_key_bytes(
     key: &str,
     text: Option<&str>,
@@ -985,6 +1200,29 @@ mod tests {
         );
     }
 
+    fn terminal_spec<'a>(
+        type_id: &'a crate::component_registry::ComponentTypeId,
+        layout: &'a Arc<nana_ui_core::LayoutStyle>,
+        attrs: &'a [(&'a str, &'a str)],
+    ) -> SemanticSpec<'a> {
+        SemanticSpec {
+            attrs,
+            ..SemanticSpec::from_parts(type_id, layout)
+        }
+    }
+
+    fn screen_view(
+        type_id: &crate::component_registry::ComponentTypeId,
+        layout: &Arc<nana_ui_core::LayoutStyle>,
+        screen: &str,
+    ) -> TerminalView {
+        TerminalView::from_semantic(&terminal_spec(
+            type_id,
+            layout,
+            &[("columns", "80"), ("rows", "24"), ("screen", screen)],
+        ))
+    }
+
     #[test]
     fn semantic_rebind_keeps_pty_cells_when_grid_size_is_unchanged() {
         use crate::component_registry::ComponentTypeId;
@@ -1006,5 +1244,246 @@ mod tests {
         let rebound = TerminalView::reconcile_semantic(&spec, Some(&previous));
         assert_eq!(rebound.screen.cells[0].text.as_ref(), "a");
         assert_eq!(rebound.selection, previous.selection);
+    }
+
+    #[test]
+    fn vue_reconcile_keeps_an_application_fed_screen_when_size_attrs_are_unchanged() {
+        let type_id = crate::component_registry::ComponentTypeId::new("nana.terminal").unwrap();
+        let layout_style = Arc::new(nana_ui_core::LayoutStyle::default());
+        let attrs = [("columns", "80"), ("rows", "24")];
+        let spec = terminal_spec(&type_id, &layout_style, &attrs);
+        let mut view = TerminalView::from_semantic(&spec);
+        assert_eq!(view.screen.columns, 80);
+        assert_eq!(view.screen.rows, 24);
+
+        let mut fed = TerminalScreen::blank(10, 2);
+        Arc::make_mut(&mut fed.cells)[0].text = Arc::from("a");
+        view.screen = fed.clone();
+        view.viewport = Some((10, 2));
+
+        let reconciled = TerminalView::reconcile_semantic(&spec, Some(&view));
+        assert_eq!(reconciled.screen.columns, 10);
+        assert_eq!(reconciled.screen.rows, 2);
+        assert_eq!(reconciled.screen.cells[0].text.as_ref(), "a");
+        assert_eq!(reconciled.viewport, Some((10, 2)));
+
+        let changed_attrs = [("columns", "40"), ("rows", "12")];
+        let changed = TerminalView::reconcile_semantic(
+            &terminal_spec(&type_id, &layout_style, &changed_attrs),
+            Some(&reconciled),
+        );
+        assert_eq!(
+            changed.screen.cells[0].text.as_ref(),
+            "a",
+            "a later Vue columns/rows change still must not blank the application buffer"
+        );
+        assert_eq!(changed.screen.columns, 10);
+        assert_eq!(changed.screen.rows, 2);
+    }
+
+    fn from_semantic_reads_screen_json_and_reconcile_keeps_host_feed_without_it() {
+        let type_id = crate::component_registry::ComponentTypeId::new("nana.terminal").unwrap();
+        let layout_style = Arc::new(nana_ui_core::LayoutStyle::default());
+        let view = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":2,"rows":1,"cells":[{"text":"h"},{"text":"i"}]}"#,
+        );
+        assert_eq!(view.screen.columns, 2);
+        assert_eq!(view.screen.rows, 1);
+        assert_eq!(view.screen.cells[0].text.as_ref(), "h");
+        assert_eq!(view.screen.cells[1].text.as_ref(), "i");
+
+        let without_screen = terminal_spec(
+            &type_id,
+            &layout_style,
+            &[("columns", "80"), ("rows", "24")],
+        );
+        let mut hosted = TerminalView::from_semantic(&without_screen);
+        hosted.screen = view.screen.clone();
+        let reconciled = TerminalView::reconcile_semantic(&without_screen, Some(&hosted));
+        assert_eq!(reconciled.screen.cells[0].text.as_ref(), "h");
+
+        let replaced = TerminalView::reconcile_semantic(
+            &terminal_spec(
+                &type_id,
+                &layout_style,
+                &[
+                    ("columns", "80"),
+                    ("rows", "24"),
+                    ("screen", r#"{"columns":1,"rows":1,"cells":[{"text":"x"}]}"#),
+                ],
+            ),
+            Some(&reconciled),
+        );
+        assert_eq!(replaced.screen.columns, 1);
+        assert_eq!(replaced.screen.cells[0].text.as_ref(), "x");
+
+        let ignored = TerminalView::from_semantic(&terminal_spec(
+            &type_id,
+            &layout_style,
+            &[
+                ("columns", "80"),
+                ("rows", "24"),
+                ("cells", r#"[{"text":"z"}]"#),
+            ],
+        ));
+        assert_eq!(ignored.screen.columns, 80);
+        assert_eq!(ignored.screen.cells[0].text.as_ref(), " ");
+
+        let nested = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":2,"rows":1,"cells":["h","i"],"cursor":{"position":{"row":0,"column":1},"shape":"bar"}}"#,
+        );
+        assert_eq!(nested.screen.cells[0].text.as_ref(), "h");
+        let cursor = nested.screen.cursor.expect("nested cursor.position");
+        assert_eq!(cursor.position, TerminalPosition { row: 0, column: 1 });
+        assert_eq!(cursor.shape, TerminalCursorShape::Bar);
+
+        let flat = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":1,"rows":1,"cells":[{"text":"x"}],"cursor":{"row":3,"column":5}}"#,
+        );
+        assert_eq!(
+            flat.screen.cursor.map(|cursor| cursor.position),
+            Some(TerminalPosition { row: 3, column: 5 })
+        );
+        assert!(
+            screen_view(
+                &type_id,
+                &layout_style,
+                r#"{"columns":1,"rows":1,"cells":[{"text":"x"}],"cursor":{"shape":"bar"}}"#,
+            )
+            .screen
+            .cursor
+            .is_none()
+        );
+
+        let rejected = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":2,"rows":1,"cells":[1,2]}"#,
+        );
+        assert_eq!(rejected.screen.columns, 80);
+        assert_eq!(rejected.screen.cells[0].text.as_ref(), " ");
+
+        let packed = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":4,"rows":1,"cells":"你好"}"#,
+        );
+        assert_eq!(packed.screen.cells[0].text.as_ref(), "你");
+        assert_eq!(packed.screen.cells[0].width, 2);
+        assert_eq!(packed.screen.cells[1].width, 0);
+        assert_eq!(packed.screen.cells[2].text.as_ref(), "好");
+        assert_eq!(packed.screen.cells[2].width, 2);
+
+        let wrap = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":3,"rows":2,"cells":"你好"}"#,
+        );
+        assert_eq!(wrap.screen.cells[0].width, 2);
+        assert_eq!(wrap.screen.cells[2].text.as_ref(), " ");
+        assert_eq!(wrap.screen.cells[3].text.as_ref(), "好");
+        assert_eq!(wrap.screen.cells[3].width, 2);
+
+        let wiped = TerminalView::reconcile_semantic(
+            &terminal_spec(
+                &type_id,
+                &layout_style,
+                &[("columns", "80"), ("rows", "24"), ("screen", "{")],
+            ),
+            Some(&hosted),
+        );
+        assert_eq!(wiped.screen.columns, 80);
+        assert_eq!(wiped.screen.cells[0].text.as_ref(), " ");
+
+        let array = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":2,"rows":1,"cells":["你",""]}"#,
+        );
+        assert_eq!(array.screen.cells[0].width, 2);
+        assert_eq!(array.screen.cells[1].width, 0);
+        let objects = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":2,"rows":1,"cells":[{"text":"你"},{"text":""}]}"#,
+        );
+        assert_eq!(objects.screen.cells[0].width, 2);
+        assert_eq!(objects.screen.cells[1].width, 0);
+        assert_eq!(
+            screen_view(
+                &type_id,
+                &layout_style,
+                r#"{"columns":1,"rows":1,"cells":[{"text":"你","width":1}]}"#,
+            )
+            .screen
+            .cells[0]
+                .width,
+            1
+        );
+
+        let colors = screen_view(
+            &type_id,
+            &layout_style,
+            r#"{"columns":1,"rows":1,"cells":[{"text":"x","foreground":[255,0,0],"background":[0,1,0,0.5]}]}"#,
+        );
+        assert_eq!(
+            colors.screen.cells[0].foreground,
+            Some([1.0, 0.0, 0.0, 1.0])
+        );
+        assert_eq!(
+            colors.screen.cells[0].background,
+            Some([0.0, 1.0, 0.0, 0.5])
+        );
+        assert_eq!(
+            screen_view(
+                &type_id,
+                &layout_style,
+                r#"{"columns":1,"rows":1,"cells":[{"text":"x","foreground":[255,128,0,128]}]}"#,
+            )
+            .screen
+            .cells[0]
+                .foreground,
+            Some([1.0, 128.0 / 255.0, 0.0, 128.0 / 255.0])
+        );
+        assert_eq!(
+            screen_view(
+                &type_id,
+                &layout_style,
+                r#"{"columns":1,"rows":1,"cells":[{"text":"x","foreground":[1e400,0,0]}]}"#,
+            )
+            .screen
+            .cells[0]
+                .foreground,
+            None
+        );
+    }
+
+    #[test]
+    fn from_semantic_overlays_vue_css_size_onto_structural_defaults() {
+        let type_id = crate::component_registry::ComponentTypeId::new("nana.terminal").unwrap();
+        let layout_style = Arc::new(nana_ui_core::LayoutStyle {
+            height: Some(LengthSpec::Px(216.0)),
+            width: Some(LengthSpec::Px(640.0)),
+            ..nana_ui_core::LayoutStyle::default()
+        });
+        let view = TerminalView::from_semantic(&terminal_spec(&type_id, &layout_style, &[]));
+        assert_eq!(view.style.layout.height, Some(LengthSpec::Px(216.0)));
+        assert_eq!(view.style.layout.width, Some(LengthSpec::Px(640.0)));
+        assert_eq!(view.style.layout.overflow_y, OverflowSpec::Hidden);
+        assert_eq!(view.style.layout.flex_grow, Some(1.0));
+
+        let fill = TerminalView::from_semantic(&terminal_spec(
+            &type_id,
+            &Arc::new(nana_ui_core::LayoutStyle::default()),
+            &[],
+        ));
+        assert_eq!(fill.style.layout.width, Some(LengthSpec::Fill));
+        assert_eq!(fill.style.layout.height, Some(LengthSpec::Fill));
     }
 }

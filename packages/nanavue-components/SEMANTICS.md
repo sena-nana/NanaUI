@@ -130,7 +130,7 @@ Issue #5 — Vue **基础组件与布局原语**经 `MessageBridge` 落到 Nana 
 | Vue | Runtime |
 | --- | --- |
 | `<nana-drop-target drop-accepts="files">` | `set_drop_target` + `FileDropEvent` |
-| `<nana-terminal>` | `TerminalView`；PTY 归应用 |
+| `<nana-terminal>` `columns` / `rows` / `screen` / `@input` | `TerminalView` / `TerminalScreen` / `TerminalEvent::Input`（`cells` 可以是 grapheme 串或字符串/对象数组；省略 `width` 时按显示宽度 0/1/2；颜色 0–1 或 0–255） |
 | `<nana-diff :hunks :layout>` | `DiffView`；接受/拒绝不改 buffer |
 
 ## NanaChip ↔ `Chip`

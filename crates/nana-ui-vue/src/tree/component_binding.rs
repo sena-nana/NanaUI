@@ -671,6 +671,30 @@ pub(crate) fn bind_native_json_attrs(widget: &SemanticWidgetView<'_>) -> Vec<(St
                 &["hide-header", "hideheader", "hideHeader"],
             );
         }
+        crate::WidgetKind::Diff => {
+            push(&mut extras, "hunks", &["hunks"]);
+            push(&mut extras, "layout", &["layout"]);
+        }
+        crate::WidgetKind::Textarea => {
+            push(
+                &mut extras,
+                "line-numbers",
+                &["line-numbers", "linenumbers"],
+            );
+            push(
+                &mut extras,
+                "relative-line-numbers",
+                &["relative-line-numbers", "relativelinenumbers"],
+            );
+            push(&mut extras, "minimap", &["minimap"]);
+            push(&mut extras, "diagnostics", &["diagnostics"]);
+            push(&mut extras, "git-gutter", &["git-gutter", "gitgutter"]);
+        }
+        crate::WidgetKind::Terminal => {
+            push(&mut extras, "columns", &["columns", "cols"]);
+            push(&mut extras, "rows", &["rows"]);
+            push(&mut extras, "screen", &["screen"]);
+        }
         _ => {}
     }
     extras

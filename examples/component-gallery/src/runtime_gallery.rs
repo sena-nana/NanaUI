@@ -1,15 +1,16 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use nana_ui::runtime::{
     Activate, AppShell, AppTitleBar, Avatar, Button, CalendarHeatmap, CalendarHeatmapDatum,
     CalendarHeatmapEvent, Card, Checkbox, Chip, DesktopShell, DiffHunk, DiffLine, DiffView,
     DockFloatingSurface, DocumentId, DropAccepts, Dropdown, DropdownEvent, DropdownOption,
-    EmptyState, Entity, FrameworkError, GraphCanvas, GraphCanvasEvent, GraphMinimap,
-    GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue, LayoutViewport,
-    LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle, OverlayHost,
-    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode, Popover,
-    PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged, RichTextEvent,
+    EmptyState, Entity, FileDragKind, FileDropEvent, FrameworkError, GraphCanvas, GraphCanvasEvent,
+    GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue,
+    LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle,
+    OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
+    Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged, RichTextEvent,
     RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, SemanticColorRole, SidebarFooter,
     SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection,
@@ -42,6 +43,11 @@ type RichTextMount = (
     Entity<HostStack>,
     Entity<NativeMarkdown>,
     Entity<nana_ui::runtime::Text>,
+    Entity<HostStack>,
+    Entity<nana_ui::runtime::Text>,
+    Entity<TextArea>,
+    Entity<TerminalView>,
+    Entity<DiffView>,
 );
 type GraphMount = (
     Entity<HostStack>,
@@ -133,6 +139,15 @@ pub(super) struct GalleryRuntime {
     rich_text_root: Entity<HostStack>,
     rich_text: Entity<NativeMarkdown>,
     link_status: Entity<nana_ui::runtime::Text>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    drop: Entity<HostStack>,
+    drop_hint: Entity<nana_ui::runtime::Text>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    code_editor: Entity<TextArea>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    terminal: Entity<TerminalView>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    diff: Entity<DiffView>,
     graph_root: Entity<HostStack>,
     graph: Entity<GraphCanvas>,
     graph_minimap: Entity<GraphMinimap>,
@@ -258,7 +273,7 @@ impl GalleryRuntime {
         let controls = mount_controls(context, document_id, state, &pending)?;
         let surfaces = mount_surfaces(context, document_id, state, &pending)?;
         let feedback = mount_feedback(context, document_id, state, &pending)?;
-        let (rich_text_root, rich_text, link_status) =
+        let (rich_text_root, rich_text, link_status, drop, drop_hint, code_editor, terminal, diff) =
             mount_rich_text(context, document_id, state, &pending)?;
         let (graph_root, graph, graph_minimap, graph_selection, graph_reset) =
             mount_graph(context, document_id, state, &pending)?;
@@ -414,6 +429,11 @@ impl GalleryRuntime {
             rich_text_root,
             rich_text,
             link_status,
+            drop,
+            drop_hint,
+            code_editor,
+            terminal,
+            diff,
             graph_root,
             graph,
             graph_minimap,
@@ -485,6 +505,9 @@ impl GalleryRuntime {
                 ),
                 None => styled_text("", SemanticColorRole::Muted, 11.0, 400),
             };
+        });
+        let _ = context.update_component(self.drop_hint, |label, _| {
+            *label = gallery_drop_hint(state);
         });
         let _ = context.update_component(self.graph, |canvas, _| {
             canvas.set_model(state.graph.clone());
@@ -571,6 +594,21 @@ impl GalleryRuntime {
 
     pub(super) fn pending_sink(&self) -> Arc<Mutex<Vec<GalleryMessage>>> {
         Arc::clone(&self.pending)
+    }
+
+    pub(super) fn dispatch_file_drag(
+        &mut self,
+        kind: FileDragKind,
+        paths: &[PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> (bool, Vec<GalleryMessage>) {
+        let document = self.document.document();
+        let changed = self
+            .document
+            .context_mut()
+            .dispatch_file_drag(document, kind, paths, position)
+            .unwrap_or(false);
+        (changed, take_pending(&self.pending))
     }
 
     pub(super) fn flush_viewport(&mut self, size: (f32, f32)) {
@@ -760,6 +798,80 @@ impl GalleryRuntime {
     }
 
     #[cfg(test)]
+    fn drop_target_center(&self) -> Option<(f32, f32)> {
+        let bounds = self
+            .document
+            .context()
+            .world()
+            .layout_box(self.drop.stable_id())?;
+        Some((
+            bounds.x + bounds.width * 0.5,
+            bounds.y + bounds.height * 0.5,
+        ))
+    }
+
+    #[cfg(test)]
+    fn drop_hint_text(&self) -> Option<String> {
+        self.document
+            .context()
+            .world()
+            .text(self.drop_hint.stable_id())
+            .map(str::to_owned)
+    }
+
+    #[cfg(test)]
+    fn code_editor_gutters(&self) -> Option<(bool, bool, usize, usize)> {
+        self.document
+            .context()
+            .read(self.code_editor, |editor| {
+                (
+                    editor.line_numbers,
+                    editor.minimap,
+                    editor.diagnostics.len(),
+                    editor.git_gutter.len(),
+                )
+            })
+            .ok()
+    }
+
+    #[cfg(test)]
+    fn terminal_prompt(&self) -> Option<String> {
+        self.document
+            .context()
+            .read(self.terminal, |terminal| {
+                terminal
+                    .screen
+                    .cells
+                    .iter()
+                    .filter(|cell| cell.width > 0)
+                    .map(|cell| cell.text.as_ref())
+                    .collect::<String>()
+            })
+            .ok()
+    }
+
+    #[cfg(test)]
+    fn diff_has_review_actions(&self) -> bool {
+        use nana_ui::runtime::AccessibilityRole;
+
+        let context = self.document.context();
+        let world = context.world();
+        let Some(hunk) = context
+            .assembled_child(self.diff.stable_id(), "body")
+            .and_then(|body| context.assembled_child(body, "hunk-0"))
+        else {
+            return false;
+        };
+        ["accept", "reject"].iter().all(|key| {
+            context.assembled_child(hunk, key).is_some_and(|id| {
+                world
+                    .accessibility(id)
+                    .is_some_and(|state| state.role == AccessibilityRole::Button)
+            })
+        })
+    }
+
+    #[cfg(test)]
     fn first_dock_handle_drag(&self) -> Option<(LogicalPoint, LogicalPoint)> {
         let context = self.document.context();
         let document = self.document.document();
@@ -892,6 +1004,60 @@ impl GalleryState {
         self.gallery_runtime
             .as_ref()
             .is_some_and(GalleryRuntime::markdown_has_mermaid_presenter)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_dispatch_file_drag(
+        &mut self,
+        kind: FileDragKind,
+        paths: &[PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> bool {
+        let (changed, messages) = {
+            let Some(runtime) = self.gallery_runtime.as_mut() else {
+                return false;
+            };
+            runtime.dispatch_file_drag(kind, paths, position)
+        };
+        for message in messages {
+            self.update(message);
+        }
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_drop_target_center(&self) -> Option<(f32, f32)> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::drop_target_center)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_drop_hint_text(&self) -> Option<String> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::drop_hint_text)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_code_editor_gutters(&self) -> Option<(bool, bool, usize, usize)> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::code_editor_gutters)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_terminal_prompt(&self) -> Option<String> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::terminal_prompt)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gallery_diff_has_review_actions(&self) -> bool {
+        self.gallery_runtime
+            .as_ref()
+            .is_some_and(GalleryRuntime::diff_has_review_actions)
     }
 
     #[cfg(test)]
@@ -1979,9 +2145,9 @@ fn mount_rich_text(
     context: &mut nana_ui::runtime::AppContext,
     document_id: DocumentId,
     state: &GalleryState,
-    _pending: &Arc<Mutex<Vec<GalleryMessage>>>,
+    pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<RichTextMount, FrameworkError> {
-    let (root, markdown, link_status, drop, diff, terminal) =
+    let (root, markdown, link_status, drop, drop_hint, editor, terminal, diff) =
         context.build_detached(document_id, |ui| {
             let heading = ui.parked(styled_text(
                 "原生富文本",
@@ -2013,20 +2179,20 @@ fn mount_rich_text(
             ));
             let editor = ui.parked(gallery_code_editor(state));
             let terminal_title = ui.parked(styled_text("终端", SemanticColorRole::Text, 13.0, 600));
-            let terminal = ui.parked(TerminalView::new(gallery_terminal_screen()));
-            let diff_title = ui.parked(styled_text("差异", SemanticColorRole::Text, 13.0, 600));
-            let diff = ui.parked(DiffView::new(gallery_diff_hunks()));
+            let terminal = ui.parked(gallery_terminal_view());
             let drop_title = ui.parked(styled_text("拖入文件", SemanticColorRole::Text, 13.0, 600));
-            let drop = ui.parked(HostStack::column(8.0));
-            let drop_hint = ui.parked(styled_text(
-                "把文件拖到这里",
-                SemanticColorRole::Muted,
-                12.0,
-                400,
-            ));
+            let drop = ui.parked(
+                HostStack::column(8.0)
+                    .padding(12.0)
+                    .background(SemanticColorRole::Subtle)
+                    .min_height(LengthSpec::Px(48.0)),
+            );
+            let drop_hint = ui.parked(gallery_drop_hint(state));
             ui.nest(drop, |ui| {
                 ui.adopt(drop_hint);
             });
+            let diff_title = ui.parked(styled_text("差异", SemanticColorRole::Text, 13.0, 600));
+            let diff = ui.parked(gallery_diff_view());
             let root = ui.detached(HostStack::canvas());
             ui.nest(root, |ui| {
                 ui.adopt(heading);
@@ -2037,18 +2203,66 @@ fn mount_rich_text(
                 ui.adopt(editor);
                 ui.adopt(terminal_title);
                 ui.adopt(terminal);
-                ui.adopt(diff_title);
-                ui.adopt(diff);
                 ui.adopt(drop_title);
                 ui.adopt(drop);
+                ui.adopt(diff_title);
+                ui.adopt(diff);
             });
-            (root, markdown, link_status, drop, diff, terminal)
+            (
+                root,
+                markdown,
+                link_status,
+                drop,
+                drop_hint,
+                editor,
+                terminal,
+                diff,
+            )
         })?;
     context.set_drop_target(drop, DropAccepts::files())?;
+    context.on(drop, {
+        let pending = Arc::clone(pending);
+        move |_, event: &FileDropEvent, _| {
+            let FileDropEvent::Dropped { paths, .. } = event else {
+                return;
+            };
+            let message = GalleryMessage::FilesDropped(paths.to_vec());
+            if let Ok(mut queue) = pending.lock() {
+                queue.push(message);
+            }
+        }
+    })?;
     context.assemble_diff_view(diff)?;
     context.refresh_terminal_view(terminal)?;
     context.assemble_markdown(markdown)?;
-    Ok((root, markdown, link_status))
+    Ok((
+        root,
+        markdown,
+        link_status,
+        drop,
+        drop_hint,
+        editor,
+        terminal,
+        diff,
+    ))
+}
+
+fn gallery_drop_hint(state: &GalleryState) -> nana_ui::runtime::Text {
+    if state.dropped_paths.is_empty() {
+        return styled_text("把文件拖到这里", SemanticColorRole::Muted, 12.0, 400);
+    }
+    let names = state
+        .dropped_paths
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .collect::<Vec<_>>()
+        .join("、");
+    styled_text(
+        format!("已放入：{names}"),
+        SemanticColorRole::Accent,
+        12.0,
+        400,
+    )
 }
 
 fn gallery_terminal_screen() -> TerminalScreen {
@@ -2929,7 +3143,7 @@ fn gallery_textarea(state: &GalleryState) -> TextArea {
 fn gallery_code_editor(state: &GalleryState) -> TextArea {
     TextArea::new(state.editor.as_str())
         .placeholder("fn main() {}")
-        .height(120.0)
+        .height(96.0)
         .line_numbers(true)
         .minimap(true)
         .diagnostics(std::sync::Arc::from([
@@ -2945,6 +3159,28 @@ fn gallery_code_editor(state: &GalleryState) -> TextArea {
             nana_ui::runtime::TextGitMarkKind::Modified,
         )]))
         .disabled(!state.editor_enabled())
+}
+
+fn gallery_terminal_view() -> TerminalView {
+    let mut view = TerminalView::new(gallery_terminal_screen());
+    let layout = Arc::make_mut(&mut view.style.layout);
+    layout.height = Some(LengthSpec::Px(
+        view.cell_height * f32::from(view.screen.rows),
+    ));
+    layout.min_height = layout.height;
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    view
+}
+
+fn gallery_diff_view() -> DiffView {
+    let mut view = DiffView::new(gallery_diff_hunks());
+    let layout = Arc::make_mut(&mut view.style.layout);
+    layout.height = Some(LengthSpec::Shrink);
+    layout.min_height = Some(LengthSpec::Px(80.0));
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
+    view
 }
 
 fn field_status_text(state: &GalleryState) -> nana_ui::runtime::Text {

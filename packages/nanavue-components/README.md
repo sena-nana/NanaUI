@@ -30,7 +30,7 @@ import "@nanaui/nanavue-components/controls.css";
 | `NanaNumberInput` | `NumberInput` |
 | `NanaTextarea` | `TextArea`（`lineNumbers` / `diagnostics` / `gitGutter` / `minimap`） |
 | `NanaDropTarget` | 任意节点 `set_drop_target`（`nana.drop-target`；`@filedrop` ↔ `FileDropEvent::Dropped`） |
-| `NanaTerminal` | `TerminalView`（`@input` ↔ `TerminalEvent::Input`，`@resize` ↔ `Resize`） |
+| `NanaTerminal` | `TerminalView`（`screen` JSON 喂单元格；PTY 仍归应用；`@input` ↔ `TerminalEvent::Input`，`@resize` ↔ `Resize`） |
 | `NanaDiff` | `DiffView`（hunk/行接受拒绝是请求，buffer 归应用） |
 | `NanaCheckbox` | `Checkbox` |
 | `NanaSwitch` | `Switch` |

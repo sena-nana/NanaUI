@@ -3243,6 +3243,164 @@ fn command_palette_host_items_keep_category() {
 }
 
 #[test]
+fn vue_diff_hunks_and_textarea_gutters_reach_from_semantic() {
+    let mut doc = NanaTreeDocument::new(420, 240, 1.0);
+    let diff = doc.create_element("nana-diff");
+    let area = doc.create_element("textarea");
+    let terminal = doc.create_element("nana-terminal");
+    doc.insert(diff, doc.mount_root(), None);
+    doc.insert(area, doc.mount_root(), None);
+    doc.insert(terminal, doc.mount_root(), None);
+
+    let mut diff_props = crate::WidgetProps::default();
+    diff_props.apply_prop(
+        "hunks",
+        &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+            [
+                (
+                    "header".into(),
+                    nana_js_engine::HostValue::string("@@ -1 +1 @@"),
+                ),
+                (
+                    "lines".into(),
+                    nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+                        [
+                            ("kind".into(), nana_js_engine::HostValue::string("added")),
+                            ("text".into(), nana_js_engine::HostValue::string("hello")),
+                            ("new".into(), nana_js_engine::HostValue::Number(1.0)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    )]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        )]),
+    );
+    diff_props.apply_prop("layout", &nana_js_engine::HostValue::string("split"));
+
+    let mut area_props = crate::WidgetProps {
+        value: "fn main() {}".into(),
+        ..Default::default()
+    };
+    area_props.apply_prop("line-numbers", &nana_js_engine::HostValue::Bool(true));
+    area_props.apply_prop("minimap", &nana_js_engine::HostValue::Bool(true));
+    area_props.apply_prop(
+        "diagnostics",
+        &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+            [
+                ("offset".into(), nana_js_engine::HostValue::Number(0.0)),
+                ("length".into(), nana_js_engine::HostValue::Number(2.0)),
+                (
+                    "severity".into(),
+                    nana_js_engine::HostValue::string("error"),
+                ),
+                ("message".into(), nana_js_engine::HostValue::string("bad")),
+            ]
+            .into_iter()
+            .collect(),
+        )]),
+    );
+    area_props.apply_prop(
+        "git-gutter",
+        &nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
+            [
+                ("line".into(), nana_js_engine::HostValue::Number(1.0)),
+                ("kind".into(), nana_js_engine::HostValue::string("modified")),
+            ]
+            .into_iter()
+            .collect(),
+        )]),
+    );
+
+    let mut terminal_props = crate::WidgetProps::default();
+    terminal_props.apply_prop("columns", &nana_js_engine::HostValue::Number(80.0));
+    terminal_props.apply_prop("rows", &nana_js_engine::HostValue::Number(24.0));
+    terminal_props.apply_prop(
+        "screen",
+        &nana_js_engine::HostValue::Object(
+            [
+                ("columns".into(), nana_js_engine::HostValue::Number(2.0)),
+                ("rows".into(), nana_js_engine::HostValue::Number(1.0)),
+                (
+                    "cells".into(),
+                    nana_js_engine::HostValue::Array(vec![
+                        nana_js_engine::HostValue::Object(
+                            [("text".into(), nana_js_engine::HostValue::string("h"))]
+                                .into_iter()
+                                .collect(),
+                        ),
+                        nana_js_engine::HostValue::Object(
+                            [("text".into(), nana_js_engine::HostValue::string("i"))]
+                                .into_iter()
+                                .collect(),
+                        ),
+                    ]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    );
+
+    let mut bridge = crate::MessageBridge::new();
+    bridge.register(diff.0, crate::WidgetKind::Diff, diff_props);
+    bridge.register(area.0, crate::WidgetKind::Textarea, area_props);
+    bridge.register(terminal.0, crate::WidgetKind::Terminal, terminal_props);
+    doc.sync_semantic_styles(&bridge.snapshot());
+
+    let diff_id = StableNodeId::try_from(diff).unwrap();
+    let (hunks, layout) = doc
+        .context()
+        .read(Entity::<DiffView>::from_stable_id(diff_id), |view| {
+            (view.hunks.len(), view.layout)
+        })
+        .expect("diff view");
+    assert_eq!(hunks, 1, "nana-diff hunks JSON must reach from_semantic");
+    assert_eq!(layout, DiffLayout::Split);
+    assert!(
+        doc.world()
+            .node(diff_id)
+            .is_some_and(|node| !node.children.is_empty()),
+        "bound hunks must assemble children"
+    );
+
+    let area_id = StableNodeId::try_from(area).unwrap();
+    assert!(
+        matches!(
+            doc.runtime.standard_visual(area_id),
+            Some(nana_ui_runtime::StandardVisual::TextInput {
+                line_numbers: true,
+                diagnostics,
+                git_marks,
+                editor_options: nana_ui_runtime::TextEditorRenderOptions { minimap: true, .. },
+                ..
+            }) if diagnostics.len() == 1 && git_marks.len() == 1
+        ),
+        "line-numbers, diagnostics, and git-gutter attrs must reach TextArea"
+    );
+
+    let terminal_id = StableNodeId::try_from(terminal).unwrap();
+    let (columns, rows, first) = doc
+        .context()
+        .read(
+            Entity::<TerminalView>::from_stable_id(terminal_id),
+            |view| {
+                (
+                    view.screen.columns,
+                    view.screen.rows,
+                    view.screen.cells.first().map(|cell| cell.text.to_string()),
+                )
+            },
+        )
+        .expect("terminal");
+    assert_eq!(columns, 2, "screen JSON columns must win over columns attr");
+    assert_eq!(rows, 1);
+    assert_eq!(first.as_deref(), Some("h"));
+}
+
+#[test]
 #[cfg(feature = "rich-text")]
 fn markdown_source_from_native_props_projects_and_assembles() {
     let mut doc = NanaTreeDocument::new(420, 240, 1.0);

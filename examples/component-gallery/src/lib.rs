@@ -1,5 +1,6 @@
 use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -136,6 +137,7 @@ pub enum GalleryMessage {
     GraphMinimap(GraphMinimapEvent),
     ResetGraphViewport,
     OpenMarkdownLink(String),
+    FilesDropped(Vec<PathBuf>),
     OpenSettings,
     BackFromSettings,
     SelectSettingsTab(SettingsTabId),
@@ -267,6 +269,7 @@ pub struct GalleryState {
     confirmed_actions: u32,
     markdown: NativeMarkdown,
     opened_markdown_link: Option<String>,
+    dropped_paths: Vec<PathBuf>,
     graph: GraphModel,
     graph_viewport: GraphViewport,
     graph_selection: Option<GraphSelection>,
@@ -347,6 +350,7 @@ impl GalleryState {
             confirmed_actions: 0,
             markdown: NativeMarkdown::parse(MARKDOWN_FIXTURE),
             opened_markdown_link: None,
+            dropped_paths: Vec::new(),
             graph: graph_view::gallery_graph(),
             graph_viewport: GraphViewport::new(GraphPoint::new(72.0, 96.0), 1.0),
             graph_selection: None,
@@ -562,6 +566,9 @@ impl GalleryState {
             }
             GalleryMessage::OpenMarkdownLink(link) => {
                 self.opened_markdown_link = Some(link);
+            }
+            GalleryMessage::FilesDropped(paths) => {
+                self.dropped_paths = paths;
             }
             GalleryMessage::Graph(GraphCanvasEvent::SelectionChanged(selection)) => {
                 self.graph_selection = selection;
@@ -1166,6 +1173,28 @@ impl GalleryApp {
         messages
     }
 
+    fn apply_gallery_file_drag(
+        &mut self,
+        kind: nana_ui::runtime::FileDragKind,
+        paths: &[PathBuf],
+        position: Option<(f32, f32)>,
+    ) -> RuntimeProgramUpdate {
+        if self.state.settings_open {
+            return RuntimeProgramUpdate::default();
+        }
+        let (changed, messages) = {
+            let Some(runtime) = self.state.gallery_runtime.as_mut() else {
+                return RuntimeProgramUpdate::default();
+            };
+            runtime.dispatch_file_drag(kind, paths, position)
+        };
+        let mut update = self.apply_all(messages);
+        if changed {
+            update.redraw = RuntimeRedraw::All;
+        }
+        update
+    }
+
     fn apply_all(
         &mut self,
         messages: impl IntoIterator<Item = GalleryMessage>,
@@ -1422,6 +1451,25 @@ impl GalleryApp {
             WindowEvent::Closed { id } => {
                 self.dock_windows.remove(&id);
                 RuntimeProgramUpdate::default()
+            }
+            WindowEvent::FileHovered {
+                id,
+                paths,
+                position,
+            } if id == WindowId::PRIMARY => self.apply_gallery_file_drag(
+                nana_ui::runtime::FileDragKind::Hover,
+                &paths,
+                position,
+            ),
+            WindowEvent::FileDropped {
+                id,
+                paths,
+                position,
+            } if id == WindowId::PRIMARY => {
+                self.apply_gallery_file_drag(nana_ui::runtime::FileDragKind::Drop, &paths, position)
+            }
+            WindowEvent::FileHoverCancelled { id } if id == WindowId::PRIMARY => {
+                self.apply_gallery_file_drag(nana_ui::runtime::FileDragKind::Cancel, &[], None)
             }
             WindowEvent::FocusChanged { id, focused: true } if id != WindowId::PRIMARY => {
                 if let Some(item) = floating_surface_for_window(&self.state.dock, id)

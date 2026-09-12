@@ -9,6 +9,8 @@ export const NanaTerminal = {
   props: {
     columns: { type: Number, default: 80 },
     rows: { type: Number, default: 24 },
+    /** `{ columns, rows, cells, cursor?: { position: { row, column } } }` — cells are a grapheme string or string/object array; colors are 0–1 or 0–255 RGB(A). */
+    screen: { type: [Object, String], default: undefined },
     disabled: { type: Boolean, default: false },
     readOnly: { type: Boolean, default: false },
   },
@@ -22,6 +24,12 @@ export const NanaTerminal = {
           .join(" "),
         columns: String(props.columns),
         rows: String(props.rows),
+        screen:
+          props.screen == null
+            ? undefined
+            : typeof props.screen === "string"
+              ? props.screen
+              : JSON.stringify(props.screen),
         disabled: props.disabled,
         "read-only": props.readOnly ? "" : undefined,
         "data-agent-id": attrs["data-agent-id"] || "nana.terminal",
