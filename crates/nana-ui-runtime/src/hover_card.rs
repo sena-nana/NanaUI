@@ -350,6 +350,77 @@ mod tests {
             .unwrap();
     }
 
+    fn avatar_card_with_button() -> (
+        AppContext,
+        crate::Entity<HoverCard>,
+        crate::Entity<crate::Button>,
+    ) {
+        let mut context = AppContext::new();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_image("", "账户")
+                    .trigger_size(18.0)
+                    .open_delay(0)
+                    .close_delay(120),
+            )
+            .unwrap();
+        let button = context
+            .create_component(document(), crate::Button::new("进入空间"))
+            .unwrap();
+        context.append_child(card, button).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        (context, card, button)
+    }
+
+    /// Avatar triggers clip their circular chrome; the open card must still
+    /// receive pointer hits and keep the surface open.
+    #[test]
+    fn pointer_on_avatar_card_content_outside_the_trigger_keeps_it_open() {
+        let (mut context, card, button) = avatar_card_with_button();
+        let card_id = card.stable_id();
+        let button_id = button.stable_id();
+        hover_at(&mut context, document(), Some(card_id), 0);
+        tick(&mut context, 400);
+        relayout(&mut context);
+        context.rebuild_hit_test(document());
+        let button_box = context.world().layout_box(button_id).unwrap();
+        let trigger_box = context.world().layout_box(card_id).unwrap();
+        assert!(
+            button_box.x >= trigger_box.x + trigger_box.width
+                || button_box.y >= trigger_box.y + trigger_box.height,
+            "card content must sit outside the 18px trigger: trigger={trigger_box:?} button={button_box:?}"
+        );
+        let hx = button_box.x + button_box.width / 2.0;
+        let hy = button_box.y + button_box.height / 2.0;
+        let hit = context.pointer_target(document(), hx, hy);
+        assert_eq!(
+            hit,
+            Some(button_id),
+            "trigger={trigger_box:?} button={button_box:?} hit=({hx},{hy}) -> {hit:?}"
+        );
+        hover_at(&mut context, document(), Some(button_id), 450);
+        tick(&mut context, 800);
+        assert!(context.read(card, |card| card.open).unwrap());
+    }
+
+    #[test]
+    fn activating_the_trigger_emits_activate() {
+        let (mut context, card, _) = card_with_button();
+        let received = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&received);
+        context
+            .on(card, move |_, _: &crate::Activate, _| {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+            .unwrap();
+        assert!(context.activate_node(card.stable_id()).unwrap());
+        assert!(received.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     /// Hovering the trigger opens the anchored surface after the configured
     /// delay, and the card content projects as a viewport-fixed overlay.
     #[test]
