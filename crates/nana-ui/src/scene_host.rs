@@ -484,7 +484,6 @@ fn initialize<Program: RuntimeProgram>(
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
-    apply_client_chrome_after_create(window.as_ref(), &settings);
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
     let mut material = apply_window_surface(
@@ -2345,25 +2344,6 @@ mod tests {
         let opaque_caption = windows_scene_chrome(true, false);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
-    }
-
-    #[test]
-    fn native_style_mutations_restore_client_chrome() {
-        let windows = include_str!("scene_host/windows.rs");
-        let helper = windows
-            .split("fn mutate_native_style")
-            .nth(1)
-            .and_then(|rest| rest.split("fn restore_client_chrome").next())
-            .expect("mutate_native_style");
-        assert!(helper.contains("restore_client_chrome("));
-
-        let host = include_str!("scene_host.rs");
-        let surface = host
-            .split("fn apply_window_surface")
-            .nth(1)
-            .and_then(|rest| rest.split("\nfn ").next())
-            .expect("apply_window_surface");
-        assert!(surface.contains("apply_client_chrome_after_create("));
     }
 
     #[test]

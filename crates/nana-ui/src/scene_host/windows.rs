@@ -211,7 +211,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             settings.icon.as_ref(),
             id == WindowId::PRIMARY,
         );
-        apply_client_chrome_after_create(window.as_ref(), &settings);
         let material = apply_window_surface(
             window.as_ref(),
             self.last_theme,
@@ -264,8 +263,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
             parent.set_enable(false);
         }
-        window.set_visible(true);
-        self.restore_client_chrome(id);
+        self.mutate_native_style(id, |window| window.set_visible(true));
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         Ok(WindowEvent::Ready { id, geometry })
