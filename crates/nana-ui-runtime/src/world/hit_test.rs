@@ -100,53 +100,52 @@ fn overlay_connector_box(trigger: LayoutBox, surface: LayoutBox) -> Option<Layou
     let y = trigger.y.min(surface.y);
     let right = (trigger.x + trigger.width).max(surface.x + surface.width);
     let bottom = (trigger.y + trigger.height).max(surface.y + surface.height);
-    let below = surface.y - (trigger.y + trigger.height);
-    let above = trigger.y - (surface.y + surface.height);
-    let rightward = surface.x - (trigger.x + trigger.width);
-    let leftward = trigger.x - (surface.x + surface.width);
-    let mut best: Option<(f32, LayoutBox)> = None;
-    let mut consider = |gap: f32, box_: LayoutBox| {
-        if gap > MIN && best.is_none_or(|(current, _)| gap > current) {
-            best = Some((gap, box_));
-        }
-    };
-    consider(
-        below,
-        LayoutBox {
-            x,
-            y: trigger.y + trigger.height,
-            width: right - x,
-            height: below,
-        },
-    );
-    consider(
-        above,
-        LayoutBox {
-            x,
-            y: surface.y + surface.height,
-            width: right - x,
-            height: above,
-        },
-    );
-    consider(
-        rightward,
-        LayoutBox {
-            x: trigger.x + trigger.width,
-            y,
-            width: rightward,
-            height: bottom - y,
-        },
-    );
-    consider(
-        leftward,
-        LayoutBox {
-            x: surface.x + surface.width,
-            y,
-            width: leftward,
-            height: bottom - y,
-        },
-    );
-    best.map(|(_, box_)| box_)
+    let trigger_right = trigger.x + trigger.width;
+    let trigger_bottom = trigger.y + trigger.height;
+    let surface_right = surface.x + surface.width;
+    let surface_bottom = surface.y + surface.height;
+    [
+        (
+            surface.y - trigger_bottom,
+            LayoutBox {
+                x,
+                y: trigger_bottom,
+                width: right - x,
+                height: surface.y - trigger_bottom,
+            },
+        ),
+        (
+            trigger.y - surface_bottom,
+            LayoutBox {
+                x,
+                y: surface_bottom,
+                width: right - x,
+                height: trigger.y - surface_bottom,
+            },
+        ),
+        (
+            surface.x - trigger_right,
+            LayoutBox {
+                x: trigger_right,
+                y,
+                width: surface.x - trigger_right,
+                height: bottom - y,
+            },
+        ),
+        (
+            trigger.x - surface_right,
+            LayoutBox {
+                x: surface_right,
+                y,
+                width: trigger.x - surface_right,
+                height: bottom - y,
+            },
+        ),
+    ]
+    .into_iter()
+    .filter(|(gap, _)| *gap > MIN)
+    .max_by(|a, b| a.0.total_cmp(&b.0))
+    .map(|(_, box_)| box_)
 }
 
 impl HitIndex {
@@ -1394,48 +1393,29 @@ mod connector_tests {
     }
 
     #[test]
-    fn below_the_trigger() {
-        let gap =
+    fn connector_picks_the_separating_axis() {
+        let below =
             overlay_connector_box(box_at(10.0, 0.0, 20.0, 10.0), box_at(0.0, 16.0, 40.0, 8.0))
                 .unwrap();
-        assert_eq!(gap.y, 10.0);
-        assert_eq!(gap.height, 6.0);
-        assert_eq!(gap.x, 0.0);
-        assert_eq!(gap.width, 40.0);
-    }
-
-    #[test]
-    fn above_the_trigger() {
-        let gap =
+        assert_eq!(
+            (below.x, below.y, below.width, below.height),
+            (0.0, 10.0, 40.0, 6.0)
+        );
+        let above =
             overlay_connector_box(box_at(10.0, 20.0, 20.0, 10.0), box_at(0.0, 0.0, 40.0, 14.0))
                 .unwrap();
-        assert_eq!(gap.y, 14.0);
-        assert_eq!(gap.height, 6.0);
-    }
-
-    #[test]
-    fn to_the_right_of_the_trigger() {
-        let gap =
+        assert_eq!((above.y, above.height), (14.0, 6.0));
+        let right =
             overlay_connector_box(box_at(0.0, 0.0, 20.0, 10.0), box_at(26.0, 0.0, 40.0, 10.0))
                 .unwrap();
-        assert_eq!(gap.x, 20.0);
-        assert_eq!(gap.width, 6.0);
-    }
-
-    #[test]
-    fn overlap_has_no_connector() {
+        assert_eq!((right.x, right.width), (20.0, 6.0));
         assert_eq!(
             overlay_connector_box(box_at(0.0, 0.0, 20.0, 10.0), box_at(4.0, 2.0, 40.0, 20.0)),
             None
         );
-    }
-
-    #[test]
-    fn larger_axis_wins_when_both_gaps_exist() {
-        let gap =
+        let diagonal =
             overlay_connector_box(box_at(0.0, 0.0, 10.0, 10.0), box_at(14.0, 20.0, 10.0, 10.0))
                 .unwrap();
-        assert_eq!(gap.y, 10.0);
-        assert_eq!(gap.height, 10.0);
+        assert_eq!((diagonal.y, diagonal.height), (10.0, 10.0));
     }
 }

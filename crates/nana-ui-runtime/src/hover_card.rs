@@ -557,68 +557,59 @@ mod tests {
         context.rebuild_hit_test(document());
         let trigger = context.world().layout_box(card_id).unwrap();
         let content_box = context.world().layout_box(content_id).unwrap();
-        match placement {
-            PopoverPlacement::Bottom => assert!(
-                content_box.y >= trigger.y + trigger.height,
-                "card hangs below the trigger: trigger={trigger:?} content={content_box:?}"
-            ),
-            PopoverPlacement::Top => assert!(
-                content_box.y + content_box.height <= trigger.y,
-                "card hangs above the trigger: trigger={trigger:?} content={content_box:?}"
-            ),
-            PopoverPlacement::Right => assert!(
-                content_box.x >= trigger.x + trigger.width,
-                "card hangs to the right of the trigger: trigger={trigger:?} content={content_box:?}"
-            ),
-            PopoverPlacement::Left => assert!(
-                content_box.x + content_box.width <= trigger.x,
-                "card hangs to the left of the trigger: trigger={trigger:?} content={content_box:?}"
-            ),
-        }
-        let content_x = content_box.x + content_box.width / 2.0;
-        let content_y = content_box.y + content_box.height / 2.0;
-        let trigger_cx = trigger.x + trigger.width / 2.0;
-        let trigger_cy = trigger.y + trigger.height / 2.0;
-        let (x0, y0, x1, y1, x2, y2) = match placement {
+        let (along_x, hangs, edge, mid) = match placement {
             PopoverPlacement::Bottom => (
-                trigger_cx,
-                trigger_cy,
-                trigger_cx,
-                trigger.y + trigger.height + 1.0,
-                trigger_cx,
+                false,
+                content_box.y >= trigger.y + trigger.height,
+                trigger.y + trigger.height,
                 (trigger.y + trigger.height + content_box.y) / 2.0,
             ),
             PopoverPlacement::Top => (
-                trigger_cx,
-                trigger_cy,
-                trigger_cx,
-                trigger.y - 1.0,
-                trigger_cx,
+                false,
+                content_box.y + content_box.height <= trigger.y,
+                trigger.y,
                 (content_box.y + content_box.height + trigger.y) / 2.0,
             ),
             PopoverPlacement::Right => (
-                trigger_cx,
-                trigger_cy,
-                trigger.x + trigger.width + 1.0,
-                trigger_cy,
+                true,
+                content_box.x >= trigger.x + trigger.width,
+                trigger.x + trigger.width,
                 (trigger.x + trigger.width + content_box.x) / 2.0,
-                trigger_cy,
             ),
             PopoverPlacement::Left => (
-                trigger_cx,
-                trigger_cy,
-                trigger.x - 1.0,
-                trigger_cy,
+                true,
+                content_box.x + content_box.width <= trigger.x,
+                trigger.x,
                 (content_box.x + content_box.width + trigger.x) / 2.0,
-                trigger_cy,
             ),
         };
-        let path = [
-            (x0, y0, 450u64),
-            (x1, y1, 580),
-            (x2, y2, 710),
-            (content_x, content_y, 840),
-        ];
+        assert!(
+            hangs,
+            "card hangs on {placement:?}: trigger={trigger:?} content={content_box:?}"
+        );
+        let step = match placement {
+            PopoverPlacement::Bottom | PopoverPlacement::Right => 1.0,
+            PopoverPlacement::Top | PopoverPlacement::Left => -1.0,
+        };
+        let cx = trigger.x + trigger.width / 2.0;
+        let cy = trigger.y + trigger.height / 2.0;
+        let content_x = content_box.x + content_box.width / 2.0;
+        let content_y = content_box.y + content_box.height / 2.0;
+        let path = if along_x {
+            [
+                (cx, cy, 450u64),
+                (edge + step, cy, 580),
+                (mid, cy, 710),
+                (content_x, content_y, 840),
+            ]
+        } else {
+            [
+                (cx, cy, 450u64),
+                (cx, edge + step, 580),
+                (cx, mid, 710),
+                (content_x, content_y, 840),
+            ]
+        };
         for (x, y, at_ms) in path {
             let hit = hover_point(context, x, y, at_ms);
             tick(context, at_ms + 130);
@@ -634,25 +625,21 @@ mod tests {
     fn pointer_path_from_titlebar_trigger_across_the_gap_keeps_the_card_open() {
         let (mut context, card, button, body) = desktop_shell_account_hover_card();
         let card_id = card.stable_id();
-        let button_id = button.stable_id();
-        let body_id = body.stable_id();
         hover_at(&mut context, document(), Some(card_id), 0);
         tick(&mut context, 400);
         relayout(&mut context);
         context.rebuild_hit_test(document());
-        let trigger = context.world().layout_box(card_id).unwrap();
+        let button_id = button.stable_id();
         let content = context.world().layout_box(button_id).unwrap();
-        let body_box = context.world().layout_box(body_id).unwrap();
-        assert!(
-            content.y >= trigger.y + trigger.height,
-            "card hangs below the titlebar trigger: trigger={trigger:?} content={content:?}"
-        );
-        let content_x = content.x + content.width / 2.0;
-        let content_y = content.y + content.height / 2.0;
+        let body_box = context.world().layout_box(body.stable_id()).unwrap();
         assert_eq!(
-            context.pointer_target(document(), content_x, content_y),
+            context.pointer_target(
+                document(),
+                content.x + content.width / 2.0,
+                content.y + content.height / 2.0
+            ),
             Some(button_id),
-            "titlebar hover card must beat the fill body: trigger={trigger:?} content={content:?} body={body_box:?}"
+            "titlebar hover card must beat the fill body: content={content:?} body={body_box:?}"
         );
         assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
     }
@@ -698,12 +685,6 @@ mod tests {
     #[test]
     fn pointer_path_across_a_right_gap_keeps_the_card_open() {
         let (mut context, card, button) = card_with_button();
-        context
-            .update_component(card, |card, _| {
-                card.placement = PopoverPlacement::Right;
-            })
-            .unwrap();
-        relayout(&mut context);
         assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Right);
     }
 
