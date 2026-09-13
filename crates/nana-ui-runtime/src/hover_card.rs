@@ -156,17 +156,12 @@ impl HoverCard {
             trigger_button_style()
         };
         if self.open {
-            // The card chrome is a primitive of this node. Raise it with the
-            // overlay children so a title-bar trigger is not painted under the
-            // page that follows it in document order.
             Arc::make_mut(&mut style.layout).z_index = Some(MENU_OVERLAY_Z_INDEX);
         }
         style
     }
 
-    /// Ghost icon-button chrome: square, no idle fill, no `align_self: Start`.
-    /// Menu-button styling belongs to [`crate::ActionMenu`], not a hover card
-    /// sitting next to toolbar `IconButton`s.
+    /// Square Ghost chrome sized by [`Self::trigger_size`].
     fn icon_trigger_style(&self) -> NodeStyle {
         let size = sanitize_size(self.trigger_size);
         let mut style = NodeStyle {
@@ -178,14 +173,7 @@ impl HoverCard {
         style.interaction.pressed.background = Some(SemanticColorRole::Active);
         style.interaction.pressed.foreground = Some(SemanticColorRole::Text);
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(size));
-        layout.height = Some(LengthSpec::Px(size));
-        layout.min_width = Some(LengthSpec::Px(size));
-        layout.min_height = Some(LengthSpec::Px(size));
-        layout.max_width = Some(LengthSpec::Px(size));
-        layout.max_height = Some(LengthSpec::Px(size));
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
+        apply_trigger_size(layout, size);
         layout.border_radius = Some(UI_METRICS.radius_sm);
         style
     }
@@ -202,14 +190,9 @@ impl HoverCard {
             style.background = None;
         }
         let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(size));
-        layout.height = Some(LengthSpec::Px(size));
-        layout.min_width = Some(LengthSpec::Px(size));
-        layout.min_height = Some(LengthSpec::Px(size));
+        apply_trigger_size(layout, size);
         layout.max_width = Some(LengthSpec::Px(size));
         layout.max_height = Some(LengthSpec::Px(size));
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
         layout.border_width = Some(0.0);
         layout.border_radius = Some(size * 0.5);
         layout.overflow_x = OverflowSpec::Hidden;
@@ -313,6 +296,16 @@ impl ComponentView for HoverCard {
             },
         );
     }
+}
+
+fn apply_trigger_size(layout: &mut nana_ui_core::LayoutStyle, size: f32) {
+    let px = Some(LengthSpec::Px(size));
+    layout.width = px;
+    layout.height = px;
+    layout.min_width = px;
+    layout.min_height = px;
+    layout.flex_grow = Some(0.0);
+    layout.flex_shrink = Some(0.0);
 }
 
 fn sanitize_size(size: f32) -> f32 {
@@ -582,9 +575,6 @@ mod tests {
         );
     }
 
-    /// Title-bar account glyphs sit next to Ghost `IconButton`s. The trigger
-    /// must be a square of `trigger_size` with no menu-button fill and no
-    /// `align_self: Start` that would pin it to the top of a 36px bar.
     #[test]
     fn icon_trigger_is_a_ghost_square_honoring_trigger_size() {
         let mut context = AppContext::new();
@@ -610,7 +600,6 @@ mod tests {
         assert!((bounds.height - 28.0).abs() < f32::EPSILON);
     }
 
-    /// Opening a hover card must not reuse ActionMenu's pop on the trigger.
     #[test]
     fn opening_does_not_scale_or_fade_the_trigger() {
         let (mut context, card, _) = card_with_button();
@@ -619,16 +608,8 @@ mod tests {
         assert!(context.read(card, |card| card.open).unwrap());
         let extracted = context.world().extract_nodes(&[card.stable_id()]);
         let layout = extracted[0].source_style.layout.as_ref();
-        assert!(
-            layout.transform.is_none(),
-            "trigger must not pop-scale: {:?}",
-            layout.transform
-        );
-        assert!(
-            layout.opacity.is_none() || layout.opacity == Some(1.0),
-            "trigger must stay opaque: {:?}",
-            layout.opacity
-        );
+        assert!(layout.transform.is_none());
+        assert!(layout.opacity.is_none() || layout.opacity == Some(1.0));
         assert_eq!(layout.z_index, Some(MENU_OVERLAY_Z_INDEX));
     }
 }
