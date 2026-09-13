@@ -93,59 +93,60 @@ fn union_bounds(a: LayoutBox, b: LayoutBox) -> LayoutBox {
     }
 }
 
-/// Rectangle covering the empty strip between a trigger and its overlay child.
-fn overlay_connector_box(
-    trigger: LayoutBox,
-    child: LayoutBox,
-    placement: nana_ui_core::PopoverPlacement,
-) -> Option<LayoutBox> {
+/// Empty strip between trigger and overlay surface on the axis that separates them.
+fn overlay_connector_box(trigger: LayoutBox, surface: LayoutBox) -> Option<LayoutBox> {
     const MIN: f32 = 0.5;
-    let x = trigger.x.min(child.x);
-    let y = trigger.y.min(child.y);
-    let right = (trigger.x + trigger.width).max(child.x + child.width);
-    let bottom = (trigger.y + trigger.height).max(child.y + child.height);
-    match placement {
-        nana_ui_core::PopoverPlacement::Bottom => {
-            let top = trigger.y + trigger.height;
-            let height = child.y - top;
-            (height > MIN).then_some(LayoutBox {
-                x,
-                y: top,
-                width: right - x,
-                height,
-            })
+    let x = trigger.x.min(surface.x);
+    let y = trigger.y.min(surface.y);
+    let right = (trigger.x + trigger.width).max(surface.x + surface.width);
+    let bottom = (trigger.y + trigger.height).max(surface.y + surface.height);
+    let below = surface.y - (trigger.y + trigger.height);
+    let above = trigger.y - (surface.y + surface.height);
+    let rightward = surface.x - (trigger.x + trigger.width);
+    let leftward = trigger.x - (surface.x + surface.width);
+    let mut best: Option<(f32, LayoutBox)> = None;
+    let mut consider = |gap: f32, box_: LayoutBox| {
+        if gap > MIN && best.is_none_or(|(current, _)| gap > current) {
+            best = Some((gap, box_));
         }
-        nana_ui_core::PopoverPlacement::Top => {
-            let top = child.y + child.height;
-            let height = trigger.y - top;
-            (height > MIN).then_some(LayoutBox {
-                x,
-                y: top,
-                width: right - x,
-                height,
-            })
-        }
-        nana_ui_core::PopoverPlacement::Right => {
-            let left = trigger.x + trigger.width;
-            let width = child.x - left;
-            (width > MIN).then_some(LayoutBox {
-                x: left,
-                y,
-                width,
-                height: bottom - y,
-            })
-        }
-        nana_ui_core::PopoverPlacement::Left => {
-            let left = child.x + child.width;
-            let width = trigger.x - left;
-            (width > MIN).then_some(LayoutBox {
-                x: left,
-                y,
-                width,
-                height: bottom - y,
-            })
-        }
-    }
+    };
+    consider(
+        below,
+        LayoutBox {
+            x,
+            y: trigger.y + trigger.height,
+            width: right - x,
+            height: below,
+        },
+    );
+    consider(
+        above,
+        LayoutBox {
+            x,
+            y: surface.y + surface.height,
+            width: right - x,
+            height: above,
+        },
+    );
+    consider(
+        rightward,
+        LayoutBox {
+            x: trigger.x + trigger.width,
+            y,
+            width: rightward,
+            height: bottom - y,
+        },
+    );
+    consider(
+        leftward,
+        LayoutBox {
+            x: surface.x + surface.width,
+            y,
+            width: leftward,
+            height: bottom - y,
+        },
+    );
+    best.map(|(_, box_)| box_)
 }
 
 impl HitIndex {
@@ -914,17 +915,23 @@ impl UiWorld {
         self.motion_layout(id, &self.effective_layout_style(id))
     }
 
-    /// Hit box covering the visual gap between an open overlay and its trigger.
-    /// The gap is not in the HoverCard subtree, so without this the close delay
-    /// starts as soon as the pointer leaves the trigger.
+    /// Gap between a HoverCard trigger and its overlay; that strip is outside the subtree.
     fn overlay_connector_hit(&self, id: StableNodeId) -> Option<LayoutBox> {
-        let overlay = self.parent_triggered_overlay(id)?;
         let parent = self.parent_id(id)?;
-        overlay_connector_box(
-            self.record(parent).layout,
-            self.record(id).layout,
-            overlay.placement,
-        )
+        match self.nodes.visual(parent)? {
+            StandardVisual::MenuSurface {
+                kind: crate::MenuSurfaceKind::HoverCard,
+                open: true,
+                overlay: Some(overlay),
+                ..
+            } if self.record(parent).hierarchy.children.first().copied() == Some(id) => {
+                overlay_connector_box(
+                    self.record(parent).layout,
+                    crate::popover::overlay_surface_from_items(self, parent, Some(overlay)),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// Build hit entries for `seeds` and their visible descendants. Each seed
@@ -1371,3 +1378,64 @@ impl UiWorld {
 #[cfg(test)]
 #[path = "hit_test/build_tests.rs"]
 mod build_tests;
+
+#[cfg(test)]
+mod connector_tests {
+    use super::overlay_connector_box;
+    use crate::LayoutBox;
+
+    fn box_at(x: f32, y: f32, width: f32, height: f32) -> LayoutBox {
+        LayoutBox {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn below_the_trigger() {
+        let gap =
+            overlay_connector_box(box_at(10.0, 0.0, 20.0, 10.0), box_at(0.0, 16.0, 40.0, 8.0))
+                .unwrap();
+        assert_eq!(gap.y, 10.0);
+        assert_eq!(gap.height, 6.0);
+        assert_eq!(gap.x, 0.0);
+        assert_eq!(gap.width, 40.0);
+    }
+
+    #[test]
+    fn above_the_trigger() {
+        let gap =
+            overlay_connector_box(box_at(10.0, 20.0, 20.0, 10.0), box_at(0.0, 0.0, 40.0, 14.0))
+                .unwrap();
+        assert_eq!(gap.y, 14.0);
+        assert_eq!(gap.height, 6.0);
+    }
+
+    #[test]
+    fn to_the_right_of_the_trigger() {
+        let gap =
+            overlay_connector_box(box_at(0.0, 0.0, 20.0, 10.0), box_at(26.0, 0.0, 40.0, 10.0))
+                .unwrap();
+        assert_eq!(gap.x, 20.0);
+        assert_eq!(gap.width, 6.0);
+    }
+
+    #[test]
+    fn overlap_has_no_connector() {
+        assert_eq!(
+            overlay_connector_box(box_at(0.0, 0.0, 20.0, 10.0), box_at(4.0, 2.0, 40.0, 20.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn larger_axis_wins_when_both_gaps_exist() {
+        let gap =
+            overlay_connector_box(box_at(0.0, 0.0, 10.0, 10.0), box_at(14.0, 20.0, 10.0, 10.0))
+                .unwrap();
+        assert_eq!(gap.y, 10.0);
+        assert_eq!(gap.height, 10.0);
+    }
+}

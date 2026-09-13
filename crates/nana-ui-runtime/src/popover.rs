@@ -659,6 +659,46 @@ mod tests {
         assert!(!context.read(menu, |menu| menu.popover.open).unwrap());
     }
 
+    #[test]
+    fn first_action_item_beats_later_siblings_under_bottom_placement() {
+        let mut context = AppContext::new();
+        let menu = context
+            .create_component(
+                document(),
+                crate::ActionMenu::new().trigger("Actions").open(true),
+            )
+            .unwrap();
+        let first = context
+            .create_component(document(), crate::ActionMenuItem::new("First"))
+            .unwrap();
+        let last = context
+            .create_component(document(), crate::ActionMenuItem::new("Last"))
+            .unwrap();
+        context.append_child(menu, first).unwrap();
+        context.append_child(menu, last).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        context.rebuild_hit_test(document());
+        let first_id = first.stable_id();
+        let first_box = context.world().layout_box(first_id).unwrap();
+        let last_box = context.world().layout_box(last.stable_id()).unwrap();
+        assert!(
+            last_box.y > first_box.y,
+            "items stack below the trigger: first={first_box:?} last={last_box:?}"
+        );
+        let hit = context.pointer_target(
+            document(),
+            first_box.x + first_box.width / 2.0,
+            first_box.y + first_box.height / 2.0,
+        );
+        assert_eq!(
+            hit,
+            Some(first_id),
+            "first={first_box:?} last={last_box:?} hit={hit:?}"
+        );
+    }
+
     /// The trigger is the only pressable affordance a closed menu has, so it
     /// must carry its own background rather than reading as bare text.
     #[test]

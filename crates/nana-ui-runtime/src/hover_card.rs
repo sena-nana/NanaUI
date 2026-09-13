@@ -543,9 +543,80 @@ mod tests {
         );
     }
 
-    /// Real account chrome is DesktopShell + AppTitleBar trailing. The pointer
-    /// must keep the card open while it travels the `gap` between trigger and
-    /// overlay, not only after teleporting onto the content node.
+    fn assert_gap_path_keeps_open(
+        context: &mut AppContext,
+        card: crate::Entity<HoverCard>,
+        content: crate::Entity<crate::Button>,
+        along_x: bool,
+    ) {
+        let card_id = card.stable_id();
+        let content_id = content.stable_id();
+        hover_at(context, document(), Some(card_id), 0);
+        tick(context, 400);
+        relayout(context);
+        context.rebuild_hit_test(document());
+        let trigger = context.world().layout_box(card_id).unwrap();
+        let content_box = context.world().layout_box(content_id).unwrap();
+        let content_x = content_box.x + content_box.width / 2.0;
+        let content_y = content_box.y + content_box.height / 2.0;
+        let (x0, y0, x1, y1, x2, y2) = if along_x {
+            let trigger_y = trigger.y + trigger.height / 2.0;
+            let gap_x = if content_box.x >= trigger.x + trigger.width {
+                (trigger.x + trigger.width + content_box.x) / 2.0
+            } else {
+                (content_box.x + content_box.width + trigger.x) / 2.0
+            };
+            let edge_x = if content_box.x >= trigger.x + trigger.width {
+                trigger.x + trigger.width + 1.0
+            } else {
+                trigger.x - 1.0
+            };
+            (
+                trigger.x + trigger.width / 2.0,
+                trigger_y,
+                edge_x,
+                trigger_y,
+                gap_x,
+                trigger_y,
+            )
+        } else {
+            let trigger_x = trigger.x + trigger.width / 2.0;
+            let gap_y = if content_box.y >= trigger.y + trigger.height {
+                (trigger.y + trigger.height + content_box.y) / 2.0
+            } else {
+                (content_box.y + content_box.height + trigger.y) / 2.0
+            };
+            let edge_y = if content_box.y >= trigger.y + trigger.height {
+                trigger.y + trigger.height + 1.0
+            } else {
+                trigger.y - 1.0
+            };
+            (
+                trigger_x,
+                trigger.y + trigger.height / 2.0,
+                trigger_x,
+                edge_y,
+                trigger_x,
+                gap_y,
+            )
+        };
+        let path = [
+            (x0, y0, 450u64),
+            (x1, y1, 580),
+            (x2, y2, 710),
+            (content_x, content_y, 840),
+        ];
+        for (x, y, at_ms) in path {
+            let hit = hover_point(context, x, y, at_ms);
+            tick(context, at_ms + 130);
+            assert!(
+                context.read(card, |card| card.open).unwrap(),
+                "open must survive ({x},{y}) hit={hit:?} trigger={trigger:?} content={content_box:?}"
+            );
+        }
+    }
+
+    /// DesktopShell trailing HoverCard: the gap is outside the subtree.
     #[test]
     fn pointer_path_from_titlebar_trigger_across_the_gap_keeps_the_card_open() {
         let (mut context, card, button, body) = desktop_shell_account_hover_card();
@@ -570,22 +641,57 @@ mod tests {
             Some(button_id),
             "titlebar hover card must beat the fill body: trigger={trigger:?} content={content:?} body={body_box:?}"
         );
-        let trigger_x = trigger.x + trigger.width / 2.0;
-        let gap_y = (trigger.y + trigger.height + content.y) / 2.0;
-        let path = [
-            (trigger_x, trigger.y + trigger.height / 2.0, 450u64),
-            (trigger_x, trigger.y + trigger.height + 1.0, 580),
-            (trigger_x, gap_y, 710),
-            (content_x, content_y, 840),
-        ];
-        for (x, y, at_ms) in path {
-            let hit = hover_point(&mut context, x, y, at_ms);
-            tick(&mut context, at_ms + 130);
-            assert!(
-                context.read(card, |card| card.open).unwrap(),
-                "open must survive ({x},{y}) hit={hit:?} trigger={trigger:?} content={content:?} body={body_box:?}"
-            );
-        }
+        assert_gap_path_keeps_open(&mut context, card, button, false);
+    }
+
+    #[test]
+    fn pointer_path_across_a_top_gap_keeps_the_card_open() {
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document(), crate::Stack::column(0.0))
+            .unwrap();
+        let spacer = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(28.0));
+                    layout.height = Some(LengthSpec::Px(200.0));
+                }),
+            )
+            .unwrap();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .placement(PopoverPlacement::Top)
+                    .open_delay(0)
+                    .close_delay(120),
+            )
+            .unwrap();
+        let button = context
+            .create_component(document(), crate::Button::new("进入空间"))
+            .unwrap();
+        context.append_child(card, button).unwrap();
+        context.append_child(root, spacer).unwrap();
+        context.append_child(root, card).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        assert_gap_path_keeps_open(&mut context, card, button, false);
+    }
+
+    #[test]
+    fn pointer_path_across_a_right_gap_keeps_the_card_open() {
+        let (mut context, card, button) = card_with_button();
+        context
+            .update_component(card, |card, _| {
+                card.placement = PopoverPlacement::Right;
+            })
+            .unwrap();
+        relayout(&mut context);
+        assert_gap_path_keeps_open(&mut context, card, button, true);
     }
 
     /// Avatar triggers clip their circular chrome; the open card must still
