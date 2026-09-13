@@ -1,13 +1,13 @@
 //! Host-owned, policy-gated WebSocket transport boundary.
 //!
 //! The framework reserves the interface: origin policy, host ops, and the JS
-//! `WebSocket` shim. The transport itself is application-owned — NanaUI ships
-//! no default implementation, and without a host-injected [`WebSocketHost`]
-//! the JS surface reports itself unavailable.
+//! `WebSocket` shim. Desktop builds include [`NativeWebSocketHost`]; applications
+//! may replace it with another [`WebSocketHost`] implementation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{Arc, Mutex};
 
 use url::Url;
 
@@ -188,9 +188,244 @@ pub trait WebSocketHost: Send + Sync + fmt::Debug {
 
 pub type SharedWebSocketHost = Arc<dyn WebSocketHost>;
 
+pub fn shared_websocket_host(policy: SocketPolicy) -> SharedWebSocketHost {
+    Arc::new(NativeWebSocketHost::new(policy))
+}
+
+#[derive(Debug)]
+enum SocketCommand {
+    Send(tungstenite::Message),
+    Close(u16, String),
+}
+
+#[derive(Debug)]
+pub struct NativeWebSocketHost {
+    policy: SocketPolicy,
+    connections: Arc<Mutex<BTreeMap<u64, Sender<SocketCommand>>>>,
+}
+fn set_socket_timeout(stream: &mut tungstenite::stream::MaybeTlsStream<std::net::TcpStream>) {
+    match stream {
+        tungstenite::stream::MaybeTlsStream::Plain(s) => {
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(50)));
+        }
+        tungstenite::stream::MaybeTlsStream::Rustls(s) => {
+            let _ = s
+                .sock
+                .set_read_timeout(Some(std::time::Duration::from_millis(50)));
+        }
+        _ => {}
+    }
+}
+impl NativeWebSocketHost {
+    pub fn new(policy: SocketPolicy) -> Self {
+        Self {
+            policy,
+            connections: Arc::new(Mutex::new(BTreeMap::new())),
+        }
+    }
+}
+impl WebSocketHost for NativeWebSocketHost {
+    fn open(&self, id: u64, request: WsOpenRequest, sink: Arc<dyn WsSink>) -> Result<(), WsError> {
+        let url = Url::parse(&request.url)
+            .map_err(|e| WsError::new(WsErrorKind::InvalidRequest, e.to_string()))?;
+        self.policy.authorize(&url)?;
+        use tungstenite::client::IntoClientRequest;
+        let mut handshake = request
+            .url
+            .clone()
+            .into_client_request()
+            .map_err(|e| WsError::new(WsErrorKind::InvalidRequest, e.to_string()))?;
+        if !request.protocols.is_empty() {
+            let value = request.protocols.join(", ");
+            let header = tungstenite::http::HeaderValue::from_str(&value)
+                .map_err(|e| WsError::new(WsErrorKind::InvalidRequest, e.to_string()))?;
+            handshake
+                .headers_mut()
+                .insert("Sec-WebSocket-Protocol", header);
+        }
+        let (tx, rx): (Sender<SocketCommand>, Receiver<SocketCommand>) = std::sync::mpsc::channel();
+        let mut registry = self.connections.lock().unwrap();
+        if registry.contains_key(&id) {
+            return Err(WsError::new(
+                WsErrorKind::InvalidRequest,
+                "WebSocket connection id is already in use",
+            ));
+        }
+        registry.insert(id, tx);
+        drop(registry);
+        let connections = Arc::clone(&self.connections);
+        let max_message_bytes = self.policy.max_message_bytes;
+        std::thread::spawn(move || {
+            // Do not follow HTTP redirects here: the policy was evaluated for
+            // the requested origin and must not silently expand to a new one.
+            let result = tungstenite::client::connect_with_config(handshake, None, 0);
+            match result {
+                Ok((mut socket, _)) => {
+                    set_socket_timeout(socket.get_mut());
+                    sink.emit(WsEvent::Open);
+                    'connection: loop {
+                        while let Ok(command) = rx.try_recv() {
+                            match command {
+                                SocketCommand::Send(message) => {
+                                    if let Err(error) = socket.send(message) {
+                                        let reason = error.to_string();
+                                        sink.emit(WsEvent::Error(reason.clone()));
+                                        sink.emit(WsEvent::Closed {
+                                            code: 1006,
+                                            reason,
+                                            was_clean: false,
+                                        });
+                                        break 'connection;
+                                    }
+                                }
+                                SocketCommand::Close(code, reason) => {
+                                    let frame = tungstenite::protocol::CloseFrame {
+                                        code: tungstenite::protocol::frame::coding::CloseCode::from(
+                                            code,
+                                        ),
+                                        reason: reason.clone().into(),
+                                    };
+                                    match socket.close(Some(frame)) {
+                                        Ok(()) => sink.emit(WsEvent::Closed {
+                                            code,
+                                            reason,
+                                            was_clean: true,
+                                        }),
+                                        Err(error) => {
+                                            let failure = error.to_string();
+                                            sink.emit(WsEvent::Error(failure.clone()));
+                                            sink.emit(WsEvent::Closed {
+                                                code: 1006,
+                                                reason: failure,
+                                                was_clean: false,
+                                            });
+                                        }
+                                    }
+                                    break 'connection;
+                                }
+                            }
+                        }
+                        match socket.read() {
+                            Ok(tungstenite::Message::Text(value))
+                                if value.len() <= max_message_bytes =>
+                            {
+                                sink.emit(WsEvent::Message(WsMessage::Text(value.to_string())))
+                            }
+                            Ok(tungstenite::Message::Binary(value))
+                                if value.len() <= max_message_bytes =>
+                            {
+                                sink.emit(WsEvent::Message(WsMessage::Binary(value.to_vec())))
+                            }
+                            Ok(tungstenite::Message::Text(_))
+                            | Ok(tungstenite::Message::Binary(_)) => {
+                                let reason =
+                                    format!("WebSocket message exceeds {max_message_bytes} bytes");
+                                let close = tungstenite::protocol::CloseFrame {
+                                    code: tungstenite::protocol::frame::coding::CloseCode::Size,
+                                    reason: reason.clone().into(),
+                                };
+                                let _ = socket.close(Some(close));
+                                sink.emit(WsEvent::Error(reason.clone()));
+                                sink.emit(WsEvent::Closed {
+                                    code: 1009,
+                                    reason,
+                                    was_clean: false,
+                                });
+                                break 'connection;
+                            }
+                            Ok(tungstenite::Message::Close(frame)) => {
+                                let (code, reason) = frame
+                                    .map(|f| (u16::from(f.code), f.reason.to_string()))
+                                    .unwrap_or((1000, String::new()));
+                                sink.emit(WsEvent::Closed {
+                                    code,
+                                    reason,
+                                    was_clean: true,
+                                });
+                                break 'connection;
+                            }
+                            Ok(_) => {}
+                            Err(tungstenite::Error::ConnectionClosed) => {
+                                sink.emit(WsEvent::Closed {
+                                    code: 1000,
+                                    reason: String::new(),
+                                    was_clean: true,
+                                });
+                                break 'connection;
+                            }
+                            Err(tungstenite::Error::Io(ref io))
+                                if io.kind() == std::io::ErrorKind::WouldBlock
+                                    || io.kind() == std::io::ErrorKind::TimedOut => {}
+                            Err(error) => {
+                                sink.emit(WsEvent::Error(error.to_string()));
+                                sink.emit(WsEvent::Closed {
+                                    code: 1006,
+                                    reason: error.to_string(),
+                                    was_clean: false,
+                                });
+                                break 'connection;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    sink.emit(WsEvent::Error(e.to_string()));
+                    sink.emit(WsEvent::Closed {
+                        code: 1006,
+                        reason: e.to_string(),
+                        was_clean: false,
+                    });
+                }
+            }
+            connections.lock().unwrap().remove(&id);
+        });
+        let _ = id;
+        Ok(())
+    }
+    fn send(&self, id: u64, message: WsMessage) -> Result<(), WsError> {
+        if message.len() > self.policy.max_message_bytes {
+            return Err(WsError::new(
+                WsErrorKind::InvalidRequest,
+                format!(
+                    "WebSocket message exceeds {} bytes",
+                    self.policy.max_message_bytes
+                ),
+            ));
+        }
+        let m = match message {
+            WsMessage::Text(v) => tungstenite::Message::Text(v.into()),
+            WsMessage::Binary(v) => tungstenite::Message::Binary(v.into()),
+        };
+        self.connections
+            .lock()
+            .unwrap()
+            .get(&id)
+            .ok_or_else(|| WsError::new(WsErrorKind::Network, "unknown connection"))?
+            .send(SocketCommand::Send(m))
+            .map_err(|_| WsError::new(WsErrorKind::Network, "connection closed"))
+    }
+    fn close(&self, id: u64, code: u16, reason: &str) -> Result<(), WsError> {
+        let tx = self
+            .connections
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| WsError::new(WsErrorKind::Network, "unknown connection"))?;
+        tx.send(SocketCommand::Close(code, reason.to_string()))
+            .map_err(|_| WsError::new(WsErrorKind::Network, "connection closed"))
+    }
+    fn policy(&self) -> &SocketPolicy {
+        &self.policy
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn default_policy_denies_every_origin() {
@@ -231,5 +466,67 @@ mod tests {
                 .kind,
             WsErrorKind::Policy
         );
+    }
+
+    #[test]
+    fn native_host_round_trips_text_and_closes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let message = socket.read().unwrap();
+            socket.send(message).unwrap();
+            let _ = socket.close(None);
+        });
+        let policy = SocketPolicy::default()
+            .with_allowed_origin(&format!("ws://127.0.0.1:{port}"))
+            .unwrap();
+        let host = NativeWebSocketHost::new(policy);
+        let (sender, receiver) = mpsc::channel();
+        #[derive(Debug)]
+        struct Sink(std::sync::mpsc::Sender<WsEvent>);
+        impl WsSink for Sink {
+            fn emit(&self, event: WsEvent) {
+                let _ = self.0.send(event);
+            }
+        }
+        host.open(
+            1,
+            WsOpenRequest {
+                url: format!("ws://127.0.0.1:{port}/echo"),
+                protocols: vec![],
+            },
+            Arc::new(Sink(sender)),
+        )
+        .unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WsEvent::Open
+        );
+        host.send(1, WsMessage::Text("hello".into())).unwrap();
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WsEvent::Message(WsMessage::Text("hello".into()))
+        );
+        host.close(1, 1000, "done").unwrap();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WsEvent::Closed { code: 1000, .. }
+        ));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn native_host_rejects_oversized_outbound_messages_before_network_io() {
+        let mut policy = SocketPolicy::default();
+        policy.allow_origin("ws://127.0.0.1").unwrap();
+        policy.max_message_bytes = 3;
+        let host = NativeWebSocketHost::new(policy);
+        let error = host
+            .send(42, WsMessage::Text("toolong".into()))
+            .unwrap_err();
+        assert_eq!(error.kind, WsErrorKind::InvalidRequest);
+        assert!(error.message.contains("exceeds 3 bytes"));
     }
 }

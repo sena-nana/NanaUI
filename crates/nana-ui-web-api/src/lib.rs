@@ -39,9 +39,9 @@ pub use nana_ui_platform::OsClipboard;
 pub use nana_ui_platform::{
     ClipboardHost, FetchCancellation, FetchError, FetchErrorKind, FetchHead, FetchHost,
     FetchPolicy, FetchRequest, FetchResponse, FetchSink, MemoryClipboard, NativeFetchHost,
-    SharedClipboardHost, SharedFetchHost, SharedWebSocketHost, SocketPolicy, UnsupportedClipboard,
-    WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage, WsOpenRequest, WsSink,
-    default_shared_clipboard, shared_clipboard, shared_fetch_host,
+    NativeWebSocketHost, SharedClipboardHost, SharedFetchHost, SharedWebSocketHost, SocketPolicy,
+    UnsupportedClipboard, WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage, WsOpenRequest,
+    WsSink, default_shared_clipboard, shared_clipboard, shared_fetch_host, shared_websocket_host,
 };
 
 /// UTF-8 JS that installs window/document/localStorage/rAF/history/… on `globalThis`.
@@ -106,7 +106,8 @@ impl WebApiState {
         fetch_host: SharedFetchHost,
         local_storage: SharedStorage,
     ) -> Self {
-        Self {
+        let socket = SocketRuntime::new();
+        let mut state = Self {
             location_path: "/".into(),
             local_storage,
             storage: HashMap::new(),
@@ -120,12 +121,18 @@ impl WebApiState {
             location_search: String::new(),
             location_hash: String::new(),
             fetch: FetchRuntime::new(fetch_host),
-            socket: SocketRuntime::new(),
-        }
+            socket,
+        };
+        state
+            .socket
+            .set_host(Some(nana_ui_platform::shared_websocket_host(
+                nana_ui_platform::SocketPolicy::default(),
+            )));
+        state
     }
 
-    /// Attach or detach the application-owned WebSocket transport. Absent by
-    /// default: without a host the JS `WebSocket` surface reports unavailable.
+    /// Attach or detach the WebSocket transport. A native deny-all host is
+    /// installed by default; pass `None` to explicitly disable sockets.
     pub fn set_socket_host(&mut self, socket_host: Option<SharedWebSocketHost>) {
         self.socket.set_host(socket_host);
     }

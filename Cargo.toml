@@ -49,6 +49,7 @@ base64 = "0.23"
 crossbeam-channel = "0.5"
 url = "2.5"
 ureq = { version = "=3.4.0", default-features = false, features = ["rustls"] }
+tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 # Keep a single WGPU major version across NanaUI.
 wgpu = "30.0.0"
 # Hosted desktop windowing. winit 0.31-line git rev, not the iced-rs fork.

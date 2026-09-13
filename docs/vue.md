@@ -76,7 +76,7 @@ for (;;) {
 
 `FormData` 可以直接当 `fetch` 的正文：`append` / `set` / `get` / `getAll` / `has` / `delete` / 迭代都在，编码为 `multipart/form-data`，boundary 由框架生成并写进 `content-type`（你自己写了 `content-type` 就不覆盖）。文件项传 `Blob`，字节走已有的资源对象通道。`new FormData(formElement)` 不支持——它要走真实表单控件，直接报错而不是发一个空正文。
 
-`WebSocket` 是预留接口：JS 面有 `WebSocket` 构造器（ws/wss URL、`send`/`close`、`onopen/onmessage/onclose/onerror`），但框架不内置任何传输。应用不注入实现时，`new WebSocket()` 直接报"不可用"；注入方式与 `fetch_host` 相同，通过 `MountOptions.socket_host` 提供应用自己的 `WebSocketHost` 实现，并为其配置 `SocketPolicy` 源白名单（默认全拒绝）。入站消息和连接状态事件在下一帧泵里送达回调。
+`WebSocket` 由桌面端内置 `NativeWebSocketHost` 提供传输（ws/wss URL、`send`/`close`、`onopen/onmessage/onclose/onerror`）。默认 `SocketPolicy` 仍为空白名单，应用必须通过 `MountOptions.socket_host` 注入配置了 `SocketPolicy` 源白名单的 host，或调用 `WebApiState::set_socket_host` 替换默认 host；未授权源会在连接前失败。网络 I/O 在线程中执行，入站消息和连接状态事件在下一帧泵里送达回调。
 
 ## 网络与宿主命令
 

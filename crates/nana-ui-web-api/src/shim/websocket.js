@@ -29,8 +29,8 @@
 
   /**
    * Buffered WebSocket surface over the reserved `wsOpen` / `wsSend` / `wsClose`
-   * host ops. The transport is application-owned: without a host-injected
-   * socket backend the constructor throws and nothing connects.
+   * host ops. Desktop builds provide a native host by default; applications
+   * may replace it through the Web API host configuration.
    */
   function WebSocketShim(url, protocols) {
     EventTargetShim.call(this);

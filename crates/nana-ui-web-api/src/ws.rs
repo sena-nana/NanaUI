@@ -167,7 +167,6 @@ impl SocketRuntime {
         if let Err(error) = host.close(id, code, reason) {
             // The transport does not track this id, so its `Closed` event can
             // never arrive — synthesize one so `onclose` still fires once.
-            self.connections.remove(&id);
             let _ = self.event_sender.send(SocketEvent {
                 id,
                 event: WsEvent::Closed {
@@ -204,7 +203,9 @@ impl SocketRuntime {
                     self.connections.insert(item.id, SocketState::Open);
                 }
                 WsEvent::Closed { .. } => {
-                    self.connections.remove(&item.id);
+                    if self.connections.remove(&item.id).is_none() {
+                        continue;
+                    }
                 }
                 WsEvent::Message(_) | WsEvent::Error(_) => {}
             }
@@ -428,6 +429,7 @@ mod tests {
     #[test]
     fn ws_open_reports_unavailable_without_a_socket_host() {
         let state = crate::shared_web_api_state();
+        state.lock().unwrap().set_socket_host(None);
         let mut api = HostApiRegistry::new();
         crate::register_web_api_host_ops(&mut api, state);
         let error = api

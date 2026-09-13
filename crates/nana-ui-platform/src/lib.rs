@@ -33,8 +33,8 @@ pub use window::{
 };
 #[cfg(feature = "ws")]
 pub use ws::{
-    SharedWebSocketHost, SocketPolicy, WebSocketHost, WsError, WsErrorKind, WsEvent, WsMessage,
-    WsOpenRequest, WsSink,
+    NativeWebSocketHost, SharedWebSocketHost, SocketPolicy, WebSocketHost, WsError, WsErrorKind,
+    WsEvent, WsMessage, WsOpenRequest, WsSink, shared_websocket_host,
 };
 
 /// Experimental Android host capability flags. They are intentionally absent

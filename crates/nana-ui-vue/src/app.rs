@@ -23,9 +23,8 @@ pub struct MountOptions {
     /// the JS `fetch()` path and the engine's `url(...)` image loads; without
     /// one, no remote image is fetched.
     pub fetch_host: Option<SharedFetchHost>,
-    /// Optional application-owned WebSocket transport. The framework reserves
-    /// the interface only — without a host here, the JS `WebSocket` constructor
-    /// reports itself unavailable.
+    /// Optional application-owned WebSocket transport. When omitted, the
+    /// default native host is used with a deny-all `SocketPolicy`.
     pub socket_host: Option<SharedWebSocketHost>,
 }
 

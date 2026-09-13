@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 default = ["clipboard", "fetch"]
 clipboard = ["dep:arboard"]
 fetch = ["dep:url", "dep:ureq"]
-ws = ["dep:url"]
+ws = ["dep:url", "dep:tungstenite"]
 experimental-android = []
 
 [lib]
@@ -21,6 +21,7 @@ path = "src/lib.rs"
 nana-ui-core.workspace = true
 url = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }
 
 # Desktop OS clipboard only. Android does not compile arboard; hosts use
 # UnsupportedClipboard until a real Android backend exists.
