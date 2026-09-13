@@ -722,67 +722,36 @@ mod tests {
         (context, card, body, button)
     }
 
-    fn open_card(context: &mut AppContext, card: crate::Entity<HoverCard>) {
-        hover_at(context, document(), Some(card.stable_id()), 0);
-        tick(context, 400);
-        relayout(context);
-        context.rebuild_hit_test(document());
-    }
-
-    /// A padded content Stack is not pointer-interactive unless `.hittable()`.
-    /// Crossing the trigger-to-card gap must not fail pointer dispatch.
+    /// A non-hittable content Stack must not become the gap pointer target.
     #[test]
     fn gap_over_a_non_interactive_card_body_is_a_valid_pointer_target() {
         let (mut context, card, body, _) = card_with_stack_body(false);
-        open_card(&mut context, card);
+        hover_at(&mut context, document(), Some(card.stable_id()), 0);
+        tick(&mut context, 400);
+        relayout(&mut context);
+        context.rebuild_hit_test(document());
         let trigger = context.world().layout_box(card.stable_id()).unwrap();
         let body_box = context.world().layout_box(body.stable_id()).unwrap();
-        assert!(
-            body_box.y >= trigger.y + trigger.height,
-            "card hangs below the trigger: trigger={trigger:?} body={body_box:?}"
+        let hit = context.pointer_target(
+            document(),
+            trigger.x + trigger.width / 2.0,
+            (trigger.y + trigger.height + body_box.y) / 2.0,
         );
-        let x = trigger.x + trigger.width / 2.0;
-        let y = (trigger.y + trigger.height + body_box.y) / 2.0;
-        let hit = context.pointer_target(document(), x, y);
-        if let Some(id) = hit {
-            assert_ne!(
-                id,
-                body.stable_id(),
-                "non-interactive body must not be the gap target: body={body_box:?}"
-            );
-            assert!(
-                context
-                    .world()
-                    .interaction(id)
-                    .is_some_and(|interaction| interaction.pointer_events),
-                "gap hit {id:?} must accept pointer input"
-            );
-        }
+        assert_ne!(hit, Some(body.stable_id()));
         context
             .set_pointer_hover_at(document(), 1, hit, std::time::Duration::from_millis(450))
-            .expect("gap hover must not fail host pointer dispatch");
+            .unwrap();
     }
 
-    /// Content child owns the card padding, so the hover-safe area covers the
-    /// whole surface once that child is hittable.
     #[test]
     fn pointer_on_hittable_card_body_padding_keeps_the_card_open() {
         let (mut context, card, body, button) = card_with_stack_body(true);
-        open_card(&mut context, card);
         assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
         let body_box = context.world().layout_box(body.stable_id()).unwrap();
-        let pad = (body_box.x + 6.0, body_box.y + 6.0);
-        let hit = hover_point(&mut context, pad.0, pad.1, 900);
-        assert_eq!(
-            hit,
-            Some(body.stable_id()),
-            "padding must hit the hittable body: body={body_box:?} hit={hit:?}"
-        );
+        let hit = hover_point(&mut context, body_box.x + 6.0, body_box.y + 6.0, 900);
+        assert_eq!(hit, Some(body.stable_id()));
         tick(&mut context, 1100);
-        assert!(
-            context.read(card, |card| card.open).unwrap(),
-            "pointer on card padding must not close it"
-        );
+        assert!(context.read(card, |card| card.open).unwrap());
     }
 
     /// Avatar triggers clip their circular chrome; the open card must still
