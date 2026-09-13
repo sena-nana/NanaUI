@@ -1277,6 +1277,7 @@ impl UiWorld {
                     previous.layout.paint.visibility != style.layout.paint.visibility;
                 let pointer_events_changed =
                     previous.layout.pointer_events != style.layout.pointer_events;
+                let cursor_changed = previous.layout.cursor != style.layout.cursor;
                 let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
                 let transform_changed = previous.layout.transform != style.layout.transform
                     || previous.layout.transform_3d != style.layout.transform_3d
@@ -1292,7 +1293,7 @@ impl UiWorld {
                 self.record_mut(*id).style = style.clone();
                 self.sync_node_presence(*id);
 
-                if !style_excluding_transform_eq(&previous, style) {
+                if !style_excluding_transform_and_cursor_eq(&previous, style) {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
                 }
                 if inherited_paint_changed {
@@ -1339,6 +1340,13 @@ impl UiWorld {
                     // value. Not a layout dirty.
                     self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::INPUT);
                     self.clear_hover_for_pointer_events_none(*id);
+                }
+                if cursor_changed {
+                    self.cursor_style_dirty = true;
+                    // Cursor is inherited and consumed by the host from the
+                    // resolved style; descendants need fresh computed values,
+                    // but no layout, hit-test, or render extraction is required.
+                    self.mark_subtree(*id, DirtyMask::STYLE);
                 }
                 if transform_changed {
                     // Scene extract and hit-test read `layout.transform`; LAYOUT

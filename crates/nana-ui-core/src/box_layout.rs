@@ -1493,6 +1493,56 @@ pub enum PointerEventsSpec {
     None,
 }
 
+/// CSS `cursor` keyword subset used by the desktop host.
+///
+/// The value is inherited. Custom `url(...)` cursors and unknown keywords are
+/// intentionally rejected by the L1 parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CursorSpec {
+    Default,
+    Pointer,
+    Text,
+    Move,
+    Grab,
+    Grabbing,
+    NotAllowed,
+    Crosshair,
+    Help,
+    Wait,
+    Progress,
+    ZoomIn,
+    ZoomOut,
+    None,
+}
+
+impl Default for CursorSpec {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl CursorSpec {
+    pub fn parse(input: &str) -> Option<Self> {
+        Some(match input.trim().to_ascii_lowercase().as_str() {
+            "default" => Self::Default,
+            "pointer" => Self::Pointer,
+            "text" => Self::Text,
+            "move" => Self::Move,
+            "grab" => Self::Grab,
+            "grabbing" => Self::Grabbing,
+            "not-allowed" => Self::NotAllowed,
+            "crosshair" => Self::Crosshair,
+            "help" => Self::Help,
+            "wait" => Self::Wait,
+            "progress" => Self::Progress,
+            "zoom-in" => Self::ZoomIn,
+            "zoom-out" => Self::ZoomOut,
+            "none" => Self::None,
+            _ => return None,
+        })
+    }
+}
+
 impl PointerEventsSpec {
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
@@ -3085,6 +3135,9 @@ pub struct LayoutStyle {
     /// Specified CSS `pointer-events`. `None` means inherit (not `auto`).
     #[serde(default)]
     pub pointer_events: Option<PointerEventsSpec>,
+    /// CSS `cursor`; unspecified values inherit from the parent.
+    #[serde(default)]
+    pub cursor: Option<CursorSpec>,
     /// `white-space: nowrap`（与 [`Self::white_space`] 同步）。
     #[serde(default)]
     pub white_space_nowrap: bool,
@@ -3320,6 +3373,7 @@ impl Default for LayoutStyle {
             text_overflow_ellipsis: false,
             line_clamp: None,
             pointer_events: None,
+            cursor: None,
             white_space_nowrap: false,
             white_space: WhiteSpaceSpec::Normal,
             word_break: None,

@@ -510,9 +510,32 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         {
             return;
         }
+        self.sync_window_cursor_now(id);
+    }
+
+    /// Refresh the cursor after a document flush even when pointer-driven
+    /// synchronization ran moments earlier in the same frame.
+    pub(super) fn sync_window_cursor_forced(&mut self, id: WindowId) {
+        // Treat the forced probe as the latest sync so a pointer event in the
+        // same frame does not immediately repeat the document walk.
+        self.input_mut(id).cursor_sync_last = Some(std::time::Instant::now());
+        self.sync_window_cursor_now(id);
+    }
+
+    /// Restore the native cursor after the pointer leaves this window. This
+    /// must not probe the document: the last in-window target may have had
+    /// `cursor:none`, and that state must not leak outside the window.
+    pub(super) fn reset_window_cursor(&self, id: WindowId) {
+        if let Some(window) = self.window(id) {
+            window.set_cursor_visible(true);
+            window.set_cursor(CursorIcon::Default.into());
+        }
+    }
+
+    fn sync_window_cursor_now(&mut self, id: WindowId) {
         let cursor = self.input_of(id).cursor;
         let frame_edge = self.frame_resize_edge_at(id, cursor.0, cursor.1);
-        let (handle, text_field) = self
+        let (handle, css_cursor, text_field) = self
             .program
             .read_document(id, |document| {
                 let context = document.context();
@@ -523,14 +546,21 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     .or_else(|| context.workspace_handle_near(document_id, cursor.0, cursor.1))
                     .and_then(|handle| context.world().layout_box(handle))
                     .map(|bounds| (bounds.width, bounds.height));
-                let text_field = context
-                    .pointer_target(document_id, cursor.0, cursor.1)
-                    .is_some_and(|node| context.world().text_input(node).is_some());
-                (handle, text_field)
+                let target = context.pointer_target(document_id, cursor.0, cursor.1);
+                let text_field =
+                    target.is_some_and(|node| context.world().text_input(node).is_some());
+                let css_cursor = target
+                    .and_then(|node| context.world().computed_style(node))
+                    .and_then(|style| style.cursor_specified.then_some(style.cursor));
+                (handle, css_cursor, text_field)
             })
-            .unwrap_or((None, false));
+            .unwrap_or((None, None, false));
         if let Some(window) = self.window(id) {
-            window.set_cursor(scene_cursor_icon(frame_edge, handle, text_field).into());
+            let (icon, visible) = scene_cursor_icon(frame_edge, handle, css_cursor, text_field);
+            window.set_cursor_visible(visible);
+            if visible {
+                window.set_cursor(icon.into());
+            }
         }
     }
     pub(super) fn consume_frame_resize(

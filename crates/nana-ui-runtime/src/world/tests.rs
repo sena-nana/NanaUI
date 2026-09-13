@@ -3,8 +3,8 @@ use super::geometry::*;
 use super::*;
 use crate::{Easing, MeasureTextShaper};
 use nana_ui_core::{
-    LayoutStyle, LengthSpec, OverflowSpec, PaintMat4, PaintTransform, PointerEventsSpec,
-    SemanticColorRole,
+    CursorSpec, LayoutStyle, LengthSpec, OverflowSpec, PaintMat4, PaintTransform,
+    PointerEventsSpec, SemanticColorRole,
 };
 
 fn node(value: u64) -> StableNodeId {
@@ -1121,6 +1121,85 @@ fn pointer_events_none_inherits_unless_child_is_explicit_auto() {
         world.hit_test(document(1), 20.0, 50.0),
         Some(node(2)),
         "parent padding that is not on the auto child passes through"
+    );
+}
+
+#[test]
+fn cursor_inherits_and_explicit_child_value_wins() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    create.create(
+        node(2),
+        document(1),
+        NodeKind::Element {
+            tag: "parent".into(),
+        },
+    );
+    create.create(
+        node(3),
+        document(1),
+        NodeKind::Element {
+            tag: "inherited".into(),
+        },
+    );
+    create.create(
+        node(4),
+        document(1),
+        NodeKind::Element {
+            tag: "explicit".into(),
+        },
+    );
+    create.insert(node(1), node(2), None);
+    create.insert(node(2), node(3), None);
+    create.insert(node(2), node(4), None);
+    let mut parent = NodeStyle::default();
+    Arc::make_mut(&mut parent.layout).cursor = Some(CursorSpec::Grab);
+    create.set_style(node(2), parent);
+    let mut explicit = NodeStyle::default();
+    Arc::make_mut(&mut explicit.layout).cursor = Some(CursorSpec::Pointer);
+    create.set_style(node(4), explicit);
+    world.commit(create).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    assert_eq!(
+        world.computed_style(node(1)).unwrap().cursor,
+        CursorSpec::Default
+    );
+    assert_eq!(
+        world.computed_style(node(2)).unwrap().cursor,
+        CursorSpec::Grab
+    );
+    assert!(world.computed_style(node(2)).unwrap().cursor_specified);
+    assert_eq!(
+        world.computed_style(node(3)).unwrap().cursor,
+        CursorSpec::Grab
+    );
+    assert_eq!(
+        world.computed_style(node(4)).unwrap().cursor,
+        CursorSpec::Pointer
+    );
+
+    let mut update = NodeStyle::default();
+    Arc::make_mut(&mut update.layout).cursor = Some(CursorSpec::Move);
+    let mut mutation = MutationQueue::new();
+    mutation.set_style(node(2), update);
+    world.commit(mutation).unwrap();
+    let work = world.take_system_work();
+    assert!(work.layout.is_empty(), "cursor changes do not relayout");
+    assert!(
+        work.input_hit_test.is_empty(),
+        "cursor changes do not rebuild hit test"
+    );
+    assert!(
+        work.render_extraction.is_empty(),
+        "cursor changes do not rebuild scene nodes"
+    );
+    world.resolve_styles(&work.style).unwrap();
+    assert_eq!(
+        world.computed_style(node(3)).unwrap().cursor,
+        CursorSpec::Move
     );
 }
 

@@ -218,7 +218,7 @@ pub use menus::{
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,
-    ContentFit, ContextPredicate, DropAccepts, DropEffect, DropKind, DropdownEvent,
+    ContentFit, ContextPredicate, CursorSpec, DropAccepts, DropEffect, DropKind, DropdownEvent,
     DropdownSelection, FileDragKind, FlexDirection, FlexWrap, FontFeatureSetting, FontKerningSpec,
     FontVariationSetting, FrameStage, GRAPH_EDGE_HIT_TOLERANCE, GRAPH_MAX_ZOOM, GRAPH_MIN_ZOOM,
     GRAPH_NODE_TITLE_HEIGHT, GRAPH_PORT_HIT_RADIUS, GRAPH_PORT_INSET, GRAPH_PORT_PITCH,

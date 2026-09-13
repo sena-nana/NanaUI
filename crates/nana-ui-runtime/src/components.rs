@@ -1646,6 +1646,12 @@ pub struct ComputedStyle {
     pub visible: bool,
     /// CSS `pointer-events` after inheritance (`auto` / `none`).
     pub pointer_events: nana_ui_core::PointerEventsSpec,
+    /// CSS `cursor` after inheritance (initial `default`).
+    pub cursor: nana_ui_core::CursorSpec,
+    /// Whether the cursor value comes from an authored declaration in this
+    /// node or one of its ancestors (distinguishes explicit `default` from
+    /// the initial value used by editable controls).
+    pub cursor_specified: bool,
     pub font_size: f32,
     pub font_weight: Option<u16>,
     pub italic: bool,
@@ -1675,6 +1681,8 @@ impl Default for ComputedStyle {
             box_visible: true,
             visible: true,
             pointer_events: nana_ui_core::PointerEventsSpec::Auto,
+            cursor: nana_ui_core::CursorSpec::Default,
+            cursor_specified: false,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,
             italic: false,

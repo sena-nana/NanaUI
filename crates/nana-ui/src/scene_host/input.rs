@@ -35,9 +35,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         }
+        let pointer_left = matches!(&event, WinitWindowEvent::PointerLeft { .. });
         if let Some(modal) = self.active_modal_child(id)
             && !allows_modal_parent_event(&event)
         {
+            if pointer_left {
+                self.reset_window_cursor(id);
+            }
             self.focus_window(modal);
             return;
         }
@@ -53,10 +57,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         if let Some(input) = self.normalized_input(id, &event) {
             if self.consume_frame_resize(event_loop, id, &input) {
+                if pointer_left {
+                    self.reset_window_cursor(id);
+                }
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
-            if matches!(
+            if pointer_left {
+                self.reset_window_cursor(id);
+            } else if matches!(
                 &event,
                 WinitWindowEvent::PointerMoved { .. } | WinitWindowEvent::PointerEntered { .. }
             ) {

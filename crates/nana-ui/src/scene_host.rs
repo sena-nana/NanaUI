@@ -19,7 +19,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{AppearanceSettings, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
+use nana_ui_core::{AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use nana_ui_platform::{
     DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
     SystemAppearance, TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent,
@@ -1004,23 +1004,44 @@ fn frame_resize_edge_for(
 fn scene_cursor_icon(
     frame_edge: Option<WindowResizeEdge>,
     handle: Option<(f32, f32)>,
+    css_cursor: Option<CursorSpec>,
     text_field: bool,
-) -> CursorIcon {
+) -> (CursorIcon, bool) {
     match frame_edge {
-        Some(WindowResizeEdge::East | WindowResizeEdge::West) => CursorIcon::EwResize,
-        Some(WindowResizeEdge::North | WindowResizeEdge::South) => CursorIcon::NsResize,
-        Some(WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest) => CursorIcon::NeswResize,
-        Some(WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast) => CursorIcon::NwseResize,
+        Some(WindowResizeEdge::East | WindowResizeEdge::West) => (CursorIcon::EwResize, true),
+        Some(WindowResizeEdge::North | WindowResizeEdge::South) => (CursorIcon::NsResize, true),
+        Some(WindowResizeEdge::NorthEast | WindowResizeEdge::SouthWest) => {
+            (CursorIcon::NeswResize, true)
+        }
+        Some(WindowResizeEdge::NorthWest | WindowResizeEdge::SouthEast) => {
+            (CursorIcon::NwseResize, true)
+        }
         None => match handle {
             Some((width, height)) => {
                 if width <= height {
-                    CursorIcon::EwResize
+                    (CursorIcon::EwResize, true)
                 } else {
-                    CursorIcon::NsResize
+                    (CursorIcon::NsResize, true)
                 }
             }
-            None if text_field => CursorIcon::Text,
-            None => CursorIcon::Default,
+            None => match css_cursor {
+                Some(CursorSpec::None) => (CursorIcon::Default, false),
+                Some(CursorSpec::Default) => (CursorIcon::Default, true),
+                Some(CursorSpec::Pointer) => (CursorIcon::Pointer, true),
+                Some(CursorSpec::Text) => (CursorIcon::Text, true),
+                Some(CursorSpec::Move) => (CursorIcon::Move, true),
+                Some(CursorSpec::Grab) => (CursorIcon::Grab, true),
+                Some(CursorSpec::Grabbing) => (CursorIcon::Grabbing, true),
+                Some(CursorSpec::NotAllowed) => (CursorIcon::NotAllowed, true),
+                Some(CursorSpec::Crosshair) => (CursorIcon::Crosshair, true),
+                Some(CursorSpec::Help) => (CursorIcon::Help, true),
+                Some(CursorSpec::Wait) => (CursorIcon::Wait, true),
+                Some(CursorSpec::Progress) => (CursorIcon::Progress, true),
+                Some(CursorSpec::ZoomIn) => (CursorIcon::ZoomIn, true),
+                Some(CursorSpec::ZoomOut) => (CursorIcon::ZoomOut, true),
+                None if text_field => (CursorIcon::Text, true),
+                None => (CursorIcon::Default, true),
+            },
         },
     }
 }
@@ -3251,7 +3272,7 @@ mod tests {
 
     #[test]
     fn client_frame_resize_hits_edges_unless_caption_or_maximized() {
-        use super::{frame_resize_edge_for, scene_cursor_icon};
+        use super::{CursorSpec, frame_resize_edge_for, scene_cursor_icon};
         use winit::cursor::CursorIcon;
 
         let mut settings = WindowSettings::new("Scene");
@@ -3276,19 +3297,42 @@ mod tests {
         geometry.maximized = false;
         assert!(frame_resize_edge_for(&settings, &geometry, true, 2.0, 300.0).is_none());
         assert_eq!(
-            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0)), true),
-            CursorIcon::EwResize
+            scene_cursor_icon(Some(WindowResizeEdge::East), Some((8.0, 200.0)), None, true,),
+            (CursorIcon::EwResize, true)
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((8.0, 200.0)), true),
-            CursorIcon::EwResize
+            scene_cursor_icon(None, Some((8.0, 200.0)), None, true),
+            (CursorIcon::EwResize, true)
         );
         assert_eq!(
-            scene_cursor_icon(None, Some((200.0, 8.0)), false),
-            CursorIcon::NsResize
+            scene_cursor_icon(None, Some((200.0, 8.0)), None, false),
+            (CursorIcon::NsResize, true)
         );
-        assert_eq!(scene_cursor_icon(None, None, true), CursorIcon::Text);
-        assert_eq!(scene_cursor_icon(None, None, false), CursorIcon::Default);
+        assert_eq!(
+            scene_cursor_icon(None, None, None, true),
+            (CursorIcon::Text, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::Pointer), false),
+            (CursorIcon::Pointer, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::None), false),
+            (CursorIcon::Default, false)
+        );
+        assert_eq!(
+            scene_cursor_icon(
+                Some(WindowResizeEdge::West),
+                None,
+                Some(CursorSpec::Pointer),
+                false,
+            ),
+            (CursorIcon::EwResize, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, None, false),
+            (CursorIcon::Default, true)
+        );
     }
 
     #[test]

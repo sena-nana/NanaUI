@@ -26,6 +26,8 @@ pub struct RuntimeDocument {
 pub struct RuntimeFrameUpdate {
     pub generation: u64,
     pub passes: usize,
+    /// Whether this flush applied an authored cursor declaration change.
+    pub cursor_changed: bool,
     pub scene: SceneDelta,
     pub accessibility: AccessibilityDelta,
 }
@@ -155,7 +157,6 @@ impl RuntimeDocument {
                 return Err(FrameworkError::FrameDidNotSettle);
             }
             passes += 1;
-
             if let Err(error) = self.context.resolve_styles(&work.style) {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
@@ -244,9 +245,11 @@ impl RuntimeDocument {
             scene
         };
         self.context.finish_frame_profile();
+        let cursor_changed = self.context.take_window_cursor_dirty();
         Ok(RuntimeFrameUpdate {
             generation,
             passes,
+            cursor_changed,
             scene,
             accessibility,
         })
@@ -298,10 +301,47 @@ fn restore_work(context: &mut AppContext, consumed: Vec<SystemWork>) {
 mod tests {
     use std::sync::Arc;
 
-    use nana_ui_core::{LayoutStyle, LengthSpec};
-    use nana_ui_runtime::{Button, ComputedStyle, StableNodeId, TextContent, TextMetrics};
+    use nana_ui_core::{CursorSpec, LayoutStyle, LengthSpec};
+    use nana_ui_runtime::{
+        Button, ComputedStyle, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent,
+        TextMetrics,
+    };
 
     use super::*;
+
+    #[test]
+    fn flush_reports_cursor_changes_only_for_cursor_mutations() {
+        let document_id = DocumentId::new(42).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let root = StableNodeId::new(1).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(root, document_id, NodeKind::Document);
+        runtime.context_mut().world_mut().commit(create).unwrap();
+
+        let initial = runtime
+            .flush_with(|_, _| Ok(()))
+            .expect("initial document flush");
+        assert!(!initial.cursor_changed);
+
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).cursor = Some(CursorSpec::Pointer);
+        let mut cursor_mutation = MutationQueue::new();
+        cursor_mutation.set_style(root, style);
+        runtime
+            .context_mut()
+            .world_mut()
+            .commit(cursor_mutation)
+            .unwrap();
+        let cursor_update = runtime
+            .flush_with(|_, _| Ok(()))
+            .expect("cursor document flush");
+        assert!(cursor_update.cursor_changed);
+
+        let idle = runtime
+            .flush_with(|_, _| Ok(()))
+            .expect("idle document flush");
+        assert!(!idle.cursor_changed);
+    }
 
     #[test]
     fn closed_modal_live_presence_retires_scene_and_reopening_projects_updates() {

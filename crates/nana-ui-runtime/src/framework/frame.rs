@@ -8,6 +8,12 @@ impl AppContext {
         self.world.take_system_work()
     }
 
+    /// Consume the host cursor-sync hint after a successful document frame.
+    #[doc(hidden)]
+    pub fn take_window_cursor_dirty(&mut self) -> bool {
+        self.world.take_window_cursor_dirty()
+    }
+
     /// Algorithm-level counters from the last drained system batch.
     pub fn last_work_counters(&self) -> crate::WorkCounters {
         self.world.last_work_counters()

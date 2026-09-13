@@ -52,7 +52,7 @@ pub use box_layout::{
     AlignSpec, BackdropFilter, BackgroundImage, BackgroundImageFit, BackgroundPosition,
     BackgroundRepeat, BorderImageSlice, BorderImageSpec, BorderImageTile, BorderStyle,
     BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, CalcExprRef, ClearSpec, ClipCircle, ClipEllipse,
-    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, CssGradient, DirSpec,
+    ClipInset, ClipPath, ClipPoint, ClipShapeRadius, ColorFilter, CssGradient, CursorSpec, DirSpec,
     DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
     FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
     GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,

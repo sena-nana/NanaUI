@@ -123,6 +123,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
         };
+        // A cursor declaration can change while the pointer is stationary;
+        // refresh the native cursor after the document's computed styles settle.
+        // Ordinary redraws keep the pointer-event throttle and avoid a full
+        // document probe on every animation/GPU frame.
+        if update.cursor_changed {
+            self.sync_window_cursor_forced(id);
+        }
         let Some(pending) = self.accessibility_pending_mut(id) else {
             self.rearm_frame_demand(id);
             return;

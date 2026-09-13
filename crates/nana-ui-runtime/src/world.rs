@@ -428,6 +428,8 @@ pub struct UiWorld {
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     style_model: StyleModelRef,
     generation: u64,
+    /// Cursor declarations changed since the last system-work drain.
+    cursor_style_dirty: bool,
     presenters: HashMap<String, Box<dyn TextPresenter>>,
     spawned_since_drain: usize,
     despawned_since_drain: usize,
@@ -519,6 +521,10 @@ impl Default for UiWorld {
 }
 
 impl UiWorld {
+    pub(crate) fn take_window_cursor_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.cursor_style_dirty)
+    }
+
     pub fn new() -> Self {
         Self {
             input: input::WorldInputState::default(),
@@ -540,6 +546,7 @@ impl UiWorld {
             animation_deadlines: BTreeSet::new(),
             style_model: StyleModelRef::default(),
             generation: 0,
+            cursor_style_dirty: false,
             presenters: HashMap::new(),
             spawned_since_drain: 0,
             despawned_since_drain: 0,
@@ -2203,17 +2210,17 @@ fn validate_text_metrics(id: StableNodeId, metrics: TextMetrics) -> Result<(), U
     Ok(())
 }
 
-fn style_excluding_transform_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
+fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) -> bool {
     left.foreground == right.foreground
         && left.background == right.background
         && left.border == right.border
         && left.interaction == right.interaction
         && left.text_horizontal_alignment == right.text_horizontal_alignment
         && left.text_vertical_alignment == right.text_vertical_alignment
-        && layout_excluding_transform_eq(left.layout.as_ref(), right.layout.as_ref())
+        && layout_excluding_transform_and_cursor_eq(left.layout.as_ref(), right.layout.as_ref())
 }
 
-fn layout_excluding_transform_eq(
+fn layout_excluding_transform_and_cursor_eq(
     left: &nana_ui_core::LayoutStyle,
     right: &nana_ui_core::LayoutStyle,
 ) -> bool {
@@ -2226,6 +2233,7 @@ fn layout_excluding_transform_eq(
         style.transform_box = nana_ui_core::TransformBox::ViewBox;
         style.css_perspective = None;
         style.preserve_3d = false;
+        style.cursor = None;
         style
     };
     strip(left) == strip(right)

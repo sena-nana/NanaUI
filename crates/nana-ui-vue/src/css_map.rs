@@ -17,6 +17,7 @@
 //! | 已知控件 class（`nana-btn--primary` 等） | **Semantics**（经 `widget_map`） | 用任意 paint CSS 当 token 工厂 |
 //! | 主题色 / 间距 / 圆角档位 | **Tokens**（`ThemeMetrics` / 语义色） | 业务 `#rrggbb` 发明正式 token |
 //! | `pointer-events` (`auto` / `none`) | **Layout** paint/hit（[`PointerEventsSpec`]） | 异形窗 / 窗口 alpha / SVG 命中模型 |
+//! | `cursor` 常用关键字 | **Layout** → Runtime/Scene host 窗口光标 | `url()` 自定义光标图 |
 //!
 //! 纯数据 [`LayoutStyle`] / [`LengthSpec`] / [`ParentBox`] 住在 `nana-ui-core::box_layout`。
 //! **本模块只做 CSS 子集解析**；禁止把解析器放进 `nana-ui` / `nana-ui-core`。
@@ -74,13 +75,13 @@
 #[cfg(test)]
 use nana_ui_core::box_layout::PaintTransform;
 pub use nana_ui_core::box_layout::{
-    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec,
-    DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow, GridLine,
-    GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack, GridTrackListUnsupported,
-    JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec, LogicalInlineEdges,
-    OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec, TextShadowSpec,
-    ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec, resolve_grid_column_widths,
-    resolve_grid_track_sizes,
+    AlignSpec, BorderStyle, BoxShadowSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, CursorSpec,
+    DirSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow,
+    GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
+    GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
+    LogicalInlineEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
+    TextShadowSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
+    resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, WordBreakSpec,
@@ -2743,16 +2744,16 @@ impl LayoutStyleCss for LayoutStyle {
                     self.opacity = Some(v.clamp(0.0, 1.0));
                 }
             }
-            // Window-level / chrome: fail closed. `cursor` has no CSS→window
-            // mapping (winit cursor is chrome resize only). `user-select` has
-            // no L1 selection gate. `-webkit-app-region` / `app-region` is
+            "cursor" => {
+                if let Some(cursor) = CursorSpec::parse(val) {
+                    self.cursor = Some(cursor);
+                }
+            }
+            // Window-level / chrome: fail closed. `user-select` has no L1
+            // selection gate. `-webkit-app-region` / `app-region` is
             // Electron caption CSS on arbitrary boxes; Nana drag is only
             // AppTitleBar → nana-window, not a CSS region map.
-            "cursor"
-            | "user-select"
-            | "-webkit-user-select"
-            | "-webkit-app-region"
-            | "app-region" => {}
+            "user-select" | "-webkit-user-select" | "-webkit-app-region" | "app-region" => {}
             _ => {}
         }
         self.resolve_logical_box_edges();
@@ -7408,11 +7409,42 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     }
 
     #[test]
-    fn cursor_user_select_and_app_region_fail_closed() {
+    fn cursor_keywords_parse_and_unsupported_values_fail_closed() {
+        let mut layout = LayoutStyle::default();
+        let cases = [
+            ("default", CursorSpec::Default),
+            ("pointer", CursorSpec::Pointer),
+            ("text", CursorSpec::Text),
+            ("move", CursorSpec::Move),
+            ("grab", CursorSpec::Grab),
+            ("grabbing", CursorSpec::Grabbing),
+            ("not-allowed", CursorSpec::NotAllowed),
+            ("crosshair", CursorSpec::Crosshair),
+            ("help", CursorSpec::Help),
+            ("wait", CursorSpec::Wait),
+            ("progress", CursorSpec::Progress),
+            ("zoom-in", CursorSpec::ZoomIn),
+            ("zoom-out", CursorSpec::ZoomOut),
+            ("none", CursorSpec::None),
+        ];
+        for (keyword, expected) in cases {
+            layout.apply_css_property("cursor", keyword, None, None);
+            assert_eq!(layout.cursor, Some(expected), "cursor:{keyword}");
+        }
+        layout.apply_css_text("cursor:pointer;cursor:grab", None, None);
+        assert_eq!(layout.cursor, Some(CursorSpec::Grab));
+        layout.apply_css_text("cursor:url(pointer.cur), pointer", None, None);
+        assert_eq!(layout.cursor, Some(CursorSpec::Grab));
+        layout.apply_css_text("cursor:future-cursor", None, None);
+        assert_eq!(layout.cursor, Some(CursorSpec::Grab));
+    }
+
+    #[test]
+    fn user_select_and_app_region_fail_closed() {
         let mut layout = LayoutStyle::default();
         let before = layout.clone();
         layout.apply_css_text(
-            "cursor:pointer;user-select:none;-webkit-user-select:none;-webkit-app-region:drag;app-region:drag",
+            "user-select:none;-webkit-user-select:none;-webkit-app-region:drag;app-region:drag",
             None,
             None,
         );
