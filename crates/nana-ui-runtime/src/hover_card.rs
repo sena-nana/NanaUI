@@ -371,6 +371,54 @@ mod tests {
             .unwrap();
     }
 
+    fn shell_with_titlebar_hover_card() -> (
+        AppContext,
+        crate::Entity<HoverCard>,
+        crate::Entity<crate::Button>,
+        crate::Entity<crate::Stack>,
+    ) {
+        let mut context = AppContext::new();
+        let shell = context
+            .create_component(document(), crate::Stack::fill_column(0.0))
+            .unwrap();
+        let titlebar = context
+            .create_component(
+                document(),
+                crate::Stack::bar(0.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Px(36.0));
+                    layout.justify_content = nana_ui_core::JustifySpec::End;
+                    layout.overflow_x = OverflowSpec::Hidden;
+                }),
+            )
+            .unwrap();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .placement(PopoverPlacement::Bottom)
+                    .alignment(PopoverAlignment::End)
+                    .open_delay(0)
+                    .close_delay(120),
+            )
+            .unwrap();
+        let button = context
+            .create_component(document(), crate::Button::new("退出登录"))
+            .unwrap();
+        context.append_child(card, button).unwrap();
+        context.append_child(titlebar, card).unwrap();
+        let body = context
+            .create_component(document(), crate::Stack::fill_column(0.0).hittable())
+            .unwrap();
+        context.append_child(shell, titlebar).unwrap();
+        context.append_child(shell, body).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        (context, card, button, body)
+    }
+
     fn avatar_card_with_button() -> (
         AppContext,
         crate::Entity<HoverCard>,
@@ -395,6 +443,44 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
         (context, card, button)
+    }
+
+    /// Overlay children receive `position: fixed` only from `effective_layout_style`.
+    #[test]
+    fn pointer_on_titlebar_card_content_beats_the_fill_body() {
+        let (mut context, card, button, body) = shell_with_titlebar_hover_card();
+        let card_id = card.stable_id();
+        let button_id = button.stable_id();
+        let body_id = body.stable_id();
+        hover_at(&mut context, document(), Some(card_id), 0);
+        tick(&mut context, 400);
+        relayout(&mut context);
+        context.rebuild_hit_test(document());
+        let button_box = context.world().layout_box(button_id).unwrap();
+        let trigger_box = context.world().layout_box(card_id).unwrap();
+        let body_box = context.world().layout_box(body_id).unwrap();
+        assert!(
+            button_box.y >= trigger_box.y + trigger_box.height,
+            "card hangs below the titlebar trigger: trigger={trigger_box:?} button={button_box:?}"
+        );
+        assert!(
+            button_box.y + 1.0 >= body_box.y,
+            "card content overlaps the fill body: body={body_box:?} button={button_box:?}"
+        );
+        let hx = button_box.x + button_box.width / 2.0;
+        let hy = button_box.y + button_box.height / 2.0;
+        let hit = context.pointer_target(document(), hx, hy);
+        assert_eq!(
+            hit,
+            Some(button_id),
+            "titlebar hover card must beat the fill body: trigger={trigger_box:?} button={button_box:?} body={body_box:?} hit=({hx},{hy}) -> {hit:?}"
+        );
+        hover_at(&mut context, document(), Some(button_id), 450);
+        tick(&mut context, 800);
+        assert!(
+            context.read(card, |card| card.open).unwrap(),
+            "pointer on the card content must not close it"
+        );
     }
 
     /// Avatar triggers clip their circular chrome; the open card must still

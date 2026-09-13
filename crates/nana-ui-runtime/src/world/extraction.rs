@@ -18,13 +18,17 @@ impl UiWorld {
             if !self.nodes.contains(node) {
                 break;
             };
-            if let Some(authored) = self
+            let z = self
                 .nodes
                 .get(node)
                 .and_then(|record| record.style.layout.z_index)
-            {
-                z_index = authored;
-                memo.stacking.insert(node, authored);
+                .or_else(|| {
+                    self.parent_triggered_overlay(node)
+                        .map(|_| crate::popover::MENU_OVERLAY_Z_INDEX)
+                });
+            if let Some(z) = z {
+                z_index = z;
+                memo.stacking.insert(node, z);
                 break;
             }
             memo.chain.push(node);

@@ -568,7 +568,7 @@ impl UiWorld {
         while let Some(id) = cursor {
             let node = self.nodes.get(id)?;
             chain.push(id);
-            if node.style.layout.position == PositionSpec::Fixed {
+            if self.hit_motion_layout(id).position == PositionSpec::Fixed {
                 break;
             }
             cursor = node.hierarchy.parent;
@@ -577,7 +577,7 @@ impl UiWorld {
         let mut blocks_3d = false;
         for id in chain.into_iter().rev() {
             let node = self.nodes.get(id)?;
-            let style = self.motion_layout(id, &node.style.layout);
+            let style = self.hit_motion_layout(id);
             let b = node.layout;
             let local = if blocks_3d && style.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
@@ -719,7 +719,7 @@ impl UiWorld {
         let mut inherited_z = 0;
         for id in chain.into_iter().rev() {
             let node = self.record(id);
-            let style = &node.style.layout;
+            let style = self.hit_motion_layout(id);
             path.push(index.entries.get(&id).map_or(0, |entry| entry.entry.order));
             inherited_z = style.z_index.unwrap_or(inherited_z);
             let children = node
@@ -854,6 +854,11 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Overlay children receive `position: fixed` only from [`Self::effective_layout_style`].
+    fn hit_motion_layout(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
+        self.motion_layout(id, &self.effective_layout_style(id))
+    }
+
     /// Build hit entries for `seeds` and their visible descendants. Each seed
     /// carries the accumulated transform of its parent, so a scoped patch can
     /// resume from an existing entry instead of walking from the document root.
@@ -890,7 +895,7 @@ impl UiWorld {
                 continue;
             }
             let layout = self.record(id).layout;
-            let motion_layout = self.motion_layout(id, &self.record(id).style.layout);
+            let motion_layout = self.hit_motion_layout(id);
             let node_style = motion_layout.as_ref();
             // This is a projection root, not a Runtime reparent. Fixed layout
             // is viewport-relative; ancestors still control lifecycle and
@@ -1079,7 +1084,7 @@ impl UiWorld {
         }) {
             return false;
         }
-        if self.record(root).style.layout.position == PositionSpec::Fixed {
+        if self.hit_motion_layout(root).position == PositionSpec::Fixed {
             let mut forest = self.build_hit_forest(vec![(root, IDENTITY_AFFINE)]);
             if forest.len() > 1 {
                 return false;

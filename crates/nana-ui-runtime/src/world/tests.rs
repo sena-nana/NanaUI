@@ -6490,6 +6490,27 @@ fn clip_empty_state_visual() -> StandardVisual {
     }
 }
 
+fn open_menu_overlay_visual() -> StandardVisual {
+    StandardVisual::MenuSurface {
+        kind: crate::MenuSurfaceKind::HoverCard,
+        open: true,
+        trigger: None,
+        trigger_icon: None,
+        trigger_image: None,
+        gap: 0.0,
+        overlay: Some(crate::TriggeredMenuOverlay {
+            placement: nana_ui_core::PopoverPlacement::Bottom,
+            alignment: nana_ui_core::PopoverAlignment::Center,
+            width: 240.0,
+            padding: 0.0,
+            gap: 6.0,
+        }),
+        query: None,
+        rows: Arc::from([]),
+        highlighted: None,
+    }
+}
+
 #[test]
 fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     let mut world = UiWorld::new();
@@ -6514,9 +6535,17 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
             tag: "section".into(),
         },
     );
+    queue.create(
+        node(5),
+        document(1),
+        NodeKind::Element {
+            tag: "hover-card".into(),
+        },
+    );
     queue.insert(node(1), node(2), None);
     queue.insert(node(1), node(3), None);
     queue.insert(node(1), node(4), None);
+    queue.insert(node(1), node(5), None);
     queue.set_standard_visual(node(2), Some(confirm_modal_visual()));
     queue.set_standard_visual(node(3), Some(clip_empty_state_visual()));
     queue.set_style(
@@ -6529,17 +6558,19 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
             ..NodeStyle::default()
         },
     );
+    queue.set_standard_visual(node(5), Some(open_menu_overlay_visual()));
     world.commit(queue).unwrap();
     world.take_system_work();
     assert_eq!(world.confirm_modals, 1);
     assert_eq!(world.clip_visuals, 2);
-    assert_eq!(world.z_index_nodes, 1);
+    assert_eq!(world.z_index_nodes, 2);
     assert!(world.confirm_action_effect(node(3)).is_none());
 
     let mut park = MutationQueue::new();
     park.park_subtree(node(2));
     park.park_subtree(node(3));
     park.park_subtree(node(4));
+    park.park_subtree(node(5));
     world.commit(park).unwrap();
     assert_eq!(world.confirm_modals, 0);
     assert_eq!(world.clip_visuals, 0);
@@ -6553,15 +6584,17 @@ fn parking_or_removing_the_last_presence_node_returns_the_skip_path() {
     remount.insert(node(1), node(2), None);
     remount.insert(node(1), node(3), None);
     remount.insert(node(1), node(4), None);
+    remount.insert(node(1), node(5), None);
     world.commit(remount).unwrap();
     assert_eq!(world.confirm_modals, 1);
     assert_eq!(world.clip_visuals, 2);
-    assert_eq!(world.z_index_nodes, 1);
+    assert_eq!(world.z_index_nodes, 2);
 
     let mut remove = MutationQueue::new();
     remove.detach(node(2));
     remove.detach(node(3));
     remove.detach(node(4));
+    remove.detach(node(5));
     world.commit(remove).unwrap();
     assert_eq!(world.confirm_modals, 0);
     assert_eq!(world.clip_visuals, 0);

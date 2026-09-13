@@ -446,7 +446,8 @@ pub struct UiWorld {
     confirm_modals: usize,
     /// Live EmptyState + ModalFrame visuals that clip descendants.
     clip_visuals: usize,
-    /// Nodes with an authored `z-index`. Stacking walks skip when this is zero.
+    /// Nodes with an authored `z-index`, or an open triggered menu overlay
+    /// whose children inject z-index. Stacking walks skip when this is zero.
     z_index_nodes: usize,
     /// Live nodes whose box resolves against the viewport (`position: fixed`,
     /// `vw` / `vh`). A resize dirties this set together with document roots
@@ -1434,7 +1435,8 @@ impl UiWorld {
         PresenceFlags {
             confirm: is_confirm_modal(visual),
             clip: is_clip_visual(visual),
-            z_index: style.is_some_and(|style| style.layout.z_index.is_some()),
+            z_index: style.is_some_and(|style| style.layout.z_index.is_some())
+                || is_triggered_menu_overlay(visual),
             viewport: style.is_some_and(|style| style.layout.depends_on_viewport()),
         }
     }
@@ -2145,6 +2147,17 @@ fn is_clip_visual(visual: Option<&StandardVisual>) -> bool {
     matches!(
         visual,
         Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+    )
+}
+
+fn is_triggered_menu_overlay(visual: Option<&StandardVisual>) -> bool {
+    matches!(
+        visual,
+        Some(StandardVisual::MenuSurface {
+            open: true,
+            overlay: Some(_),
+            ..
+        })
     )
 }
 
