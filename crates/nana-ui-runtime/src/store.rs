@@ -81,6 +81,9 @@ pub(crate) struct NodeRecord {
     pub style: NodeStyle,
     pub resolved: ResolvedStyle,
     pub text: TextContent,
+    /// Bumped when this node's authored text value changes. Layout-scoped
+    /// shaping uses it to skip cache/key work when only the box Y moved.
+    pub text_gen: u64,
     pub text_metrics: TextMetrics,
     pub layout: LayoutBox,
     pub layout_padding: Option<nana_ui_core::PaddingSpec>,
@@ -100,6 +103,7 @@ impl NodeRecord {
             style: NodeStyle::default(),
             resolved: ResolvedStyle::interned_default(),
             text: TextContent::default(),
+            text_gen: 0,
             text_metrics: TextMetrics::default(),
             layout: LayoutBox::default(),
             layout_padding: None,
@@ -197,6 +201,17 @@ pub(crate) struct NodeStore {
     /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
     /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
     text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
+    /// Last wrap-aware shape identity for plain text nodes. Lets a later
+    /// layout-scoped pass skip key construction when only the box Y moved.
+    last_layout_shapes: HashMap<StableNodeId, LastLayoutShape>,
+}
+
+/// Identity of the last `shape_text_for_layout*` result for a plain text node.
+#[derive(Clone, Debug)]
+pub(crate) struct LastLayoutShape {
+    pub constraints: crate::TextShapeConstraints,
+    pub style: Arc<ComputedStyle>,
+    pub text_gen: u64,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
@@ -266,6 +281,7 @@ impl NodeStore {
         self.text_signatures.remove(&id);
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
+        self.last_layout_shapes.remove(&id);
         Some(record)
     }
 
@@ -374,6 +390,12 @@ impl NodeStore {
         LayoutBox,
         text_drop_indicator,
         set_text_drop_indicator
+    );
+    sparse!(
+        last_layout_shapes,
+        LastLayoutShape,
+        last_layout_shape,
+        set_last_layout_shape
     );
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {

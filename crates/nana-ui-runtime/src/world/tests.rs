@@ -6192,12 +6192,242 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
         "max_width / wrap must miss the unconstrained cache entry"
     );
     let wrapped_hits = wrapped.text_layout_cache_hits;
+    let wrapped_runs = wrapped.text_shaped_runs;
+    crate::text_shape_stats::reset();
     world
         .shape_text_for_layout(document(1), &mut shaper)
         .unwrap();
     let wrapped_hit = world.last_work_counters();
-    assert!(wrapped_hit.text_layout_cache_hits > wrapped_hits);
+    let skipped = crate::text_shape_stats::snapshot();
+    assert_eq!(
+        wrapped_hit.text_layout_cache_hits, wrapped_hits,
+        "unchanged wrap constraints must skip cache lookup"
+    );
+    assert_eq!(wrapped_hit.text_shaped_runs, wrapped_runs);
+    assert!(skipped.skipped_unchanged >= 1);
+    assert_eq!(skipped.key_builds, 0);
+    assert_eq!(skipped.cache_lookups, 0);
     assert_eq!(wrapped_hit.glyph_cache_hits, None);
+}
+
+#[test]
+fn layout_scoped_shape_skips_empty_text_before_clone_or_lookup() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout(document(1), &mut FunctionalShaper::default())
+        .unwrap();
+    let stats = crate::text_shape_stats::snapshot();
+    let counters = world.last_work_counters();
+    assert_eq!(stats.nonempty_text_nodes, 0);
+    assert_eq!(stats.string_clones, 0);
+    assert_eq!(stats.key_builds, 0);
+    assert_eq!(stats.cache_lookups, 0);
+    assert_eq!(counters.text_shaped_runs, 0);
+    assert_eq!(counters.text_layout_cache_hits, 0);
+    assert_eq!(counters.text_layout_cache_misses, 0);
+}
+
+#[test]
+fn layout_scoped_shape_skips_plain_text_when_only_box_y_moves() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "row 0".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&work.text, &mut shaper).unwrap();
+    let mut place = MutationQueue::new();
+    place.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 16.0,
+        },
+    );
+    world.commit(place).unwrap();
+    world.take_system_work();
+    world
+        .shape_text_for_layout(document(1), &mut shaper)
+        .unwrap();
+
+    let mut shifted = MutationQueue::new();
+    shifted.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 40.0,
+            width: 80.0,
+            height: 16.0,
+        },
+    );
+    world.commit(shifted).unwrap();
+    world.take_system_work();
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
+        .unwrap();
+    let skipped = crate::text_shape_stats::snapshot();
+    let after_shift = world.last_work_counters();
+    assert_eq!(after_shift.text_shaped_runs, 0);
+    assert_eq!(after_shift.text_layout_cache_hits, 0);
+    assert_eq!(after_shift.text_layout_cache_misses, 0);
+    assert_eq!(skipped.string_clones, 0);
+    assert_eq!(skipped.key_builds, 0);
+    assert_eq!(skipped.cache_lookups, 0);
+    assert_eq!(skipped.skipped_unchanged, 1);
+}
+
+#[test]
+fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "a long wrapping line of text".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&work.text, &mut shaper).unwrap();
+    let mut place = MutationQueue::new();
+    place.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 16.0,
+        },
+    );
+    world.commit(place).unwrap();
+    world.take_system_work();
+    world
+        .shape_text_for_layout(document(1), &mut shaper)
+        .unwrap();
+
+    let mut wider = MutationQueue::new();
+    wider.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 200.0,
+            height: 16.0,
+        },
+    );
+    world.commit(wider).unwrap();
+    world.take_system_work();
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
+        .unwrap();
+    let after_width = world.last_work_counters();
+    let width_stats = crate::text_shape_stats::snapshot();
+    assert!(after_width.text_layout_cache_misses >= 1);
+    assert_eq!(width_stats.skipped_unchanged, 0);
+    assert_eq!(width_stats.key_builds, 1);
+    assert_eq!(width_stats.cache_lookups, 1);
+
+    let mut rewrite = MutationQueue::new();
+    rewrite.set_text(
+        node(1),
+        TextContent {
+            value: "short".into(),
+        },
+    );
+    world.commit(rewrite).unwrap();
+    let mutated = world.take_system_work();
+    world.resolve_styles(&mutated.style).unwrap();
+    world.shape_text(&mutated.text, &mut shaper).unwrap();
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
+        .unwrap();
+    let after_text = crate::text_shape_stats::snapshot();
+    assert_eq!(after_text.skipped_unchanged, 0);
+    assert!(after_text.key_builds >= 1);
+    assert!(after_text.cache_lookups >= 1);
+}
+
+#[test]
+fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "same".into(),
+        },
+    );
+    queue.set_text(
+        node(2),
+        TextContent {
+            value: "same".into(),
+        },
+    );
+    queue.create(node(3), document(1), NodeKind::Text);
+    queue.set_text(
+        node(3),
+        TextContent {
+            value: "L".repeat(4096),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&work.text, &mut shaper).unwrap();
+    let scheduled = world.last_work_counters();
+    assert!(scheduled.text_layout_cache_hits >= 1);
+    assert!(scheduled.text_layout_cache_misses >= 2);
+
+    for id in [1u64, 2, 3] {
+        let mut place = MutationQueue::new();
+        place.write_layout(
+            node(id),
+            LayoutBox {
+                x: 0.0,
+                y: (id as f32) * 20.0,
+                width: 80.0,
+                height: 16.0,
+            },
+        );
+        world.commit(place).unwrap();
+    }
+    world.take_system_work();
+    world
+        .shape_text_for_layout(document(1), &mut shaper)
+        .unwrap();
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout_scoped(&[node(1), node(2), node(3)], &mut shaper)
+        .unwrap();
+    let skipped = crate::text_shape_stats::snapshot();
+    assert_eq!(skipped.skipped_unchanged, 3);
+    assert_eq!(skipped.key_builds, 0);
+    assert_eq!(skipped.cache_lookups, 0);
+    assert_eq!(skipped.string_clones, 0);
 }
 
 #[test]

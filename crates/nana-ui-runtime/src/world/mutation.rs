@@ -1380,6 +1380,7 @@ impl UiWorld {
             }
             UiMutation::SetText { id, text } => {
                 self.record_mut(*id).text = text.clone();
+                self.bump_text_gen(*id);
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -1772,9 +1773,11 @@ impl UiWorld {
                     self.record_mut(*id).text = TextContent {
                         value: state.value.clone(),
                     };
+                    self.bump_text_gen(*id);
                 } else {
                     self.nodes.set_text_input(*id, None);
                     self.record_mut(*id).text = TextContent::default();
+                    self.bump_text_gen(*id);
                     self.remove_ime(*id);
                 }
                 // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
@@ -1824,6 +1827,7 @@ impl UiWorld {
                 };
                 debug_assert!(replaced, "validated selection must remain valid");
                 self.record_mut(*id).text = TextContent { value };
+                self.bump_text_gen(*id);
                 self.mark(
                     *id,
                     DirtyMask::TEXT

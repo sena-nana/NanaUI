@@ -95,6 +95,8 @@ mod terminal;
 mod text_editing;
 mod text_input_limit;
 mod text_layout_cache;
+#[cfg(any(test, feature = "benchmark"))]
+pub mod text_shape_stats;
 mod thumbnail;
 mod toast;
 mod tree_view;

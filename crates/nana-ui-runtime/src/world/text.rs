@@ -100,17 +100,15 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = crate::text_layout_cache::TextLayoutKey::new(text, style, constraints);
-        if let Some(metrics) = self.cache.lookup(&key) {
+        let key = layout_cache_key(text, style, constraints);
+        if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
         self.runs = self.runs.saturating_add(1);
         if constraints.wrap {
             self.wrap_layouts = self.wrap_layouts.saturating_add(1);
         }
-        let metrics = self
-            .inner
-            .shape_cached(id, text, style, constraints, self.glyphs);
+        let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
         self.cache.insert(key, metrics);
         metrics
     }
@@ -144,17 +142,15 @@ impl TextShaper for PreparedCountingShaper<'_> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = crate::text_layout_cache::TextLayoutKey::new(text, style, constraints);
-        if let Some(metrics) = self.cache.lookup(&key) {
+        let key = layout_cache_key(text, style, constraints);
+        if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
         *self.runs = self.runs.saturating_add(1);
         if constraints.wrap {
             *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
         }
-        let metrics = self
-            .inner
-            .shape_cached(id, text, style, constraints, self.glyphs);
+        let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
         self.cache.insert(key, metrics);
         metrics
     }
@@ -199,6 +195,80 @@ impl TextShaper for PreparedCountingShaper<'_> {
         self.inner
             .text_highlights(id, text, selection, style, constraints)
     }
+}
+
+fn layout_cache_key(
+    text: &TextContent,
+    style: &ComputedStyle,
+    constraints: crate::TextShapeConstraints,
+) -> crate::text_layout_cache::TextLayoutKey {
+    #[cfg(any(test, feature = "benchmark"))]
+    {
+        crate::text_shape_stats::note_key_build();
+        crate::text_shape_stats::timed_key(|| {
+            crate::text_layout_cache::TextLayoutKey::new(text, style, constraints)
+        })
+    }
+    #[cfg(not(any(test, feature = "benchmark")))]
+    {
+        crate::text_layout_cache::TextLayoutKey::new(text, style, constraints)
+    }
+}
+
+fn layout_cache_lookup(
+    cache: &mut crate::text_layout_cache::TextLayoutCache,
+    key: &crate::text_layout_cache::TextLayoutKey,
+) -> Option<TextMetrics> {
+    #[cfg(any(test, feature = "benchmark"))]
+    {
+        crate::text_shape_stats::note_lookup();
+        crate::text_shape_stats::timed_lookup(|| cache.lookup(key))
+    }
+    #[cfg(not(any(test, feature = "benchmark")))]
+    {
+        cache.lookup(key)
+    }
+}
+
+fn inner_shape_cached(
+    shaper: &mut (impl TextShaper + ?Sized),
+    id: StableNodeId,
+    text: &TextContent,
+    style: &ComputedStyle,
+    constraints: crate::TextShapeConstraints,
+    glyphs: &mut crate::GlyphCache,
+) -> TextMetrics {
+    #[cfg(any(test, feature = "benchmark"))]
+    {
+        crate::text_shape_stats::timed_inner_shape(|| {
+            shaper.shape_cached(id, text, style, constraints, glyphs)
+        })
+    }
+    #[cfg(not(any(test, feature = "benchmark")))]
+    {
+        shaper.shape_cached(id, text, style, constraints, glyphs)
+    }
+}
+
+fn clone_shaped_text(
+    world: &UiWorld,
+    id: StableNodeId,
+    presentation: Option<&TextInputPresentationSource>,
+) -> TextContent {
+    let clone = || {
+        presentation.as_ref().map_or_else(
+            || world.record(id).text.clone(),
+            |source| source.text.clone(),
+        )
+    };
+    #[cfg(any(test, feature = "benchmark"))]
+    let text = crate::text_shape_stats::timed_clone(clone);
+    #[cfg(not(any(test, feature = "benchmark")))]
+    let text = clone();
+    world.record_string_clone(text.value.len());
+    #[cfg(any(test, feature = "benchmark"))]
+    crate::text_shape_stats::note_clone(text.value.len());
+    text
 }
 
 pub(super) fn shape_empty_state_text(
@@ -3149,13 +3219,9 @@ impl UiWorld {
         let mut shaped = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
+        #[cfg(any(test, feature = "benchmark"))]
+        crate::text_shape_stats::note_scope(ids.len());
         for id in ids {
-            let presentation = self.text_input_presentation_source(id);
-            let text = presentation.as_ref().map_or_else(
-                || self.record(id).text.clone(),
-                |source| source.text.clone(),
-            );
-            self.record_string_clone(text.value.len());
             let computed = self.record(id).resolved.0.as_ref();
             if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = self.nodes.visual(id)
             {
@@ -3207,11 +3273,37 @@ impl UiWorld {
                 }
                 continue;
             }
-            if text.value.is_empty() || !computed.visible {
+            if !computed.visible {
                 continue;
             }
+            let presentation = self.text_input_presentation_source(id);
+            let empty = presentation.as_ref().map_or_else(
+                || self.record(id).text.value.is_empty(),
+                |source| source.text.value.is_empty(),
+            );
+            if empty {
+                continue;
+            }
+            #[cfg(any(test, feature = "benchmark"))]
+            crate::text_shape_stats::note_nonempty();
             let constraints = self.text_shape_constraints(id);
-            let metrics = shaper.shape(id, &text, computed, constraints);
+            if presentation.is_none()
+                && self.layout_shape_unchanged(id, &self.record(id).resolved.0, constraints)
+            {
+                #[cfg(any(test, feature = "benchmark"))]
+                crate::text_shape_stats::note_skipped_unchanged();
+                continue;
+            }
+            let style = Arc::clone(&self.record(id).resolved.0);
+            let computed = style.as_ref();
+            let text;
+            let text_ref = if let Some(source) = presentation.as_ref() {
+                text = clone_shaped_text(self, id, Some(source));
+                &text
+            } else {
+                &self.record(id).text
+            };
+            let metrics = shaper.shape(id, text_ref, computed, constraints);
             validate_text_metrics(id, metrics)?;
             let previous_overlays = self
                 .nodes
@@ -3228,6 +3320,9 @@ impl UiWorld {
                     &mut shaper,
                 )
             });
+            if presentation.is_none() {
+                self.remember_layout_shape(id, style, constraints);
+            }
             if self.record(id).text_metrics != metrics
                 || presentation
                     .as_ref()
@@ -3266,6 +3361,36 @@ impl UiWorld {
             }
         });
         Ok(changed)
+    }
+
+    fn layout_shape_unchanged(
+        &self,
+        id: StableNodeId,
+        style: &Arc<ComputedStyle>,
+        constraints: crate::TextShapeConstraints,
+    ) -> bool {
+        self.nodes.last_layout_shape(id).is_some_and(|last| {
+            last.text_gen == self.record(id).text_gen
+                && Arc::ptr_eq(&last.style, style)
+                && last.constraints == constraints
+        })
+    }
+
+    fn remember_layout_shape(
+        &mut self,
+        id: StableNodeId,
+        style: Arc<ComputedStyle>,
+        constraints: crate::TextShapeConstraints,
+    ) {
+        let text_gen = self.record(id).text_gen;
+        self.nodes.set_last_layout_shape(
+            id,
+            Some(crate::store::LastLayoutShape {
+                constraints,
+                style,
+                text_gen,
+            }),
+        );
     }
 }
 
@@ -3347,6 +3472,8 @@ impl UiWorld {
         let mut shaped = Vec::with_capacity(ids.len());
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
+        #[cfg(any(test, feature = "benchmark"))]
+        crate::text_shape_stats::note_scope(ids.len());
         for &id in ids {
             if !self.contains(id) {
                 let _shaper = shaper;
@@ -3355,12 +3482,12 @@ impl UiWorld {
                 return Err(UiWorldError::MissingNode(id));
             }
             let presentation = self.text_input_presentation_source(id);
-            let text = presentation.as_ref().map_or_else(
-                || self.record(id).text.clone(),
-                |source| source.text.clone(),
-            );
-            self.record_string_clone(text.value.len());
+            let text = clone_shaped_text(self, id, presentation.as_ref());
             let style = self.record(id).resolved.0.as_ref().clone();
+            #[cfg(any(test, feature = "benchmark"))]
+            if !text.value.is_empty() {
+                crate::text_shape_stats::note_nonempty();
+            }
             if let Some(visual @ StandardVisual::EmptyState { .. }) = self.nodes.visual(id) {
                 let intrinsic = shape_empty_state_text(id, visual, &style, None, &mut shaper);
                 validate_text_metrics(id, intrinsic.title)?;

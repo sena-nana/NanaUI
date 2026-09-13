@@ -965,9 +965,41 @@ dispatch 1.0,不到 4%),级联合并也不是(2.5%)。剩下的是两边各自�
 一个字都没重排,阶段时间却主导了整条曲线的陡度。又一次"计数器说只碰了几个节点"。
 
 走的是 `shape_text_for_layout_scoped(上一次布局作用域)`,head 改动的作用域就是整篇文档,
-所以 O(N) 是应付的;超线性不是。**没修**,候选还没分清:每个节点在"文本为空就跳过"那一步
-**之前**就克隆了一次文本 `String`(`record_string_clone` 专门记了它)、每节点一次按文本内容
-做键的 shape 缓存查找、以及缓存容量不够导致的抖动。要先把这三者分开量,才谈得上改。
+所以 O(N) 是应付的;超线性不是。Issue #33 把候选拆开量了,再修。
+
+`nana-dirty-frame-benchmark` 现在导出 `text_shaped_runs` / cache hit-miss-eviction,以及
+`feature = "benchmark"` 下的 TextShape 子计时(`clone` / `key` / `lookup` / `inner`)。本机
+(Windows, 2026-09-13)在加观测、未改热路径时:
+
+| 节点 | `text_shaped` | `text_shaped_runs` | cache hit/miss/evict | clones | keys | inner ms | TextShape |
+| ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| 4,002 | 0 | 0 | 2000 / 0 / 0 | 4002 | 2000 | 0 | 2.45 ms |
+| 8,002 | 0 | **4000** | 0 / 4000 / 4000 | 8002 | 4000 | 3.25 | clone 1.52 + key 0.46 + lookup 0.98 + inner 3.25 |
+
+`text_shaped == 0` 只说明 TEXT 脏集为空。fixture 每行文本唯一(`"row {n}"`),`TextLayoutCache`
+FIFO cap=2048: 2000 条唯一文本全进 cache,inner=0;4000 条时 FIFO 不随 lookup 刷新,每帧 4000
+次 miss、4000 次真正 reshape、4000 次 eviction。另外每个 scope 节点都在空检查前 clone
+`String`,每个非空节点都按全文构造 `TextLayoutKey` 再 lookup。
+
+修法不是放大全局 cap,也不是缩小 layout scope。`shape_text_for_layout_impl` 现在:
+
+1. 空文本 / 不可见在 clone 和 key 之前早退;
+2. 普通文本节点记住上次 wrap 约束 + `ComputedStyle` Arc 身份 + 文本世代;仅 Y 位移时跳过
+   clone / key / lookup / inner(`skipped_unchanged`)。EmptyState / ModalFrame / TextInput
+   仍走完整路径。
+
+同一台机器修复后(`--shape layout --position head --dirty 1`,150 samples / 30 warmup):
+
+| 节点 | TextShape | runs | lookups | skipped | Layout |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,002 | 0.176 ms | 0 | 0 | 1000 | 3.68 ms |
+| 4,002 | 0.557 ms | 0 | 0 | 2000 | 11.47 ms |
+| 8,002 | 1.811 ms | 0 | 0 | 4000 | 31.75 ms |
+
+8,002 / 2,002 = 4 倍节点,TextShape 1.811 / 0.176 ≈ 10.3 倍,与同机 Layout 8.6 倍、HitTest
+8.6 倍同量级(工作集出 cache),不再是 cache 抖出来的近 O(N²)。`text_shaped_runs` 与 lookup
+跟真实路径一致:跳过不记成 cache hit。绝对毫秒数与上表首次归因(另一台机器 0.180 / 2.767)
+不可比。
 
 **全量通道之后的第一帧增量是 O(文档) 的**,见上面第二条。这是刻意换来的:全量通道本身就
 是 O(文档),而在它上面记录计划会让每一帧全量都贵 42%。
@@ -1025,6 +1057,10 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 ./target/release/nana-dirty-frame-benchmark --samples 150 --warmup 30 --output report.json
 # 单格，便于剖析
 ./target/release/nana-dirty-frame-benchmark --shape layout --position tail --rows 4000 --dirty 1
+# Issue #33：head TextShape 零工作路径（约 2k / 4k / 8k 节点）
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 1000 --samples 150 --warmup 30
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 2000 --samples 150 --warmup 30
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 4000 --samples 150 --warmup 30
 # 第五轮的那两列
 ./target/release/nana-dirty-frame-benchmark --position tail --dirty 1 --samples 150 --warmup 30
 ```

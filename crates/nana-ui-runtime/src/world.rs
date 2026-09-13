@@ -1372,6 +1372,11 @@ impl UiWorld {
             .expect("entity must have runtime component")
     }
 
+    fn bump_text_gen(&mut self, id: StableNodeId) {
+        let record = self.record_mut(id);
+        record.text_gen = record.text_gen.saturating_add(1);
+    }
+
     pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
         self.nodes.get(id)?.hierarchy.parent
     }

@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameStage, LayoutViewport, MeasureTextShaper, MutationQueue, NodeKind,
-    NodeStyle, StableNodeId, StageStatus, TextContent, WorkCounters,
+    NodeStyle, StableNodeId, StageStatus, TextContent, WorkCounters, text_shape_stats,
 };
 use nana_ui_scene::RuntimeDocument;
 use serde::Serialize;
@@ -70,6 +70,7 @@ struct Cell {
     /// subtree expansion `project_accessibility_delta` performs internally.
     projected: Projected,
     layout_substages_ms: LayoutSubstages,
+    text_shape: TextShapePass,
 }
 
 #[derive(Serialize)]
@@ -104,6 +105,13 @@ struct Counters {
     entities_changed: usize,
     style_processed: usize,
     text_shaped: usize,
+    text_shaped_runs: usize,
+    text_layout_cache_hits: usize,
+    text_layout_cache_misses: usize,
+    text_wrap_layouts: usize,
+    cache_eviction: Option<usize>,
+    allocations: usize,
+    allocated_bytes: usize,
     layout_nodes: usize,
     hit_test_candidates: usize,
     accessibility_nodes_updated: usize,
@@ -118,6 +126,13 @@ impl From<WorkCounters> for Counters {
             entities_changed: value.entities_changed,
             style_processed: value.style_processed,
             text_shaped: value.text_shaped,
+            text_shaped_runs: value.text_shaped_runs,
+            text_layout_cache_hits: value.text_layout_cache_hits,
+            text_layout_cache_misses: value.text_layout_cache_misses,
+            text_wrap_layouts: value.text_wrap_layouts,
+            cache_eviction: value.cache_eviction,
+            allocations: value.allocations,
+            allocated_bytes: value.allocated_bytes,
             layout_nodes: value.layout_nodes,
             hit_test_candidates: value.hit_test_candidates,
             accessibility_nodes_updated: value.accessibility_nodes_updated,
@@ -125,6 +140,22 @@ impl From<WorkCounters> for Counters {
             render_nodes_extracted: value.render_nodes_extracted,
         }
     }
+}
+
+/// Attribution inside the single `FrameStage::TextShape` number. Not `WorkCounters`.
+#[derive(Serialize)]
+struct TextShapePass {
+    scope_nodes: usize,
+    nonempty_text_nodes: usize,
+    string_clones: usize,
+    string_clone_bytes: usize,
+    key_builds: usize,
+    cache_lookups: usize,
+    skipped_unchanged: usize,
+    clone_ms: f64,
+    key_ms: f64,
+    lookup_ms: f64,
+    inner_shape_ms: f64,
 }
 
 #[derive(Serialize)]
@@ -392,6 +423,7 @@ fn measure(
     let mut stage_status = [StageStatus::Skipped; 13];
     let mut counters = WorkCounters::default();
     let mut substage_totals = [Duration::ZERO; 4];
+    let mut text_shape_totals = text_shape_stats::TextShapePassStats::default();
     let mut projected = Projected {
         accessibility_updated: 0,
         accessibility_removed: 0,
@@ -404,6 +436,7 @@ fn measure(
         let hovered = iteration % 2 == 0;
         dirty(runtime.context_mut(), shape, &targets, hovered);
         let _ = runtime.context_mut().take_layout_substage_totals();
+        text_shape_stats::reset();
         let started = Instant::now();
         let update = runtime.flush(viewport, &mut shaper).unwrap();
         let elapsed = started.elapsed();
@@ -420,6 +453,38 @@ fn measure(
         for (total, elapsed) in substage_totals.iter_mut().zip(substages) {
             *total += elapsed;
         }
+        let text_shape = text_shape_stats::snapshot();
+        text_shape_totals.scope_nodes = text_shape_totals
+            .scope_nodes
+            .saturating_add(text_shape.scope_nodes);
+        text_shape_totals.nonempty_text_nodes = text_shape_totals
+            .nonempty_text_nodes
+            .saturating_add(text_shape.nonempty_text_nodes);
+        text_shape_totals.string_clones = text_shape_totals
+            .string_clones
+            .saturating_add(text_shape.string_clones);
+        text_shape_totals.string_clone_bytes = text_shape_totals
+            .string_clone_bytes
+            .saturating_add(text_shape.string_clone_bytes);
+        text_shape_totals.key_builds = text_shape_totals
+            .key_builds
+            .saturating_add(text_shape.key_builds);
+        text_shape_totals.cache_lookups = text_shape_totals
+            .cache_lookups
+            .saturating_add(text_shape.cache_lookups);
+        text_shape_totals.skipped_unchanged = text_shape_totals
+            .skipped_unchanged
+            .saturating_add(text_shape.skipped_unchanged);
+        text_shape_totals.clone_ns = text_shape_totals
+            .clone_ns
+            .saturating_add(text_shape.clone_ns);
+        text_shape_totals.key_ns = text_shape_totals.key_ns.saturating_add(text_shape.key_ns);
+        text_shape_totals.lookup_ns = text_shape_totals
+            .lookup_ns
+            .saturating_add(text_shape.lookup_ns);
+        text_shape_totals.inner_shape_ns = text_shape_totals
+            .inner_shape_ns
+            .saturating_add(text_shape.inner_shape_ns);
         flushes.push(elapsed);
         projected = Projected {
             accessibility_updated: update.accessibility.updated.len(),
@@ -470,6 +535,31 @@ fn measure(
             writeback_commit_ms: ms_mean(substage_totals[2], samples),
             scroll_metrics_ms: ms_mean(substage_totals[3], samples),
         },
+        text_shape: TextShapePass {
+            scope_nodes: mean_count(text_shape_totals.scope_nodes, samples),
+            nonempty_text_nodes: mean_count(text_shape_totals.nonempty_text_nodes, samples),
+            string_clones: mean_count(text_shape_totals.string_clones, samples),
+            string_clone_bytes: mean_count(text_shape_totals.string_clone_bytes, samples),
+            key_builds: mean_count(text_shape_totals.key_builds, samples),
+            cache_lookups: mean_count(text_shape_totals.cache_lookups, samples),
+            skipped_unchanged: mean_count(text_shape_totals.skipped_unchanged, samples),
+            clone_ms: ns_mean_ms(text_shape_totals.clone_ns, samples),
+            key_ms: ns_mean_ms(text_shape_totals.key_ns, samples),
+            lookup_ms: ns_mean_ms(text_shape_totals.lookup_ns, samples),
+            inner_shape_ms: ns_mean_ms(text_shape_totals.inner_shape_ns, samples),
+        },
+    }
+}
+
+fn mean_count(total: usize, samples: usize) -> usize {
+    if samples == 0 { 0 } else { total / samples }
+}
+
+fn ns_mean_ms(total_ns: u64, samples: usize) -> f64 {
+    if samples == 0 {
+        0.0
+    } else {
+        (total_ns as f64 / samples as f64) / 1_000_000.0
     }
 }
 
@@ -561,6 +651,34 @@ fn main() {
                         cell.layout_substages_ms.engine_ms,
                         cell.layout_substages_ms.writeback_commit_ms,
                         cell.layout_substages_ms.scroll_metrics_ms,
+                    );
+                    eprintln!(
+                        "        text: shaped={} runs={} cache hit/miss/evict={}/{}/{:?} wrap={} allocs={} bytes={}",
+                        cell.counters.text_shaped,
+                        cell.counters.text_shaped_runs,
+                        cell.counters.text_layout_cache_hits,
+                        cell.counters.text_layout_cache_misses,
+                        cell.counters.cache_eviction,
+                        cell.counters.text_wrap_layouts,
+                        cell.counters.allocations,
+                        cell.counters.allocated_bytes,
+                    );
+                    eprintln!(
+                        "        text shape pass: scope={} nonempty={} clones={} clone_bytes={} keys={} lookups={} skipped={}",
+                        cell.text_shape.scope_nodes,
+                        cell.text_shape.nonempty_text_nodes,
+                        cell.text_shape.string_clones,
+                        cell.text_shape.string_clone_bytes,
+                        cell.text_shape.key_builds,
+                        cell.text_shape.cache_lookups,
+                        cell.text_shape.skipped_unchanged,
+                    );
+                    eprintln!(
+                        "        text shape substages mean: clone={:.4} key={:.4} lookup={:.4} inner={:.4}",
+                        cell.text_shape.clone_ms,
+                        cell.text_shape.key_ms,
+                        cell.text_shape.lookup_ms,
+                        cell.text_shape.inner_shape_ms,
                     );
                     for stage in &cell.stages_ms {
                         if stage.status == "ran" && stage.p50_ms > 0.0 {
