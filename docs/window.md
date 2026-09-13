@@ -90,7 +90,7 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback 多选采用换行分隔的 CLI 输出，文件名本身包含换行时无法无歧义拆分；单选只剥离一个协议结尾换行，保留实际文件名。该 fallback 多选边界不能作为任意路径支持通过的依据。
 
-`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名），不呈现对话框；`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。macOS 从 AppKit panel 读回三项。Windows 起始目录来自 `GetFolder`；`IFileDialog` 没有 GetTitle / GetFileTypes，标题是 `SetTitle` 成功后的回显，目录选择不应用过滤器因此扩展名为空。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出，并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
+`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名），不呈现对话框；`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。macOS 从 AppKit panel 读回三项。Windows 起始目录来自 `GetFolder`；`IFileDialog` 没有 GetTitle / GetFileTypes，标题是 `SetTitle` 成功后的回显。目录选择不应用过滤器（因此扩展名为空），也不应用预填文件名。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出，并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
 
 ## 图标
 

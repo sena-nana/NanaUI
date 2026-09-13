@@ -97,6 +97,13 @@ pub(super) fn open<W>(
 where
     W: HasWindowHandle + HasDisplayHandle + Send + Sync + ?Sized + 'static,
 {
+    // winit 0.31 `HasWindowHandle` is only valid on the window thread. Capture
+    // the owner HWND here; the worker keeps `window` alive for Show().
+    let Some(owner) = owner_hwnd(window.as_ref()) else {
+        return Err(FileDialogError::WindowClosed);
+    };
+    // HWND is a raw pointer and not Send; the integer is the portable owner id.
+    let owner = owner.0 as isize;
     let cancellation = crate::platform::DialogCancellation::default();
     let cancel = cancellation.clone();
     std::thread::Builder::new()
@@ -115,7 +122,7 @@ where
                 return;
             }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                present(_parent.as_ref(), &request)
+                present(HWND(owner as *mut _), &request)
             }))
             .unwrap_or_else(|_| {
                 FileDialogResult::failed(
@@ -140,13 +147,7 @@ pub(super) fn describe(
     ))
 }
 
-fn present<W>(window: &W, request: &FileDialogRequest) -> FileDialogResult
-where
-    W: HasWindowHandle + ?Sized,
-{
-    let Some(owner) = owner_hwnd(window) else {
-        return FileDialogResult::failed(request.id, FileDialogError::WindowClosed);
-    };
+fn present(owner: HWND, request: &FileDialogRequest) -> FileDialogResult {
     let _com = match ComScope::enter() {
         Ok(scope) => scope,
         Err(error) => return FileDialogResult::failed(request.id, error),
@@ -160,7 +161,10 @@ where
     }
     match unsafe { dialog.file_dialog().Show(Some(owner)) } {
         Ok(()) => match dialog.collect_paths(request.kind.is_multiple()) {
-            Ok(paths) => FileDialogResult::selected(request.id, paths),
+            Ok(paths) => match require_directories(request.kind, paths) {
+                Ok(paths) => FileDialogResult::selected(request.id, paths),
+                Err(error) => FileDialogResult::failed(request.id, error),
+            },
             Err(error) => FileDialogResult::failed(request.id, error),
         },
         Err(error) => result_from_hresult(request.id, error.code()),
@@ -176,10 +180,6 @@ fn configure(dialog: &NativeDialog, request: &FileDialogRequest) -> Result<(), F
             let title = wide(title);
             file.SetTitle(PCWSTR(title.as_ptr())).map_err(platform)?;
         }
-        if let Some(name) = &request.file_name {
-            let name = wide(name);
-            file.SetFileName(PCWSTR(name.as_ptr())).map_err(platform)?;
-        }
     }
     apply_directory(file, request.directory.as_deref());
     if matches!(
@@ -188,6 +188,12 @@ fn configure(dialog: &NativeDialog, request: &FileDialogRequest) -> Result<(), F
     ) {
         return Ok(());
     }
+    if let Some(name) = &request.file_name {
+        let name = wide(name);
+        unsafe {
+            file.SetFileName(PCWSTR(name.as_ptr())).map_err(platform)?;
+        }
+    }
     apply_filters(file, &request.filters)
 }
 
@@ -195,6 +201,11 @@ fn apply_directory(dialog: &IFileDialog, directory: Option<&Path>) {
     let Some(directory) = directory else {
         return;
     };
+    // Non-directories (missing, file, or otherwise not a folder) must not
+    // become SetFolder; SHCreateItemFromParsingName succeeds for those too.
+    if !directory.is_dir() {
+        return;
+    }
     let wide = win32_parsing_name(directory);
     let item =
         unsafe { SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(wide.as_ptr()), None) };
@@ -202,6 +213,27 @@ fn apply_directory(dialog: &IFileDialog, directory: Option<&Path>) {
         return;
     };
     let _ = unsafe { dialog.SetFolder(&item) };
+}
+
+fn require_directories(
+    kind: FileDialogKind,
+    paths: Vec<PathBuf>,
+) -> Result<Vec<PathBuf>, FileDialogError> {
+    if !matches!(
+        kind,
+        FileDialogKind::PickFolder | FileDialogKind::PickFolders
+    ) {
+        return Ok(paths);
+    }
+    for path in &paths {
+        if path.exists() && !path.is_dir() {
+            return Err(FileDialogError::Platform(format!(
+                "folder dialog returned a non-directory: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(paths)
 }
 
 fn apply_filters(dialog: &IFileDialog, filters: &[FileFilter]) -> Result<(), FileDialogError> {
@@ -270,6 +302,8 @@ struct Configured {
     extensions: Vec<String>,
     #[cfg_attr(not(test), allow(dead_code))]
     options: FILEOPENDIALOGOPTIONS,
+    #[cfg_attr(not(test), allow(dead_code))]
+    file_name: Option<String>,
 }
 
 fn inspect(request: &FileDialogRequest) -> Result<Configured, FileDialogError> {
@@ -300,7 +334,23 @@ fn inspect(request: &FileDialogRequest) -> Result<Configured, FileDialogError> {
                 .collect(),
         },
         options,
+        file_name: dialog_file_name(file),
     })
+}
+
+fn dialog_file_name(dialog: &IFileDialog) -> Option<String> {
+    let name = unsafe { dialog.GetFileName().ok()? };
+    if name.is_null() {
+        return None;
+    }
+    let text = unsafe {
+        let wide = name.as_wide();
+        let text = String::from_utf16_lossy(wide);
+        CoTaskMemFree(Some(name.0 as *const _));
+        text
+    };
+    let text = text.trim_end_matches('\0').trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 fn shell_item_path(item: &IShellItem) -> Result<PathBuf, FileDialogError> {
@@ -405,16 +455,78 @@ mod tests {
         assert_eq!(directory, Some(expected));
     }
 
+    fn folder_path(value: Option<&str>) -> Option<PathBuf> {
+        value
+            .map(PathBuf::from)
+            .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+    }
+
     #[test]
     fn missing_directory_is_skipped_not_cancelled() {
         let missing = std::env::temp_dir().join("nana-ui-missing-dir-issue34");
         let _ = std::fs::remove_dir_all(&missing);
-        let request = FileDialogRequest::new(2, FileDialogKind::PickFolder).directory(&missing);
-        let configured = inspect(&request).expect("invalid start folder does not fail configure");
+        let baseline = inspect(&FileDialogRequest::new(2, FileDialogKind::PickFolder))
+            .expect("default folder dialog can be configured");
+        let configured =
+            inspect(&FileDialogRequest::new(2, FileDialogKind::PickFolder).directory(&missing))
+                .expect("invalid start folder does not fail configure");
         assert!(configured.options.contains(FOS_PICKFOLDERS));
+        assert_eq!(
+            folder_path(configured.directory.as_deref()),
+            folder_path(baseline.directory.as_deref())
+        );
         if let Some(directory) = configured.directory {
-            assert_ne!(PathBuf::from(&directory), missing);
+            let got = folder_path(Some(&directory)).expect("configured folder");
+            assert_ne!(got, missing);
+            assert_ne!(got, std::fs::canonicalize(&missing).unwrap_or(missing));
         }
+    }
+
+    #[test]
+    fn file_path_as_directory_is_skipped() {
+        let file = std::env::temp_dir().join("nana-ui-not-a-dir-issue34.txt");
+        std::fs::write(&file, b"x").expect("temp file for directory fallback");
+        let baseline = inspect(&FileDialogRequest::new(3, FileDialogKind::PickFolder))
+            .expect("default folder dialog can be configured");
+        let configured =
+            inspect(&FileDialogRequest::new(3, FileDialogKind::PickFolder).directory(&file));
+        let _ = std::fs::remove_file(&file);
+        let configured = configured.expect("file start folder does not fail configure");
+        assert!(configured.options.contains(FOS_PICKFOLDERS));
+        assert_eq!(
+            folder_path(configured.directory.as_deref()),
+            folder_path(baseline.directory.as_deref())
+        );
+    }
+
+    #[test]
+    fn folder_results_reject_existing_files() {
+        let file = std::env::temp_dir().join("nana-ui-folder-result-issue34.txt");
+        std::fs::write(&file, b"x").expect("temp file for folder result");
+        let error = require_directories(FileDialogKind::PickFolder, vec![file.clone()])
+            .expect_err("existing file is not a folder result");
+        let _ = std::fs::remove_file(&file);
+        assert!(matches!(error, FileDialogError::Platform(_)));
+        let dir = std::env::temp_dir();
+        let paths =
+            require_directories(FileDialogKind::PickFolder, vec![dir.clone()]).expect("dir ok");
+        assert_eq!(paths, vec![dir]);
+        let file_kind = require_directories(
+            FileDialogKind::OpenFile,
+            vec![PathBuf::from("not-checked.txt")],
+        )
+        .expect("file kinds keep their paths");
+        assert_eq!(file_kind, vec![PathBuf::from("not-checked.txt")]);
+    }
+
+    #[test]
+    fn folder_kind_ignores_file_name() {
+        let request = FileDialogRequest::new(5, FileDialogKind::PickFolder)
+            .file_name("nana-dialog-selection.txt")
+            .directory(std::env::temp_dir());
+        let configured = inspect(&request).expect("folder dialog ignores save file name");
+        assert!(configured.options.contains(FOS_PICKFOLDERS));
+        assert_eq!(configured.file_name, None);
     }
 
     #[test]
