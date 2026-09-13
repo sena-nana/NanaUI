@@ -79,18 +79,18 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 每个窗口只能有一个活动对话框。拒绝通过独立 `WindowEvent::FileDialogRejected { id, request_id, error }` 回流。第二个不同身份的请求收到 `FileDialogError::Busy`，不会覆盖第一个请求；重复活动身份收到 `DuplicateRequest`，消费方保留原 pending，不把拒绝当作该活动请求完成。窗口关闭时活动请求收到 `WindowClosed`。宿主为每次打开分配内部 token，关闭后晚到的回调（包括窗口或请求 ID 重用）不会完成新请求，每个接受的请求只完成一次。宿主同时持有原生会话句柄，关闭时结束 macOS sheet、关闭 Windows worker 的 picker 或取消 portal/zenity；保留父句柄的 worker 不会留下可见孤儿窗口。
 
-**取消不是错误**：`result.error` 为 `None` 且 `paths` 为空。可观察的平台/线程错误通过 `FileDialogError::Platform` 返回；不支持的目标返回 `Unavailable`。rfd 本身只返回 `Option`，其 `None` 保持取消语义，不能据此推断系统失败。`PickFolders` 和 `OpenFiles` 返回多个路径，其余返回单路径或取消。过滤器、初始目录和保存文件名保留在请求中。
+**取消不是错误**：`result.error` 为 `None` 且 `paths` 为空。可观察的平台/线程错误通过 `FileDialogError::Platform` 返回；不支持的目标返回 `Unavailable`。Windows 上用户关闭对话框是 `HRESULT_FROM_WIN32(ERROR_CANCELLED)`，其它 HRESULT 是 `Platform`，两者不混用。`PickFolders` 和 `OpenFiles` 返回多个路径，其余返回单路径或取消。过滤器、初始目录和保存文件名保留在请求中。不存在或不可访问的初始目录会被跳过，对话框落在系统默认位置，不把这种情况当成取消。
 
 | 平台 | 执行方式 |
 | --- | --- |
 | macOS | 主线程 `NSOpenPanel` / `NSSavePanel` sheet，回调完成；支持文件、多个文件、目录、多个目录和保存 |
-| Windows | 独立 rfd 工作线程持有父窗口，支持文件/目录的单选与多选及保存，不阻塞宿主渲染 |
+| Windows | 独立工作线程上的 `IFileOpenDialog` / `IFileSaveDialog`，父窗口为 owner HWND；`FOS_PICKFOLDERS` 选择目录；不阻塞宿主渲染 |
 | Linux | 独立 portal 工作线程，带父窗口标识；响应在打开前订阅并按实际返回的 request path 关联，兼容旧 portal；不可用时沿用可取消并回收子进程的 zenity fallback |
 | 其它 | 返回 `Unavailable`，不静默悬挂 |
 
 Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback 多选采用换行分隔的 CLI 输出，文件名本身包含换行时无法无歧义拆分；单选只剥离一个协议结尾换行，保留实际文件名。该 fallback 多选边界不能作为任意路径支持通过的依据。
 
-`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名），不呈现对话框；`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出，并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
+`describe_configured_dialog(&request)` 读回平台实际配置（标题、起始目录、扩展名），不呈现对话框；`crates/nana-window/examples/file-dialog-probe.rs` 检查这部分配置。macOS 从 AppKit panel 读回三项。Windows 起始目录来自 `GetFolder`；`IFileDialog` 没有 GetTitle / GetFileTypes，标题是 `SetTitle` 成功后的回显，目录选择不应用过滤器因此扩展名为空。真实交互使用 `crates/nana-ui/examples/hosted-file-dialog-probe.rs`：在应用窗口内覆盖五种选择、重复与忙碌拒绝、取消、窗口退出，并观察对话框打开时持续 `window_frame_presented`。配置检查和交叉编译不能代替各平台原生交互验收。
 
 ## 图标
 

@@ -61,59 +61,7 @@ where
     }
     #[cfg(target_os = "windows")]
     {
-        let mut dialog = rfd::FileDialog::new().set_parent(&window.as_ref());
-        if let Some(title) = &request.title {
-            dialog = dialog.set_title(title.as_ref());
-        }
-        if let Some(directory) = &request.directory {
-            dialog = dialog.set_directory(directory);
-        }
-        if let Some(name) = &request.file_name {
-            dialog = dialog.set_file_name(name.as_ref());
-        }
-        for filter in &request.filters {
-            dialog = dialog.add_filter(filter.name.as_ref(), &filter.extensions);
-        }
-        let cancellation = crate::platform::DialogCancellation::default();
-        let cancel = cancellation.clone();
-        std::thread::Builder::new()
-            .name("nana-file-dialog".into())
-            .spawn(move || {
-                // Keep the owner alive until the native dialog has stopped using it.
-                let _parent = window;
-                let _hook = match cancellation.install() {
-                    Ok(hook) => hook,
-                    Err(error) => {
-                        completion(FileDialogResult::failed(request.id, error));
-                        return;
-                    }
-                };
-                if cancellation.cancelled() {
-                    completion(FileDialogResult::cancelled(request.id));
-                    return;
-                }
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let paths = match request.kind {
-                        FileDialogKind::OpenFile => dialog.pick_file().map(|path| vec![path]),
-                        FileDialogKind::OpenFiles => dialog.pick_files(),
-                        FileDialogKind::SaveFile => dialog.save_file().map(|path| vec![path]),
-                        FileDialogKind::PickFolder => dialog.pick_folder().map(|path| vec![path]),
-                        FileDialogKind::PickFolders => dialog.pick_folders(),
-                    };
-                    // rfd does not expose an error channel; None is cancellation.
-                    // Do not invent a platform error from that ambiguous outcome.
-                    FileDialogResult::selected(request.id, paths.unwrap_or_default())
-                }))
-                .unwrap_or_else(|_| {
-                    FileDialogResult::failed(
-                        request.id,
-                        FileDialogError::Platform("file dialog backend panicked".into()),
-                    )
-                });
-                completion(result);
-            })
-            .map(|_| FileDialogHandle::new(move || cancel.cancel()))
-            .map_err(|error| FileDialogError::Platform(error.to_string()))
+        windows_dialog::open(window, request, completion)
     }
     #[cfg(target_os = "linux")]
     {
@@ -132,6 +80,9 @@ where
 /// This complements hosted interaction checks by inspecting configuration
 /// without displaying a native picker. Returns `None` where the platform
 /// cannot be queried.
+///
+/// On Windows, directory comes from `GetFolder`. Title is echoed after
+/// `SetTitle` (no COM getter). Folder kinds report no extensions.
 pub fn describe_configured_dialog(
     request: &FileDialogRequest,
 ) -> Option<(Option<String>, Option<String>, Vec<String>)> {
@@ -139,7 +90,11 @@ pub fn describe_configured_dialog(
     {
         crate::platform::describe_configured_panel(request)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_dialog::describe(request)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = request;
         None
@@ -149,6 +104,10 @@ pub fn describe_configured_dialog(
 #[cfg(target_os = "linux")]
 #[path = "file_dialog_linux.rs"]
 mod linux;
+
+#[cfg(target_os = "windows")]
+#[path = "file_dialog_windows.rs"]
+mod windows_dialog;
 
 #[cfg(test)]
 mod tests {

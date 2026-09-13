@@ -1,5 +1,5 @@
-//! Cancellable portal requests, with the same zenity fallback previously
-//! supplied by application rfd consumers. Only the worker touches D-Bus.
+//! Cancellable portal requests, with a zenity fallback when the desktop
+//! portal is unavailable. Only the worker touches D-Bus.
 use super::*;
 use futures_lite::{StreamExt, future};
 use std::{collections::HashMap, path::PathBuf};
