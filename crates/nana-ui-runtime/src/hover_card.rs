@@ -547,7 +547,7 @@ mod tests {
         context: &mut AppContext,
         card: crate::Entity<HoverCard>,
         content: crate::Entity<crate::Button>,
-        along_x: bool,
+        placement: PopoverPlacement,
     ) {
         let card_id = card.stable_id();
         let content_id = content.stable_id();
@@ -557,48 +557,61 @@ mod tests {
         context.rebuild_hit_test(document());
         let trigger = context.world().layout_box(card_id).unwrap();
         let content_box = context.world().layout_box(content_id).unwrap();
+        match placement {
+            PopoverPlacement::Bottom => assert!(
+                content_box.y >= trigger.y + trigger.height,
+                "card hangs below the trigger: trigger={trigger:?} content={content_box:?}"
+            ),
+            PopoverPlacement::Top => assert!(
+                content_box.y + content_box.height <= trigger.y,
+                "card hangs above the trigger: trigger={trigger:?} content={content_box:?}"
+            ),
+            PopoverPlacement::Right => assert!(
+                content_box.x >= trigger.x + trigger.width,
+                "card hangs to the right of the trigger: trigger={trigger:?} content={content_box:?}"
+            ),
+            PopoverPlacement::Left => assert!(
+                content_box.x + content_box.width <= trigger.x,
+                "card hangs to the left of the trigger: trigger={trigger:?} content={content_box:?}"
+            ),
+        }
         let content_x = content_box.x + content_box.width / 2.0;
         let content_y = content_box.y + content_box.height / 2.0;
-        let (x0, y0, x1, y1, x2, y2) = if along_x {
-            let trigger_y = trigger.y + trigger.height / 2.0;
-            let gap_x = if content_box.x >= trigger.x + trigger.width {
-                (trigger.x + trigger.width + content_box.x) / 2.0
-            } else {
-                (content_box.x + content_box.width + trigger.x) / 2.0
-            };
-            let edge_x = if content_box.x >= trigger.x + trigger.width {
-                trigger.x + trigger.width + 1.0
-            } else {
-                trigger.x - 1.0
-            };
-            (
-                trigger.x + trigger.width / 2.0,
-                trigger_y,
-                edge_x,
-                trigger_y,
-                gap_x,
-                trigger_y,
-            )
-        } else {
-            let trigger_x = trigger.x + trigger.width / 2.0;
-            let gap_y = if content_box.y >= trigger.y + trigger.height {
-                (trigger.y + trigger.height + content_box.y) / 2.0
-            } else {
-                (content_box.y + content_box.height + trigger.y) / 2.0
-            };
-            let edge_y = if content_box.y >= trigger.y + trigger.height {
-                trigger.y + trigger.height + 1.0
-            } else {
-                trigger.y - 1.0
-            };
-            (
-                trigger_x,
-                trigger.y + trigger.height / 2.0,
-                trigger_x,
-                edge_y,
-                trigger_x,
-                gap_y,
-            )
+        let trigger_cx = trigger.x + trigger.width / 2.0;
+        let trigger_cy = trigger.y + trigger.height / 2.0;
+        let (x0, y0, x1, y1, x2, y2) = match placement {
+            PopoverPlacement::Bottom => (
+                trigger_cx,
+                trigger_cy,
+                trigger_cx,
+                trigger.y + trigger.height + 1.0,
+                trigger_cx,
+                (trigger.y + trigger.height + content_box.y) / 2.0,
+            ),
+            PopoverPlacement::Top => (
+                trigger_cx,
+                trigger_cy,
+                trigger_cx,
+                trigger.y - 1.0,
+                trigger_cx,
+                (content_box.y + content_box.height + trigger.y) / 2.0,
+            ),
+            PopoverPlacement::Right => (
+                trigger_cx,
+                trigger_cy,
+                trigger.x + trigger.width + 1.0,
+                trigger_cy,
+                (trigger.x + trigger.width + content_box.x) / 2.0,
+                trigger_cy,
+            ),
+            PopoverPlacement::Left => (
+                trigger_cx,
+                trigger_cy,
+                trigger.x - 1.0,
+                trigger_cy,
+                (content_box.x + content_box.width + trigger.x) / 2.0,
+                trigger_cy,
+            ),
         };
         let path = [
             (x0, y0, 450u64),
@@ -641,7 +654,7 @@ mod tests {
             Some(button_id),
             "titlebar hover card must beat the fill body: trigger={trigger:?} content={content:?} body={body_box:?}"
         );
-        assert_gap_path_keeps_open(&mut context, card, button, false);
+        assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
     }
 
     #[test]
@@ -679,7 +692,7 @@ mod tests {
         context
             .layout_document(document(), LayoutViewport::new(800.0, 600.0))
             .unwrap();
-        assert_gap_path_keeps_open(&mut context, card, button, false);
+        assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Top);
     }
 
     #[test]
@@ -691,7 +704,7 @@ mod tests {
             })
             .unwrap();
         relayout(&mut context);
-        assert_gap_path_keeps_open(&mut context, card, button, true);
+        assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Right);
     }
 
     /// Avatar triggers clip their circular chrome; the open card must still
