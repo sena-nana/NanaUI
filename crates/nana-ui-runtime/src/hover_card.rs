@@ -11,11 +11,11 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     ContentFit, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    SemanticColorRole,
+    SemanticColorRole, UI_METRICS,
 };
 
 use crate::gpu_slots::HOST_TEXTURE_RENDERER;
-use crate::popover::{trigger_button_style, trigger_icon_button_style};
+use crate::popover::{MENU_OVERLAY_Z_INDEX, trigger_button_style};
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, InteractionState,
@@ -148,13 +148,46 @@ impl HoverCard {
     }
 
     fn effective_style(&self) -> NodeStyle {
-        if self.trigger_image.is_some() {
-            return self.image_trigger_style();
+        let mut style = if self.trigger_image.is_some() {
+            self.image_trigger_style()
+        } else if self.trigger_icon.is_some() {
+            self.icon_trigger_style()
+        } else {
+            trigger_button_style()
+        };
+        if self.open {
+            // The card chrome is a primitive of this node. Raise it with the
+            // overlay children so a title-bar trigger is not painted under the
+            // page that follows it in document order.
+            Arc::make_mut(&mut style.layout).z_index = Some(MENU_OVERLAY_Z_INDEX);
         }
-        if self.trigger_icon.is_some() {
-            return trigger_icon_button_style();
-        }
-        trigger_button_style()
+        style
+    }
+
+    /// Ghost icon-button chrome: square, no idle fill, no `align_self: Start`.
+    /// Menu-button styling belongs to [`crate::ActionMenu`], not a hover card
+    /// sitting next to toolbar `IconButton`s.
+    fn icon_trigger_style(&self) -> NodeStyle {
+        let size = sanitize_size(self.trigger_size);
+        let mut style = NodeStyle {
+            foreground: Some(SemanticColorRole::Muted),
+            ..NodeStyle::default()
+        };
+        style.interaction.hovered.background = Some(SemanticColorRole::Hover);
+        style.interaction.hovered.foreground = Some(SemanticColorRole::Text);
+        style.interaction.pressed.background = Some(SemanticColorRole::Active);
+        style.interaction.pressed.foreground = Some(SemanticColorRole::Text);
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Px(size));
+        layout.height = Some(LengthSpec::Px(size));
+        layout.min_width = Some(LengthSpec::Px(size));
+        layout.min_height = Some(LengthSpec::Px(size));
+        layout.max_width = Some(LengthSpec::Px(size));
+        layout.max_height = Some(LengthSpec::Px(size));
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        layout.border_radius = Some(UI_METRICS.radius_sm);
+        style
     }
 
     /// Avatar chrome: circular clip, fixed box, neutral placeholder while the
@@ -219,14 +252,13 @@ impl ComponentView for HoverCard {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let open = world.project_menu_presence(id, self.open, mutations);
         // Empty image still uses avatar chrome; do not fall back to a text trigger.
         let trigger = (self.trigger_icon.is_none() && self.trigger_image.is_none())
             .then(|| Arc::clone(&self.trigger))
             .filter(|label| !label.is_empty());
         let visual = StandardVisual::MenuSurface {
             kind: MenuSurfaceKind::HoverCard,
-            open,
+            open: self.open,
             trigger: trigger.clone(),
             trigger_icon: self.trigger_icon,
             trigger_image: self.trigger_image.clone(),
@@ -548,5 +580,55 @@ mod tests {
             placeholder_style.background,
             Some(SemanticColorRole::Subtle)
         );
+    }
+
+    /// Title-bar account glyphs sit next to Ghost `IconButton`s. The trigger
+    /// must be a square of `trigger_size` with no menu-button fill and no
+    /// `align_self: Start` that would pin it to the top of a 36px bar.
+    #[test]
+    fn icon_trigger_is_a_ghost_square_honoring_trigger_size() {
+        let mut context = AppContext::new();
+        let card = context
+            .create_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0),
+            )
+            .unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        let style = context.world().node_style(card.stable_id()).unwrap();
+        assert_eq!(style.layout.align_self, None);
+        assert_eq!(style.layout.width, Some(LengthSpec::Px(28.0)));
+        assert_eq!(style.layout.height, Some(LengthSpec::Px(28.0)));
+        assert!(style.background.is_none());
+        assert!(style.border.is_none());
+        let bounds = context.world().layout_box(card.stable_id()).unwrap();
+        assert!((bounds.width - 28.0).abs() < f32::EPSILON);
+        assert!((bounds.height - 28.0).abs() < f32::EPSILON);
+    }
+
+    /// Opening a hover card must not reuse ActionMenu's pop on the trigger.
+    #[test]
+    fn opening_does_not_scale_or_fade_the_trigger() {
+        let (mut context, card, _) = card_with_button();
+        hover_at(&mut context, document(), Some(card.stable_id()), 0);
+        tick(&mut context, 400);
+        assert!(context.read(card, |card| card.open).unwrap());
+        let extracted = context.world().extract_nodes(&[card.stable_id()]);
+        let layout = extracted[0].source_style.layout.as_ref();
+        assert!(
+            layout.transform.is_none(),
+            "trigger must not pop-scale: {:?}",
+            layout.transform
+        );
+        assert!(
+            layout.opacity.is_none() || layout.opacity == Some(1.0),
+            "trigger must stay opaque: {:?}",
+            layout.opacity
+        );
+        assert_eq!(layout.z_index, Some(MENU_OVERLAY_Z_INDEX));
     }
 }

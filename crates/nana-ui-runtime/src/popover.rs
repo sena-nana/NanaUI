@@ -535,17 +535,9 @@ pub(crate) fn menu_surface_geometry(
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let has_trigger = trigger.is_some() || trigger_icon.is_some() || trigger_image.is_some();
-    // An image trigger's chrome is the avatar element itself, so the surface
-    // region rides the real element box instead of the compact control height.
-    let trigger_h = if has_trigger {
-        if trigger_image.is_some() {
-            bounds.height
-        } else {
-            TRIGGER_HEIGHT
-        }
-    } else {
-        0.0
-    };
+    // Chrome follows the laid-out trigger box; glyph/image sizes are not the
+    // compact control height authored by `trigger_button_style`.
+    let trigger_h = if has_trigger { bounds.height } else { 0.0 };
     // In icon and image modes the trigger text is only the accessible name, so
     // no text region is emitted and the chrome owns the visuals.
     let label = if trigger_icon.is_none() && trigger_image.is_none() {
