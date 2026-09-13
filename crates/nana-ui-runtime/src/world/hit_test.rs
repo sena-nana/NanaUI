@@ -144,7 +144,7 @@ fn overlay_connector_box(trigger: LayoutBox, surface: LayoutBox) -> Option<Layou
     ]
     .into_iter()
     .filter(|(gap, _)| *gap > MIN)
-    .max_by(|a, b| a.0.total_cmp(&b.0))
+    .reduce(|best, next| if next.0 > best.0 { next } else { best })
     .map(|(_, box_)| box_)
 }
 
@@ -1417,5 +1417,9 @@ mod connector_tests {
             overlay_connector_box(box_at(0.0, 0.0, 10.0, 10.0), box_at(14.0, 20.0, 10.0, 10.0))
                 .unwrap();
         assert_eq!((diagonal.y, diagonal.height), (10.0, 10.0));
+        let tied =
+            overlay_connector_box(box_at(0.0, 0.0, 10.0, 10.0), box_at(20.0, 20.0, 10.0, 10.0))
+                .unwrap();
+        assert_eq!((tied.y, tied.height), (10.0, 10.0));
     }
 }
