@@ -4,7 +4,7 @@
  */
 import { computed, h } from "@vue/runtime-core";
 import { createWindowIndex, virtualViewport } from "./virtual-window.js";
-import { useScrollWindow, retainedWindowChildren, retainedKeyIndices, useVirtualActivity } from "./NanaVirtualList.js";
+import { useScrollWindow, useStableVirtualWindow, retainedWindowChildren, retainedKeyIndices, useVirtualActivity } from "./NanaVirtualList.js";
 
 export const NanaVirtualTree = {
   name: "NanaVirtualTree",
@@ -30,7 +30,7 @@ export const NanaVirtualTree = {
     );
 
     const activity = useVirtualActivity(() => ({ count: sizes.value.length, keyAt: props.keyAt, indexOfKey: props.indexOfKey }));
-    const windowed = computed(() => sizes.value.windowFor(virtualViewport({
+    const windowed = useStableVirtualWindow(() => sizes.value.windowFor(virtualViewport({
       offset: [0, y.value], extent: [0, height.value], overscan: [0, props.overscan],
     })));
 

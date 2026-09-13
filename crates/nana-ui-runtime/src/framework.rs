@@ -23,6 +23,7 @@ use std::fmt;
 use std::future::Future;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::ops::Range;
 use std::panic::Location;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -885,6 +886,31 @@ pub(crate) struct TextPointerClick {
     pub count: u8,
 }
 
+/// Published list gate state for retained sync.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VirtualListPublished {
+    range: Range<usize>,
+    len: usize,
+    total_extent: f32,
+    activity: HashSet<StableNodeId>,
+    fingerprint: u64,
+}
+
+/// Published table gate state for retained sync.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct VirtualTablePublished {
+    rows: Range<usize>,
+    columns: Range<usize>,
+    frozen_rows: Range<usize>,
+    frozen_columns: Range<usize>,
+    row_len: usize,
+    column_len: usize,
+    row_extent: f32,
+    column_extent: f32,
+    activity: HashSet<StableNodeId>,
+    fingerprint: u64,
+}
+
 /// Application-owned mapping between visible data keys and retained component
 /// entities. Positioned materialization also keeps explicitly retained and active
 /// editing items, each under a bounded placement container.
@@ -894,6 +920,7 @@ pub struct VirtualListItems<K, C: ComponentView> {
     entities: HashMap<K, Entity<C>>,
     containers: HashMap<K, Entity<crate::Stack>>,
     ime_owner: Option<StableNodeId>,
+    published: Option<VirtualListPublished>,
 }
 
 /// Application-owned visible row/cell identities for a virtual Table. The
@@ -905,6 +932,7 @@ pub struct VirtualTableItems<R, C> {
     rows: HashMap<R, Entity<TableRow>>,
     cells: HashMap<(R, C), Entity<TableCell>>,
     ime_owner: Option<StableNodeId>,
+    published: Option<VirtualTablePublished>,
 }
 
 impl<R, C> Default for VirtualTableItems<R, C> {
@@ -914,6 +942,7 @@ impl<R, C> Default for VirtualTableItems<R, C> {
             rows: HashMap::new(),
             cells: HashMap::new(),
             ime_owner: None,
+            published: None,
         }
     }
 }
@@ -937,6 +966,48 @@ where
 
     pub fn cell_entity(&self, row: &R, column: &C) -> Option<Entity<TableCell>> {
         self.cells.get(&(row.clone(), column.clone())).copied()
+    }
+
+    pub(crate) fn publish_table(
+        &mut self,
+        layout: &VirtualTableLayout,
+        pane: &nana_ui_core::VirtualTableFrozenWindow,
+        activity: HashSet<StableNodeId>,
+        fingerprint: u64,
+    ) {
+        self.published = Some(VirtualTablePublished {
+            rows: pane.rows.body.range.clone(),
+            columns: pane.columns.body.range.clone(),
+            frozen_rows: pane.rows.frozen.clone(),
+            frozen_columns: pane.columns.frozen.clone(),
+            row_len: layout.row_count(),
+            column_len: layout.column_count(),
+            row_extent: layout.row_layout().total_extent(),
+            column_extent: layout.column_layout().total_extent(),
+            activity,
+            fingerprint,
+        });
+    }
+
+    pub(crate) fn table_range_unchanged(
+        &self,
+        layout: &VirtualTableLayout,
+        pane: &nana_ui_core::VirtualTableFrozenWindow,
+        activity: &HashSet<StableNodeId>,
+        fingerprint: u64,
+    ) -> bool {
+        self.published.as_ref().is_some_and(|published| {
+            published.rows == pane.rows.body.range
+                && published.columns == pane.columns.body.range
+                && published.frozen_rows == pane.rows.frozen
+                && published.frozen_columns == pane.columns.frozen
+                && published.row_len == layout.row_count()
+                && published.column_len == layout.column_count()
+                && published.row_extent == layout.row_layout().total_extent()
+                && published.column_extent == layout.column_layout().total_extent()
+                && published.activity == *activity
+                && published.fingerprint == fingerprint
+        })
     }
 }
 
@@ -976,6 +1047,7 @@ impl<K, C: ComponentView> Default for VirtualListItems<K, C> {
             entities: HashMap::new(),
             containers: HashMap::new(),
             ime_owner: None,
+            published: None,
         }
     }
 }
@@ -991,6 +1063,38 @@ where
 
     pub fn entity(&self, key: &K) -> Option<Entity<C>> {
         self.entities.get(key).copied()
+    }
+
+    pub(crate) fn publish_list(
+        &mut self,
+        layout: &VirtualListLayout,
+        window: &VirtualListWindow,
+        activity: HashSet<StableNodeId>,
+        fingerprint: u64,
+    ) {
+        self.published = Some(VirtualListPublished {
+            range: window.range.clone(),
+            len: layout.len(),
+            total_extent: layout.total_extent(),
+            activity,
+            fingerprint,
+        });
+    }
+
+    pub(crate) fn list_range_unchanged(
+        &self,
+        layout: &VirtualListLayout,
+        window: &VirtualListWindow,
+        activity: &HashSet<StableNodeId>,
+        fingerprint: u64,
+    ) -> bool {
+        self.published.as_ref().is_some_and(|published| {
+            published.range == window.range
+                && published.len == layout.len()
+                && published.total_extent == layout.total_extent()
+                && published.activity == *activity
+                && published.fingerprint == fingerprint
+        })
     }
 }
 

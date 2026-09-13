@@ -306,3 +306,104 @@ fn rust_virtual_table_frozen_regions_match_real_clicks() {
     )
     .unwrap();
 }
+
+#[test]
+fn rust_virtual_list_sync_rematerializes_only_when_the_range_changes() {
+    if !offscreen::pixels_available() {
+        return;
+    }
+    let id = DocumentId::new(1).unwrap();
+    let mut document = RuntimeDocument::new(id);
+    let cx = document.context_mut();
+    let scroll = cx
+        .create_component(
+            id,
+            ScrollView::new(ScrollAxes::Vertical).style(NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    width: Some(LengthSpec::Px(320.0)),
+                    height: Some(LengthSpec::Px(160.0)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+    let list = cx.create_component(id, List::new()).unwrap();
+    let mut mutations = MutationQueue::new();
+    mutations.insert(scroll.stable_id(), list.stable_id(), None);
+    cx.commit_mutations(mutations).unwrap();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(32.0, 1_000));
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let mut session = RuntimeAgentSession::new(document, 360, 200).unwrap();
+    session.flush().unwrap();
+    let sync = |session: &mut RuntimeAgentSession,
+                items: &mut VirtualListItems<usize, TextInput>| {
+        session
+            .document_mut()
+            .context_mut()
+            .sync_virtual_list_retained_in(
+                scroll,
+                list,
+                items,
+                &layout,
+                0.0,
+                0,
+                &[],
+                |index| index,
+                |key| Some(*key),
+                |index, _| TextInput::new(format!("Draft {index}")),
+            )
+            .unwrap()
+    };
+
+    sync(&mut session, &mut items);
+    session.flush().unwrap();
+
+    session
+        .document_mut()
+        .context_mut()
+        .scroll_to(scroll, ScrollOffset { x: 0.0, y: 8.0 })
+        .unwrap();
+    session.flush().unwrap();
+    let first = sync(&mut session, &mut items);
+    session.flush().unwrap();
+    let keys = items.mounted_keys().to_vec();
+    assert!(!keys.is_empty());
+
+    session
+        .document_mut()
+        .context_mut()
+        .scroll_to(scroll, ScrollOffset { x: 0.0, y: 16.0 })
+        .unwrap();
+    session.flush().unwrap();
+    let generation = session.document().context().world().generation();
+    let again = sync(&mut session, &mut items);
+    assert_eq!(again.range, first.range);
+    assert_eq!(items.mounted_keys(), keys);
+    assert_eq!(
+        session.document().context().world().generation(),
+        generation
+    );
+
+    session
+        .document_mut()
+        .context_mut()
+        .scroll_to(scroll, ScrollOffset { x: 0.0, y: 32.0 })
+        .unwrap();
+    session.flush().unwrap();
+    let crossed = sync(&mut session, &mut items);
+    session.flush().unwrap();
+    assert_ne!(crossed.range, first.range);
+    assert_ne!(items.mounted_keys(), keys);
+    let visible = items.entity(&crossed.range.start).unwrap();
+    let bounds = session
+        .document()
+        .scene()
+        .draw_node_bounds(visible.stable_id())
+        .unwrap();
+    session.click_xy(bounds.x + 12.0, bounds.y + 12.0).unwrap();
+    assert_eq!(
+        session.document().context().world().focused(id),
+        Some(visible.stable_id())
+    );
+}

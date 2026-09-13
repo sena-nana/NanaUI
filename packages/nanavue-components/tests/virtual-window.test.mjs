@@ -5,6 +5,8 @@ import {
   variableWindow,
   virtualWindow,
   createWindowIndex,
+  windowGeometryEqual,
+  frozenWindowGeometryEqual,
 } from "../src/virtual-window.js";
 
 describe("virtual window geometry", () => {
@@ -105,6 +107,18 @@ test("public index queries sanitize fractional positions and nonfinite counts", 
   const large = uniformWindow(2 ** 32, 1, 100, 20, 0);
   assert.equal(large.start, 100);
   assert.equal(large.end, 120);
+});
+
+test("window geometry is unchanged while scroll stays inside the same range", () => {
+  const index = createWindowIndex({ count: 100, itemExtent: 20 });
+  const origin = index.window(0, 50, 0);
+  assert.equal(origin.start, 0);
+  assert.equal(origin.end, 3);
+  assert.equal(windowGeometryEqual(origin, index.window(5, 50, 0)), true);
+  assert.equal(windowGeometryEqual(origin, index.window(20, 50, 0)), false);
+  const pane = index.frozenWindow(0, 50, 0, 1);
+  assert.equal(frozenWindowGeometryEqual(pane, index.frozenWindow(5, 50, 0, 1)), true);
+  assert.equal(frozenWindowGeometryEqual(pane, index.frozenWindow(20, 50, 0, 1)), false);
 });
 
 

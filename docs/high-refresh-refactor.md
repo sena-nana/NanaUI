@@ -96,8 +96,12 @@ Rust 提供相同几何规则：`VirtualFrozenWindow`、`VirtualTableFrozenWindo
 
 此入口是定位物化的显式选择；旧 `materialize_virtual_list[_in]` / tree 入口保持原先
 仅管理身份、由调用方安排布局的合同。不要在同一个非空 items 实例混用两种入口。
-应用需在视口或数据变化时再次调用物化，待布局发布后通过 `scroll_to` 更新 ScrollView；
-本轮未添加自动调度绑定；Rust 冻结表格使用下述定位入口。
+滚动与视口尺寸走 opt-in `sync_virtual_{list,tree,table}_retained_in`：从 ScrollView 读权威偏移，
+`window_for` 判定 range（含 overscan）；调用方传入的 fingerprint 也参与门控，未变则不提交 mutation。
+数据 key 序列、版本或 retained keys 变化时更新 fingerprint；行高或布局变化先更新 layout，
+再调用 `materialize_virtual_*_retained_in`。
+焦点或 IME 状态变化仍会重走 retained 清理。不要把物化绑在
+`ScrollChanged` 上。Rust 冻结表格在 range 不变时只更新冻结前缀变换。
 
 ## Rust 冻结表格与目标 GPU 存储（续建）
 

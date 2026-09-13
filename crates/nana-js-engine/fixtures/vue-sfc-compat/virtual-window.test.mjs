@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { reactive, createRenderer, nextTick } from "@vue/runtime-core";
+import { reactive, createRenderer, h, nextTick } from "@vue/runtime-core";
 
 // Load the workspace sources against this fixture's pinned Vue installation.
 const sourceBase = new URL("../../../../packages/nanavue-components/src/", import.meta.url);
@@ -266,4 +266,46 @@ test("frozen table automatically retains the active cell on both axes until focu
   assert.ok(!rows().flatMap(cells).includes(editor));
   app.unmount();
   assert.equal(root.children.length, 0);
+});
+
+
+test("frozen table pixel scroll updates pins without rerunning ordinary cell slots", async () => {
+  const Component = (await import(modules.NanaVirtualTable)).NanaVirtualTable;
+  let ordinarySlotCalls = 0;
+  const renderer = createRenderer({
+    createElement: tag => ({tag, props: {}, children: [], layoutBox: {width: 201, height: 101}}),
+    createText: text => ({text}), createComment: text => ({text}),
+    insert(child, parent, anchor) {
+      if (child.parent) child.parent.children.splice(child.parent.children.indexOf(child), 1);
+      child.parent = parent;
+      const at = anchor ? parent.children.indexOf(anchor) : -1;
+      if (at < 0) parent.children.push(child); else parent.children.splice(at, 0, child);
+    },
+    remove(child) { child.parent.children.splice(child.parent.children.indexOf(child), 1); child.parent = null; },
+    setText() {}, setElementText() {}, parentNode: node => node.parent,
+    nextSibling: node => node.parent?.children[node.parent.children.indexOf(node) + 1] ?? null,
+    patchProp(node, key, _old, value) { node.props[key] = value; },
+  });
+  const root = {children: []};
+  const props = {
+    rowCount: 100, columnCount: 100, rowExtent: 20, columnExtent: 40,
+    overscan: 0, frozenRows: 1, frozenColumns: 1,
+  };
+  const app = renderer.createApp({
+    render: () => h(Component, props, {
+      default: slotProps => {
+        if (!slotProps.frozenRow && !slotProps.frozenColumn) ordinarySlotCalls += 1;
+        return [];
+      },
+    }),
+  });
+  app.mount(root);
+  await nextTick();
+  const initialCalls = ordinarySlotCalls;
+  assert.ok(initialCalls > 0);
+  const host = root.children[0];
+  host.props.onScroll({scrollTop: 1, scrollLeft: 1});
+  await nextTick();
+  assert.equal(ordinarySlotCalls, initialCalls);
+  app.unmount();
 });

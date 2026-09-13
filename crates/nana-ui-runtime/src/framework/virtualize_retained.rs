@@ -120,6 +120,7 @@ impl AppContext {
         let ime_owner = focused
             .filter(|id| self.world.ime(*id).is_some())
             .or_else(|| items.ime_owner.filter(|id| self.world.ime(*id).is_some()));
+        let activity = self.activity_items(list.id, owned.keys().copied(), focused, ime_owner);
         let mut active = retained_keys.to_vec();
         for target in [focused, ime_owner].into_iter().flatten() {
             let mut current = Some(target);
@@ -255,10 +256,89 @@ impl AppContext {
             .materializer
             .commit(plan)
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
+        items.publish_list(layout, &window, activity, 0);
         for (id, index, key) in mounted_now {
             on_mount(self, Entity::from_stable_id(id), index, &key)?;
         }
         Ok(window)
+    }
+
+    /// Range-gated list sync from the ScrollView offset. Call from a frame hook;
+    /// data and retained-key changes are represented by `fingerprint`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_virtual_list_retained_in<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        overscan: f32,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.sync_virtual_list_retained_with(
+            scroll,
+            list,
+            items,
+            layout,
+            overscan,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            |_, _, _, _| Ok(()),
+        )
+    }
+
+    /// Range-gated list sync with a post-commit mount hook.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_virtual_list_retained_with<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        list: Entity<List>,
+        items: &mut VirtualListItems<K, C>,
+        layout: &VirtualListLayout,
+        overscan: f32,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+        on_mount: impl FnMut(&mut Self, Entity<C>, usize, &K) -> Result<(), FrameworkError>,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        let viewport = self.virtual_viewport_from_scroll(scroll, [0.0, overscan])?;
+        let window = layout.window_for(viewport);
+        let activity = self.virtual_list_activity(list, items)?;
+        if items.list_range_unchanged(layout, &window, &activity, fingerprint) {
+            return Ok(window);
+        }
+        let result = self.materialize_virtual_list_retained_with(
+            list,
+            items,
+            layout,
+            viewport,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+            on_mount,
+        );
+        if result.is_ok() {
+            items.publish_list(layout, &window, activity, fingerprint);
+        }
+        result
     }
 
     /// Materialize both axes, frozen prefixes and active cells in one commit.
@@ -285,29 +365,7 @@ impl AppContext {
         R: Clone + Eq + Hash,
         C: Clone + Eq + Hash,
     {
-        let mut viewport = viewport;
-        for (axis, total) in [
-            layout.column_layout().total_extent(),
-            layout.row_layout().total_extent(),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let extent = viewport.extent[axis];
-            viewport.extent[axis] = if extent.is_finite() {
-                extent.max(0.0)
-            } else {
-                0.0
-            };
-            let offset = viewport.offset[axis];
-            viewport.offset[axis] = if offset.is_finite() {
-                offset
-                    .max(0.0)
-                    .min((total - viewport.extent[axis]).max(0.0))
-            } else {
-                0.0
-            };
-        }
+        let viewport = clamp_virtual_table_viewport(layout, viewport);
         self.read(table, |_| ())?;
         let document = self
             .world
@@ -362,6 +420,7 @@ impl AppContext {
                 column_key_at,
             )
             .map_err(|_| FrameworkError::InvalidVirtualization)?;
+        let activity = self.activity_items(table.id, cell_keys.keys().copied(), focused, ime);
         let window = self.commit_virtual_table(
             table,
             items,
@@ -371,7 +430,73 @@ impl AppContext {
             build_cell,
         )?;
         items.ime_owner = ime.or(focused).filter(|id| self.world.contains(*id));
+        items.publish_table(
+            layout,
+            &layout.window_with_frozen(viewport, frozen),
+            activity,
+            0,
+        );
         Ok(window)
+    }
+
+    /// Range-gated table sync from the ScrollView offset. Frozen transforms are
+    /// updated on an unchanged window when the offset changes.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_virtual_table_retained_in<R, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        table: Entity<Table>,
+        items: &mut VirtualTableItems<R, C>,
+        layout: &VirtualTableLayout,
+        overscan: [f32; 2],
+        fingerprint: u64,
+        frozen: [usize; 2],
+        retained_cells: &[(R, C)],
+        row_key_at: impl FnMut(usize) -> R,
+        row_index_of_key: impl FnMut(&R) -> Option<usize>,
+        column_key_at: impl FnMut(usize) -> C,
+        column_index_of_key: impl FnMut(&C) -> Option<usize>,
+        build_row: impl FnMut(usize, &R) -> TableRow,
+        build_cell: impl FnMut(usize, &R, usize, &C) -> TableCell,
+    ) -> Result<VirtualTableWindow, FrameworkError>
+    where
+        R: Clone + Eq + Hash,
+        C: Clone + Eq + Hash,
+    {
+        let viewport = clamp_virtual_table_viewport(
+            layout,
+            self.virtual_viewport_from_scroll(scroll, overscan)?,
+        );
+        let pane = layout.window_with_frozen(viewport, frozen);
+        let activity = self.virtual_table_activity(table, items)?;
+        if items.table_range_unchanged(layout, &pane, &activity, fingerprint) {
+            if frozen != [0, 0] {
+                self.pin_virtual_table_frozen(items, viewport)?;
+            }
+            return Ok(VirtualTableWindow {
+                rows: pane.rows.body,
+                columns: pane.columns.body,
+            });
+        }
+        let result = self.materialize_virtual_table_retained_in(
+            table,
+            items,
+            layout,
+            viewport,
+            frozen,
+            retained_cells,
+            row_key_at,
+            row_index_of_key,
+            column_key_at,
+            column_index_of_key,
+            build_row,
+            build_cell,
+        );
+        if result.is_ok() {
+            let pane = layout.window_with_frozen(viewport, frozen);
+            items.publish_table(layout, &pane, activity, fingerprint);
+        }
+        result
     }
 
     /// Positioned virtualization over only the tree's expanded row sequence.
@@ -402,6 +527,234 @@ impl AppContext {
             build,
         )
     }
+
+    /// Range-gated sync over a tree's expanded row sequence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_virtual_tree_retained_in<K, C>(
+        &mut self,
+        scroll: Entity<ScrollView>,
+        tree: Entity<List>,
+        items: &mut VirtualTreeItems<K, C>,
+        layout: &VirtualTreeLayout,
+        overscan: f32,
+        fingerprint: u64,
+        retained_keys: &[K],
+        key_at: impl FnMut(usize) -> K,
+        index_of_key: impl FnMut(&K) -> Option<usize>,
+        build: impl FnMut(usize, &K) -> C,
+    ) -> Result<VirtualListWindow, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        self.sync_virtual_list_retained_in(
+            scroll,
+            tree,
+            &mut items.items,
+            layout.row_layout(),
+            overscan,
+            fingerprint,
+            retained_keys,
+            key_at,
+            index_of_key,
+            build,
+        )
+    }
+
+    fn virtual_ime_target(
+        &self,
+        focused: Option<StableNodeId>,
+        stored: Option<StableNodeId>,
+    ) -> Option<StableNodeId> {
+        focused
+            .filter(|id| self.world.ime(*id).is_some())
+            .or_else(|| stored.filter(|id| self.world.ime(*id).is_some()))
+    }
+
+    fn activity_items(
+        &self,
+        root: StableNodeId,
+        owned: impl IntoIterator<Item = StableNodeId>,
+        focused: Option<StableNodeId>,
+        ime: Option<StableNodeId>,
+    ) -> HashSet<StableNodeId> {
+        let owned = owned.into_iter().collect::<HashSet<_>>();
+        [focused, ime]
+            .into_iter()
+            .flatten()
+            .filter_map(|target| {
+                let mut current = Some(target);
+                while let Some(id) = current {
+                    if id == root {
+                        break;
+                    }
+                    if owned.contains(&id) {
+                        return Some(id);
+                    }
+                    current = self.world.node(id).and_then(|node| node.parent);
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn virtual_list_activity<K, C>(
+        &self,
+        list: Entity<List>,
+        items: &VirtualListItems<K, C>,
+    ) -> Result<HashSet<StableNodeId>, FrameworkError>
+    where
+        K: Clone + Eq + Hash,
+        C: ComponentView,
+    {
+        let document = self
+            .world
+            .node(list.id)
+            .ok_or(FrameworkError::MissingView(list.id))?
+            .document;
+        let focused = self.world.focused(document);
+        let ime = self.virtual_ime_target(focused, items.ime_owner);
+        Ok(self.activity_items(
+            list.id,
+            items.containers.values().map(|entity| entity.id),
+            focused,
+            ime,
+        ))
+    }
+
+    fn virtual_table_activity<R, C>(
+        &self,
+        table: Entity<Table>,
+        items: &VirtualTableItems<R, C>,
+    ) -> Result<HashSet<StableNodeId>, FrameworkError>
+    where
+        R: Clone + Eq + Hash,
+        C: Clone + Eq + Hash,
+    {
+        let document = self
+            .world
+            .node(table.id)
+            .ok_or(FrameworkError::MissingView(table.id))?
+            .document;
+        let focused = self.world.focused(document);
+        let ime = self.virtual_ime_target(focused, items.ime_owner);
+        Ok(self.activity_items(
+            table.id,
+            items.cells.values().map(|entity| entity.id),
+            focused,
+            ime,
+        ))
+    }
+
+    fn virtual_viewport_from_scroll(
+        &self,
+        scroll: Entity<ScrollView>,
+        overscan: [f32; 2],
+    ) -> Result<VirtualViewport, FrameworkError> {
+        self.read(scroll, |_| ())?;
+        let offset = self.world.scroll_offset(scroll.id).unwrap_or_default();
+        let bounds = self.world.layout_box(scroll.id);
+        let metrics = self.world.scroll_metrics(scroll.id);
+        let width = bounds
+            .and_then(|bounds| (bounds.width > 0.0).then_some(bounds.width))
+            .or_else(|| metrics.map(|metrics| metrics.viewport_width))
+            .unwrap_or(0.0)
+            .max(0.0);
+        let height = bounds
+            .and_then(|bounds| (bounds.height > 0.0).then_some(bounds.height))
+            .or_else(|| metrics.map(|metrics| metrics.viewport_height))
+            .unwrap_or(0.0)
+            .max(0.0);
+        Ok(VirtualViewport {
+            offset: [offset.x, offset.y],
+            extent: [width, height],
+            overscan,
+        })
+    }
+
+    fn pin_virtual_table_frozen<R, C>(
+        &mut self,
+        items: &VirtualTableItems<R, C>,
+        viewport: VirtualViewport,
+    ) -> Result<(), FrameworkError>
+    where
+        R: Clone + Eq + Hash,
+        C: Clone + Eq + Hash,
+    {
+        let mut mutations = MutationQueue::new();
+        let mut staged_rows = Vec::new();
+        let mut staged_cells = Vec::new();
+        for entity in items.rows.values().copied() {
+            let Some(transform) = self.read(entity, |row| row.style.layout.transform)? else {
+                continue;
+            };
+            if transform.f == viewport.offset[1] {
+                continue;
+            }
+            let mut row = self.read(entity, Clone::clone)?;
+            Arc::make_mut(&mut row.style.layout).transform = Some(nana_ui_core::PaintTransform {
+                f: viewport.offset[1],
+                ..transform
+            });
+            row.project(entity.id, &self.world, &mut mutations);
+            staged_rows.push((entity.id, row));
+        }
+        for entity in items.cells.values().copied() {
+            let Some(transform) = self.read(entity, |cell| cell.style.layout.transform)? else {
+                continue;
+            };
+            if transform.e == viewport.offset[0] {
+                continue;
+            }
+            let mut cell = self.read(entity, Clone::clone)?;
+            Arc::make_mut(&mut cell.style.layout).transform = Some(nana_ui_core::PaintTransform {
+                e: viewport.offset[0],
+                ..transform
+            });
+            cell.project(entity.id, &self.world, &mut mutations);
+            staged_cells.push((entity.id, cell));
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.world.commit(mutations)?;
+        for (id, row) in staged_rows {
+            self.views.insert(id, Box::new(row));
+        }
+        for (id, cell) in staged_cells {
+            self.views.insert(id, Box::new(cell));
+        }
+        Ok(())
+    }
+}
+
+fn clamp_virtual_table_viewport(
+    layout: &VirtualTableLayout,
+    mut viewport: VirtualViewport,
+) -> VirtualViewport {
+    for (axis, total) in [
+        layout.column_layout().total_extent(),
+        layout.row_layout().total_extent(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let extent = viewport.extent[axis];
+        viewport.extent[axis] = if extent.is_finite() {
+            extent.max(0.0)
+        } else {
+            0.0
+        };
+        let offset = viewport.offset[axis];
+        viewport.offset[axis] = if offset.is_finite() {
+            offset
+                .max(0.0)
+                .min((total - viewport.extent[axis]).max(0.0))
+        } else {
+            0.0
+        };
+    }
+    viewport
 }
 
 pub(super) fn position_table_row(

@@ -216,6 +216,26 @@ export function createWindowIndex({ count = 0, itemExtent = 0, extents } = {}) {
   };
 }
 
+export function windowGeometryEqual(a, b) {
+  return !!a && !!b
+    && a.start === b.start
+    && a.end === b.end
+    && a.leading === b.leading
+    && a.trailing === b.trailing
+    && a.total === b.total;
+}
+
+export function frozenWindowGeometryEqual(a, b) {
+  return !!a && !!b
+    && windowGeometryEqual(a.body, b.body)
+    && a.count === b.count
+    && a.frozenExtent === b.frozenExtent
+    && Array.isArray(a.frozen)
+    && Array.isArray(b.frozen)
+    && a.frozen.length === b.frozen.length
+    && a.frozen.every((index, i) => index === b.frozen[i]);
+}
+
 export function virtualViewport({offset = [0, 0], extent = [0, 0], overscan = [0, 0]} = {}) {
   return {offset: offset.map(sanitizeExtent), extent: extent.map(sanitizeExtent), overscan: overscan.map(sanitizeExtent)};
 }

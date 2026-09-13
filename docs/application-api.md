@@ -241,9 +241,19 @@ cx.materialize_virtual_list_retained_in(
 )?;
 ```
 
-每行要绑事件时用 `materialize_virtual_list_retained_with`，它多收一个 `on_mount`
-回调：**只**为本次新建的行调用一次（滚回已挂载的行不会重复调用），在提交之后执行，
-可以直接 `cx.on(entity, ...)`。滚走释放的行连同 handler 一起释放。
+滚动驱动的窗口用 `sync_virtual_list_retained_in(scroll, list, items, layout, overscan, fingerprint, …)`
+（树/表是 `sync_virtual_tree_retained_in` / `sync_virtual_table_retained_in`）。它从
+ScrollView 读当前 `ScrollOffset` 和视口，用 `window_for`（含 overscan）判断 range；
+range、数据 fingerprint 与活动焦点/IME 状态都没变就不提交 Runtime mutation，仍走平移。
+fingerprint 由应用按 key 序列、数据版本和 retained keys 计算；同长度同 extent 的 key 重排必须改变它。
+range 跨过一行才挂新行、卸旧行；焦点或 IME 失效时会立即释放自动保留项。
+在 `prepare` / 帧钩子里调用；不要绑在 `ScrollChanged` 上（会漏惯性、布局钳位、flush 后偏移）。
+数据 key 序列、版本或 `retained_keys` 变化时更新 fingerprint 后继续调用 sync；行高或布局变化
+先更新 `layout` 再物化。封面、事件、翻页继续放在 `on_mount` / 行差集里，框架不拉图。
+
+每行要绑事件时用 `materialize_virtual_list_retained_with`（或 `sync_virtual_list_retained_with`），
+它多收一个 `on_mount` 回调：**只**为本次新建的行调用一次（滚回已挂载的行不会重复调用），
+在提交之后执行，可以直接 `cx.on(entity, ...)`。滚走释放的行连同 handler 一起释放。
 
 项身份与内容按 key 保持；框架在组件外放置一个非命中容器以维护逻辑位置，
 并管理 List 的完整内容高度。数据重排必须提供最新逆索引；删除、折叠或 key
@@ -259,7 +269,10 @@ row_key_at, row_index_of, column_key_at, column_index_of, build_row, build_cell)
 `VirtualTableLayout` 和 key 数据模型。`frozen` 按 `[列数, 行数]` 排列，`retained_cells`
 是额外保留的 `(行 key, 列 key)`；焦点及 Runtime IME 所在单元格自动保留。
 框架管理表格内容尺寸、行列绝对位置、冻结变换和冻结区域顺序；未指定单元格背景时使用
-Surface。应用维护最新两轴逆索引，在视口/数据变化后调用入口；不要再覆盖受管理的变换。
+Surface。应用维护最新两轴逆索引；数据变化调用 `materialize_virtual_table_retained_in`，
+滚动用 `sync_virtual_table_retained_in(..., overscan, fingerprint, frozen, ...)`。正文与冻结 range、
+fingerprint 和活动焦点/IME 状态都不变时不挂/卸单元格；冻结前缀
+仍按当前偏移更新变换。不要再覆盖受管理的变换。
 离屏导航先 `reveal_cell_with_frozen`，物化、发布布局、滚动，再聚焦目标内的控件。
 列卸载会释放单元格的全部嵌套视图和订阅。持久选择和草稿仍由应用按业务 key 保存。
 

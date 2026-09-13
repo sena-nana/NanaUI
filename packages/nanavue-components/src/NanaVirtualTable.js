@@ -2,9 +2,52 @@
  * NanaVirtualTable — two-axis visible window over Runtime `ScrollView`.
  * Geometry matches `VirtualTableLayout`.
  */
-import { computed, h } from "@vue/runtime-core";
-import { createWindowIndex } from "./virtual-window.js";
-import { useScrollWindow, retainedWindowChildren, retainedKeyIndices, useVirtualActivity } from "./NanaVirtualList.js";
+import { cloneVNode, computed, h, inject, provide } from "@vue/runtime-core";
+import { createWindowIndex, frozenWindowGeometryEqual } from "./virtual-window.js";
+import { useScrollWindow, useStableVirtualWindow, retainedWindowChildren, retainedKeyIndices, useVirtualActivity } from "./NanaVirtualList.js";
+
+const SCROLL_X = "nanaVirtualScrollX";
+const SCROLL_Y = "nanaVirtualScrollY";
+
+const VirtualTableRowPinned = {
+  name: "NanaVirtualTableRowPinned",
+  props: {
+    width: { type: Number, required: true },
+    height: { type: Number, required: true },
+    content: { type: Object, required: true },
+  },
+  setup(props) {
+    const y = inject(SCROLL_Y, { value: 0 });
+    return () => cloneVNode(props.content, {
+      style: {
+        ...props.content.props?.style,
+        width: `${props.width}px`,
+        height: `${props.height}px`,
+        transform: `translateY(${y.value}px)`,
+      },
+    });
+  },
+};
+
+const VirtualTableCellPinned = {
+  name: "NanaVirtualTableCellPinned",
+  props: {
+    width: { type: Number, required: true },
+    height: { type: Number, required: true },
+    content: { type: Object, required: true },
+  },
+  setup(props) {
+    const x = inject(SCROLL_X, { value: 0 });
+    return () => cloneVNode(props.content, {
+      style: {
+        ...props.content.props?.style,
+        width: `${props.width}px`,
+        height: `${props.height}px`,
+        transform: `translateX(${x.value}px)`,
+      },
+    });
+  },
+};
 
 export const NanaVirtualTable = {
   name: "NanaVirtualTable",
@@ -43,14 +86,20 @@ export const NanaVirtualTable = {
       }),
     );
 
+    provide(SCROLL_X, x);
+    provide(SCROLL_Y, y);
     const activity = useVirtualActivity(
       () => ({ count: rowSizes.value.length, keyAt: props.rowKeyAt, indexOfKey: props.rowIndexOfKey }),
       () => ({ count: columnSizes.value.length, keyAt: props.columnKeyAt, indexOfKey: props.columnIndexOfKey }),
     );
-    const rowPane = computed(() => rowSizes.value.frozenWindow(y.value, height.value, props.overscan, props.frozenRows));
-    const rows = computed(() => rowPane.value.body);
-    const columnPane = computed(() => columnSizes.value.frozenWindow(x.value, width.value, props.overscan, props.frozenColumns));
-    const columns = computed(() => columnPane.value.body);
+    const rowPane = useStableVirtualWindow(
+      () => rowSizes.value.frozenWindow(y.value, height.value, props.overscan, props.frozenRows),
+      frozenWindowGeometryEqual,
+    );
+    const columnPane = useStableVirtualWindow(
+      () => columnSizes.value.frozenWindow(x.value, width.value, props.overscan, props.frozenColumns),
+      frozenWindowGeometryEqual,
+    );
     const retainedRows = () => [...rowPane.value.frozen, ...activity.indices(0), ...retainedKeyIndices({
       retainedKeys: props.retainedRowKeys, keyAt: props.rowKeyAt, indexOfKey: props.rowIndexOfKey,
     }, rowSizes.value.length)];
@@ -78,32 +127,59 @@ export const NanaVirtualTable = {
           "data-agent-id": attrs["data-agent-id"] || "nana.virtual-table",
           onScroll,
         },
-        retainedWindowChildren(rowSizes.value, rows.value, retainedRows(), "nana-virtual-table", "y", (row) => {
+        retainedWindowChildren(rowSizes.value, rowPane.value.body, retainedRows(), "nana-virtual-table", "y", (row) => {
           const rowKey = props.rowKeyAt ? props.rowKeyAt(row) : row;
-          return h(
+          const frozenRow = row < rowPane.value.count;
+          const rowHeight = rowSizes.value.prefixAt(row + 1) - rowSizes.value.prefixAt(row);
+          const cells = retainedWindowChildren(columnSizes.value, columnPane.value.body, retainedColumns(), "nana-virtual-table", "x", (column) => {
+            const columnKey = props.columnKeyAt ? props.columnKeyAt(column) : column;
+            const frozenColumn = column < columnPane.value.count;
+            const cellWidth = columnSizes.value.prefixAt(column + 1) - columnSizes.value.prefixAt(column);
+            const content = h(
+              "div",
+              {
+                key: columnKey,
+                class: "nana-virtual-table__cell",
+                style: {
+                  width: `${cellWidth}px`,
+                  height: `${rowHeight}px`,
+                  flexShrink: 0,
+                  position: "relative",
+                  zIndex: frozenColumn ? 1 : 0,
+                  background: frozenRow || frozenColumn ? "var(--bg-elev, #f3f4f6)" : undefined,
+                },
+                ...activity.handlers(row, column),
+              },
+              () => slots.default?.({ row, column, rowKey, columnKey, frozenRow, frozenColumn }) || [],
+            );
+            return frozenColumn ? h(
+              VirtualTableCellPinned,
+              { key: columnKey, width: cellWidth, height: rowHeight, content },
+            ) : content;
+          });
+          const content = h(
             "div",
-            { key: rowKey, class: "nana-virtual-table__row", style: {
-              display: "flex", flexDirection: "row", flexShrink: 0,
-              width: `${columns.value.total}px`,
-              height: `${rowSizes.value.prefixAt(row + 1) - rowSizes.value.prefixAt(row)}px`,
-              position: "relative", zIndex: row < rowPane.value.count ? 2 : 0,
-              transform: row < rowPane.value.count ? `translateY(${y.value}px)` : undefined,
-            } },
-            retainedWindowChildren(columnSizes.value, columns.value, retainedColumns(), "nana-virtual-table", "x", (column) => {
-              const columnKey = props.columnKeyAt ? props.columnKeyAt(column) : column;
-              return h(
-                "div",
-                { key: columnKey, ...activity.handlers(row, column), class: "nana-virtual-table__cell", style: {
-                  width: `${columnSizes.value.prefixAt(column + 1) - columnSizes.value.prefixAt(column)}px`,
-                  height: `${rowSizes.value.prefixAt(row + 1) - rowSizes.value.prefixAt(row)}px`, flexShrink: 0,
-                  position: "relative", zIndex: column < columnPane.value.count ? 1 : 0,
-                  transform: column < columnPane.value.count ? `translateX(${x.value}px)` : undefined,
-                  background: row < rowPane.value.count || column < columnPane.value.count ? "var(--bg-elev, #f3f4f6)" : undefined,
-                } },
-                slots.default?.({ row, column, rowKey, columnKey, frozenRow: row < rowPane.value.count, frozenColumn: column < columnPane.value.count }) || [],
-              );
-            }),
+            {
+              key: rowKey,
+              class: "nana-virtual-table__row",
+              style: {
+                display: "flex",
+                flexDirection: "row",
+                flexShrink: 0,
+                width: `${columnPane.value.body.total}px`,
+                height: `${rowHeight}px`,
+                position: "relative",
+                zIndex: frozenRow ? 2 : 0,
+              },
+            },
+            cells,
           );
+          return frozenRow ? h(VirtualTableRowPinned, {
+            key: rowKey,
+            width: columnPane.value.body.total,
+            height: rowHeight,
+            content,
+          }) : content;
         }),
       );
   },

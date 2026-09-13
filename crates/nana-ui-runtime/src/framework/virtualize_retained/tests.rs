@@ -467,3 +467,332 @@ fn retained_virtual_table_freezes_both_axes_and_preserves_nested_editor() {
     assert!(!cx.views.contains_key(&editor.id));
     assert!(!cx.event_dependencies.contains_key(&editor.id));
 }
+
+fn scroll_port(cx: &mut AppContext, width: f32, height: f32) -> Entity<crate::ScrollView> {
+    let scroll = cx
+        .create_component(document(), crate::ScrollView::new(crate::ScrollAxes::Both))
+        .unwrap();
+    cx.set_scroll_metrics(
+        scroll,
+        crate::ScrollMetrics {
+            viewport_width: width,
+            viewport_height: height,
+            content_width: width.max(10_000.0),
+            content_height: 10_000.0,
+        },
+    )
+    .unwrap();
+    scroll
+}
+
+#[test]
+fn sync_virtual_list_skips_mutation_until_the_visible_range_changes() {
+    use std::sync::{Arc, Mutex};
+
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 50.0);
+    let list = cx.create_component(document(), List::new()).unwrap();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 100));
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let mounted = Arc::new(Mutex::new(Vec::new()));
+    let sync = |cx: &mut AppContext,
+                items: &mut VirtualListItems<usize, TextInput>,
+                seen: &Arc<Mutex<Vec<usize>>>| {
+        let seen = Arc::clone(seen);
+        cx.sync_virtual_list_retained_with(
+            scroll,
+            list,
+            items,
+            &layout,
+            0.0,
+            0,
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index, _| TextInput::new(format!("row {index}")),
+            move |_cx, _entity, index, _key| {
+                seen.lock().unwrap().push(index);
+                Ok(())
+            },
+        )
+        .unwrap()
+    };
+
+    let first = sync(&mut cx, &mut items, &mounted);
+    assert_eq!(first.range, 0..3);
+    let first_keys = items.mounted_keys().to_vec();
+    let first_mounted = mounted.lock().unwrap().clone();
+    assert_eq!(first_mounted, vec![0, 1, 2]);
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 5.0 })
+        .unwrap();
+    let generation = cx.world().generation();
+    let again = sync(&mut cx, &mut items, &mounted);
+    assert_eq!(again.range, 0..3);
+    assert_eq!(items.mounted_keys(), first_keys);
+    assert_eq!(*mounted.lock().unwrap(), first_mounted);
+    assert_eq!(
+        cx.world().generation(),
+        generation,
+        "unchanged range must not submit Runtime mutation"
+    );
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 20.0 })
+        .unwrap();
+    let crossed = sync(&mut cx, &mut items, &mounted);
+    assert_eq!(crossed.range, 1..4);
+    assert_eq!(items.mounted_keys(), &[1, 2, 3]);
+    assert_eq!(*mounted.lock().unwrap(), vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn sync_virtual_list_fingerprint_reacts_to_key_reordering() {
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 50.0);
+    let list = cx.create_component(document(), List::new()).unwrap();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 4));
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let mut keys = vec![0, 1, 2, 3];
+    let sync = |cx: &mut AppContext,
+                items: &mut VirtualListItems<usize, TextInput>,
+                keys: &Vec<usize>,
+                fingerprint| {
+        cx.sync_virtual_list_retained_in(
+            scroll,
+            list,
+            items,
+            &layout,
+            0.0,
+            fingerprint,
+            &[],
+            |index| keys[index],
+            |key| keys.iter().position(|candidate| candidate == key),
+            |index, key| TextInput::new(format!("{index}:{key}")),
+        )
+        .unwrap()
+    };
+
+    sync(&mut cx, &mut items, &keys, 1);
+    let generation = cx.world().generation();
+    keys.swap(0, 1);
+    sync(&mut cx, &mut items, &keys, 2);
+    assert!(cx.world().generation() > generation);
+    assert_eq!(items.mounted_keys(), &[1, 0, 2]);
+}
+
+#[test]
+fn sync_virtual_tree_uses_the_same_range_gate_as_the_list() {
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 50.0);
+    let tree = cx.create_component(document(), List::new()).unwrap();
+    let layout = VirtualTreeLayout::uniform(20.0, [0; 20]);
+    let mut items = VirtualTreeItems::<usize, TextInput>::default();
+    let sync = |cx: &mut AppContext, items: &mut VirtualTreeItems<usize, TextInput>| {
+        cx.sync_virtual_tree_retained_in(
+            scroll,
+            tree,
+            items,
+            &layout,
+            0.0,
+            0,
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |_, _| TextInput::new("tree"),
+        )
+        .unwrap()
+    };
+
+    assert_eq!(sync(&mut cx, &mut items).range, 0..3);
+    let keys = items.mounted_keys().to_vec();
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 5.0 })
+        .unwrap();
+    let generation = cx.world().generation();
+    assert_eq!(sync(&mut cx, &mut items).range, 0..3);
+    assert_eq!(items.mounted_keys(), keys);
+    assert_eq!(cx.world().generation(), generation);
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 20.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).range, 1..4);
+    assert_eq!(items.mounted_keys(), &[1, 2, 3]);
+}
+
+#[test]
+fn sync_virtual_table_pins_frozen_cells_without_remounting_an_unchanged_range() {
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 200.0, 50.0);
+    let table = cx.create_component(document(), Table::new()).unwrap();
+    let layout = VirtualTableLayout::new(
+        std::iter::repeat_n(20.0, 100),
+        (0..20).map(|column| nana_ui_core::TableColumn::new(column.to_string(), 40.0)),
+    );
+    let mut items = VirtualTableItems::<usize, usize>::default();
+    let sync = |cx: &mut AppContext, items: &mut VirtualTableItems<usize, usize>| {
+        cx.sync_virtual_table_retained_in(
+            scroll,
+            table,
+            items,
+            &layout,
+            [0.0; 2],
+            0,
+            [1, 1],
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index| index,
+            |key| Some(*key),
+            |_, _| TableRow::new(),
+            |row, _, column, _| TableCell::new(format!("{row}/{column}")),
+        )
+        .unwrap()
+    };
+
+    let first = sync(&mut cx, &mut items);
+    assert_eq!(first.rows.range.start, 1);
+    let rows = items.mounted_rows().to_vec();
+    let cells = items.cells.len();
+    let header = items.row_entity(&0).unwrap();
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 5.0 })
+        .unwrap();
+    let again = sync(&mut cx, &mut items);
+    assert_eq!(again.rows.range, first.rows.range);
+    assert_eq!(again.columns.range, first.columns.range);
+    assert_eq!(items.mounted_rows(), rows);
+    assert_eq!(items.cells.len(), cells);
+    assert_eq!(
+        cx.world()
+            .node_style(header.id)
+            .unwrap()
+            .layout
+            .transform
+            .unwrap()
+            .f,
+        5.0
+    );
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 20.0 })
+        .unwrap();
+    let crossed = sync(&mut cx, &mut items);
+    assert_eq!(crossed.rows.range, 2..4);
+    assert!(items.mounted_rows().contains(&0));
+    assert!(items.mounted_rows().contains(&2));
+    assert!(items.mounted_rows().contains(&3));
+    assert!(!items.mounted_rows().contains(&1));
+}
+
+#[test]
+fn sync_virtual_list_releases_an_off_window_editor_after_blur() {
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 320.0, 50.0);
+    let list = cx.create_component(document(), List::new()).unwrap();
+    let layout = VirtualListLayout::new(std::iter::repeat_n(20.0, 100));
+    let mut items = VirtualListItems::<usize, TextInput>::default();
+    let sync = |cx: &mut AppContext, items: &mut VirtualListItems<usize, TextInput>| {
+        cx.sync_virtual_list_retained_in(
+            scroll,
+            list,
+            items,
+            &layout,
+            0.0,
+            0,
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index, _| TextInput::new(format!("row {index}")),
+        )
+        .unwrap()
+    };
+
+    sync(&mut cx, &mut items);
+    let editor = items.entity(&0).unwrap();
+    cx.focus_node(document(), editor.id).unwrap();
+    cx.set_ime_preedit(document(), "拼".into(), None).unwrap();
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 20.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).range, 1..4);
+    assert_eq!(items.entity(&0), Some(editor));
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 25.0 })
+        .unwrap();
+    let generation = cx.world().generation();
+    assert_eq!(sync(&mut cx, &mut items).range, 1..4);
+    assert_eq!(items.entity(&0), Some(editor));
+    assert_eq!(cx.world().generation(), generation);
+
+    let mut mutations = MutationQueue::new();
+    cx.clear_ime(document()).unwrap();
+    mutations.request_focus(document(), None);
+    cx.commit_mutations(mutations).unwrap();
+    sync(&mut cx, &mut items);
+    assert!(items.entity(&0).is_none());
+    assert!(!cx.world().contains(editor.id));
+    assert_eq!(items.mounted_keys(), &[1, 2, 3]);
+}
+
+#[test]
+fn sync_virtual_table_releases_an_off_window_cell_after_blur() {
+    let mut cx = AppContext::new();
+    let scroll = scroll_port(&mut cx, 200.0, 50.0);
+    let table = cx.create_component(document(), Table::new()).unwrap();
+    let layout = VirtualTableLayout::new(
+        std::iter::repeat_n(20.0, 100),
+        (0..20).map(|column| nana_ui_core::TableColumn::new(column.to_string(), 40.0)),
+    );
+    let mut items = VirtualTableItems::<usize, usize>::default();
+    let sync = |cx: &mut AppContext, items: &mut VirtualTableItems<usize, usize>| {
+        cx.sync_virtual_table_retained_in(
+            scroll,
+            table,
+            items,
+            &layout,
+            [0.0; 2],
+            0,
+            [1, 1],
+            &[],
+            |index| index,
+            |key| Some(*key),
+            |index| index,
+            |key| Some(*key),
+            |_, _| TableRow::new(),
+            |row, _, column, _| TableCell::new(format!("{row}/{column}")),
+        )
+        .unwrap()
+    };
+
+    sync(&mut cx, &mut items);
+    let cell = items.cell_entity(&1, &2).unwrap();
+    let mut editor = None;
+    cx.mount(cell, |ui| {
+        editor = Some(ui.child("editor", TextInput::new("draft"))?);
+        Ok(())
+    })
+    .unwrap();
+    let editor = editor.unwrap();
+    cx.focus_node(document(), editor.id).unwrap();
+    cx.set_ime_preedit(document(), "拼".into(), None).unwrap();
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 20.0 })
+        .unwrap();
+    assert_eq!(sync(&mut cx, &mut items).rows.range, 2..4);
+    assert_eq!(items.cell_entity(&1, &2), Some(cell));
+
+    cx.scroll_to(scroll, crate::ScrollOffset { x: 0.0, y: 25.0 })
+        .unwrap();
+    let generation = cx.world().generation();
+    assert_eq!(sync(&mut cx, &mut items).rows.range, 2..4);
+    assert_eq!(items.cell_entity(&1, &2), Some(cell));
+    assert!(cx.world().generation() > generation);
+    let generation = cx.world().generation();
+    assert_eq!(sync(&mut cx, &mut items).rows.range, 2..4);
+    assert_eq!(cx.world().generation(), generation);
+
+    let mut mutations = MutationQueue::new();
+    cx.clear_ime(document()).unwrap();
+    mutations.request_focus(document(), None);
+    cx.commit_mutations(mutations).unwrap();
+    sync(&mut cx, &mut items);
+    assert!(items.cell_entity(&1, &2).is_none());
+    assert!(!cx.world().contains(cell.id));
+    assert!(!items.mounted_rows().contains(&1));
+}

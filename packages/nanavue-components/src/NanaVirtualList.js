@@ -2,8 +2,8 @@
  * NanaVirtualList — visible-window list over Runtime `ScrollView`.
  * Geometry matches `VirtualListLayout::window`.
  */
-import { computed, h, nextTick, onMounted, onUnmounted, onUpdated, ref, shallowRef, watchEffect } from "@vue/runtime-core";
-import { createWindowIndex, virtualViewport } from "./virtual-window.js";
+import { computed, h, nextTick, onMounted, onUnmounted, onUpdated, ref, shallowRef, watchEffect, watchSyncEffect } from "@vue/runtime-core";
+import { createWindowIndex, virtualViewport, windowGeometryEqual } from "./virtual-window.js";
 
 export function hostExtent(el, axis) {
   if (!el) return 0;
@@ -19,6 +19,16 @@ export function scrollOffset(ev, axis) {
     return Number(ev?.scrollLeft ?? ev?.offset?.x ?? ev?.x);
   }
   return Number(ev?.scrollTop ?? ev?.offset?.y ?? ev?.y);
+}
+
+/** Publish a new window object only when visible range geometry changes. */
+export function useStableVirtualWindow(compute, equal = windowGeometryEqual) {
+  const windowed = shallowRef(compute());
+  watchSyncEffect(() => {
+    const next = compute();
+    if (!equal(windowed.value, next)) windowed.value = next;
+  });
+  return windowed;
 }
 
 export function useScrollWindow() {
@@ -199,7 +209,7 @@ export const NanaVirtualList = {
     );
 
     const activity = useVirtualActivity(() => ({ count: sizes.value.length, keyAt: props.keyAt, indexOfKey: props.indexOfKey }));
-    const windowed = computed(() => sizes.value.windowFor(virtualViewport({
+    const windowed = useStableVirtualWindow(() => sizes.value.windowFor(virtualViewport({
       offset: [0, y.value], extent: [0, height.value], overscan: [0, props.overscan],
     })));
 
