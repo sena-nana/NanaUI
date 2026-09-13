@@ -855,7 +855,7 @@ impl UiWorld {
 
 impl UiWorld {
     /// Overlay children receive `position: fixed` only from [`Self::effective_layout_style`].
-    fn hit_motion_layout(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
+    pub(super) fn hit_motion_layout(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
         self.motion_layout(id, &self.effective_layout_style(id))
     }
 

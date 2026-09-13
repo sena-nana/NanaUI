@@ -121,7 +121,11 @@ impl UiWorld {
         while let Some(node) = memo.chain.pop() {
             let record = self.nodes.get(node)?;
             let bounds = record.layout;
-            let layout = self.motion_layout(node, &record.style.layout);
+            let layout = self.hit_motion_layout(node);
+            if layout.position == PositionSpec::Fixed {
+                cumulative = (IDENTITY_AFFINE, [0.0, 0.0]);
+                blocks_3d = false;
+            }
             let local = if blocks_3d && layout.transform_3d.is_some() {
                 (IDENTITY_AFFINE, [0.0, 0.0])
             } else {
