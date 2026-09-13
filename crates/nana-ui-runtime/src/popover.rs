@@ -1087,13 +1087,39 @@ mod tests {
     #[test]
     fn scrolled_popover_overlay_hit_matches_accessibility_bounds() {
         let mut context = AppContext::new();
+        let page = context
+            .create_component(
+                document(),
+                crate::ScrollView::new(crate::ScrollAxes::Vertical).style(
+                    crate::Stack::column(0.0)
+                        .width(LengthSpec::Fill)
+                        .height(LengthSpec::Px(240.0))
+                        .node_style(),
+                ),
+            )
+            .unwrap();
+        let column = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).width(LengthSpec::Fill),
+            )
+            .unwrap();
+        let spacer = context
+            .create_component(
+                document(),
+                crate::Stack::column(0.0).height(LengthSpec::Px(400.0)),
+            )
+            .unwrap();
         let popover = context
             .create_component(
                 document(),
                 Popover::new().trigger("选择草稿").width(240.0).open(true),
             )
             .unwrap();
-        let scroll = context
+        context.append_child(page, column).unwrap();
+        context.append_child(column, spacer).unwrap();
+        context.append_child(column, popover).unwrap();
+        let overlay = context
             .create_component(
                 document(),
                 crate::ScrollView::new(crate::ScrollAxes::Vertical).style(
@@ -1110,8 +1136,8 @@ mod tests {
                 crate::Stack::column(6.0).width(LengthSpec::Fill),
             )
             .unwrap();
-        context.append_child(popover, scroll).unwrap();
-        context.append_child(scroll, list).unwrap();
+        context.append_child(popover, overlay).unwrap();
+        context.append_child(overlay, list).unwrap();
         let mut last = None;
         for index in 0..24 {
             let item = context
@@ -1121,22 +1147,26 @@ mod tests {
             last = Some(item);
         }
         let last = last.unwrap();
+        let viewport = LayoutViewport::new(320.0, 400.0);
+        context.layout_document(document(), viewport).unwrap();
         context
-            .layout_document(document(), LayoutViewport::new(320.0, 800.0))
+            .scroll_to(page, crate::ScrollOffset { x: 0.0, y: 160.0 })
             .unwrap();
         context
             .scroll_to(
-                scroll,
+                overlay,
                 crate::ScrollOffset {
                     x: 0.0,
                     y: 1_000_000.0,
                 },
             )
             .unwrap();
-        context
-            .layout_document(document(), LayoutViewport::new(320.0, 800.0))
-            .unwrap();
+        context.layout_document(document(), viewport).unwrap();
         context.rebuild_hit_test(document());
+        assert_eq!(
+            context.world().scroll_offset(page.stable_id()).map(|o| o.y),
+            Some(160.0)
+        );
         let last_id = last.stable_id();
         let bounds = context
             .world()
@@ -1153,7 +1183,7 @@ mod tests {
         assert_eq!(
             hit,
             Some(last_id),
-            "scrolled overlay a11y center must hit that item: {bounds:?} -> {hit:?}"
+            "overlay a11y center must ignore ancestor page scroll: {bounds:?} -> {hit:?}"
         );
     }
 }
