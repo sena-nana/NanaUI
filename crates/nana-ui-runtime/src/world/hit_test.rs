@@ -508,7 +508,7 @@ impl HitIndex {
                     let child = indexed.children[slot].expect("live child bounds");
                     if !emitted_menu && self.entries[&child].entry.z_index <= menu_z {
                         emitted_menu = true;
-                        if emit(id) {
+                        if node.hittable && emit(id) {
                             return true;
                         }
                     }
@@ -518,7 +518,7 @@ impl HitIndex {
             return true;
         }
 
-        if !emitted_menu && emit(id) {
+        if !emitted_menu && node.hittable && emit(id) {
             return true;
         }
         if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
@@ -823,7 +823,9 @@ impl UiWorld {
             candidates.push(id);
             false
         });
-        candidates.retain(|id| !self.motion_blocks_input(*id));
+        candidates.retain(|id| {
+            !self.motion_blocks_input(*id) && self.validate_pointer_target(document, *id).is_ok()
+        });
         if forest.viewport_hit_at(x, y) {
             candidates
                 .sort_by_cached_key(|id| std::cmp::Reverse(self.hit_paint_key(forest, *id, x, y)));
@@ -850,8 +852,12 @@ impl UiWorld {
         let forest = self.hit_test_index.get(&document)?;
         let mut found = None;
         forest.visit_roots(x, y, &mut |id| {
-            found = Some(id);
-            true
+            if self.validate_pointer_target(document, id).is_ok() {
+                found = Some(id);
+                true
+            } else {
+                false
+            }
         });
         found
     }
@@ -1057,16 +1063,22 @@ impl UiWorld {
                 && used_pe.hittable()
                 && style.pointer_events.hittable()
                 && !confirm_busy;
+            // Connector bounds live on the first overlay child so the gap
+            // between a HoverCard trigger and its card stays in the hit
+            // tree. Emitting that child when it cannot receive pointer
+            // input fails host dispatch (`NotPointerInteractive`).
             let menu = hittable
-                .then(|| self.component_geometry(id))
-                .flatten()
-                .and_then(|geometry| match geometry {
-                    crate::ComponentGeometry::Select {
-                        menu: Some(menu), ..
-                    } => Some(menu.surface),
-                    _ => None,
+                .then(|| {
+                    self.component_geometry(id)
+                        .and_then(|geometry| match geometry {
+                            crate::ComponentGeometry::Select {
+                                menu: Some(menu), ..
+                            } => Some(menu.surface),
+                            _ => None,
+                        })
+                        .or_else(|| self.overlay_connector_hit(id))
                 })
-                .or_else(|| self.overlay_connector_hit(id));
+                .flatten();
             let index = built.len();
             built.push(BuiltHit {
                 entry: HitEntry {
