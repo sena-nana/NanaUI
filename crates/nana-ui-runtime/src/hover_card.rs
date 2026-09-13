@@ -593,23 +593,21 @@ mod tests {
         };
         let cx = trigger.x + trigger.width / 2.0;
         let cy = trigger.y + trigger.height / 2.0;
-        let content_x = content_box.x + content_box.width / 2.0;
-        let content_y = content_box.y + content_box.height / 2.0;
-        let path = if along_x {
-            [
-                (cx, cy, 450u64),
-                (edge + step, cy, 580),
-                (mid, cy, 710),
-                (content_x, content_y, 840),
-            ]
+        let (edge_x, edge_y, mid_x, mid_y) = if along_x {
+            (edge + step, cy, mid, cy)
         } else {
-            [
-                (cx, cy, 450u64),
-                (cx, edge + step, 580),
-                (cx, mid, 710),
-                (content_x, content_y, 840),
-            ]
+            (cx, edge + step, cx, mid)
         };
+        let path = [
+            (cx, cy, 450u64),
+            (edge_x, edge_y, 580),
+            (mid_x, mid_y, 710),
+            (
+                content_box.x + content_box.width / 2.0,
+                content_box.y + content_box.height / 2.0,
+                840,
+            ),
+        ];
         for (x, y, at_ms) in path {
             let hit = hover_point(context, x, y, at_ms);
             tick(context, at_ms + 130);
@@ -624,11 +622,7 @@ mod tests {
     #[test]
     fn pointer_path_from_titlebar_trigger_across_the_gap_keeps_the_card_open() {
         let (mut context, card, button, body) = desktop_shell_account_hover_card();
-        let card_id = card.stable_id();
-        hover_at(&mut context, document(), Some(card_id), 0);
-        tick(&mut context, 400);
-        relayout(&mut context);
-        context.rebuild_hit_test(document());
+        assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
         let button_id = button.stable_id();
         let content = context.world().layout_box(button_id).unwrap();
         let body_box = context.world().layout_box(body.stable_id()).unwrap();
@@ -641,7 +635,6 @@ mod tests {
             Some(button_id),
             "titlebar hover card must beat the fill body: content={content:?} body={body_box:?}"
         );
-        assert_gap_path_keeps_open(&mut context, card, button, PopoverPlacement::Bottom);
     }
 
     #[test]

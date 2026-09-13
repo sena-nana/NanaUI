@@ -104,40 +104,44 @@ fn overlay_connector_box(trigger: LayoutBox, surface: LayoutBox) -> Option<Layou
     let trigger_bottom = trigger.y + trigger.height;
     let surface_right = surface.x + surface.width;
     let surface_bottom = surface.y + surface.height;
+    let below = surface.y - trigger_bottom;
+    let above = trigger.y - surface_bottom;
+    let rightward = surface.x - trigger_right;
+    let leftward = trigger.x - surface_right;
     [
         (
-            surface.y - trigger_bottom,
+            below,
             LayoutBox {
                 x,
                 y: trigger_bottom,
                 width: right - x,
-                height: surface.y - trigger_bottom,
+                height: below,
             },
         ),
         (
-            trigger.y - surface_bottom,
+            above,
             LayoutBox {
                 x,
                 y: surface_bottom,
                 width: right - x,
-                height: trigger.y - surface_bottom,
+                height: above,
             },
         ),
         (
-            surface.x - trigger_right,
+            rightward,
             LayoutBox {
                 x: trigger_right,
                 y,
-                width: surface.x - trigger_right,
+                width: rightward,
                 height: bottom - y,
             },
         ),
         (
-            trigger.x - surface_right,
+            leftward,
             LayoutBox {
                 x: surface_right,
                 y,
-                width: trigger.x - surface_right,
+                width: leftward,
                 height: bottom - y,
             },
         ),
