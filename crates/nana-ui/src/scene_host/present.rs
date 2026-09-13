@@ -5,20 +5,94 @@ use super::*;
 use crate::SceneGpuRendererRegistry;
 
 impl<Program: RuntimeProgram> SceneReady<Program> {
+    /// `true` when prepare ran (encode may have been skipped). `false` on abort.
+    pub(super) fn tick_hidden_gpu(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) -> bool {
+        if self.render_suspended {
+            return false;
+        }
+        if self.graphics.take_device_lost() {
+            self.recover_device(event_loop);
+            return false;
+        }
+        if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+            return false;
+        }
+        self.program.prepare_window_frame(id, &self.context_for(id));
+        if !super::schedule::drawable_surface(self.geometry_of(id).physical_size) {
+            return true;
+        }
+        let Some(producers) = self.program.scene_resource_producers(id) else {
+            return true;
+        };
+        let Some(scene) = self
+            .program
+            .read_document(id, |document| document.shared_scene())
+        else {
+            return false;
+        };
+        let resources = self.graphics.resources();
+        let device = resources.device();
+        let queue = resources.queue();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("NanaUI hidden gpu tick"),
+        });
+        match producers.encode_scene(scene.as_ref(), device, queue, &mut encoder) {
+            Ok(prepared) => {
+                let submission = queue.submit([encoder.finish()]);
+                prepared.submitted(device, submission);
+                true
+            }
+            Err(error) => {
+                drop(encoder);
+                self.program.host_failure(HostFailure::ResourceProduction {
+                    window: id,
+                    error: error.to_string(),
+                });
+                false
+            }
+        }
+    }
+
+    fn rearm_frame_demand(&mut self, id: WindowId) {
+        let now = Instant::now();
+        let demand = self.program.frame_demand(id);
+        self.frame_schedules
+            .entry(id)
+            .or_default()
+            .defer(demand, now);
+    }
+
+    fn serve_frame_demand(&mut self, id: WindowId) {
+        let now = Instant::now();
+        let demand = self.program.frame_demand(id);
+        self.frame_schedules
+            .entry(id)
+            .or_default()
+            .update(demand, now);
+    }
+
     pub(super) fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         if self.render_suspended || !self.can_present(id) {
+            self.rearm_frame_demand(id);
             return;
         }
         if self.graphics.take_device_lost() {
             self.recover_device(event_loop);
+            self.rearm_frame_demand(id);
             return;
         }
         if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+            self.rearm_frame_demand(id);
             return;
         }
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
         if event_loop.exiting() || self.render_suspended {
+            self.rearm_frame_demand(id);
             return;
         }
         self.resize_window(id);
@@ -33,6 +107,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         else {
             self.program
                 .host_failure(HostFailure::MissingDocument { window: id });
+            self.rearm_frame_demand(id);
             return;
         };
         let update = match flush {
@@ -44,10 +119,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     window: id,
                     error: error.to_string(),
                 });
+                self.rearm_frame_demand(id);
                 return;
             }
         };
         let Some(pending) = self.accessibility_pending_mut(id) else {
+            self.rearm_frame_demand(id);
             return;
         };
         pending.stage(update.accessibility);
@@ -57,6 +134,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         else {
             self.program
                 .host_failure(HostFailure::MissingDocument { window: id });
+            self.rearm_frame_demand(id);
             return;
         };
         self.sync_native_browsers(id, scene.as_ref());
@@ -69,6 +147,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 // after the redraw guard above admitted it.
                 self.program
                     .host_failure(HostFailure::AuxiliarySurfaceLost { window: id });
+                self.rearm_frame_demand(id);
                 return;
             };
             auxiliary.surface.format()
@@ -79,8 +158,12 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.request_redraw(id);
                 return;
             }
-            Ok(HostedSurfaceFrame::Skipped) => return,
+            Ok(HostedSurfaceFrame::Skipped) => {
+                self.rearm_frame_demand(id);
+                return;
+            }
             Err(error) => {
+                self.rearm_frame_demand(id);
                 self.suspend_rendering(error);
                 return;
             }
@@ -109,6 +192,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                         window: id,
                         error: error.to_string(),
                     });
+                    self.rearm_frame_demand(id);
                     return;
                 }
             }
@@ -181,6 +265,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 self.discard_frame(id, frame);
                 self.program
                     .host_failure(HostFailure::ResourceProduction { window: id, error });
+                self.rearm_frame_demand(id);
                 return;
             }
             let renderer = self.native_renderers.entry(format).or_default().clone();
@@ -206,7 +291,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 window: id,
                 error: error.to_string(),
             });
-            self.request_redraw(id);
+            self.rearm_frame_demand(id);
             return;
         }
         let submit_started = std::time::Instant::now();
@@ -217,6 +302,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.painter_mut(format)
             .record_submit(submit_started.elapsed());
         self.graphics.present(frame);
+        self.serve_frame_demand(id);
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition
             && let Err(error) = composition.commit()

@@ -69,7 +69,9 @@ scene_gpu_renderers / scene_resource_producers
 
 无变更时 flush 是空转，宿主不应空刷。动画、实时 GPU、普通 UI 的唤醒是分开的：一块实时画面在动，不该迫使整棵 Runtime 全量更新。
 
-`FrameDemand` 指定按需、截止时间或持续刷新。纹理内容更新通过
+`FrameDemand` 指定按需、截止时间或持续刷新。窗口被遮挡或最小化时宿主仍按
+`FrameDemand` 调用 `prepare_window_frame`，不 flush、不获取 Surface、不 present。
+0 维仍 prepare，producer encode 只在尺寸可画时跑。纹理内容更新通过
 `HostTextureRegistry::slot` 取得的 `TextureSlot` 通知引用该资源的窗口。
 已落地范围与性能证据见 [高刷新重构](high-refresh-refactor.md)。
 

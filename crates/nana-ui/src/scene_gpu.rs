@@ -146,7 +146,10 @@ pub struct SceneResourceEncodeContext<'a> {
 }
 
 /// Advanced graph-scheduled offscreen on the HostTexture path.
-/// Prefer `prepare_window_frame`. The host encodes preparation before UI sampling and submits the frame once.
+/// Prefer `prepare_window_frame`. Visible frames encode on the Surface encoder
+/// and submit with UI paint; hidden ticks encode without a Surface and submit
+/// immediately. [`Self::submitted`] means this encode was queued, not that a
+/// UI frame sampling it has presented.
 pub trait SceneResourceProducer: fmt::Debug + Send + Sync + 'static {
     /// Encode one preparation pass. Returning an error drops this pass without
     /// submission; implementations must not retain a pending submission token
@@ -308,6 +311,7 @@ pub struct PreparedSceneResources {
 }
 
 impl PreparedSceneResources {
+    /// The host queued this encode. Hidden ticks call this without presenting.
     pub fn submitted(self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) {
         for (node, producer) in self.nodes {
             producer.submitted(&node, device, submission.clone());

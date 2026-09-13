@@ -60,8 +60,8 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | `theme_mode` | 深色 / 浅色 |
 | `window_material_mode` | 可选；默认实色 |
 | `host_textures` | 默认；slot → `HostTexture` |
-| `prepare_window_frame` | flush 前准备纹理 |
-| `window_frame_presented` | present 后释放旧资源 |
+| `prepare_window_frame` | flush 前准备纹理。窗口遮挡或最小化时 `FrameDemand` 到期仍会调用，包括 0 维；不 flush、不 present。producer encode 仅在尺寸可画时跑 |
+| `window_frame_presented` | present 后释放旧资源。隐藏 GPU tick 不调用 |
 | `scene_gpu_renderers` | 高级。`None` = 演示 `"gpu-view"`；空表 = 不画 |
 | `scene_resource_producers` | 高级。按图离屏；第一次可忽略 |
 | `bind_window` | present 之后填内容 |

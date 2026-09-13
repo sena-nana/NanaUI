@@ -25,7 +25,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
-        let frame_deadline = self.schedule_presentations(now);
+        let frame_deadline = self.schedule_presentations(event_loop, now);
         let next_wakeup = [self.next_gpu_retry, self.next_wakeup(), frame_deadline]
             .into_iter()
             .flatten()
@@ -39,7 +39,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             })
     }
 
-    fn schedule_presentations(&mut self, now: Instant) -> Option<Instant> {
+    fn schedule_presentations(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        now: Instant,
+    ) -> Option<Instant> {
         let changed = std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
         for id in changed {
             if self.can_present(id) {
@@ -48,20 +52,40 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         let mut next = None;
         for id in self.known_window_ids() {
-            if self.render_suspended || !self.can_present(id) {
+            if self.render_suspended {
                 self.frame_schedules.remove(&id);
                 continue;
             }
             let demand = self.program.frame_demand(id);
-            let (due, deadline) = self
-                .frame_schedules
-                .entry(id)
-                .or_default()
-                .update(demand, now);
-            if due {
-                self.request_redraw(id);
-            }
-            if let Some(deadline) = deadline {
+            let drawable = drawable_surface(self.geometry_of(id).physical_size);
+            let due = self.frame_schedules.entry(id).or_default().due(demand, now);
+            let tick = frame_tick(self.can_present(id), due, drawable);
+            let (deadline, armed_at) = match tick {
+                FrameTick::Present => {
+                    self.request_redraw(id);
+                    (
+                        self.frame_schedules.entry(id).or_default().arm(demand, now),
+                        now,
+                    )
+                }
+                FrameTick::GpuOnly => {
+                    let served = self.tick_hidden_gpu(event_loop, id);
+                    let armed_at = Instant::now();
+                    let demand = self.program.frame_demand(id);
+                    let schedule = self.frame_schedules.entry(id).or_default();
+                    let deadline = if served {
+                        schedule.update(demand, armed_at).1
+                    } else {
+                        schedule.defer(demand, armed_at)
+                    };
+                    (deadline, armed_at)
+                }
+                FrameTick::None => (
+                    self.frame_schedules.entry(id).or_default().arm(demand, now),
+                    now,
+                ),
+            };
+            if let Some(deadline) = deadline.filter(|deadline| *deadline > armed_at) {
                 next = Some(next.map_or(deadline, |old: Instant| old.min(deadline)));
             }
         }
@@ -146,5 +170,52 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         update = update.merge(self.drain_all_program_messages());
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameTick {
+    None,
+    Present,
+    GpuOnly,
+}
+
+pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
+    physical_size.0 > 0 && physical_size.1 > 0
+}
+
+fn frame_tick(can_present: bool, demand_due: bool, drawable: bool) -> FrameTick {
+    if !demand_due {
+        FrameTick::None
+    } else if can_present {
+        if drawable {
+            FrameTick::Present
+        } else {
+            FrameTick::None
+        }
+    } else {
+        FrameTick::GpuOnly
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FrameTick, drawable_surface, frame_tick};
+
+    #[test]
+    fn due_hidden_windows_tick_gpu_without_presenting() {
+        assert_eq!(frame_tick(false, true, true), FrameTick::GpuOnly);
+        assert_eq!(frame_tick(true, true, true), FrameTick::Present);
+        assert_eq!(frame_tick(false, false, true), FrameTick::None);
+        assert_eq!(frame_tick(true, false, true), FrameTick::None);
+        assert_eq!(frame_tick(true, true, false), FrameTick::None);
+        assert_eq!(frame_tick(false, true, false), FrameTick::GpuOnly);
+    }
+
+    #[test]
+    fn zero_size_is_not_a_presentable_surface() {
+        assert!(!drawable_surface((0, 100)));
+        assert!(!drawable_surface((200, 0)));
+        assert!(drawable_surface((200, 100)));
     }
 }

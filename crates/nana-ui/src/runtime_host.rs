@@ -434,8 +434,11 @@ pub trait RuntimeProgram: Sized + 'static {
     }
 
     /// Acquire application-owned frame resources immediately before the host
-    /// flushes and paints this window. Resources retired here must remain alive
-    /// until [`Self::window_frame_presented`] confirms Surface submission.
+    /// flushes and paints this window. Also runs when [`Self::frame_demand`] is
+    /// due while the window is occluded or minimised, including 0-size
+    /// geometry: that hidden tick does not flush, acquire a Surface, or call
+    /// [`Self::window_frame_presented`]. Keep this method cheap; do not retire
+    /// textures the last presented UI frame still samples.
     fn prepare_window_frame(
         &mut self,
         _id: WindowId,
@@ -444,7 +447,8 @@ pub trait RuntimeProgram: Sized + 'static {
     }
 
     /// Release resources retired by [`Self::prepare_window_frame`] only after
-    /// the host has submitted and presented this window's frame.
+    /// the host has submitted and presented this window's frame. Hidden GPU
+    /// ticks do not call this.
     fn window_frame_presented(
         &mut self,
         _id: WindowId,
@@ -955,15 +959,13 @@ pub(crate) struct FrameSchedule {
 }
 
 impl FrameSchedule {
+    pub(crate) fn due(&self, demand: FrameDemand, now: Instant) -> bool {
+        self.armed_deadline(demand, now)
+            .is_some_and(|deadline| deadline <= now)
+    }
+
     pub(crate) fn update(&mut self, demand: FrameDemand, now: Instant) -> (bool, Option<Instant>) {
-        if self.demand != demand {
-            self.demand = demand;
-            self.deadline = match demand {
-                FrameDemand::OnDemand => None,
-                FrameDemand::At(at) => Some(at),
-                FrameDemand::Continuous(_) => Some(now),
-            };
-        }
+        self.arm(demand, now);
         let due = self.deadline.is_some_and(|deadline| deadline <= now);
         if due {
             self.deadline = match demand {
@@ -976,7 +978,48 @@ impl FrameSchedule {
         }
         (due, self.deadline)
     }
+
+    pub(crate) fn arm(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        if self.demand != demand {
+            self.demand = demand;
+            self.deadline = Self::fresh_deadline(demand, now);
+        }
+        self.deadline
+    }
+
+    pub(crate) fn defer(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        self.demand = demand;
+        self.deadline = match demand {
+            FrameDemand::OnDemand => None,
+            FrameDemand::At(at) => {
+                let retry = now + PRESENT_RETRY;
+                Some(if at > retry { at } else { retry })
+            }
+            FrameDemand::Continuous(fps) => {
+                next_continuous_deadline(now, now, continuous_period(fps))
+            }
+        };
+        self.deadline
+    }
+
+    fn armed_deadline(&self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        if self.demand == demand {
+            self.deadline
+        } else {
+            Self::fresh_deadline(demand, now)
+        }
+    }
+
+    fn fresh_deadline(demand: FrameDemand, now: Instant) -> Option<Instant> {
+        match demand {
+            FrameDemand::OnDemand => None,
+            FrameDemand::At(at) => Some(at),
+            FrameDemand::Continuous(_) => Some(now),
+        }
+    }
 }
+
+const PRESENT_RETRY: std::time::Duration = std::time::Duration::from_millis(16);
 
 fn continuous_period(fps: std::num::NonZeroU32) -> std::time::Duration {
     std::time::Duration::from_secs_f64(1.0 / f64::from(fps.get()))
@@ -1003,33 +1046,80 @@ mod frame_schedule_tests {
     use super::*;
     use std::time::Duration;
 
+    fn fps(n: u32) -> FrameDemand {
+        FrameDemand::Continuous(std::num::NonZeroU32::new(n).unwrap())
+    }
+
     #[test]
     fn continuous_skips_missed_ticks_and_deadline_fires_once() {
         let now = Instant::now();
         let mut schedule = FrameSchedule::default();
-        let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(120).unwrap());
-        assert!(schedule.update(demand, now).0);
-        assert!(!schedule.update(demand, now).0);
+        assert!(schedule.update(fps(120), now).0);
+        assert!(!schedule.update(fps(120), now).0);
         let later = now + Duration::from_secs(1);
-        let (due, next) = schedule.update(demand, later);
+        let (due, next) = schedule.update(fps(120), later);
         assert!(due);
         assert!(next.unwrap() > later);
-        assert!(!schedule.update(demand, later).0);
+        assert!(!schedule.update(fps(120), later).0);
         assert!(schedule.update(FrameDemand::At(later), later).0);
         assert!(!schedule.update(FrameDemand::At(later), later).0);
         assert_eq!(schedule.update(FrameDemand::OnDemand, later), (false, None));
     }
 
     #[test]
+    fn due_peek_does_not_consume() {
+        let now = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.due(fps(60), now));
+        assert!(schedule.due(fps(60), now));
+        assert!(schedule.update(fps(60), now).0);
+        assert!(!schedule.due(fps(60), now));
+    }
+
+    #[test]
+    fn at_demand_reschedules_when_the_instant_moves() {
+        let t0 = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.update(FrameDemand::At(t0), t0).0);
+        assert_eq!(schedule.update(FrameDemand::At(t0), t0), (false, None));
+        let t1 = t0 + Duration::from_millis(16);
+        let (due, next) = schedule.update(FrameDemand::At(t1), t0);
+        assert!(!due);
+        assert_eq!(next, Some(t1));
+    }
+
+    #[test]
+    fn update_consumes_a_due_at() {
+        let t0 = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.due(FrameDemand::At(t0), t0));
+        assert_eq!(schedule.update(FrameDemand::At(t0), t0), (true, None));
+        assert!(!schedule.due(FrameDemand::At(t0), t0));
+    }
+
+    #[test]
+    fn defer_retries_after_backoff() {
+        let t0 = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.update(FrameDemand::At(t0), t0).0);
+        let next = schedule.defer(FrameDemand::At(t0), t0).expect("retry");
+        assert!(next > t0);
+        assert!(!schedule.due(FrameDemand::At(t0), t0));
+        assert!(schedule.due(FrameDemand::At(t0), next));
+        let next = schedule.defer(fps(60), t0).expect("period");
+        assert!(next > t0);
+        assert!(!schedule.due(fps(60), t0));
+    }
+
+    #[test]
     fn continuous_keeps_phase_when_a_frame_runs_late() {
         let start = Instant::now();
         let mut schedule = FrameSchedule::default();
-        let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(120).unwrap());
-        assert!(schedule.update(demand, start).0);
-        let first_deadline = schedule.update(demand, start).1.expect("period deadline");
+        assert!(schedule.update(fps(120), start).0);
+        let first_deadline = schedule.update(fps(120), start).1.expect("period deadline");
         let period = first_deadline.saturating_duration_since(start);
         let late = first_deadline + Duration::from_micros(250);
-        let (due, next) = schedule.update(demand, late);
+        let (due, next) = schedule.update(fps(120), late);
         assert!(due);
         let next = next.expect("phase-locked deadline");
         assert_eq!(next, first_deadline + period);
