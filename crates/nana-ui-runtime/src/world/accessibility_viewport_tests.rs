@@ -218,6 +218,30 @@ fn assert_hit_at_accessible_center(world: &UiWorld) {
 }
 
 #[test]
+fn fixed_node_accessibility_bounds_ignore_ancestor_scroll() {
+    let mut world = fixture();
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        node(3),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                position: nana_ui_core::PositionSpec::Fixed,
+                ..LayoutStyle::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world.rebuild_hit_test(document());
+    let bounds = button_bounds(&world);
+    assert_eq!(
+        bounds.y, 260.0,
+        "Fixed boxes are viewport-relative and must not pick up ancestor scroll"
+    );
+    assert_hit_at_accessible_center(&world);
+}
+
+#[test]
 fn accessible_bounds_include_nested_scroll_without_changing_layout() {
     let world = fixture();
     let bounds = button_bounds(&world);

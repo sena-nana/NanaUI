@@ -123,6 +123,7 @@ impl UiWorld {
             let bounds = record.layout;
             let layout = self.hit_motion_layout(node);
             if layout.position == PositionSpec::Fixed {
+                // Viewport-relative; ancestors cannot scroll or clip this branch.
                 cumulative = (IDENTITY_AFFINE, [0.0, 0.0]);
                 blocks_3d = false;
             }
