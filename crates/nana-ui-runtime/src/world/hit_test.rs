@@ -93,6 +93,61 @@ fn union_bounds(a: LayoutBox, b: LayoutBox) -> LayoutBox {
     }
 }
 
+/// Rectangle covering the empty strip between a trigger and its overlay child.
+fn overlay_connector_box(
+    trigger: LayoutBox,
+    child: LayoutBox,
+    placement: nana_ui_core::PopoverPlacement,
+) -> Option<LayoutBox> {
+    const MIN: f32 = 0.5;
+    let x = trigger.x.min(child.x);
+    let y = trigger.y.min(child.y);
+    let right = (trigger.x + trigger.width).max(child.x + child.width);
+    let bottom = (trigger.y + trigger.height).max(child.y + child.height);
+    match placement {
+        nana_ui_core::PopoverPlacement::Bottom => {
+            let top = trigger.y + trigger.height;
+            let height = child.y - top;
+            (height > MIN).then_some(LayoutBox {
+                x,
+                y: top,
+                width: right - x,
+                height,
+            })
+        }
+        nana_ui_core::PopoverPlacement::Top => {
+            let top = child.y + child.height;
+            let height = trigger.y - top;
+            (height > MIN).then_some(LayoutBox {
+                x,
+                y: top,
+                width: right - x,
+                height,
+            })
+        }
+        nana_ui_core::PopoverPlacement::Right => {
+            let left = trigger.x + trigger.width;
+            let width = child.x - left;
+            (width > MIN).then_some(LayoutBox {
+                x: left,
+                y,
+                width,
+                height: bottom - y,
+            })
+        }
+        nana_ui_core::PopoverPlacement::Left => {
+            let left = child.x + child.width;
+            let width = trigger.x - left;
+            (width > MIN).then_some(LayoutBox {
+                x: left,
+                y,
+                width,
+                height: bottom - y,
+            })
+        }
+    }
+}
+
 impl HitIndex {
     fn viewport_hit_at(&self, x: f32, y: f32) -> bool {
         !self.viewport_roots.is_empty()
@@ -859,6 +914,19 @@ impl UiWorld {
         self.motion_layout(id, &self.effective_layout_style(id))
     }
 
+    /// Hit box covering the visual gap between an open overlay and its trigger.
+    /// The gap is not in the HoverCard subtree, so without this the close delay
+    /// starts as soon as the pointer leaves the trigger.
+    fn overlay_connector_hit(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let overlay = self.parent_triggered_overlay(id)?;
+        let parent = self.parent_id(id)?;
+        overlay_connector_box(
+            self.record(parent).layout,
+            self.record(id).layout,
+            overlay.placement,
+        )
+    }
+
     /// Build hit entries for `seeds` and their visible descendants. Each seed
     /// carries the accumulated transform of its parent, so a scoped patch can
     /// resume from an existing entry instead of walking from the document root.
@@ -987,7 +1055,8 @@ impl UiWorld {
                         menu: Some(menu), ..
                     } => Some(menu.surface),
                     _ => None,
-                });
+                })
+                .or_else(|| self.overlay_connector_hit(id));
             let index = built.len();
             built.push(BuiltHit {
                 entry: HitEntry {

@@ -371,6 +371,66 @@ mod tests {
             .unwrap();
     }
 
+    fn hover_point(context: &mut AppContext, x: f32, y: f32, at_ms: u64) -> Option<StableNodeId> {
+        context.rebuild_hit_test(document());
+        let target = context.pointer_target(document(), x, y);
+        hover_at(context, document(), target, at_ms);
+        target
+    }
+
+    fn desktop_shell_account_hover_card() -> (
+        AppContext,
+        crate::Entity<HoverCard>,
+        crate::Entity<crate::Button>,
+        crate::Entity<crate::Stack>,
+    ) {
+        let mut context = AppContext::new();
+        let card = context
+            .create_detached_component(
+                document(),
+                HoverCard::new()
+                    .trigger_icon(Icon::Add, "账号")
+                    .trigger_size(28.0)
+                    .placement(PopoverPlacement::Bottom)
+                    .alignment(PopoverAlignment::End)
+                    .open_delay(0)
+                    .close_delay(120),
+            )
+            .unwrap();
+        let button = context
+            .create_detached_component(document(), crate::Button::new("退出登录"))
+            .unwrap();
+        context.append_child(card, button).unwrap();
+        let trailing = context
+            .create_detached_component(
+                document(),
+                crate::Stack::row(4.0).with_layout(|layout| {
+                    layout.height = Some(LengthSpec::Fill);
+                    layout.align_items = nana_ui_core::AlignSpec::Center;
+                }),
+            )
+            .unwrap();
+        context.append_child(trailing, card).unwrap();
+        let body = context
+            .create_detached_component(document(), crate::Stack::fill_column(0.0).hittable())
+            .unwrap();
+        let shell = context
+            .create_component(
+                document(),
+                crate::DesktopShell::new()
+                    .title("LiliaBilibili")
+                    .title_trailing(trailing.stable_id())
+                    .title_window_controls(false)
+                    .primary(body.stable_id()),
+            )
+            .unwrap();
+        context.assemble_desktop_shell(shell).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 600.0))
+            .unwrap();
+        (context, card, button, body)
+    }
+
     fn shell_with_titlebar_hover_card() -> (
         AppContext,
         crate::Entity<HoverCard>,
@@ -481,6 +541,51 @@ mod tests {
             context.read(card, |card| card.open).unwrap(),
             "pointer on the card content must not close it"
         );
+    }
+
+    /// Real account chrome is DesktopShell + AppTitleBar trailing. The pointer
+    /// must keep the card open while it travels the `gap` between trigger and
+    /// overlay, not only after teleporting onto the content node.
+    #[test]
+    fn pointer_path_from_titlebar_trigger_across_the_gap_keeps_the_card_open() {
+        let (mut context, card, button, body) = desktop_shell_account_hover_card();
+        let card_id = card.stable_id();
+        let button_id = button.stable_id();
+        let body_id = body.stable_id();
+        hover_at(&mut context, document(), Some(card_id), 0);
+        tick(&mut context, 400);
+        relayout(&mut context);
+        context.rebuild_hit_test(document());
+        let trigger = context.world().layout_box(card_id).unwrap();
+        let content = context.world().layout_box(button_id).unwrap();
+        let body_box = context.world().layout_box(body_id).unwrap();
+        assert!(
+            content.y >= trigger.y + trigger.height,
+            "card hangs below the titlebar trigger: trigger={trigger:?} content={content:?}"
+        );
+        let content_x = content.x + content.width / 2.0;
+        let content_y = content.y + content.height / 2.0;
+        assert_eq!(
+            context.pointer_target(document(), content_x, content_y),
+            Some(button_id),
+            "titlebar hover card must beat the fill body: trigger={trigger:?} content={content:?} body={body_box:?}"
+        );
+        let trigger_x = trigger.x + trigger.width / 2.0;
+        let gap_y = (trigger.y + trigger.height + content.y) / 2.0;
+        let path = [
+            (trigger_x, trigger.y + trigger.height / 2.0, 450u64),
+            (trigger_x, trigger.y + trigger.height + 1.0, 580),
+            (trigger_x, gap_y, 710),
+            (content_x, content_y, 840),
+        ];
+        for (x, y, at_ms) in path {
+            let hit = hover_point(&mut context, x, y, at_ms);
+            tick(&mut context, at_ms + 130);
+            assert!(
+                context.read(card, |card| card.open).unwrap(),
+                "open must survive ({x},{y}) hit={hit:?} trigger={trigger:?} content={content:?} body={body_box:?}"
+            );
+        }
     }
 
     /// Avatar triggers clip their circular chrome; the open card must still
