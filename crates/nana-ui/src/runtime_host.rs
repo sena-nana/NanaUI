@@ -1002,6 +1002,14 @@ impl FrameSchedule {
         self.deadline
     }
 
+    /// Continuous consumes the served tick. At/OnDemand keep a still-due deadline.
+    pub(crate) fn advance_served(&mut self, demand: FrameDemand, now: Instant) -> Option<Instant> {
+        match demand {
+            FrameDemand::Continuous(_) => self.update(demand, now).1,
+            _ => self.arm(demand, now),
+        }
+    }
+
     fn armed_deadline(&self, demand: FrameDemand, now: Instant) -> Option<Instant> {
         if self.demand == demand {
             self.deadline
@@ -1089,12 +1097,27 @@ mod frame_schedule_tests {
     }
 
     #[test]
-    fn update_consumes_a_due_at() {
+    fn advance_served_keeps_a_due_at_armed() {
         let t0 = Instant::now();
         let mut schedule = FrameSchedule::default();
         assert!(schedule.due(FrameDemand::At(t0), t0));
-        assert_eq!(schedule.update(FrameDemand::At(t0), t0), (true, None));
-        assert!(!schedule.due(FrameDemand::At(t0), t0));
+        assert_eq!(schedule.advance_served(FrameDemand::At(t0), t0), Some(t0));
+        assert!(schedule.due(FrameDemand::At(t0), t0));
+        let t1 = t0 + Duration::from_millis(16);
+        assert_eq!(schedule.advance_served(FrameDemand::At(t1), t0), Some(t1));
+        assert!(!schedule.due(FrameDemand::At(t1), t0));
+    }
+
+    #[test]
+    fn advance_served_paces_continuous() {
+        let now = Instant::now();
+        let mut schedule = FrameSchedule::default();
+        assert!(schedule.due(fps(60), now));
+        let next = schedule.advance_served(fps(60), now);
+        assert!(next.unwrap() > now);
+        assert!(!schedule.due(fps(60), now));
+        schedule.arm(fps(60), now);
+        assert!(!schedule.due(fps(60), now));
     }
 
     #[test]

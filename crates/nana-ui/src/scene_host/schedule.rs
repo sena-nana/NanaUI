@@ -74,7 +74,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     let demand = self.program.frame_demand(id);
                     let schedule = self.frame_schedules.entry(id).or_default();
                     let deadline = if served {
-                        schedule.update(demand, armed_at).1
+                        schedule.advance_served(demand, armed_at)
                     } else {
                         schedule.defer(demand, armed_at)
                     };
@@ -85,7 +85,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                     now,
                 ),
             };
-            if let Some(deadline) = deadline.filter(|deadline| *deadline > armed_at) {
+            if let Some(deadline) = frame_wait_target(tick, deadline, armed_at) {
                 next = Some(next.map_or(deadline, |old: Instant| old.min(deadline)));
             }
         }
@@ -198,9 +198,24 @@ fn frame_tick(can_present: bool, demand_due: bool, drawable: bool) -> FrameTick 
     }
 }
 
+fn frame_wait_target(
+    tick: FrameTick,
+    deadline: Option<Instant>,
+    armed_at: Instant,
+) -> Option<Instant> {
+    if deadline.is_some_and(|deadline| deadline > armed_at) {
+        deadline
+    } else if tick == FrameTick::GpuOnly {
+        Some(armed_at)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FrameTick, drawable_surface, frame_tick};
+    use super::{FrameTick, drawable_surface, frame_tick, frame_wait_target};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn due_hidden_windows_tick_gpu_without_presenting() {
@@ -210,6 +225,21 @@ mod tests {
         assert_eq!(frame_tick(true, false, true), FrameTick::None);
         assert_eq!(frame_tick(true, true, false), FrameTick::None);
         assert_eq!(frame_tick(false, true, false), FrameTick::GpuOnly);
+    }
+
+    #[test]
+    fn gpu_only_waits_at_armed_when_deadline_is_not_after_now() {
+        let now = Instant::now();
+        assert_eq!(
+            frame_wait_target(FrameTick::GpuOnly, Some(now), now),
+            Some(now)
+        );
+        assert_eq!(frame_wait_target(FrameTick::Present, Some(now), now), None);
+        let later = now + Duration::from_millis(16);
+        assert_eq!(
+            frame_wait_target(FrameTick::GpuOnly, Some(later), now),
+            Some(later)
+        );
     }
 
     #[test]

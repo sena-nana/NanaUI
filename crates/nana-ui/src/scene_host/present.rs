@@ -72,7 +72,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.frame_schedules
             .entry(id)
             .or_default()
-            .update(demand, now);
+            .advance_served(demand, now);
     }
 
     pub(super) fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
