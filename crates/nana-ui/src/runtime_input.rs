@@ -548,10 +548,12 @@ impl RuntimeInputAdapter {
                             .or_else(|| context.dock_tab_strip_near(document, *x, *y));
                         let hit = dock_handle.or(split_handle).or(workspace_handle).or(target);
                         let focus_target = hit.and_then(|id| nearest_focusable(context, id));
-                        if let Some(focus) = focus_target {
-                            context.focus_node(document, focus)?;
-                        } else {
-                            context.clear_focus(document)?;
+                        if !hit.is_some_and(|id| context.preserves_hover_card_editor_focus(id)) {
+                            if let Some(focus) = focus_target {
+                                context.focus_node(document, focus)?;
+                            } else {
+                                context.clear_focus(document)?;
+                            }
                         }
                         if *button == 0
                             && !activation_click
@@ -7207,3 +7209,6 @@ mod terminal_input_tests {
         assert_eq!(events.lock().unwrap().len(), 1);
     }
 }
+
+#[cfg(test)]
+mod hover_card_tests;

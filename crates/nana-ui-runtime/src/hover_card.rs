@@ -49,6 +49,8 @@ pub struct HoverCard {
     pub open_delay_ms: u64,
     pub close_delay_ms: u64,
     pub close_on_escape: bool,
+    /// Keep an outside editor focused during pointer interaction; keyboard navigation stays free.
+    pub preserve_editor_focus: bool,
 }
 
 impl HoverCard {
@@ -66,6 +68,7 @@ impl HoverCard {
             open_delay_ms: 300,
             close_delay_ms: DEFAULT_CLOSE_DELAY_MS,
             close_on_escape: true,
+            preserve_editor_focus: false,
         }
     }
 
@@ -131,6 +134,13 @@ impl HoverCard {
 
     pub fn close_on_escape(mut self, enabled: bool) -> Self {
         self.close_on_escape = enabled;
+        self
+    }
+
+    /// Preserve an outside editor during pointer interaction and restore it when
+    /// keyboard focus leaves this card on dismissal. Disabled by default.
+    pub fn preserve_editor_focus(mut self, enabled: bool) -> Self {
+        self.preserve_editor_focus = enabled;
         self
     }
 

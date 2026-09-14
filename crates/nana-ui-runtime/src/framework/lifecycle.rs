@@ -515,6 +515,7 @@ impl AppContext {
                 self.resize_terminal_view(Entity::from_stable_id(id), bounds.width, bounds.height)?;
             }
         }
+        self.sync_hover_card_focus(id);
         self.sync_sidebar_section_body_port(id);
         let tooltip = self
             .views
@@ -868,6 +869,119 @@ impl AppContext {
             },
         )?;
         Ok(true)
+    }
+
+    /// Whether a pointer press should leave the current editor and its selection
+    /// untouched. Activation still proceeds through the normal input pipeline.
+    pub fn preserves_hover_card_editor_focus(&self, target: StableNodeId) -> bool {
+        let Some(root) = self.enclosing_hover_card(target) else {
+            return false;
+        };
+        let Some(document) = self.world.document_of(root) else {
+            return false;
+        };
+        self.component_lifecycle
+            .hover_cards
+            .get(&root)
+            .is_some_and(|state| state.preserve_editor_focus)
+            && self
+                .focused_text_editor(document)
+                .is_some_and(|editor| !self.overlay_descendant(root, editor.node))
+    }
+
+    fn sync_hover_card_focus(&mut self, id: StableNodeId) {
+        let Some(card) = self
+            .views
+            .get(&id)
+            .and_then(|view| view.downcast_ref::<crate::HoverCard>())
+        else {
+            return;
+        };
+        let open = card.open;
+        let preserve = card.preserve_editor_focus;
+        let focused = self
+            .world
+            .document_of(id)
+            .and_then(|doc| self.world.focused(doc))
+            .filter(|focus| !self.overlay_descendant(id, *focus));
+        let lifecycle = self.component_lifecycle.hover_cards.entry(id).or_default();
+        if open && !lifecycle.open && preserve {
+            lifecycle.restore_focus = focused;
+        }
+        if !open {
+            lifecycle.restore_focus = None;
+            lifecycle.show_at = None;
+            lifecycle.close_at = None;
+        }
+        lifecycle.open = open;
+        lifecycle.preserve_editor_focus = preserve;
+    }
+
+    pub(super) fn remember_hover_card_entry(
+        &mut self,
+        document: DocumentId,
+        previous: StableNodeId,
+        focus: StableNodeId,
+    ) {
+        let Some(root) = self.enclosing_hover_card(focus) else {
+            return;
+        };
+        if self.world.document_of(previous) != Some(document)
+            || self.overlay_descendant(root, previous)
+        {
+            return;
+        }
+        if let Some(state) = self.component_lifecycle.hover_cards.get_mut(&root)
+            && state.open
+            && state.preserve_editor_focus
+        {
+            state.restore_focus = Some(previous);
+        }
+    }
+
+    pub(super) fn hover_card_closing_focus(
+        &self,
+        mutations: &MutationQueue,
+    ) -> Vec<(DocumentId, Option<StableNodeId>)> {
+        let mut restores = Vec::new();
+        let closing = mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetStandardVisual {
+                    id,
+                    visual:
+                        Some(crate::StandardVisual::MenuSurface {
+                            kind: crate::MenuSurfaceKind::HoverCard,
+                            open,
+                            ..
+                        }),
+                } => Some((*id, *open)),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
+        for (root, open) in closing {
+            let Some(state) = self.component_lifecycle.hover_cards.get(&root) else {
+                continue;
+            };
+            if open || !state.open || !state.preserve_editor_focus {
+                continue;
+            }
+            let Some(document) = self.world.document_of(root) else {
+                continue;
+            };
+            let explicit_focus = mutations.as_slice().iter().any(|mutation| matches!(mutation,
+                crate::UiMutation::RequestFocus { document: requested, .. } if *requested == document));
+            if !explicit_focus
+                && self
+                    .world
+                    .focused(document)
+                    .is_some_and(|focus| self.overlay_descendant(root, focus))
+            {
+                restores.push((document, state.restore_focus));
+            }
+        }
+        restores
     }
 
     /// Pointer entered a hover-card subtree: dismiss any other open card and

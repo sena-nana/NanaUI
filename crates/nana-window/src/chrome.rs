@@ -565,7 +565,7 @@ const fn dwm_corner_preference(rounded_corners: bool) -> i32 {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        i32::from(rounded_corners)
+        if rounded_corners { 1 } else { 0 }
     }
 }
 

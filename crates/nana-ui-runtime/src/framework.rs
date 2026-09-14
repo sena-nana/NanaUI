@@ -452,6 +452,8 @@ struct TooltipLifecycle {
 /// the card content rides the trigger's subtree.
 #[derive(Debug, Clone, Copy, Default)]
 struct HoverCardLifecycle {
+    preserve_editor_focus: bool,
+    restore_focus: Option<StableNodeId>,
     show_at: Option<Duration>,
     close_at: Option<Duration>,
     open: bool,
@@ -1243,6 +1245,7 @@ impl AppContext {
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
         self.prepare_surface_closing(&mut mutations);
+        let hover_restore = self.hover_card_closing_focus(&mutations);
         let previous_focus = mutations
             .as_slice()
             .iter()
@@ -1287,7 +1290,25 @@ impl AppContext {
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
+        for (document, restore) in hover_restore {
+            if let Some(restore) = restore.filter(|focus| {
+                self.overlay_focus_candidate(document, *focus)
+                    && self.world.is_overlay_reachable(*focus)
+                    && !self.world.motion_blocks_input(*focus)
+            }) {
+                // Validate against the committed tree: the same batch may have
+                // hidden, disabled or removed the previous editor.
+                if self.focus_node(document, restore).is_err() {
+                    self.clear_focus(document)?;
+                }
+            } else {
+                self.clear_focus(document)?;
+            }
+        }
         for (document, previous) in previous_focus {
+            if let Some(focus) = self.world.focused(document) {
+                self.remember_hover_card_entry(document, previous, focus);
+            }
             self.seal_blurred_editor_history(document, Some(previous));
         }
         for (document, id) in deleted_layout_nodes {
@@ -1939,7 +1960,6 @@ impl AppContext {
         {
             return Ok(false);
         }
-        let previous_focus = self.world.focused(document);
         // A numeric draft settles before focus leaves it, so a half-typed value
         // never survives as the visible text of an unfocused field.
         if self.world.focused(document) != Some(target) {
@@ -1999,8 +2019,7 @@ impl AppContext {
         }
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, Some(target));
-        self.world.commit(mutations)?;
-        self.seal_blurred_editor_history(document, previous_focus);
+        self.commit_mutations(mutations)?;
         Ok(true)
     }
 
@@ -2012,8 +2031,7 @@ impl AppContext {
         self.commit_focused_number_input(document)?;
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
-        self.world.commit(mutations)?;
-        self.seal_blurred_editor_history(document, previous_focus);
+        self.commit_mutations(mutations)?;
         Ok(true)
     }
 

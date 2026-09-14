@@ -229,3 +229,12 @@ Vue 使用 `NanaDonutChart` 的 `slices` / `labels` / `cutout`，以及
 `Button::icon(icon).icon_size(px).icon_gap(px)` 把图标与文字作为同一内容组量测、
 居中和裁剪，保持一个按钮的 Activate、焦点与禁用语义。loading 用 spinner 替换
 图标而不叠加第二个槽位；仅 spinner 相位变化不触发布局。
+
+### HoverCard 编辑器焦点
+
+`HoverCard::preserve_editor_focus(true)` 用于扫码等非模态辅助卡，默认关闭。
+指针命中触发器或卡内操作时保留卡外编辑器焦点和选区，按钮仍正常激活；
+Tab/Shift+Tab 仍可进入可访问操作。键盘焦点从卡外进入后，关闭时恢复最近的
+有效外部焦点；显式转焦点优先，同批隐藏、禁用或删除目标不会阻止关闭。
+内容容器需要参与命中（例如 `Stack::column(...).hittable()`），使二维码和
+空白区域的鼠标事件归属该卡；`QrCode` 本身仍是不可聚焦的可访问 Image。

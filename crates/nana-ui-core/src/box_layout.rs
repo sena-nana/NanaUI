@@ -1497,8 +1497,9 @@ pub enum PointerEventsSpec {
 ///
 /// The value is inherited. Custom `url(...)` cursors and unknown keywords are
 /// intentionally rejected by the L1 parser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CursorSpec {
+    #[default]
     Default,
     Pointer,
     Text,
@@ -1513,12 +1514,6 @@ pub enum CursorSpec {
     ZoomIn,
     ZoomOut,
     None,
-}
-
-impl Default for CursorSpec {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 impl CursorSpec {
