@@ -90,6 +90,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         maximized: false,
         transparent: false,
         always_on_top: false,
+        fullscreen: None,
         focus_on_show: true,
         constrain_to_work_area: false,
         resizable: true,

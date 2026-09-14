@@ -602,6 +602,9 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
             WindowEvent::MousePassthroughChanged { .. } => {}
+            WindowEvent::ModeChanged { id, mode } => {
+                self.vue.record_platform_mode(VueWindowId(id.0), &mode)?;
+            }
             // File dialogs are owned by the application, not the framework:
             // `PathField` emits `BrowseRequested`, the application answers with
             // `WindowCommand::OpenFileDialog` and consumes the outcome. The Vue

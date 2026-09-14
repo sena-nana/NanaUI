@@ -80,7 +80,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         match &event {
-            WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
+            WinitWindowEvent::RedrawRequested => {
+                self.sync_window_mode(event_loop, id);
+                self.redraw(event_loop, id);
+            }
             WinitWindowEvent::CloseRequested => {
                 self.forward_window_event(event_loop, id, &event);
                 self.close_window(event_loop, id);
@@ -89,6 +92,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             WinitWindowEvent::Moved(_) => {
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
+                self.sync_window_mode(event_loop, id);
             }
             WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
                 let geometry_changed = self.sync_geometry(id);
@@ -97,6 +101,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 #[cfg(not(target_os = "macos"))]
                 let native_live_resize = false;
                 self.forward_window_event(event_loop, id, &event);
+                self.sync_window_mode(event_loop, id);
                 // Native macOS drags repaint through winit's live-resize
                 // hook, and a custom chrome drag paints its steps in-stack;
                 // both would only duplicate the per-step frame here.
@@ -112,6 +117,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.request_redraw(id);
                 }
                 self.forward_window_event(event_loop, id, &event);
+                self.sync_window_mode(event_loop, id);
             }
             WinitWindowEvent::Focused(focused) => {
                 if !*focused {

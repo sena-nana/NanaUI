@@ -20,6 +20,8 @@ createApp({
 
 Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vue_as_nana`）把这份脚本和 V8 引擎交给**同一个** `run_runtime`。`VueRuntimeProgram` 需要 feature `hosted`（隐含 `scene-view`，把 UiScene 交给 `SceneWgpuPainter`）。后打开的窗口共用这一套 JavaScript 和同一份 GPU，不必另起引擎。
 
+JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布尔）。`windowGeometry().fullscreen` 和窗口的 `alwaysOnTop` 现在是宿主观察到的值：请求入队时不再乐观写入，要等 `WindowEvent::ModeChanged` 回流。调用后立刻读几何可能仍是旧值。
+
 窗口化对照 `examples/vue-hosted-acceptance`。`examples/vue-counter` 是引擎探针（含无头点击），不是应用模板。
 
 ## 两种写法，同一棵树

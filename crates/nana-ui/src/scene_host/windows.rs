@@ -29,6 +29,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.program
                         .sync_animation_clock(self.animation_clock.epoch());
                     self.apply_update(event_loop, update, None);
+                    self.sync_window_mode(event_loop, id);
                 }
             }
             RoutedWindowCommand::Focus(id) => self.focus_window(id),
@@ -57,20 +58,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 let WindowCommand::SetFullscreen { fullscreen, .. } = command else {
                     return;
                 };
-                self.mutate_native_style(id, |window| {
-                    window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
-                });
-            }
-            RoutedWindowCommand::SetSimpleFullscreen(id) => {
-                let WindowCommand::SetSimpleFullscreen { fullscreen, .. } = command else {
-                    return;
-                };
-                self.mutate_native_style(id, |window| {
-                    #[cfg(target_os = "macos")]
-                    window.set_simple_fullscreen(fullscreen);
-                    #[cfg(not(target_os = "macos"))]
-                    window.set_fullscreen(fullscreen.then_some(Fullscreen::Borderless(None)));
-                });
+                // Batched commands have no reply; the outcome is `ModeChanged`.
+                let _ = self.set_window_fullscreen(event_loop, id, fullscreen);
             }
             RoutedWindowCommand::SetMinimized(id) => {
                 let WindowCommand::SetMinimized { minimized, .. } = command else {
@@ -107,9 +96,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 let WindowCommand::SetAlwaysOnTop { always_on_top, .. } = command else {
                     return;
                 };
-                self.mutate_native_style(id, |window| {
-                    window.set_window_level(window_level(always_on_top));
-                });
+                let level = if always_on_top {
+                    WindowLevel::AlwaysOnTop
+                } else {
+                    WindowLevel::Normal
+                };
+                self.set_window_level(event_loop, id, level);
             }
             RoutedWindowCommand::SetIcon(id) => {
                 let WindowCommand::SetIcon { icon, .. } = command else {
@@ -294,6 +286,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         pending_native.0 = None;
         self.window_ids.insert(window.id(), id);
+        let level = if settings.always_on_top {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        };
+        let pending_fullscreen = settings.fullscreen;
         self.window_contexts.insert(
             id,
             WindowContext {
@@ -311,6 +309,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 accessibility,
                 accessibility_pending: PendingAccessibility::default(),
                 size_move,
+                level,
+                mode: None,
+                pending_fullscreen,
             },
         );
         #[cfg(target_os = "windows")]
@@ -809,7 +810,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .unwrap_or(&self.settings)
     }
 
-    fn mutate_native_style<R>(
+    pub(super) fn mutate_native_style<R>(
         &self,
         id: WindowId,
         mutate: impl FnOnce(&dyn winit::window::Window) -> R,
@@ -1024,6 +1025,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .map_err(WindowError::InitializationFailed)?;
         let update = self.program.window_event(event, &self.context_for(id));
         self.apply_update(event_loop, update, None);
+        self.sync_window_mode(event_loop, id);
         // `Ready` has been delivered, so creation itself succeeded; a window its
         // own `Ready` handling closed resolves as closed, not as a failed creation.
         if self.shutting_down {
@@ -1042,7 +1044,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         control: crate::window_service::Control,
     ) -> Result<(), crate::WindowError> {
         use crate::window_service::{Control, validate_size};
-        use crate::{WindowCursor, WindowError, WindowLevel};
+        use crate::{WindowCursor, WindowError};
         let window = self.window(id).cloned().ok_or(WindowError::WindowClosed)?;
         match control {
             Control::Visible(visible) => {
@@ -1060,6 +1062,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     &self.context_for(id),
                 );
                 self.apply_update(event_loop, update, None);
+                if visible {
+                    self.sync_window_mode(event_loop, id);
+                }
             }
             Control::Size(size) => {
                 validate_size(size)?;
@@ -1090,15 +1095,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Control::Resizable(value) => {
                 self.mutate_native_style(id, |window| window.set_resizable(value));
             }
-            Control::Level(level) => {
-                self.mutate_native_style(id, |window| {
-                    window.set_window_level(match level {
-                        WindowLevel::Normal => winit::window::WindowLevel::Normal,
-                        WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
-                        WindowLevel::AlwaysOnBottom => winit::window::WindowLevel::AlwaysOnBottom,
-                    })
-                });
-            }
+            Control::Level(level) => self.set_window_level(event_loop, id, level),
             Control::ContentProtected(protected) => {
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 window.set_content_protected(protected);
@@ -1171,6 +1168,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return Err(WindowError::InvalidParameter(
                     "position must be finite".into(),
                 ));
+            }
+            Control::Command(WindowCommand::SetFullscreen { fullscreen, .. }) => {
+                self.set_window_fullscreen(event_loop, id, fullscreen)?;
             }
             Control::Command(command) => self.apply_window_command(event_loop, command),
         }

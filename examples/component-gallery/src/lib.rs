@@ -1640,6 +1640,7 @@ fn runtime_dock_window_commands(
                     maximized: false,
                     transparent: false,
                     always_on_top: false,
+                    fullscreen: None,
                     focus_on_show: true,
                     constrain_to_work_area: false,
                     resizable: true,

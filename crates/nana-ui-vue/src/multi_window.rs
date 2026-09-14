@@ -1175,6 +1175,7 @@ impl VueRuntime {
                         maximized: false,
                         transparent: options.transparent,
                         always_on_top: options.always_on_top,
+                        fullscreen: None,
                         focus_on_show: true,
                         constrain_to_work_area: false,
                         resizable: options.resizable,
@@ -1212,7 +1213,7 @@ impl VueRuntime {
                 VueWindowCommand::SetFullscreen { id, fullscreen } => {
                     WindowCommand::SetFullscreen {
                         id: WindowId(id.0),
-                        fullscreen,
+                        fullscreen: fullscreen.then(nana_ui_platform::FullscreenRequest::default),
                     }
                 }
                 VueWindowCommand::SetMinimized { id, minimized } => WindowCommand::SetMinimized {
@@ -1357,6 +1358,31 @@ impl VueRuntime {
             entry.geometry.x = x as f64;
             entry.geometry.y = y as f64;
         }
+        let payload = geometry_value(&entry.geometry);
+        if let HostValue::Object(mut map) = payload {
+            map.insert("id".into(), HostValue::Number(id.0 as f64));
+            state.emit("window-geometry", HostValue::Object(map));
+        }
+        Ok(())
+    }
+
+    /// Fullscreen and always-on-top as the host observed them.
+    #[cfg(feature = "hosted")]
+    pub fn record_platform_mode(
+        &self,
+        id: VueWindowId,
+        mode: &nana_ui_platform::WindowModeState,
+    ) -> Result<(), JsEngineError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+        let entry = state
+            .windows
+            .get_mut(&id)
+            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+        entry.geometry.fullscreen = mode.fullscreen.is_some();
+        entry.options.always_on_top = mode.level == nana_ui_platform::WindowLevel::AlwaysOnTop;
         let payload = geometry_value(&entry.geometry);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
@@ -1669,17 +1695,11 @@ fn push_flag_command(
         .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
     let command = command(id, flag);
     match &command {
-        VueWindowCommand::SetFullscreen { fullscreen, .. } => {
-            entry.geometry.fullscreen = *fullscreen;
-        }
         VueWindowCommand::SetMinimized { minimized, .. } => {
             entry.geometry.minimized = *minimized;
         }
         VueWindowCommand::SetMaximized { maximized, .. } => {
             entry.geometry.maximized = *maximized;
-        }
-        VueWindowCommand::SetAlwaysOnTop { always_on_top, .. } => {
-            entry.options.always_on_top = *always_on_top;
         }
         _ => {}
     }
@@ -2019,9 +2039,10 @@ mod tests {
             geometry.get("width").and_then(HostValue::as_f64),
             Some(640.0)
         );
+        // Fullscreen is what the host reports, not what was requested.
         assert_eq!(
             geometry.get("fullscreen").and_then(HostValue::as_bool),
-            Some(true)
+            Some(false)
         );
         let commands = runtime.drain_window_commands();
         assert!(commands.iter().any(|command| matches!(
@@ -2039,6 +2060,33 @@ mod tests {
                 fullscreen: true
             }
         )));
+    }
+
+    #[cfg(feature = "hosted")]
+    #[test]
+    fn host_reported_mode_becomes_window_geometry() {
+        let runtime = VueRuntime::default();
+        runtime
+            .record_platform_mode(
+                VueWindowId(0),
+                &nana_ui_platform::WindowModeState {
+                    fullscreen: Some(nana_ui_platform::FullscreenMode::Borderless),
+                    level: nana_ui_platform::WindowLevel::AlwaysOnTop,
+                    display: None,
+                },
+            )
+            .unwrap();
+        let geometry = runtime
+            .host_api_registry()
+            .call("windowGeometry", &[HostValue::Number(0.0)])
+            .unwrap()
+            .as_object()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            geometry.get("fullscreen").and_then(HostValue::as_bool),
+            Some(true)
+        );
     }
 
     #[cfg(feature = "scene-view")]

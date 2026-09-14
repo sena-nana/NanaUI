@@ -205,8 +205,8 @@ pub use nana_ui_core::{
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
 #[cfg(feature = "hosted")]
 pub use nana_ui_platform::{
-    DisplayId, DisplayInfo, ImeEvent, WindowIcon, WindowIconError,
-    clear_registered_application_icon, register_application_icon,
+    DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, ImeEvent, WindowIcon,
+    WindowIconError, WindowModeState, clear_registered_application_icon, register_application_icon,
 };
 /// Fetch host boundary, re-exported so hosts can supply
 /// [`SceneWgpuPainter::set_resource_fetch_host`] without depending on

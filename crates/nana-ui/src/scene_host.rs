@@ -23,10 +23,11 @@ use std::time::{Duration, Instant};
 use nana_ui_core::{AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
-    SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent, WindowGeometry, WindowIcon,
-    WindowId, WindowResizeEdge, clamp_position_to_displays, clear_registered_application_icon,
-    register_application_icon, window_resize_edge,
+    DisplayBounds, FullscreenRequest, ImeEvent, InputEvent, InputModifiers, PointerPhase,
+    PointerType, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent, WindowGeometry,
+    WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
+    clamp_position_to_displays, clear_registered_application_icon, register_application_icon,
+    window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -51,7 +52,6 @@ use winit::event_loop::{
 };
 use winit::icon::{Icon, RgbaIcon};
 use winit::keyboard::ModifiersState;
-use winit::monitor::Fullscreen;
 #[cfg(target_os = "macos")]
 use winit::platform::macos::{WindowAttributesMacOS, WindowExtMacOS};
 #[cfg(target_os = "windows")]
@@ -99,7 +99,7 @@ pub fn run_runtime_scene<Program: RuntimeProgram>(
         proxy: event_loop.create_proxy(),
         message_tx,
         message_rx,
-        settings,
+        settings: Box::new(settings),
         startup_failure: Arc::clone(&startup_failure),
     };
     event_loop
@@ -116,7 +116,7 @@ enum SceneRunner<Program: RuntimeProgram> {
         proxy: EventLoopProxy,
         message_tx: Sender<Program::Message>,
         message_rx: Receiver<Program::Message>,
-        settings: WindowDescriptor,
+        settings: Box<WindowDescriptor>,
         startup_failure: Arc<Mutex<Option<String>>>,
     },
     Ready(Box<WindowManager<Program>>),
@@ -150,6 +150,12 @@ struct WindowContext {
     accessibility: Option<HostedAccessibility>,
     accessibility_pending: PendingAccessibility,
     size_move: LiveSizeMove,
+    /// Level last applied; platforms do not report it back.
+    level: WindowLevel,
+    /// Mode last delivered through `WindowEvent::ModeChanged`.
+    mode: Option<WindowModeState>,
+    /// Fullscreen applied once the window is visible and not fullscreen.
+    pending_fullscreen: Option<FullscreenRequest>,
 }
 
 impl Drop for WindowContext {
@@ -444,7 +450,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
             proxy,
             message_tx,
             message_rx,
-            settings,
+            *settings,
             Arc::clone(&startup_failure),
             None,
         ) {
@@ -609,6 +615,13 @@ fn initialize<Program: RuntimeProgram>(
         accessibility,
         accessibility_pending: PendingAccessibility::default(),
         size_move: LiveSizeMove::install(window.as_ref())?,
+        level: if settings.always_on_top {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        },
+        mode: None,
+        pending_fullscreen: settings.fullscreen,
     };
     pending_native.0 = None;
     let mut ready = WindowManager {
@@ -681,6 +694,7 @@ fn initialize<Program: RuntimeProgram>(
         window.set_visible(ready.settings.visible);
         apply_client_chrome_after_create(window.as_ref(), &ready.settings);
         window.request_redraw();
+        ready.sync_window_mode(event_loop, WindowId::PRIMARY);
     }
     Ok(ready)
 }
@@ -1422,7 +1436,6 @@ enum RoutedWindowCommand {
     Move(WindowId),
     SetBounds(WindowId),
     SetFullscreen(WindowId),
-    SetSimpleFullscreen(WindowId),
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
@@ -1450,9 +1463,6 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         WindowCommand::SetBounds { id, .. } if known(*id) => RoutedWindowCommand::SetBounds(*id),
         WindowCommand::SetFullscreen { id, .. } if known(*id) => {
             RoutedWindowCommand::SetFullscreen(*id)
-        }
-        WindowCommand::SetSimpleFullscreen { id, .. } if known(*id) => {
-            RoutedWindowCommand::SetSimpleFullscreen(*id)
         }
         WindowCommand::SetMinimized { id, .. } if known(*id) => {
             RoutedWindowCommand::SetMinimized(*id)
@@ -3337,7 +3347,7 @@ mod tests {
             route_window_command(
                 &WindowCommand::SetFullscreen {
                     id: WindowId(3),
-                    fullscreen: true,
+                    fullscreen: Some(nana_ui_platform::FullscreenRequest::default()),
                 },
                 &known
             ),

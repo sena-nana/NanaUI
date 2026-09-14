@@ -219,6 +219,7 @@ impl Fixture {
                     maximized: false,
                     transparent: false,
                     always_on_top: false,
+                    fullscreen: None,
                     resizable: true,
                     role: WindowRole::Tool,
                     modal: false,

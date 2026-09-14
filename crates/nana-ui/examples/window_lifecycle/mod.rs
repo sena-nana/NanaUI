@@ -1,10 +1,11 @@
 //! Native lifecycle acceptance; ordinary application code has no winit dependency.
 use nana_ui::runtime::{List, Text};
 use nana_ui::{
-    ApplicationState, ApplicationWindow, RuntimeProgramContext, RuntimeProgramUpdate,
-    WindowDescriptor, WindowError, WindowHandle,
+    ApplicationState, ApplicationWindow, DisplayId, FullscreenMode, FullscreenRequest,
+    RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, WindowError, WindowHandle,
+    WindowLevel,
 };
-use nana_ui_platform::WindowId;
+use nana_ui_platform::{WindowId, WindowModeState};
 use std::{
     collections::HashMap,
     sync::{Mutex, mpsc},
@@ -25,6 +26,7 @@ pub struct App {
     focused: mpsc::Sender<WindowId>,
     presented: mpsc::Sender<(WindowId, u64)>,
     resized: mpsc::Sender<(WindowId, (f32, f32))>,
+    modes: mpsc::Sender<(WindowId, WindowModeState)>,
 }
 pub fn descriptor(title: &str) -> WindowDescriptor {
     WindowDescriptor {
@@ -63,6 +65,7 @@ impl ApplicationState for App {
         let (tx, rx) = mpsc::channel();
         let (resized_tx, resized_rx) = mpsc::channel();
         let (focused_tx, focused_rx) = mpsc::channel();
+        let (modes_tx, modes_rx) = mpsc::channel();
         if std::env::args().any(|arg| arg == "--probe-host-stop") {
             let service = context.windows().clone();
             let worker_service = service.clone();
@@ -94,6 +97,7 @@ impl ApplicationState for App {
                 focused: focused_tx,
                 presented: tx,
                 resized: resized_tx,
+                modes: modes_tx,
             });
         }
         context.dispatch(Message::Pump);
@@ -185,6 +189,69 @@ impl ApplicationState for App {
                     .wait()
                     .map_err(|e| e.to_string())?;
                 second
+                    .set_mouse_passthrough_forward(true)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                second
+                    .set_mouse_passthrough_forward(false)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                let display = service
+                    .displays()
+                    .wait()
+                    .map_err(|e| e.to_string())?
+                    .first()
+                    .map(|display| display.id)
+                    .ok_or("no display was enumerated")?;
+                // Simple covers the named display without a macOS Space
+                // switch, which the host environment often cannot complete.
+                let on = |display| {
+                    Some(FullscreenRequest {
+                        mode: FullscreenMode::Simple,
+                        display: Some(display),
+                    })
+                };
+                if !matches!(
+                    second.set_fullscreen(on(DisplayId(u128::MAX))).wait(),
+                    Err(WindowError::InvalidParameter(_))
+                ) {
+                    return Err("fullscreen on a disconnected display was accepted".into());
+                }
+                second
+                    .set_fullscreen(on(display))
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                wait_for_mode(&modes_rx, second.id(), |mode| {
+                    mode.fullscreen.is_some() && mode.display.is_none_or(|shown| shown == display)
+                })?;
+                second
+                    .set_window_level(WindowLevel::AlwaysOnTop)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                wait_for_mode(&modes_rx, second.id(), |mode| {
+                    mode.level == WindowLevel::AlwaysOnTop
+                })?;
+                second
+                    .set_fullscreen(None)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                wait_for_mode(&modes_rx, second.id(), |mode| mode.fullscreen.is_none())?;
+                second
+                    .set_window_level(WindowLevel::Normal)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                let mut opens_fullscreen = descriptor("Opens fullscreen");
+                opens_fullscreen.fullscreen = Some(FullscreenRequest {
+                    mode: FullscreenMode::Simple,
+                    display: None,
+                });
+                let opened = service
+                    .create_window(opens_fullscreen)
+                    .wait()
+                    .map_err(|e| e.to_string())?;
+                wait_for_mode(&modes_rx, opened.id(), |mode| mode.fullscreen.is_some())?;
+                opened.close().wait().map_err(|e| e.to_string())?;
+                second
                     .set_visible(false)
                     .wait()
                     .map_err(|e| e.to_string())?;
@@ -255,6 +322,7 @@ impl ApplicationState for App {
             focused: focused_tx,
             presented: tx,
             resized: resized_tx,
+            modes: modes_tx,
         })
     }
     fn build(
@@ -296,6 +364,9 @@ impl ApplicationState for App {
         }
         if let nana_ui_platform::WindowEvent::FocusChanged { id, focused: true } = event {
             let _ = self.focused.send(*id);
+        }
+        if let nana_ui_platform::WindowEvent::ModeChanged { id, mode } = event {
+            let _ = self.modes.send((*id, *mode));
         }
         RuntimeProgramUpdate::default()
     }
@@ -347,8 +418,28 @@ pub fn verify() {
         .expect("lifecycle did not complete")
         .expect("lifecycle failed");
     println!(
-        "Window lifecycle passed: three windows, shared GPU, worker controls, primary close, stale handle, recreate and present."
+        "Window lifecycle passed: three windows, shared GPU, worker controls, display-targeted fullscreen and level reported by ModeChanged, primary close, stale handle, recreate and present."
     );
+}
+
+fn wait_for_mode(
+    rx: &mpsc::Receiver<(WindowId, WindowModeState)>,
+    expected: WindowId,
+    reached: impl Fn(&WindowModeState) -> bool,
+) -> Result<(), String> {
+    let mut seen = Vec::new();
+    loop {
+        let (id, mode) = rx.recv_timeout(Duration::from_secs(20)).map_err(|_| {
+            format!(
+                "window {} never reported the expected mode; seen {seen:?}",
+                expected.0
+            )
+        })?;
+        if id == expected && reached(&mode) {
+            return Ok(());
+        }
+        seen.push((id.0, mode));
+    }
 }
 
 fn wait_for_focus(rx: &mpsc::Receiver<WindowId>, expected: WindowId) -> Result<(), String> {

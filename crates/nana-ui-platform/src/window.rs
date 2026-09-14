@@ -176,6 +176,13 @@ pub enum WindowEvent {
         id: WindowId,
         appearance: SystemAppearance,
     },
+    /// Effective fullscreen state, level and display. Delivered after `Ready`,
+    /// after each fullscreen or level request, and when the platform reports a
+    /// change — only when it differs from the previous delivery.
+    ModeChanged {
+        id: WindowId,
+        mode: WindowModeState,
+    },
 }
 
 /// Session identity of a connected display. Equal across enumerations within
@@ -210,6 +217,40 @@ impl DisplayInfo {
             size: (f64::from(width) / scale, f64::from(height) / scale),
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum FullscreenMode {
+    /// Borderless fullscreen at the display's current video mode.
+    #[default]
+    Borderless,
+    /// macOS fullscreen without a separate Space; `Borderless` elsewhere.
+    Simple,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct FullscreenRequest {
+    pub mode: FullscreenMode,
+    /// `None` keeps the window's current display.
+    pub display: Option<DisplayId>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum WindowLevel {
+    #[default]
+    Normal,
+    AlwaysOnTop,
+    AlwaysOnBottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowModeState {
+    /// `Simple` is reported only on macOS.
+    pub fullscreen: Option<FullscreenMode>,
+    /// The level last applied by the host; platforms do not report level
+    /// changes made outside the application.
+    pub level: WindowLevel,
+    pub display: Option<DisplayId>,
 }
 
 /// Operating-system light/dark preference.
@@ -379,6 +420,9 @@ pub struct WindowDescriptor {
     /// Initial visibility, applied only after document initialization succeeds.
     pub visible: bool,
     pub always_on_top: bool,
+    /// Enter fullscreen when the window is first shown. If the display is no
+    /// longer connected the window opens without fullscreen.
+    pub fullscreen: Option<FullscreenRequest>,
     /// Whether initially showing this window may activate it.
     pub focus_on_show: bool,
     /// Keep the complete restored frame inside the nearest display work area.
@@ -415,6 +459,7 @@ impl WindowDescriptor {
             transparent: false,
             visible: true,
             always_on_top: false,
+            fullscreen: None,
             focus_on_show: true,
             constrain_to_work_area: false,
             resizable: true,
@@ -472,14 +517,11 @@ pub enum WindowCommand {
         position: (f32, f32),
         size: (f32, f32),
     },
+    /// `None` leaves fullscreen. A display that is not connected leaves the
+    /// window unchanged; `WindowHandle::set_fullscreen` reports that error.
     SetFullscreen {
         id: WindowId,
-        fullscreen: bool,
-    },
-    /// macOS 走 winit simple fullscreen(不切换 Space);其他平台回落原生 Borderless 全屏。
-    SetSimpleFullscreen {
-        id: WindowId,
-        fullscreen: bool,
+        fullscreen: Option<FullscreenRequest>,
     },
     SetMinimized {
         id: WindowId,

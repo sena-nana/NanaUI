@@ -165,6 +165,48 @@ window.close().wait()?;
 
 `ApplicationState::window_event` 和 `RuntimeProgram::window_event` 接收框架窗口事件；指针、键盘输入通过 `RuntimeProgram::input_event` 的 `RoutedInput` 接收，附带命中与处理结果，同一输入不重复派发。缩放变化通过带新 `scale_factor` 的 `Resized` 通知。
 
+### 显示器与全屏
+
+`WindowService::displays()`（嵌入式宿主用 `EmbeddedRuntime::displays(event_loop)`）在窗口线程枚举当前连接的显示器，返回 `DisplayInfo`：id、名称、物理位置/尺寸、缩放、刷新率、是否主屏。Wayland 不上报主屏。`DisplayInfo::logical_bounds()` 把物理矩形换算成 `WindowDescriptor::initial_position` 使用的全局逻辑坐标；没有位置或尺寸时返回 `None`。
+
+`DisplayId` 是本次进程里的显示器身份，跨次枚举相等。它是否在拔插后仍然指向同一块屏，取决于平台：
+
+| 平台 | 拔掉再插回 |
+| --- | --- |
+| macOS | `MonitorHandle::id()` 跨重连稳定 |
+| Windows / Linux | 不跨重连；重连后当作新显示器 |
+
+没有显示器拓扑事件：winit 不提供连接/断开通知。拔屏后下一次 `displays()` 不再列出它；已经全屏在该屏上的窗口按平台落到剩余显示器。指定一块已经不存在的屏：显式 `set_fullscreen(Some(FullscreenRequest { display: Some(id), .. }))` 返回 `WindowError::InvalidParameter`，窗口状态不变；描述符上的 `WindowDescriptor::fullscreen` 则退回窗口模式（尽力而为，创建本身仍成功）。
+
+全屏只有无边框覆盖当前视频模式，没有独占全屏（不会改显示器分辨率，避免和其他 Surface、采集工具抢显示模式）。
+
+```rust
+#[derive(Default)]
+pub struct FullscreenRequest {
+    pub mode: FullscreenMode,       // Borderless（默认）或 Simple
+    pub display: Option<DisplayId>, // None = 窗口当前所在屏
+}
+
+pub enum FullscreenMode {
+    Borderless, // 无边框，覆盖该屏当前视频模式
+    Simple,     // macOS 不切 Space；其他平台等同 Borderless
+}
+```
+
+`WindowHandle::set_fullscreen(None)` 退出全屏。`Simple` 只在 macOS 上报为 `WindowModeState::fullscreen = Some(Simple)`。从 macOS 原生全屏切到 Simple 时，宿主先退出原生全屏，等 `fullscreen()` 读到 `None` 再应用 Simple。
+
+有效状态通过 `WindowEvent::ModeChanged { id, mode }` 上报，`mode` 含实际全屏模式、窗口层级和当前显示器。时机：
+
+- 每个窗口 `Ready` 之后必发一次，作为初始状态
+- 每次全屏或层级请求之后
+- `Resized` / `Moved` / `ScaleFactorChanged` / `Occluded` / `RedrawRequested` 之后，如果观察结果变了
+
+只在与上次交付不同时发送。层级是宿主上次应用的值：平台不会回报应用外的置顶变化。macOS 原生全屏动画期间读到的是目标状态。X11 下窗管自己改的全屏/置顶观察不到。`RedrawRequested` 和 `Occluded` 用来补齐异步 Borderless 完成之后的观察。
+
+描述符全屏在窗口可见之后才应用（窗口先以隐藏状态创建并完成文档初始化）。不要用描述符表达“这块屏必须存在”，那是显式请求的合同。
+
+`window-service-lifecycle` / `embedded-window-lifecycle` 覆盖枚举非空、指定屏全屏后收到 `ModeChanged`、置顶、退出全屏、非法 `DisplayId`、描述符全屏。macOS 绿色按钮、第二块屏、拔屏，以及 Windows 多屏，需要人工核对。
+
 ### 嵌入已有宿主
 
 `platform_host::EmbeddedRuntime` 接收宿主 `ActiveEventLoop`、proxy 和 `HostedGpuShared`，从不创建或退出宿主事件循环。宿主转发 `window_event`、`wake` 和 `about_to_wait`。`HostedGpuShared::from_device` 接入已有 Instance/Adapter/Device/Queue；不申请第二个 Device。
@@ -185,6 +227,9 @@ window.close().wait()?;
 - 普通应用用 `WindowService` / `WindowHandle` 替代自行分配窗口 ID 和提交 `WindowCommand`。
 - `WindowCommand` 从平台 crate 根导出移入 `nana_ui_platform::host`，仅供 Vue、Dock、chrome 等框架适配器使用；适配器提交的批次仍在宿主 commit 时进入同一个 WindowManager。
 - 主窗口不再具有隐式退出特权；需要“关主窗退出”的产品应显式返回退出更新。
+- `WindowCommand::SetFullscreen` 的参数从 `bool` 改为 `Option<FullscreenRequest>`：`None` 退出全屏，`Some` 进入。删除 `SetSimpleFullscreen`；macOS 不切 Space 的全屏改为 `FullscreenRequest { mode: FullscreenMode::Simple, display: None }`。`WindowHandle::set_simple_fullscreen` 一并删除。
+- `WindowLevel` 从 `nana_ui::window_service` 下沉到 `nana_ui_platform`，`nana_ui` 再导出。全屏和置顶的有效值走 `WindowEvent::ModeChanged`，不要自己记一份请求镜像。
+- LiliaBilibili `app/presentation.rs` 仍按 `SetFullscreen { fullscreen: bool }` 编译；下次升级 pin 时改为 `fullscreen: on.then(FullscreenRequest::default)`，并在 `WindowEvent` match 中处理 `ModeChanged`。
 
 窗口配置持久化继续由应用负责，框架不选择配置目录或写盘。
 

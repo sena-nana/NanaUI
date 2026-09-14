@@ -1,6 +1,6 @@
 //! Thread-safe window requests. Native objects remain on the host thread.
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{DisplayInfo, WindowId, WindowResizeEdge};
+use nana_ui_platform::{DisplayInfo, FullscreenRequest, WindowId, WindowResizeEdge};
 use std::{
     future::Future,
     pin::Pin,
@@ -9,7 +9,7 @@ use std::{
     thread::ThreadId,
 };
 
-pub use nana_ui_platform::WindowDescriptor;
+pub use nana_ui_platform::{WindowDescriptor, WindowLevel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowError {
@@ -123,12 +123,6 @@ impl<T> Future for WindowRequest<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowLevel {
-    Normal,
-    AlwaysOnTop,
-    AlwaysOnBottom,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowCursor {
     /// Restore Runtime/CSS cursor selection.
@@ -360,13 +354,10 @@ impl WindowHandle {
     pub fn set_resizable(&self, resizable: bool) -> WindowRequest<()> {
         self.control(Control::Resizable(resizable))
     }
-    pub fn set_simple_fullscreen(&self, fullscreen: bool) -> WindowRequest<()> {
-        self.control(Control::Command(WindowCommand::SetSimpleFullscreen {
-            id: self.id,
-            fullscreen,
-        }))
-    }
-    pub fn set_fullscreen(&self, fullscreen: bool) -> WindowRequest<()> {
+    /// `None` leaves fullscreen. A display that is not connected fails with
+    /// `InvalidParameter` and leaves the window unchanged; the effective mode
+    /// arrives as `WindowEvent::ModeChanged`.
+    pub fn set_fullscreen(&self, fullscreen: Option<FullscreenRequest>) -> WindowRequest<()> {
         self.control(Control::Command(WindowCommand::SetFullscreen {
             id: self.id,
             fullscreen,
@@ -557,8 +548,33 @@ mod tests {
         assert_eq!(worker.join().unwrap(), Ok(()));
     }
     #[test]
-    fn displays_are_answered_without_blocking_when_host_stopped() {
+    fn displays_and_targeted_fullscreen_are_answered_by_the_host() {
         let (service, rx) = WindowService::channel(Arc::new(|| {}));
+        let target = FullscreenRequest {
+            display: Some(nana_ui_platform::DisplayId(9)),
+            ..Default::default()
+        };
+        let mut fullscreen = service.handle(WindowId(2)).set_fullscreen(Some(target));
+        let Request::Control(
+            _,
+            _,
+            Control::Command(WindowCommand::SetFullscreen {
+                fullscreen: Some(queued),
+                ..
+            }),
+            reply,
+        ) = rx.try_recv().unwrap()
+        else {
+            panic!("unexpected request")
+        };
+        assert_eq!(queued, target);
+        reply.finish(Err(WindowError::InvalidParameter(
+            "display is not connected".into(),
+        )));
+        assert!(matches!(
+            fullscreen.try_take(),
+            Some(Err(WindowError::InvalidParameter(_)))
+        ));
         let mut displays = service.displays();
         let Request::Displays(reply) = rx.try_recv().unwrap() else {
             panic!("unexpected request")
