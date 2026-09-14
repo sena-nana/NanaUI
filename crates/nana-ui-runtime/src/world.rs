@@ -964,6 +964,7 @@ impl UiWorld {
                     .and_then(|style| style.layout.paint.visibility)
             });
             if !self.presence_live(candidate)
+                || !self.menu_branch_open(candidate)
                 || self
                     .node_style(candidate)
                     .is_some_and(|style| style.layout.omits_box())

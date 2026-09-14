@@ -552,3 +552,57 @@ fn hover_card_refresh_invalidation_then_close_preserves_editor() {
         );
     }
 }
+
+#[test]
+fn hover_card_pointer_actions_preserve_active_ime_composition() {
+    let mut f = Fixture::new();
+    f.input
+        .dispatch_ime(
+            &mut f.cx,
+            f.doc,
+            &ImeEvent::Preedit {
+                text: "你".into(),
+                selection: Some((0, 3)),
+            },
+        )
+        .unwrap();
+    f.open();
+    for target in [f.card.stable_id(), f.qr.stable_id(), f.refresh.stable_id()] {
+        if !f.cx.read(f.card, |card| card.open).unwrap() {
+            f.open();
+        }
+        f.click(target);
+        f.assert_editor();
+        assert_eq!(
+            f.cx.world()
+                .ime(f.editor.stable_id())
+                .map(|ime| (ime.text.as_str(), ime.selection)),
+            Some(("你", Some((0, 3))))
+        );
+    }
+    assert_eq!(f.activations.load(Ordering::SeqCst), 1);
+    f.cx.update_component(f.card, |card, _| card.open = false)
+        .unwrap();
+    f.assert_editor();
+    f.input
+        .dispatch_ime(&mut f.cx, f.doc, &ImeEvent::Commit("你".into()))
+        .unwrap();
+    assert_eq!(
+        f.cx.world().text_input(f.editor.stable_id()).unwrap().value,
+        "abcde你"
+    );
+    assert!(f.cx.world().ime(f.editor.stable_id()).is_none());
+}
+
+#[test]
+fn hover_card_closed_content_is_skipped_by_tab_navigation() {
+    let mut f = Fixture::new();
+    f.open();
+    f.key("Escape", false, None);
+    f.layout();
+    f.key("Tab", false, None);
+    assert_eq!(f.cx.world().focused(f.doc), Some(f.other.stable_id()));
+    f.key("Tab", true, None);
+    f.assert_editor();
+    assert_eq!(f.activations.load(Ordering::SeqCst), 0);
+}
