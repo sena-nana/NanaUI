@@ -26,9 +26,9 @@ pub use fetch::{
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 pub use window::{
-    DisplayBounds, SystemAppearance, TextInputPurpose, TextInputRequest, WindowCommand,
+    DisplayBounds, SystemAppearance, TextInputPurpose, TextInputRequest, WindowDescriptor,
     WindowEvent, WindowGeometry, WindowIcon, WindowIconError, WindowId, WindowResizeEdge,
-    WindowRole, WindowSettings, clamp_position_to_displays, clear_registered_application_icon,
+    WindowRole, clamp_position_to_displays, clear_registered_application_icon,
     fit_window_to_displays, register_application_icon, resolve_window_icon, window_resize_edge,
 };
 #[cfg(feature = "ws")]
@@ -130,4 +130,9 @@ pub enum SurfacePhase {
     Ready,
     /// Window torn down — drop Surface before the next Ready.
     Destroyed,
+}
+
+/// Backend protocol for framework adapters. Applications use WindowService.
+pub mod host {
+    pub use crate::window::WindowCommand;
 }

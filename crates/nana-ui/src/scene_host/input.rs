@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn handle_window_event(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -63,6 +63,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 return;
             }
             let disposition = self.dispatch_input(event_loop, id, input);
+            if !self.window_contexts.contains_key(&id) {
+                return;
+            }
             if pointer_left {
                 self.reset_window_cursor(id);
             } else if matches!(
@@ -77,29 +80,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         match &event {
             WinitWindowEvent::RedrawRequested => self.redraw(event_loop, id),
-            WinitWindowEvent::CloseRequested if id == WindowId::PRIMARY => {
-                self.forward_window_event(event_loop, id, &event);
-                self.browsers.clear();
-                self.close_all_file_dialogs();
-                event_loop.exit();
-            }
             WinitWindowEvent::CloseRequested => {
                 self.forward_window_event(event_loop, id, &event);
-                if self.auxiliary.contains_key(&id) {
-                    self.close_window(event_loop, id);
-                }
+                self.close_window(event_loop, id);
             }
-            WinitWindowEvent::Destroyed if id == WindowId::PRIMARY => {
-                self.forward_window_event(event_loop, id, &event);
-                self.browsers.clear();
-                self.close_all_file_dialogs();
-                event_loop.exit();
-            }
-            WinitWindowEvent::Destroyed => {
-                if self.auxiliary.contains_key(&id) {
-                    self.close_window(event_loop, id);
-                }
-            }
+            WinitWindowEvent::Destroyed => self.close_window(event_loop, id),
             WinitWindowEvent::Moved(_) => {
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
@@ -317,23 +302,17 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         disposition
     }
     pub(super) fn input_of(&self, id: WindowId) -> &InputTracker {
-        if id == WindowId::PRIMARY {
-            &self.input
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| &host.input)
-                .unwrap_or(&self.input)
-        }
+        &self
+            .window_contexts
+            .get(&id)
+            .expect("input belongs to a live window")
+            .input
     }
     pub(super) fn input_mut(&mut self, id: WindowId) -> &mut InputTracker {
-        if id == WindowId::PRIMARY {
-            &mut self.input
-        } else {
-            self.auxiliary
-                .get_mut(&id)
-                .map(|host| &mut host.input)
-                .unwrap_or(&mut self.input)
-        }
+        &mut self
+            .window_contexts
+            .get_mut(&id)
+            .expect("input belongs to a live window")
+            .input
     }
 }

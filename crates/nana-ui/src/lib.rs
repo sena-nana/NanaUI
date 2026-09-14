@@ -173,8 +173,8 @@ pub use graph::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
-    HostedDeviceLost, HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuSurface,
-    HostedRunError, HostedSurfaceFrame, HostedSurfaceMode,
+    HostedDeviceLost, HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuShared,
+    HostedGpuSurface, HostedRunError, HostedSurfaceFrame, HostedSurfaceMode,
 };
 pub use icons::Icon;
 pub use layout::{
@@ -263,7 +263,7 @@ pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
     FrameDemand, HostFailure, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, RuntimeWindowSettings, run_runtime,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]
@@ -323,3 +323,17 @@ pub use nana_ui_scene::DocumentAccessError;
 pub use nana_ui_core::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
 };
+
+#[cfg(feature = "hosted")]
+mod window_service;
+#[cfg(feature = "hosted")]
+pub use window_service::{
+    WindowCapture, WindowCursor, WindowDescriptor, WindowEffects, WindowError, WindowHandle,
+    WindowLevel, WindowRequest, WindowService,
+};
+
+/// Native event-loop integration for advanced hosts.
+#[cfg(feature = "hosted")]
+pub mod platform_host {
+    pub use crate::scene_host::EmbeddedRuntime;
+}

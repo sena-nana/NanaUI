@@ -15,6 +15,8 @@
       throw new Error("__nanaHost.call missing for web-api `" + name + "`");
     }
     const values = Array.isArray(args) ? args : [];
+    // Window service operations carry their own identity and are host-global.
+    if (name.startsWith("window") && name !== "windowCall") return host.call(name, values);
     let windowId = Number(globalThis.__nanaActiveWindowId || 0);
     if (!windowId && values.length) {
       const first = Number(values[0]);
@@ -22,6 +24,10 @@
         windowId = Math.floor(first / 4294967296);
       }
     }
+    const targetId = name === "windowCall" ? Number(values[0]) : windowId;
+    // Closed is delivered after native document/resource destruction. During
+    // Vue's synchronous unmount, cleanup still releases JS timers and images.
+    if (globalThis.__nanaIsWindowDisposing?.(targetId)) return null;
     if (windowId && name !== "windowCall") {
       return host.call("windowCall", [windowId, String(name), values]);
     }

@@ -3,7 +3,8 @@
 //! Floating dock commands and pointer interactions use this one host boundary.
 //! This helper does not build a widget tree or a second GPU context.
 
-use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{WindowDescriptor, WindowId, WindowRole};
 use nana_ui_runtime::{DockFloatingSurface, DockWorkspaceEvent, dock_surface_window_key};
 
 use crate::runtime_host::{RuntimeProgramUpdate, RuntimeRedraw};
@@ -79,8 +80,9 @@ fn redraw_for_runtime_dock_effects(effects: &[DockWorkspaceEvent]) -> RuntimeRed
     redraw
 }
 
-fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> WindowSettings {
-    WindowSettings {
+fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> WindowDescriptor {
+    WindowDescriptor {
+        visible: true,
         title: title.to_string(),
         initial_size: (f64::from(surface.width), f64::from(surface.height)),
         minimum_size: (FLOATING_MIN_WIDTH, FLOATING_MIN_HEIGHT),

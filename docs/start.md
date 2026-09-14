@@ -35,7 +35,7 @@ use std::convert::Infallible;
 
 use nana_ui::runtime::{Activate, Button, DocumentId, RuntimeDocument, Text};
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, ThemeMode,
     run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
@@ -112,7 +112,7 @@ impl RuntimeProgram for App {
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    run_runtime::<App>(RuntimeWindowSettings::new("NanaUI"))
+    run_runtime::<App>(WindowDescriptor::new("NanaUI"))
 }
 ```
 

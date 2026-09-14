@@ -11,7 +11,7 @@
  * (getBoundingClientRect, style, classList, dataset, …) do not throw.
  */
 import { createRenderer } from "@vue/runtime-core";
-import { defineLayoutMetrics, hostCall, layoutRect, nanaWindowIdFromNode, scrollNodeIntoView, withNanaWindowContext } from "./layoutMetrics.js";
+import { withNanaWindowDisposal, defineLayoutMetrics, hostCall, layoutRect, nanaWindowIdFromNode, scrollNodeIntoView, withNanaWindowContext } from "./layoutMetrics.js";
 import { appearEnterPhaseAfter, armMotionEndFromStyles, cancelArmedMotionEnd, createMotionEndEvent, isPaintOnlyStyleKey, isVueTransitionClass, preserveMotionClasses, resolveTransitionComputedStyles, vueTransitionClassKind } from "./transitionContract.js";
 
 export { hostCall } from "./layoutMetrics.js";
@@ -79,12 +79,37 @@ function bindDecodedImage(el, nid, source) {
   return true;
 }
 
+const mountedWindowApps = new Map();
+
+function disposeWindow(id, detail, readyError) {
+  const handle = nanaWindowHandles.get(id);
+  withNanaWindowDisposal(id, () => {
+    let failure;
+    const cleanup = (action) => {
+      try { action(); } catch (error) { failure ??= error; }
+    };
+    if (handle) {
+      handle.__rejectReady(readyError);
+      cleanup(() => handle.unmount());
+    }
+    // createApp().mount() also owns a Vue scope, even without a JS window handle.
+    // A failing hook must not prevent the other applications from being disposed.
+    for (const app of [...(mountedWindowApps.get(id) || [])]) cleanup(() => app.unmount());
+    mountedWindowApps.delete(id);
+    handle?.__resolveClosed(detail);
+    nanaWindowHandles.delete(id);
+    cleanup(() => releaseWindowNodeHandles(id));
+    cleanup(() => globalThis.__nanaDestroyWindowContext?.(id));
+    if (failure) throw failure;
+  });
+}
+
 function releaseWindowNodeHandles(windowId) {
   const id = Number(windowId || 0);
-  if (!id) return;
   for (const [nid, node] of nodes.cachedNodes()) {
     if (nanaWindowIdFromNode(nid) !== id) continue;
-    releaseNodeResources(node);
+    releaseNodeResources(node, false);
+    cancelArmedMotionEnd(nid);
     nodes.forgetNode(nid);
     releaseNodeListeners(nid);
   }
@@ -92,10 +117,12 @@ function releaseWindowNodeHandles(windowId) {
 
 globalThis.__nanaReleaseWindowNodes = releaseWindowNodeHandles;
 
-function releaseNodeResources(node) {
+function releaseNodeResources(node, recursive = true) {
   if (!node || typeof node !== "object") return;
-  const children = Array.from(node.childNodes || []);
-  for (const child of children) releaseNodeResources(child);
+  if (recursive) {
+    const children = Array.from(node.childNodes || []);
+    for (const child of children) releaseNodeResources(child);
+  }
   // The host destroys this node's style state on remove, but `nodeCache` keeps
   // the JS shell so detached refs stay `===`. Without this a re-inserted
   // wrapper would look like the host still holds the old declarations, and the
@@ -700,8 +727,24 @@ function createRendererForWindow(windowId = 0) {
         if (container == null || container === "") {
           container = defaultMountContainer(windowId);
         }
-        return origMount(container);
+        const result = withNanaWindowContext(windowId, () => origMount(container));
+        let apps = mountedWindowApps.get(windowId);
+        if (!apps) mountedWindowApps.set(windowId, apps = new Set());
+        apps.add(app);
+        return result;
       };
+      const origUnmount = app.unmount?.bind(app);
+      if (origUnmount) {
+        app.unmount = function () {
+          try {
+            return withNanaWindowContext(windowId, origUnmount);
+          } finally {
+            const apps = mountedWindowApps.get(windowId);
+            apps?.delete(app);
+            if (!apps?.size) mountedWindowApps.delete(windowId);
+          }
+        };
+      }
     }
     return app;
   };
@@ -893,9 +936,14 @@ function createWindowHandle(descriptor) {
       return withNanaWindowContext(id, () => renderer.render(vnode, root));
     },
     unmount() {
-      if (app && typeof app.unmount === "function") app.unmount();
-      else withNanaWindowContext(id, () => renderer.render(null, root));
-      app = null;
+      try {
+        withNanaWindowContext(id, () => {
+          if (app && typeof app.unmount === "function") app.unmount();
+          else renderer.render(null, root);
+        });
+      } finally {
+        app = null;
+      }
     },
     close() {
       hostCall("windowClose", [id]);
@@ -1054,22 +1102,9 @@ if (globalThis.Nana.host && typeof globalThis.Nana.host.on === "function") {
     if (handle) handle.__resolveReady();
   });
   globalThis.Nana.host.on("window-open-failed", (payload) => {
-    const id = Number(payload && payload.id);
-    const handle = nanaWindowHandles.get(id);
-    if (handle) {
-      const error = new Error(String((payload && payload.message) || "native window creation failed"));
-      error.name = "WindowOpenError";
-      handle.__rejectReady(error);
-      handle.unmount();
-      handle.__resolveClosed({ reason: "open-failed", error });
-    }
-    nanaWindowHandles.delete(id);
-    if (typeof globalThis.__nanaReleaseWindowNodes === "function") {
-      globalThis.__nanaReleaseWindowNodes(id);
-    }
-    if (typeof globalThis.__nanaDestroyWindowContext === "function") {
-      globalThis.__nanaDestroyWindowContext(id);
-    }
+    const error = new Error(String((payload && payload.message) || "native window creation failed"));
+    error.name = "WindowOpenError";
+    disposeWindow(Number(payload && payload.id), { reason: "open-failed", error }, error);
   });
   globalThis.Nana.host.on("window-geometry", (payload) => {
     const handle = nanaWindowHandles.get(Number(payload && payload.id));
@@ -1081,21 +1116,8 @@ if (globalThis.Nana.host && typeof globalThis.Nana.host.on === "function") {
     }
   });
   globalThis.Nana.host.on("window-closed", (payload) => {
-    const id = Number(payload && payload.id);
-    const handle = nanaWindowHandles.get(id);
-    if (handle) {
-      const error = new Error("window closed before becoming ready");
-      error.name = "AbortError";
-      handle.__rejectReady(error);
-      handle.unmount();
-      handle.__resolveClosed({ reason: "closed" });
-    }
-    nanaWindowHandles.delete(id);
-    if (typeof globalThis.__nanaReleaseWindowNodes === "function") {
-      globalThis.__nanaReleaseWindowNodes(id);
-    }
-    if (typeof globalThis.__nanaDestroyWindowContext === "function") {
-      globalThis.__nanaDestroyWindowContext(id);
-    }
+    const error = new Error("window closed before becoming ready");
+    error.name = "AbortError";
+    disposeWindow(Number(payload && payload.id), { reason: "closed" }, error);
   });
 }

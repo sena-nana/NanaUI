@@ -12,13 +12,11 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     HostTexture, HostTextureAlphaMode, HostTextureRegistry, RoutedInput, RuntimeInputAdapter,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeWindowSettings, ThemeMode, dock_workspace_window_id, run_runtime,
-    runtime_dock_window_update,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
+    WindowDescriptor, dock_workspace_window_id, run_runtime, runtime_dock_window_update,
 };
-use nana_ui_platform::{
-    ImeEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
-};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{ImeEvent, WindowEvent, WindowId, WindowRole};
 
 const TOOL: WindowId = WindowId(100);
 const PREVIEW_SLOT: &str = "preview";
@@ -212,7 +210,8 @@ impl Fixture {
             redraw: RuntimeRedraw::All,
             window_commands: vec![WindowCommand::Open {
                 id: TOOL,
-                settings: WindowSettings {
+                settings: WindowDescriptor {
+                    visible: true,
                     title: "Notes".into(),
                     initial_size: (360.0, 180.0),
                     minimum_size: (240.0, 120.0),
@@ -501,7 +500,7 @@ fn merge_update(
 
 pub fn run() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<Fixture>(
-        RuntimeWindowSettings::new("NanaUI fixture")
+        WindowDescriptor::new("NanaUI fixture")
             .initial_size(720.0, 420.0)
             .minimum_size(480.0, 280.0)
             .system_caption(true),

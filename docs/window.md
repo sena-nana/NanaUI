@@ -4,7 +4,7 @@ Windows 自绘窗口按钮采用 NanaUI 图标按钮外观：28×28、控件圆�
 
 NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都按桌面软件来，不按浏览器来。
 
-`run_runtime(RuntimeWindowSettings::new("标题"))` 会创建主窗口、唯一 GPU 上下文，并开始事件循环。`RuntimeWindowSettings` 就是 `nana_ui_platform::WindowSettings`。
+`run_runtime(WindowDescriptor::new("标题"))` 会创建主窗口、唯一 GPU 上下文，并开始事件循环。`WindowDescriptor` 就是 `nana_ui_platform::WindowDescriptor`。
 
 ## 标题栏
 
@@ -17,15 +17,15 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 自绘 chrome 可拖窗口客户区最外 8px 缩放（四边与四角）。系统 caption、最大化、全屏、`resizable: false` 交给平台边框或禁用，不叠第二套命中。
 
-没有自绘标题栏的窗口设 `WindowSettings::system_caption(true)`，避免 Windows 无框窗口失去关闭按钮。
+没有自绘标题栏的窗口设 `WindowDescriptor::system_caption(true)`，避免 Windows 无框窗口失去关闭按钮。
 
 关闭 / 最小化 / 最大化是窗口动作。控件发出语义（`WindowChromeAction`），Scene host 去执行。普通控件拿不到窗口句柄。L1 CSS `-webkit-app-region` / `app-region` 不是拖拽合同：任意盒写 `drag` 也不会变成 caption。
 
-`WindowChromeState` 绑在明确的 `WindowId` 上。单窗口可用默认入口（只认收到的第一扇窗）；多窗口在 `WindowCommand::Open` 拿到 ID 后用 `for_window` 各建一份。关窗后不会自动接管别的窗口。
+`WindowChromeState` 绑在明确的 `WindowId` 上。单窗口可用默认入口（只认收到的第一扇窗）；多窗口在等待 `WindowService::create_window` 获得 handle 后，用其 `id()` 调用 `for_window` 各建一份。关窗后不会自动接管别的窗口。
 
 ### Windows 客户端绘制标题栏契约
 
-Windows 上有两条互斥的 chrome 路径，由 `WindowSettings::system_caption` 与 `transparent` 决定，实现见 `windows_scene_chrome`：
+Windows 上有两条互斥的 chrome 路径，由 `WindowDescriptor::system_caption` 与 `transparent` 决定，实现见 `windows_scene_chrome`：
 
 | 设置 | 系统边框 | 阴影 / 圆角 | `WS_EX_NOREDIRECTIONBITMAP` |
 | --- | --- | --- | --- |
@@ -57,7 +57,7 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 原生应用菜单栏是**唯一画不进界面树**的桌面 chrome：macOS 上它属于应用而不是窗口，住在系统菜单条里。所以它在 `nana-window`，用一份平台中立的模型描述（`MenuBar` / `Menu` / `MenuEntry` / `MenuShortcut`，模型本身在 `nana-ui-core`，纯数据）。
 
-应用**声明**菜单，宿主**安装**它：发 `WindowCommand::SetMenuBar { id, bar }`。普通控件拿不到窗口句柄，而 Windows 的菜单属于窗口，所以安装必须由持有窗口的 Scene host 做——和 `SetIcon` 同一条路。
+应用**声明**菜单，宿主**安装**它：调用 `window.set_menu_bar(bar)`。普通控件拿不到窗口句柄，而 Windows 的菜单属于窗口，所以安装必须由持有窗口的 Scene host 做——和 `SetIcon` 同一条路。
 
 选中项通过 `take_menu_activations()` 回来：每帧 drain 一次，拿到的是 `MenuEntry::Item` 的 `id`。**框架只报告用户选了哪一项，这个 id 是什么意思仍由应用决定**，与 `SecondaryPress` 同一原则。参照 `examples/component-gallery`：菜单 id 被映射成和界面操作完全相同的业务消息。
 
@@ -75,7 +75,7 @@ IME：焦点进可编辑字段时 `Window::request_ime_update(Enable)` 一次（
 
 ## 文件对话框
 
-系统文件对话框需要父窗口句柄——macOS 挂成 sheet,Windows 需要 owner HWND——而句柄只在宿主层。所以对话框和菜单栏走同一条路:模型在 `nana-ui-core`(`FileDialogRequest` / `FileDialogResult` / `FileFilter`),打开由宿主经 `WindowCommand::OpenFileDialog { id, request }` 执行。控件仍然拿不到句柄:`PathField` 只发 `BrowseRequested`,由应用翻译成一个请求。
+系统文件对话框需要父窗口句柄——macOS 挂成 sheet,Windows 需要 owner HWND——而句柄只在宿主层。所以对话框和菜单栏走同一条路:模型在 `nana-ui-core`(`FileDialogRequest` / `FileDialogResult` / `FileFilter`),应用通过 `WindowHandle::open_file_dialog` 请求，由宿主执行。控件仍然拿不到句柄:`PathField` 只发 `BrowseRequested`,由应用翻译成一个请求。
 
 结果是**异步**的：宿主通过 `WindowEvent::FileDialogCompleted { id, result }` 回流并主动唤醒事件循环。`id` 是窗口身份，`result.id` 是应用的 `u64` 请求身份；应用保存请求对应的业务对象和编辑基线，再消费结果。没有全局结果队列，也无需每帧轮询。
 
@@ -98,7 +98,7 @@ Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback �
 
 任务栏、exe、Dock 上的图标是应用身份，不是界面里的 `Icon` 字形。
 
-- Rust：`register_application_icon`，或 `WindowSettings::icon` / `WindowCommand::SetIcon`
+- Rust：`register_application_icon`，或 `WindowDescriptor::icon` / `WindowHandle::set_icon`
 - 未设置时用默认几何标记，不要把它当品牌
 - Windows exe 可在 `build.rs` 里 `nana_app_icon::embed_windows()`
 - macOS Dock：`nana_window::set_application_icon_png`；`.app` 用 `nana-package-app`
@@ -141,41 +141,60 @@ cargo run -p nana-app-icon --bin nana-package-app --   --exe target/dist/compone
 
 ## 多窗口
 
-`WindowCommand::Open { id, settings }` 再开工具窗或预览窗。它们共用同一份 Device / Queue；若走 Vue，也共用同一个 JS 引擎。关主窗口即退出；关辅助窗口只拆那一扇。
+普通应用通过 `context.windows()` 创建窗口，通过 `context.window()` 控制当前窗口。`WindowHandle` 可克隆并发送给工作线程，不持有原生窗口；所有操作排队回到窗口线程。尺寸和位置使用逻辑坐标。
 
 ```rust
-RuntimeProgramUpdate {
-    redraw: RuntimeRedraw::All,
-    window_commands: vec![WindowCommand::Open {
-        id: TOOL,
-        settings: WindowSettings {
-            title: "Notes".into(),
-            initial_size: (360.0, 180.0),
-            minimum_size: (240.0, 120.0),
-            role: WindowRole::Tool,
-            parent: Some(WindowId::PRIMARY),
-            system_caption: true,
-            ..WindowSettings::new("Notes")
-        },
-    }],
-    exit: false,
-}
+// 工作线程；在异步代码中也可以用 .await。
+let window = service.create_window(WindowDescriptor {
+    title: "Notes".into(),
+    initial_size: (480.0, 320.0),
+    minimum_size: (240.0, 120.0),
+    system_caption: true,
+    ..Default::default()
+}).wait()?;
+window.set_title("Preview").wait()?;
+window.set_size((640.0, 480.0)).wait()?;
+window.close().wait()?;
 ```
 
-每扇窗一份 `RuntimeDocument`，用 `document` / `document_mut` 按 `WindowId` 交出。完整例子：`window-chrome-multi-window.rs`、`examples/runtime-host-fixture`。
+创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成；失败会回滚，不发送 `Ready`。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建，在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
 
-窗口位置、最大化、上次开在哪块屏幕，由应用自己记。框架在创建窗口前按当前显示器工作区约束位置（原屏断开则主屏居中，DPI 变则按逻辑尺寸重算），但不替你选配置目录，也不写盘。
+操作返回 `WindowRequest<T>`，支持 `.await`、工作线程 `.wait()` 和窗口线程非阻塞的 `try_take()`。在窗口线程调用 `.wait()` 返回 `HostThreadWait`，不阻塞事件循环。待处理窗口请求最多 1024 个，队列满时立即返回 `QueueFull`，调用方可等待已提交请求完成后重试。关闭后的 handle 返回 `WindowClosed`，宿主释放后返回 `HostStopped`；身份及世代检查防止旧请求作用于重新创建的窗口。
 
+主窗口与附加窗口共用注册表和 Device/Queue，每个窗口独立持有 Surface、输入、IME、文档和渲染目标。默认关闭一扇窗口只释放该窗口及其原生子窗口；standalone 最后一扇窗口关闭后退出。应用仍可显式返回 `RuntimeProgramUpdate::exit()` 关闭整个应用。
+
+`ApplicationState::window_event` 和 `RuntimeProgram::window_event` 接收框架窗口事件；指针、键盘输入通过 `RuntimeProgram::input_event` 的 `RoutedInput` 接收，附带命中与处理结果，同一输入不重复派发。缩放变化通过带新 `scale_factor` 的 `Resized` 通知。
+
+### 嵌入已有宿主
+
+`platform_host::EmbeddedRuntime` 接收宿主 `ActiveEventLoop`、proxy 和 `HostedGpuShared`，从不创建或退出宿主事件循环。宿主转发 `window_event`、`wake` 和 `about_to_wait`。`HostedGpuShared::from_device` 接入已有 Instance/Adapter/Device/Queue；不申请第二个 Device。
+
+设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后，先在窗口线程调用 `notify_device_lost()`，再转发其他窗口事件；通过 `needs_gpu_replacement()` 检查挂起状态，重建宿主设备后调用 `replace_gpu()`。替换先为所有存活窗口准备 Surface，成功后统一切换并调用应用 GPU 重建回调。
+
+`WindowHandle::with_native_handle` 将回调调度到窗口线程，仅借用回调期间有效的 raw handle。不能保存原始指针供回调结束后使用，也不会取得 `winit::Window` 所有权。
+
+`window.effects().set_material()` 返回实际 `MaterialOutcome`；穿透通过 `set_mouse_passthrough()` 控制。`window.capture().set_protected()` 请求 macOS/Windows 的原生捕获保护，其他后端返回 `Unsupported`；这不是对所有捕获方式的保证。
+
+完整示例：`window-service-lifecycle` 无需导入 winit；`embedded-window-lifecycle` 展示高级宿主适配。两个示例都自动验证三窗口真实呈现、跨线程控制、主窗关闭、失败回滚、子窗释放与再次创建。
+
+### 从旧接口迁移
+
+- `RuntimeWindowSettings` / `WindowSettings` 统一改为 `WindowDescriptor`，显式结构体初始化需添加 `visible` 或使用默认值。
+- 普通应用用 `WindowService` / `WindowHandle` 替代自行分配窗口 ID 和提交 `WindowCommand`。
+- `WindowCommand` 从平台 crate 根导出移入 `nana_ui_platform::host`，仅供 Vue、Dock、chrome 等框架适配器使用；适配器提交的批次仍在宿主 commit 时进入同一个 WindowManager。
+- 主窗口不再具有隐式退出特权；需要“关主窗退出”的产品应显式返回退出更新。
+
+窗口配置持久化继续由应用负责，框架不选择配置目录或写盘。
 
 ### 独立透明工具窗
 
-`WindowSettings::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。不需要 `DesktopShell` 才能使用边缘缩放。
+`WindowDescriptor::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。不需要 `DesktopShell` 才能使用边缘缩放。
 
-`WindowCommand::Open` 成功发出 `WindowEvent::Ready`；创建失败发出 `OpenFailed { id, error }`，应用应撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
+`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
 
 `RuntimeProgram::window_material_mode_for(id)` 与 `appearance_backdrop_opacity_for(id)` 默认调用现有全局方法，允许主窗和透明工具窗分别配置。宿主在创建、外观变化、Surface 恢复时都按目标窗口调用；背景透明不改变前景文字的不透明度。纯透明窗口的内容背景由应用 Runtime 节点绘制。
 
-`WindowSettings::constrain_to_work_area = true` 用于完整恢复工具窗：部分出屏的位置也会校正，尺寸超出屏幕时会缩小。Windows 使用扣除任务栏的原生工作区；其他平台当前回退显示器边界。默认 `false` 保留原有“与任意屏幕有交集即保留位置”的行为。
+`WindowDescriptor::constrain_to_work_area = true` 用于完整恢复工具窗：部分出屏的位置也会校正，尺寸超出屏幕时会缩小。Windows 使用扣除任务栏的原生工作区；其他平台当前回退显示器边界。默认 `false` 保留原有“与任意屏幕有交集即保留位置”的行为。
 
 原生验收探针（会短暂移动鼠标到探针自身窗口）：
 
@@ -223,3 +242,24 @@ python scripts/validate-desktop-overlay.py
 通过示例页、说明页、后退、隐藏和截图按钮验证真实父窗。设置
 `NANA_BROWSER_CAPTURE_OUTPUT=/tmp/nanaui-browser.png` 可保存网页 PNG。必须实际查看
 原生窗口与 PNG 后才能宣称平台视觉和交互通过；编译及离屏树检查不能替代 WebKit 验收。
+
+### Surface 故障恢复
+
+Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口，并以两秒间隔在现有共享 GPU 上重试；其他窗口继续绘制。`HostFailure::SurfaceRecovery` 报告窗口身份与首次错误。恢复成功后重置该窗口材质缓存并重绘，失败不关闭应用文档。恢复期间材质操作返回 `OperationFailed`。失败的材质操作不会保存新的覆盖值或透明偏好；若原生配置已部分改变，后续 Surface 恢复会重新应用上一次成功的设置。只有 Device 丢失才启动全局 GPU 恢复；embedded 的局部 Surface 故障不会要求宿主更换 Device。
+
+窗口拖动、边缘缩放与穿透控制保留底层错误分类：平台明确不支持时返回 `Unsupported`，操作被系统忽略或遇到其他 OS 错误时返回 `OperationFailed`。穿透事件与请求完成结果报告同一次操作的结果。
+
+同一父窗口已有模态子窗口时，重复创建模态子窗口会失败；可以在现有模态子窗口内创建嵌套模态。请求聚焦父窗口会沿模态链转发到最深层活动子窗口。关闭父窗口会递归清理整条子窗口链，清理过程中不会重新启用或聚焦正在关闭的 Windows 父窗口。
+
+`embedded-window-lifecycle --probe-device-loss` 在首帧前由宿主销毁外部 Device、通知管理器挂起并替换 GPU，然后执行相同的多窗口与焦点验收。它验证宿主通知/替换协议和恢复后的 present，不表示绘制中途恢复的性能数据。
+
+创建描述符的尺寸必须有限且为正，位置必须有限，模态窗口必须指定父窗口。`WindowService::create_window` 对这些错误直接完成为 `InvalidParameter`，不入队、不唤醒宿主。standalone/embedded 的初始窗口同样在分配原生资源前校验，并且不能指定父窗口；有父窗口的窗口通过服务创建。
+
+宿主直接销毁 `EmbeddedRuntime` 时，会先关闭请求队列并完成等待中的请求，再销毁应用状态。因此应用析构可以等待正在等待窗口请求的工作线程，未处理和后续请求均得到 `HostStopped`。`embedded-window-lifecycle --probe-host-stop` 覆盖这一退出顺序。
+
+Vue 主窗口也遵循独立关闭语义：原生关闭确认后释放对应文档、JS 定时器和监听器，其他 Vue 窗口及共享引擎继续存活。主窗口 DOM 操作在调用时解析存活文档，不会因引擎保留宿主操作而延长已关闭文档的生命周期。最后一个窗口的关闭通知仍会在引擎销毁前派发；材质和背景透明度按目标窗口读取。
+
+
+`vue-hosted-acceptance --window-lifecycle-probe` 使用实际 Vue 组件验证主窗口独立关闭：两个 Surface 首先 present，主窗口关闭后检查 Vue 卸载钩子、文档和 JS 上下文释放，再确认附加窗口继续 present，最后检查其关闭通知与缓存释放。探针会将附加窗口置前，避免启动时被主窗口完全遮挡而等待不到首帧。
+
+Vue 窗口关闭时会卸载该窗口通过 `createApp().mount()` 或窗口 handle 挂载的应用，清理节点身份缓存、样式、动画、定时器及监听器。原生文档已先行销毁，因此同步卸载范围中的文档操作只完成 JS 侧清理；业务需要持久化数据时应在关闭请求阶段处理。普通存活窗口的卸载和宿主错误语义保持正常。

@@ -13,7 +13,7 @@ use nana_ui::{
     DockWorkspaceEvent, Icon, KeyModifiers, KeyStroke, MaterialOutcome, RegionId, SelectionMove,
     SettingsTabId, SplitPaneAction, ThemeMode, TreeViewEvent, WindowMaterialMode, WorkspaceAction,
 };
-use nana_ui_platform::WindowCommand;
+use nana_ui_platform::host::WindowCommand;
 use std::path::PathBuf;
 
 #[test]

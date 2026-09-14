@@ -225,7 +225,7 @@ mod pending_tests {
     }
 }
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn handle_ime(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -325,50 +325,31 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         &self,
         id: WindowId,
     ) -> Vec<nana_ui_runtime::AccessibilityActionRequest> {
-        if id == WindowId::PRIMARY {
-            self.accessibility
-                .as_ref()
-                .map_or_else(Vec::new, HostedAccessibility::take_actions)
-        } else {
-            self.auxiliary
-                .get(&id)
-                .and_then(|host| host.accessibility.as_ref())
-                .map_or_else(Vec::new, HostedAccessibility::take_actions)
-        }
+        self.window_contexts
+            .get(&id)
+            .and_then(|host| host.accessibility.as_ref())
+            .map_or_else(Vec::new, HostedAccessibility::take_actions)
     }
     #[cfg(not(target_os = "android"))]
     pub(super) fn synchronize_accessibility(&mut self, id: WindowId) {
         let scale_factor = self.scale_factor(id);
-        let has_adapter = if id == WindowId::PRIMARY {
-            self.accessibility.is_some()
-        } else {
-            self.auxiliary
-                .get(&id)
-                .is_some_and(|host| host.accessibility.is_some())
-        };
+        let has_adapter = self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.accessibility.is_some());
         if !has_adapter {
             return;
         }
-        let scale_factor_changed = if id == WindowId::PRIMARY {
-            self.accessibility
-                .as_ref()
-                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
-        } else {
-            self.auxiliary
-                .get(&id)
-                .and_then(|host| host.accessibility.as_ref())
-                .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor))
-        };
-        let projector_generation = if id == WindowId::PRIMARY {
-            self.accessibility
-                .as_ref()
-                .and_then(HostedAccessibility::retained_generation)
-        } else {
-            self.auxiliary
-                .get(&id)
-                .and_then(|host| host.accessibility.as_ref())
-                .and_then(HostedAccessibility::retained_generation)
-        };
+        let scale_factor_changed = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.accessibility.as_ref())
+            .is_some_and(|accessibility| accessibility.scale_factor_changed(scale_factor));
+        let projector_generation = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.accessibility.as_ref())
+            .and_then(HostedAccessibility::retained_generation);
         let Some(pending) = self.accessibility_pending_mut(id) else {
             return;
         };
@@ -385,12 +366,8 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         ) else {
             return;
         };
-        if id == WindowId::PRIMARY {
-            if let Some(accessibility) = self.accessibility.as_mut() {
-                accessibility.synchronize(update, scale_factor);
-            }
-        } else if let Some(accessibility) = self
-            .auxiliary
+        if let Some(accessibility) = self
+            .window_contexts
             .get_mut(&id)
             .and_then(|host| host.accessibility.as_mut())
         {
@@ -401,22 +378,14 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         &mut self,
         id: WindowId,
     ) -> Option<&mut PendingAccessibility> {
-        if id == WindowId::PRIMARY {
-            Some(&mut self.accessibility_pending)
-        } else {
-            self.auxiliary
-                .get_mut(&id)
-                .map(|host| &mut host.accessibility_pending)
-        }
+        self.window_contexts
+            .get_mut(&id)
+            .map(|host| &mut host.accessibility_pending)
     }
     #[cfg(not(target_os = "android"))]
     pub(super) fn accessibility_mut(&mut self, id: WindowId) -> Option<&mut HostedAccessibility> {
-        if id == WindowId::PRIMARY {
-            self.accessibility.as_mut()
-        } else {
-            self.auxiliary
-                .get_mut(&id)
-                .and_then(|host| host.accessibility.as_mut())
-        }
+        self.window_contexts
+            .get_mut(&id)
+            .and_then(|host| host.accessibility.as_mut())
     }
 }

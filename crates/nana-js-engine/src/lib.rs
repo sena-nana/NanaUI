@@ -1107,6 +1107,10 @@ impl HostApiRegistry {
         self.handlers.get(name)
     }
 
+    pub fn get_async(&self, name: &str) -> Option<&HostAsyncApiHandler> {
+        self.async_handlers.get(name)
+    }
+
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.handlers
             .keys()

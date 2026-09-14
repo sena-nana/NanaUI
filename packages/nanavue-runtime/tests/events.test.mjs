@@ -14,7 +14,7 @@ const shimSrc = loadShimSource();
 
 
 
-async function loadRuntime() {
+async function loadRuntime(createRenderer) {
   const hostListeners = new Map();
   const sandbox = {
     console,
@@ -53,12 +53,12 @@ async function loadRuntime() {
       return null;
     },
   };
-  sandbox.createRenderer = () => ({
+  sandbox.createRenderer = createRenderer || (() => ({
     createApp() {
       return {};
     },
     render() {},
-  });
+  }));
 
   vm.runInNewContext(shimSrc, sandbox, { filename: "shim.js" });
   Object.assign(sandbox, await loadRenderer(sandbox));
@@ -479,6 +479,14 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
           args[2][0] === rootId,
       ),
     );
+    // Controls must not become windowCall(documentId, windowClose, ...)
+    // when invoked from this window's own callback context.
+    sandbox.__nanaActiveWindowId = 1;
+    handle.focus();
+    handle.setTitle("renamed");
+    sandbox.__nanaActiveWindowId = 0;
+    assert.ok(calls.some(([name, args]) => name === "windowFocus" && args[0] === 1));
+    assert.ok(calls.some(([name, args]) => name === "windowSetTitle" && args[0] === 1));
     assert.equal(handle.document.querySelector("body").__nid, rootId);
     assert.ok(
       calls.some(
@@ -491,6 +499,115 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     sandbox.__hostListeners.get("window-closed")({ id: 1 });
     assert.equal((await closed).reason, "closed");
     assert.equal(sandbox.Nana.windows.get(1), null);
+  });
+
+  test("closed mounted windows dispose Vue nodes after native document removal", async () => {
+    let unmounted = 0;
+    const sandbox = await loadRuntime((ops) => ({
+      createApp() {
+        let child;
+        return {
+          mount(root) {
+            child = ops.createElement("div");
+            ops.insert(child, root);
+          },
+          unmount() {
+            ops.remove(child);
+            unmounted += 1;
+          },
+        };
+      },
+      render() {},
+    }));
+    let nativeAlive = true;
+    let callsAfterClose = 0;
+    const rootId = 4294967298;
+    sandbox.__nanaHost.call = (name, args = []) => {
+      if (!nativeAlive) {
+        callsAfterClose += 1;
+        throw new Error("native document already removed");
+      }
+      const operation = name === "windowCall" ? args[1] : name;
+      if (operation === "createElement") return rootId + 1;
+      if (operation === "nodeKind") return "element";
+      if (operation === "elementTag") return "body";
+      if (operation === "childNodes") return [];
+      return null;
+    };
+    sandbox.Nana.host.invoke = () => Promise.resolve({ id: 1, mountRoot: rootId, ready: true });
+    const handle = await sandbox.Nana.windows.create({ title: "mounted" });
+    handle.mount({});
+    const originalRoot = handle.root;
+    nativeAlive = false;
+    sandbox.__hostListeners.get("window-closed")({ id: 1 });
+    assert.equal(unmounted, 1);
+    assert.equal((await handle.closed).reason, "closed");
+    assert.equal(sandbox.Nana.windows.get(1), null);
+    assert.equal(sandbox.__nanaGetWindowContext(1), null);
+    assert.equal(callsAfterClose, 0);
+    assert.throws(() => sandbox.hostCall("patchProp", [rootId, "data-stale", "true"]), /native document already removed/);
+    // Cached node identities must be released, including the root.
+    nativeAlive = true;
+    assert.notEqual(sandbox.wrapNode(rootId, "element", "body"), originalRoot);
+    sandbox.__hostListeners.get("window-closed")({ id: 1 });
+    assert.equal(unmounted, 1);
+  });
+
+  test("closing primary unmounts ordinary createApp scopes and releases cached nodes", async () => {
+    let unmounted = 0;
+    let globalControlCalls = 0;
+    const sandbox = await loadRuntime((ops) => ({
+      createApp() {
+        let root;
+        return {
+          mount(container) { root = container; },
+          unmount() {
+            sandbox.cancelAnimationFrame(123);
+            sandbox.clearTimeout(456);
+            sandbox.clearInterval(789);
+            sandbox.hostCall("windowFocus", [1]);
+            ops.remove(root);
+            unmounted += 1;
+          },
+        };
+      },
+      render() {},
+    }));
+    const root = sandbox.wrapNode(2, "element", "body");
+    sandbox.createApp({}).mount(root);
+    sandbox.__nanaHost.call = (name) => {
+      if (name === "windowFocus") { globalControlCalls += 1; return null; }
+      throw new Error("primary already closed");
+    };
+    sandbox.__hostListeners.get("window-closed")({ id: 0 });
+    assert.equal(unmounted, 1);
+    assert.equal(sandbox.__nanaGetWindowContext(0), null);
+    assert.equal(globalControlCalls, 1);
+    sandbox.__nanaHost.call = () => null;
+    assert.notEqual(sandbox.wrapNode(2, "element", "body"), root);
+    sandbox.__hostListeners.get("window-closed")({ id: 0 });
+    assert.equal(unmounted, 1);
+  });
+
+  test("one failing unmount does not retain other applications in the closed window", async () => {
+    let disposed = 0;
+    const sandbox = await loadRuntime(() => ({
+      createApp(component) {
+        return {
+          mount() {},
+          unmount() { disposed += 1; if (component.fail) throw new Error("unmount failed"); },
+        };
+      },
+      render() {},
+    }));
+    const root = sandbox.wrapNode(2, "element", "body");
+    sandbox.createApp({ fail: true }).mount(root);
+    sandbox.createApp({}).mount(root);
+    assert.throws(() => sandbox.__hostListeners.get("window-closed")({ id: 0 }), /unmount failed/);
+    assert.equal(disposed, 2);
+    assert.equal(sandbox.__nanaGetWindowContext(0), null);
+    sandbox.__hostListeners.get("window-closed")({ id: 0 });
+    assert.equal(disposed, 2);
   });
 
   test("window.open without url maps onto Nana.windows.create", async () => {
@@ -563,4 +680,23 @@ test("programmatic focus dispatches actual host transitions through ancestor cap
   assert.equal(focused, 72, "inactive blur must not steal focus");
   second.blur();
   assert.deepEqual(events, [["focus", 71], ["blur", 71], ["focus", 72], ["blur", 72]]);
+});
+
+test("closing primary context clears callbacks even after native document removal", async () => {
+  const sandbox = await loadRuntime();
+  const primary = sandbox.__nanaGetWindowContext(0);
+  const auxiliary = sandbox.__nanaCreateWindowContext(2, 320, 240, 1);
+  let fired = 0;
+  const timeout = sandbox.setTimeout(() => fired++, 10);
+  const raf = sandbox.requestAnimationFrame(() => fired++);
+  const interval = sandbox.setInterval(() => fired++, 10);
+  primary.window.addEventListener("resize", () => fired++);
+  sandbox.__nanaHost.call = () => { throw new Error("native document closed"); };
+  assert.equal(sandbox.__nanaDestroyWindowContext(0), true);
+  assert.equal(sandbox.__nanaDestroyWindowContext(0), false);
+  assert.equal(sandbox.__nanaGetWindowContext(0), null);
+  assert.equal(sandbox.__nanaGetWindowContext(2), auxiliary);
+  sandbox.__nanaDrainTimers({ raf: [raf], timeouts: [timeout], intervals: [interval] });
+  primary.window.dispatchEvent(new sandbox.Event("resize"));
+  assert.equal(fired, 0);
 });

@@ -1,7 +1,7 @@
 //! Single-engine, multi-window Vue document coordination.
 //!
 //! This module deliberately stops at generic window commands. The native host
-//! translates them into its existing `HostedWindowCommand` path, so no window,
+//! commits them through the shared window manager, so no window,
 //! surface, adapter, device, or queue is created by the Vue compatibility layer.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -789,15 +789,53 @@ impl VueRuntime {
 
     /// Framework registry: primary-document DOM ops plus explicit multi-window routing.
     pub fn host_api_registry(&self) -> HostApiRegistry {
-        let mut api = self
-            .state
-            .lock()
-            .expect("Vue runtime state")
+        // Engine registrations must not retain a closed primary document. Resolve
+        // the live window on each call, just as explicit windowCall routing does.
+        let state = self.state.lock().expect("Vue runtime state");
+        let operations = state
             .windows
             .get(&VueWindowId::PRIMARY)
-            .expect("primary Vue window")
-            .api
-            .clone();
+            .or_else(|| state.windows.values().next())
+            .map(|entry| {
+                entry
+                    .api
+                    .names()
+                    .map(|name| (name.to_owned(), entry.api.get_async(name).is_some()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut api = HostApiRegistry::new();
+        api.set_observer(state.host_call_observer.clone());
+        drop(state);
+        for (name, asynchronous) in operations {
+            let state = Arc::clone(&self.state);
+            let operation = name.clone();
+            if asynchronous {
+                api.register_async(name, move |args, context| {
+                    let handler = state
+                        .lock()
+                        .map_err(state_poisoned)?
+                        .windows
+                        .get(&VueWindowId::PRIMARY)
+                        .and_then(|entry| entry.api.get_async(&operation))
+                        .cloned()
+                        .ok_or_else(|| JsException::new("primary Vue window is closed"))?;
+                    handler(args, context)
+                });
+            } else {
+                api.register(name, move |args| {
+                    let handler = state
+                        .lock()
+                        .map_err(state_poisoned)?
+                        .windows
+                        .get(&VueWindowId::PRIMARY)
+                        .and_then(|entry| entry.api.get(&operation))
+                        .cloned()
+                        .ok_or_else(|| JsException::new("primary Vue window is closed"))?;
+                    handler(args)
+                });
+            }
+        }
 
         {
             let state = Arc::clone(&self.state);
@@ -1116,15 +1154,17 @@ impl VueRuntime {
     }
 
     /// Translate Vue window requests into the Scene/`run_runtime` host contract.
-    pub fn drain_runtime_window_commands(&self) -> Vec<nana_ui_platform::WindowCommand> {
-        use nana_ui_platform::{WindowCommand, WindowId, WindowRole, WindowSettings};
+    pub fn drain_runtime_window_commands(&self) -> Vec<nana_ui_platform::host::WindowCommand> {
+        use nana_ui_platform::host::WindowCommand;
+        use nana_ui_platform::{WindowDescriptor, WindowId, WindowRole};
 
         self.drain_window_commands()
             .into_iter()
             .map(|command| match command {
                 VueWindowCommand::Open { id, options } => WindowCommand::Open {
                     id: WindowId(id.0),
-                    settings: WindowSettings {
+                    settings: WindowDescriptor {
+                        visible: true,
                         title: options.title,
                         initial_size: (options.width, options.height),
                         minimum_size: (options.minimum_width, options.minimum_height),
@@ -1223,11 +1263,6 @@ impl VueRuntime {
 
     /// Releases the document only after the native host confirms close.
     pub fn notify_window_closed(&self, id: VueWindowId) -> Result<(), JsEngineError> {
-        if id == VueWindowId::PRIMARY {
-            return Err(JsEngineError::new(
-                "primary Vue window is released with the runtime",
-            ));
-        }
         let mut state = self
             .state
             .lock()
@@ -1289,9 +1324,6 @@ impl VueRuntime {
     }
 
     pub fn request_close(&self, id: VueWindowId) -> Result<(), JsEngineError> {
-        if id == VueWindowId::PRIMARY {
-            return Ok(());
-        }
         let mut state = self
             .state
             .lock()
@@ -1787,7 +1819,7 @@ mod tests {
         let commands = runtime.drain_runtime_window_commands();
         assert!(matches!(
             commands.as_slice(),
-            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+            [nana_ui_platform::host::WindowCommand::Open { settings, .. }]
                 if settings.icon.as_ref().is_some_and(|icon| {
                     icon.width == 1 && icon.rgba == [73, 145, 215, 255]
                 })
@@ -1804,7 +1836,7 @@ mod tests {
         let commands = runtime.drain_runtime_window_commands();
         assert!(matches!(
             commands.as_slice(),
-            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+            [nana_ui_platform::host::WindowCommand::Open { settings, .. }]
                 if !settings.system_caption
         ));
     }
@@ -1825,9 +1857,46 @@ mod tests {
         let commands = runtime.drain_runtime_window_commands();
         assert!(matches!(
             commands.as_slice(),
-            [nana_ui_platform::WindowCommand::Open { settings, .. }]
+            [nana_ui_platform::host::WindowCommand::Open { settings, .. }]
                 if settings.system_caption
         ));
+    }
+
+    #[test]
+    fn primary_close_releases_document_while_api_and_auxiliary_windows_survive() {
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        api.call("windowCreate", &[]).unwrap();
+        let document = {
+            let host = runtime.host(VueWindowId::PRIMARY).unwrap();
+            Arc::downgrade(&host.lock().unwrap().document())
+        };
+        runtime.request_close(VueWindowId::PRIMARY).unwrap();
+        assert!(runtime.host(VueWindowId::PRIMARY).is_some());
+        runtime.notify_window_closed(VueWindowId::PRIMARY).unwrap();
+        assert_eq!(runtime.window_ids(), [VueWindowId(1)]);
+        assert!(
+            document.upgrade().is_none(),
+            "registered API retained closed document"
+        );
+        assert!(
+            api.call("createElement", &[HostValue::string("section")])
+                .is_err()
+        );
+        api.call(
+            "windowCall",
+            &[
+                HostValue::Number(1.0),
+                HostValue::string("createElement"),
+                HostValue::Array(vec![HostValue::string("section")]),
+            ],
+        )
+        .unwrap();
+        runtime
+            .host_api_registry()
+            .call("windowCreate", &[])
+            .unwrap();
+        assert_eq!(runtime.window_ids(), [VueWindowId(1), VueWindowId(2)]);
     }
 
     #[test]

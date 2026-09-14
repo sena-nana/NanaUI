@@ -40,7 +40,7 @@ fn initial_browser_command(request: &NativeBrowserRequest) -> BrowserCommand {
     }
 }
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Reconcile against the live Runtime tree before delivering callbacks, even
     /// when its next Scene flush has not happened yet.
     pub(super) fn reconcile_browser_lifetimes(&mut self) {

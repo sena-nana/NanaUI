@@ -6,9 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nana_ui::runtime::{Activate, Button, DocumentId, FrameworkError, List, RuntimeDocument, Text};
 use nana_ui::{
     RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeWindowSettings, ThemeMode, run_runtime,
+    ThemeMode, WindowDescriptor, run_runtime,
 };
-use nana_ui_platform::{WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{WindowEvent, WindowId, WindowRole};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Message {
@@ -26,9 +27,10 @@ struct SmokeWindow {
 }
 
 impl Smoke {
-    fn open_settings(number: usize) -> WindowSettings {
+    fn open_settings(number: usize) -> WindowDescriptor {
         let offset = 64.0 * number.saturating_sub(1) as f64;
-        WindowSettings {
+        WindowDescriptor {
+            visible: true,
             title: format!("NanaUI Window {number}"),
             initial_size: (640.0, 420.0),
             minimum_size: (480.0, 320.0),
@@ -188,7 +190,7 @@ impl RuntimeProgram for Smoke {
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<Smoke>(
-        RuntimeWindowSettings::new("NanaUI Window 1")
+        WindowDescriptor::new("NanaUI Window 1")
             .initial_size(640.0, 420.0)
             .minimum_size(480.0, 320.0)
             .system_caption(true),

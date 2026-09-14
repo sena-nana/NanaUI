@@ -9,10 +9,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
-use nana_ui_platform::{
-    InputEvent, SystemAppearance, WindowCommand, WindowEvent, WindowGeometry, WindowId,
-    WindowSettings,
-};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{InputEvent, SystemAppearance, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::{
     AccessibilityActionRequest, AccessibilityUpdate, AnimationFrame, FrameworkError, StableNodeId,
     Task,
@@ -23,7 +21,7 @@ use crate::{
     HostTextureRegistry, HostedGpuResources, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
 };
 
-pub use nana_ui_platform::WindowSettings as RuntimeWindowSettings;
+pub use nana_ui_platform::WindowDescriptor;
 
 /// Skip the raw program input hook when Runtime already consumed the event.
 /// The Scene host does not use this gate; it always delivers `input_event`.
@@ -55,6 +53,7 @@ pub(crate) fn gated_runtime_window_update(
 /// Native window identities intentionally do not cross this boundary.
 pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_id: WindowId,
+    windows: Option<crate::WindowService>,
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
     material: MaterialOutcome,
@@ -70,6 +69,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
     fn clone(&self) -> Self {
         Self {
             window_id: self.window_id,
+            windows: self.windows.clone(),
             geometry: self.geometry,
             gpu: self.gpu.clone(),
             material: self.material,
@@ -98,6 +98,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     ) -> Self {
         Self {
             window_id,
+            windows: None,
             geometry,
             gpu,
             material,
@@ -106,6 +107,21 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             tasks,
             system_appearance,
         }
+    }
+
+    pub(crate) fn with_windows(mut self, windows: crate::WindowService) -> Self {
+        self.windows = Some(windows);
+        self
+    }
+
+    pub fn windows(&self) -> &crate::WindowService {
+        self.windows
+            .as_ref()
+            .expect("window service is available in a native host")
+    }
+
+    pub fn window(&self) -> crate::WindowHandle {
+        self.windows().handle(self.window_id)
     }
 
     pub const fn window_id(&self) -> WindowId {
@@ -261,6 +277,7 @@ pub enum HostFailure {
     ResourceProduction { window: WindowId, error: String },
     UnpaintableScene { window: WindowId, error: String },
     AuxiliarySurfaceLost { window: WindowId },
+    SurfaceRecovery { window: WindowId, error: String },
 }
 
 impl HostFailure {
@@ -276,7 +293,8 @@ impl HostFailure {
             | Self::FrameDidNotSettle { window, .. }
             | Self::ResourceProduction { window, .. }
             | Self::UnpaintableScene { window, .. }
-            | Self::AuxiliarySurfaceLost { window } => *window,
+            | Self::AuxiliarySurfaceLost { window }
+            | Self::SurfaceRecovery { window, .. } => *window,
         }
     }
 
@@ -290,7 +308,8 @@ impl HostFailure {
             | Self::InputHandler { error, .. }
             | Self::FrameDidNotSettle { error, .. }
             | Self::ResourceProduction { error, .. }
-            | Self::UnpaintableScene { error, .. } => Some(error),
+            | Self::UnpaintableScene { error, .. }
+            | Self::SurfaceRecovery { error, .. } => Some(error),
             Self::MissingDocument { .. } | Self::AuxiliarySurfaceLost { .. } => None,
         }
     }
@@ -300,6 +319,7 @@ impl fmt::Display for HostFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "host failure on window {}", self.window().0)?;
         match self {
+            Self::SurfaceRecovery { .. } => formatter.write_str(": surface recovery pending"),
             Self::DocumentAccess { .. } => formatter.write_str(": document access failed"),
             Self::AccessibilityAction { .. } => {
                 formatter.write_str(": accessibility action failed")
@@ -487,6 +507,21 @@ pub trait RuntimeProgram: Sized + 'static {
     ) -> Result<RuntimeProgramUpdate, FrameworkError> {
         Ok(RuntimeProgramUpdate::default())
     }
+
+    /// Build the window document before the native window is published.
+    /// Returning an error rolls the entire creation back; Ready is never sent.
+    fn initialize_window(
+        &mut self,
+        id: WindowId,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(), String> {
+        self.with_document(id, |_| ())
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "window document was not initialized".to_string())
+    }
+
+    /// Roll back application state after an unsuccessful window creation.
+    fn discard_window(&mut self, _id: WindowId) {}
 
     fn window_event(
         &mut self,
@@ -711,7 +746,7 @@ fn clip_ime_surrounding(
 }
 
 pub fn run_runtime<Program: RuntimeProgram>(
-    settings: WindowSettings,
+    settings: WindowDescriptor,
 ) -> Result<(), crate::HostedRunError> {
     crate::run_runtime_scene::<Program>(settings)
 }

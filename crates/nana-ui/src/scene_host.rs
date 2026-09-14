@@ -20,11 +20,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nana_ui_core::{AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
+use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
     DisplayBounds, ImeEvent, InputEvent, InputModifiers, PointerPhase, PointerType,
-    SystemAppearance, TextInputPurpose, TextInputRequest, WindowCommand, WindowEvent,
-    WindowGeometry, WindowIcon, WindowId, WindowResizeEdge, clamp_position_to_displays,
-    clear_registered_application_icon, register_application_icon, window_resize_edge,
+    SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent, WindowGeometry, WindowIcon,
+    WindowId, WindowResizeEdge, clamp_position_to_displays, clear_registered_application_icon,
+    register_application_icon, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -68,7 +69,7 @@ use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
     HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, gated_runtime_window_update,
+    RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor, gated_runtime_window_update,
     runtime_ime_surrounding, runtime_text_input_request,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
@@ -87,7 +88,7 @@ const TASK_WORKERS: usize = 4;
 
 /// Run a [`RuntimeProgram`] on the Nana Scene host.
 pub fn run_runtime_scene<Program: RuntimeProgram>(
-    settings: RuntimeWindowSettings,
+    settings: WindowDescriptor,
 ) -> Result<(), HostedRunError> {
     let event_loop = EventLoop::new().map_err(HostedRunError::EventLoop)?;
     event_loop.set_control_flow(ControlFlow::Wait);
@@ -114,38 +115,61 @@ enum SceneRunner<Program: RuntimeProgram> {
         proxy: EventLoopProxy,
         message_tx: Sender<Program::Message>,
         message_rx: Receiver<Program::Message>,
-        settings: RuntimeWindowSettings,
+        settings: WindowDescriptor,
         startup_failure: Arc<Mutex<Option<String>>>,
     },
-    Ready(Box<SceneReady<Program>>),
+    Ready(Box<WindowManager<Program>>),
     Finished {
         startup_failure: Arc<Mutex<Option<String>>>,
     },
 }
 
-struct SceneAuxiliary {
+/// Clears native material registrations on every failed creation path.
+struct PendingNativeWindow(Option<Arc<dyn winit::window::Window>>);
+impl Drop for PendingNativeWindow {
+    fn drop(&mut self) {
+        if let Some(window) = self.0.as_ref() {
+            clear_system_material(window.as_ref());
+        }
+    }
+}
+
+struct WindowContext {
+    surface_retry: Option<Instant>,
+    applied_appearance: Option<windows::WindowAppearance>,
+    cursor_override: Option<CursorIcon>,
+    cursor_visible_override: Option<bool>,
+    material_override: Option<nana_window::MaterialEffect>,
     surface: HostedGpuSurface,
     geometry: WindowGeometry,
     input: InputTracker,
     material: MaterialOutcome,
-    settings: RuntimeWindowSettings,
+    settings: WindowDescriptor,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
     accessibility_pending: PendingAccessibility,
     size_move: LiveSizeMove,
 }
 
-impl Drop for SceneAuxiliary {
+impl Drop for WindowContext {
     fn drop(&mut self) {
         clear_system_material(self.surface.window().as_ref());
     }
 }
 
-struct SceneReady<Program: RuntimeProgram> {
+struct WindowManager<Program: RuntimeProgram> {
     program: Program,
+    embedded: bool,
+    shutting_down: bool,
+    wake_deadline: Option<Instant>,
+    host_work: Arc<schedule::HostWorkWake>,
+    host_work_deadline: Option<Instant>,
+    windows: crate::WindowService,
+    window_requests: Option<Receiver<crate::window_service::Request>>,
+    next_window_id: u64,
     // Native children drop before their owning GPU/window resources.
     browsers: HashMap<(WindowId, String), browser::HostedBrowser>,
-    graphics: HostedGpuContext,
+    graphics: crate::HostedGpuShared,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     native_renderers:
         HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
@@ -155,7 +179,6 @@ struct SceneReady<Program: RuntimeProgram> {
     messages: Receiver<Program::Message>,
     file_dialogs: dialogs::FileDialogs,
     tasks: SyncSender<Task<Program::Message>>,
-    geometry: WindowGeometry,
     animation_clock: RuntimeAnimationClock,
     frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
     texture_subscriptions: HashMap<WindowId, crate::TextureSubscription>,
@@ -163,19 +186,14 @@ struct SceneReady<Program: RuntimeProgram> {
     image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
     image_window_keys: HashMap<WindowId, HashSet<String>>,
     occluded: HashSet<WindowId>,
-    #[cfg(not(target_os = "android"))]
-    accessibility: Option<HostedAccessibility>,
-    accessibility_pending: PendingAccessibility,
-    input: InputTracker,
     material: MaterialOutcome,
-    auxiliary: HashMap<WindowId, SceneAuxiliary>,
+    window_contexts: HashMap<WindowId, WindowContext>,
     window_ids: HashMap<winit::window::WindowId, WindowId>,
+    closing_windows: HashSet<WindowId>,
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeMode,
-    last_material_mode: nana_window::MaterialEffect,
-    last_window_appearance: HashMap<WindowId, (nana_window::MaterialEffect, f32)>,
-    settings: RuntimeWindowSettings,
+    settings: WindowDescriptor,
     ime: HashMap<WindowId, AppliedIme>,
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
@@ -184,7 +202,14 @@ struct SceneReady<Program: RuntimeProgram> {
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
     #[cfg(target_os = "macos")]
     present_transaction_pinned: HashSet<WindowId>,
-    size_move: LiveSizeMove,
+}
+
+impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
+    fn drop(&mut self) {
+        // App destructors may join workers waiting for window requests. Resolve
+        // those requests before Rust drops `program` (the first field).
+        self.window_requests.take();
+    }
 }
 
 struct WindowChromeSession {
@@ -418,6 +443,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
             message_rx,
             settings,
             Arc::clone(&startup_failure),
+            None,
         ) {
             Ok(ready) => *self = Self::Ready(Box::new(ready)),
             Err(error) => {
@@ -431,11 +457,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         let Self::Ready(ready) = self else {
             return;
         };
-        ready.complete_file_dialogs(event_loop);
-        while let Ok(message) = ready.messages.try_recv() {
-            ready.process_message(event_loop, message);
-        }
-        ready.drain_browser_events(event_loop);
+        ready.drain_host_work(event_loop);
     }
 
     fn window_event(
@@ -466,9 +488,14 @@ fn initialize<Program: RuntimeProgram>(
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
     message_rx: Receiver<Program::Message>,
-    settings: RuntimeWindowSettings,
+    settings: WindowDescriptor,
     startup_failure: Arc<Mutex<Option<String>>>,
-) -> Result<SceneReady<Program>, String> {
+    shared_gpu: Option<crate::HostedGpuShared>,
+) -> Result<WindowManager<Program>, String> {
+    crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
+    if settings.parent.is_some() {
+        return Err("initial window cannot have a parent".into());
+    }
     let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
             .create_window(
@@ -483,6 +510,7 @@ fn initialize<Program: RuntimeProgram>(
             )
             .map_err(|error| format!("failed to create scene window: {error}"))?,
     );
+    let mut pending_native = PendingNativeWindow(Some(window.clone()));
     apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
@@ -493,14 +521,27 @@ fn initialize<Program: RuntimeProgram>(
         last_material_mode,
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
     );
-    let mut graphics = pollster::block_on(HostedGpuContext::new_with_surface_mode(
-        Arc::clone(&window),
-        wgpu::Features::empty(),
-        window_wants_transparent_surface(settings.transparent, last_material_mode),
-        Program::surface_mode(),
-    ))
-    .map_err(|error| error.to_string())?;
-    let format = graphics.format();
+    let embedded = shared_gpu.is_some();
+    let (graphics, mut surface) = if let Some(graphics) = shared_gpu {
+        let surface = graphics
+            .create_surface_with_mode(
+                Arc::clone(&window),
+                settings.transparent,
+                Program::surface_mode(),
+            )
+            .map_err(|error| error.to_string())?;
+        (graphics, surface)
+    } else {
+        pollster::block_on(HostedGpuContext::new_with_surface_mode(
+            Arc::clone(&window),
+            wgpu::Features::empty(),
+            window_wants_transparent_surface(settings.transparent, last_material_mode),
+            Program::surface_mode(),
+        ))
+        .map_err(|error| error.to_string())?
+        .into_parts()
+    };
+    let format = surface.format();
     let mut painters = HashMap::new();
     painters.insert(
         format,
@@ -510,38 +551,48 @@ fn initialize<Program: RuntimeProgram>(
             format,
         ),
     );
-    let tasks = spawn_task_workers(message_tx.clone(), proxy.clone());
-    let geometry = window_geometry(graphics.window().as_ref());
+    let host_work = Arc::new(schedule::HostWorkWake::new(proxy.clone()));
+    let window_wake = Arc::clone(&host_work);
+    let (windows, window_requests) =
+        crate::WindowService::channel(Arc::new(move || window_wake.wake()));
+    windows.register(WindowId::PRIMARY);
+    let tasks = spawn_task_workers(message_tx.clone(), Arc::clone(&host_work));
+    let geometry = window_geometry(window.as_ref());
     let context = program_context(
         message_tx.clone(),
-        proxy.clone(),
+        Arc::clone(&host_work),
         &graphics,
         WindowId::PRIMARY,
         geometry,
         tasks.clone(),
         material,
-        graphics.alpha_mode(),
-    );
+        surface.alpha_mode(),
+        window.theme().map(system_appearance_from_winit),
+    )
+    .with_windows(windows.clone());
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
+    // Locals drop in reverse order: if the remaining host setup fails, close
+    // the inbox before the initialized program can join request-waiting workers.
+    let startup_requests = window_requests;
     last_theme = program.theme_mode();
     last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     material = apply_window_surface(
-        graphics.window().as_ref(),
+        window.as_ref(),
         last_theme,
         &settings,
         last_material_mode,
         program.appearance_backdrop_opacity_for(WindowId::PRIMARY),
     );
     graphics
-        .apply_alpha_mode(window_wants_transparent_surface(
-            settings.transparent,
-            last_material_mode,
-        ))
+        .apply_surface_alpha_mode(
+            &mut surface,
+            window_wants_transparent_surface(settings.transparent, last_material_mode),
+        )
         .map_err(|error| error.to_string())?;
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
-            Arc::clone(graphics.window()),
+            Arc::clone(&window),
             true,
             window.scale_factor() as f32,
         ))
@@ -549,8 +600,33 @@ fn initialize<Program: RuntimeProgram>(
     let mut window_ids = HashMap::new();
     window_ids.insert(window.id(), WindowId::PRIMARY);
     let animation_clock = RuntimeAnimationClock::now();
-    let mut ready = SceneReady {
+    let primary = WindowContext {
+        surface_retry: None,
+        applied_appearance: None,
+        cursor_override: None,
+        cursor_visible_override: None,
+        material_override: None,
+        surface,
+        geometry,
+        input: InputTracker::default(),
+        material,
+        settings: settings.clone(),
+        #[cfg(not(target_os = "android"))]
+        accessibility,
+        accessibility_pending: PendingAccessibility::default(),
+        size_move: LiveSizeMove::install(window.as_ref())?,
+    };
+    pending_native.0 = None;
+    let mut ready = WindowManager {
         program,
+        embedded,
+        shutting_down: false,
+        wake_deadline: None,
+        host_work: Arc::clone(&host_work),
+        host_work_deadline: None,
+        windows,
+        window_requests: Some(startup_requests),
+        next_window_id: 1 << 63,
         graphics,
         painters,
         native_renderers: HashMap::new(),
@@ -561,7 +637,6 @@ fn initialize<Program: RuntimeProgram>(
         file_dialogs: dialogs::FileDialogs::default(),
         browsers: HashMap::new(),
         tasks,
-        geometry,
         animation_clock,
         frame_schedules: HashMap::new(),
         texture_subscriptions: HashMap::new(),
@@ -569,18 +644,13 @@ fn initialize<Program: RuntimeProgram>(
         image_targets: Arc::new(Mutex::new(HashMap::new())),
         image_window_keys: HashMap::new(),
         occluded: HashSet::new(),
-        #[cfg(not(target_os = "android"))]
-        accessibility,
-        accessibility_pending: PendingAccessibility::default(),
-        input: InputTracker::default(),
         material,
-        auxiliary: HashMap::new(),
+        window_contexts: HashMap::from([(WindowId::PRIMARY, primary)]),
         window_ids,
+        closing_windows: HashSet::new(),
         next_gpu_retry: None,
         render_suspended: false,
         last_theme,
-        last_material_mode,
-        last_window_appearance: HashMap::new(),
         settings,
         ime: HashMap::new(),
         chrome: HashMap::new(),
@@ -590,17 +660,19 @@ fn initialize<Program: RuntimeProgram>(
         live_frame_resize: None,
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
-        size_move: LiveSizeMove::install(window.as_ref())?,
     };
     ready
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
     ready.install_image_wakers();
-    ready.prepare_window_chrome(WindowId::PRIMARY, ready.geometry.maximized);
+    ready.prepare_window_chrome(
+        WindowId::PRIMARY,
+        ready.geometry_of(WindowId::PRIMARY).maximized,
+    );
     let update = ready.program.window_event(
         WindowEvent::Ready {
             id: WindowId::PRIMARY,
-            geometry: ready.geometry,
+            geometry: ready.geometry_of(WindowId::PRIMARY),
         },
         &ready.context(),
     );
@@ -611,15 +683,15 @@ fn initialize<Program: RuntimeProgram>(
         }
         ready.process_message(event_loop, message);
     }
-    if !event_loop.exiting() {
-        ready.graphics.window().set_visible(true);
-        apply_client_chrome_after_create(ready.graphics.window().as_ref(), &ready.settings);
-        ready.graphics.window().request_redraw();
+    if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
+        window.set_visible(ready.settings.visible);
+        apply_client_chrome_after_create(window.as_ref(), &ready.settings);
+        window.request_redraw();
     }
     Ok(ready)
 }
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     fn install_image_wakers(&mut self) {
         let targets = Arc::clone(&self.image_targets);
         let redraws = Arc::clone(&self.texture_redraws);
@@ -654,20 +726,30 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn context(&self) -> RuntimeProgramContext<Program::Message> {
-        self.context_for(WindowId::PRIMARY)
+        self.context_for(
+            self.window_contexts
+                .keys()
+                .copied()
+                .min()
+                .unwrap_or(WindowId::PRIMARY),
+        )
     }
 
     fn context_for(&self, id: WindowId) -> RuntimeProgramContext<Program::Message> {
         program_context(
             self.message_tx.clone(),
-            self.proxy.clone(),
+            Arc::clone(&self.host_work),
             &self.graphics,
             id,
             self.geometry_of(id),
             self.tasks.clone(),
             self.material_of(id),
             self.alpha_mode_of(id),
+            self.window(id)
+                .and_then(|w| w.theme())
+                .map(system_appearance_from_winit),
         )
+        .with_windows(self.windows.clone())
     }
 
     fn apply_update(
@@ -676,10 +758,23 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         update: RuntimeProgramUpdate,
         painting: Option<WindowId>,
     ) {
+        if self.shutting_down {
+            return;
+        }
         if update.exit {
+            self.shutting_down = true;
+            // Reject requests made by close callbacks and resolve queued futures
+            // before application-owned state is released.
+            self.window_requests.take();
             self.browsers.clear();
             self.close_all_file_dialogs();
-            event_loop.exit();
+            let ids = self.known_window_ids();
+            for id in ids {
+                self.close_window(event_loop, id);
+            }
+            if !self.embedded {
+                event_loop.exit();
+            }
             return;
         }
         for command in update.window_commands {
@@ -698,50 +793,34 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn known_window_ids(&self) -> Vec<WindowId> {
-        let mut ids = vec![WindowId::PRIMARY];
-        ids.extend(self.auxiliary.keys().copied());
-        ids
+        self.window_contexts.keys().copied().collect()
     }
 
     fn window(&self, id: WindowId) -> Option<&Arc<dyn winit::window::Window>> {
-        if id == WindowId::PRIMARY {
-            Some(self.graphics.window())
-        } else {
-            self.auxiliary.get(&id).map(|host| host.surface.window())
-        }
+        self.window_contexts
+            .get(&id)
+            .map(|host| host.surface.window())
     }
 
     fn geometry_of(&self, id: WindowId) -> WindowGeometry {
-        if id == WindowId::PRIMARY {
-            self.geometry
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| host.geometry)
-                .unwrap_or_default()
-        }
+        self.window_contexts
+            .get(&id)
+            .map(|host| host.geometry)
+            .unwrap_or_default()
     }
 
     fn material_of(&self, id: WindowId) -> MaterialOutcome {
-        if id == WindowId::PRIMARY {
-            self.material
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| host.material)
-                .unwrap_or(self.material)
-        }
+        self.window_contexts
+            .get(&id)
+            .map(|host| host.material)
+            .unwrap_or(self.material)
     }
 
     fn alpha_mode_of(&self, id: WindowId) -> wgpu::CompositeAlphaMode {
-        if id == WindowId::PRIMARY {
-            self.graphics.alpha_mode()
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| host.surface.alpha_mode())
-                .unwrap_or_else(|| self.graphics.alpha_mode())
-        }
+        self.window_contexts
+            .get(&id)
+            .map(|host| host.surface.alpha_mode())
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque)
     }
 
     fn request_redraw(&self, id: WindowId) {
@@ -757,25 +836,20 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 }
 
-impl<Program: RuntimeProgram> Drop for SceneReady<Program> {
-    fn drop(&mut self) {
-        clear_system_material(self.graphics.window().as_ref());
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "Host-owned resources form one callback context"
 )]
 fn program_context<Message: Send + 'static>(
     message_tx: Sender<Message>,
-    proxy: EventLoopProxy,
-    graphics: &HostedGpuContext,
+    wake: Arc<schedule::HostWorkWake>,
+    graphics: &crate::HostedGpuShared,
     id: WindowId,
     geometry: WindowGeometry,
     tasks: SyncSender<Task<Message>>,
     material: MaterialOutcome,
     surface_alpha_mode: wgpu::CompositeAlphaMode,
+    appearance: Option<nana_ui_platform::SystemAppearance>,
 ) -> RuntimeProgramContext<Message> {
     RuntimeProgramContext::new(
         id,
@@ -785,26 +859,26 @@ fn program_context<Message: Send + 'static>(
         surface_alpha_mode,
         Arc::new(move |message| {
             if message_tx.send(message).is_ok() {
-                proxy.wake_up();
+                wake.wake();
             }
         }),
         tasks,
         // System-wide preference: sampling the primary window is enough, and
         // the window handle itself never crosses this boundary.
-        graphics.window().theme().map(system_appearance_from_winit),
+        appearance,
     )
 }
 
 fn spawn_task_workers<Message: Send + 'static>(
     message_tx: Sender<Message>,
-    proxy: EventLoopProxy,
+    wake: Arc<schedule::HostWorkWake>,
 ) -> SyncSender<Task<Message>> {
     let (sender, receiver) = std::sync::mpsc::sync_channel::<Task<Message>>(TASK_QUEUE_CAPACITY);
     let receiver = Arc::new(Mutex::new(receiver));
     for _ in 0..TASK_WORKERS {
         let receiver = Arc::clone(&receiver);
         let message_tx = message_tx.clone();
-        let proxy = proxy.clone();
+        let wake = Arc::clone(&wake);
         std::thread::spawn(move || {
             loop {
                 let task = {
@@ -820,7 +894,7 @@ fn spawn_task_workers<Message: Send + 'static>(
                 if message_tx.send(message).is_err() {
                     return;
                 }
-                proxy.wake_up();
+                wake.wake();
             }
         });
     }
@@ -941,7 +1015,7 @@ fn apply_window_transparency(window: &dyn winit::window::Window, requested: crat
 fn apply_window_surface(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
     appearance: crate::MaterialEffect,
     backdrop_opacity: f32,
 ) -> MaterialOutcome {
@@ -989,7 +1063,7 @@ fn frame_resize_edge(edge: WindowResizeEdge) -> FrameResizeEdge {
 }
 
 fn frame_resize_edge_for(
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
     geometry: &WindowGeometry,
     fullscreen: bool,
     x: f32,
@@ -1114,7 +1188,7 @@ fn apply_text_input_request(window: &dyn winit::window::Window, apply: ImeApply)
 }
 
 fn scene_window_attributes(
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
     displays: &[DisplayBounds],
 ) -> winit::window::WindowAttributes {
     let mut settings = settings.clone();
@@ -1160,7 +1234,7 @@ fn scene_window_attributes(
 }
 
 /// Live display bounds in the global logical coordinate space, matching the
-/// coordinate space of `WindowSettings::initial_position`.
+/// coordinate space of `WindowDescriptor::initial_position`.
 fn scene_display_bounds_with_work_area(
     event_loop: &dyn ActiveEventLoop,
     work_area: bool,
@@ -1271,7 +1345,7 @@ fn suppress_caption_after_create(system_caption: bool, transparent: bool) -> boo
 /// Re-apply after any winit call that rewrites native window style.
 fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
     window: &W,
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
 ) {
     if settings.system_caption {
         return;
@@ -1284,7 +1358,7 @@ fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
 
 fn apply_scene_window_chrome(
     attributes: winit::window::WindowAttributes,
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
 ) -> winit::window::WindowAttributes {
     #[cfg(target_os = "macos")]
     {
@@ -1328,7 +1402,7 @@ fn apply_scene_window_chrome(
 }
 
 fn scene_aux_window_attributes(
-    settings: &RuntimeWindowSettings,
+    settings: &WindowDescriptor,
     parent: Option<&dyn winit::window::Window>,
     displays: &[DisplayBounds],
 ) -> Result<winit::window::WindowAttributes, String> {
@@ -1411,9 +1485,7 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::Open { id, .. } if known(*id) => RoutedWindowCommand::Focus(*id),
         WindowCommand::Open { id, .. } => RoutedWindowCommand::Open(*id),
-        WindowCommand::Close(id) if *id == WindowId::PRIMARY || !known(*id) => {
-            RoutedWindowCommand::Ignore
-        }
+        WindowCommand::Close(id) if !known(*id) => RoutedWindowCommand::Ignore,
         WindowCommand::Close(id) => RoutedWindowCommand::Close(*id),
         WindowCommand::Focus(id) if known(*id) => RoutedWindowCommand::Focus(*id),
         WindowCommand::SetTitle { id, .. } if known(*id) => RoutedWindowCommand::SetTitle(*id),
@@ -2119,6 +2191,99 @@ pub(crate) const fn system_appearance_from_winit(theme: WinitTheme) -> SystemApp
     }
 }
 
+/// Adapter for an existing winit event loop. Call from the host's window thread.
+/// This adapter never creates or exits an event loop and shares the supplied GPU.
+pub struct EmbeddedRuntime<Program: RuntimeProgram> {
+    manager: WindowManager<Program>,
+}
+impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
+    pub fn new(
+        event_loop: &dyn ActiveEventLoop,
+        proxy: EventLoopProxy,
+        graphics: crate::HostedGpuShared,
+        settings: WindowDescriptor,
+    ) -> Result<Self, String> {
+        let (tx, rx) = mpsc::channel();
+        initialize(
+            event_loop,
+            proxy,
+            tx,
+            rx,
+            settings,
+            Arc::new(Mutex::new(None)),
+            Some(graphics),
+        )
+        .map(|manager| Self { manager })
+    }
+    pub fn windows(&self) -> &crate::WindowService {
+        &self.manager.windows
+    }
+    /// Forward the embedding host's device-loss notification on the window thread
+    /// before forwarding further window events. This does not exit the host loop
+    /// or install/replace the host's device callback.
+    pub fn notify_device_lost(&mut self) {
+        self.manager.render_suspended = true;
+        self.manager.next_gpu_retry = None;
+    }
+
+    pub fn needs_gpu_replacement(&self) -> bool {
+        self.manager.render_suspended
+    }
+    /// Called by the embedding host after it replaces its device.
+    pub fn replace_gpu(&mut self, graphics: crate::HostedGpuShared) -> Result<(), String> {
+        let surfaces: Result<Vec<_>, _> = self
+            .manager
+            .window_contexts
+            .iter()
+            .map(|(&id, host)| {
+                graphics
+                    .recreate_surface(&host.surface)
+                    .map(|surface| (id, surface))
+            })
+            .collect();
+        for (id, surface) in surfaces.map_err(|error| error.to_string())? {
+            let host = self.manager.window_contexts.get_mut(&id).unwrap();
+            host.surface = surface;
+            host.surface_retry = None;
+        }
+        self.manager.graphics = graphics;
+        self.manager.painters.clear();
+        self.manager.native_renderers.clear();
+        self.manager.render_suspended = false;
+        self.manager.next_gpu_retry = None;
+        self.manager.refresh_material();
+        let ids = self.manager.known_window_ids();
+        invalidate_program_host_textures(ids, |id| self.manager.program.host_textures(id));
+        self.manager.program.rebuild_gpu(&self.manager.context());
+        self.manager.request_redraw_all();
+        Ok(())
+    }
+    pub fn is_empty(&self) -> bool {
+        self.manager.window_contexts.is_empty()
+    }
+    /// Returns false for windows owned by another component of the host.
+    pub fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        native_id: winit::window::WindowId,
+        event: WinitWindowEvent,
+    ) -> bool {
+        let Some(id) = self.manager.window_ids.get(&native_id).copied() else {
+            return false;
+        };
+        self.manager.handle_window_event(event_loop, id, event);
+        true
+    }
+    pub fn wake(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.manager.drain_host_work(event_loop);
+    }
+    /// Returns NanaUI's next deadline for the host to merge with its own timers.
+    pub fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) -> Option<Instant> {
+        self.manager.about_to_wait(event_loop);
+        self.manager.wake_deadline
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_os = "android"))]
@@ -2138,10 +2303,11 @@ mod tests {
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
         RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
     };
+    use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
         ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
-        TextInputRequest, WindowCommand, WindowEvent, WindowGeometry, WindowIcon, WindowId,
-        WindowResizeEdge, WindowSettings,
+        TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowId,
+        WindowResizeEdge,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -2316,7 +2482,7 @@ mod tests {
 
     #[test]
     fn scene_windows_use_client_chrome_and_runtime_settings() {
-        let mut settings = WindowSettings::new("Scene");
+        let mut settings = WindowDescriptor::new("Scene");
         settings.transparent = true;
         settings.always_on_top = true;
         settings.resizable = false;
@@ -2382,7 +2548,7 @@ mod tests {
 
     #[test]
     fn scene_windows_reclamp_offscreen_initial_positions_to_live_displays() {
-        let mut settings = WindowSettings::new("Scene");
+        let mut settings = WindowDescriptor::new("Scene");
         settings.initial_size = (888.0, 586.0);
         settings.initial_position = Some((2100.0, 40.0));
         let main = [DisplayBounds {
@@ -3137,7 +3303,7 @@ mod tests {
         let primary = WindowId::PRIMARY;
         let tool = WindowId(7);
         let known = [primary, tool];
-        let settings = WindowSettings::new("tool");
+        let settings = WindowDescriptor::new("tool");
 
         assert_eq!(
             route_window_command(
@@ -3161,7 +3327,7 @@ mod tests {
         );
         assert_eq!(
             route_window_command(&WindowCommand::Close(primary), &known),
-            RoutedWindowCommand::Ignore
+            RoutedWindowCommand::Close(primary)
         );
         assert_eq!(
             route_window_command(&WindowCommand::Close(tool), &known),
@@ -3275,7 +3441,7 @@ mod tests {
         use super::{CursorSpec, frame_resize_edge_for, scene_cursor_icon};
         use winit::cursor::CursorIcon;
 
-        let mut settings = WindowSettings::new("Scene");
+        let mut settings = WindowDescriptor::new("Scene");
         let mut geometry = geometry();
         geometry.logical_size = (800.0, 600.0);
         assert_eq!(

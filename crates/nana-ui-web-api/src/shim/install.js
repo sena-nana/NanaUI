@@ -65,17 +65,23 @@
   };
   globalThis.__nanaDestroyWindowContext = function __nanaDestroyWindowContext(windowId) {
     const id = Number(windowId || 0);
-    if (!id) return false;
     const context = windowContexts.get(id);
+    if (!context) return false;
     withWindowContext(id, function () {
       for (const [timerId, entry] of rafCallbacks) {
-        if (entry.windowId === id) cancelAnimationFrame(timerId);
+        if (entry.windowId === id) {
+          try { cancelAnimationFrame(timerId); } catch (_err) {}
+        }
       }
       for (const [timerId, entry] of timeoutCallbacks) {
-        if (entry.windowId === id) clearTimeoutShim(timerId);
+        if (entry.windowId === id) {
+          try { clearTimeoutShim(timerId); } catch (_err) {}
+        }
       }
       for (const [timerId, entry] of intervalCallbacks) {
-        if (entry.windowId === id) clearIntervalShim(timerId);
+        if (entry.windowId === id) {
+          try { clearIntervalShim(timerId); } catch (_err) {}
+        }
       }
       for (const pending of pendingFetches.values()) {
         if (pending.windowId === id) pending.abort();

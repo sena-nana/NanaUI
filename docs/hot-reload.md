@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dev.jail_root(),
     )?;
     VueRuntimeProgram::run_dev(
-        RuntimeWindowSettings::new("My App"),
+        WindowDescriptor::new("My App"),
         V8Engine::new,   // 工厂，不是实例：每次重载跑在全新 isolate 里
         artifact,
         HostApiRegistry::new(),

@@ -6,7 +6,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeWindowSettings, ThemeMode, ThemeModeExt, run_runtime,
+    ThemeMode, ThemeModeExt, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -212,7 +212,7 @@ impl RuntimeProgram for GpuViewDemo {
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<GpuViewDemo>(
-        RuntimeWindowSettings::new("NanaUI GPU View Demo")
+        WindowDescriptor::new("NanaUI GPU View Demo")
             .initial_size(1100.0, 720.0)
             .minimum_size(760.0, 520.0)
             .system_caption(true),

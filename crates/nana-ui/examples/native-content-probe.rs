@@ -5,10 +5,11 @@ mod windows_probe {
     use nana_ui::runtime::{DocumentId, NativeContent, RuntimeDocument, Stack, Text};
     use nana_ui::{
         DocumentAccessError, HostedSurfaceMode, NativeContentRegion, RuntimeProgram,
-        RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, WindowsComposition,
+        RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, WindowsComposition,
         WindowsCompositionRect, WindowsNativeVisual,
     };
-    use nana_ui_platform::{WindowCommand, WindowEvent, WindowId};
+    use nana_ui_platform::host::WindowCommand;
+    use nana_ui_platform::{WindowEvent, WindowId};
     use std::{collections::BTreeMap, convert::Infallible, sync::Arc, time::Duration};
     const AUX: WindowId = WindowId(1);
     #[derive(Clone)]
@@ -189,7 +190,7 @@ mod windows_probe {
                 } => RuntimeProgramUpdate {
                     window_commands: vec![WindowCommand::Open {
                         id: AUX,
-                        settings: RuntimeWindowSettings::new("Native auxiliary")
+                        settings: WindowDescriptor::new("Native auxiliary")
                             .initial_size(420.0, 300.0),
                     }],
                     ..RuntimeProgramUpdate::redraw_all()
@@ -345,7 +346,7 @@ fn main() {
         windows_probe::surface_lifecycle();
     } else {
         nana_ui::run_runtime::<windows_probe::Probe>(
-            nana_ui::RuntimeWindowSettings::new("NanaUI native composition probe")
+            nana_ui::WindowDescriptor::new("NanaUI native composition probe")
                 .initial_size(800.0, 600.0),
         )
         .unwrap();

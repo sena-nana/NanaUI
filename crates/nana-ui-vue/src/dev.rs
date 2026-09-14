@@ -118,7 +118,7 @@ impl VueRuntime {
     /// are shared by every Vue window, so a per-window reload is not
     /// expressible. Auxiliary windows come back when the reloaded artifact opens
     /// them again.
-    pub fn dev_close_auxiliary_windows(&self) -> Vec<nana_ui_platform::WindowCommand> {
+    pub fn dev_close_auxiliary_windows(&self) -> Vec<nana_ui_platform::host::WindowCommand> {
         for id in self.window_ids() {
             if id != VueWindowId::PRIMARY {
                 let _ = self.request_close(id);

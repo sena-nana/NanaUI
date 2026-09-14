@@ -17,6 +17,7 @@ const probeStatus = ref("native:pending");
 const pointerSample = ref<any>(null);
 let frame = 0;
 let auxiliaryWindow: any = null;
+let auxiliaryIndependent = false;
 let inputProbe = false;
 try {
   inputProbe = Boolean((globalThis as any).__nanaHost?.call?.("acceptanceInputProbe", []));
@@ -47,16 +48,16 @@ function toggleStructuralSwap() {
   structuralSwap.value = structuralSwap.value === "a" ? "b" : "a";
 }
 
-async function openAuxiliaryWindow() {
+async function openAuxiliaryWindow(independent = false) {
   if (auxiliaryWindow) return auxiliaryWindow;
   auxiliaryWindow = await Nana.windows.create({
     title: "NanaUI Vue auxiliary acceptance",
     width: 480,
     height: 300,
     transparent: true,
-    modal: true,
-    parentId: 0,
+    ...(independent ? {} : { modal: true, parentId: 0 }),
   });
+  auxiliaryIndependent = independent;
   auxiliaryWindow.mount(AuxiliaryAcceptance);
   auxiliaryWindow.closed.then(() => { auxiliaryWindow = null; });
   return auxiliaryWindow;
@@ -174,7 +175,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   cancelAnimationFrame(frame);
-  auxiliaryWindow?.close();
+  if (!auxiliaryIndependent) auxiliaryWindow?.close();
   delete (globalThis as any).__nanaHostedAcceptanceControl;
 });
 </script>

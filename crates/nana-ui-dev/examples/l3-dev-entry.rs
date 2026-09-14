@@ -24,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use nana_ui::{
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
 };
 use nana_ui_dev::{DevConfig, DevHandoff, DevSignal, DevWatcher, RebuildCommand};
 use nana_ui_platform::WindowId;
@@ -233,7 +233,7 @@ fn main() -> ExitCode {
         return code;
     }
     match nana_ui_dev::run_with_restart::<DemoProgram>(
-        RuntimeWindowSettings::new("L3 dev entry"),
+        WindowDescriptor::new("L3 dev entry"),
         Path::new(HANDOFF),
     ) {
         Ok(()) => ExitCode::SUCCESS,

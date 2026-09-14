@@ -7,7 +7,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeWindowSettings, ThemeMode, run_runtime,
+    ThemeMode, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -212,7 +212,7 @@ impl RuntimeProgram for TransparentWindow {
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    let mut settings = RuntimeWindowSettings::new("NanaUI Transparent Window Demo")
+    let mut settings = WindowDescriptor::new("NanaUI Transparent Window Demo")
         .initial_size(920.0, 620.0)
         .minimum_size(640.0, 420.0)
         .system_caption(true);

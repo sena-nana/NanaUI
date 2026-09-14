@@ -29,6 +29,7 @@ serde_json.workspace = true
 v8 = { workspace = true, optional = true }
 
 [dev-dependencies]
+nana-ui-platform.workspace = true
 tungstenite.workspace = true
 # Engine tests drive the bundled Vue probe artifacts.
 nana-js-engine = { workspace = true, features = ["probe-fixtures"] }

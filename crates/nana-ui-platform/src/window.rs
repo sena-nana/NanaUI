@@ -335,13 +335,15 @@ pub fn resolve_window_icon(per_window: Option<&WindowIcon>) -> Option<WindowIcon
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WindowSettings {
+pub struct WindowDescriptor {
     pub title: String,
     pub initial_size: (f64, f64),
     pub minimum_size: (f64, f64),
     pub initial_position: Option<(f64, f64)>,
     pub maximized: bool,
     pub transparent: bool,
+    /// Initial visibility, applied only after document initialization succeeds.
+    pub visible: bool,
     pub always_on_top: bool,
     /// Whether initially showing this window may activate it.
     pub focus_on_show: bool,
@@ -362,7 +364,13 @@ pub struct WindowSettings {
     pub icon: Option<WindowIcon>,
 }
 
-impl WindowSettings {
+impl Default for WindowDescriptor {
+    fn default() -> Self {
+        Self::new("NanaUI")
+    }
+}
+
+impl WindowDescriptor {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
@@ -371,6 +379,7 @@ impl WindowSettings {
             initial_position: None,
             maximized: false,
             transparent: false,
+            visible: true,
             always_on_top: false,
             focus_on_show: true,
             constrain_to_work_area: false,
@@ -413,7 +422,7 @@ pub enum WindowCommand {
     },
     Open {
         id: WindowId,
-        settings: WindowSettings,
+        settings: WindowDescriptor,
     },
     Close(WindowId),
     Move {
@@ -537,7 +546,7 @@ mod tests {
 
     #[test]
     fn client_chrome_is_the_default_window_contract() {
-        let settings = WindowSettings::new("Scene");
+        let settings = WindowDescriptor::new("Scene");
         assert!(!settings.system_caption);
         assert!(settings.icon.is_none());
         assert!(matches!(

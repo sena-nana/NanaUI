@@ -797,7 +797,7 @@ cargo clippy -p nana-ui --lib --features hosted,graph-canvas --locked --no-deps 
 Scene components 配置通过 101 项库测试、2 项 RuntimeDocument 集成测试、5 项侧栏
 集成测试及 all-targets 严格 Clippy。全工作区目标检查继续暴露两处窗口消费者未迁移：
 runtime-host-fixture 与 window-chrome-multi-window 现显式补齐 focus_on_show=true、
-constrain_to_work_area=false，与 WindowSettings::new 的默认值一致。
+constrain_to_work_area=false，与 WindowDescriptor::new 的默认值一致。
 
 ```powershell
 cargo test -p nana-ui-scene --features components --locked --target-dir E:/codex-build/nanaui-high-refresh

@@ -6,9 +6,10 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     DocumentAccessError, FileDialogKind, FileDialogRequest, FileFilter, RuntimeProgram,
-    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeWindowSettings, run_runtime,
+    RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
-use nana_ui_platform::{WindowCommand, WindowEvent, WindowId};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{WindowEvent, WindowId};
 use std::io::{self, BufRead, Write};
 
 #[derive(Clone)]
@@ -220,6 +221,6 @@ fn report(message: std::fmt::Arguments<'_>) {
 }
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<Probe>(
-        RuntimeWindowSettings::new("NanaUI File Dialog Probe").initial_size(480.0, 580.0),
+        WindowDescriptor::new("NanaUI File Dialog Probe").initial_size(480.0, 580.0),
     )
 }

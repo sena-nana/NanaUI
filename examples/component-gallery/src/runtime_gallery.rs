@@ -2147,8 +2147,8 @@ fn mount_rich_text(
     state: &GalleryState,
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<RichTextMount, FrameworkError> {
-    let (root, markdown, link_status, drop, drop_hint, editor, terminal, diff) =
-        context.build_detached(document_id, |ui| {
+    let (root, markdown, link_status, drop, drop_hint, editor, terminal, diff) = context
+        .build_detached(document_id, |ui| {
             let heading = ui.parked(styled_text(
                 "原生富文本",
                 SemanticColorRole::Text,

@@ -39,9 +39,8 @@ use nana_ui::{
     RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis,
     SplitPaneAction, SplitPaneController,
 };
-use nana_ui_platform::{
-    InputEvent, WindowCommand, WindowEvent, WindowId, WindowRole, WindowSettings,
-};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{InputEvent, WindowDescriptor, WindowEvent, WindowId, WindowRole};
 
 #[path = "views/graph.rs"]
 mod graph_view;
@@ -1632,7 +1631,8 @@ fn runtime_dock_window_commands(
         .map(|event| match event {
             DockWorkspaceEvent::OpenFloating(surface) => WindowCommand::Open {
                 id: WindowId(nana_ui::runtime::dock_surface_window_key(&surface.id)),
-                settings: WindowSettings {
+                settings: WindowDescriptor {
+                    visible: true,
                     title: DOCK_WINDOW_TITLE.to_owned(),
                     initial_size: (f64::from(surface.width), f64::from(surface.height)),
                     minimum_size: (FLOATING_MIN_WIDTH, FLOATING_MIN_HEIGHT),

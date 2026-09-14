@@ -62,7 +62,7 @@ impl FileDialogs {
     }
 }
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn open_file_dialog(
         &mut self,
         event_loop: &dyn ActiveEventLoop,

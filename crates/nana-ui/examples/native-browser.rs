@@ -4,8 +4,8 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     BrowserCommand, BrowserEvent, BrowserPolicy, DocumentAccessError, NativeBrowserEvent,
-    NativeBrowserRequest, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeWindowSettings, ThemeMode, run_runtime,
+    NativeBrowserRequest, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
+    WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
 use std::io::Write;
@@ -242,7 +242,7 @@ fn report(message: std::fmt::Arguments<'_>) {
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<BrowserExample>(
-        RuntimeWindowSettings::new("NanaUI Browser")
+        WindowDescriptor::new("NanaUI Browser")
             .initial_size(1200.0, 760.0)
             .system_caption(true),
     )

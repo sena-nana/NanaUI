@@ -180,7 +180,7 @@ impl HostedGpuSurface {
         Ok(())
     }
 
-    pub fn window(&self) -> &Arc<dyn winit::window::Window> {
+    pub(crate) fn window(&self) -> &Arc<dyn winit::window::Window> {
         &self.window
     }
 
@@ -260,7 +260,6 @@ impl HostedGpuSurface {
         resources: &HostedGpuResources,
         want_transparent: bool,
     ) -> Result<(), HostedGpuError> {
-        self.want_transparent = want_transparent;
         let capabilities = self.surface.get_capabilities(adapter);
         if self.target.mode() == HostedSurfaceMode::Window
             && alpha_mode_needs_surface_recreate(
@@ -269,18 +268,18 @@ impl HostedGpuSurface {
                 &capabilities.alpha_modes,
             )
         {
-            return self.recover(instance, adapter, resources);
+            return self.recover_with_alpha(instance, adapter, resources, want_transparent);
         }
         let alpha_mode = surface_alpha(
             self.target.mode(),
             &capabilities.alpha_modes,
             want_transparent,
         )?;
-        if self.configuration.alpha_mode == alpha_mode {
-            return Ok(());
+        if self.configuration.alpha_mode != alpha_mode {
+            self.configuration.alpha_mode = alpha_mode;
+            self.reconfigure(resources);
         }
-        self.configuration.alpha_mode = alpha_mode;
-        self.reconfigure(resources);
+        self.want_transparent = want_transparent;
         Ok(())
     }
 
@@ -289,6 +288,16 @@ impl HostedGpuSurface {
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
         resources: &HostedGpuResources,
+    ) -> Result<(), HostedGpuError> {
+        self.recover_with_alpha(instance, adapter, resources, self.want_transparent)
+    }
+
+    fn recover_with_alpha(
+        &mut self,
+        instance: &wgpu::Instance,
+        adapter: &wgpu::Adapter,
+        resources: &HostedGpuResources,
+        want_transparent: bool,
     ) -> Result<(), HostedGpuError> {
         let surface = self.target.create_surface(instance, self.window.clone())?;
         let capabilities = surface.get_capabilities(adapter);
@@ -300,13 +309,14 @@ impl HostedGpuSurface {
         self.configuration.alpha_mode = surface_alpha(
             self.target.mode(),
             &capabilities.alpha_modes,
-            self.want_transparent,
+            want_transparent,
         )?;
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
         self.configuration.present_mode = self.live_present_mode;
         self.surface = surface;
         self.reconfigure(resources);
         self.commit_target()?;
+        self.want_transparent = want_transparent;
         self.needs_recovery = false;
         Ok(())
     }
@@ -363,16 +373,27 @@ impl HostedGpuSurface {
     }
 }
 
-/// The only adapter, device and queue used by a hosted application.
-///
-/// The primary surface is retained for source compatibility. Auxiliary
-/// surfaces created with [`Self::create_surface`] share the same GPU resources.
+/// GPU bootstrap for advanced native hosts. `into_parts` separates the first
+/// surface from the shared device; the Scene host manages every surface equally.
 pub struct HostedGpuContext {
+    shared: HostedGpuShared,
+    primary: HostedGpuSurface,
+}
+
+/// Shared device resources without ownership of any native window.
+#[derive(Clone)]
+pub struct HostedGpuShared {
     instance: wgpu::Instance,
     resources: HostedGpuResources,
     device_lost: Arc<AtomicBool>,
     device_lost_report: Arc<Mutex<Option<HostedDeviceLost>>>,
-    primary: HostedGpuSurface,
+}
+
+impl std::ops::Deref for HostedGpuContext {
+    type Target = HostedGpuShared;
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,6 +403,10 @@ pub struct HostedDeviceLost {
 }
 
 impl HostedGpuContext {
+    pub fn into_parts(self) -> (HostedGpuShared, HostedGpuSurface) {
+        (self.shared, self.primary)
+    }
+
     pub async fn new(
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
@@ -492,10 +517,12 @@ impl HostedGpuContext {
         )?;
 
         Ok(Self {
-            instance,
-            resources,
-            device_lost,
-            device_lost_report,
+            shared: HostedGpuShared {
+                instance,
+                resources,
+                device_lost,
+                device_lost_report,
+            },
             primary,
         })
     }
@@ -503,18 +530,6 @@ impl HostedGpuContext {
     #[cfg(target_os = "windows")]
     pub fn windows_composition(&self) -> Option<&crate::WindowsComposition> {
         self.primary.windows_composition()
-    }
-
-    pub fn window(&self) -> &Arc<dyn winit::window::Window> {
-        self.primary.window()
-    }
-
-    pub fn adapter(&self) -> &wgpu::Adapter {
-        self.resources.adapter()
-    }
-
-    pub fn resources(&self) -> HostedGpuResources {
-        self.resources.clone()
     }
 
     pub const fn format(&self) -> wgpu::TextureFormat {
@@ -531,35 +546,102 @@ impl HostedGpuContext {
     }
 
     pub fn resize(&mut self) {
-        self.primary.resize(&self.resources);
+        self.primary.resize(&self.shared.resources);
     }
 
     pub fn prepare_frame(&mut self, live: bool) {
-        self.primary.prepare_frame(&self.resources, live);
-    }
-
-    pub fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
-        surface.prepare_frame(&self.resources, live);
+        self.primary.prepare_frame(&self.shared.resources, live);
     }
 
     pub fn reconfigure(&mut self) {
-        self.primary.reconfigure(&self.resources);
+        self.primary.reconfigure(&self.shared.resources);
     }
 
     pub fn recover_surface(&mut self) -> Result<(), HostedGpuError> {
-        self.primary
-            .recover(&self.instance, self.resources.adapter(), &self.resources)
+        self.primary.recover(
+            &self.shared.instance,
+            self.shared.resources.adapter(),
+            &self.shared.resources,
+        )
     }
 
     pub fn apply_alpha_mode(&mut self, want_transparent: bool) -> Result<(), HostedGpuError> {
         self.primary.apply_alpha_mode(
-            &self.instance,
-            self.resources.adapter(),
-            &self.resources,
+            &self.shared.instance,
+            self.shared.resources.adapter(),
+            &self.shared.resources,
             want_transparent,
         )
     }
 
+    pub fn is_drawable(&self) -> bool {
+        self.primary.is_drawable()
+    }
+
+    pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
+        self.primary.acquire_frame(
+            &self.shared.instance,
+            self.shared.resources.adapter(),
+            &self.shared.resources,
+        )
+    }
+
+    /// Abandon an acquired primary frame after encoding fails. Drop all views
+    /// and unfinished encoders referencing it before calling this method.
+    /// The next acquisition recreates only this surface: on DX12, dropping a
+    /// frame does not restore the consumed frame-latency waitable signal.
+    pub fn discard_frame(&mut self, frame: wgpu::SurfaceTexture) {
+        drop(frame);
+        self.primary.needs_recovery = true;
+    }
+}
+
+impl HostedGpuShared {
+    /// Adopt an existing host device without requesting another adapter/device.
+    /// Device-loss notification and replacement remain the embedding host's responsibility.
+    pub fn from_device(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+    ) -> Self {
+        let adapter_info = adapter.get_info();
+        Self {
+            instance,
+            resources: HostedGpuResources {
+                generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+                adapter,
+                device,
+                queue,
+                adapter_info,
+            },
+            device_lost: Arc::new(AtomicBool::new(false)),
+            device_lost_report: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) async fn rebuild_for_surface(
+        surface: &HostedGpuSurface,
+    ) -> Result<(Self, HostedGpuSurface), HostedGpuError> {
+        HostedGpuContext::new_with_target(
+            surface.window.clone(),
+            wgpu::Features::empty(),
+            surface.want_transparent,
+            surface.target.clone(),
+        )
+        .await
+        .map(HostedGpuContext::into_parts)
+    }
+
+    pub fn adapter(&self) -> &wgpu::Adapter {
+        self.resources.adapter()
+    }
+    pub fn resources(&self) -> HostedGpuResources {
+        self.resources.clone()
+    }
+    pub fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
+        surface.prepare_frame(&self.resources, live);
+    }
     pub fn apply_surface_alpha_mode(
         &self,
         surface: &mut HostedGpuSurface,
@@ -572,20 +654,13 @@ impl HostedGpuContext {
             want_transparent,
         )
     }
-
-    pub fn is_drawable(&self) -> bool {
-        self.primary.is_drawable()
-    }
-
     pub fn take_device_lost(&self) -> bool {
         self.device_lost.swap(false, Ordering::AcqRel)
     }
-
     pub fn take_device_lost_report(&self) -> Option<HostedDeviceLost> {
         self.device_lost.store(false, Ordering::Release);
         self.device_lost_report.lock().ok()?.take()
     }
-
     pub fn create_surface(
         &self,
         window: Arc<dyn winit::window::Window>,
@@ -593,7 +668,6 @@ impl HostedGpuContext {
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         self.create_surface_with_mode(window, want_transparent, HostedSurfaceMode::Window)
     }
-
     pub fn create_surface_with_mode(
         &self,
         window: Arc<dyn winit::window::Window>,
@@ -603,8 +677,7 @@ impl HostedGpuContext {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
         self.create_surface_with_target(window, want_transparent, target)
     }
-
-    /// Attach an auxiliary window's retained visual tree to rebuilt GPU resources.
+    /// Attach a retained native surface target to replacement GPU resources.
     pub fn recreate_surface(
         &self,
         previous: &HostedGpuSurface,
@@ -615,7 +688,6 @@ impl HostedGpuContext {
             previous.target.clone(),
         )
     }
-
     fn create_surface_with_target(
         &self,
         window: Arc<dyn winit::window::Window>,
@@ -644,37 +716,18 @@ impl HostedGpuContext {
             target,
         )
     }
-
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
         surface.resize(&self.resources);
     }
-
     pub fn acquire_surface_frame(
         &self,
         surface: &mut HostedGpuSurface,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
         surface.acquire_frame(&self.instance, self.resources.adapter(), &self.resources)
     }
-
-    pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        self.primary
-            .acquire_frame(&self.instance, self.resources.adapter(), &self.resources)
-    }
-
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.resources.queue().present(frame);
     }
-
-    /// Abandon an acquired primary frame after encoding fails. Drop all views
-    /// and unfinished encoders referencing it before calling this method.
-    /// The next acquisition recreates only this surface: on DX12, dropping a
-    /// frame does not restore the consumed frame-latency waitable signal.
-    pub fn discard_frame(&mut self, frame: wgpu::SurfaceTexture) {
-        drop(frame);
-        self.primary.needs_recovery = true;
-    }
-
-    /// Auxiliary-target counterpart of [`Self::discard_frame`].
     pub fn discard_surface_frame(
         &self,
         surface: &mut HostedGpuSurface,

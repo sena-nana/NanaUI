@@ -11,7 +11,7 @@ use std::time::Instant;
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
     HostTextureRegistry, HostedGpuResources, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeWindowSettings, ThemeMode, install_theme_tokens,
+    RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor, install_theme_tokens,
     window_material_effect,
 };
 use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowGeometry, WindowId};
@@ -123,7 +123,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         previous: Option<&RuntimeArtifact>,
         geometry: Option<&nana_ui_platform::WindowGeometry>,
         theme: ThemeMode,
-    ) -> Result<Vec<nana_ui_platform::WindowCommand>, JsEngineError> {
+    ) -> Result<Vec<nana_ui_platform::host::WindowCommand>, JsEngineError> {
         let state = crate::dev::save_state(&mut self.engine);
 
         // One isolate is shared by every window, so auxiliary windows cannot
@@ -483,19 +483,28 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 
     pub fn runtime_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
-        let close_primary = matches!(
-            event,
-            WindowEvent::CloseRequested {
-                id: WindowId::PRIMARY,
-            }
-        );
         if let Err(_error) = self.handle_platform_window_event(event) {
             return RuntimeProgramUpdate::default();
         }
-        if close_primary {
-            return RuntimeProgramUpdate::exit();
-        }
         self.runtime_program_update(true)
+    }
+
+    /// Complete viewport and JS binding before the host publishes the window.
+    pub fn prepare_window_creation(
+        &mut self,
+        id: WindowId,
+        geometry: nana_ui_platform::WindowGeometry,
+    ) -> Result<(), JsEngineError> {
+        let id = VueWindowId(id.0);
+        self.vue.set_viewport(
+            id,
+            geometry.physical_size.0.max(1),
+            geometry.physical_size.1.max(1),
+            geometry.scale_factor.max(0.01),
+        )?;
+        self.vue.record_platform_geometry(id, &geometry)?;
+        self.vue.bind_window(&mut self.engine, id)?;
+        Ok(())
     }
 
     fn handle_platform_window_event(&mut self, event: WindowEvent) -> Result<(), JsEngineError> {
@@ -580,15 +589,16 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             WindowEvent::AppearanceChanged { .. } => {}
             WindowEvent::Closed { id } => {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
+                // The last closed document cannot supply another frame pump.
+                // Deliver its reliable lifecycle event while the engine is alive.
+                self.engine.run_microtasks()?;
             }
             WindowEvent::Moved { id, geometry } => {
                 self.vue
                     .record_platform_geometry(VueWindowId(id.0), &geometry)?;
             }
             WindowEvent::CloseRequested { id } => {
-                if id != WindowId::PRIMARY {
-                    self.vue.request_close(VueWindowId(id.0))?;
-                }
+                self.vue.request_close(VueWindowId(id.0))?;
             }
             WindowEvent::FileHovered {
                 id,
@@ -941,7 +951,7 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     /// watcher thread -- with the file already read. Nothing here touches the
     /// filesystem.
     pub fn run_dev(
-        settings: RuntimeWindowSettings,
+        settings: WindowDescriptor,
         engine: impl Fn() -> E + Send + Sync + 'static,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
@@ -1029,7 +1039,7 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     /// Production entry for caller-owned engines. Release applications pass a
     /// `nana_js_v8::V8Engine` here, keeping one engine for every Vue window.
     pub fn run(
-        settings: RuntimeWindowSettings,
+        settings: WindowDescriptor,
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
@@ -1135,9 +1145,13 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     }
 
     fn window_material_mode(&self) -> nana_ui::MaterialEffect {
+        self.window_material_mode_for(WindowId::PRIMARY)
+    }
+
+    fn window_material_mode_for(&self, id: WindowId) -> nana_ui::MaterialEffect {
         self.runtime
             .vue()
-            .host(VueWindowId::PRIMARY)
+            .host(VueWindowId(id.0))
             .and_then(|host| {
                 host.lock()
                     .ok()
@@ -1147,9 +1161,13 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
     }
 
     fn appearance_backdrop_opacity(&self) -> f32 {
+        self.appearance_backdrop_opacity_for(WindowId::PRIMARY)
+    }
+
+    fn appearance_backdrop_opacity_for(&self, id: WindowId) -> f32 {
         self.runtime
             .vue()
-            .host(VueWindowId::PRIMARY)
+            .host(VueWindowId(id.0))
             .and_then(|host| {
                 host.lock()
                     .ok()
@@ -1213,6 +1231,30 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         let update = self.runtime.runtime_input(id, event)?;
         self.sync_documents();
         Ok(update)
+    }
+
+    fn initialize_window(
+        &mut self,
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(), String> {
+        self.runtime
+            .prepare_window_creation(id, context.geometry())
+            .map_err(|error| error.to_string())?;
+        self.sync_documents();
+        self.with_document(id, |_| ())
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Vue window document was not initialized".to_string())
+    }
+
+    fn discard_window(&mut self, id: WindowId) {
+        let _ = self
+            .runtime
+            .handle_platform_window_event(WindowEvent::OpenFailed {
+                id,
+                error: "window initialization failed".into(),
+            });
+        self.sync_documents();
     }
 
     fn window_event(

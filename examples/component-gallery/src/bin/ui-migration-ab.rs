@@ -16,12 +16,12 @@ use nana_ui::runtime::{
 use nana_ui::{
     GraphCanvasEvent, GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort,
     GraphPortKind, GraphPortSide, GraphSelection, GraphSize, GraphViewport, RegionId, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw,
-    RuntimeWindowSettings, SettingsModel, SettingsState, SettingsTab, SplitAxis, ThemeMode,
-    run_runtime_scene,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SettingsModel,
+    SettingsState, SettingsTab, SplitAxis, ThemeMode, WindowDescriptor, run_runtime_scene,
 };
 use nana_ui_core::{SplitPaneModel, WorkspaceModel};
-use nana_ui_platform::{InputEvent, WindowCommand, WindowId};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{InputEvent, WindowId};
 use nana_ui_scene::RuntimeDocument;
 
 const SLOT_INSET: f32 = 8.0;
@@ -96,7 +96,7 @@ struct App {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_runtime_scene::<App>(
-        RuntimeWindowSettings::new("NanaUI Runtime migration A/B")
+        WindowDescriptor::new("NanaUI Runtime migration A/B")
             .initial_size(1280.0, 720.0)
             .minimum_size(960.0, 560.0)
             .system_caption(true),

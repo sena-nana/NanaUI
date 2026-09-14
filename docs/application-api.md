@@ -7,7 +7,7 @@
 | 消费方 | crate / 包 | 入口 |
 | --- | --- | --- |
 | 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`ApplicationState`、`RuntimeApplication`、`run_runtime` |
-| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowSettings`、`WindowCommand`、`InputEvent` |
+| 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowDescriptor`、`WindowHandle`、`InputEvent` |
 | Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
 | Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
 | Vue renderer | `@nanaui/nanavue-runtime` | `createApp()` |
@@ -50,7 +50,7 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 资源更新使用 `TextureSlot`；详细变更和当前验收范围见
 [高刷新重构](high-refresh-refactor.md)。
 
-应用实现这个 trait，再 `run_runtime::<App>(RuntimeWindowSettings::new("…"))`。
+应用实现这个 trait，再 `run_runtime::<App>(WindowDescriptor::new("…"))`。
 
 | 方法 | 职责 |
 | --- | --- |
@@ -67,7 +67,7 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
 | `window_event` | 窗口生命周期 |
-| `window_event` 里发 `WindowCommand::SetMenuBar` | 原生菜单栏；选中项用 `take_menu_activations()` 每帧 drain，见 [窗口](window.md#菜单栏) |
+| 通过 `WindowHandle::set_menu_bar` 设置菜单 | 原生菜单栏；选中项用 `take_menu_activations()` 每帧 drain，见 [窗口](window.md#菜单栏) |
 | `input_event` | Runtime 派发之后的原始输入，唯一的输入钩子。参数 `RoutedInput` 同时带 `event`、`pointer_hit`（仅指针与滚轮）和 `disposition`；已消费事件仍派发，应用快捷键应检查 `disposition.prevent_default` |
 | `next_wakeup` / `wake` | 与重绘无关的定时工作 |
 | `host_failure` | 宿主已从该错误恢复；默认忽略 |
@@ -362,3 +362,9 @@ encoder，再调用 `discard_frame`（主窗口）或 `discard_surface_frame`（
 `RuntimeProgramContext<Message>` 可直接克隆并移入后台任务，仅要求 `Message: Send`，
 不要求消息实现 `Clone`。克隆共享宿主 GPU 资源、消息入口与任务队列；后台任务通过
 `dispatch` 唤醒宿主并提交消息，业务状态仍由应用更新回调处理。
+
+## 窗口服务
+
+`RuntimeProgramContext::windows()` 提供线程安全的 `WindowService`，`window()` 提供当前窗口的 `WindowHandle`。窗口描述统一为 `WindowDescriptor`。`ApplicationState::build` 在每扇窗口发布前执行；构建失败不显示窗口。窗口事件可在 `ApplicationState::window_event` 中观察。详见 [窗口](window.md#多窗口) 的完成语义、embedded 接口和迁移说明。
+
+窗口关闭时，`RuntimeApplication` 先移除窗口文档，再调用 `ApplicationState::window_closed` 清理应用状态，最后调用 `window_event(Closed)`。关闭通知的观察者因此看到已完成清理的状态；创建失败回滚仍调用清理钩子，但不发送成功或关闭事件。

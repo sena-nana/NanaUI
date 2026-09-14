@@ -9,14 +9,16 @@
 //! Frameless client chrome probe (`NanaAppShell` / `nana-app-title-bar`):
 //! `cargo run -p vue-hosted-acceptance --locked -- --chrome-probe`
 
+mod window_lifecycle;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use nana_js_engine::probe::{VUE_SFC_COMPAT_CSS, vue_sfc_compat_artifact};
 use nana_js_engine::{HostApiRegistry, HostValue, JsEngine};
 use nana_ui::{
-    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    RuntimeWindowSettings, ThemeMode, run_runtime,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
+    WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{ImeEvent, InputEvent, PointerType, WindowEvent, WindowId};
 use nana_ui_runtime::FrameworkError;
@@ -65,6 +67,7 @@ struct AcceptanceProgram {
     inner: VueRuntimeProgram<nana_js_v8::V8Engine>,
     input_probe: bool,
     composition: Option<CompositionProbe>,
+    lifecycle: Option<window_lifecycle::Probe>,
 }
 
 /// One IME composition, accumulated so `--input-probe` can print a single
@@ -101,11 +104,15 @@ impl CompositionProbe {
 fn main() -> Result<(), nana_ui::HostedRunError> {
     let chrome_probe = std::env::args().any(|argument| argument == "--chrome-probe");
     let hybrid = std::env::args().any(|argument| argument == "--hybrid");
-    run_runtime::<AcceptanceProgram>(primary_window_settings(chrome_probe, hybrid))
+    run_runtime::<AcceptanceProgram>(primary_window_settings(chrome_probe, hybrid))?;
+    if std::env::args().any(|arg| arg == "--window-lifecycle-probe") {
+        window_lifecycle::verify();
+    }
+    Ok(())
 }
 
-fn primary_window_settings(chrome_probe: bool, hybrid: bool) -> RuntimeWindowSettings {
-    RuntimeWindowSettings::new(if chrome_probe {
+fn primary_window_settings(chrome_probe: bool, hybrid: bool) -> WindowDescriptor {
+    WindowDescriptor::new(if chrome_probe {
         "NanaUI chrome probe"
     } else if hybrid {
         "NanaUI Vue + native probe acceptance"
@@ -231,12 +238,14 @@ impl RuntimeProgram for AcceptanceProgram {
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let chrome_probe = std::env::args().any(|argument| argument == "--chrome-probe");
         let hybrid = !chrome_probe && std::env::args().any(|argument| argument == "--hybrid");
-        let auto_windows =
-            !chrome_probe && std::env::args().any(|argument| argument == "--windows");
+        let lifecycle_probe = std::env::args().any(|arg| arg == "--window-lifecycle-probe");
+        let auto_windows = !lifecycle_probe
+            && !chrome_probe
+            && std::env::args().any(|argument| argument == "--windows");
         let input_probe =
             !chrome_probe && std::env::args().any(|argument| argument == "--input-probe");
         let geometry = context.geometry();
-        let runtime = build_runtime(
+        let mut runtime = build_runtime(
             context.gpu().clone(),
             hybrid,
             auto_windows,
@@ -246,11 +255,21 @@ impl RuntimeProgram for AcceptanceProgram {
             geometry.physical_size.1.max(1),
             geometry.scale_factor.max(0.01),
         )?;
+        if lifecycle_probe {
+            let open = runtime
+                .engine_mut()
+                .resolve_function("__nanaHostedAcceptanceControl.openAuxiliaryWindow")?;
+            runtime
+                .engine_mut()
+                .invoke(open, &[HostValue::Bool(true)])?;
+            runtime.engine_mut().run_microtasks()?;
+        }
         Ok((
             Self {
                 inner: VueRuntimeProgram::from_runtime(runtime),
                 input_probe,
                 composition: None,
+                lifecycle: lifecycle_probe.then(|| window_lifecycle::Probe::new(context)),
             },
             Vec::new(),
         ))
@@ -284,6 +303,14 @@ impl RuntimeProgram for AcceptanceProgram {
         self.inner.theme_mode()
     }
 
+    fn host_failure(&mut self, failure: nana_ui::HostFailure) {
+        assert!(
+            self.lifecycle.is_none(),
+            "Vue lifecycle host failure: {failure}"
+        );
+        self.inner.host_failure(failure);
+    }
+
     fn host_textures(&self, id: WindowId) -> Option<nana_ui::HostTextureRegistry> {
         self.inner.host_textures(id)
     }
@@ -294,6 +321,18 @@ impl RuntimeProgram for AcceptanceProgram {
         context: &RuntimeProgramContext<Self::Message>,
     ) {
         self.inner.prepare_window_frame(id, context);
+    }
+
+    fn window_frame_presented(
+        &mut self,
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        let update = self.inner.window_frame_presented(id, context);
+        if let Some(probe) = self.lifecycle.as_mut() {
+            probe.presented(id, context);
+        }
+        update
     }
 
     fn take_accessibility_update(
@@ -338,6 +377,17 @@ impl RuntimeProgram for AcceptanceProgram {
         self.inner.input_event(id, input, context)
     }
 
+    fn initialize_window(
+        &mut self,
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(), String> {
+        self.inner.initialize_window(id, context)
+    }
+    fn discard_window(&mut self, id: WindowId) {
+        self.inner.discard_window(id);
+    }
+
     fn window_event(
         &mut self,
         event: WindowEvent,
@@ -345,6 +395,9 @@ impl RuntimeProgram for AcceptanceProgram {
     ) -> RuntimeProgramUpdate {
         match &event {
             WindowEvent::Ready { id, .. } => {
+                if let Some(probe) = self.lifecycle.as_mut() {
+                    probe.ready(*id, context);
+                }
                 eprintln!(
                     "nana window ready id={} material={:?} alpha={:?}",
                     id.0,
@@ -382,7 +435,18 @@ impl RuntimeProgram for AcceptanceProgram {
             },
             _ => {}
         }
-        self.inner.window_event(event, context)
+        let closed = match &event {
+            WindowEvent::Closed { id } => Some(*id),
+            _ => None,
+        };
+        let mut update = self.inner.window_event(event, context);
+        if let Some(id) = closed
+            && let Some(probe) = self.lifecycle.as_mut()
+            && probe.closed(id, &mut self.inner)
+        {
+            update.redraw = nana_ui::RuntimeRedraw::All;
+        }
+        update
     }
 
     fn next_wakeup(&self) -> Option<std::time::Instant> {

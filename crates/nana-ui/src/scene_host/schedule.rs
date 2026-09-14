@@ -2,38 +2,157 @@
 
 use super::*;
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+pub(super) struct HostWorkWake {
+    pending: std::sync::atomic::AtomicBool,
+    host_thread: std::thread::ThreadId,
+    proxy: EventLoopProxy,
+}
+impl HostWorkWake {
+    pub(super) fn new(proxy: EventLoopProxy) -> Self {
+        Self {
+            pending: std::sync::atomic::AtomicBool::new(false),
+            host_thread: std::thread::current().id(),
+            proxy,
+        }
+    }
+    pub(super) fn wake(&self) {
+        let was_pending = self.pending.swap(true, std::sync::atomic::Ordering::AcqRel);
+        // A callback on the host thread is already inside the loop. Re-signalling
+        // its native source can starve macOS redraw observers indefinitely.
+        if !was_pending && std::thread::current().id() != self.host_thread {
+            self.proxy.wake_up();
+        }
+    }
+    fn take_pending(&self) -> bool {
+        self.pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+/// Yield between finite batches even when callbacks continuously enqueue more work.
+/// One slow callback cannot be preempted, but no further callback starts after the deadline.
+pub(super) fn drain_host_batch(
+    mut work: impl FnMut() -> bool,
+    mut now: impl FnMut() -> Instant,
+) -> bool {
+    let deadline = now() + Duration::from_millis(2);
+    for _ in 0..64 {
+        if !work() {
+            return false;
+        }
+        if now() >= deadline {
+            return true;
+        }
+    }
+    true
+}
+
+impl<Program: RuntimeProgram> WindowManager<Program> {
+    pub(super) fn drain_host_work(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.host_work.take_pending();
+        self.host_work_deadline = None;
+        self.drain_window_requests(event_loop);
+        self.complete_file_dialogs(event_loop);
+        self.drain_host_messages(event_loop);
+        self.drain_browser_events(event_loop);
+    }
+    pub(super) fn drain_host_messages(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let remaining = drain_host_batch(
+            || {
+                if self.shutting_down || event_loop.exiting() {
+                    return false;
+                }
+                let Ok(message) = self.messages.try_recv() else {
+                    return false;
+                };
+                self.process_message(event_loop, message);
+                !self.shutting_down && !event_loop.exiting()
+            },
+            Instant::now,
+        );
+        if remaining {
+            self.host_work.wake();
+        }
+    }
     pub(super) fn process_message(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         message: Program::Message,
     ) {
-        self.bind_after_present.insert(WindowId::PRIMARY);
+        if let Some(id) = self.window_contexts.keys().copied().min() {
+            self.bind_after_present.insert(id);
+        }
         let update = self.program.update(message, &self.context());
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
     }
     pub(super) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let now = Instant::now();
+        if self
+            .host_work_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.drain_host_work(event_loop);
+        }
+        if self.host_work.take_pending() && !self.shutting_down {
+            self.host_work_deadline
+                .get_or_insert_with(|| Instant::now() + Duration::from_millis(1));
+        }
         #[cfg(target_os = "macos")]
         self.unpin_idle_present_transactions();
+        let surface_retry_due = self
+            .window_contexts
+            .values()
+            .any(|host| host.surface_retry.is_some_and(|deadline| now >= deadline));
+        if surface_retry_due {
+            // A device-loss callback may have been waiting on the last in-flight
+            // submission when the window was suspended. Poll before local retry.
+            let _ = self
+                .graphics
+                .resources()
+                .device()
+                .poll(wgpu::PollType::Poll);
+        }
         if self.graphics.take_device_lost()
             || self.next_gpu_retry.is_some_and(|deadline| now >= deadline)
         {
             self.recover_device(event_loop);
         }
+        if surface_retry_due {
+            self.retry_surfaces(now);
+        }
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
         let frame_deadline = self.schedule_presentations(event_loop, now);
-        let next_wakeup = [self.next_gpu_retry, self.next_wakeup(), frame_deadline]
-            .into_iter()
-            .flatten()
-            .min();
-        event_loop.set_control_flow(next_wakeup.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        let next_wakeup = [
+            self.next_gpu_retry,
+            (!self.render_suspended)
+                .then(|| {
+                    self.window_contexts
+                        .values()
+                        .filter_map(|host| host.surface_retry)
+                        .min()
+                })
+                .flatten(),
+            self.next_wakeup(),
+            frame_deadline,
+            self.host_work_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        self.wake_deadline = next_wakeup;
+        if !self.embedded {
+            event_loop
+                .set_control_flow(next_wakeup.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+        }
     }
     pub(super) fn can_present(&self, id: WindowId) -> bool {
-        !self.occluded.contains(&id)
+        self.window_contexts
+            .get(&id)
+            .is_some_and(|host| host.surface_retry.is_none())
+            && !self.occluded.contains(&id)
             && self.window(id).is_some_and(|window| {
                 window.is_visible() != Some(false) && window.is_minimized() != Some(true)
             })
@@ -52,7 +171,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
         let mut next = None;
         for id in self.known_window_ids() {
-            if self.render_suspended {
+            if self.render_suspended || self.window_contexts[&id].surface_retry.is_some() {
                 self.frame_schedules.remove(&id);
                 continue;
             }
@@ -316,5 +435,47 @@ mod tests {
         assert!(!drawable_surface((0, 100)));
         assert!(!drawable_surface((200, 0)));
         assert!(drawable_surface((200, 100)));
+    }
+}
+
+#[cfg(test)]
+mod queue_fairness_tests {
+    use super::*;
+    #[test]
+    fn self_replenishing_producer_yields_without_losing_fifo_order() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(0).unwrap();
+        let mut consumed = Vec::new();
+        let now = Instant::now();
+        assert!(drain_host_batch(
+            || {
+                let value = rx.try_recv().unwrap();
+                consumed.push(value);
+                tx.send(value + 1).unwrap();
+                true
+            },
+            || now
+        ));
+        assert_eq!(consumed, (0..64).collect::<Vec<_>>());
+        assert_eq!(rx.try_recv().unwrap(), 64);
+    }
+    #[test]
+    fn slow_callback_yields_before_starting_another() {
+        let start = Instant::now();
+        let elapsed = std::cell::Cell::new(Duration::ZERO);
+        let calls = std::cell::Cell::new(0);
+        assert!(drain_host_batch(
+            || {
+                calls.set(calls.get() + 1);
+                elapsed.set(Duration::from_millis(3));
+                true
+            },
+            || start + elapsed.get()
+        ));
+        assert_eq!(calls.get(), 1);
+    }
+    #[test]
+    fn empty_or_stopped_queue_does_not_schedule_another_wake() {
+        assert!(!drain_host_batch(|| false, Instant::now));
     }
 }

@@ -14,7 +14,7 @@ cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts
 
 ## 挂上去
 
-`run_runtime` 创建**一份** Adapter / Device / Queue（`HostedGpuContext`）。附加窗口只新建 Surface，共享同一份设备。已经有外部事件循环时，用更低层的 `HostedGpuContext`；不要再 `request_device`。
+`run_runtime` 创建**一份** Adapter / Device / Queue（`HostedGpuContext`）。附加窗口只新建 Surface，共享同一份设备。已有外部事件循环时，用 `platform_host::EmbeddedRuntime` 和 `HostedGpuShared::from_device` 注入宿主设备；不要再 `request_device`。
 
 树上挂 `GpuTextureView::new("preview")`，`host_textures()` 登记同一 slot，`prepare_window_frame` 用**同一** Device / Queue 更新。
 
@@ -184,3 +184,5 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 - 为 Android 另写一套 renderer，或把实验 NativeActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
 - 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
 - 在 UI 画完之后把原生 WebView 盖在窗口上，或让控件拿 HWND / NSView 去挂引擎
+
+外部 GPU 的丢失回调归宿主所有。通过 `HostedGpuShared::from_device` 注入时，NanaUI 不会安装或覆盖该回调；宿主应把通知转发到窗口线程，调用 `EmbeddedRuntime::notify_device_lost()` 后暂停原设备上的其他工作，并在新 GPU 就绪后调用 `replace_gpu()`。管理器在通知与替换之间保持挂起，不退出宿主事件循环。

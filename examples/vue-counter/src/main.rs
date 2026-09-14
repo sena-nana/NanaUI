@@ -293,7 +293,7 @@ fn engine_label() -> &'static str {
 #[cfg(feature = "windowed")]
 mod windowed {
     use nana_js_engine::{HostApiRegistry, RuntimeArtifact};
-    use nana_ui::{HostedRunError, RuntimeWindowSettings};
+    use nana_ui::{HostedRunError, WindowDescriptor};
     use nana_ui_vue::VueRuntimeProgram;
 
     use super::{SEMANTIC_COUNTER_JS, engine_label};
@@ -304,7 +304,7 @@ mod windowed {
         let engine = nana_js_v8::V8Engine::new();
         let title = format!("Vue Counter NanaUI bridge ({})", engine_label());
         VueRuntimeProgram::<CounterEngine>::run(
-            RuntimeWindowSettings::new(title)
+            WindowDescriptor::new(title)
                 .initial_size(480.0, 360.0)
                 .minimum_size(360.0, 240.0)
                 .system_caption(true),

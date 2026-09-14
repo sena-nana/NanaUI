@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn apply_window_command(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -14,22 +14,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 let WindowCommand::SetMousePassthrough { enabled, .. } = command else {
                     return;
                 };
-                let result = self
-                    .mutate_native_style(id, |window| {
-                        window
-                            .set_cursor_hittest(!enabled)
-                            .map_err(|error| error.to_string())
-                    })
-                    .unwrap_or_else(|| Err("window does not exist".to_string()));
-                let update = self.program.window_event(
-                    WindowEvent::MousePassthroughChanged {
-                        id,
-                        enabled,
-                        result,
-                    },
-                    &self.context_for(id),
-                );
-                self.apply_update(event_loop, update, None);
+                let _ = self.set_mouse_passthrough(event_loop, id, enabled);
             }
             RoutedWindowCommand::Ignore => {}
             RoutedWindowCommand::Open(id) => {
@@ -173,12 +158,52 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
         }
     }
+    fn set_mouse_passthrough(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        enabled: bool,
+    ) -> Result<(), crate::WindowError> {
+        let result = self
+            .mutate_native_style(id, |window| {
+                window
+                    .set_cursor_hittest(!enabled)
+                    .map_err(window_request_error)
+            })
+            .unwrap_or(Err(crate::WindowError::WindowClosed));
+        let update = self.program.window_event(
+            WindowEvent::MousePassthroughChanged {
+                id,
+                enabled,
+                result: result.as_ref().copied().map_err(ToString::to_string),
+            },
+            &self.context_for(id),
+        );
+        self.apply_update(event_loop, update, None);
+        result
+    }
+
     pub(super) fn open_window(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
-        settings: RuntimeWindowSettings,
+        settings: WindowDescriptor,
     ) -> Result<WindowEvent, String> {
+        if self.shutting_down {
+            return Err("window host has stopped".into());
+        }
+        if self.render_suspended {
+            return Err("shared GPU recovery pending".into());
+        }
+        if self.window(id).is_some() {
+            return Err("window identity is already live".into());
+        }
+        crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
+        if let Some(parent) = settings.parent
+            && (self.window(parent).is_none() || self.closing_windows.contains(&parent))
+        {
+            return Err("parent window does not exist".into());
+        }
         if settings.modal {
             let parent = settings
                 .parent
@@ -203,9 +228,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         )?;
         let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
-                .create_window(attributes)
+                .create_window(attributes.with_visible(false))
                 .map_err(|error| error.to_string())?,
         );
+        let mut pending_native = PendingNativeWindow(Some(window.clone()));
         apply_scene_window_icon(
             window.as_ref(),
             settings.icon.as_ref(),
@@ -243,11 +269,36 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         #[cfg(target_os = "windows")]
         let modal_parent = settings.modal.then_some(settings.parent).flatten();
         let size_move = LiveSizeMove::install(window.as_ref())?;
+        self.windows.register(id);
+        let context = program_context(
+            self.message_tx.clone(),
+            Arc::clone(&self.host_work),
+            &self.graphics,
+            id,
+            geometry,
+            self.tasks.clone(),
+            material,
+            surface.alpha_mode(),
+            window.theme().map(system_appearance_from_winit),
+        )
+        .with_windows(self.windows.clone());
+        if let Err(error) = self.program.initialize_window(id, &context) {
+            self.windows.unregister(id);
+            self.program.discard_window(id);
+            // PendingNativeWindow owns platform cleanup for every failed stage.
+            return Err(error);
+        }
+        pending_native.0 = None;
         self.file_dialogs.reopened(id);
         self.window_ids.insert(window.id(), id);
-        self.auxiliary.insert(
+        self.window_contexts.insert(
             id,
-            SceneAuxiliary {
+            WindowContext {
+                surface_retry: None,
+                applied_appearance: None,
+                cursor_override: None,
+                cursor_visible_override: None,
+                material_override: None,
                 surface,
                 geometry,
                 input: InputTracker::default(),
@@ -263,14 +314,25 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
             parent.set_enable(false);
         }
-        self.mutate_native_style(id, |window| window.set_visible(true));
+        self.mutate_native_style(id, |window| {
+            window.set_visible(self.settings_of(id).visible)
+        });
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
         Ok(WindowEvent::Ready { id, geometry })
     }
     pub(super) fn close_window(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
-        if id == WindowId::PRIMARY {
+        if !self.window_contexts.contains_key(&id) || !self.closing_windows.insert(id) {
             return;
+        }
+        self.windows.unregister(id);
+        let children: Vec<_> = self
+            .window_contexts
+            .iter()
+            .filter_map(|(&child, host)| (host.settings.parent == Some(id)).then_some(child))
+            .collect();
+        for child in children {
+            self.close_window(event_loop, child);
         }
         if let Some(window) = self.window(id) {
             window.set_visible(false);
@@ -278,6 +340,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.browsers.retain(|(window, _), _| *window != id);
         self.close_file_dialog(event_loop, id);
         self.chrome.remove(&id);
+        self.bind_after_present.remove(&id);
+        #[cfg(target_os = "macos")]
+        self.present_transaction_pinned.remove(&id);
         self.frame_schedules.remove(&id);
         self.texture_subscriptions.remove(&id);
         if let Ok(mut targets) = self.image_targets.lock() {
@@ -297,17 +362,18 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         {
             live.end(window.as_ref());
         }
-        if let Some(host) = self.auxiliary.remove(&id) {
+        if let Some(host) = self.window_contexts.remove(&id) {
             #[cfg(target_os = "windows")]
-            if let Some(parent) = host
+            if let Some(parent_id) = host
                 .settings
                 .modal
                 .then_some(host.settings.parent)
                 .flatten()
-                .and_then(|parent| self.window(parent))
+                && !self.closing_windows.contains(&parent_id)
+                && let Some(parent) = self.window(parent_id)
             {
                 parent.set_enable(true);
-                parent.focus_window();
+                self.focus_window(parent_id);
             }
             self.window_ids.remove(&host.surface.window().id());
             self.ime.remove(&id);
@@ -317,8 +383,15 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 .window_event(WindowEvent::Closed { id }, &self.context_for(id));
             self.apply_update(event_loop, update, None);
         }
+        self.closing_windows.remove(&id);
+        if self.window_contexts.is_empty() && !self.embedded {
+            event_loop.exit();
+        }
     }
-    pub(super) fn focus_window(&self, id: WindowId) {
+    pub(super) fn focus_window(&self, mut id: WindowId) {
+        while let Some(modal) = self.active_modal_child(id) {
+            id = modal;
+        }
         self.mutate_native_style(id, |window| window.set_visible(true));
         if let Some(window) = self.window(id) {
             window.focus_window();
@@ -345,80 +418,83 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         });
     }
     pub(super) fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
-        self.auxiliary.iter().find_map(|(id, host)| {
+        self.window_contexts.iter().find_map(|(id, host)| {
             (host.settings.modal && host.settings.parent == Some(parent)).then_some(*id)
         })
     }
     pub(super) fn sync_appearance(&mut self) {
-        let theme = self.program.theme_mode();
-        let appearance: HashMap<_, _> = self
-            .known_window_ids()
-            .into_iter()
-            .map(|id| {
-                (
-                    id,
-                    (
-                        self.program.window_material_mode_for(id),
-                        AppearanceSettings::clamp_backdrop_opacity(
-                            self.program.appearance_backdrop_opacity_for(id),
-                        ),
-                    ),
-                )
-            })
-            .collect();
-        if theme != self.last_theme || appearance != self.last_window_appearance {
-            self.last_theme = theme;
-            self.last_material_mode = self.program.window_material_mode_for(WindowId::PRIMARY);
-            self.last_window_appearance = appearance;
-            self.refresh_material();
-            self.request_redraw_all();
+        self.last_theme = self.program.theme_mode();
+        if self.render_suspended {
+            return;
         }
-    }
-    pub(super) fn refresh_material(&mut self) {
-        clear_system_material(self.graphics.window().as_ref());
-        self.material = apply_window_surface(
-            self.graphics.window().as_ref(),
-            self.last_theme,
-            &self.settings,
-            self.program.window_material_mode_for(WindowId::PRIMARY),
-            self.program
-                .appearance_backdrop_opacity_for(WindowId::PRIMARY),
-        );
-        let mut alpha_error = self
-            .graphics
-            .apply_alpha_mode(window_wants_transparent_surface(
-                self.settings.transparent,
-                self.program.window_material_mode_for(WindowId::PRIMARY),
-            ))
-            .err();
-        for (id, host) in &mut self.auxiliary {
-            let mode = self.program.window_material_mode_for(*id);
-            clear_system_material(host.surface.window().as_ref());
-            host.material = apply_window_surface(
-                host.surface.window().as_ref(),
-                self.last_theme,
-                &host.settings,
-                mode,
-                self.program.appearance_backdrop_opacity_for(*id),
-            );
-            if let Err(error) = self.graphics.apply_surface_alpha_mode(
-                &mut host.surface,
-                window_wants_transparent_surface(host.settings.transparent, mode),
-            ) {
-                alpha_error = Some(error);
+        for id in self.known_window_ids() {
+            if self.window_contexts[&id].surface_retry.is_some() {
+                continue;
+            }
+            if let Err(error) = self.sync_window_material(id) {
+                self.suspend_surface(id, error);
             }
         }
-        if let Some(error) = alpha_error {
-            self.suspend_rendering(error);
+    }
+
+    pub(super) fn sync_window_material(&mut self, id: WindowId) -> Result<(), HostedGpuError> {
+        let material_override = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.material_override);
+        self.apply_window_material(id, material_override)
+    }
+
+    fn apply_window_material(
+        &mut self,
+        id: WindowId,
+        material_override: Option<nana_window::MaterialEffect>,
+    ) -> Result<(), HostedGpuError> {
+        let mode = self.program.window_material_mode_for(id);
+        let desired = WindowAppearance {
+            theme: self.program.theme_mode(),
+            material: material_override.unwrap_or(mode),
+            opacity: AppearanceSettings::clamp_backdrop_opacity(
+                self.program.appearance_backdrop_opacity_for(id),
+            ),
+        };
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return Ok(());
+        };
+        let outcome = apply_changed_appearance(&mut host.applied_appearance, desired, || {
+            clear_system_material(host.surface.window().as_ref());
+            let outcome = apply_window_surface(
+                host.surface.window().as_ref(),
+                desired.theme,
+                &host.settings,
+                desired.material,
+                desired.opacity,
+            );
+            self.graphics.apply_surface_alpha_mode(
+                &mut host.surface,
+                window_wants_transparent_surface(host.settings.transparent, desired.material),
+            )?;
+            Ok(outcome)
+        })?;
+        if let Some(outcome) = outcome {
+            host.material = outcome;
+            self.request_redraw(id);
         }
+        Ok(())
+    }
+
+    /// GPU replacement requires reapplying effects even when the request is unchanged.
+    pub(super) fn refresh_material(&mut self) {
+        for host in self.window_contexts.values_mut() {
+            host.applied_appearance = None;
+        }
+        self.sync_appearance();
     }
     /// Refreshes the cached window geometry from the live window state and
     /// reports whether it moved.
     pub(super) fn sync_geometry(&mut self, id: WindowId) -> bool {
         let previous = self.geometry_of(id);
-        if id == WindowId::PRIMARY {
-            self.geometry = window_geometry(self.graphics.window().as_ref());
-        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+        if let Some(host) = self.window_contexts.get_mut(&id) {
             host.geometry = window_geometry(host.surface.window().as_ref());
         }
         let changed = self.geometry_of(id) != previous;
@@ -474,10 +550,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         }
     }
     pub(super) fn resize_window(&mut self, id: WindowId) {
+        if self.render_suspended {
+            return;
+        }
         let live = self.is_live_resize(id);
-        if id == WindowId::PRIMARY {
-            self.graphics.prepare_frame(live);
-        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+        if let Some(host) = self.window_contexts.get_mut(&id)
+            && host.surface_retry.is_none()
+        {
             self.graphics.prepare_surface_frame(&mut host.surface, live);
         }
     }
@@ -495,13 +574,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         false
     }
     pub(super) fn size_move_active(&self, id: WindowId) -> bool {
-        if id == WindowId::PRIMARY {
-            self.size_move.is_active()
-        } else {
-            self.auxiliary
-                .get(&id)
-                .is_some_and(|host| host.size_move.is_active())
-        }
+        self.window_contexts
+            .get(&id)
+            .is_some_and(|host| host.size_move.is_active())
     }
     pub(super) fn sync_window_cursor(&mut self, id: WindowId) {
         if !self
@@ -557,6 +632,9 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             .unwrap_or((None, None, false));
         if let Some(window) = self.window(id) {
             let (icon, visible) = scene_cursor_icon(frame_edge, handle, css_cursor, text_field);
+            let host = self.window_contexts.get(&id).unwrap();
+            let icon = host.cursor_override.unwrap_or(icon);
+            let visible = host.cursor_visible_override.unwrap_or(visible);
             window.set_cursor_visible(visible);
             if visible {
                 window.set_cursor(icon.into());
@@ -707,15 +785,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             })
             .unwrap_or(false)
     }
-    pub(super) fn settings_of(&self, id: WindowId) -> &RuntimeWindowSettings {
-        if id == WindowId::PRIMARY {
-            &self.settings
-        } else {
-            self.auxiliary
-                .get(&id)
-                .map(|host| &host.settings)
-                .unwrap_or(&self.settings)
-        }
+    pub(super) fn settings_of(&self, id: WindowId) -> &WindowDescriptor {
+        self.window_contexts
+            .get(&id)
+            .map(|host| &host.settings)
+            .unwrap_or(&self.settings)
     }
 
     fn mutate_native_style<R>(
@@ -731,11 +805,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
     }
 
     fn restore_client_chrome(&self, id: WindowId) {
-        if id == WindowId::PRIMARY {
-            apply_client_chrome_after_create(self.graphics.window().as_ref(), &self.settings);
-            return;
-        }
-        let Some(host) = self.auxiliary.get(&id) else {
+        let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
         apply_client_chrome_after_create(host.surface.window().as_ref(), &host.settings);
@@ -776,10 +846,6 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         let Some(action) = action else {
             return update;
         };
-        if action == WindowChromeAction::Close && id == WindowId::PRIMARY {
-            update.exit = true;
-            return update;
-        }
         let maximized = self
             .chrome
             .get(&id)
@@ -827,5 +893,365 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
                 );
             }
         });
+    }
+}
+
+impl<Program: RuntimeProgram> WindowManager<Program> {
+    pub(super) fn drain_window_requests(&mut self, event_loop: &dyn ActiveEventLoop) {
+        use crate::window_service::Request;
+        let remaining = super::schedule::drain_host_batch(
+            || {
+                if self.shutting_down || event_loop.exiting() {
+                    return false;
+                }
+                let Some(request) = self
+                    .window_requests
+                    .as_ref()
+                    .and_then(|requests| requests.try_recv().ok())
+                else {
+                    return false;
+                };
+                match request {
+                    Request::Material(id, generation, effect, reply) => {
+                        if !self.windows.is_current(id, generation) {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        if let Some(host) = self.window_contexts.get(&id)
+                            && (self.render_suspended || host.surface_retry.is_some())
+                        {
+                            reply.finish(Err(crate::WindowError::OperationFailed(
+                                "window surface recovery pending".into(),
+                            )));
+                            return true;
+                        }
+                        match self.apply_window_material(id, Some(effect)) {
+                            Ok(()) => {
+                                self.window_contexts.get_mut(&id).unwrap().material_override =
+                                    Some(effect);
+                                reply.finish(Ok(self.material_of(id)));
+                            }
+                            Err(error) => {
+                                let message = error.to_string();
+                                self.suspend_surface(id, error);
+                                reply.finish(Err(crate::WindowError::OperationFailed(message)));
+                            }
+                        }
+                    }
+                    Request::Create(settings, reply) => {
+                        let id = WindowId(self.next_window_id);
+                        let Some(next) = self.next_window_id.checked_add(1) else {
+                            reply.finish(Err(crate::WindowError::InitializationFailed(
+                                "window identities exhausted".into(),
+                            )));
+                            return true;
+                        };
+                        self.next_window_id = next;
+                        match self.open_window(event_loop, id, settings) {
+                            Ok(event) => {
+                                let update =
+                                    self.program.window_event(event, &self.context_for(id));
+                                self.apply_update(event_loop, update, None);
+                                if self.shutting_down {
+                                    reply.finish(Err(crate::WindowError::HostStopped));
+                                } else if self.window(id).is_some() {
+                                    reply.finish(Ok(self.windows.handle(id)));
+                                } else {
+                                    reply.finish(Err(crate::WindowError::InitializationFailed(
+                                        "window initialization rejected".into(),
+                                    )));
+                                }
+                            }
+                            Err(error) => {
+                                reply.finish(Err(crate::WindowError::InitializationFailed(error)))
+                            }
+                        }
+                    }
+                    Request::Native(id, generation, callback) => {
+                        if !self.windows.is_current(id, generation) {
+                            callback(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        use raw_window_handle::HasWindowHandle;
+                        match self.window(id) {
+                            Some(window) => callback(
+                                window
+                                    .window_handle()
+                                    .map_err(|e| crate::WindowError::Unsupported(e.to_string())),
+                            ),
+                            None => callback(Err(crate::WindowError::WindowClosed)),
+                        }
+                    }
+                    Request::Control(id, generation, control, reply) => {
+                        if !self.windows.is_current(id, generation) {
+                            reply.finish(Err(crate::WindowError::WindowClosed));
+                            return true;
+                        }
+                        reply.finish(self.control_window(event_loop, id, control));
+                    }
+                }
+                !self.shutting_down && !event_loop.exiting()
+            },
+            Instant::now,
+        );
+        if remaining {
+            self.host_work.wake();
+        }
+    }
+
+    fn control_window(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        control: crate::window_service::Control,
+    ) -> Result<(), crate::WindowError> {
+        use crate::window_service::{Control, validate_size};
+        use crate::{WindowCursor, WindowError, WindowLevel};
+        let window = self.window(id).cloned().ok_or(WindowError::WindowClosed)?;
+        match control {
+            Control::Visible(visible) => {
+                self.mutate_native_style(id, |window| window.set_visible(visible));
+                let update = self.program.window_event(
+                    WindowEvent::VisibilityChanged {
+                        id,
+                        hidden: !visible,
+                    },
+                    &self.context_for(id),
+                );
+                self.apply_update(event_loop, update, None);
+            }
+            Control::Size(size) => {
+                validate_size(size)?;
+                self.mutate_native_style(id, |window| {
+                    window.request_surface_size(winit::dpi::LogicalSize::new(size.0, size.1).into())
+                });
+            }
+            Control::MinSize(size) => {
+                if let Some(size) = size {
+                    validate_size(size)?;
+                }
+                self.mutate_native_style(id, |window| {
+                    window.set_min_surface_size(
+                        size.map(|s| winit::dpi::LogicalSize::new(s.0, s.1).into()),
+                    )
+                });
+            }
+            Control::MaxSize(size) => {
+                if let Some(size) = size {
+                    validate_size(size)?;
+                }
+                self.mutate_native_style(id, |window| {
+                    window.set_max_surface_size(
+                        size.map(|s| winit::dpi::LogicalSize::new(s.0, s.1).into()),
+                    )
+                });
+            }
+            Control::Resizable(value) => {
+                self.mutate_native_style(id, |window| window.set_resizable(value));
+            }
+            Control::Level(level) => {
+                self.mutate_native_style(id, |window| {
+                    window.set_window_level(match level {
+                        WindowLevel::Normal => winit::window::WindowLevel::Normal,
+                        WindowLevel::AlwaysOnTop => winit::window::WindowLevel::AlwaysOnTop,
+                        WindowLevel::AlwaysOnBottom => winit::window::WindowLevel::AlwaysOnBottom,
+                    })
+                });
+            }
+            Control::ContentProtected(protected) => {
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                window.set_content_protected(protected);
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                {
+                    let _ = protected;
+                    return Err(WindowError::Unsupported("native content protection".into()));
+                }
+            }
+            Control::CursorVisible(visible) => {
+                self.window_contexts
+                    .get_mut(&id)
+                    .unwrap()
+                    .cursor_visible_override = Some(visible);
+                window.set_cursor_visible(visible);
+            }
+            Control::Cursor(cursor) => {
+                let host = self.window_contexts.get_mut(&id).unwrap();
+                host.cursor_override = match cursor {
+                    WindowCursor::Automatic => {
+                        host.cursor_visible_override = None;
+                        None
+                    }
+                    WindowCursor::Default => Some(CursorIcon::Default),
+                    WindowCursor::Pointer => Some(CursorIcon::Pointer),
+                    WindowCursor::Text => Some(CursorIcon::Text),
+                    WindowCursor::Move => Some(CursorIcon::Move),
+                    WindowCursor::Grab => Some(CursorIcon::Grab),
+                    WindowCursor::Grabbing => Some(CursorIcon::Grabbing),
+                    WindowCursor::NotAllowed => Some(CursorIcon::NotAllowed),
+                    WindowCursor::Crosshair => Some(CursorIcon::Crosshair),
+                    WindowCursor::Wait => Some(CursorIcon::Wait),
+                };
+                self.sync_window_cursor_now(id);
+            }
+            Control::Redraw => window.request_redraw(),
+            Control::Resize(edge) => {
+                if !resize_custom_frame(window.as_ref(), frame_resize_edge(edge)) {
+                    window
+                        .drag_resize_window(match edge {
+                            WindowResizeEdge::North => winit::window::ResizeDirection::North,
+                            WindowResizeEdge::South => winit::window::ResizeDirection::South,
+                            WindowResizeEdge::East => winit::window::ResizeDirection::East,
+                            WindowResizeEdge::West => winit::window::ResizeDirection::West,
+                            WindowResizeEdge::NorthEast => {
+                                winit::window::ResizeDirection::NorthEast
+                            }
+                            WindowResizeEdge::NorthWest => {
+                                winit::window::ResizeDirection::NorthWest
+                            }
+                            WindowResizeEdge::SouthEast => {
+                                winit::window::ResizeDirection::SouthEast
+                            }
+                            WindowResizeEdge::SouthWest => {
+                                winit::window::ResizeDirection::SouthWest
+                            }
+                        })
+                        .map_err(window_request_error)?;
+                }
+            }
+            Control::Command(WindowCommand::Drag(_)) => {
+                window.drag_window().map_err(window_request_error)?;
+            }
+            Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {
+                self.set_mouse_passthrough(event_loop, id, enabled)?;
+            }
+            Control::Command(WindowCommand::Move { position, .. })
+                if !position.0.is_finite() || !position.1.is_finite() =>
+            {
+                return Err(WindowError::InvalidParameter(
+                    "position must be finite".into(),
+                ));
+            }
+            Control::Command(command) => self.apply_window_command(event_loop, command),
+        }
+        // Style-changing operations restore client chrome at their mutation
+        // boundary. Redraw/cursor requests must not rewrite native chrome, and
+        // commands already use the same boundary in apply_window_command.
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct WindowAppearance {
+    theme: crate::ThemeMode,
+    material: nana_window::MaterialEffect,
+    opacity: f32,
+}
+
+fn apply_changed_appearance(
+    applied: &mut Option<WindowAppearance>,
+    desired: WindowAppearance,
+    apply: impl FnOnce() -> Result<MaterialOutcome, HostedGpuError>,
+) -> Result<Option<MaterialOutcome>, HostedGpuError> {
+    if *applied == Some(desired) {
+        return Ok(None);
+    }
+    let outcome = apply()?;
+    *applied = Some(desired);
+    Ok(Some(outcome))
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::*;
+    #[test]
+    fn unchanged_windows_do_not_reapply_native_material() {
+        let original = WindowAppearance {
+            theme: crate::ThemeMode::Dark,
+            material: nana_window::MaterialEffect::Solid,
+            opacity: 1.0,
+        };
+        let mut windows = [Some(original); 3];
+        let changed = WindowAppearance {
+            opacity: 0.5,
+            ..original
+        };
+        let mut calls = Vec::new();
+        for (index, cache) in windows.iter_mut().enumerate() {
+            let desired = if index == 1 { changed } else { original };
+            let result = apply_changed_appearance(cache, desired, || {
+                calls.push(index);
+                Ok(MaterialOutcome::chosen_solid())
+            })
+            .unwrap();
+            assert_eq!(result.is_some(), index == 1);
+        }
+        assert_eq!(calls, vec![1]);
+        assert_eq!(windows[1], Some(changed));
+        assert!(
+            apply_changed_appearance(&mut windows[1], changed, || panic!(
+                "unchanged material was reapplied"
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            apply_changed_appearance(&mut windows[1], original, || Err(
+                HostedGpuError::SurfaceValidation
+            ))
+            .is_err()
+        );
+        assert_eq!(windows[1], Some(changed));
+    }
+    #[test]
+    fn theme_changes_and_device_replacement_invalidate_appearance() {
+        let original = WindowAppearance {
+            theme: crate::ThemeMode::Dark,
+            material: nana_window::MaterialEffect::Solid,
+            opacity: 1.0,
+        };
+        let mut cached = Some(original);
+        let light = WindowAppearance {
+            theme: crate::ThemeMode::Light,
+            ..original
+        };
+        let calls = std::cell::Cell::new(0);
+        let apply = |cache: &mut Option<WindowAppearance>, desired| {
+            apply_changed_appearance(cache, desired, || {
+                calls.set(calls.get() + 1);
+                Err(HostedGpuError::SurfaceValidation)
+            })
+        };
+        assert!(apply(&mut cached, light).is_err());
+        cached = None;
+        assert!(apply(&mut cached, original).is_err());
+        assert_eq!(calls.get(), 2);
+    }
+}
+
+fn window_request_error(error: winit::error::RequestError) -> crate::WindowError {
+    match error {
+        winit::error::RequestError::NotSupported(_) => {
+            crate::WindowError::Unsupported(error.to_string())
+        }
+        _ => crate::WindowError::OperationFailed(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod request_error_tests {
+    use super::*;
+
+    #[test]
+    fn ignored_request_is_an_operation_failure_not_a_missing_capability() {
+        assert!(matches!(
+            window_request_error(winit::error::RequestError::Ignored),
+            crate::WindowError::OperationFailed(_)
+        ));
+        assert!(matches!(
+            window_request_error(winit::error::RequestError::NotSupported(
+                winit::error::NotSupportedError::new("fixture capability")
+            )),
+            crate::WindowError::Unsupported(_)
+        ));
     }
 }

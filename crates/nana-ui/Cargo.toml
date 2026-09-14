@@ -141,3 +141,11 @@ required-features = ["hosted", "bundled-fonts"]
 [[example]]
 name = "native-browser"
 required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "window-service-lifecycle"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
+name = "embedded-window-lifecycle"
+required-features = ["hosted", "bundled-fonts"]

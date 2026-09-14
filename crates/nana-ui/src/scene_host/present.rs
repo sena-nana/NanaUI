@@ -4,7 +4,7 @@ use super::*;
 #[cfg(target_os = "windows")]
 use crate::SceneGpuRendererRegistry;
 
-impl<Program: RuntimeProgram> SceneReady<Program> {
+impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `true` when prepare ran (encode may have been skipped). `false` on abort.
     pub(super) fn tick_hidden_gpu(
         &mut self,
@@ -18,7 +18,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.recover_device(event_loop);
             return false;
         }
-        if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+        if !self.window_contexts.contains_key(&id) {
             return false;
         }
         self.program.prepare_window_frame(id, &self.context_for(id));
@@ -85,13 +85,13 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             self.rearm_frame_demand(id);
             return;
         }
-        if id != WindowId::PRIMARY && !self.auxiliary.contains_key(&id) {
+        if !self.window_contexts.contains_key(&id) {
             self.rearm_frame_demand(id);
             return;
         }
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
-        if event_loop.exiting() || self.render_suspended {
+        if event_loop.exiting() || self.render_suspended || !self.can_present(id) {
             self.rearm_frame_demand(id);
             return;
         }
@@ -146,19 +146,10 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         };
         self.sync_native_browsers(id, scene.as_ref());
         self.update_image_targets(id, scene.as_ref());
-        let format = if id == WindowId::PRIMARY {
-            self.graphics.format()
-        } else {
-            let Some(auxiliary) = self.auxiliary.get(&id) else {
-                // prepare_window_frame may have closed this auxiliary surface
-                // after the redraw guard above admitted it.
-                self.program
-                    .host_failure(HostFailure::AuxiliarySurfaceLost { window: id });
-                self.rearm_frame_demand(id);
-                return;
-            };
-            auxiliary.surface.format()
+        let Some(host) = self.window_contexts.get(&id) else {
+            return;
         };
+        let format = host.surface.format();
         let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
@@ -171,7 +162,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
             Err(error) => {
                 self.rearm_frame_demand(id);
-                self.suspend_rendering(error);
+                self.suspend_surface(id, error);
                 return;
             }
         };
@@ -243,14 +234,11 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         #[allow(unused_mut)]
         let mut gpu_renderers = self.program.scene_gpu_renderers(id);
         #[cfg(target_os = "windows")]
-        let composition = if id == WindowId::PRIMARY {
-            self.graphics.windows_composition().cloned()
-        } else {
-            self.auxiliary
-                .get(&id)
-                .and_then(|host| host.surface.windows_composition())
-                .cloned()
-        };
+        let composition = self
+            .window_contexts
+            .get(&id)
+            .and_then(|host| host.surface.windows_composition())
+            .cloned();
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition.as_ref() {
             let regions = crate::native_content_regions(
@@ -338,9 +326,7 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         self.apply_update(event_loop, update, None);
     }
     fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
-        if id == WindowId::PRIMARY {
-            self.graphics.discard_frame(frame);
-        } else if let Some(host) = self.auxiliary.get_mut(&id) {
+        if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics
                 .discard_surface_frame(&mut host.surface, frame);
         }
@@ -350,90 +336,56 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
         &mut self,
         id: WindowId,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        if id == WindowId::PRIMARY {
-            self.graphics.acquire_frame()
-        } else {
-            let host = self
-                .auxiliary
-                .get_mut(&id)
-                .ok_or(HostedGpuError::SurfaceValidation)?;
-            self.graphics.acquire_surface_frame(&mut host.surface)
-        }
+        let host = self
+            .window_contexts
+            .get_mut(&id)
+            .ok_or(HostedGpuError::SurfaceValidation)?;
+        self.graphics.acquire_surface_frame(&mut host.surface)
     }
-    pub(super) fn recover_device(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let window = Arc::clone(self.graphics.window());
-        let _ = apply_window_surface(
-            window.as_ref(),
-            self.last_theme,
-            &self.settings,
-            self.last_material_mode,
-            self.program
-                .appearance_backdrop_opacity_for(WindowId::PRIMARY),
-        );
-        match pollster::block_on(self.graphics.recreate(wgpu::Features::empty())) {
-            Ok(graphics) => {
-                let mut painters = HashMap::new();
-                painters.insert(
-                    graphics.format(),
-                    SceneWgpuPainter::new(
-                        graphics.resources().device(),
-                        graphics.resources().queue(),
-                        graphics.format(),
-                    ),
-                );
-                let previous = std::mem::take(&mut self.auxiliary);
-                let recovery_windows: Vec<WindowId> = std::iter::once(WindowId::PRIMARY)
-                    .chain(previous.keys().copied())
-                    .collect();
-                let mut rebuilt = HashMap::new();
+    pub(super) fn recover_device(&mut self, _event_loop: &dyn ActiveEventLoop) {
+        if self.embedded {
+            self.render_suspended = true;
+            self.next_gpu_retry = None;
+            return;
+        }
+        let Some((&first_id, first)) = self.window_contexts.iter().next() else {
+            return;
+        };
+        match pollster::block_on(crate::HostedGpuShared::rebuild_for_surface(&first.surface)) {
+            Ok((graphics, surface)) => {
+                let recovery_windows = self.known_window_ids();
+                let first = self.window_contexts.get_mut(&first_id).unwrap();
+                first.surface = surface;
+                first.surface_retry = None;
                 let mut failed = Vec::new();
-                for (id, mut host) in previous {
-                    let window = Arc::clone(host.surface.window());
-                    host.material = apply_window_surface(
-                        window.as_ref(),
-                        self.last_theme,
-                        &host.settings,
-                        self.program.window_material_mode_for(id),
-                        self.program.appearance_backdrop_opacity_for(id),
-                    );
+                for (&id, host) in &mut self.window_contexts {
+                    if id == first_id {
+                        continue;
+                    }
                     match graphics.recreate_surface(&host.surface) {
                         Ok(surface) => {
-                            let format = surface.format();
-                            painters.entry(format).or_insert_with(|| {
-                                SceneWgpuPainter::new(
-                                    graphics.resources().device(),
-                                    graphics.resources().queue(),
-                                    format,
-                                )
-                            });
                             host.surface = surface;
-                            rebuilt.insert(id, host);
+                            host.surface_retry = None;
                         }
-                        Err(_) => failed.push((id, host.surface.window().id())),
+                        Err(error) => {
+                            host.surface_retry = None;
+                            failed.push((id, error));
+                        }
                     }
                 }
                 self.graphics = graphics;
-                self.painters = painters;
-                self.install_image_wakers();
+                self.painters.clear();
                 self.native_renderers.clear();
-                self.auxiliary = rebuilt;
-                self.refresh_material();
                 self.next_gpu_retry = None;
                 self.render_suspended = false;
+                for (id, error) in failed {
+                    self.suspend_surface(id, error);
+                }
+                self.refresh_material();
                 invalidate_program_host_textures(recovery_windows, |id| {
                     self.program.host_textures(id)
                 });
                 self.program.rebuild_gpu(&self.context());
-                for (id, window_id) in failed {
-                    self.window_ids.remove(&window_id);
-                    let update = self
-                        .program
-                        .window_event(WindowEvent::Closed { id }, &self.context_for(id));
-                    self.apply_update(event_loop, update, None);
-                    if event_loop.exiting() {
-                        return;
-                    }
-                }
                 self.request_redraw_all();
             }
             Err(_) => {
@@ -442,9 +394,47 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             }
         }
     }
-    pub(super) fn suspend_rendering(&mut self, _error: HostedGpuError) {
-        self.render_suspended = true;
-        self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
+    pub(super) fn suspend_surface(&mut self, id: WindowId, error: HostedGpuError) {
+        // WGPU delivers a destroyed device's callback during polling, after its
+        // submissions finish. Surface failure alone must not decide its scope.
+        let _ = self
+            .graphics
+            .resources()
+            .device()
+            .poll(wgpu::PollType::Poll);
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        // Surface errors do not imply device loss. Keep the other windows alive,
+        // and never let repeated appearance updates postpone or bypass this retry.
+        if host.surface_retry.is_none() {
+            host.surface_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
+            self.program.host_failure(HostFailure::SurfaceRecovery {
+                window: id,
+                error: error.to_string(),
+            });
+        }
+    }
+
+    pub(super) fn retry_surfaces(&mut self, now: Instant) {
+        if self.render_suspended {
+            return;
+        }
+        for id in self.known_window_ids() {
+            let host = self.window_contexts.get_mut(&id).unwrap();
+            let recovered =
+                retry_surface(&mut host.surface, &mut host.surface_retry, now, |surface| {
+                    self.graphics.recreate_surface(surface)
+                });
+            if recovered {
+                host.applied_appearance = None;
+                if let Err(error) = self.sync_window_material(id) {
+                    self.suspend_surface(id, error);
+                } else {
+                    self.request_redraw(id);
+                }
+            }
+        }
     }
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
         let resources = self.graphics.resources();
@@ -468,5 +458,78 @@ impl<Program: RuntimeProgram> SceneReady<Program> {
             proxy.wake_up();
         }));
         painter
+    }
+}
+
+/// Preserve the retained native target until a complete replacement is ready.
+/// A failed attempt consumes its deadline, so repeated loop wakes cannot spin.
+fn retry_surface<T, E>(
+    surface: &mut T,
+    deadline: &mut Option<Instant>,
+    now: Instant,
+    recreate: impl FnOnce(&T) -> Result<T, E>,
+) -> bool {
+    if !deadline.is_some_and(|deadline| now >= deadline) {
+        return false;
+    }
+    match recreate(surface) {
+        Ok(replacement) => {
+            *surface = replacement;
+            *deadline = None;
+            true
+        }
+        Err(_) => {
+            *deadline = Some(now + GPU_RETRY_INTERVAL);
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod surface_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn failed_window_retains_surface_and_backs_off_without_touching_healthy_window() {
+        let now = Instant::now();
+        let mut failed_surface = 10;
+        let mut healthy_surface = 20;
+        let mut failed_deadline = Some(now);
+        let mut healthy_deadline = None;
+        assert!(!retry_surface(
+            &mut failed_surface,
+            &mut failed_deadline,
+            now,
+            |_| Err::<i32, _>("unavailable")
+        ));
+        assert_eq!(failed_surface, 10);
+        assert_eq!(failed_deadline, Some(now + GPU_RETRY_INTERVAL));
+        for time in [now, now + GPU_RETRY_INTERVAL / 2] {
+            assert!(!retry_surface(
+                &mut failed_surface,
+                &mut failed_deadline,
+                time,
+                |_| -> Result<i32, ()> { panic!("retried before deadline") }
+            ));
+            assert!(!retry_surface(
+                &mut healthy_surface,
+                &mut healthy_deadline,
+                time,
+                |_| -> Result<i32, ()> { panic!("healthy window recreated") }
+            ));
+        }
+        assert!(retry_surface(
+            &mut failed_surface,
+            &mut failed_deadline,
+            now + GPU_RETRY_INTERVAL,
+            |old| {
+                assert_eq!(*old, 10);
+                Ok::<_, ()>(11)
+            }
+        ));
+        assert_eq!(failed_surface, 11);
+        assert_eq!(failed_deadline, None);
+        assert_eq!(healthy_surface, 20);
+        assert_eq!(healthy_deadline, None);
     }
 }

@@ -6,11 +6,12 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ApplicationState, ApplicationWindow, RuntimeApplication, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, SceneResourceEncodeContext, SceneResourceProducer,
-    SceneResourceProducerRegistry, default_scene_gpu_renderers, run_runtime,
+    RuntimeProgramUpdate, SceneResourceEncodeContext, SceneResourceProducer,
+    SceneResourceProducerRegistry, WindowDescriptor, default_scene_gpu_renderers, run_runtime,
 };
 use nana_ui_core::{LayoutStyle, LengthSpec, VisibilitySpec};
-use nana_ui_platform::{WindowCommand, WindowId, WindowSettings};
+use nana_ui_platform::WindowId;
+use nana_ui_platform::host::WindowCommand;
 use std::{
     collections::HashMap,
     io::{self, BufRead, Write},
@@ -375,7 +376,7 @@ impl ApplicationState for Probe {
                 return RuntimeProgramUpdate {
                     window_commands: vec![WindowCommand::Open {
                         id: self.target,
-                        settings: WindowSettings::new("NanaUI Auxiliary Probe")
+                        settings: WindowDescriptor::new("NanaUI Auxiliary Probe")
                             .initial_size(420.0, 180.0)
                             .minimum_size(420.0, 180.0),
                     }],
@@ -420,7 +421,7 @@ impl ApplicationState for Probe {
 }
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<RuntimeApplication<Probe>>(
-        RuntimeWindowSettings::new("NanaUI Accessibility Probe")
+        WindowDescriptor::new("NanaUI Accessibility Probe")
             .minimum_size(420.0, 180.0)
             .initial_size(420.0, 180.0),
     )

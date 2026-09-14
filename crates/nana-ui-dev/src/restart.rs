@@ -95,7 +95,7 @@ impl DevHandoff {
     /// Apply the carried geometry to window settings.
     ///
     /// Only geometry: the state blob is the application's to interpret.
-    pub fn apply(&self, settings: &mut nana_ui::RuntimeWindowSettings) {
+    pub fn apply(&self, settings: &mut nana_ui::WindowDescriptor) {
         if let Some((x, y)) = self.position {
             settings.initial_position = Some((x as f64, y as f64));
         }
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn applying_a_handoff_sets_geometry_and_constrains_to_the_work_area() {
-        let mut settings = nana_ui::RuntimeWindowSettings::new("App");
+        let mut settings = nana_ui::WindowDescriptor::new("App");
         DevHandoff {
             position: Some((100, 50)),
             size: Some((1024, 768)),

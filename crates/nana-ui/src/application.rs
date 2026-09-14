@@ -54,6 +54,15 @@ pub trait ApplicationState: Sized + 'static {
     ) -> RuntimeProgramUpdate {
         RuntimeProgramUpdate::default()
     }
+    /// Observe framework window lifecycle events without importing native events.
+    /// `Closed` is delivered after the document is removed and `window_closed` returns.
+    fn window_event(
+        &mut self,
+        _event: &WindowEvent,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
     fn theme_mode(&self) -> ThemeMode {
         ThemeMode::Dark
     }
@@ -193,34 +202,37 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
                 self.state.presented(window, context)
             })
     }
+    fn initialize_window(
+        &mut self,
+        id: WindowId,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> Result<(), String> {
+        let mut window = ApplicationWindow::new();
+        self.state
+            .build(&mut window, context)
+            .map_err(|error| error.to_string())?;
+        self.windows.insert(id, window);
+        Ok(())
+    }
+
+    fn discard_window(&mut self, id: WindowId) {
+        self.windows.remove(&id);
+        self.state.window_closed(id);
+    }
+
     fn window_event(
         &mut self,
         event: WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        match event {
-            WindowEvent::Ready { id, .. } if !self.windows.contains_key(&id) => {
-                let mut window = ApplicationWindow::new();
-                if let Err(error) = self.state.build(&mut window, context) {
-                    eprintln!("NanaUI window build failed: {error}");
-                    return RuntimeProgramUpdate {
-                        window_commands: vec![nana_ui_platform::WindowCommand::Close(id)],
-                        ..Default::default()
-                    };
-                }
-                self.windows.insert(id, window);
-                RuntimeProgramUpdate::redraw(id)
-            }
-            WindowEvent::Closed { id } => {
-                self.windows.remove(&id);
-                self.state.window_closed(id);
-                RuntimeProgramUpdate::default()
-            }
-            WindowEvent::CloseRequested { id } if id == WindowId::PRIMARY => {
-                RuntimeProgramUpdate::exit()
-            }
+        if let WindowEvent::Closed { id } = &event {
+            self.windows.remove(id);
+            self.state.window_closed(*id);
+        }
+        let application_update = self.state.window_event(&event, context);
+        let update = match event {
             WindowEvent::CloseRequested { id } => RuntimeProgramUpdate {
-                window_commands: vec![nana_ui_platform::WindowCommand::Close(id)],
+                window_commands: vec![nana_ui_platform::host::WindowCommand::Close(id)],
                 ..Default::default()
             },
             WindowEvent::FileHovered {
@@ -237,7 +249,8 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
                 self.dispatch_file_drag(id, FileDragKind::Cancel, &[], None)
             }
             _ => RuntimeProgramUpdate::default(),
-        }
+        };
+        update.merge(application_update)
     }
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         self.state.rebuild_gpu(&mut self.windows, context);

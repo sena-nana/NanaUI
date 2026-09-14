@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nana_ui::{RuntimeProgramContext, RuntimeWindowSettings};
+use nana_ui::{RuntimeProgramContext, WindowDescriptor};
 
 #[cfg(feature = "vue")]
 use crate::ReloadRequest;
@@ -86,7 +86,7 @@ pub fn restored_handoff() -> Option<DevHandoff> {
 ///
 /// `handoff` is where the geometry file lives; put it under `target/`.
 pub fn run_with_restart<Program: nana_ui::RuntimeProgram>(
-    mut settings: RuntimeWindowSettings,
+    mut settings: WindowDescriptor,
     handoff: &Path,
 ) -> Result<(), nana_ui::HostedRunError> {
     // Geometry is this function's business; the state blob is the program's, and

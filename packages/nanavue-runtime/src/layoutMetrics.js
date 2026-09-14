@@ -21,14 +21,38 @@ export function withNanaWindowContext(windowId, action) {
   }
 }
 
+// Native Closed/OpenFailed arrives after the document has been destroyed.
+// Vue must still run unmount hooks and release its JS resources, without
+// submitting document operations to that dead host during synchronous disposal.
+const disposingWindows = new Set();
+export function isNanaWindowDisposing(windowId) {
+  return disposingWindows.has(Number(windowId));
+}
+// The Web API shim shares this scope for timer/image cleanup in Vue hooks.
+globalThis.__nanaIsWindowDisposing = isNanaWindowDisposing;
+export function withNanaWindowDisposal(windowId, action) {
+  const id = Number(windowId);
+  if (disposingWindows.has(id)) return action();
+  disposingWindows.add(id);
+  try {
+    return withNanaWindowContext(id, action);
+  } finally {
+    disposingWindows.delete(id);
+  }
+}
+
 export function hostCall(name, args) {
   const host = globalThis.__nanaHost;
   if (!host || typeof host.call !== "function") {
     throw new Error("__nanaHost.call is not registered");
   }
   const values = Array.isArray(args) ? args : [];
+  // Window service operations carry their own identity and are host-global.
+  if (name.startsWith("window") && name !== "windowCall") return host.call(name, values);
   let windowId = Number(globalThis.__nanaActiveWindowId || 0);
   if (!windowId && values.length) windowId = nanaWindowIdFromNode(values[0]);
+  const targetId = name === "windowCall" ? Number(values[0]) : windowId;
+  if (disposingWindows.has(targetId)) return null;
   if (windowId && name !== "windowCall") {
     return host.call("windowCall", [windowId, String(name), values]);
   }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use nana_ui::runtime::{Activate, Button, Entity, FrameworkError, List, Text};
 use nana_ui::{
     ApplicationState, ApplicationWindow, RuntimeApplication, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, run_runtime,
+    RuntimeProgramUpdate, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::WindowId;
 
@@ -73,6 +73,6 @@ impl ApplicationState for Counter {
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
     run_runtime::<RuntimeApplication<Counter>>(
-        RuntimeWindowSettings::new("NanaUI Counter").initial_size(480.0, 320.0),
+        WindowDescriptor::new("NanaUI Counter").initial_size(480.0, 320.0),
     )
 }

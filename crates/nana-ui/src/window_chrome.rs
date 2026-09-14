@@ -1,5 +1,6 @@
 use nana_ui_core::{LengthSpec, LogicalPoint};
-use nana_ui_platform::{InputEvent, PointerPhase, WindowCommand, WindowId};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{InputEvent, PointerPhase, WindowId};
 use nana_ui_runtime::{
     AccessibilityRole, AppContext, AppTitleBar, AppTitleBarControls, DocumentId, Entity, NodeKind,
 };

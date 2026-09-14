@@ -3,11 +3,10 @@
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeWindowSettings, ThemeMode, run_runtime,
+    RuntimeProgramUpdate, ThemeMode, WindowDescriptor, run_runtime,
 };
-use nana_ui_platform::{
-    InputEvent, PointerPhase, WindowCommand, WindowEvent, WindowId, WindowRole,
-};
+use nana_ui_platform::host::WindowCommand;
+use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowId, WindowRole};
 use std::{
     convert::Infallible,
     io::{self, BufRead, Write},
@@ -112,7 +111,7 @@ impl RuntimeProgram for Probe {
             }]),
             Message::Close => commands(vec![WindowCommand::Close(OVERLAY)]),
             Message::Fail => {
-                let mut settings = RuntimeWindowSettings::new("invalid modal");
+                let mut settings = WindowDescriptor::new("invalid modal");
                 settings.modal = true;
                 commands(vec![WindowCommand::Open {
                     id: WindowId(2),
@@ -145,7 +144,7 @@ impl RuntimeProgram for Probe {
                 id: WindowId::PRIMARY,
                 ..
             } => {
-                let mut settings = RuntimeWindowSettings::new("NanaUI overlay probe layer")
+                let mut settings = WindowDescriptor::new("NanaUI overlay probe layer")
                     .initial_size(420.0, 300.0)
                     .minimum_size(280.0, 240.0);
                 settings.initial_position = Some((200.0, 200.0));
@@ -235,7 +234,7 @@ impl RuntimeProgram for Probe {
     }
 }
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    let mut settings = RuntimeWindowSettings::new("NanaUI overlay probe base")
+    let mut settings = WindowDescriptor::new("NanaUI overlay probe base")
         .initial_size(800.0, 600.0)
         .minimum_size(600.0, 400.0);
     settings.initial_position = Some((100.0, 100.0));

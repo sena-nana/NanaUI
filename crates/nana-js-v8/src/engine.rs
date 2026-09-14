@@ -1361,6 +1361,91 @@ mod tests {
     }
 
     #[test]
+    fn vue_primary_close_keeps_engine_and_other_documents_alive() {
+        with_serial_v8_tests(|| {
+            let source = format!(
+                "{}\n{}",
+                nana_ui_web_api::WEB_API_SHIM_JS,
+                r#"
+                globalThis.__nanaFireEvent = () => {};
+                globalThis.__nanaFireWindowEvent = () => {};
+                globalThis.__closed = [];
+                globalThis.__timerFired = 0;
+                globalThis.__timer = setTimeout(() => __timerFired++, 0);
+                Nana.host.on('window-closed', event => {
+                    __closed.push(event.id);
+                    __nanaDestroyWindowContext(event.id);
+                });
+                globalThis.__aux = __nanaHost.call('windowCreate', []).id;
+                __nanaCreateWindowContext(__aux, 300, 200, 1);
+                globalThis.__primaryCloseProbe = () => {
+                    __nanaDrainTimers({ timeouts: [__timer], raf: [], intervals: [] });
+                    return { closed: __closed, timer: __timerFired, primaryGone: __nanaGetWindowContext(0) === null };
+                };
+                globalThis.__openAfterPrimaryClose = () => {
+                    __nanaHost.call('windowCall', [__aux, 'createElement', ['section']]);
+                    return __nanaHost.call('windowCreate', []).id;
+                };
+            "#
+            );
+            let mut runtime = nana_ui_vue::VueHostedRuntime::new(
+                V8Engine::new(),
+                RuntimeArtifact::from_source("primary-close.js", source),
+                HostApiRegistry::new(),
+                400,
+                300,
+                1.0,
+            )
+            .unwrap();
+            runtime
+                .handle_window_event(nana_ui_platform::WindowEvent::Closed {
+                    id: nana_ui_platform::WindowId::PRIMARY,
+                })
+                .unwrap();
+            let probe = runtime
+                .engine_mut()
+                .resolve_function("__primaryCloseProbe")
+                .unwrap();
+            let result = runtime.engine_mut().invoke(probe, &[]).unwrap();
+            let result = result.as_object().unwrap();
+            assert_eq!(
+                result.get("primaryGone").and_then(HostValue::as_bool),
+                Some(true)
+            );
+            assert_eq!(result.get("timer").and_then(HostValue::as_f64), Some(0.0));
+            assert_eq!(runtime.vue().window_ids(), [nana_ui_vue::VueWindowId(1)]);
+            let open = runtime
+                .engine_mut()
+                .resolve_function("__openAfterPrimaryClose")
+                .unwrap();
+            assert_eq!(
+                runtime.engine_mut().invoke(open, &[]).unwrap().as_f64(),
+                Some(2.0)
+            );
+            for id in [1, 2] {
+                runtime
+                    .handle_window_event(nana_ui_platform::WindowEvent::Closed {
+                        id: nana_ui_platform::WindowId(id),
+                    })
+                    .unwrap();
+            }
+            assert!(runtime.vue().window_ids().is_empty());
+            let result = runtime.engine_mut().invoke(probe, &[]).unwrap();
+            assert_eq!(
+                result
+                    .as_object()
+                    .unwrap()
+                    .get("closed")
+                    .and_then(HostValue::as_array)
+                    .unwrap()
+                    .len(),
+                3
+            );
+            runtime.engine_mut().shutdown();
+        });
+    }
+
+    #[test]
     fn compile_and_load_v8_snapshot_without_plaintext() {
         with_serial_v8_tests(|| {
             let source = r#"
