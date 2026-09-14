@@ -31,7 +31,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 **展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`DonutChart`、`GraphCanvas`、`GraphMinimap`。
 
-**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。弹出表面是 viewport-fixed，**不进入父级 isolation group**：卡内菜单会画到后面的兄弟卡之上，应用不必给整张卡抬 `z_index`。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
+**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。弹出表面是 viewport-fixed，**不进入父级 isolation group**：卡内菜单会画到后面的兄弟卡之上，重叠处命中同一排序，应用不必给整张卡抬 `z_index`。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
 `Chip`、`ColorField`、`PathField`、`FileTab` 这类**叶子复合件**在你写 props 的那一刻自己重建子节点，不需要再记一次 `assemble_*`。`Shell` / `Workspace` / `Dock` / `SplitPane` / `PaneSection` 不走这条：它们协调的是应用自己的槽位，且不便宜，挂到每次写入会破坏「无变更不弄脏」的脏帧合同——这几个仍在装配好槽位后显式调用对应的 `assemble_*`。
 

@@ -745,9 +745,10 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    // Fixed branches share the document's paint order despite having separate
-    // spatial roots. Structural paths compare exactly like preorder ordinals,
-    // without walking or numbering every document node on pointer movement.
+    // Fixed branches are separate spatial roots. Paint already stops the
+    // stacking-group prefix at `position: fixed` so menus leave a parent
+    // isolation group; hit order must use the same cut, or a later sibling
+    // card steals clicks from an open Popover.
     fn hit_paint_key(
         &self,
         index: &HitIndex,
@@ -771,6 +772,9 @@ impl UiWorld {
         let mut cursor = Some(target);
         while let Some(id) = cursor {
             chain.push(id);
+            if self.hit_motion_layout(id).position == PositionSpec::Fixed {
+                break;
+            }
             cursor = self.parent_id(id);
         }
         let mut path = Vec::new();

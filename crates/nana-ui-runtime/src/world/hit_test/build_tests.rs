@@ -563,8 +563,8 @@ fn viewport_fixed_hit_order_respects_structural_stacking_and_position_changes() 
     world.rebuild_hit_test(document);
     assert_eq!(
         world.hit_test(document, 120.0, 120.0),
-        Some(id(4)),
-        "the outer z10 group cannot escape the later z20 group"
+        Some(id(3)),
+        "a position:fixed overlay leaves its parent's stacking group, matching Scene paint"
     );
 
     let mut change = MutationQueue::new();
@@ -608,6 +608,67 @@ fn viewport_fixed_hit_order_respects_structural_stacking_and_position_changes() 
         .unwrap();
     world.rebuild_hit_test(document);
     assert_eq!(world.hit_test(document, 120.0, 120.0), Some(id(4)));
+}
+
+#[test]
+fn fixed_overlay_hits_above_later_siblings_of_an_isolating_parent() {
+    let mut world = UiWorld::new();
+    let document = DocumentId::new(1).unwrap();
+    let id = |value| StableNodeId::new(value).unwrap();
+    let mut queue = MutationQueue::new();
+    for value in 1..=3 {
+        queue.create(id(value), document, NodeKind::Element { tag: "div".into() });
+        queue.write_layout(
+            id(value),
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 80.0,
+            },
+        );
+        queue.set_interaction(
+            id(value),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    queue.insert(id(1), id(2), None);
+    queue.set_style(
+        id(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                position: PositionSpec::Relative,
+                z_index: Some(0),
+                isolation: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                position: PositionSpec::Fixed,
+                z_index: Some(1_000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world
+        .resolve_styles(&world.document_order(document))
+        .unwrap();
+    world.rebuild_hit_test(document);
+    assert_eq!(
+        world.hit_test(document, 40.0, 40.0),
+        Some(id(2)),
+        "a position:fixed menu must hit above a later sibling of its isolating parent"
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@ Rust 第一路径用控件自己的布局，不写 CSS；排行与列、边框�
 
 **定位。** `relative`、脱流的 `absolute`、相对窗口的 `fixed`、文档流内的 `sticky`（滚动投影之后才贴住，不写回 Runtime `LayoutBox`）。`fixed` 只适合普通节点贴在视口上；产品浮层仍走控件，不要自己用 `fixed` 搭对话框。
 
-**层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序，并把隔离组当成一层：`opacity` 介于 0 和 1 的组、`isolation: isolate`、以及 `position` 非 static 且写了 `z-index`。高 z 子项不会画到组外的后出现兄弟之上。**例外：** `position: fixed` 的表面（Popover / ActionMenu / HoverCard 的弹出层）画在根层叠上下文，不被父级隔离组裁进卡片里。不要靠应用给整张卡抬 `z_index`。不是完整 CSS Appendix E（负 z 分层、float/inline 层、transform 单独成层等未全做）。命中仍走树结构，组内 z 只在兄弟间比。
+**层叠上下文子集。** Scene 按 `(z_index, document_order)` 排序，并把隔离组当成一层：`opacity` 介于 0 和 1 的组、`isolation: isolate`、以及 `position` 非 static 且写了 `z-index`。高 z 子项不会画到组外的后出现兄弟之上。**例外：** `position: fixed` 的表面（Popover / ActionMenu / HoverCard 的弹出层）画在根层叠上下文，不被父级隔离组裁进卡片里。重叠处的命中排序用同一条前缀切断，否则后面的兄弟卡会抢走菜单点击。不要靠应用给整张卡抬 `z_index`。不是完整 CSS Appendix E（负 z 分层、float/inline 层、transform 单独成层等未全做）。命中仍走树结构，组内 z 只在兄弟间比。
 
 **`display: contents`。** 子节点提升到父级格式化上下文；该节点自己没有盒子。
 
