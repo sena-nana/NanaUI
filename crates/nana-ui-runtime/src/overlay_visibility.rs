@@ -1,6 +1,6 @@
-//! Time-based overlay show/hide policy. Hosts supply clocks and lock flags;
-//! the policy does not own windows, media, or pointer routing, and is not a
-//! leaf control.
+//! Time-based overlay show/hide policy. Hosts supply clocks and lock flags
+//! through [`crate::AppContext::sync_overlay_visibility`]; the policy does not
+//! own windows, media, or pointer routing, and is not a leaf control.
 
 use std::time::{Duration, Instant};
 
@@ -160,6 +160,111 @@ impl OverlayVisibility {
     }
 }
 
+impl crate::AppContext {
+    /// Whether `id` is `ancestor` or a descendant of it.
+    pub fn is_descendant(&self, id: crate::StableNodeId, ancestor: crate::StableNodeId) -> bool {
+        self.world().is_descendant_or_self(id, ancestor)
+    }
+
+    /// Focus, pointer capture, and open descendant menus for `root`.
+    pub fn overlay_locks(
+        &self,
+        document: crate::DocumentId,
+        root: crate::StableNodeId,
+    ) -> OverlayLocks {
+        OverlayLocks {
+            focused: self
+                .world()
+                .focused(document)
+                .is_some_and(|focused| self.is_descendant(focused, root)),
+            dragging: self
+                .world()
+                .pointer_captures(document)
+                .into_iter()
+                .any(|(_, owner)| self.is_descendant(owner, root)),
+            menu_open: self.descendant_menu_open(root),
+        }
+    }
+
+    fn descendant_menu_open(&self, root: crate::StableNodeId) -> bool {
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if matches!(
+                self.world().standard_visual(id),
+                Some(crate::StandardVisual::MenuSurface { open: true, .. })
+            ) {
+                return true;
+            }
+            if let Some(node) = self.world().node(id) {
+                stack.extend(node.children);
+            }
+        }
+        false
+    }
+
+    /// Collect locks from the world, drive the bar's overlay policy, write
+    /// `hidden`, and return the next wakeup instant.
+    pub fn sync_overlay_visibility(
+        &mut self,
+        bar: crate::Entity<crate::MediaTransportBar>,
+        now: Instant,
+        active: bool,
+    ) -> Result<Option<Instant>, crate::FrameworkError> {
+        let document = self
+            .world()
+            .node(bar.stable_id())
+            .ok_or(crate::FrameworkError::MissingView(bar.stable_id()))?
+            .document;
+        let root = bar.stable_id();
+        let mut locks = self.overlay_locks(document, root);
+        let menu_closed = self.read(bar, |bar| bar.menu_was_open)? && !locks.menu_open;
+        if menu_closed
+            && self
+                .world()
+                .focused(document)
+                .is_some_and(|focused| self.is_descendant(focused, root))
+        {
+            self.clear_focus(document)?;
+            locks = self.overlay_locks(document, root);
+        }
+        self.update_component(bar, |bar, _| {
+            if menu_closed {
+                bar.visibility.activity(now);
+            }
+            bar.visibility.synchronize(now, active, locks);
+            bar.visibility.tick(now);
+            bar.menu_was_open = locks.menu_open;
+            let hidden = !bar.visibility.visible();
+            std::sync::Arc::make_mut(&mut bar.style.layout).hidden = hidden;
+            bar.visibility.wakeup()
+        })
+    }
+
+    /// Immediate reveal (pointer / keyboard activity over the chrome or stage).
+    pub fn reveal_overlay(
+        &mut self,
+        bar: crate::Entity<crate::MediaTransportBar>,
+        now: Instant,
+    ) -> Result<bool, crate::FrameworkError> {
+        self.update_component(bar, |bar, _| {
+            let before = bar.visibility.wakeup();
+            let changed = bar.visibility.activity(now);
+            let hidden = !bar.visibility.visible();
+            let layout = std::sync::Arc::make_mut(&mut bar.style.layout);
+            let wrote = layout.hidden != hidden;
+            layout.hidden = hidden;
+            changed || wrote || before != bar.visibility.wakeup()
+        })
+    }
+
+    pub fn overlay_wakeup(
+        &self,
+        bar: crate::Entity<crate::MediaTransportBar>,
+    ) -> Result<Option<Instant>, crate::FrameworkError> {
+        self.read(bar, |bar| bar.visibility.wakeup())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +325,75 @@ mod tests {
         assert!(!vis.visible());
         vis.tick(now + OVERLAY_IDLE + Duration::from_millis(150));
         assert!(vis.visible());
+    }
+
+    #[test]
+    fn app_context_hides_the_bar_after_idle_and_holds_for_focus() {
+        use crate::{AppContext, DocumentId, LayoutViewport, MediaTransportBar, MutationQueue};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document, MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
+            .unwrap();
+        let now = Instant::now();
+        let wakeup = cx.sync_overlay_visibility(bar, now, true).unwrap();
+        assert_eq!(wakeup, Some(now + OVERLAY_IDLE));
+        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+
+        cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
+            .unwrap();
+        assert!(cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+
+        let play = cx.read(bar, |bar| bar.play()).unwrap().unwrap();
+        assert!(
+            cx.reveal_overlay(bar, now + OVERLAY_IDLE)
+                .expect("keyboard activity")
+        );
+        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(cx.focus_node(document, play.stable_id()).unwrap());
+        cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
+            .unwrap();
+        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert!(cx.overlay_wakeup(bar).unwrap().is_none());
+
+        cx.clear_focus(document).unwrap();
+        let mut mutations = MutationQueue::new();
+        mutations.capture_pointer(1, play.stable_id());
+        cx.commit_mutations(mutations).unwrap();
+        cx.sync_overlay_visibility(bar, now + Duration::from_secs(40), true)
+            .unwrap();
+        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+
+        let mut mutations = MutationQueue::new();
+        mutations.release_pointer(1, play.stable_id());
+        cx.commit_mutations(mutations).unwrap();
+        cx.sync_overlay_visibility(bar, now + Duration::from_secs(40), true)
+            .unwrap();
+        assert_eq!(
+            cx.overlay_wakeup(bar).unwrap(),
+            Some(now + Duration::from_secs(43))
+        );
+
+        assert!(
+            cx.reveal_overlay(bar, now + Duration::from_secs(41))
+                .unwrap()
+        );
+        assert!(!cx.read(bar, |bar| bar.style.layout.hidden).unwrap());
+        assert_eq!(
+            cx.overlay_wakeup(bar).unwrap(),
+            Some(now + Duration::from_secs(44)),
+            "pointer activity should reset the idle deadline"
+        );
+
+        let child = cx
+            .create_component(document, crate::Stack::row(0.0))
+            .unwrap();
+        cx.append_child(bar, child).unwrap();
+        assert!(cx.is_descendant(child.stable_id(), bar.stable_id()));
+        assert!(!cx.is_descendant(bar.stable_id(), child.stable_id()));
     }
 }

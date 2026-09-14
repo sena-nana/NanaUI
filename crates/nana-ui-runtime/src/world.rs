@@ -1614,7 +1614,7 @@ impl UiWorld {
         self.apply_presence_flags(Some(id), PresenceFlags::NONE);
     }
 
-    pub(crate) fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
+    pub fn is_descendant_or_self(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
         let mut current = Some(id);
         while let Some(candidate) = current {
             if candidate == ancestor {

@@ -1432,6 +1432,52 @@ fn isolation_keeps_high_z_child_contiguous() {
 }
 
 #[test]
+fn fixed_overlay_paints_above_later_siblings_of_an_isolating_parent() {
+    let mut parent = node(1, None, &[2]);
+    parent.z_index = 0;
+    parent.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([0.0, 0.0, 1.0, 1.0]),
+            position: nana_ui_core::PositionSpec::Relative,
+            z_index: Some(0),
+            isolation: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut overlay = node(2, Some(1), &[]);
+    overlay.z_index = 1_000;
+    overlay.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            position: nana_ui_core::PositionSpec::Fixed,
+            z_index: Some(1_000),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut sibling = node(3, None, &[]);
+    sibling.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([0.0, 1.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta([parent, overlay, sibling], []);
+    let order = scene
+        .primitives()
+        .map(|primitive| primitive.node.get())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        vec![1, 3, 2],
+        "a position:fixed menu surface must paint above later siblings of its isolating parent"
+    );
+}
+
+#[test]
 fn text_primitive_preserves_content_box_and_paint_semantics() {
     let mut text = node(1, None, &[]);
     text.text = Some(TextContent {

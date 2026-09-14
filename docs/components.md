@@ -25,13 +25,13 @@ import "@nanaui/nanavue-components/controls.css";
 
 **操作与输入。** `Button`、`IconButton`、`TextInput`、`TextArea`、`NumberInput`、`Checkbox`、`Switch`、`RangeField`、`Select`、`Dropdown`、`SearchDropdown`、`SegmentedControl`、`Tabs`、`XYPad`、`ColorField`、`PathField`、`DatePicker`。`RangeField` 默认在轨道旁画当前值和单位；`.show_value(false)`（Vue `showValue`）只留轨道，读屏仍能读到数值。
 
-**布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。
+**布局与文本基元。** `Text`、`Stack`（`row` / `column` / `bar` / `spacer` / `overlay_layer` 等预设）、`Divider`、`IconGlyph`、`ScrollView`。`Stack::spacer()` 是零宽 flex-grow，把其后兄弟推到行尾。`Stack::overlay_layer()` 铺满已定位父级、脱流、不命中、裁剪，给舞台 HUD / 弹幕当容器；节点池仍由应用挂。`Divider` 默认交叉轴 `Fill` + `align_self: Stretch`，放进 `align_items: Start` 的列里仍能看见。
 
 **表格与树。** `Table` / `TableRow` / `TableCell`、`TreeView`、`ReorderList`。列可 `sortable(true)`，表头激活走 `VirtualTableLayout::toggle_sort`（升序 → 降序 → 取消）；`move_column` 重排列。**排序本身仍由应用做**——只有你知道数据怎么比。
 
 **展示。** `Card`、`List` / `ListItem`、`FormField`、`EmptyState`、`Progress`、`Skeleton`、`Spinner`、`StatusBadge`、`Chip`、`Avatar`、`Tooltip`、`ValidationMessage`、`QrCode`、`ImageViewer`、`NativeMarkdown`、`CalendarHeatmap`、`TimeSeriesChart`、`DonutChart`、`GraphCanvas`、`GraphMinimap`。
 
-**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
+**浮层。** `Dialog`、`ConfirmDialog`、`Drawer`、`Popover`、`ActionMenu`、`ContextMenu`、`CommandPalette`。浮层由框架放在窗口里，靠近边缘时收进视口；不要用 `position: fixed` 自己搭一层。`Popover` / `ActionMenu` 的触发器支持文本（`trigger`）与图标（`trigger_icon`）两种；图标触发器渲染为 28×28 方形按钮，图标在按钮内几何居中，可访问名由 `trigger_icon` 的 label 提供，裸符号（如 `+`）不要用文本触发器。弹出表面是 viewport-fixed，**不进入父级 isolation group**：卡内菜单会画到后面的兄弟卡之上，应用不必给整张卡抬 `z_index`。`DesktopShell` 有两层 `OverlayHost`：`overlay` 放对话框，`status` 放 toast，确认框打开时 toast 仍可显示。
 
 `Chip`、`ColorField`、`PathField`、`FileTab` 这类**叶子复合件**在你写 props 的那一刻自己重建子节点，不需要再记一次 `assemble_*`。`Shell` / `Workspace` / `Dock` / `SplitPane` / `PaneSection` 不走这条：它们协调的是应用自己的槽位，且不便宜，挂到每次写入会破坏「无变更不弄脏」的脏帧合同——这几个仍在装配好槽位后显式调用对应的 `assemble_*`。
 
@@ -94,13 +94,15 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 `Avatar` 是圆形 Cover-fit `HostTexture` 槽（`nana.avatar` / `<nana-avatar>`，采样 `nana.host-texture`），默认不参与命中、不可焦点。空 `resource`、宿主清空、加载失败都走 Subtle 占位，**不**自绘产品字母。加载失败由宿主把 `resource` 清成空；不改缺槽拒绝帧的 GPU 合同。有 `label` 时 AccessKit 为 Image 且有名；无名则为 Image 无 name。无点击事件。与 `Thumbnail` 的区分见 rustdoc（Cover、圆形、固定边长）。
 
+`HoverCard::trigger_image` 与 `Avatar` / `Thumbnail` 一样走 generation / version：`replace_view(generation)` / `invalidate_content()` 推进 Scene revision，宿主纹理晚到时画面才会从占位换成实图。
+
 ### OverlayVisibility
 
-媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。宿主喂时钟与锁标志；不要当成 Button / Chip 往树上挂。
+媒体/舞台 HUD 的自动隐藏用 `OverlayVisibility` **策略对象**：idle 超时隐藏、hover dwell 延迟显现、焦点 / 拖拽 / 菜单锁（`OverlayLocks`）保持可见。`active = false`（加载 / 暂停 / 空）保持可见。它不是叶子控件，不进 `register_component`，没有 Vue 标签，不参与布局或命中。`MediaTransportBar` 内持一份策略；用 `AppContext::sync_overlay_visibility(bar, now, active)` 从 world 收集锁（焦点 / capture 是否在条或其菜单内、任一子 `Popover.open`）、写回 `hidden`、返回 wakeup。画面上的指针活动用 `reveal_overlay`。祖先查询走公开的 `AppContext::is_descendant`。仍允许宿主在 sync 之后按业务覆盖 `hidden`（例如传输不可用）。
 
 ### MediaTransportBar
 
-画面上的播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态、进度与时间读数（`m:ss` / `h:mm:ss`）并折叠空第二行。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏仍由宿主喂 `OverlayVisibility`。
+画面上的播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态、进度与时间读数（`m:ss` / `h:mm:ss`）并折叠空第二行。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏走 `AppContext::sync_overlay_visibility`；不要在应用里再复制 descendant / hit-test 锁。
 
 `ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 
@@ -204,7 +206,7 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 没有应用内浏览器控件。`GpuTextureView` / `<iframe>` 都不加载网页；拟议的 `WebView`（`nana.webview`）见 [应用内浏览器](gpu.md#应用内浏览器)，目前未实现，Gallery 不得摆假浏览。
 
-`Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Loading 态的 spinner 居中绘制，边长 28（紧凑 `Spinner` 的两倍）；带标签的独立 `Spinner` 仍贴左，作为文字的前置槽。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
+`Thumbnail` 默认维持控件高度 × aspect；显式 style 的宽高、约束与圆角优先，可用于响应式卡片封面。`fit(ContentFit::Cover)` 保留封面裁切，默认仍是 Contain；空、加载、就绪与不可用共享布局尺寸。Loading 态的 spinner 居中绘制，边长 28（紧凑 `Spinner` 的两倍）；带标签的独立 `Spinner` 仍贴左，作为文字的前置槽。封面角标挂成 Thumbnail 的子节点：控件是 containing block（`position: relative`）并裁剪圆角；`Thumbnail::badge()` 给出右下角、不命中的实底徽章。Vue 的 `NanaThumbnail` 使用同一 `fit` 属性。
 
 ### 图表与带图标按钮
 

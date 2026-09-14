@@ -8,7 +8,8 @@
 use nana_ui_core::{AppearanceSettings, BackdropTarget};
 
 pub use nana_ui_core::{
-    SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS,
+    SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space,
+    type_scale,
 };
 
 /// Linear RGBA color used by L3 token adapters. Same layout as [`SemanticColor`].
@@ -287,5 +288,12 @@ mod tests {
         assert!((solid.colors.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.titlebar.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.colors.background.a - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn space_and_type_scale_are_on_the_theme_surface() {
+        assert_eq!(super::space::MD, 8.0);
+        assert_eq!(super::type_scale::BODY, super::UI_BASE_TEXT_SIZE);
+        assert_eq!(super::type_scale::SEMIBOLD, 600);
     }
 }
