@@ -59,9 +59,14 @@ impl StartupProbe {
         }
     }
 
+    pub fn continuous_preview(&self) -> bool {
+        self.measure_seconds.is_some() || self.destroy_device
+    }
+
     pub fn record_frame<Message: Send + 'static>(
         &mut self,
         context: &RuntimeProgramContext<Message>,
+        exchange: Option<nana_ui::FrameExchangeStats>,
     ) -> bool {
         if self.record_first_frame(context.material()) {
             return true;
@@ -150,6 +155,15 @@ impl StartupProbe {
             "interval_gate_passed": interval_gate_passed,
             "destroyed_generation": self.destroyed_generation,
             "recovered_generation": self.recovered_generation,
+            "frame_exchange": exchange.map(|stats| serde_json::json!({
+                "submitted": stats.submitted,
+                "published": stats.published,
+                "superseded": stats.superseded,
+                "pool_full": stats.pool_full,
+                "stale_epoch": stats.stale_epoch,
+                "occupied": stats.occupied,
+                "occupied_high_water": stats.occupied_high_water,
+            })),
             "note": "Surface present callback intervals; no display scanout feedback, no pixel readback. Device probe explicitly destroys only this application's Device. Gate: P95 <= 8.33+2ms (NanaLive small-late), mean not slower than period+2%, cadence >= 98% of 120Hz, P50 not a 60Hz lock."
         });
         let json = serde_json::to_string_pretty(&report).unwrap();

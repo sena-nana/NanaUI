@@ -1,6 +1,6 @@
 ---
 name: nanaui-gpu-integration
-description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPainter into the host GPU context. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, SceneWgpuPainter, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, WGPU dependencies, or NanaShader and Live2D HostTexture-slot boundaries.
+description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPainter into the host GPU context. Use when changing GpuView, GpuTextureView, HostTexture, RenderSlot, SceneWgpuPainter, FrameExchange, FrameBinding, render passes, texture lifecycle, hosted-gpu-demo, redraw scheduling, WGPU dependencies, or NanaShader and Live2D HostTexture-slot boundaries.
 ---
 
 # NanaUI GPU Integration
@@ -28,6 +28,12 @@ description: Maintain NanaUI's host-owned WGPU integration. Inject SceneWgpuPain
   `"gpu-view"` unpaintable. Examples explicitly register their demo painter.
 - `<video data-nana-video>` samples `video:{id}` HostTexture. Do not also paint
   `poster` as `content_image` on a slotted surface.
+- Latest-frame handoff from a producer thread uses `nana-frame-exchange`
+  (`FrameExchange` / `FrameInbox` / `FrameLease`) on the host Device/Queue.
+  `nana-ui::FrameBinding` is the UI-side slot binder: call `prepare` from
+  `prepare_window_frame` and `presented` from `window_frame_presented`. The copy
+  is GPU-side, not zero-copy; do not wait for GPU completion on the UI thread,
+  and do not drop a sampled lease before present.
 - Keep CPU readback and PNG encoding inside snapshot tooling. Never use a second Device/Queue or
   copies to hide incompatible dependencies.
 - Treat GPU demos as contract evidence, not proof of real NanaShader/Live2D integration.

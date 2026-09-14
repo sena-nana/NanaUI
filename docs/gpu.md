@@ -65,6 +65,41 @@ Quad 与 HostTexture 蒙版共用缓存实现；每个缓存最多同时获取 4
 
 合成顺序就是文档顺序：`"nana.host-texture"` 在主 pass 里、在这个节点该出现的位置采样，不攒到帧尾。多层就是相邻的几张 `GpuTextureView`。不要绕过界面树去直写窗口 Surface。
 
+## 跨线程最新帧
+
+画面在另一个线程上产出（模型渲染、导播合成、解码）时，用 `FrameExchange` 把完成的帧交给窗口，用 `FrameBinding` 把它绑到 slot。两者都在宿主那一份 Device / Queue 上，生产端 crate `nana-frame-exchange` 只依赖 wgpu，渲染库不必依赖 `nana-ui`。
+
+```rust
+// 生产线程：每个 tick 都 poll，复制只在有新帧时做
+let mut exchange = FrameExchange::new(
+    gpu.generation(), gpu.device().clone(), gpu.queue().clone(),
+    frame_exchange::DEFAULT_CAPACITY, epoch, notify,
+);
+let inbox = exchange.inbox(); // 交给 UI
+match exchange.copy_from(&rendered, epoch) {
+    CopyOutcome::Submitted => {}
+    CopyOutcome::PoolFull => {} // 丢这一帧，不等
+    CopyOutcome::EmptySource | CopyOutcome::IncompatibleSource => {}
+}
+exchange.poll();
+
+// 窗口
+let mut binding = FrameBinding::new(gpu.device(), gpu.generation(), textures.slot("program"), HostTextureAlphaMode::Premultiplied);
+fn prepare_window_frame(..) { binding.prepare(Some(&inbox), |token| accept(token)); }
+fn window_frame_presented(..) -> RuntimeProgramUpdate {
+    if binding.presented(Some(&inbox), |token| accept(token)) { RuntimeProgramUpdate::redraw(id) } else { RuntimeProgramUpdate::default() }
+}
+```
+
+- **是 GPU 内复制，不是零拷贝。** `copy_from` 在 slot 池里做一次 `copy_texture_to_texture`，不回读 CPU。源纹理需要 `COPY_SRC`、单采样、单层 2D、非深度格式，否则返回 `IncompatibleSource`，不会触发 wgpu 校验错误。
+- **谁都不等谁。** 池满时 `copy_from` 直接返回 `PoolFull`；UI 读最新帧只做指针交换；GPU 完成通过 `on_submitted_work_done` 回报，只在生产端 `poll` 里处理。
+- **容量。** 一个窗口需要 3 个 slot：在途复制、正在显示、已替换但未 present。每多一个绑定同一交换的窗口加 2 个。
+- **Lease 顺序。** `prepare` 换帧后，旧帧留到 `presented` 才释放；两次 present 之间最多换一次。lease 归还后，生产端要等 UI 那次提交完成才复用该 slot。隐藏 tick 只 prepare 不 present，所以最多换一次就停住，生产端随后看到 `PoolFull`。
+- **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧，旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）；被拒绝的帧不确认唤醒，所以隐藏窗口不会每帧被叫醒，策略变化时由应用请求重绘。
+- **唤醒。** `notify` 在生产线程调用，只负责调度窗口：`context.window().request_redraw()` 或 `context.dispatch(..)`，不要在里面等。
+- **设备重建。** `rebuild_gpu` 后用新上下文重建 exchange 和 binding。代次不同的 inbox 不会被绑定。已发出的 lease 继续有效；最后一个持有者释放后，旧 Device / Queue 在后台线程销毁。
+- **诊断。** `FrameExchange::stats()` 给出 submitted / published / superseded / pool_full / stale_epoch 与占用高水位，读取不在帧路径上分配。
+
 ## GpuView
 
 没有中间纹理、必须写进当前 UI pass 时才用。`gpu-view-demo` 是演示。
@@ -181,6 +216,8 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 - 在 UI 画完之后再往 Surface 上盖一层实时画面
 - 把 GPU 内容攒到帧尾一次性画，打乱和按钮的前后关系
 - 同一资源在一帧里提交互相冲突的 revision（整帧会失败，不会挑一个用）
+- 在 UI 线程等生产端或 GPU 完成来拿帧；用 `FrameInbox` 取最新帧
+- 在 `window_frame_presented` 之前丢掉仍可能被采样的帧，或让 slot 在 binding 销毁后继续指向已归还的纹理
 - 为 Android 另写一套 renderer，或把实验 NativeActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
 - 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
 - 在 UI 画完之后把原生 WebView 盖在窗口上，或让控件拿 HWND / NSView 去挂引擎

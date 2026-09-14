@@ -27,6 +27,8 @@ pub mod dialog;
 pub mod dock;
 #[cfg(feature = "gpu")]
 mod font_face_ingest;
+#[cfg(feature = "gpu")]
+mod frame_binding;
 pub mod geometry;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
@@ -152,6 +154,8 @@ pub use default_gpu_view::{
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};
 #[cfg(feature = "gpu")]
 pub use font_face_ingest::{HostFontFaceSpec, ingest_host_font_faces};
+#[cfg(feature = "gpu")]
+pub use frame_binding::FrameBinding;
 pub use geometry::{LogicalPoint, LogicalRect, PhysicalRect, RegionRect, WorkspaceGeometry};
 #[cfg(feature = "gpu")]
 pub use gpu_texture::{
@@ -184,6 +188,12 @@ pub use layout::{
 pub use menu::{MenuConfirmation, MenuSelection};
 #[cfg(feature = "hosted")]
 pub use nana_app_icon::{default_window_icon, window_icon_from_png};
+/// Producer half of the latest-frame exchange; [`FrameBinding`] is the consumer.
+#[cfg(feature = "gpu")]
+pub use nana_frame_exchange::{
+    self as frame_exchange, CopyOutcome, DEFAULT_CAPACITY, FrameExchange, FrameExchangeStats,
+    FrameInbox, FrameLease, FrameToken,
+};
 /// Full generated Tabler catalog (`icons_tabler::USER`, `::KEYBOARD`, …) as
 /// typed [`Icon`] constants, behind the `icons-tabler` feature. The built-in
 /// catalog only covers shell chrome; reach here before hand-authoring

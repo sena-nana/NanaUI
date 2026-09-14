@@ -43,7 +43,7 @@ rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui-co
 # product glyphs (user, keyboard, message, play …) should not have to
 # hand-author `IconData`. Unreferenced constants are dropped by the linker.
 icons-tabler = ["dep:nana-icons-tabler"]
-gpu = ["dep:bytemuck", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "nana-ui-platform/fetch", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:base64", "dep:cryoglyph", "dep:image", "dep:pollster", "dep:nana-svg-raster", "nana-ui-platform/fetch", "dep:wgpu"]
 hosted = [
     "gpu",
     "accesskit-tree",
@@ -67,6 +67,7 @@ cryoglyph = { git = "https://github.com/sena-nana/cryoglyph.git", rev = "3fe41b1
 image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts"] }
+nana-frame-exchange = { workspace = true, optional = true }
 nana-ui-core.workspace = true
 nana-icons-tabler = { workspace = true, optional = true }
 nana-ui-runtime.workspace = true

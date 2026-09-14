@@ -2309,6 +2309,7 @@ dependencies = [
  "cryoglyph",
  "image",
  "nana-app-icon",
+ "nana-frame-exchange",
  "nana-icons-tabler",
  "nana-svg-raster",
  "nana-ui-core",

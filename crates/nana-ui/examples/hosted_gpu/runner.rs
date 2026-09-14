@@ -1,15 +1,21 @@
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use nana_ui::runtime::{
     Activate, Button, DocumentId, Entity, FrameworkError, GpuTextureView, List, RuntimeDocument,
     Text,
 };
 use nana_ui::{
-    ButtonKind, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
-    run_runtime,
+    ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameBinding, FrameExchange, FrameExchangeStats,
+    FrameInbox, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources, HostedRunError,
+    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
+    WindowDescriptor, WindowHandle, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -22,25 +28,123 @@ const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
 static STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
-struct PreviewProducer(Arc<Mutex<SharedScene>>);
+#[derive(Clone, Copy)]
+struct ProducerFrame {
+    size: (u32, u32),
+    background: nana_ui::Color,
+    accent: nana_ui::Color,
+    revision: u32,
+}
 
-impl std::fmt::Debug for PreviewProducer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PreviewProducer")
+struct PreviewProducer {
+    inbox: FrameInbox<u64>,
+    stats: Arc<Mutex<FrameExchangeStats>>,
+    commands: mpsc::Sender<ProducerFrame>,
+    stop: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl PreviewProducer {
+    fn spawn(
+        gpu: &HostedGpuResources,
+        window: WindowHandle,
+        initial: ProducerFrame,
+        continuous: bool,
+    ) -> Self {
+        let (commands, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stats = Arc::new(Mutex::new(FrameExchangeStats::default()));
+        let notify = {
+            let window = window.clone();
+            Arc::new(move || {
+                drop(window.request_redraw());
+            })
+        };
+        let mut exchange = FrameExchange::new(
+            gpu.generation(),
+            Arc::clone(gpu.device()),
+            Arc::clone(gpu.queue()),
+            DEFAULT_CAPACITY,
+            0,
+            notify,
+        );
+        let inbox = exchange.inbox();
+        let device = Arc::clone(gpu.device());
+        let queue = Arc::clone(gpu.queue());
+        let stop_thread = Arc::clone(&stop);
+        let stats_thread = Arc::clone(&stats);
+        let join = thread::Builder::new()
+            .name("hosted-gpu-demo-producer".into())
+            .spawn(move || {
+                let mut frame = initial;
+                let mut scene = SharedScene::new(
+                    &device,
+                    &queue,
+                    SURFACE_FORMAT,
+                    [frame.background, frame.accent],
+                    frame.revision,
+                    frame.size,
+                );
+                let mut dirty = true;
+                while !stop_thread.load(Ordering::Acquire) {
+                    while let Ok(next) = rx.try_recv() {
+                        frame = next;
+                        dirty = true;
+                    }
+                    if dirty || continuous {
+                        scene.resize(&device, SURFACE_FORMAT, frame.size.0, frame.size.1);
+                        scene.update(&queue, frame.background, frame.accent, frame.revision);
+                        let mut encoder =
+                            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                label: Some("hosted gpu demo producer"),
+                            });
+                        scene.render(&mut encoder);
+                        queue.submit([encoder.finish()]);
+                        match exchange.copy_from(scene.texture(), 0) {
+                            CopyOutcome::Submitted | CopyOutcome::PoolFull => {}
+                            CopyOutcome::EmptySource | CopyOutcome::IncompatibleSource => {}
+                        }
+                        dirty = false;
+                    }
+                    exchange.poll();
+                    if let Ok(mut published) = stats_thread.lock() {
+                        *published = exchange.stats();
+                    }
+                    match rx.recv_timeout(Duration::from_millis(8)) {
+                        Ok(next) => {
+                            frame = next;
+                            dirty = true;
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .expect("hosted gpu demo producer");
+        Self {
+            inbox,
+            stats,
+            commands,
+            stop,
+            join: Some(join),
+        }
+    }
+
+    fn submit(&self, frame: ProducerFrame) {
+        let _ = self.commands.send(frame);
+    }
+
+    fn stats(&self) -> FrameExchangeStats {
+        self.stats.lock().map(|stats| *stats).unwrap_or_default()
     }
 }
 
-impl nana_ui::SceneResourceProducer for PreviewProducer {
-    fn encode(
-        &self,
-        _: &nana_ui::runtime::CustomRenderNode,
-        context: nana_ui::SceneResourceEncodeContext<'_>,
-    ) -> Result<(), String> {
-        self.0
-            .lock()
-            .map_err(|error| error.to_string())?
-            .render(context.encoder);
-        Ok(())
+impl Drop for PreviewProducer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
     }
 }
 
@@ -56,20 +160,22 @@ pub fn run(started_at: Instant) -> Result<(), HostedRunError> {
 
 struct DemoProgram {
     panel: DemoPanel,
-    scene: Arc<Mutex<SharedScene>>,
+    producer: PreviewProducer,
+    binding: FrameBinding<u64>,
     document: RuntimeDocument,
     version: Entity<Text>,
     theme_button: Entity<Button>,
     textures: HostTextureRegistry,
-    producers: nana_ui::SceneResourceProducerRegistry,
     startup: StartupProbe,
+    size: (u32, u32),
+    stats_printed: bool,
 }
 
 impl DemoProgram {
     fn mount(
         context: &RuntimeProgramContext<Message>,
         panel: DemoPanel,
-        scene: SharedScene,
+        size: (u32, u32),
         startup: StartupProbe,
     ) -> Result<Self, FrameworkError> {
         let document_id = DocumentId::new(1).expect("hosted gpu document");
@@ -96,39 +202,45 @@ impl DemoProgram {
         })?;
 
         let textures = HostTextureRegistry::new();
-        let (width, height) = scene.size();
-        textures.register(
-            PREVIEW_SLOT,
-            scene.texture(),
-            width,
-            height,
+        let binding = FrameBinding::new(
+            context.gpu().device().as_ref(),
+            context.gpu().generation(),
+            textures.slot(PREVIEW_SLOT),
             HostTextureAlphaMode::Opaque,
         );
-        let _ = context;
-        let scene = Arc::new(Mutex::new(scene));
-        let mut producers = nana_ui::SceneResourceProducerRegistry::new();
-        producers.insert(PREVIEW_SLOT, Arc::new(PreviewProducer(Arc::clone(&scene))));
+        let producer = PreviewProducer::spawn(
+            context.gpu(),
+            context.window(),
+            Self::frame(&panel, size),
+            startup.continuous_preview(),
+        );
         Ok(Self {
             panel,
-            scene,
+            producer,
+            binding,
             document,
             version,
             theme_button,
             textures,
-            producers,
             startup,
+            size,
+            stats_printed: false,
         })
     }
 
-    fn apply(&mut self, message: Message, context: &RuntimeProgramContext<Message>) {
+    fn frame(panel: &DemoPanel, size: (u32, u32)) -> ProducerFrame {
+        let colors = panel.colors();
+        ProducerFrame {
+            size,
+            background: colors.background,
+            accent: colors.accent_strong,
+            revision: panel.revision(),
+        }
+    }
+
+    fn apply(&mut self, message: Message) {
         self.panel.update(message);
-        let colors = self.panel.colors();
-        self.scene.lock().expect("preview scene").update(
-            context.gpu().queue(),
-            colors.background,
-            colors.accent_strong,
-            self.panel.revision(),
-        );
+        self.producer.submit(Self::frame(&self.panel, self.size));
         let _ = self
             .document
             .context_mut()
@@ -141,19 +253,6 @@ impl DemoProgram {
             .update_component(self.theme_button, |button, _| {
                 button.label = self.panel.theme_label().to_owned();
             });
-        let _ = self.textures.slot(PREVIEW_SLOT).invalidate();
-    }
-
-    fn register_texture(&self) {
-        let scene = self.scene.lock().expect("preview scene");
-        let (width, height) = scene.size();
-        self.textures.register(
-            PREVIEW_SLOT,
-            scene.texture(),
-            width,
-            height,
-            HostTextureAlphaMode::Opaque,
-        );
     }
 }
 
@@ -165,18 +264,9 @@ impl RuntimeProgram for DemoProgram {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let panel = DemoPanel::default();
-        let colors = panel.colors();
         let size = context.geometry().physical_size;
-        let scene = SharedScene::new(
-            context.gpu().device(),
-            context.gpu().queue(),
-            SURFACE_FORMAT,
-            [colors.background, colors.accent_strong],
-            panel.revision(),
-            size,
-        );
         let started_at = STARTED_AT.get().copied().unwrap_or_else(Instant::now);
-        let program = Self::mount(context, panel, scene, StartupProbe::new(started_at))
+        let program = Self::mount(context, panel, size, StartupProbe::new(started_at))
             .expect("hosted gpu document");
         Ok((program, Vec::new()))
     }
@@ -202,9 +292,9 @@ impl RuntimeProgram for DemoProgram {
     fn update(
         &mut self,
         message: Self::Message,
-        context: &RuntimeProgramContext<Self::Message>,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        self.apply(message, context);
+        self.apply(message);
         RuntimeProgramUpdate::redraw_all()
     }
 
@@ -220,27 +310,23 @@ impl RuntimeProgram for DemoProgram {
         Some(self.textures.clone())
     }
 
-    fn scene_resource_producers(
-        &self,
+    fn prepare_window_frame(
+        &mut self,
         _id: WindowId,
-    ) -> Option<nana_ui::SceneResourceProducerRegistry> {
-        Some(self.producers.clone())
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) {
+        self.binding.prepare(Some(&self.producer.inbox), |_| true);
     }
 
     fn window_event(
         &mut self,
         event: WindowEvent,
-        context: &RuntimeProgramContext<Self::Message>,
+        _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
         match event {
             WindowEvent::Ready { geometry, .. } | WindowEvent::Resized { geometry, .. } => {
-                self.scene.lock().expect("preview scene").resize(
-                    context.gpu().device(),
-                    SURFACE_FORMAT,
-                    geometry.physical_size.0,
-                    geometry.physical_size.1,
-                );
-                self.register_texture();
+                self.size = geometry.physical_size;
+                self.producer.submit(Self::frame(&self.panel, self.size));
                 RuntimeProgramUpdate::redraw_all()
             }
             WindowEvent::CloseRequested { .. } => RuntimeProgramUpdate::exit(),
@@ -249,16 +335,18 @@ impl RuntimeProgram for DemoProgram {
     }
 
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
-        let colors = self.panel.colors();
-        *self.scene.lock().expect("preview scene") = SharedScene::new(
-            context.gpu().device(),
-            context.gpu().queue(),
-            SURFACE_FORMAT,
-            [colors.background, colors.accent_strong],
-            self.panel.revision(),
-            context.geometry().physical_size,
+        self.binding = FrameBinding::new(
+            context.gpu().device().as_ref(),
+            context.gpu().generation(),
+            self.textures.slot(PREVIEW_SLOT),
+            HostTextureAlphaMode::Opaque,
         );
-        self.register_texture();
+        self.producer = PreviewProducer::spawn(
+            context.gpu(),
+            context.window(),
+            Self::frame(&self.panel, self.size),
+            self.startup.continuous_preview(),
+        );
     }
 
     fn input_event(
@@ -273,11 +361,27 @@ impl RuntimeProgram for DemoProgram {
 
     fn window_frame_presented(
         &mut self,
-        _id: WindowId,
+        id: WindowId,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        if self.startup.record_frame(context) {
-            RuntimeProgramUpdate::exit()
+        let stats = self.producer.stats();
+        if !self.stats_printed && self.binding.token().is_some() {
+            self.stats_printed = true;
+            println!(
+                "frame_exchange submitted={} published={} superseded={} pool_full={} occupied={}/{}",
+                stats.submitted,
+                stats.published,
+                stats.superseded,
+                stats.pool_full,
+                stats.occupied,
+                stats.occupied_high_water
+            );
+        }
+        if self.startup.record_frame(context, Some(stats)) {
+            return RuntimeProgramUpdate::exit();
+        }
+        if self.binding.presented(Some(&self.producer.inbox), |_| true) {
+            RuntimeProgramUpdate::redraw(id)
         } else {
             RuntimeProgramUpdate::default()
         }

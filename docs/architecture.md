@@ -10,12 +10,16 @@
 应用 / Demo
     │
     ▼
-nana-ui                 宿主适配器：run_runtime、控件再导出、SceneWgpuPainter
+nana-ui                 宿主适配器：run_runtime、控件再导出、SceneWgpuPainter、
+    │                   FrameBinding（gpu feature）
+    ├── nana-frame-exchange  跨线程最新帧（只依赖 wgpu）。生产端 crate，
+    │                       渲染库不必依赖 nana-ui
     ├── nana-ui-runtime 保留树权威（UiWorld）、内建控件、Shell、Workspace、
     │                   Dock、GPU 槽。不依赖 WGPU
     ├── nana-ui-scene   绘制图权威（UiScene）。依赖 runtime，不依赖 WGPU
     ├── nana-ui-core    共享合同：Style Model、主题令牌、WorkspaceModel、几何
-    ├── nana-ui-platform  WindowId、输入、IME、剪贴板（与 winit 转换隔离）
+    ├── nana-ui-platform  WindowId、输入、IME、剪贴板、显示器与全屏合同
+    │                     （与 winit 转换隔离）
     └── nana-window     系统材质、标题栏拖拽 / 客户区 chrome / 缩放；
                         普通控件不得拿窗口句柄
 
@@ -44,6 +48,7 @@ nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 | 对象 | 所有者 |
 | --- | --- |
 | Window、Surface、Device、Queue | 宿主（`run_runtime` 或应用的 `HostedGpuContext`） |
+| 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样 |
 | 业务状态、配置盘、Region / pane **内容** | 应用 |
 | 树、样式、未滚动布局、命中、焦点、IME、无障碍 | `UiWorld` |
 | 绘制图 | `UiScene` |

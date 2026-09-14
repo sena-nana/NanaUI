@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-use nana_ui::{Color, HostTexture};
+use nana_ui::Color;
 
 const SOURCE: &str = r#"
 struct SceneUniform {
@@ -57,7 +57,6 @@ pub struct SharedScene {
     bind_group: wgpu::BindGroup,
     uniform: wgpu::Buffer,
     target: SceneTarget,
-    texture: HostTexture,
 }
 
 impl SharedScene {
@@ -131,13 +130,11 @@ impl SharedScene {
             }],
         });
         let target = SceneTarget::new(device, format, size.0, size.1, 1);
-        let texture = HostTexture::from_wgpu(1, target.generation, target.view.clone());
         let scene = Self {
             pipeline,
             bind_group,
             uniform,
             target,
-            texture,
         };
         scene.update(queue, palette[0], palette[1], revision);
         scene
@@ -150,7 +147,6 @@ impl SharedScene {
             parameters: [revision as f32 * 0.17, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
-        self.texture.invalidate();
     }
 
     pub fn resize(
@@ -166,15 +162,10 @@ impl SharedScene {
         }
         let generation = self.target.generation.saturating_add(1);
         self.target = SceneTarget::new(device, format, width, height, generation);
-        self.texture.replace_view(self.target.view.clone());
     }
 
-    pub fn texture(&self) -> HostTexture {
-        self.texture.clone()
-    }
-
-    pub fn size(&self) -> (u32, u32) {
-        (self.target.width, self.target.height)
+    pub fn texture(&self) -> &wgpu::Texture {
+        &self.target.texture
     }
 
     pub fn render(&self, encoder: &mut wgpu::CommandEncoder) {
@@ -201,7 +192,7 @@ impl SharedScene {
 }
 
 struct SceneTarget {
-    _texture: wgpu::Texture,
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     width: u32,
     height: u32,
@@ -229,12 +220,12 @@ impl SceneTarget {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self {
-            _texture: texture,
+            texture,
             view,
             width,
             height,
