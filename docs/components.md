@@ -100,7 +100,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 ### MediaTransportBar
 
-画面上的播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态并折叠空第二行。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏仍由宿主喂 `OverlayVisibility`。
+画面上的播放条（`nana.media-transport-bar`）。框架只提供基础 chrome：播放、点播进度 / 直播 Progress、音量弹出、设置 `ActionMenu`、全屏。场景控件挂到 `leading` / `trailing` / `secondary` 槽；`secondary` 没有可见子节点时第二行自动收起，条变单行。`assemble_media_transport_bar` 建槽并接线，`sync_media_transport_bar` 写回播放态、进度与时间读数（`m:ss` / `h:mm:ss`）并折叠空第二行。事件是 `MediaTransportEvent`（PlayPause / Seek / Volume / Fullscreen）。idle 隐藏仍由宿主喂 `OverlayVisibility`。
 
 `ReorderList` 可以挂 live 行子节点。`ReorderItem::tools` 标出行内可点控件；命中该子树不开始拖拽。没有子节点时仍按标签自绘行。`IconButton::with_tooltip` 用默认 `TooltipConfig`。
 

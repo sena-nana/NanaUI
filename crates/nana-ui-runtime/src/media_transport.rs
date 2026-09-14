@@ -367,7 +367,7 @@ impl AppContext {
             self.append_child(row, center)?;
             let time = self.create_detached_component(
                 document,
-                Text::new("0:00 / 0:00")
+                Text::new("")
                     .font_size(12.0)
                     .color(SemanticColorRole::Muted),
             )?;
@@ -525,27 +525,40 @@ impl AppContext {
                 button.disabled = snapshot.disabled;
             })?;
         }
+        let (position, duration) = media_time(&snapshot);
+        let seek = slots.seek.map(Entity::<RangeField>::from_stable_id);
+        // A scrub keeps its own value until the host catches up through Seek;
+        // the readout previews it instead of the stale host position.
+        let scrub = seek.and_then(|seek| {
+            self.read(seek, |range| range.dragging.map(|_| range.value))
+                .ok()
+                .flatten()
+        });
         if let Some(time) = slots.time {
-            self.update_component(Entity::<Text>::from_stable_id(time), |text, _| {
-                let layout = Arc::make_mut(&mut text.style.layout);
-                layout.hidden = snapshot.live;
+            let time = Entity::<Text>::from_stable_id(time);
+            let shown = scrub.map_or(position, |value| value.min(duration));
+            let readout = time_readout(shown, duration);
+            // Hosts sync on every playback tick; skip the write while the
+            // shown second and visibility are unchanged.
+            let current = self.read(time, |text| {
+                text.value == readout && text.style.layout.hidden == snapshot.live
             })?;
+            if !current {
+                self.update_component(time, |text, _| {
+                    text.value = readout;
+                    Arc::make_mut(&mut text.style.layout).hidden = snapshot.live;
+                })?;
+            }
         }
-        if let Some(seek) = slots.seek {
-            let dragging = self
-                .read(Entity::<RangeField>::from_stable_id(seek), |range| {
-                    range.dragging.is_some()
-                })
-                .unwrap_or(false);
-            self.update_component(Entity::<RangeField>::from_stable_id(seek), |range, _| {
+        if let Some(seek) = seek {
+            self.update_component(seek, |range, _| {
                 let layout = Arc::make_mut(&mut range.style.layout);
                 layout.hidden = snapshot.live;
                 range.disabled = snapshot.disabled || snapshot.live;
-                let maximum = snapshot.duration.max(1.0);
                 range.minimum = 0.0;
-                range.maximum = maximum;
-                if !dragging {
-                    range.value = snapshot.position.clamp(0.0, maximum);
+                range.maximum = duration.max(1.0);
+                if scrub.is_none() {
+                    range.value = position;
                 }
             })?;
         }
@@ -636,6 +649,35 @@ fn chrome_icon(icon: Icon, label: &str) -> IconButton {
     IconButton::new(icon, label)
         .size(ControlSize::Small)
         .with_tooltip(label)
+}
+
+/// `(position, duration)` shared by the readout and the seek range. Non-finite
+/// or negative seconds become zero; a position past the end clamps to it.
+fn media_time(bar: &MediaTransportBar) -> (f64, f64) {
+    let seconds = |value: f64| {
+        if value.is_finite() {
+            value.max(0.0)
+        } else {
+            0.0
+        }
+    };
+    let duration = seconds(bar.duration);
+    (seconds(bar.position).min(duration), duration)
+}
+
+fn time_readout(position: f64, duration: f64) -> String {
+    format!("{} / {}", clock(position), clock(duration))
+}
+
+/// Whole seconds as `m:ss`, or `h:mm:ss` from one hour on.
+fn clock(seconds: f64) -> String {
+    let total = seconds as u64;
+    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes}:{seconds:02}")
+    }
 }
 
 #[cfg(test)]
@@ -745,6 +787,126 @@ mod tests {
             event,
             MediaTransportEvent::Seek(value) if (*value - 12.0).abs() < f64::EPSILON
         )));
+    }
+
+    fn sync_time(
+        cx: &mut AppContext,
+        bar: Entity<MediaTransportBar>,
+        position: f64,
+        duration: f64,
+    ) {
+        cx.update_component(bar, |bar, _| {
+            bar.position = position;
+            bar.duration = duration;
+        })
+        .unwrap();
+        cx.sync_media_transport_bar(bar).unwrap();
+    }
+
+    fn readout(cx: &AppContext, slots: &MediaTransportSlots) -> String {
+        cx.world().text(slots.time.unwrap()).unwrap().to_owned()
+    }
+
+    fn seek_value(cx: &AppContext, slots: &MediaTransportSlots) -> f64 {
+        cx.read(
+            Entity::<RangeField>::from_stable_id(slots.seek.unwrap()),
+            |range| range.value,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn time_readout_follows_position_and_duration() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+
+        sync_time(&mut cx, bar, 12.0, 120.0);
+        assert_eq!(readout(&cx, &slots), "0:12 / 2:00");
+        sync_time(&mut cx, bar, 12.7, 120.0);
+        assert_eq!(readout(&cx, &slots), "0:12 / 2:00");
+        sync_time(&mut cx, bar, 13.0, 120.0);
+        assert_eq!(readout(&cx, &slots), "0:13 / 2:00");
+
+        sync_time(&mut cx, bar, 500.0, 120.0);
+        assert_eq!(readout(&cx, &slots), "2:00 / 2:00");
+        assert_eq!(seek_value(&cx, &slots), 120.0);
+
+        let generation = cx.world().generation();
+        cx.sync_media_transport_bar(bar).unwrap();
+        assert_eq!(cx.world().generation(), generation);
+    }
+
+    #[test]
+    fn leaving_live_shows_the_current_readout() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new().live(true))
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+        let time = slots.time.unwrap();
+
+        sync_time(&mut cx, bar, 30.0, 90.0);
+        assert!(cx.world().node_style(time).unwrap().layout.hidden);
+
+        cx.update_component(bar, |bar, _| bar.live = false).unwrap();
+        cx.sync_media_transport_bar(bar).unwrap();
+        assert!(!cx.world().node_style(time).unwrap().layout.hidden);
+        assert_eq!(readout(&cx, &slots), "0:30 / 1:30");
+    }
+
+    #[test]
+    fn readout_handles_hours_and_invalid_seconds() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+
+        sync_time(&mut cx, bar, 3600.0, 3725.0);
+        assert_eq!(readout(&cx, &slots), "1:00:00 / 1:02:05");
+
+        sync_time(&mut cx, bar, f64::NAN, f64::INFINITY);
+        assert_eq!(readout(&cx, &slots), "0:00 / 0:00");
+        assert_eq!(seek_value(&cx, &slots), 0.0);
+
+        sync_time(&mut cx, bar, -5.0, 60.0);
+        assert_eq!(readout(&cx, &slots), "0:00 / 1:00");
+        assert_eq!(seek_value(&cx, &slots), 0.0);
+    }
+
+    #[test]
+    fn scrubbing_previews_the_dragged_position() {
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document(), MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+        let seek = Entity::<RangeField>::from_stable_id(slots.seek.unwrap());
+        sync_time(&mut cx, bar, 12.0, 120.0);
+
+        cx.update_component(seek, |range, _| {
+            range.dragging = Some(crate::RangeDragState {
+                pointer_id: 1,
+                initial_value: 12.0,
+            });
+            range.value = 45.0;
+        })
+        .unwrap();
+        sync_time(&mut cx, bar, 13.0, 120.0);
+        assert_eq!(readout(&cx, &slots), "0:45 / 2:00");
+        assert_eq!(seek_value(&cx, &slots), 45.0);
+
+        cx.update_component(seek, |range, _| range.dragging = None)
+            .unwrap();
+        sync_time(&mut cx, bar, 45.0, 120.0);
+        assert_eq!(readout(&cx, &slots), "0:45 / 2:00");
     }
 
     #[test]
