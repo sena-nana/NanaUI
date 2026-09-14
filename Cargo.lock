@@ -2249,6 +2249,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-frame-exchange"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "nana-icons-tabler"
 version = "0.1.0"
 dependencies = [

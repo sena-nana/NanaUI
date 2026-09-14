@@ -1,0 +1,17 @@
+[package]
+name = "nana-frame-exchange"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Bounded latest-frame exchange from a producer thread to a consumer on one shared WGPU device"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_frame_exchange"
+path = "src/lib.rs"
+
+[dependencies]
+wgpu.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
