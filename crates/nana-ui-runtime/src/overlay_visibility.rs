@@ -189,10 +189,15 @@ impl crate::AppContext {
     fn descendant_menu_open(&self, root: crate::StableNodeId) -> bool {
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
-            if matches!(
-                self.world().standard_visual(id),
-                Some(crate::StandardVisual::MenuSurface { open: true, .. })
-            ) {
+            if self
+                .view_entity::<crate::ActionMenu>(id)
+                .and_then(|entity| self.read(entity, |menu| menu.popover.open).ok())
+                .unwrap_or(false)
+                || self
+                    .view_entity::<crate::Popover>(id)
+                    .and_then(|entity| self.read(entity, |popover| popover.open).ok())
+                    .unwrap_or(false)
+            {
                 return true;
             }
             if let Some(node) = self.world().node(id) {
@@ -395,5 +400,37 @@ mod tests {
         cx.append_child(bar, child).unwrap();
         assert!(cx.is_descendant(child.stable_id(), bar.stable_id()));
         assert!(!cx.is_descendant(bar.stable_id(), child.stable_id()));
+    }
+
+    #[test]
+    fn open_action_menu_holds_visibility_without_a_projected_visual() {
+        use crate::{AppContext, DocumentId, LayoutViewport, MediaTransportBar};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let bar = cx
+            .create_component(document, MediaTransportBar::new())
+            .unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        cx.layout_document(document, LayoutViewport::new(640.0, 360.0))
+            .unwrap();
+        let now = Instant::now();
+        cx.sync_overlay_visibility(bar, now, true).unwrap();
+        let settings = cx.read(bar, |bar| bar.settings()).unwrap().unwrap();
+        assert!(cx.toggle_action_menu(settings).unwrap());
+        cx.sync_overlay_visibility(bar, now + OVERLAY_IDLE, true)
+            .unwrap();
+        assert!(
+            !cx.read(bar, |bar| bar.style.layout.hidden).unwrap(),
+            "an open ActionMenu must lock the bar from the component open flag"
+        );
+        assert!(cx.overlay_wakeup(bar).unwrap().is_none());
+        assert!(cx.dismiss_popovers_on_escape().unwrap());
+        cx.sync_overlay_visibility(bar, now + Duration::from_secs(31), true)
+            .unwrap();
+        assert_eq!(
+            cx.overlay_wakeup(bar).unwrap(),
+            Some(now + Duration::from_secs(34))
+        );
     }
 }
