@@ -187,12 +187,8 @@ pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
 fn frame_tick(can_present: bool, demand_due: bool, drawable: bool) -> FrameTick {
     if !demand_due {
         FrameTick::None
-    } else if can_present {
-        if drawable {
-            FrameTick::Present
-        } else {
-            FrameTick::None
-        }
+    } else if can_present && drawable {
+        FrameTick::Present
     } else {
         FrameTick::GpuOnly
     }
@@ -215,16 +211,88 @@ fn frame_wait_target(
 #[cfg(test)]
 mod tests {
     use super::{FrameTick, drawable_surface, frame_tick, frame_wait_target};
+    use crate::runtime_host::{FrameDemand, FrameSchedule};
     use std::time::{Duration, Instant};
 
     #[test]
-    fn due_hidden_windows_tick_gpu_without_presenting() {
-        assert_eq!(frame_tick(false, true, true), FrameTick::GpuOnly);
-        assert_eq!(frame_tick(true, true, true), FrameTick::Present);
-        assert_eq!(frame_tick(false, false, true), FrameTick::None);
-        assert_eq!(frame_tick(true, false, true), FrameTick::None);
-        assert_eq!(frame_tick(true, true, false), FrameTick::None);
-        assert_eq!(frame_tick(false, true, false), FrameTick::GpuOnly);
+    fn demand_ticks_only_present_with_a_drawable_visible_surface() {
+        let now = Instant::now();
+        for (visible, drawable, expected) in [
+            (false, false, FrameTick::GpuOnly),
+            (false, true, FrameTick::GpuOnly),
+            (true, false, FrameTick::GpuOnly),
+            (true, true, FrameTick::Present),
+        ] {
+            assert_eq!(frame_tick(visible, true, drawable), expected);
+            let mut schedule = FrameSchedule::default();
+            let demand = FrameDemand::OnDemand;
+            let tick = frame_tick(visible, schedule.due(demand, now), drawable);
+            assert_eq!(tick, FrameTick::None);
+            assert_eq!(
+                frame_wait_target(tick, schedule.arm(demand, now), now),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn zero_size_continuous_ticks_keep_waking_and_resume_presenting() {
+        let demand = FrameDemand::Continuous(std::num::NonZeroU32::new(60).unwrap());
+        for size in [(0, 100), (200, 0), (0, 0)] {
+            for can_present in [false, true] {
+                let mut schedule = FrameSchedule::default();
+                let mut now = Instant::now();
+                for _ in 0..8 {
+                    let tick = frame_tick(
+                        can_present,
+                        schedule.due(demand, now),
+                        drawable_surface(size),
+                    );
+                    assert_eq!(tick, FrameTick::GpuOnly);
+                    let deadline = schedule.advance_served(demand, now);
+                    let next = frame_wait_target(tick, deadline, now).expect("continuous wakeup");
+                    assert!(next > now);
+                    assert!(!schedule.due(demand, now));
+                    now = next;
+                }
+                assert_eq!(
+                    frame_tick(true, schedule.due(demand, now), true),
+                    FrameTick::Present
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gpu_only_at_tracks_post_prepare_demand_and_failure_retry() {
+        let now = Instant::now();
+        let later = now + Duration::from_millis(50);
+        let demand = FrameDemand::At(now);
+        for (visible, drawable) in [(false, false), (false, true), (true, false)] {
+            for (after, expected_deadline, expected_wake) in [
+                (FrameDemand::OnDemand, None, now),
+                (FrameDemand::At(later), Some(later), later),
+                (demand, Some(now), now),
+            ] {
+                let mut schedule = FrameSchedule::default();
+                let tick = frame_tick(visible, schedule.due(demand, now), drawable);
+                assert_eq!(tick, FrameTick::GpuOnly);
+                let deadline = schedule.advance_served(after, now);
+                assert_eq!(deadline, expected_deadline);
+                assert_eq!(frame_wait_target(tick, deadline, now), Some(expected_wake));
+                // Cleared demand settles to idle; retained At work stays armed.
+                assert_eq!(
+                    schedule.due(after, expected_wake),
+                    expected_deadline.is_some()
+                );
+            }
+            let mut schedule = FrameSchedule::default();
+            let tick = frame_tick(visible, schedule.due(demand, now), drawable);
+            let retry = frame_wait_target(tick, schedule.defer(demand, now), now).unwrap();
+            assert!(retry > now);
+            assert!(!schedule.due(demand, now));
+            assert!(schedule.due(demand, retry));
+        }
     }
 
     #[test]
@@ -244,6 +312,7 @@ mod tests {
 
     #[test]
     fn zero_size_is_not_a_presentable_surface() {
+        assert!(!drawable_surface((0, 0)));
         assert!(!drawable_surface((0, 100)));
         assert!(!drawable_surface((200, 0)));
         assert!(drawable_surface((200, 100)));

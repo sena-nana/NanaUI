@@ -435,8 +435,9 @@ pub trait RuntimeProgram: Sized + 'static {
 
     /// Acquire application-owned frame resources immediately before the host
     /// flushes and paints this window. Also runs when [`Self::frame_demand`] is
-    /// due while the window is occluded or minimised, including 0-size
-    /// geometry: that hidden tick does not flush, acquire a Surface, or call
+    /// due while the window is occluded, minimised, or has 0-size
+    /// geometry (even if visible): that hidden tick does not flush, acquire a
+    /// Surface, or call
     /// [`Self::window_frame_presented`]. Keep this method cheap; do not retire
     /// textures the last presented UI frame still samples.
     fn prepare_window_frame(

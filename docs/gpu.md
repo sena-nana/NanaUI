@@ -145,7 +145,7 @@ URL、白名单、Cookie、引擎选型归**应用**（默认拒绝，localhost 
 
 可见帧：`encode_scene` 使用宿主在获取 Surface 后建立的 encoder，生产与 UI 绘制合并提交，成功后才调用 `PreparedSceneResources::submitted`。编码或绘制失败时整份 encoder 丢弃，生产者不能自行提交或提前报告完成。标准宿主同时将已获取但未呈现的目标标记为需要 Surface 恢复，下一次获取使用原有 Device / Queue 重建该目标，避免 DX12 的帧延迟等待信号在丢帧后阻止后续获取。低层 `HostedGpuContext` 消费者应先释放帧的 view 和 encoder，再调用 `discard_frame` 或 `discard_surface_frame`；这些方法不会提交 GPU 工作或请求重绘，重试需求由应用决定。`hosted-gpu-demo` 展示了这条路径。
 
-隐藏 tick：窗口遮挡或最小化时，`FrameDemand` 到期仍调用 `prepare_window_frame`；尺寸可画时再在无 Surface 的 encoder 上跑 `scene_resource_producers` 并立刻 submit。不 flush UI、不 present、不调用 `window_frame_presented`。`submitted()` 表示这次 encode 已入队，不是「采样该纹理的 UI 帧已经呈现」。0 维仍 prepare，不跑 producer encode（与 Surface 拒绝 0 维 reconfigure 一致）。
+隐藏 tick：窗口遮挡、最小化或尺寸为零（即使仍可见）时，`FrameDemand` 到期仍调用 `prepare_window_frame`；尺寸可画时再在无 Surface 的 encoder 上跑 `scene_resource_producers` 并立刻 submit。不 flush UI、不 present、不调用 `window_frame_presented`。`submitted()` 表示这次 encode 已入队，不是「采样该纹理的 UI 帧已经呈现」。0 维仍 prepare，不跑 producer encode（与 Surface 拒绝 0 维 reconfigure 一致）。
 
 Rust 可以保存 `registry.slot("preview")` 返回的 `TextureSlot`。
 内容已更新时调用 `invalidate()`，替换纹理时调用 `replace()`；通知只唤醒引用该
