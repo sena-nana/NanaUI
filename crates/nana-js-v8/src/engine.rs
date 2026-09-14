@@ -2769,6 +2769,255 @@ mod tests {
     }
 
     #[test]
+    fn vue_native_websocket_callbacks_follow_frame_pump() {
+        assert_vue_native_websocket_callbacks(false);
+    }
+
+    #[test]
+    fn vue_native_websocket_batches_message_and_close_in_one_frame() {
+        assert_vue_native_websocket_callbacks(true);
+    }
+
+    fn assert_vue_native_websocket_callbacks(batch_close: bool) {
+        with_serial_v8_tests(|| {
+            use nana_ui_vue::{MountOptions, mount_vue_as_nana};
+            use nana_ui_web_api::{
+                NativeWebSocketHost, SocketPolicy, WebSocketHost, WsError, WsEvent, WsMessage,
+                WsOpenRequest, WsSink,
+            };
+            use std::net::TcpListener;
+            use std::sync::mpsc;
+            use std::time::{Duration, Instant};
+
+            const TIMEOUT: Duration = Duration::from_secs(5);
+            // Observe only after forwarding into the real runtime queue. No
+            // transport or event is synthesized by this test adapter.
+            #[derive(Debug)]
+            struct ObservedHost {
+                native: NativeWebSocketHost,
+                events: mpsc::Sender<WsEvent>,
+            }
+            struct ObservedSink {
+                inner: Arc<dyn WsSink>,
+                events: mpsc::Sender<WsEvent>,
+            }
+            impl WsSink for ObservedSink {
+                fn emit(&self, event: WsEvent) {
+                    self.inner.emit(event.clone());
+                    let _ = self.events.send(event);
+                }
+            }
+            impl WebSocketHost for ObservedHost {
+                fn open(
+                    &self,
+                    id: u64,
+                    request: WsOpenRequest,
+                    sink: Arc<dyn WsSink>,
+                ) -> Result<(), WsError> {
+                    self.native.open(
+                        id,
+                        request,
+                        Arc::new(ObservedSink {
+                            inner: sink,
+                            events: self.events.clone(),
+                        }),
+                    )
+                }
+                fn send(&self, id: u64, message: WsMessage) -> Result<(), WsError> {
+                    self.native.send(id, message)
+                }
+                fn close(&self, id: u64, code: u16, reason: &str) -> Result<(), WsError> {
+                    self.native.close(id, code, reason)
+                }
+                fn policy(&self) -> &SocketPolicy {
+                    self.native.policy()
+                }
+            }
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let origin = format!("ws://{}", listener.local_addr().unwrap());
+            let (events_tx, events_rx) = mpsc::channel();
+            let mut host = mount_vue_as_nana(MountOptions {
+                socket_host: Some(Arc::new(ObservedHost {
+                    native: NativeWebSocketHost::new(
+                        SocketPolicy::default()
+                            .with_allowed_origin(&origin)
+                            .unwrap(),
+                    ),
+                    events: events_tx,
+                })),
+                ..Default::default()
+            });
+            let mut engine = V8Engine::new();
+            let mut api = HostApiRegistry::new();
+            api.register("acceptanceMode", |_| {
+                Ok(HostValue::string("websocket-probe"))
+            });
+            host.initialize_with_web_api_and_host_api(&mut engine, vue_sfc_compat_artifact(), &api)
+                .unwrap();
+            host.bind_event_bridge(&mut engine).unwrap();
+            let start = engine.resolve_function("__nanaSocketProbe.start").unwrap();
+            let probe = engine.resolve_function("__nanaSocketProbe.probe").unwrap();
+            engine
+                .invoke(
+                    start,
+                    &[
+                        HostValue::string(format!("{origin}/echo")),
+                        HostValue::string("ws://127.0.0.1:0/denied"),
+                    ],
+                )
+                .unwrap();
+            assert!(
+                host.next_wakeup().is_some(),
+                "connecting socket must schedule the frame pump"
+            );
+            let initial = engine.invoke(probe, &[]).unwrap();
+            assert_eq!(
+                initial.as_object().unwrap().get("denied"),
+                Some(&HostValue::Bool(true))
+            );
+            assert_eq!(
+                initial.as_object().unwrap().get("readyState"),
+                Some(&HostValue::Number(0.0))
+            );
+
+            // The native client owns its I/O worker. Drive the server here,
+            // so assertion unwinding closes it without another thread to join.
+            let deadline = Instant::now() + TIMEOUT;
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("loopback accept: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TIMEOUT)).unwrap();
+            let mut server = tungstenite::accept(stream).unwrap();
+            let close = tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "loopback-done".into(),
+            };
+
+            let native_events = [
+                WsEvent::Open,
+                WsEvent::Message(WsMessage::Text("echo:vue-loopback".into())),
+                WsEvent::Closed {
+                    code: 1000,
+                    reason: "loopback-done".into(),
+                    was_clean: true,
+                },
+            ];
+            let frame_ends: &[usize] = if batch_close { &[1, 3] } else { &[1, 2, 3] };
+            let names = ["open", "message", "close"];
+            let event_values = |count| {
+                HostValue::Array(
+                    names[..count]
+                        .iter()
+                        .map(|name| HostValue::string(*name))
+                        .collect(),
+                )
+            };
+            let mut delivered = 0;
+            for &end in frame_ends {
+                if delivered == 1 {
+                    assert_eq!(
+                        server.read().unwrap(),
+                        tungstenite::Message::Text("vue-loopback".into())
+                    );
+                    server
+                        .send(tungstenite::Message::Text("echo:vue-loopback".into()))
+                        .unwrap();
+                }
+                if delivered == (if batch_close { 1 } else { 2 }) {
+                    server.close(Some(close.clone())).unwrap();
+                }
+                for (index, expected) in native_events.iter().enumerate().take(end).skip(delivered)
+                {
+                    let received = events_rx.recv_timeout(TIMEOUT).unwrap_or_else(|error| {
+                        panic!("native {} event deadline: {error}", names[index])
+                    });
+                    assert_eq!(&received, expected, "native {} event", names[index]);
+                }
+                // Microtasks alone cannot dispatch a native socket callback.
+                engine.run_microtasks().unwrap();
+                let before = engine.invoke(probe, &[]).unwrap();
+                assert_eq!(
+                    before.as_object().unwrap().get("events"),
+                    Some(&event_values(delivered))
+                );
+                host.pump_frame(&mut engine).unwrap();
+                let after = engine.invoke(probe, &[]).unwrap();
+                assert_eq!(
+                    after.as_object().unwrap().get("events"),
+                    Some(&event_values(end)),
+                    "callback batch {delivered}..{end}: {after:?}"
+                );
+                let label = [
+                    "socket:open",
+                    "socket:echo:vue-loopback",
+                    "socket:closed:1000:loopback-done",
+                ][end - 1];
+                assert!(
+                    host.semantic_snapshot()
+                        .widgets
+                        .iter()
+                        .any(|widget| widget.props.label == label),
+                    "Vue semantic label missing after {}",
+                    names[end - 1]
+                );
+                delivered = end;
+            }
+            let final_state = engine.invoke(probe, &[]).unwrap();
+            let final_state = final_state.as_object().unwrap();
+            assert_eq!(
+                final_state.get("listenerMessages"),
+                Some(&HostValue::Array(vec![HostValue::string(
+                    "echo:vue-loopback"
+                )]))
+            );
+            assert_eq!(
+                final_state.get("states"),
+                Some(&HostValue::Array(vec![
+                    HostValue::Number(1.0),
+                    HostValue::Number(1.0),
+                    HostValue::Number(3.0)
+                ]))
+            );
+            assert_eq!(final_state.get("readyState"), Some(&HostValue::Number(3.0)));
+            let closed = final_state.get("closed").unwrap().as_object().unwrap();
+            assert_eq!(closed.get("code"), Some(&HostValue::Number(1000.0)));
+            assert_eq!(
+                closed.get("reason"),
+                Some(&HostValue::string("loopback-done"))
+            );
+            assert_eq!(closed.get("wasClean"), Some(&HostValue::Bool(true)));
+            assert_eq!(
+                server
+                    .read()
+                    .expect("server must receive close acknowledgement"),
+                tungstenite::Message::Close(Some(close)),
+            );
+            host.pump_frame(&mut engine).unwrap();
+            assert_eq!(
+                engine.invoke(probe, &[]).unwrap().as_object(),
+                Some(final_state)
+            );
+            assert!(
+                host.next_wakeup().is_none(),
+                "closed socket must stop scheduling frames"
+            );
+            engine.shutdown();
+        });
+    }
+
+    #[test]
     fn vue_sfc_fetch_updates_semantic_tree_on_v8() {
         with_serial_v8_tests(|| {
             use std::time::{Duration, Instant};

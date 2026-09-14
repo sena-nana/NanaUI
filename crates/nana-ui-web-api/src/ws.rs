@@ -198,15 +198,22 @@ impl SocketRuntime {
     pub fn drain_events(&mut self) -> Vec<SocketEvent> {
         let mut due = Vec::new();
         while let Ok(item) = self.events.try_recv() {
+            // Workers can finish after reset_pending() or a terminal event.
+            // Only a still-owned connection may deliver callbacks or wake us.
+            let Some(state) = self.connections.get_mut(&item.id) else {
+                continue;
+            };
             match &item.event {
                 WsEvent::Open => {
-                    self.connections.insert(item.id, SocketState::Open);
-                }
-                WsEvent::Closed { .. } => {
-                    if self.connections.remove(&item.id).is_none() {
+                    if *state != SocketState::Connecting {
                         continue;
                     }
+                    *state = SocketState::Open;
                 }
+                WsEvent::Closed { .. } => {
+                    self.connections.remove(&item.id);
+                }
+                WsEvent::Message(_) if *state != SocketState::Open => continue,
                 WsEvent::Message(_) | WsEvent::Error(_) => {}
             }
             due.push(item);
@@ -499,6 +506,94 @@ mod tests {
         );
         let guard = state.lock().unwrap();
         assert!(!guard.socket.has_active());
+        assert!(guard.next_wakeup(std::time::Instant::now()).is_none());
+    }
+
+    #[test]
+    fn reload_discards_late_socket_events_without_reviving_old_connections() {
+        let (state, api, fixture) = registered_state(FixtureSocketHost::new(
+            SocketPolicy::default()
+                .with_allowed_origin("wss://example.com")
+                .unwrap(),
+        ));
+        let old_id = api
+            .call("wsOpen", &[open_args("wss://example.com/chat")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        state.lock().unwrap().reset_pending();
+        assert_eq!(
+            fixture.inner.lock().unwrap().closed,
+            vec![(old_id, 1001, "runtime reload".into())]
+        );
+        fixture.sink(old_id).emit(WsEvent::Open);
+        fixture
+            .sink(old_id)
+            .emit(WsEvent::Message(WsMessage::Text("stale".into())));
+        fixture
+            .sink(old_id)
+            .emit(WsEvent::Error("stale failure".into()));
+        {
+            let mut guard = state.lock().unwrap();
+            assert!(guard.drain_socket_events().is_empty());
+            assert!(guard.next_wakeup(std::time::Instant::now()).is_none());
+        }
+        let new_id = api
+            .call("wsOpen", &[open_args("wss://example.com/chat")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        assert_ne!(old_id, new_id);
+        fixture.sink(old_id).emit(WsEvent::Closed {
+            code: 1001,
+            reason: "late close".into(),
+            was_clean: true,
+        });
+        fixture.sink(new_id).emit(WsEvent::Open);
+        let events = state.lock().unwrap().drain_socket_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].as_object().unwrap()["id"],
+            HostValue::Number(new_id as f64)
+        );
+    }
+
+    #[test]
+    fn closing_socket_does_not_reopen_on_a_queued_open_event() {
+        let (state, api, fixture) = registered_state(FixtureSocketHost::new(
+            SocketPolicy::default()
+                .with_allowed_origin("wss://example.com")
+                .unwrap(),
+        ));
+        let id = api
+            .call("wsOpen", &[open_args("wss://example.com/chat")])
+            .unwrap()
+            .as_f64()
+            .unwrap() as u64;
+        state
+            .lock()
+            .unwrap()
+            .socket
+            .close(id, 1000, "cancel")
+            .unwrap();
+        fixture.sink(id).emit(WsEvent::Open);
+        fixture
+            .sink(id)
+            .emit(WsEvent::Message(WsMessage::Text("too late".into())));
+        let mut guard = state.lock().unwrap();
+        assert!(guard.drain_socket_events().is_empty());
+        assert!(
+            guard
+                .socket
+                .send(id, WsMessage::Text("must not send".into()))
+                .is_err()
+        );
+        fixture.sink(id).emit(WsEvent::Closed {
+            code: 1000,
+            reason: "cancel".into(),
+            was_clean: true,
+        });
+        assert_eq!(guard.drain_socket_events().len(), 1);
         assert!(guard.next_wakeup(std::time::Instant::now()).is_none());
     }
 

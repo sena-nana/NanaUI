@@ -1,4 +1,5 @@
 import { createApp } from "@nanaui/nanavue-runtime";
+import WebSocketProbe from "./WebSocketProbe.vue";
 import ChromeProbe from "./ChromeProbe.vue";
 import CompatFixture from "./CompatFixture.vue";
 import HostedAcceptance from "./HostedAcceptance.vue";
@@ -7,7 +8,9 @@ try {
   acceptanceMode = String(globalThis.__nanaHost.call("acceptanceMode", []));
 } catch {}
 
-if (acceptanceMode) {
+if (acceptanceMode === "websocket-probe") {
+  createApp(WebSocketProbe).mount();
+} else if (acceptanceMode) {
   (globalThis as any).__nanaHostedAcceptance = {
     mount() {
       const app =

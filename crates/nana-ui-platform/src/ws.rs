@@ -334,9 +334,21 @@ impl WebSocketHost for NativeWebSocketHost {
                                 break 'connection;
                             }
                             Ok(tungstenite::Message::Close(frame)) => {
+                                // read() queues the peer's close acknowledgement;
+                                // dropping here would reset TCP without sending it.
+                                if let Err(error) = socket.flush() {
+                                    let reason = error.to_string();
+                                    sink.emit(WsEvent::Error(reason.clone()));
+                                    sink.emit(WsEvent::Closed {
+                                        code: 1006,
+                                        reason,
+                                        was_clean: false,
+                                    });
+                                    break 'connection;
+                                }
                                 let (code, reason) = frame
                                     .map(|f| (u16::from(f.code), f.reason.to_string()))
-                                    .unwrap_or((1000, String::new()));
+                                    .unwrap_or((1005, String::new()));
                                 sink.emit(WsEvent::Closed {
                                     code,
                                     reason,
@@ -468,53 +480,146 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_host_round_trips_text_and_closes() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            let message = socket.read().unwrap();
-            socket.send(message).unwrap();
-            let _ = socket.close(None);
-        });
-        let policy = SocketPolicy::default()
-            .with_allowed_origin(&format!("ws://127.0.0.1:{port}"))
-            .unwrap();
-        let host = NativeWebSocketHost::new(policy);
-        let (sender, receiver) = mpsc::channel();
-        #[derive(Debug)]
-        struct Sink(std::sync::mpsc::Sender<WsEvent>);
-        impl WsSink for Sink {
-            fn emit(&self, event: WsEvent) {
-                let _ = self.0.send(event);
-            }
+    struct TestSink(mpsc::Sender<WsEvent>);
+
+    impl WsSink for TestSink {
+        fn emit(&self, event: WsEvent) {
+            let _ = self.0.send(event);
         }
+    }
+
+    fn accept_loopback(listener: &TcpListener) -> tungstenite::WebSocket<std::net::TcpStream> {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                Err(e) => panic!("accept deadline: {e}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        tungstenite::accept(stream).unwrap()
+    }
+
+    fn assert_native_peer_close(
+        close: Option<tungstenite::protocol::CloseFrame>,
+        expected: WsEvent,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin = format!("ws://{}", listener.local_addr().unwrap());
+        let host = NativeWebSocketHost::new(
+            SocketPolicy::default()
+                .with_allowed_origin(&origin)
+                .unwrap(),
+        );
+        let (tx, rx) = mpsc::channel();
         host.open(
             1,
             WsOpenRequest {
-                url: format!("ws://127.0.0.1:{port}/echo"),
+                url: origin,
                 protocols: vec![],
             },
-            Arc::new(Sink(sender)),
+            Arc::new(TestSink(tx)),
         )
         .unwrap();
+        let mut socket = accept_loopback(&listener);
         assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            WsEvent::Open
+        );
+        socket.close(close.clone()).unwrap();
+        assert_eq!(
+            socket.read().expect("peer close acknowledgement"),
+            tungstenite::Message::Close(close)
+        );
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), expected);
+    }
+
+    #[test]
+    fn native_host_acknowledges_peer_close() {
+        assert_native_peer_close(
+            Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "peer-done".into(),
+            }),
+            WsEvent::Closed {
+                code: 1000,
+                reason: "peer-done".into(),
+                was_clean: true,
+            },
+        );
+    }
+
+    #[test]
+    fn native_host_reports_no_status_for_an_empty_peer_close() {
+        assert_native_peer_close(
+            None,
+            WsEvent::Closed {
+                code: 1005,
+                reason: String::new(),
+                was_clean: true,
+            },
+        );
+    }
+
+    #[test]
+    fn native_host_round_trips_text_and_closes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin = format!("ws://{}", listener.local_addr().unwrap());
+        let host = NativeWebSocketHost::new(
+            SocketPolicy::default()
+                .with_allowed_origin(&origin)
+                .unwrap(),
+        );
+        let (sender, receiver) = mpsc::channel();
+        host.open(
+            1,
+            WsOpenRequest {
+                url: format!("{origin}/echo"),
+                protocols: vec![],
+            },
+            Arc::new(TestSink(sender)),
+        )
+        .unwrap();
+        let mut server = accept_loopback(&listener);
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
             WsEvent::Open
         );
         host.send(1, WsMessage::Text("hello".into())).unwrap();
+        let message = server.read().unwrap();
+        assert_eq!(message, tungstenite::Message::Text("hello".into()));
+        server.send(message).unwrap();
         assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
             WsEvent::Message(WsMessage::Text("hello".into()))
         );
+        // Let the client initiate close; a simultaneous server close made
+        // this test race registry removal before host.close().
         host.close(1, 1000, "done").unwrap();
+        assert_eq!(
+            server.read().unwrap(),
+            tungstenite::Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "done".into(),
+            }))
+        );
         assert!(matches!(
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
-            WsEvent::Closed { code: 1000, .. }
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+            WsEvent::Closed { code: 1000, reason, .. } if reason == "done"
         ));
-        server.join().unwrap();
     }
 
     #[test]

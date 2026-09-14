@@ -78,6 +78,12 @@ for (;;) {
 
 `WebSocket` 由桌面端内置 `NativeWebSocketHost` 提供传输（ws/wss URL、`send`/`close`、`onopen/onmessage/onclose/onerror`）。默认 `SocketPolicy` 仍为空白名单，应用必须通过 `MountOptions.socket_host` 注入配置了 `SocketPolicy` 源白名单的 host，或调用 `WebApiState::set_socket_host` 替换默认 host；未授权源会在连接前失败。网络 I/O 在线程中执行，入站消息和连接状态事件在下一帧泵里送达回调。
 
+桌面端到端验收使用真实 V8 + Vue 和本地 loopback 服务端，覆盖白名单拒绝、`onopen` 中 `send`、消息/关闭事件的分帧与同帧回调、Vue 状态更新及关闭应答：
+
+```bash
+cargo test -p nana-js-v8 --features engine --locked vue_native_websocket -- --test-threads=1
+```
+
 ## 网络与宿主命令
 
 网络默认全关。应用必须列出允许的源，格式 `scheme://host[:port]`。localhost 不会自动放行。跨源跳转时，即使目标在白名单里，授权类请求头仍会被拿掉。默认超时 30 秒，请求和响应各 16 MiB，最多 5 次重定向。

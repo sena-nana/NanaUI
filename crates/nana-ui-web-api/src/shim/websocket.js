@@ -48,6 +48,8 @@
     this._wsWindowId = Number(globalThis.__nanaActiveWindowId || 0);
     pendingSockets.set(id, this);
   }
+  WebSocketShim.prototype = Object.create(EventTargetShim.prototype);
+  WebSocketShim.prototype.constructor = WebSocketShim;
   WebSocketShim.CONNECTING = SOCKET_CONNECTING;
   WebSocketShim.OPEN = SOCKET_OPEN;
   WebSocketShim.CLOSING = SOCKET_CLOSING;
