@@ -935,6 +935,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     return false;
                 };
                 match request {
+                    Request::Displays(reply) => {
+                        reply.finish(Ok(super::display::display_infos(event_loop)));
+                    }
                     Request::Material(id, generation, effect, reply) => {
                         if !self.windows.is_current(id, generation) {
                             reply.finish(Err(crate::WindowError::WindowClosed));

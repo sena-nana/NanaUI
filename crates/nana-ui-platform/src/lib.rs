@@ -26,9 +26,9 @@ pub use fetch::{
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 pub use window::{
-    DisplayBounds, SystemAppearance, TextInputPurpose, TextInputRequest, WindowDescriptor,
-    WindowEvent, WindowGeometry, WindowIcon, WindowIconError, WindowId, WindowResizeEdge,
-    WindowRole, clamp_position_to_displays, clear_registered_application_icon,
+    DisplayBounds, DisplayId, DisplayInfo, SystemAppearance, TextInputPurpose, TextInputRequest,
+    WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowIconError, WindowId,
+    WindowResizeEdge, WindowRole, clamp_position_to_displays, clear_registered_application_icon,
     fit_window_to_displays, register_application_icon, resolve_window_icon, window_resize_edge,
 };
 #[cfg(feature = "ws")]

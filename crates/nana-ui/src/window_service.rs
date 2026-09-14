@@ -1,6 +1,6 @@
 //! Thread-safe window requests. Native objects remain on the host thread.
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{WindowId, WindowResizeEdge};
+use nana_ui_platform::{DisplayInfo, WindowId, WindowResizeEdge};
 use std::{
     future::Future,
     pin::Pin,
@@ -168,6 +168,7 @@ pub(crate) enum Request {
         crate::MaterialEffect,
         Reply<crate::MaterialOutcome>,
     ),
+    Displays(Reply<Vec<DisplayInfo>>),
     Create(WindowDescriptor, Reply<WindowHandle>),
     Control(WindowId, u64, Control, Reply<()>),
     Native(WindowId, u64, NativeCallback),
@@ -176,6 +177,7 @@ impl Request {
     fn reject(self, error: WindowError) {
         match self {
             Self::Material(_, _, _, reply) => reply.finish(Err(error)),
+            Self::Displays(reply) => reply.finish(Err(error)),
             Self::Create(_, reply) => reply.finish(Err(error)),
             Self::Control(_, _, _, reply) => reply.finish(Err(error)),
             Self::Native(_, _, callback) => {
@@ -220,6 +222,12 @@ impl WindowService {
             return request;
         }
         self.submit(Request::Create(descriptor, reply));
+        request
+    }
+    /// Displays connected now, enumerated on the window thread.
+    pub fn displays(&self) -> WindowRequest<Vec<DisplayInfo>> {
+        let (request, reply) = WindowRequest::pair(self.host_thread);
+        self.submit(Request::Displays(reply));
         request
     }
     pub(crate) fn register(&self, id: WindowId) {
@@ -547,6 +555,21 @@ mod tests {
         assert_eq!(title, "worker");
         reply.finish(Ok(()));
         assert_eq!(worker.join().unwrap(), Ok(()));
+    }
+    #[test]
+    fn displays_are_answered_without_blocking_when_host_stopped() {
+        let (service, rx) = WindowService::channel(Arc::new(|| {}));
+        let mut displays = service.displays();
+        let Request::Displays(reply) = rx.try_recv().unwrap() else {
+            panic!("unexpected request")
+        };
+        reply.finish(Ok(Vec::new()));
+        assert_eq!(displays.try_take(), Some(Ok(Vec::new())));
+        drop(rx);
+        assert_eq!(
+            service.displays().try_take(),
+            Some(Err(WindowError::HostStopped))
+        );
     }
     #[test]
     fn stopping_host_resolves_pending_and_future_requests() {

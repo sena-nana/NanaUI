@@ -203,6 +203,11 @@ pub use nana_ui_core::{
     WorkspaceModel, WorkspaceMutation,
 };
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
+#[cfg(feature = "hosted")]
+pub use nana_ui_platform::{
+    DisplayId, DisplayInfo, ImeEvent, WindowIcon, WindowIconError,
+    clear_registered_application_icon, register_application_icon,
+};
 /// Fetch host boundary, re-exported so hosts can supply
 /// [`SceneWgpuPainter::set_resource_fetch_host`] without depending on
 /// `nana-ui-platform` directly.
@@ -210,11 +215,6 @@ pub use nana_ui_core::{XYPadEvent, XYPadValue};
 pub use nana_ui_platform::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
     FetchResponse, NativeFetchHost, SharedFetchHost, shared_fetch_host,
-};
-#[cfg(feature = "hosted")]
-pub use nana_ui_platform::{
-    ImeEvent, WindowIcon, WindowIconError, clear_registered_application_icon,
-    register_application_icon,
 };
 /// Compatibility re-export of Runtime `TextArea`. Prefer [`runtime::TextArea`].
 pub use nana_ui_runtime::TextArea as Textarea;

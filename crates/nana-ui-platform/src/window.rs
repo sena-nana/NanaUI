@@ -178,6 +178,40 @@ pub enum WindowEvent {
     },
 }
 
+/// Session identity of a connected display. Equal across enumerations within
+/// one process; only macOS keeps it across reconnects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DisplayId(pub u128);
+
+/// One connected display as enumerated by the window host.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayInfo {
+    pub id: DisplayId,
+    pub name: Option<String>,
+    pub physical_position: Option<(i32, i32)>,
+    pub physical_size: Option<(u32, u32)>,
+    pub scale_factor: f64,
+    pub refresh_rate_millihertz: Option<std::num::NonZeroU32>,
+    /// Never reported on Wayland.
+    pub primary: bool,
+}
+
+impl DisplayInfo {
+    /// Bounds in the global logical space of `WindowDescriptor::initial_position`.
+    pub fn logical_bounds(&self) -> Option<DisplayBounds> {
+        let (x, y) = self.physical_position?;
+        let (width, height) = self.physical_size?;
+        let scale = self.scale_factor;
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        Some(DisplayBounds {
+            position: (f64::from(x) / scale, f64::from(y) / scale),
+            size: (f64::from(width) / scale, f64::from(height) / scale),
+        })
+    }
+}
+
 /// Operating-system light/dark preference.
 ///
 /// Platforms that do not report a preference yield `None` from

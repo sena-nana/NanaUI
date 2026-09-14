@@ -5,6 +5,7 @@
 mod accessibility;
 mod browser;
 mod dialogs;
+mod display;
 mod input;
 mod present;
 mod schedule;
@@ -1211,34 +1212,18 @@ fn scene_display_bounds_with_work_area(
     event_loop: &dyn ActiveEventLoop,
     work_area: bool,
 ) -> Vec<DisplayBounds> {
-    event_loop
-        .available_monitors()
-        .filter_map(|monitor| {
-            let position = monitor.position()?;
-            let size = monitor.current_video_mode()?.size();
-            let scale = monitor.scale_factor();
-            if !scale.is_finite() || scale <= 0.0 {
-                return None;
+    display::display_infos(event_loop)
+        .into_iter()
+        .filter_map(|mut display| {
+            if work_area
+                && let Some((position, size)) = display
+                    .physical_position
+                    .and_then(nana_window::display_work_area)
+            {
+                display.physical_position = Some(position);
+                display.physical_size = Some(size);
             }
-            let (position, size) = if work_area {
-                nana_window::display_work_area((position.x, position.y))
-                    .map(|(p, s)| {
-                        (
-                            winit::dpi::PhysicalPosition::new(p.0, p.1),
-                            winit::dpi::PhysicalSize::new(s.0, s.1),
-                        )
-                    })
-                    .unwrap_or((position, size))
-            } else {
-                (position, size)
-            };
-            Some(DisplayBounds {
-                position: (f64::from(position.x) / scale, f64::from(position.y) / scale),
-                size: (
-                    f64::from(size.width) / scale,
-                    f64::from(size.height) / scale,
-                ),
-            })
+            display.logical_bounds()
         })
         .collect()
 }
@@ -2219,6 +2204,11 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
         self.manager.switch_gpu(graphics, surfaces);
         Ok(())
     }
+    /// Displays connected now.
+    pub fn displays(&self, event_loop: &dyn ActiveEventLoop) -> Vec<nana_ui_platform::DisplayInfo> {
+        display::display_infos(event_loop)
+    }
+
     /// Create a window synchronously on the host's window thread.
     /// Resolves exactly like `WindowService::create_window`, without a queue round trip.
     pub fn create_window(
