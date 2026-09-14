@@ -604,17 +604,14 @@ mod tests {
                 );
 
                 runtime
-                    .dispatch_bridge_event(
-                        WindowId::PRIMARY,
-                        nana_ui_vue::BridgeEvent::Native {
-                            id: first_id,
-                            name: "activated".into(),
-                            payload: HostValue::Object(BTreeMap::from([(
-                                "score".into(),
-                                HostValue::Number(7.0),
-                            )])),
-                        },
-                    )
+                    .dispatch_bridge_event(nana_ui_vue::BridgeEvent::Native {
+                        id: first_id,
+                        name: "activated".into(),
+                        payload: HostValue::Object(BTreeMap::from([(
+                            "score".into(),
+                            HostValue::Number(7.0),
+                        )])),
+                    })
                     .unwrap();
                 assert!(
                     snapshot_after_pump(&mut runtime)

@@ -89,7 +89,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     return;
                 }
                 self.resize_window(id);
-                self.sync_geometry(id);
+                // The cached geometry is now current, so the native resize that
+                // follows will not request this frame itself.
+                if self.sync_geometry(id) {
+                    self.request_redraw(id);
+                }
                 let update = self.program.window_event(
                     WindowEvent::Resized {
                         id,
@@ -281,7 +285,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             surface.alpha_mode(),
             window.theme().map(system_appearance_from_winit),
         )
-        .with_windows(self.windows.clone());
+        .with_windows(&self.windows);
         if let Err(error) = self.program.initialize_window(id, &context) {
             self.windows.unregister(id);
             self.program.discard_window(id);
@@ -289,7 +293,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return Err(error);
         }
         pending_native.0 = None;
-        self.file_dialogs.reopened(id);
         self.window_ids.insert(window.id(), id);
         self.window_contexts.insert(
             id,
@@ -362,6 +365,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         {
             live.end(window.as_ref());
         }
+        // Cleared before `Closed` runs, so a window that callback reopens with the
+        // same identity is not treated as closing.
+        self.closing_windows.remove(&id);
         if let Some(host) = self.window_contexts.remove(&id) {
             #[cfg(target_os = "windows")]
             if let Some(parent_id) = host
@@ -370,6 +376,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .then_some(host.settings.parent)
                 .flatten()
                 && !self.closing_windows.contains(&parent_id)
+                // A modal opened while this one was closing still blocks the parent.
+                && self.active_modal_child(parent_id).is_none()
                 && let Some(parent) = self.window(parent_id)
             {
                 parent.set_enable(true);
@@ -383,7 +391,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .window_event(WindowEvent::Closed { id }, &self.context_for(id));
             self.apply_update(event_loop, update, None);
         }
-        self.closing_windows.remove(&id);
         if self.window_contexts.is_empty() && !self.embedded {
             event_loop.exit();
         }
@@ -419,7 +426,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
     pub(super) fn active_modal_child(&self, parent: WindowId) -> Option<WindowId> {
         self.window_contexts.iter().find_map(|(id, host)| {
-            (host.settings.modal && host.settings.parent == Some(parent)).then_some(*id)
+            (host.settings.modal
+                && host.settings.parent == Some(parent)
+                && !self.closing_windows.contains(id))
+            .then_some(*id)
         })
     }
     pub(super) fn sync_appearance(&mut self) {
@@ -505,7 +515,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 maximized,
             });
         }
-        self.sync_title_bar_maximized(id, maximized);
+        // Title bars mirror only maximize transitions; moves and plain resizes
+        // leave them alone, and optimistic chrome toggles are not overwritten.
+        if maximized != previous.maximized {
+            self.sync_title_bar_maximized(id, maximized);
+        }
         changed
     }
     /// Pins transaction presents while the OS's own frame-resize gesture is
@@ -578,14 +592,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .is_some_and(|host| host.size_move.is_active())
     }
+    /// Program callbacks earlier in the same dispatch may have closed `id`.
     pub(super) fn sync_window_cursor(&mut self, id: WindowId) {
-        if !self
-            .input_mut(id)
-            .begin_cursor_sync(std::time::Instant::now())
-        {
+        let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
+        };
+        if host.input.begin_cursor_sync(std::time::Instant::now()) {
+            self.sync_window_cursor_now(id);
         }
-        self.sync_window_cursor_now(id);
     }
 
     /// Refresh the cursor after a document flush even when pointer-driven
@@ -593,7 +607,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn sync_window_cursor_forced(&mut self, id: WindowId) {
         // Treat the forced probe as the latest sync so a pointer event in the
         // same frame does not immediately repeat the document walk.
-        self.input_mut(id).cursor_sync_last = Some(std::time::Instant::now());
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        host.input.cursor_sync_last = Some(std::time::Instant::now());
         self.sync_window_cursor_now(id);
     }
 
@@ -870,21 +887,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
         self.sync_title_bar_maximized(id, maximized);
     }
+    /// Align the window's title bars with its maximized state through the
+    /// component index, touching only bars that differ.
     pub(super) fn sync_title_bar_maximized(&mut self, id: WindowId, maximized: bool) {
         self.program.write_document(id, |document| {
             let document_id = document.document();
             let context = document.context_mut();
-            let bars = context
+            let stale = context
                 .world()
-                .document_order(document_id)
-                .into_iter()
+                .nodes_of_component(
+                    document_id,
+                    nana_ui_runtime::component_descriptors::APP_TITLE_BAR.type_id,
+                )
                 .filter(|&node| {
                     context
-                        .read(Entity::<AppTitleBar>::from_stable_id(node), |_| ())
-                        .is_ok()
+                        .read(Entity::<AppTitleBar>::from_stable_id(node), |bar| {
+                            bar.maximized != maximized
+                        })
+                        .unwrap_or(false)
                 })
                 .collect::<Vec<_>>();
-            for bar in bars {
+            for bar in stale {
                 let _ = context.update_component(
                     Entity::<AppTitleBar>::from_stable_id(bar),
                     |bar, _| {
@@ -939,33 +962,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                         }
                     }
                     Request::Create(settings, reply) => {
-                        let id = WindowId(self.next_window_id);
-                        let Some(next) = self.next_window_id.checked_add(1) else {
-                            reply.finish(Err(crate::WindowError::InitializationFailed(
-                                "window identities exhausted".into(),
-                            )));
-                            return true;
-                        };
-                        self.next_window_id = next;
-                        match self.open_window(event_loop, id, settings) {
-                            Ok(event) => {
-                                let update =
-                                    self.program.window_event(event, &self.context_for(id));
-                                self.apply_update(event_loop, update, None);
-                                if self.shutting_down {
-                                    reply.finish(Err(crate::WindowError::HostStopped));
-                                } else if self.window(id).is_some() {
-                                    reply.finish(Ok(self.windows.handle(id)));
-                                } else {
-                                    reply.finish(Err(crate::WindowError::InitializationFailed(
-                                        "window initialization rejected".into(),
-                                    )));
-                                }
-                            }
-                            Err(error) => {
-                                reply.finish(Err(crate::WindowError::InitializationFailed(error)))
-                            }
-                        }
+                        reply.finish(self.create_service_window(event_loop, settings));
                     }
                     Request::Native(id, generation, callback) => {
                         if !self.windows.is_current(id, generation) {
@@ -999,6 +996,42 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
 
+    /// Allocate a host-owned identity and open a fully initialized window.
+    pub(super) fn create_service_window(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        settings: WindowDescriptor,
+    ) -> Result<crate::WindowHandle, crate::WindowError> {
+        use crate::WindowError;
+        if self.shutting_down {
+            return Err(WindowError::HostStopped);
+        }
+        // Skip program-chosen identities (such as hashed dock windows) already live here.
+        let id = loop {
+            let id = WindowId(self.next_window_id);
+            self.next_window_id = self.next_window_id.checked_add(1).ok_or_else(|| {
+                WindowError::InitializationFailed("window identities exhausted".into())
+            })?;
+            if !self.window_contexts.contains_key(&id) {
+                break id;
+            }
+        };
+        let event = self
+            .open_window(event_loop, id, settings)
+            .map_err(WindowError::InitializationFailed)?;
+        let update = self.program.window_event(event, &self.context_for(id));
+        self.apply_update(event_loop, update, None);
+        // `Ready` has been delivered, so creation itself succeeded; a window its
+        // own `Ready` handling closed resolves as closed, not as a failed creation.
+        if self.shutting_down {
+            Err(WindowError::HostStopped)
+        } else if self.window(id).is_some() {
+            Ok(self.windows.handle(id))
+        } else {
+            Err(WindowError::WindowClosed)
+        }
+    }
+
     fn control_window(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
@@ -1011,6 +1044,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         match control {
             Control::Visible(visible) => {
                 self.mutate_native_style(id, |window| window.set_visible(visible));
+                // Frames were deferred while hidden; a shown window repaints
+                // without relying on the program to request it.
+                if visible {
+                    self.request_redraw(id);
+                }
                 let update = self.program.window_event(
                     WindowEvent::VisibilityChanged {
                         id,

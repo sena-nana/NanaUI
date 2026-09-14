@@ -42,6 +42,13 @@ impl ApplicationHandler for Host {
             event_loop.exit();
             return;
         }
+        // The host thread creates windows through the runtime it already drives.
+        let host_window = runtime
+            .create_window(event_loop, window_lifecycle::descriptor("Host created"))
+            .unwrap();
+        assert_ne!(host_window.id(), nana_ui_platform::WindowId::PRIMARY);
+        // Submitted immediately; completion is observed through the lifecycle events.
+        drop(host_window.close());
         self.runtime = Some(runtime);
     }
     fn window_event(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId, event: WindowEvent) {

@@ -494,6 +494,12 @@ pub struct TextureSubscription {
     observers: Arc<TextureObservers>,
     id: u64,
 }
+impl TextureSubscription {
+    /// Whether this subscription listens to `registry` (clones share observers).
+    pub(crate) fn observes(&self, registry: &HostTextureRegistry) -> bool {
+        Arc::ptr_eq(&self.observers, &registry.observers)
+    }
+}
 impl Drop for TextureSubscription {
     fn drop(&mut self) {
         if let Ok(mut callbacks) = self.observers.callbacks.write() {

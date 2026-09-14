@@ -102,7 +102,8 @@ pub struct HostedGpuResources {
     adapter: wgpu::Adapter,
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    adapter_info: wgpu::AdapterInfo,
+    // Shared so per-frame context clones do not copy the adapter's strings.
+    adapter_info: Arc<wgpu::AdapterInfo>,
 }
 
 impl HostedGpuResources {
@@ -113,7 +114,7 @@ impl HostedGpuResources {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
     ) -> Self {
-        let adapter_info = adapter.get_info();
+        let adapter_info = Arc::new(adapter.get_info());
         Self {
             generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
             adapter,
@@ -154,6 +155,9 @@ pub struct HostedGpuSurface {
     window: Arc<dyn winit::window::Window>,
     needs_target_commit: bool,
     needs_recovery: bool,
+    /// A suboptimal frame is still presented; the surface cannot be configured
+    /// while that frame is alive, so reconfiguration waits for the next acquire.
+    needs_reconfigure: bool,
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
     want_transparent: bool,
@@ -251,6 +255,7 @@ impl HostedGpuSurface {
         self.surface
             .configure(resources.device(), &self.configuration);
         self.needs_target_commit = true;
+        self.needs_reconfigure = false;
     }
 
     fn apply_alpha_mode(
@@ -333,11 +338,14 @@ impl HostedGpuSurface {
         if self.needs_recovery {
             self.recover(instance, adapter, resources)?;
         }
+        if self.needs_reconfigure {
+            self.reconfigure(resources);
+        }
         self.commit_target()?;
         let result = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Ok(HostedSurfaceFrame::Ready(frame)),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                self.reconfigure(resources);
+                self.needs_reconfigure = true;
                 Ok(HostedSurfaceFrame::Ready(frame))
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
@@ -350,7 +358,7 @@ impl HostedGpuSurface {
                         Ok(HostedSurfaceFrame::Ready(frame))
                     }
                     wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
-                        self.reconfigure(resources);
+                        self.needs_reconfigure = true;
                         Ok(HostedSurfaceFrame::Ready(frame))
                     }
                     wgpu::CurrentSurfaceTexture::Validation => {
@@ -498,7 +506,7 @@ impl HostedGpuContext {
                 });
             }
         });
-        let adapter_info = adapter.get_info();
+        let adapter_info = Arc::new(adapter.get_info());
         let resources = HostedGpuResources {
             generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
             adapter,
@@ -605,7 +613,7 @@ impl HostedGpuShared {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
     ) -> Self {
-        let adapter_info = adapter.get_info();
+        let adapter_info = Arc::new(adapter.get_info());
         Self {
             instance,
             resources: HostedGpuResources {
@@ -656,6 +664,9 @@ impl HostedGpuShared {
     }
     pub fn take_device_lost(&self) -> bool {
         self.device_lost.swap(false, Ordering::AcqRel)
+    }
+    pub(crate) fn is_device_lost(&self) -> bool {
+        self.device_lost.load(Ordering::Acquire)
     }
     pub fn take_device_lost_report(&self) -> Option<HostedDeviceLost> {
         self.device_lost.store(false, Ordering::Release);
@@ -728,6 +739,13 @@ impl HostedGpuShared {
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
         self.resources.queue().present(frame);
     }
+    /// Apply a reconfiguration deferred by a suboptimal frame once that frame
+    /// has been presented, without waiting for another redraw.
+    pub(crate) fn apply_pending_reconfigure(&self, surface: &mut HostedGpuSurface) {
+        if surface.needs_reconfigure {
+            surface.reconfigure(&self.resources);
+        }
+    }
     pub fn discard_surface_frame(
         &self,
         surface: &mut HostedGpuSurface,
@@ -767,6 +785,7 @@ fn configure_surface(
         target,
         needs_target_commit: false,
         needs_recovery: false,
+        needs_reconfigure: false,
         format,
         configuration,
         want_transparent,

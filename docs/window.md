@@ -169,7 +169,9 @@ window.close().wait()?;
 
 `platform_host::EmbeddedRuntime` 接收宿主 `ActiveEventLoop`、proxy 和 `HostedGpuShared`，从不创建或退出宿主事件循环。宿主转发 `window_event`、`wake` 和 `about_to_wait`。`HostedGpuShared::from_device` 接入已有 Instance/Adapter/Device/Queue；不申请第二个 Device。
 
-设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后，先在窗口线程调用 `notify_device_lost()`，再转发其他窗口事件；通过 `needs_gpu_replacement()` 检查挂起状态，重建宿主设备后调用 `replace_gpu()`。替换先为所有存活窗口准备 Surface，成功后统一切换并调用应用 GPU 重建回调。
+宿主在窗口线程回调中可用 `create_window(event_loop, descriptor)` 同步创建窗口，结果与 `WindowService::create_window` 相同，但不经过请求队列。整个进程只有一个事件循环：standalone 下再次调用 `run_runtime` 返回 `HostedRunError::EventLoop`（winit `RecreationAttempt`）；已有事件循环的宿主应改用 `EmbeddedRuntime`。
+
+设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后，先在窗口线程调用 `notify_device_lost()`，再转发其他窗口事件；通过 `needs_gpu_replacement()` 检查挂起状态，重建宿主设备后调用 `replace_gpu()`。替换为每个存活窗口准备 Surface；只有所有窗口都无法在新 Device 上创建 Surface 时才返回错误且不切换，否则统一切换并调用应用 GPU 重建回调，失败窗口按下文 Surface 故障恢复单独重试。
 
 `WindowHandle::with_native_handle` 将回调调度到窗口线程，仅借用回调期间有效的 raw handle。不能保存原始指针供回调结束后使用，也不会取得 `winit::Window` 所有权。
 
@@ -190,7 +192,7 @@ window.close().wait()?;
 
 `WindowDescriptor::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。不需要 `DesktopShell` 才能使用边缘缩放。
 
-`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
+`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误；窗口若在处理 `Ready` 时被应用关闭，凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID，并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
 
 `RuntimeProgram::window_material_mode_for(id)` 与 `appearance_backdrop_opacity_for(id)` 默认调用现有全局方法，允许主窗和透明工具窗分别配置。宿主在创建、外观变化、Surface 恢复时都按目标窗口调用；背景透明不改变前景文字的不透明度。纯透明窗口的内容背景由应用 Runtime 节点绘制。
 
@@ -245,7 +247,7 @@ python scripts/validate-desktop-overlay.py
 
 ### Surface 故障恢复
 
-Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口，并以两秒间隔在现有共享 GPU 上重试；其他窗口继续绘制。`HostFailure::SurfaceRecovery` 报告窗口身份与首次错误。恢复成功后重置该窗口材质缓存并重绘，失败不关闭应用文档。恢复期间材质操作返回 `OperationFailed`。失败的材质操作不会保存新的覆盖值或透明偏好；若原生配置已部分改变，后续 Surface 恢复会重新应用上一次成功的设置。只有 Device 丢失才启动全局 GPU 恢复；embedded 的局部 Surface 故障不会要求宿主更换 Device。
+Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口，并以两秒间隔在现有共享 GPU 上重试；其他窗口继续绘制。`HostFailure::SurfaceRecovery` 报告窗口身份与首次错误。恢复成功后重置该窗口材质缓存并重绘，失败不关闭应用文档。恢复期间材质操作返回 `OperationFailed`。失败的材质操作不会保存新的覆盖值或透明偏好；若原生配置已部分改变，后续 Surface 恢复会重新应用上一次成功的设置。只有 Device 丢失才启动全局 GPU 恢复；Device 丢失导致的 Surface 失败不会逐窗口报告 `SurfaceRecovery`。standalone 恢复依次尝试各存活窗口作为新 Device 的基准，某扇窗口无法重建不会阻塞其他窗口；embedded 的局部 Surface 故障不会要求宿主更换 Device。
 
 窗口拖动、边缘缩放与穿透控制保留底层错误分类：平台明确不支持时返回 `Unsupported`，操作被系统忽略或遇到其他 OS 错误时返回 `OperationFailed`。穿透事件与请求完成结果报告同一次操作的结果。
 

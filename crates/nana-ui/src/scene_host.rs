@@ -181,7 +181,9 @@ struct WindowManager<Program: RuntimeProgram> {
     tasks: SyncSender<Task<Program::Message>>,
     animation_clock: RuntimeAnimationClock,
     frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
-    texture_subscriptions: HashMap<WindowId, crate::TextureSubscription>,
+    /// Host-texture slots each window's scene samples, with the subscription
+    /// that wakes it; re-subscribed only when the slot set or registry changes.
+    texture_subscriptions: HashMap<WindowId, (HashSet<Arc<str>>, crate::TextureSubscription)>,
     texture_redraws: Arc<Mutex<HashSet<WindowId>>>,
     image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
     image_window_keys: HashMap<WindowId, HashSet<String>>,
@@ -542,15 +544,6 @@ fn initialize<Program: RuntimeProgram>(
         .into_parts()
     };
     let format = surface.format();
-    let mut painters = HashMap::new();
-    painters.insert(
-        format,
-        SceneWgpuPainter::new(
-            graphics.resources().device(),
-            graphics.resources().queue(),
-            format,
-        ),
-    );
     let host_work = Arc::new(schedule::HostWorkWake::new(proxy.clone()));
     let window_wake = Arc::clone(&host_work);
     let (windows, window_requests) =
@@ -569,7 +562,7 @@ fn initialize<Program: RuntimeProgram>(
         surface.alpha_mode(),
         window.theme().map(system_appearance_from_winit),
     )
-    .with_windows(windows.clone());
+    .with_windows(&windows);
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
     // the inbox before the initialized program can join request-waiting workers.
@@ -628,7 +621,7 @@ fn initialize<Program: RuntimeProgram>(
         window_requests: Some(startup_requests),
         next_window_id: 1 << 63,
         graphics,
-        painters,
+        painters: HashMap::new(),
         native_renderers: HashMap::new(),
         text: NanaTextShaper::default(),
         proxy,
@@ -664,7 +657,7 @@ fn initialize<Program: RuntimeProgram>(
     ready
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
-    ready.install_image_wakers();
+    let _ = ready.painter_mut(format);
     ready.prepare_window_chrome(
         WindowId::PRIMARY,
         ready.geometry_of(WindowId::PRIMARY).maximized,
@@ -692,32 +685,11 @@ fn initialize<Program: RuntimeProgram>(
 }
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
-    fn install_image_wakers(&mut self) {
-        let targets = Arc::clone(&self.image_targets);
-        let redraws = Arc::clone(&self.texture_redraws);
-        let proxy = self.proxy.clone();
-        for painter in self.painters.values_mut() {
-            let targets = Arc::clone(&targets);
-            let redraws = Arc::clone(&redraws);
-            let proxy = proxy.clone();
-            painter.set_image_update_waker(Arc::new(move |key| {
-                let ids = targets
-                    .lock()
-                    .ok()
-                    .and_then(|targets| targets.get(key).cloned())
-                    .unwrap_or_default();
-                if !ids.is_empty()
-                    && let Ok(mut pending) = redraws.lock()
-                {
-                    pending.extend(ids);
-                }
-                proxy.wake_up();
-            }));
-        }
-    }
-
     fn update_image_targets(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
         let keys = scene_image_keys(scene);
+        if self.image_window_keys.get(&id) == Some(&keys) {
+            return;
+        }
         if let Ok(mut targets) = self.image_targets.lock() {
             replace_image_target_index(&mut targets, &mut self.image_window_keys, id, keys);
         } else {
@@ -749,7 +721,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .and_then(|w| w.theme())
                 .map(system_appearance_from_winit),
         )
-        .with_windows(self.windows.clone())
+        .with_windows(&self.windows)
     }
 
     fn apply_update(
@@ -2230,33 +2202,32 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
         self.manager.render_suspended
     }
     /// Called by the embedding host after it replaces its device.
+    /// Fails without switching only when no live window can present on the
+    /// replacement; otherwise windows whose surface failed recover individually.
     pub fn replace_gpu(&mut self, graphics: crate::HostedGpuShared) -> Result<(), String> {
-        let surfaces: Result<Vec<_>, _> = self
+        let surfaces: Vec<_> = self
             .manager
             .window_contexts
             .iter()
-            .map(|(&id, host)| {
-                graphics
-                    .recreate_surface(&host.surface)
-                    .map(|surface| (id, surface))
-            })
+            .map(|(&id, host)| (id, graphics.recreate_surface(&host.surface)))
             .collect();
-        for (id, surface) in surfaces.map_err(|error| error.to_string())? {
-            let host = self.manager.window_contexts.get_mut(&id).unwrap();
-            host.surface = surface;
-            host.surface_retry = None;
+        if surfaces.iter().all(|(_, surface)| surface.is_err())
+            && let Some((_, Err(error))) = surfaces.first()
+        {
+            return Err(error.to_string());
         }
-        self.manager.graphics = graphics;
-        self.manager.painters.clear();
-        self.manager.native_renderers.clear();
-        self.manager.render_suspended = false;
-        self.manager.next_gpu_retry = None;
-        self.manager.refresh_material();
-        let ids = self.manager.known_window_ids();
-        invalidate_program_host_textures(ids, |id| self.manager.program.host_textures(id));
-        self.manager.program.rebuild_gpu(&self.manager.context());
-        self.manager.request_redraw_all();
+        self.manager.switch_gpu(graphics, surfaces);
         Ok(())
+    }
+    /// Create a window synchronously on the host's window thread.
+    /// Resolves exactly like `WindowService::create_window`, without a queue round trip.
+    pub fn create_window(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        descriptor: WindowDescriptor,
+    ) -> Result<crate::WindowHandle, crate::WindowError> {
+        crate::window_service::validate_descriptor(&descriptor)?;
+        self.manager.create_service_window(event_loop, descriptor)
     }
     pub fn is_empty(&self) -> bool {
         self.manager.window_contexts.is_empty()

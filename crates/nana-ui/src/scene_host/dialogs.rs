@@ -10,14 +10,13 @@ pub(super) struct FileDialogs {
     next: u64,
     native: HashMap<WindowId, nana_window::FileDialogHandle>,
     active: HashMap<WindowId, (u64, u64)>,
-    closed: HashSet<WindowId>,
     shutting_down: bool,
     completed: Arc<Mutex<Vec<Completion>>>,
 }
 
 impl FileDialogs {
     fn begin(&mut self, id: WindowId, request: u64) -> Result<u64, FileDialogError> {
-        if self.shutting_down || self.closed.contains(&id) {
+        if self.shutting_down {
             return Err(FileDialogError::WindowClosed);
         }
         if let Some((_, active)) = self.active.get(&id) {
@@ -50,15 +49,10 @@ impl FileDialogs {
     }
 
     fn close(&mut self, id: WindowId) -> Option<FileDialogResult> {
-        self.closed.insert(id);
         self.native.remove(&id);
         self.active
             .remove(&id)
             .map(|(_, request)| FileDialogResult::failed(request, FileDialogError::WindowClosed))
-    }
-
-    pub(super) fn reopened(&mut self, id: WindowId) {
-        self.closed.remove(&id);
     }
 }
 
@@ -69,7 +63,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         id: WindowId,
         request: FileDialogRequest,
     ) {
-        let Some(window) = self.window(id).cloned() else {
+        let Some(window) = self
+            .window(id)
+            .filter(|_| !self.closing_windows.contains(&id))
+            .cloned()
+        else {
             self.reject_file_dialog(event_loop, id, request.id, FileDialogError::WindowClosed);
             return;
         };
@@ -226,8 +224,6 @@ mod tests {
             Some(FileDialogError::WindowClosed)
         );
         assert!(dialogs.close(id).is_none());
-        assert_eq!(dialogs.begin(id, 42), Err(FileDialogError::WindowClosed));
-        dialogs.reopened(id);
         let new = dialogs.begin(id, 42).unwrap();
         assert!(
             dialogs

@@ -53,7 +53,9 @@ pub(crate) fn gated_runtime_window_update(
 /// Native window identities intentionally do not cross this boundary.
 pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_id: WindowId,
-    windows: Option<crate::WindowService>,
+    /// Bound to the window generation live when the context was built, so a
+    /// retained context never controls a later window with the same identity.
+    window: Option<crate::WindowHandle>,
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
     material: MaterialOutcome,
@@ -69,7 +71,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
     fn clone(&self) -> Self {
         Self {
             window_id: self.window_id,
-            windows: self.windows.clone(),
+            window: self.window.clone(),
             geometry: self.geometry,
             gpu: self.gpu.clone(),
             material: self.material,
@@ -98,7 +100,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     ) -> Self {
         Self {
             window_id,
-            windows: None,
+            window: None,
             geometry,
             gpu,
             material,
@@ -109,19 +111,23 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         }
     }
 
-    pub(crate) fn with_windows(mut self, windows: crate::WindowService) -> Self {
-        self.windows = Some(windows);
+    pub(crate) fn with_windows(mut self, windows: &crate::WindowService) -> Self {
+        self.window = Some(windows.handle(self.window_id));
         self
     }
 
     pub fn windows(&self) -> &crate::WindowService {
-        self.windows
-            .as_ref()
-            .expect("window service is available in a native host")
+        self.window_handle().service()
     }
 
     pub fn window(&self) -> crate::WindowHandle {
-        self.windows().handle(self.window_id)
+        self.window_handle().clone()
+    }
+
+    fn window_handle(&self) -> &crate::WindowHandle {
+        self.window
+            .as_ref()
+            .expect("window service is available in a native host")
     }
 
     pub const fn window_id(&self) -> WindowId {
@@ -276,7 +282,6 @@ pub enum HostFailure {
     FrameDidNotSettle { window: WindowId, error: String },
     ResourceProduction { window: WindowId, error: String },
     UnpaintableScene { window: WindowId, error: String },
-    AuxiliarySurfaceLost { window: WindowId },
     SurfaceRecovery { window: WindowId, error: String },
 }
 
@@ -293,7 +298,6 @@ impl HostFailure {
             | Self::FrameDidNotSettle { window, .. }
             | Self::ResourceProduction { window, .. }
             | Self::UnpaintableScene { window, .. }
-            | Self::AuxiliarySurfaceLost { window }
             | Self::SurfaceRecovery { window, .. } => *window,
         }
     }
@@ -310,7 +314,7 @@ impl HostFailure {
             | Self::ResourceProduction { error, .. }
             | Self::UnpaintableScene { error, .. }
             | Self::SurfaceRecovery { error, .. } => Some(error),
-            Self::MissingDocument { .. } | Self::AuxiliarySurfaceLost { .. } => None,
+            Self::MissingDocument { .. } => None,
         }
     }
 }
@@ -332,9 +336,6 @@ impl fmt::Display for HostFailure {
             Self::FrameDidNotSettle { .. } => formatter.write_str(": frame did not settle"),
             Self::ResourceProduction { .. } => formatter.write_str(": resource production failed"),
             Self::UnpaintableScene { .. } => formatter.write_str(": unpaintable UiScene"),
-            Self::AuxiliarySurfaceLost { .. } => {
-                formatter.write_str(": auxiliary surface closed during frame")
-            }
         }
     }
 }

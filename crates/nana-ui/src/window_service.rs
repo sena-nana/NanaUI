@@ -388,6 +388,9 @@ impl WindowHandle {
             enabled,
         }))
     }
+    pub(crate) fn service(&self) -> &WindowService {
+        &self.service
+    }
     pub fn close(&self) -> WindowRequest<()> {
         self.control(Control::Command(WindowCommand::Close(self.id)))
     }

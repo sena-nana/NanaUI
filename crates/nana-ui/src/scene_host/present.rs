@@ -58,21 +58,32 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     fn rearm_frame_demand(&mut self, id: WindowId) {
-        let now = Instant::now();
-        let demand = self.program.frame_demand(id);
-        self.frame_schedules
-            .entry(id)
-            .or_default()
-            .defer(demand, now);
+        self.update_frame_schedule(id, crate::runtime_host::FrameSchedule::defer);
     }
 
     fn serve_frame_demand(&mut self, id: WindowId) {
-        let now = Instant::now();
+        self.update_frame_schedule(id, crate::runtime_host::FrameSchedule::advance_served);
+    }
+
+    /// A frame may close its own window; a closed window keeps no schedule.
+    fn update_frame_schedule(
+        &mut self,
+        id: WindowId,
+        update: impl FnOnce(
+            &mut crate::runtime_host::FrameSchedule,
+            crate::FrameDemand,
+            Instant,
+        ) -> Option<Instant>,
+    ) {
+        if !self.window_contexts.contains_key(&id) {
+            return;
+        }
         let demand = self.program.frame_demand(id);
-        self.frame_schedules
-            .entry(id)
-            .or_default()
-            .advance_served(demand, now);
+        update(
+            self.frame_schedules.entry(id).or_default(),
+            demand,
+            Instant::now(),
+        );
     }
 
     pub(super) fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
@@ -215,17 +226,23 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                         }
                     })
                     .collect::<HashSet<_>>();
-                let pending = Arc::clone(&self.texture_redraws);
-                let proxy = self.proxy.clone();
-                self.texture_subscriptions.insert(
-                    id,
-                    registry.subscribe(move |slot| {
-                        if slot.is_empty() || slots.contains(slot) {
+                let current = self.texture_subscriptions.get(&id).is_some_and(
+                    |(subscribed, subscription)| {
+                        *subscribed == slots && subscription.observes(registry)
+                    },
+                );
+                if !current {
+                    let pending = Arc::clone(&self.texture_redraws);
+                    let proxy = self.proxy.clone();
+                    let observed = slots.clone();
+                    let subscription = registry.subscribe(move |slot| {
+                        if slot.is_empty() || observed.contains(slot) {
                             pending.lock().expect("texture redraws").insert(id);
                             proxy.wake_up();
                         }
-                    }),
-                );
+                    });
+                    self.texture_subscriptions.insert(id, (slots, subscription));
+                }
             }
         } else {
             self.texture_subscriptions.remove(&id);
@@ -297,6 +314,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.painter_mut(format)
             .record_submit(submit_started.elapsed());
         self.graphics.present(frame);
+        if let Some(host) = self.window_contexts.get_mut(&id) {
+            self.graphics.apply_pending_reconfigure(&mut host.surface);
+        }
         self.serve_frame_demand(id);
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition
@@ -348,51 +368,76 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.next_gpu_retry = None;
             return;
         }
-        let Some((&first_id, first)) = self.window_contexts.iter().next() else {
+        let mut recovery_windows = self.known_window_ids();
+        if recovery_windows.is_empty() {
             return;
-        };
-        match pollster::block_on(crate::HostedGpuShared::rebuild_for_surface(&first.surface)) {
-            Ok((graphics, surface)) => {
-                let recovery_windows = self.known_window_ids();
-                let first = self.window_contexts.get_mut(&first_id).unwrap();
-                first.surface = surface;
-                first.surface_retry = None;
-                let mut failed = Vec::new();
-                for (&id, host) in &mut self.window_contexts {
-                    if id == first_id {
-                        continue;
-                    }
-                    match graphics.recreate_surface(&host.surface) {
-                        Ok(surface) => {
-                            host.surface = surface;
-                            host.surface_retry = None;
-                        }
-                        Err(error) => {
-                            host.surface_retry = None;
-                            failed.push((id, error));
-                        }
-                    }
+        }
+        recovery_windows.sort_unstable();
+        // Any live window may seed the replacement device, since adapter choice
+        // depends on its surface. A device failure does not, so stop there.
+        let mut rebuilt = None;
+        for &id in &recovery_windows {
+            let surface = &self.window_contexts[&id].surface;
+            match pollster::block_on(crate::HostedGpuShared::rebuild_for_surface(surface)) {
+                Ok((graphics, surface)) => {
+                    rebuilt = Some((id, graphics, surface));
+                    break;
                 }
-                self.graphics = graphics;
-                self.painters.clear();
-                self.native_renderers.clear();
-                self.next_gpu_retry = None;
-                self.render_suspended = false;
-                for (id, error) in failed {
-                    self.suspend_surface(id, error);
-                }
-                self.refresh_material();
-                invalidate_program_host_textures(recovery_windows, |id| {
-                    self.program.host_textures(id)
-                });
-                self.program.rebuild_gpu(&self.context());
-                self.request_redraw_all();
-            }
-            Err(_) => {
-                self.render_suspended = true;
-                self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
+                Err(HostedGpuError::Device(_)) => break,
+                Err(_) => {}
             }
         }
+        let Some((base, graphics, surface)) = rebuilt else {
+            self.render_suspended = true;
+            self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
+            return;
+        };
+        let surfaces = std::iter::once((base, Ok(surface)))
+            .chain(
+                recovery_windows
+                    .iter()
+                    .filter(|&&id| id != base)
+                    .map(|&id| {
+                        (
+                            id,
+                            graphics.recreate_surface(&self.window_contexts[&id].surface),
+                        )
+                    }),
+            )
+            .collect();
+        self.switch_gpu(graphics, surfaces);
+    }
+
+    /// Adopt a replacement device. Windows whose surface failed on it recover
+    /// individually; every other window presents on the new device immediately.
+    pub(super) fn switch_gpu(
+        &mut self,
+        graphics: crate::HostedGpuShared,
+        surfaces: Vec<(WindowId, Result<HostedGpuSurface, HostedGpuError>)>,
+    ) {
+        let mut failed = Vec::new();
+        for (id, surface) in surfaces {
+            let host = self.window_contexts.get_mut(&id).unwrap();
+            host.surface_retry = None;
+            match surface {
+                Ok(surface) => host.surface = surface,
+                Err(error) => failed.push((id, error)),
+            }
+        }
+        self.graphics = graphics;
+        self.painters.clear();
+        self.native_renderers.clear();
+        self.next_gpu_retry = None;
+        self.render_suspended = false;
+        for (id, error) in failed {
+            self.suspend_surface(id, error);
+        }
+        self.refresh_material();
+        invalidate_program_host_textures(self.known_window_ids(), |id| {
+            self.program.host_textures(id)
+        });
+        self.program.rebuild_gpu(&self.context());
+        self.request_redraw_all();
     }
     pub(super) fn suspend_surface(&mut self, id: WindowId, error: HostedGpuError) {
         // WGPU delivers a destroyed device's callback during polling, after its
@@ -402,6 +447,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .resources()
             .device()
             .poll(wgpu::PollType::Poll);
+        // A lost device fails every surface; leave it to process-wide recovery
+        // instead of reporting per-window surface failures.
+        if !self.embedded && self.graphics.is_device_lost() {
+            return;
+        }
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return;
         };
@@ -436,28 +486,35 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
     }
+    /// Painters are created lazily per surface format and own their image waker
+    /// from creation, so the per-frame lookup does no allocation.
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
-        let resources = self.graphics.resources();
-        let painter = self.painters.entry(format).or_insert_with(|| {
-            SceneWgpuPainter::new(resources.device(), resources.queue(), format)
-        });
-        let targets = Arc::clone(&self.image_targets);
-        let redraws = Arc::clone(&self.texture_redraws);
-        let proxy = self.proxy.clone();
-        painter.set_image_update_waker(Arc::new(move |key| {
-            let ids = targets
-                .lock()
-                .ok()
-                .and_then(|targets| targets.get(key).cloned())
-                .unwrap_or_default();
-            if !ids.is_empty()
-                && let Ok(mut pending) = redraws.lock()
-            {
-                pending.extend(ids);
-            }
-            proxy.wake_up();
-        }));
-        painter
+        let (graphics, targets, redraws, proxy) = (
+            &self.graphics,
+            &self.image_targets,
+            &self.texture_redraws,
+            &self.proxy,
+        );
+        self.painters.entry(format).or_insert_with(|| {
+            let resources = graphics.resources();
+            let mut painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
+            let (targets, redraws, proxy) =
+                (Arc::clone(targets), Arc::clone(redraws), proxy.clone());
+            painter.set_image_update_waker(Arc::new(move |key| {
+                let ids = targets
+                    .lock()
+                    .ok()
+                    .and_then(|targets| targets.get(key).cloned())
+                    .unwrap_or_default();
+                if !ids.is_empty()
+                    && let Ok(mut pending) = redraws.lock()
+                {
+                    pending.extend(ids);
+                }
+                proxy.wake_up();
+            }));
+            painter
+        })
     }
 }
 

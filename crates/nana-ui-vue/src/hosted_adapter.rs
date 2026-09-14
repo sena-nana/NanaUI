@@ -124,6 +124,11 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         geometry: Option<&nana_ui_platform::WindowGeometry>,
         theme: ThemeMode,
     ) -> Result<Vec<nana_ui_platform::host::WindowCommand>, JsEngineError> {
+        // The artifact mounts into the primary document. Without it a reload has
+        // nowhere to mount, so leave the surviving windows and their content alone.
+        self.require_host(VueWindowId::PRIMARY).map_err(|_| {
+            JsEngineError::new("dev reload requires the primary Vue window, which is closed")
+        })?;
         let state = crate::dev::save_state(&mut self.engine);
 
         // One isolate is shared by every window, so auxiliary windows cannot
@@ -185,11 +190,8 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         Ok(generation)
     }
 
-    pub fn dispatch_bridge_event(
-        &mut self,
-        _id: WindowId,
-        event: BridgeEvent,
-    ) -> Result<bool, JsEngineError> {
+    /// Route an event to the window that owns its widget.
+    pub fn dispatch_bridge_event(&mut self, event: BridgeEvent) -> Result<bool, JsEngineError> {
         let document = crate::DocumentId::from_node(crate::NodeHandle(event.widget_id()));
         let id = VueWindowId(document.0.saturating_sub(1));
         let host = self
@@ -277,16 +279,24 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         // A callback may update another document or mutate state before throwing.
         // Preserve those changes even when event delivery reports an error.
         let _ = self.emit_runtime_input(VueWindowId(id.0), event);
+        Ok(self.update_for_changed_windows(before))
+    }
+
+    /// Redraw only the windows whose visual revision moved since `before`.
+    fn update_for_changed_windows(
+        &self,
+        before: HashMap<WindowId, WindowVisualRevision>,
+    ) -> RuntimeProgramUpdate {
         let after = self.window_visual_revisions();
         let redraw = RuntimeRedraw::for_windows(
             after
                 .into_iter()
                 .filter_map(|(id, revision)| (before.get(&id) != Some(&revision)).then_some(id)),
         );
-        Ok(RuntimeProgramUpdate {
+        RuntimeProgramUpdate {
             redraw,
             ..self.runtime_program_update(false)
-        })
+        }
     }
 
     fn window_visual_revisions(&self) -> HashMap<WindowId, WindowVisualRevision> {
@@ -482,11 +492,26 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         }
     }
 
+    /// The host already redraws a window it resizes or publishes; moves, focus
+    /// and occlusion repaint only windows whose Vue state actually changed.
     pub fn runtime_window_event(&mut self, event: WindowEvent) -> RuntimeProgramUpdate {
+        // These run no script, so no Vue window can change visually.
+        let scripted = !matches!(
+            event,
+            WindowEvent::Moved { .. }
+                | WindowEvent::MousePassthroughChanged { .. }
+                | WindowEvent::AppearanceChanged { .. }
+                | WindowEvent::FileDialogRejected { .. }
+                | WindowEvent::FileDialogCompleted { .. }
+        );
+        let before = scripted.then(|| self.window_visual_revisions());
         if let Err(_error) = self.handle_platform_window_event(event) {
             return RuntimeProgramUpdate::default();
         }
-        self.runtime_program_update(true)
+        match before {
+            Some(before) => self.update_for_changed_windows(before),
+            None => self.runtime_program_update(false),
+        }
     }
 
     /// Complete viewport and JS binding before the host publishes the window.
@@ -1131,7 +1156,7 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             VueMessage::Dev(request) => return self.apply_dev_reload(request, _context),
         };
         self.sync_documents();
-        match self.runtime.dispatch_bridge_event(WindowId::PRIMARY, event) {
+        match self.runtime.dispatch_bridge_event(event) {
             Ok(_) => {
                 self.sync_documents();
                 self.runtime.runtime_program_update(true)
@@ -1359,6 +1384,31 @@ mod tests {
         fn interrupt(&mut self) {}
         fn request_gc(&mut self) {}
         fn shutdown(&mut self) {}
+    }
+
+    #[cfg(feature = "dev-reload")]
+    #[test]
+    fn artifact_reload_after_primary_close_keeps_surviving_windows() {
+        let vue = VueRuntime::new(400, 300, 1.0);
+        vue.host_api_registry().call("windowCreate", &[]).unwrap();
+        vue.request_close(VueWindowId::PRIMARY).unwrap();
+        vue.notify_window_closed(VueWindowId::PRIMARY).unwrap();
+        vue.drain_runtime_window_commands();
+        let survivors = vue.window_ids();
+        let mut runtime = VueHostedRuntime {
+            engine: InputEngine::default(),
+            vue,
+            application_api: HostApiRegistry::new(),
+        };
+        let artifact = RuntimeArtifact::from_source("reload.js", "");
+        let replace_engine = || -> InputEngine { panic!("reload tore down the surviving runtime") };
+        assert!(
+            runtime
+                .dev_reload(&artifact, &replace_engine, None, None, ThemeMode::Light)
+                .is_err()
+        );
+        assert_eq!(runtime.vue.window_ids(), survivors);
+        assert!(runtime.vue.drain_runtime_window_commands().is_empty());
     }
 
     #[test]

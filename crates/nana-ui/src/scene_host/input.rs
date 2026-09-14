@@ -31,7 +31,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             };
             self.apply_update(event_loop, update, None);
-            if event_loop.exiting() {
+            // An action may close its own window; the event has no target left.
+            if event_loop.exiting() || !self.window_contexts.contains_key(&id) {
                 return;
             }
         }
