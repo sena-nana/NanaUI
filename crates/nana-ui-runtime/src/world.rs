@@ -953,17 +953,20 @@ impl UiWorld {
     /// Dirty computed styles are derived from the local hierarchy instead of
     /// treating the previous frame's visibility as current authority.
     pub fn is_overlay_reachable(&self, id: StableNodeId) -> bool {
+        let mut visibility = None;
         let mut child = id;
         let mut current = Some(id);
         while let Some(candidate) = current {
+            // Visibility inherits from the nearest declaration; a visible child
+            // may override a hidden parent. Read authored styles while dirty.
+            visibility = visibility.or_else(|| {
+                self.node_style(candidate)
+                    .and_then(|style| style.layout.paint.visibility)
+            });
             if !self.presence_live(candidate)
                 || self
                     .node_style(candidate)
                     .is_some_and(|style| style.layout.omits_box())
-                || (!self.dirty_entities.contains(&candidate)
-                    && self
-                        .computed_style(candidate)
-                        .is_some_and(|style| !style.visible))
             {
                 return false;
             }
@@ -979,7 +982,7 @@ impl UiWorld {
             }
             current = parent;
         }
-        true
+        visibility != Some(nana_ui_core::VisibilitySpec::Hidden)
     }
 
     pub fn interaction(&self, id: StableNodeId) -> Option<InteractionState> {

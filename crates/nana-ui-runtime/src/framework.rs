@@ -1245,7 +1245,6 @@ impl AppContext {
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
         self.prepare_surface_closing(&mut mutations);
-        let hover_restore = self.hover_card_closing_focus(&mutations);
         let previous_focus = mutations
             .as_slice()
             .iter()
@@ -1257,6 +1256,7 @@ impl AppContext {
                 | crate::UiMutation::Detach { id: root }
                 | crate::UiMutation::Insert { child: root, .. }
                 | crate::UiMutation::SetInteraction { id: root, .. }
+                | crate::UiMutation::SetStandardVisual { id: root, .. }
                 | crate::UiMutation::SetStyle { id: root, .. }
                 | crate::UiMutation::SetOverlayHost { host: root, .. }
                 | crate::UiMutation::SetSurfaceOpen { id: root, .. } => {
@@ -1266,6 +1266,7 @@ impl AppContext {
             })
             .filter_map(|document| self.world.focused(document).map(|node| (document, node)))
             .collect::<HashMap<_, _>>();
+        let hover_restore = self.hover_card_focus_before_commit(&mutations, &previous_focus);
         let retired_documents = mutations
             .as_slice()
             .iter()
@@ -1290,7 +1291,16 @@ impl AppContext {
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
-        for (document, restore) in hover_restore {
+        for (document, root, previous, restore) in hover_restore {
+            // Other focus owners (including overlay and scope restoration) win.
+            if self
+                .world
+                .focused(document)
+                .is_some_and(|focus| focus != previous)
+                || self.hover_card_focus_reachable(root, previous)
+            {
+                continue;
+            }
             if let Some(restore) = restore.filter(|focus| {
                 self.overlay_focus_candidate(document, *focus)
                     && self.world.is_overlay_reachable(*focus)
@@ -1592,11 +1602,13 @@ impl AppContext {
     fn enclosing_hover_card(&self, id: StableNodeId) -> Option<StableNodeId> {
         let mut current = Some(id);
         while let Some(id) = current {
-            if self
-                .views
-                .get(&id)
-                .is_some_and(|view| view.is::<crate::HoverCard>())
-            {
+            if matches!(
+                self.world.standard_visual(id),
+                Some(crate::StandardVisual::MenuSurface {
+                    kind: crate::MenuSurfaceKind::HoverCard,
+                    ..
+                })
+            ) {
                 return Some(id);
             }
             current = self.world.node(id).and_then(|node| node.parent);
@@ -2475,7 +2487,6 @@ impl AppContext {
         if !self.world.contains(id) {
             return Err(FrameworkError::MissingView(id));
         }
-        let document = self.world.document_of(id).expect("node was checked above");
         let mut subtree = Vec::new();
         let mut stack = vec![id];
         while let Some(current) = stack.pop() {
@@ -2488,11 +2499,7 @@ impl AppContext {
         }
         let mut queue = MutationQueue::new();
         queue.despawn_subtree(id);
-        self.world.commit(queue)?;
-        self.release_empty_document_layout(document);
-        for &id in &subtree {
-            self.layout_cache.remove_node(document, id);
-        }
+        self.commit_mutations(queue)?;
         let removed = subtree.iter().copied().collect::<HashSet<_>>();
         self.forget_subtree(&removed);
         Ok(())

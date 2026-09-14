@@ -265,7 +265,7 @@ fn hover_card_programmatic_close_restores_keyboard_focus() {
 
 #[test]
 fn hover_card_close_never_restores_hidden_disabled_or_removed_editor() {
-    for invalidation in 0..3 {
+    for invalidation in 0..4 {
         let mut f = Fixture::new();
         f.open();
         for _ in 0..5 {
@@ -286,7 +286,12 @@ fn hover_card_close_never_restores_hidden_disabled_or_removed_editor() {
                     .node_style(f.editor.stable_id())
                     .unwrap()
                     .clone();
-            Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+            if invalidation == 3 {
+                Arc::make_mut(&mut hidden.layout).paint.visibility =
+                    Some(nana_ui_core::VisibilitySpec::Hidden);
+            } else {
+                Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+            }
             let mut mutations = nana_ui_runtime::MutationQueue::new();
             mutations.set_style(f.editor.stable_id(), hidden);
             f.cx.commit_mutations(mutations).unwrap();
@@ -318,14 +323,19 @@ fn hover_card_close_honors_explicit_focus_in_the_same_update() {
 
 #[test]
 fn hover_card_close_validates_restore_target_after_the_whole_update() {
-    for invalidation in 0..3 {
+    for invalidation in 0..4 {
         let mut f = Fixture::new();
         f.open();
         f.key("Tab", false, None);
         assert_eq!(f.cx.world().focused(f.doc), Some(f.refresh.stable_id()));
         let editor = f.editor.stable_id();
         let mut hidden = f.cx.world().node_style(editor).unwrap().clone();
-        Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+        if invalidation == 3 {
+            Arc::make_mut(&mut hidden.layout).paint.visibility =
+                Some(nana_ui_core::VisibilitySpec::Hidden);
+        } else {
+            Arc::make_mut(&mut hidden.layout).display = Some(nana_ui_core::DisplaySpec::None);
+        }
         let mut disabled = f.cx.world().accessibility(editor).unwrap().clone();
         disabled.disabled = true;
         f.cx.update_component(f.card, |card, cx| {
@@ -376,4 +386,169 @@ fn hover_card_keyboard_entry_restores_the_most_recent_external_editor() {
         f.cx.world().text_input(f.editor.stable_id()).unwrap().value,
         "abcdef"
     );
+}
+
+#[test]
+fn hover_card_pending_hover_survives_closed_property_projection() {
+    for preserve in [false, true] {
+        let mut f = Fixture::new();
+        f.cx.update_component(f.card, |card, _| card.preserve_editor_focus = preserve)
+            .unwrap();
+        f.pointer(PointerPhase::Move, Some(f.card.stable_id()), 0);
+        f.cx.advance_animations(Duration::from_millis(50));
+        f.cx.update_component(f.card, |card, _| card.close_delay_ms = 150)
+            .unwrap();
+        f.cx.advance_animations(Duration::from_millis(101));
+        f.layout();
+        assert!(
+            f.cx.read(f.card, |card| card.open).unwrap(),
+            "preserve={preserve}"
+        );
+        f.assert_editor();
+    }
+}
+
+#[test]
+fn hover_card_close_honors_focus_scope_restoration_in_same_update() {
+    let mut f = Fixture::new();
+    let scope = f.cx.create_component(f.doc, Stack::column(0.0)).unwrap();
+    let root =
+        f.cx.world()
+            .node(f.other.stable_id())
+            .unwrap()
+            .parent
+            .unwrap();
+    let mut changes = nana_ui_runtime::MutationQueue::new();
+    changes.insert(root, scope.stable_id(), None);
+    changes.insert(scope.stable_id(), f.other.stable_id(), None);
+    f.cx.commit_mutations(changes).unwrap();
+    f.cx.world_mut()
+        .register_focus_scope(scope.stable_id())
+        .unwrap();
+    f.layout();
+    f.click(f.other.stable_id());
+    f.cx.focus_node(f.doc, f.editor.stable_id()).unwrap();
+    f.assert_editor();
+    f.open();
+    f.key("Tab", false, None);
+    assert_eq!(f.cx.world().focused(f.doc), Some(f.refresh.stable_id()));
+    f.cx.update_component(f.card, |card, cx| {
+        card.open = false;
+        cx.mutations().restore_focus_within(scope.stable_id());
+    })
+    .unwrap();
+    assert_eq!(f.cx.world().focused(f.doc), Some(f.other.stable_id()));
+    f.key("x", false, Some("x"));
+    assert!(
+        f.cx.world()
+            .text_input(f.other.stable_id())
+            .unwrap()
+            .value
+            .contains('x')
+    );
+}
+
+#[test]
+fn hover_card_removed_with_keyboard_focus_restores_editor() {
+    let mut f = Fixture::new();
+    f.open();
+    f.key("Tab", false, None);
+    assert_eq!(f.cx.world().focused(f.doc), Some(f.refresh.stable_id()));
+    f.cx.remove_view(f.card).unwrap();
+    f.layout();
+    f.assert_editor();
+    f.key("x", false, Some("x"));
+    assert_eq!(
+        f.cx.world().text_input(f.editor.stable_id()).unwrap().value,
+        "abcdex"
+    );
+}
+
+#[test]
+fn hover_card_hidden_or_parked_subtree_restores_editor() {
+    for invalidation in 0..6 {
+        let mut f = Fixture::new();
+        let parent = f.cx.create_component(f.doc, Stack::column(0.0)).unwrap();
+        let root =
+            f.cx.world()
+                .node(f.card.stable_id())
+                .unwrap()
+                .parent
+                .unwrap();
+        let mut changes = nana_ui_runtime::MutationQueue::new();
+        changes.insert(root, parent.stable_id(), Some(f.other.stable_id()));
+        changes.insert(parent.stable_id(), f.card.stable_id(), None);
+        f.cx.commit_mutations(changes).unwrap();
+        f.open();
+        f.key("Tab", false, None);
+        assert_eq!(f.cx.world().focused(f.doc), Some(f.refresh.stable_id()));
+        let mut changes = nana_ui_runtime::MutationQueue::new();
+        let target = if invalidation < 2 || invalidation == 4 {
+            parent.stable_id()
+        } else {
+            f.card.stable_id()
+        };
+        if invalidation == 1 || invalidation == 3 {
+            changes.park_subtree(target);
+        } else {
+            let mut style = f.cx.world().node_style(target).unwrap().clone();
+            if invalidation >= 4 {
+                Arc::make_mut(&mut style.layout).paint.visibility =
+                    Some(nana_ui_core::VisibilitySpec::Hidden);
+            } else {
+                Arc::make_mut(&mut style.layout).display = Some(nana_ui_core::DisplaySpec::None);
+            }
+            changes.set_style(target, style);
+        }
+        f.cx.commit_mutations(changes).unwrap();
+        f.layout();
+        f.assert_editor();
+    }
+}
+
+#[test]
+fn hover_card_refresh_invalidation_then_close_preserves_editor() {
+    for invalidation in 0..4 {
+        let mut f = Fixture::new();
+        f.open();
+        f.key("Tab", false, None);
+        f.key("Enter", false, None);
+        assert_eq!(f.activations.load(Ordering::SeqCst), 1);
+        match invalidation {
+            0 => {
+                f.cx.remove_view(f.refresh).unwrap();
+            }
+            1 => {
+                f.cx.update_component(f.refresh, |button, _| button.disabled = true)
+                    .unwrap();
+            }
+            _ => {
+                let mut style =
+                    f.cx.world()
+                        .node_style(f.refresh.stable_id())
+                        .unwrap()
+                        .clone();
+                if invalidation == 3 {
+                    Arc::make_mut(&mut style.layout).paint.visibility =
+                        Some(nana_ui_core::VisibilitySpec::Hidden);
+                } else {
+                    Arc::make_mut(&mut style.layout).display =
+                        Some(nana_ui_core::DisplaySpec::None);
+                }
+                let mut changes = nana_ui_runtime::MutationQueue::new();
+                changes.set_style(f.refresh.stable_id(), style);
+                f.cx.commit_mutations(changes).unwrap();
+            }
+        }
+        f.assert_editor();
+        f.layout();
+        f.cx.advance_animations(Duration::from_millis(500));
+        f.key("Escape", false, None);
+        f.assert_editor();
+        f.key("x", false, Some("x"));
+        assert_eq!(
+            f.cx.world().text_input(f.editor.stable_id()).unwrap().value,
+            "abcdex"
+        );
+    }
 }

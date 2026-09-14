@@ -1409,6 +1409,82 @@ fn visibility_visible_child_unhides_inside_hidden_parent() {
 }
 
 #[test]
+fn focus_uses_authored_visibility_in_dirty_and_pending_styles() {
+    use nana_ui_core::VisibilitySpec;
+
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for id in [node(2), node(3)] {
+        create.create(
+            id,
+            document(1),
+            NodeKind::Element {
+                tag: "input".into(),
+            },
+        );
+        create.set_interaction(
+            id,
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    create.insert(node(1), node(2), None);
+    create.insert(node(2), node(3), None);
+    world.commit(create).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let mut hidden = NodeStyle::default();
+    Arc::make_mut(&mut hidden.layout).paint.visibility = Some(VisibilitySpec::Hidden);
+    let mut visible = NodeStyle::default();
+    Arc::make_mut(&mut visible.layout).paint.visibility = Some(VisibilitySpec::Visible);
+    let mut inherited_hidden = MutationQueue::new();
+    inherited_hidden.set_style(node(2), hidden.clone());
+    inherited_hidden.request_focus(document(1), Some(node(3)));
+    assert_eq!(
+        world.commit(inherited_hidden),
+        Err(UiWorldError::NotFocusable(node(3)))
+    );
+    assert_eq!(world.focused(document(1)), None);
+
+    // A descendant's explicit visibility wins even before computed styles run.
+    let mut reveal_child = MutationQueue::new();
+    reveal_child.set_style(node(2), hidden.clone());
+    reveal_child.set_style(node(3), visible.clone());
+    reveal_child.request_focus(document(1), Some(node(3)));
+    world.commit(reveal_child).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(3)));
+    assert!(!world.is_overlay_reachable(node(2)));
+    assert!(world.is_overlay_reachable(node(3)));
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert!(world.is_overlay_reachable(node(3)));
+
+    let mut hide_child = MutationQueue::new();
+    hide_child.request_focus(document(1), None);
+    hide_child.set_style(node(3), NodeStyle::default());
+    world.commit(hide_child).unwrap();
+    assert!(!world.is_overlay_reachable(node(3)));
+    let mut focus_hidden = MutationQueue::new();
+    focus_hidden.request_focus(document(1), Some(node(3)));
+    assert_eq!(
+        world.commit(focus_hidden),
+        Err(UiWorldError::NotFocusable(node(3)))
+    );
+
+    // Restoring the ancestor in the same transaction allows inherited focus.
+    let mut reveal_parent = MutationQueue::new();
+    reveal_parent.set_style(node(2), visible);
+    reveal_parent.request_focus(document(1), Some(node(3)));
+    world.commit(reveal_parent).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(3)));
+    assert!(world.is_overlay_reachable(node(3)));
+}
+
+#[test]
 fn pointer_events_none_skips_hit_and_auto_child_punches_through() {
     use nana_ui_core::PointerEventsSpec;
 

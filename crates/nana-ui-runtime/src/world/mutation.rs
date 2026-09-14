@@ -866,6 +866,7 @@ impl<'a> ValidationPlan<'a> {
         &mut self,
         mut id: StableNodeId,
     ) -> Result<bool, UiWorldError> {
+        let mut visibility = None;
         loop {
             if self.is_parked(id) || self.is_detached(id) {
                 return Ok(false);
@@ -879,6 +880,7 @@ impl<'a> ValidationPlan<'a> {
                         .node_style(id)
                         .map(|style| style.layout.as_ref())
                 });
+            visibility = visibility.or_else(|| layout.and_then(|layout| layout.paint.visibility));
             if layout.is_some_and(|layout| layout.omits_box())
                 || !self.overlay_branch_active(id)?
                 || self
@@ -892,7 +894,7 @@ impl<'a> ValidationPlan<'a> {
                 return Ok(false);
             }
             let Some(parent) = self.node(id)?.parent else {
-                return Ok(true);
+                return Ok(visibility != Some(nana_ui_core::VisibilitySpec::Hidden));
             };
             id = parent;
         }
