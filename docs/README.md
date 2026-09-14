@@ -59,5 +59,6 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [架构重构与迁移记录](architecture-refactor.md)
 - [四应用消费迁移与发布验收（2026-09-09）](consumer-upgrade-2026-09-09.md)
 - [LiliaCode 组件恢复（2026-09-10）](liliacode-component-restoration-2026-09-10.md)
+- [窗口全屏与跨线程最新帧（2026-09-14）](consumer-upgrade-2026-09-14.md)
 
 [待重录的快照](pending-snapshot-bless.md)：本轮改动待在录制基线的机器上 `--bless` 的 40 张，做完即删。
