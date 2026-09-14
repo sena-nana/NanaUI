@@ -134,6 +134,7 @@ impl ChannelSink<'_> {
 /// Bounded blocking worker pool. Only [`Self::drain_completions`] exposes
 /// results, so JS callbacks remain on the engine/UI thread.
 pub(crate) struct FetchRuntime {
+    pub(crate) host: SharedFetchHost,
     jobs: Sender<FetchJob>,
     completions: Receiver<FetchEvent>,
     cancelled: BTreeSet<u64>,
@@ -165,6 +166,7 @@ impl FetchRuntime {
                 .expect("spawn Nana fetch worker");
         }
         Self {
+            host,
             jobs: jobs_tx,
             completions: completion_rx,
             cancelled: BTreeSet::new(),

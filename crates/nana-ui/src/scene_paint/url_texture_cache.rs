@@ -9,7 +9,7 @@ use std::{
     },
 };
 
-use nana_ui_platform::FetchCancellation;
+use nana_ui_platform::{FetchCancellation, SharedFetchHost};
 
 use super::image_url::{decode_url_rgba, decode_url_rgba_with};
 
@@ -20,6 +20,23 @@ const IDLE_FRAMES: u64 = 120;
 
 pub(crate) type ImageWake = Arc<dyn Fn(&str) + Send + Sync>;
 type Decoded = Option<(u32, u32, Vec<u8>)>;
+
+/// Which `FetchHost` a result was loaded through: the address of that host's
+/// `Arc`. Results that did not touch the network — local files, `data:`,
+/// generated keys, and remote URLs refused for want of a host — do not depend
+/// on any host and share [`LOCAL`].
+pub(crate) type Egress = usize;
+const LOCAL: Egress = 0;
+
+/// Identity of a host; `None` is [`LOCAL`].
+pub(crate) fn egress_of(host: Option<&SharedFetchHost>) -> Egress {
+    host.map_or(LOCAL, |host| Arc::as_ptr(host).cast::<()>() as usize)
+}
+
+fn is_remote(url: &str) -> bool {
+    let url = url.trim();
+    url.starts_with("http://") || url.starts_with("https://")
+}
 
 pub(crate) struct CachedUrlTexture {
     pub(crate) view: wgpu::TextureView,
@@ -55,12 +72,27 @@ impl Pending {
     }
 }
 
-/// Retains the current working set plus a bounded LRU of inactive textures.
-/// HTTP work is limited to four concurrent requests per painter pipeline.
+/// Everything loaded through one egress.
 #[derive(Default)]
-pub(crate) struct UrlTextureCache {
+struct Bucket {
+    /// Keeps the address behind a remote bucket's [`Egress`] from being reused
+    /// by another host while results loaded through this one are cached.
+    /// Released with the bucket once it holds nothing.
+    _host: Option<SharedFetchHost>,
     entries: HashMap<String, Entry>,
     pending: HashMap<String, Pending>,
+}
+
+/// Retains the current working set plus a bounded LRU of inactive textures.
+/// HTTP work is limited to four concurrent requests per painter pipeline.
+///
+/// Remote results are partitioned by the fetch host they went through, so a
+/// painter shared by documents with different policies never serves one
+/// document an image only another document's policy admitted.
+#[derive(Default)]
+pub(crate) struct UrlTextureCache {
+    buckets: HashMap<Egress, Bucket>,
+    fetch_host: Option<SharedFetchHost>,
     ready: Arc<AtomicBool>,
     wake: Option<ImageWake>,
     frame: u64,
@@ -71,37 +103,77 @@ impl UrlTextureCache {
     pub(crate) fn set_wake(&mut self, wake: ImageWake) {
         self.wake = Some(wake);
     }
+    /// Egress for the remote URLs of the document painted next.
+    pub(crate) fn set_fetch_host(&mut self, host: Option<SharedFetchHost>) {
+        self.fetch_host = host;
+    }
+    fn egress(&self, url: &str) -> Egress {
+        if is_remote(url) {
+            egress_of(self.fetch_host.as_ref())
+        } else {
+            LOCAL
+        }
+    }
+    /// Stop the in-flight requests started through `host` and drop what it
+    /// loaded, releasing the bucket's hold on the host.
+    pub(crate) fn release_fetch_host(&mut self, host: &SharedFetchHost) {
+        if let Some(bucket) = self.buckets.remove(&egress_of(Some(host))) {
+            for pending in bucket.pending.values() {
+                pending.cancellation.cancel();
+            }
+        }
+    }
+    fn bucket_mut(&mut self, egress: Egress) -> &mut Bucket {
+        let host = &self.fetch_host;
+        self.buckets.entry(egress).or_insert_with(|| Bucket {
+            _host: host.clone().filter(|_| egress != LOCAL),
+            ..Bucket::default()
+        })
+    }
+    fn pending_len(&self) -> usize {
+        self.buckets
+            .values()
+            .map(|bucket| bucket.pending.len())
+            .sum()
+    }
     pub(crate) fn has_updates(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
     pub(crate) fn has_pending(&self) -> bool {
-        !self.pending.is_empty() || self.deferred
+        self.pending_len() > 0 || self.deferred
     }
     pub(crate) fn begin_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         self.deferred = false;
     }
     pub(crate) fn get(&self, key: &str) -> Option<&Option<CachedUrlTexture>> {
-        self.entries.get(key).map(|entry| {
-            entry.used.set(self.frame);
-            &entry.texture
-        })
+        self.buckets
+            .get(&self.egress(key))?
+            .entries
+            .get(key)
+            .map(|entry| {
+                entry.used.set(self.frame);
+                &entry.texture
+            })
     }
     pub(crate) fn contains_key(&self, key: &str) -> bool {
         self.get(key).is_some()
     }
     pub(crate) fn insert(&mut self, key: String, texture: Option<CachedUrlTexture>) {
-        self.entries.insert(
+        let used = Cell::new(self.frame);
+        self.bucket_mut(self.egress(&key)).entries.insert(
             key,
             Entry {
                 texture,
                 decoded: None,
-                used: Cell::new(self.frame),
+                used,
             },
         );
     }
     pub(crate) fn contains_retained(&self, key: &str) -> bool {
-        self.entries.contains_key(key)
+        self.buckets
+            .get(&self.egress(key))
+            .is_some_and(|bucket| bucket.entries.contains_key(key))
     }
 
     pub(crate) fn load(
@@ -110,20 +182,31 @@ impl UrlTextureCache {
         queue: &wgpu::Queue,
         url: &str,
     ) -> Option<(u32, u32)> {
-        if let Some(entry) = self.entries.get_mut(url)
-            && let Some((width, height, rgba)) = entry.decoded.take()
-        {
-            entry.texture = upload(device, queue, (width, height, &rgba));
+        let egress = self.egress(url);
+        let frame = self.frame;
+        if let Some(bucket) = self.buckets.get_mut(&egress) {
+            if let Some(entry) = bucket.entries.get_mut(url) {
+                if let Some((width, height, rgba)) = entry.decoded.take() {
+                    entry.texture = upload(device, queue, (width, height, &rgba));
+                }
+                entry.used.set(frame);
+                return entry
+                    .texture
+                    .as_ref()
+                    .map(|texture| (texture.width, texture.height));
+            }
+            if let Some(pending) = bucket.pending.get(url) {
+                pending.used.set(frame);
+                return None;
+            }
         }
-        if let Some(cached) = self.get(url) {
-            return cached.as_ref().map(|entry| (entry.width, entry.height));
-        }
-        if let Some(pending) = self.pending.get(url) {
-            pending.used.set(self.frame);
-            return None;
-        }
-        if url.trim().starts_with("http://") || url.trim().starts_with("https://") {
-            if self.pending.len() >= MAX_FETCHES {
+        if is_remote(url) {
+            // No host means no egress: refused here, before any socket.
+            let Some(host) = self.fetch_host.clone() else {
+                self.insert(url.to_owned(), None);
+                return None;
+            };
+            if self.pending_len() >= MAX_FETCHES {
                 self.deferred = true;
                 return None;
             }
@@ -133,11 +216,13 @@ impl UrlTextureCache {
             let wake = self.wake.clone();
             let cancellation = FetchCancellation::new();
             let worker_cancellation = cancellation.clone();
-            // Workers own only CPU bytes. Texture creation/upload stays on the host.
+            // Workers own only CPU bytes. Texture creation/upload stays on the
+            // host. The worker captures the requesting document's host, so a
+            // later paint with another host cannot redirect this request.
             let spawned = std::thread::Builder::new()
                 .name("nana-image".into())
                 .spawn(move || {
-                    let decoded = decode_url_rgba_with(&key, &worker_cancellation);
+                    let decoded = decode_url_rgba_with(&key, Some(&host), &worker_cancellation);
                     if tx.send(decoded).is_ok() {
                         ready.store(true, Ordering::Release);
                         if let Some(wake) = wake {
@@ -146,12 +231,12 @@ impl UrlTextureCache {
                     }
                 });
             if spawned.is_ok() {
-                self.pending.insert(
+                self.bucket_mut(egress).pending.insert(
                     url.to_owned(),
                     Pending {
                         receiver: rx,
                         cancellation,
-                        used: Cell::new(self.frame),
+                        used: Cell::new(frame),
                     },
                 );
             } else {
@@ -171,29 +256,34 @@ impl UrlTextureCache {
     /// Collect CPU results. Only a subsequent live URL lookup may upload them.
     pub(crate) fn poll(&mut self) -> bool {
         self.ready.store(false, Ordering::Release);
-        let mut complete = Vec::new();
-        self.pending
-            .retain(|key, pending| match pending.receiver.try_recv() {
-                Ok(decoded) => {
-                    complete.push((key.clone(), decoded));
-                    false
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    complete.push((key.clone(), None));
-                    false
-                }
-                Err(mpsc::TryRecvError::Empty) => true,
-            });
-        let changed = !complete.is_empty();
-        for (key, decoded) in complete {
-            self.entries.insert(
-                key,
-                Entry {
-                    texture: None,
-                    decoded,
-                    used: Cell::new(self.frame.saturating_sub(1)),
-                },
-            );
+        let used = self.frame.saturating_sub(1);
+        let mut changed = false;
+        for bucket in self.buckets.values_mut() {
+            let mut complete = Vec::new();
+            bucket
+                .pending
+                .retain(|key, pending| match pending.receiver.try_recv() {
+                    Ok(decoded) => {
+                        complete.push((key.clone(), decoded));
+                        false
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        complete.push((key.clone(), None));
+                        false
+                    }
+                    Err(mpsc::TryRecvError::Empty) => true,
+                });
+            changed |= !complete.is_empty();
+            for (key, decoded) in complete {
+                bucket.entries.insert(
+                    key,
+                    Entry {
+                        texture: None,
+                        decoded,
+                        used: Cell::new(used),
+                    },
+                );
+            }
         }
         changed
     }
@@ -210,48 +300,59 @@ impl UrlTextureCache {
     /// the entry returns the URL to "never loaded", so a node that comes back
     /// re-requests it.
     fn cancel_unreferenced_fetches(&mut self) {
-        self.pending.retain(|_, pending| {
-            if self.frame.saturating_sub(pending.used.get()) <= IDLE_FRAMES {
-                return true;
-            }
-            pending.cancellation.cancel();
-            false
-        });
+        let frame = self.frame;
+        for bucket in self.buckets.values_mut() {
+            bucket.pending.retain(|_, pending| {
+                if frame.saturating_sub(pending.used.get()) <= IDLE_FRAMES {
+                    return true;
+                }
+                pending.cancellation.cancel();
+                false
+            });
+        }
     }
 
     pub(crate) fn trim(&mut self) {
         self.cancel_unreferenced_fetches();
         let mut inactive = Vec::new();
         let mut bytes = 0;
-        for (key, entry) in &self.entries {
-            if entry.used.get() == self.frame {
-                continue;
+        for (egress, bucket) in &self.buckets {
+            for (key, entry) in &bucket.entries {
+                if entry.used.get() == self.frame {
+                    continue;
+                }
+                let size = entry.decoded.as_ref().map_or_else(
+                    || {
+                        entry
+                            .texture
+                            .as_ref()
+                            .map_or(0, |t| u64::from(t.width) * u64::from(t.height) * 4)
+                    },
+                    |(_, _, bytes)| bytes.len() as u64,
+                );
+                bytes += size;
+                inactive.push((entry.used.get(), *egress, key.clone(), size));
             }
-            let size = entry.decoded.as_ref().map_or_else(
-                || {
-                    entry
-                        .texture
-                        .as_ref()
-                        .map_or(0, |t| u64::from(t.width) * u64::from(t.height) * 4)
-                },
-                |(_, _, bytes)| bytes.len() as u64,
-            );
-            bytes += size;
-            inactive.push((entry.used.get(), key.clone(), size));
         }
         inactive.sort_unstable_by_key(|entry| entry.0);
         let mut count = inactive.len();
-        for (used, key, size) in inactive {
+        for (used, egress, key, size) in inactive {
             if count <= RETAINED_ENTRIES
                 && bytes <= RETAINED_BYTES
                 && self.frame.saturating_sub(used) <= IDLE_FRAMES
             {
                 break;
             }
-            self.entries.remove(&key);
+            if let Some(bucket) = self.buckets.get_mut(&egress) {
+                bucket.entries.remove(&key);
+            }
             count -= 1;
             bytes -= size;
         }
+        // An emptied bucket releases its host: nothing loaded through it is
+        // left to protect from a reused address.
+        self.buckets
+            .retain(|_, bucket| !bucket.entries.is_empty() || !bucket.pending.is_empty());
     }
 }
 
@@ -266,8 +367,10 @@ impl UrlTextureCache {
 /// have no cancellation point, so a worker already decoding runs to completion.
 impl Drop for UrlTextureCache {
     fn drop(&mut self) {
-        for pending in self.pending.values() {
-            pending.cancellation.cancel();
+        for bucket in self.buckets.values() {
+            for pending in bucket.pending.values() {
+                pending.cancellation.cancel();
+            }
         }
     }
 }
@@ -325,6 +428,27 @@ pub(crate) fn upload(
 mod tests {
     use super::*;
 
+    impl UrlTextureCache {
+        fn entry_keys(&self) -> Vec<&String> {
+            self.buckets
+                .values()
+                .flat_map(|bucket| bucket.entries.keys())
+                .collect()
+        }
+        fn entries(&self) -> impl Iterator<Item = &Entry> {
+            self.buckets
+                .values()
+                .flat_map(|bucket| bucket.entries.values())
+        }
+        fn insert_pending(&mut self, url: &str, pending: Pending) {
+            let egress = self.egress(url);
+            self.bucket_mut(egress).pending.insert(url.into(), pending);
+        }
+        fn pending(&self, url: &str) -> Option<&Pending> {
+            self.buckets.get(&self.egress(url))?.pending.get(url)
+        }
+    }
+
     #[test]
     fn inactive_entries_are_bounded_and_eventually_released() {
         let mut cache = UrlTextureCache::default();
@@ -335,15 +459,15 @@ mod tests {
         cache.trim();
         cache.begin_frame();
         cache.trim();
-        assert!(cache.entries.len() <= RETAINED_ENTRIES);
-        let kept = cache.entries.keys().next().unwrap().clone();
+        assert!(cache.entry_keys().len() <= RETAINED_ENTRIES);
+        let kept = cache.entry_keys()[0].clone();
         for _ in 0..=IDLE_FRAMES {
             cache.begin_frame();
             cache.get(&kept);
             cache.trim();
         }
         assert_eq!(
-            cache.entries.len(),
+            cache.entry_keys().len(),
             1,
             "only the referenced image may survive expiry"
         );
@@ -356,21 +480,18 @@ mod tests {
         cache.begin_frame();
         for id in 0..5 {
             let (sender, receiver) = mpsc::channel();
-            cache.pending.insert(
-                format!("old:{id}"),
-                Pending::for_test(receiver, cache.frame),
-            );
+            let used = cache.frame;
+            cache.insert_pending(&format!("old:{id}"), Pending::for_test(receiver, used));
             sender
                 .send(Some((2048, 2048, vec![255; 2048 * 2048 * 4])))
                 .unwrap();
         }
         cache.begin_frame();
         assert!(cache.poll());
-        assert!(cache.entries.values().all(|entry| entry.texture.is_none()));
+        assert!(cache.entries().all(|entry| entry.texture.is_none()));
         cache.trim();
         let bytes: usize = cache
-            .entries
-            .values()
+            .entries()
             .filter_map(|entry| entry.decoded.as_ref())
             .map(|(_, _, bytes)| bytes.len())
             .sum();
@@ -386,9 +507,7 @@ mod tests {
         // The clone outlives the cache, which is what makes the assertion
         // observable after the drop.
         let token = pending.cancellation.clone();
-        cache
-            .pending
-            .insert("http://example.invalid/a.png".into(), pending);
+        cache.insert_pending("http://example.invalid/a.png", pending);
 
         assert!(
             !token.is_cancelled(),
@@ -409,7 +528,7 @@ mod tests {
         cache.begin_frame();
         let pending = Pending::for_test(receiver, cache.frame);
         let token = pending.cancellation.clone();
-        cache.pending.insert(url.into(), pending);
+        cache.insert_pending(url, pending);
 
         for _ in 0..=IDLE_FRAMES {
             cache.begin_frame();
@@ -417,7 +536,7 @@ mod tests {
         }
 
         assert!(token.is_cancelled(), "an abandoned fetch must be cancelled");
-        assert!(cache.pending.is_empty(), "and must stop occupying a slot");
+        assert!(!cache.has_pending(), "and must stop occupying a slot");
         assert!(
             !cache.contains_retained(url),
             "cancelling is not failing: the URL must stay re-requestable, not be              cached as a permanent miss"
@@ -432,12 +551,12 @@ mod tests {
         cache.begin_frame();
         let pending = Pending::for_test(receiver, cache.frame);
         let token = pending.cancellation.clone();
-        cache.pending.insert(url.into(), pending);
+        cache.insert_pending(url, pending);
 
         for _ in 0..IDLE_FRAMES * 3 {
             cache.begin_frame();
             // What `load` does for a URL that is still painted this frame.
-            cache.pending.get(url).unwrap().used.set(cache.frame);
+            cache.pending(url).unwrap().used.set(cache.frame);
             cache.trim();
         }
 
@@ -445,6 +564,33 @@ mod tests {
             !token.is_cancelled(),
             "a live request must not be cancelled"
         );
-        assert_eq!(cache.pending.len(), 1);
+        assert_eq!(cache.pending_len(), 1);
+    }
+
+    #[test]
+    fn an_idle_remote_bucket_releases_its_fetch_host() {
+        let host = nana_ui_platform::shared_fetch_host(nana_ui_platform::NativeFetchHost::new(
+            nana_ui_platform::FetchPolicy::default(),
+        ));
+        let released = Arc::downgrade(&host);
+        let mut cache = UrlTextureCache::default();
+        cache.begin_frame();
+        cache.set_fetch_host(Some(host));
+        cache.insert("http://example.invalid/e.png".into(), None);
+        cache.set_fetch_host(None);
+        assert!(
+            released.upgrade().is_some(),
+            "cached results pin their host"
+        );
+
+        for _ in 0..=IDLE_FRAMES {
+            cache.begin_frame();
+            cache.trim();
+        }
+
+        assert!(
+            released.upgrade().is_none(),
+            "a closed document's host must not outlive its expired images"
+        );
     }
 }

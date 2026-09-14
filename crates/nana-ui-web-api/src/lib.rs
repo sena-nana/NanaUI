@@ -131,6 +131,12 @@ impl WebApiState {
         state
     }
 
+    /// The host behind this document's `fetch()`. Scene hosts give the same
+    /// host to the painter so `url(...)` images follow one policy.
+    pub fn fetch_host(&self) -> SharedFetchHost {
+        Arc::clone(&self.fetch.host)
+    }
+
     /// Attach or detach the WebSocket transport. A native deny-all host is
     /// installed by default; pass `None` to explicitly disable sockets.
     pub fn set_socket_host(&mut self, socket_host: Option<SharedWebSocketHost>) {

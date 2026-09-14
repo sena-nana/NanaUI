@@ -58,6 +58,12 @@ impl OffscreenSnapshots {
         })
     }
 
+    /// Egress for the `http(s)` `url(...)` images of the scenes painted next;
+    /// see [`SceneWgpuPainter::set_resource_fetch_host`].
+    pub fn set_resource_fetch_host(&mut self, host: Option<nana_ui::SharedFetchHost>) {
+        self.painter.set_resource_fetch_host(host);
+    }
+
     /// Product GPU-node renderers bound to this snapshot's Device/Queue.
     ///
     /// Without them a `GpuView` or `nana.host-texture` node paints nothing in a
@@ -452,9 +458,9 @@ mod tests {
     }
 
     /// Test double authorizing any `127.0.0.1` origin: each test binds port 0,
-    /// and the process fetch host is first-set-wins, so they cannot each install
-    /// an exact-match policy of their own. Mirrors the one in `nana-ui`, which
-    /// is `cfg(test)`-only and therefore not reachable from here.
+    /// so no exact-match policy can be written before the port is known.
+    /// Mirrors the one in `nana-ui`, which is `cfg(test)`-only and therefore
+    /// not reachable from here.
     #[derive(Debug)]
     struct LoopbackFetchHost {
         policy: nana_ui::FetchPolicy,
@@ -488,9 +494,6 @@ mod tests {
 
     fn check_layered_snapshot(no_clear: bool) {
         use std::io::{Read, Write};
-        nana_ui::set_resource_fetch_host(nana_ui::shared_fetch_host(LoopbackFetchHost {
-            policy: nana_ui::FetchPolicy::default(),
-        }));
         let mut png = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_pixel(
             8,
@@ -551,6 +554,9 @@ mod tests {
                 .unwrap();
         }
         let mut gpu = OffscreenSnapshots::new().unwrap();
+        gpu.set_resource_fetch_host(Some(nana_ui::shared_fetch_host(LoopbackFetchHost {
+            policy: nana_ui::FetchPolicy::default(),
+        })));
         let pixels = gpu
             .paint_layers(
                 &[(background.scene(), !no_clear), (overlay.scene(), false)],

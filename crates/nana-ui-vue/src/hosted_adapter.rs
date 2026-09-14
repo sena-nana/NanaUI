@@ -1205,6 +1205,12 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
         self.runtime.host_textures_for(id)
     }
 
+    /// Each window document's own `fetch()` host also gates its images.
+    fn resource_fetch_host(&self, id: WindowId) -> Option<nana_ui::SharedFetchHost> {
+        let host = self.runtime.vue().host(VueWindowId(id.0))?;
+        host.lock().ok()?.fetch_host()
+    }
+
     fn prepare_window_frame(
         &mut self,
         id: WindowId,

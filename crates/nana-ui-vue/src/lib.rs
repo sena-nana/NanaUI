@@ -757,6 +757,13 @@ impl VueHost {
         Arc::clone(&self.web_api)
     }
 
+    /// The policy-gated egress of this document's JS `fetch()`. Hand it to
+    /// `SceneWgpuPainter::set_resource_fetch_host` before painting this
+    /// document so its `url(...)` images follow the same policy.
+    pub fn fetch_host(&self) -> Option<nana_ui_web_api::SharedFetchHost> {
+        self.web_api.lock().ok().map(|web| web.fetch_host())
+    }
+
     /// Connect development diagnostics. The sink receives Vue warnings/errors;
     /// the observer receives privacy-preserving Host API timing records.
     pub fn set_diagnostics(

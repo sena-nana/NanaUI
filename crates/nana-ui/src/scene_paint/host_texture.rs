@@ -16,6 +16,12 @@ impl HostTexturePipeline {
     pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
         self.pipeline.set_image_waker(wake);
     }
+    pub(super) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
+        self.pipeline.set_fetch_host(host);
+    }
+    pub(super) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
+        self.pipeline.release_fetch_host(host);
+    }
     pub(super) fn has_image_updates(&self) -> bool {
         self.pipeline.has_image_updates()
     }

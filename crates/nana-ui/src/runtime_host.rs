@@ -454,6 +454,18 @@ pub trait RuntimeProgram: Sized + 'static {
         None
     }
 
+    /// Policy-gated egress for this window's `http(s)` `url(...)` images.
+    ///
+    /// Return the same host that governs the window's JS `fetch()`, so one
+    /// policy covers both paths. `None` refuses every remote image.
+    ///
+    /// Called every frame. Return a clone of a host the application keeps, not
+    /// one built per call: a new `Arc` is a new egress, so its images would be
+    /// requested again and the window repainted on every frame.
+    fn resource_fetch_host(&self, _id: WindowId) -> Option<nana_ui_platform::SharedFetchHost> {
+        None
+    }
+
     /// Acquire application-owned frame resources immediately before the host
     /// flushes and paints this window. Also runs when [`Self::frame_demand`] is
     /// due while the window is occluded, minimised, or has 0-size

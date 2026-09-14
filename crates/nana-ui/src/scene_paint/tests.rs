@@ -4780,6 +4780,7 @@ fn check_host_texture_url_mask(remote: bool) {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let mask = alpha_split_mask_png_data_url();
     let server = remote.then(|| {
         use base64::Engine;
@@ -5249,10 +5250,14 @@ fn blue_tile_fixture_png() -> (std::path::PathBuf, std::path::PathBuf) {
         .clone()
 }
 
-fn paint_url_quad_and_sample_center(url: String) -> [u8; 4] {
+fn paint_url_quad_and_sample_center(
+    url: String,
+    fetch_host: Option<nana_ui_platform::SharedFetchHost>,
+) -> [u8; 4] {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    painter.set_resource_fetch_host(fetch_host);
     let surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
             url,
@@ -5305,6 +5310,229 @@ fn paint_url_quad_and_sample_center(url: String) -> [u8; 4] {
     let sample = pixel(&pixels, 64, 32, 32);
     drop(texture);
     sample
+}
+
+/// A window whose document is closed mid-request while the remaining window
+/// never rebuilds a batch, so nothing but the close itself can reclaim it.
+#[test]
+fn closing_a_window_cancels_its_image_requests_and_releases_its_fetch_host() {
+    // Connections queue in the backlog and are never answered, so the request
+    // stays in flight until something cancels it.
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}/stalled.png", listener.local_addr().unwrap());
+    let closing = super::image_url::loopback_fetch_host();
+    let released = Arc::downgrade(&closing);
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0; 4],
+            nana_ui_scene::QuadSurfacePaint {
+                background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                    url,
+                    nana_ui_core::BackgroundImageFit::Stretch,
+                )),
+                ..Default::default()
+            },
+        )],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0; 2],
+        physical_size: [64; 2],
+        scale_factor: 1.0,
+        scene_origin: [0.0; 2],
+        target_origin: [0.0; 2],
+        clear_color: [0.0; 4],
+        clear: true,
+    };
+    let (_texture, view) = test_copy_target(&device, format, 64, 64);
+    for (id, host) in [(1, Some(closing)), (2, None)] {
+        painter.set_resource_fetch_host(host);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint_target(
+                RenderTargetId(id),
+                &scene,
+                &mut encoder,
+                &view,
+                viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    }
+    assert!(
+        painter.has_pending_images(),
+        "the request must be in flight"
+    );
+
+    painter.remove_target(RenderTargetId(1));
+
+    assert!(
+        !painter.has_pending_images(),
+        "closing must stop the document's requests without waiting for expiry"
+    );
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while released.upgrade().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the closed document's host must be released once its worker is cancelled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    drop(listener);
+}
+
+/// Records every URL a document's egress is asked for, then lets `inner` decide.
+#[derive(Debug)]
+struct RecordingFetchHost {
+    inner: nana_ui_platform::SharedFetchHost,
+    requests: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingFetchHost {
+    fn new(inner: nana_ui_platform::SharedFetchHost) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            requests: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    fn requests(&self) -> Vec<String> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl nana_ui_platform::FetchHost for RecordingFetchHost {
+    fn fetch(
+        &self,
+        request: nana_ui_platform::FetchRequest,
+    ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+        self.requests.lock().unwrap().push(request.url.clone());
+        self.inner.fetch(request)
+    }
+
+    fn fetch_cancellable(
+        &self,
+        request: nana_ui_platform::FetchRequest,
+        cancellation: nana_ui_platform::FetchCancellation,
+    ) -> Result<nana_ui_platform::FetchResponse, nana_ui_platform::FetchError> {
+        self.requests.lock().unwrap().push(request.url.clone());
+        self.inner.fetch_cancellable(request, cancellation)
+    }
+
+    fn policy(&self) -> &nana_ui_platform::FetchPolicy {
+        self.inner.policy()
+    }
+}
+
+/// Two documents share one painter, as windows of one surface format do. The
+/// strict one paints first and the permissive one second, then both repaint
+/// after the permissive load has landed in the shared cache.
+#[test]
+fn url_images_go_only_through_the_fetch_host_of_the_document_being_painted() {
+    let (_, path) = blue_tile_fixture_png();
+    let server = LocalPngServer::serve(std::fs::read(path).unwrap());
+    let strict = RecordingFetchHost::new(nana_ui_platform::shared_fetch_host(
+        nana_ui_platform::NativeFetchHost::new(nana_ui_platform::FetchPolicy::default()),
+    ));
+    let permissive = RecordingFetchHost::new(super::image_url::loopback_fetch_host());
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [paint_surface_quad_node(
+            1,
+            0.0,
+            0.0,
+            64.0,
+            64.0,
+            [0.0; 4],
+            nana_ui_scene::QuadSurfacePaint {
+                background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
+                    server.url.clone(),
+                    nana_ui_core::BackgroundImageFit::Stretch,
+                )),
+                ..Default::default()
+            },
+        )],
+        [],
+    );
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0; 2],
+        physical_size: [64; 2],
+        scale_factor: 1.0,
+        scene_origin: [0.0; 2],
+        target_origin: [0.0; 2],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (strict_texture, strict_view) = test_copy_target(&device, format, 64, 64);
+    let (permissive_texture, permissive_view) = test_copy_target(&device, format, 64, 64);
+    let documents: [(u64, nana_ui_platform::SharedFetchHost, &wgpu::TextureView); 2] = [
+        (1, strict.clone(), &strict_view),
+        (2, permissive.clone(), &permissive_view),
+    ];
+    let paint_both = |painter: &mut SceneWgpuPainter| {
+        for (id, host, view) in &documents {
+            painter.set_resource_fetch_host(Some(host.clone()));
+            let mut encoder = device.create_command_encoder(&Default::default());
+            painter
+                .paint_target(
+                    RenderTargetId(*id),
+                    &scene,
+                    &mut encoder,
+                    view,
+                    viewport,
+                    None,
+                    None,
+                )
+                .unwrap();
+            queue.submit([encoder.finish()]);
+        }
+    };
+
+    paint_both(&mut painter);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while painter.has_pending_images() {
+        assert!(Instant::now() < deadline, "images did not settle");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        paint_both(&mut painter);
+    }
+    paint_both(&mut painter);
+
+    let encoder = device.create_command_encoder(&Default::default());
+    let strict_pixels = readback_rgba(&device, &queue, encoder, &strict_texture, 64, 64);
+    let encoder = device.create_command_encoder(&Default::default());
+    let permissive_pixels = readback_rgba(&device, &queue, encoder, &permissive_texture, 64, 64);
+    assert!(
+        is_blue_slot(pixel(&permissive_pixels, 64, 32, 32)),
+        "the permissive document loads its image whichever document came first"
+    );
+    assert!(
+        !is_blue_slot(pixel(&strict_pixels, 64, 32, 32)),
+        "the strict document must not show an image only another policy admitted"
+    );
+    assert_eq!(
+        permissive.requests(),
+        std::slice::from_ref(&server.url),
+        "only the permissive document's request may reach its host"
+    );
+    assert_eq!(
+        strict.requests(),
+        std::slice::from_ref(&server.url),
+        "the strict document's request is decided by its own policy"
+    );
 }
 
 struct LocalPngServer {
@@ -5377,7 +5605,7 @@ fn background_image_file_url_paints_fixture_png() {
     let (fixture_dir, png_path) = blue_tile_fixture_png();
     super::set_background_image_url_base(fixture_dir);
     let file_url = nana_ui_core::url_jail::path_to_file_url(&png_path);
-    let sample = paint_url_quad_and_sample_center(file_url);
+    let sample = paint_url_quad_and_sample_center(file_url, None);
     super::image_url::reset_test_url_base();
     assert!(
         sample[2] > 200 && sample[0] < 80,
@@ -5387,11 +5615,13 @@ fn background_image_file_url_paints_fixture_png() {
 
 #[test]
 fn background_image_http_url_paints_fixture_png() {
-    super::image_url::install_loopback_fetch_host();
     let (_fixture_dir, png_path) = blue_tile_fixture_png();
     let png = std::fs::read(&png_path).expect("read fixture png");
     let server = LocalPngServer::serve(png);
-    let sample = paint_url_quad_and_sample_center(server.url.clone());
+    let sample = paint_url_quad_and_sample_center(
+        server.url.clone(),
+        Some(super::image_url::loopback_fetch_host()),
+    );
     assert!(
         sample[2] > 200 && sample[0] < 80,
         "http url png must paint blue tile, got {sample:?}"
@@ -5404,6 +5634,7 @@ fn more_http_images_than_fetch_slots_eventually_paint() {
     let server = LocalPngServer::serve(std::fs::read(path).unwrap());
     let (device, queue) = test_device();
     let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = std::sync::mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
         let _ = wake.send(());
@@ -5460,7 +5691,6 @@ fn more_http_images_than_fetch_slots_eventually_paint() {
 
 #[test]
 fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_completion() {
-    super::image_url::install_loopback_fetch_host();
     use std::{
         io::{Read, Write},
         sync::mpsc,
@@ -5502,6 +5732,7 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
     });
     let (device, queue) = test_device();
     let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
         let _ = wake.send(());
@@ -5560,7 +5791,6 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
 
 #[test]
 fn async_http_image_rebinds_each_render_target_after_shared_completion() {
-    super::image_url::install_loopback_fetch_host();
     use std::{
         io::{Read, Write},
         sync::mpsc,
@@ -5601,6 +5831,7 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
         let _ = wake.send(());

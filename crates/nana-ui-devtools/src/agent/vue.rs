@@ -272,7 +272,9 @@ impl<E: JsEngine> VueAgentSession<E> {
             guard.scene().clone()
         };
         let textures = self.host_textures.clone();
+        let fetch_host = self.host.fetch_host();
         let gpu = self.gpu_mut()?;
+        gpu.set_resource_fetch_host(fetch_host);
         let renderers = gpu.default_gpu_renderers();
         let pixels = gpu
             .paint_layers_scaled(

@@ -14,6 +14,9 @@ pub struct ApplicationWindow {
     pub textures: HostTextureRegistry,
     pub renderers: Option<SceneGpuRendererRegistry>,
     pub producers: Option<SceneResourceProducerRegistry>,
+    /// Egress for this window's `http(s)` `url(...)` images; `None` refuses them.
+    /// Keep one host per window: replacing the `Arc` refetches its images.
+    pub fetch_host: Option<nana_ui_platform::SharedFetchHost>,
     pub demand: FrameDemand,
 }
 
@@ -26,6 +29,7 @@ impl ApplicationWindow {
             textures: HostTextureRegistry::new(),
             renderers: None,
             producers: None,
+            fetch_host: None,
             demand: FrameDemand::OnDemand,
         }
     }
@@ -181,6 +185,11 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
         self.windows
             .get(&id)
             .and_then(|window| window.producers.clone())
+    }
+    fn resource_fetch_host(&self, id: WindowId) -> Option<nana_ui_platform::SharedFetchHost> {
+        self.windows
+            .get(&id)
+            .and_then(|window| window.fetch_host.clone())
     }
     fn prepare_window_frame(
         &mut self,

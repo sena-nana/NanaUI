@@ -286,7 +286,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
         }
         let theme = self.program.theme_mode();
-        let paint = self.painter_mut(format).paint_target(
+        let fetch_host = self.program.resource_fetch_host(id);
+        let painter = self.painter_mut(format);
+        // Painters are shared per format, so every window supplies its own
+        // egress, including none.
+        painter.set_resource_fetch_host(fetch_host);
+        let paint = painter.paint_target(
             crate::RenderTargetId(id.0),
             scene.as_ref(),
             &mut encoder,

@@ -301,6 +301,12 @@ impl QuadPipeline {
     pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
         self.url_cache.set_wake(wake);
     }
+    pub(super) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
+        self.url_cache.set_fetch_host(host);
+    }
+    pub(super) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
+        self.url_cache.release_fetch_host(host);
+    }
     pub(super) fn has_image_updates(&self) -> bool {
         self.url_cache.has_updates()
     }

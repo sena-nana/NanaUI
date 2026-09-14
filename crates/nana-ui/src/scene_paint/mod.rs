@@ -22,7 +22,9 @@ mod validate;
 use std::{sync::Arc, time::Instant};
 
 use nana_ui_core::GpuWorkObservation;
+use nana_ui_platform::SharedFetchHost;
 use nana_ui_scene::{RenderOperation, ScenePrimitiveKind, UiScene};
+use url_texture_cache::egress_of;
 
 use crate::{
     HostTextureRegistry, PhysicalRect,
@@ -35,7 +37,6 @@ use crate::{
 
 pub use image_url::{
     resolve_background_image_url, resolved_resource_is_allowed, set_background_image_url_base,
-    set_resource_fetch_host,
 };
 use validate::validate_scene;
 pub use validate::{HostTextureSceneResolver, ScenePaintError};
@@ -92,6 +93,11 @@ pub struct SceneWgpuPainter {
     /// Last fully scene-described dest; host textures / GPU slots skip reuse.
     painted: Option<PaintedDest>,
     image_revision: u64,
+    /// Egress for `url(...)` loads of the scenes painted next.
+    fetch_host: Option<SharedFetchHost>,
+    /// Egress the active target's URL bindings and cached dest were built
+    /// with; swapped per target like `painted`.
+    bound_fetch_host: Option<SharedFetchHost>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -117,6 +123,7 @@ struct TargetState {
     dest: Option<DestTarget>,
     painted: Option<PaintedDest>,
     image_revision: u64,
+    bound_fetch_host: Option<SharedFetchHost>,
 }
 
 struct PreparedBatch {
@@ -211,6 +218,8 @@ impl SceneWgpuPainter {
             last_dest_pass_counts: None,
             painted: None,
             image_revision: 0,
+            fetch_host: None,
+            bound_fetch_host: None,
         }
     }
 
@@ -229,6 +238,20 @@ impl SceneWgpuPainter {
     pub fn set_image_update_waker(&mut self, wake: Arc<dyn Fn(&str) + Send + Sync>) {
         self.quads.set_image_waker(wake.clone());
         self.host_textures.set_image_waker(wake);
+    }
+
+    /// Policy-gated egress for the `http(s)` `url(...)` images of the scenes
+    /// painted next: the host behind the document's JS `fetch()`. `None`
+    /// refuses remote images; `data:`, `file:` and jailed paths are unaffected.
+    ///
+    /// A shared painter is given each document's host before painting it, and
+    /// caches results per host, so no document sees an image another
+    /// document's policy admitted. Identity is the `Arc`: pass clones of one
+    /// host, or images are refetched on every change.
+    pub fn set_resource_fetch_host(&mut self, host: Option<SharedFetchHost>) {
+        self.quads.set_fetch_host(host.clone());
+        self.host_textures.set_fetch_host(host.clone());
+        self.fetch_host = host;
     }
 
     pub fn has_image_updates(&self) -> bool {
@@ -278,8 +301,30 @@ impl SceneWgpuPainter {
     }
 
     /// Release target-owned textures when a host closes a window or viewport.
+    ///
+    /// A fetch host no remaining target uses goes with it, cancelling its
+    /// image requests now: URL caches only expire entries on frames that
+    /// rebuild a batch, which static windows never do.
     pub fn remove_target(&mut self, id: RenderTargetId) {
-        self.targets.remove(&id);
+        let Some(host) = self
+            .targets
+            .remove(&id)
+            .and_then(|state| state.bound_fetch_host)
+        else {
+            return;
+        };
+        let closed = egress_of(Some(&host));
+        if std::iter::once(&self.bound_fetch_host)
+            .chain(self.targets.values().map(|state| &state.bound_fetch_host))
+            .any(|bound| egress_of(bound.as_ref()) == closed)
+        {
+            return;
+        }
+        if egress_of(self.fetch_host.as_ref()) == closed {
+            self.set_resource_fetch_host(None);
+        }
+        self.quads.release_fetch_host(&host);
+        self.host_textures.release_fetch_host(&host);
     }
 
     /// Paint with isolated target state while sharing device pipelines/caches.
@@ -318,6 +363,7 @@ impl SceneWgpuPainter {
         std::mem::swap(&mut self.dest, &mut state.dest);
         std::mem::swap(&mut self.painted, &mut state.painted);
         std::mem::swap(&mut self.prepared_batch, &mut state.prepared_batch);
+        std::mem::swap(&mut self.bound_fetch_host, &mut state.bound_fetch_host);
         self.quads.swap_target(&mut state.quads, &self.device);
         self.meshes.swap_target(&mut state.meshes, &self.device);
         self.icons.swap_target(&mut state.icons, &self.device);
@@ -348,6 +394,15 @@ impl SceneWgpuPainter {
             // The active target is held in the painter fields while `paint`
             // runs; invalidate its URL-backed bindings immediately. Other
             // targets are invalidated when their revision is observed above.
+            self.quads.invalidate_image_bindings();
+            self.host_textures.invalidate_image_bindings();
+        }
+        // URL bindings and a cached dest are keyed by URL alone, so ones built
+        // through another document's egress must not be reused under this one.
+        if egress_of(self.fetch_host.as_ref()) != egress_of(self.bound_fetch_host.as_ref()) {
+            self.bound_fetch_host = self.fetch_host.clone();
+            self.painted = None;
+            self.prepared_batch = None;
             self.quads.invalidate_image_bindings();
             self.host_textures.invalidate_image_bindings();
         }

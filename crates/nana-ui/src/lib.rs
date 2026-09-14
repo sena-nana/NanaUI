@@ -203,8 +203,9 @@ pub use nana_ui_core::{
     WorkspaceModel, WorkspaceMutation,
 };
 pub use nana_ui_core::{XYPadEvent, XYPadValue};
-/// Fetch host boundary, re-exported so hosts can configure [`set_resource_fetch_host`]
-/// without depending on `nana-ui-platform` directly.
+/// Fetch host boundary, re-exported so hosts can supply
+/// [`SceneWgpuPainter::set_resource_fetch_host`] without depending on
+/// `nana-ui-platform` directly.
 #[cfg(feature = "gpu")]
 pub use nana_ui_platform::{
     FetchCancellation, FetchError, FetchErrorKind, FetchHost, FetchPolicy, FetchRequest,
@@ -279,7 +280,6 @@ pub use scene_host::run_runtime_scene;
 pub use scene_paint::{
     HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
     SceneWgpuPainter, resolve_background_image_url, set_background_image_url_base,
-    set_resource_fetch_host,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

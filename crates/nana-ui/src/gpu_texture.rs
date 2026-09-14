@@ -995,6 +995,12 @@ impl GpuTexturePipeline {
     ) {
         self.url_cache.set_wake(wake);
     }
+    pub(crate) fn set_fetch_host(&mut self, host: Option<nana_ui_platform::SharedFetchHost>) {
+        self.url_cache.set_fetch_host(host);
+    }
+    pub(crate) fn release_fetch_host(&mut self, host: &nana_ui_platform::SharedFetchHost) {
+        self.url_cache.release_fetch_host(host);
+    }
     pub(crate) fn has_image_updates(&self) -> bool {
         self.url_cache.has_updates()
     }
