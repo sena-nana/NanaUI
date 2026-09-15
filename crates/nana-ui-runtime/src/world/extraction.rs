@@ -241,6 +241,25 @@ impl UiWorld {
             layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(padding.bottom));
             layout.padding_left = Some(nana_ui_core::LengthSpec::Px(padding.left));
         }
+        let document_selection = self
+            .document_text_selections
+            .get(&document)
+            .filter(|selection| selection.node == id && !selection.is_empty());
+        let mut text_spans = if has_text {
+            self.extracted_text_spans(id)
+        } else {
+            Vec::new()
+        };
+        if let (Some(selection), Some(color)) = (document_selection, style.selection_color) {
+            let (start, end) = selection.ordered();
+            text_spans = merge_inlay_glyph_spans(text_spans, &[(start, end)], color);
+        }
+        let document_text_selection = document_selection
+            .map(|selection| selection.lines.clone())
+            .unwrap_or_default();
+        let document_text_selection_color = style
+            .selection_background
+            .unwrap_or_else(|| self.style_model.palette.accent_soft.as_rgba_array());
         Some(ExtractedNode {
             id,
             kind,
@@ -256,11 +275,7 @@ impl UiWorld {
             focused: self.input.focused.get(&document) == Some(&id),
             ime: self.nodes.ime(id).cloned(),
             text_input: self.nodes.text_input(id).cloned(),
-            text_spans: if has_text {
-                self.extracted_text_spans(id)
-            } else {
-                Vec::new()
-            },
+            text_spans,
             standard_visual,
             component_geometry,
             standard_visual_foreground,
@@ -271,6 +286,8 @@ impl UiWorld {
                     border: self.style_model.palette.accent.as_rgba_array(),
                 }
             }),
+            document_text_selection,
+            document_text_selection_color,
         })
     }
 }

@@ -3,17 +3,17 @@
 //! Uses the host-owned wgpu Device/Queue. Layout is a bottom-aligned Runtime
 //! strip on the **full window viewport** — **not** [`nana_ui::DesktopShell`].
 //! Hit-testing must use [`crate::control_slot::control_slot_paint_bounds`].
-//! Pointer + KeyEvent input is applied through [`crate::slot_runtime::SlotRuntime`].
-//! The soft keyboard is shown/hidden from [`Self::text_input_focused`]; printable
-//! commits map to [`nana_ui_platform::ImeEvent::Commit`] (NativeActivity has no
-//! InputConnection, so no composition/preedit). Accessibility publication lives
-//! in [`crate::slot_ax`] (phase one: name/role/value; reader actions drain back
-//! into Runtime).
+//! Pointer + KeyEvent + GameTextInput events are applied through
+//! [`crate::slot_runtime::SlotRuntime`]. Composition maps to
+//! [`nana_ui_platform::ImeEvent`] via `dispatch_ime`. Accessibility
+//! publication lives in [`crate::slot_ax`].
 
 use nana_ui::{ScenePaintViewport, SceneWgpuPainter};
 use nana_ui_core::PhysicalRect;
+use nana_ui_platform::ImeEvent;
 use wgpu::{CommandEncoder, Device, Queue, TextureFormat, TextureView};
 
+use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer};
 use crate::slot_input::{SlotKeyMods, SlotLogicalKey, SlotTouchKind};
 use crate::slot_runtime::{SlotRuntime, SlotSnapshot};
 
@@ -90,11 +90,35 @@ impl SlotPainter {
         }
     }
 
+    pub fn push_ime(&mut self, event: &ImeEvent) -> bool {
+        let before = self.runtime.snapshot();
+        match self.runtime.push_ime(event) {
+            Ok(handled) => {
+                if handled {
+                    self.log_changes(before);
+                }
+                handled
+            }
+            Err(error) => {
+                log::warn!("nana-android-host: slot ime: {error}");
+                false
+            }
+        }
+    }
+
     /// Whether the Runtime keyboard focus sits on the slot's text input.
     ///
     /// The Android activity loop mirrors this into the soft keyboard.
     pub fn text_input_focused(&self) -> bool {
         self.runtime.text_input_focused()
+    }
+
+    pub fn ime_buffer(&self) -> Option<SlotImeBuffer> {
+        self.runtime.ime_buffer()
+    }
+
+    pub fn editor_info(&self) -> Option<SlotEditorInfo> {
+        self.runtime.editor_info()
     }
 
     /// Retained Runtime document backing the strip (for accessibility

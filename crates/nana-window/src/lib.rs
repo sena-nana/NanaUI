@@ -2,6 +2,7 @@
 
 mod browser;
 mod chrome;
+mod pointer;
 pub use browser::{
     BrowserCommand, BrowserCompletion, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState,
     NativeBrowser,
@@ -36,6 +37,7 @@ pub use menu::{
     Menu, MenuBar, MenuBarSupport, MenuEntry, MenuShortcut, install_application_menu_bar,
     install_menu_bar, installed_menu_bar, menu_bar_support, take_menu_activations,
 };
+pub use pointer::pointer_in_client_area;
 pub use size_move::LiveSizeMove;
 
 /// macOS Dock / application icon from PNG bytes. No-op on other platforms.

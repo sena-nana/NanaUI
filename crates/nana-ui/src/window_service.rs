@@ -1,6 +1,8 @@
 //! Thread-safe window requests. Native objects remain on the host thread.
 use nana_ui_platform::host::WindowCommand;
-use nana_ui_platform::{DisplayInfo, FullscreenRequest, WindowId, WindowResizeEdge};
+use nana_ui_platform::{
+    DisplayInfo, FullscreenRequest, MousePassthroughMode, WindowId, WindowResizeEdge,
+};
 use std::{
     future::Future,
     pin::Pin,
@@ -135,7 +137,13 @@ pub enum WindowCursor {
     Grabbing,
     NotAllowed,
     Crosshair,
+    Help,
     Wait,
+    Progress,
+    ZoomIn,
+    ZoomOut,
+    /// Hide the system cursor. Does not load a custom image.
+    None,
 }
 
 pub(crate) enum Control {
@@ -387,6 +395,23 @@ impl WindowHandle {
             enabled,
         }))
     }
+    /// Host-owned Forward passthrough: sample the global pointer and recover
+    /// hit-testing over opaque or interactive content. Widgets never see HWND.
+    pub fn set_mouse_passthrough_forward(&self, enabled: bool) -> WindowRequest<()> {
+        self.control(Control::Command(
+            WindowCommand::SetMousePassthroughForward {
+                id: self.id,
+                enabled,
+            },
+        ))
+    }
+    pub fn set_mouse_passthrough_mode(&self, mode: MousePassthroughMode) -> WindowRequest<()> {
+        match mode {
+            MousePassthroughMode::Off => self.set_mouse_passthrough(false),
+            MousePassthroughMode::Passthrough => self.set_mouse_passthrough(true),
+            MousePassthroughMode::Forward => self.set_mouse_passthrough_forward(true),
+        }
+    }
     pub(crate) fn service(&self) -> &WindowService {
         &self.service
     }
@@ -442,6 +467,12 @@ impl WindowEffects {
     }
     pub fn set_mouse_passthrough(&self, enabled: bool) -> WindowRequest<()> {
         self.0.set_mouse_passthrough(enabled)
+    }
+    pub fn set_mouse_passthrough_forward(&self, enabled: bool) -> WindowRequest<()> {
+        self.0.set_mouse_passthrough_forward(enabled)
+    }
+    pub fn set_mouse_passthrough_mode(&self, mode: MousePassthroughMode) -> WindowRequest<()> {
+        self.0.set_mouse_passthrough_mode(mode)
     }
 }
 

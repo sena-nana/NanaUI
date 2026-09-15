@@ -4,8 +4,9 @@
 //! into the Activity's decor view through an embedded dex, so screen readers
 //! walk the same Runtime tree as desktop hosts via [`AccessTreeProjector`].
 //! The adapter publishes name/role/value and queues reader actions; the host
-//! drains them through [`SlotRuntime::apply_accessibility_action`]. Scroll and
-//! virtual-list coverage is a later phase.
+//! drains them through [`SlotRuntime::apply_accessibility_action`]. Click /
+//! Focus / SetValue / SetSelection activate Button, Switch, and TextInput.
+//! Scroll and virtual-list coverage is a later phase.
 
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, Mutex};

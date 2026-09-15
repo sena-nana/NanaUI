@@ -121,6 +121,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if surface_retry_due {
             self.retry_surfaces(now);
         }
+        self.sample_passthrough_forward(event_loop);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }
@@ -138,6 +139,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.next_wakeup(),
             frame_deadline,
             self.host_work_deadline,
+            self.passthrough_forward_wakeup(),
         ]
         .into_iter()
         .flatten()

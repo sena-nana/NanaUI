@@ -176,7 +176,7 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 `undo_focused_text` / `redo_focused_text` 作用于焦点编辑器，恢复编辑**开始时**的选区（含多光标），`can_undo_text` / `can_redo_text` 供菜单置灰。`RuntimeInputAdapter` 已接 Ctrl/Cmd+Z 与 Ctrl/Cmd+Shift+Z。每个编辑器 200 步上限，节点销毁即释放。
 
-剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。
+剪贴板：Ctrl/Cmd + C / X / V / A 由 `RuntimeInputAdapter` 接到焦点编辑器。Runtime 只回答「选中的是什么」和「这次编辑做什么」（`focused_selected_text`、`cut_focused_text`、`select_all_focused_text`、`replace_focused_text`），系统剪贴板由宿主持有：默认是进程级 `OsClipboard`，宿主可用 `RuntimeInputAdapter::with_clipboard` 换掉。没选中时 Ctrl+C 不清空剪贴板；剪贴板写失败时 Ctrl+X 不删文本；只读字段能复制、不能剪切粘贴。焦点在 `NativeMarkdown` / `SelectableRichText` 上时，Ctrl+C 取的是它的选区快照。普通 `Text` 在 `user-select: text | all | contain` 下可复制（文档级选区，不是第二套 TextInput）：`text` 拖选，`all` 单击即选中该节点全文，`contain` 选区不延伸到邻居；空选区同样不清剪贴板，Cut 不删这段只读文本。`user-select: auto` 默认不可选；`none` 不进选区。作者 `::selection` / `::-moz-selection` 的 `background` / `color` 画到选区高亮，未写时选中底用主题 `accent_soft`。Android 系统剪贴板仍是另项。
 
 大列表、表格、树：Rust 用 `AppContext::materialize_virtual_*`；Vue 用 `NanaVirtualList` / `NanaVirtualTable` / `NanaVirtualTree`（host tag 是唯一的 `nana-scroll-view`）。两边同一份窗口几何（`VirtualListLayout::window`），可见窗口外不建 live 节点；滚动不重排整棵布局。GPU 节点走同一张 `ComponentRegistry`：`nana-gpu` → `nana.gpu`，`nana-gpu-view` → `nana.gpu-view`。每个控件只保留一个 tag，等于 `ComponentTypeId` 去掉 `nana.` 前缀。
 

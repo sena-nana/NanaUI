@@ -1,0 +1,19 @@
+# GameActivity packaging notes
+#
+# The Rust cdylib exports `android_main` (android-activity, game-activity
+# feature). Package with Gradle so GameActivity + GameTextInput Java classes
+# are in the APK (NativeActivity has no InputConnection):
+#
+#   source scripts/android-env.sh
+#   ./scripts/check-android-arm64.sh --build --dist
+#   ./scripts/package-android-host-apk.sh
+#   → target-android/apk/nana-android-host-debug.apk
+#
+# Do not enable GameActivity prefab C++ glue. See docs/android.md.
+
+minSdk=24
+targetSdk=34
+abi=arm64-v8a
+lib=nana_android_host
+activity=app.nanaui.host.NanaActivity
+webview=forbidden

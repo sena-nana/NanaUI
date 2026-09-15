@@ -218,7 +218,7 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 - 同一资源在一帧里提交互相冲突的 revision（整帧会失败，不会挑一个用）
 - 在 UI 线程等生产端或 GPU 完成来拿帧；用 `FrameInbox` 取最新帧
 - 在 `window_frame_presented` 之前丢掉仍可能被采样的帧，或让 slot 在 binding 销毁后继续指向已归还的纹理
-- 为 Android 另写一套 renderer，或把实验 NativeActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
+- 为 Android 另写一套 renderer，或把实验 GameActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
 - 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
 - 在 UI 画完之后把原生 WebView 盖在窗口上，或让控件拿 HWND / NSView 去挂引擎
 

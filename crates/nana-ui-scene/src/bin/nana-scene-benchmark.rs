@@ -202,6 +202,8 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 

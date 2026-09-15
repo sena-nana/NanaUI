@@ -3591,11 +3591,63 @@ fn placeholder_pseudo_paints_input_and_skips_non_inputs() {
     let div = bridge.get(2).expect("div");
     assert!(div.props.layout.placeholder_color.is_none());
     assert!(div.props.layout.width.is_none());
+    assert!(!bridge.snapshot().widgets.iter().any(|w| {
+        w.props.attrs.get(GENERATED_PSEUDO_ATTR).map(String::as_str) == Some("placeholder")
+    }),);
+}
+
+#[test]
+fn selection_pseudo_paints_originating_text_and_fails_closed_on_unknown() {
+    let mut bridge = MessageBridge::new();
+    bridge.register(
+        1,
+        WidgetKind::Text,
+        WidgetProps {
+            element_tag: "p".into(),
+            class_names: vec!["quote".into()],
+            label: "Hello".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.register(
+        2,
+        WidgetKind::Text,
+        WidgetProps {
+            element_tag: "span".into(),
+            class_names: vec!["other".into()],
+            label: "Other".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(
+        r#"
+            .quote::selection { background: #ff0000; color: #ffffff; caret-color: blue; background-image: url(sel.png); }
+            .other::selection { cursor: pointer; }
+            "#,
+    );
+    let quote = bridge.get(1).expect("quote");
+    assert_eq!(
+        quote.props.layout.selection_background,
+        Some([1.0, 0.0, 0.0, 1.0])
+    );
+    assert_eq!(
+        quote.props.layout.selection_color,
+        Some([1.0, 1.0, 1.0, 1.0])
+    );
+    assert!(quote.props.layout.cursor.is_none());
+    assert!(quote.props.layout.paint.background_image.is_none());
+    let other = bridge.get(2).expect("other");
+    assert!(
+        other.props.layout.selection_background.is_none()
+            && other.props.layout.selection_color.is_none()
+            && other.props.layout.cursor.is_none(),
+        "unsupported ::selection properties must stay fail-closed"
+    );
     assert!(
         !bridge.snapshot().widgets.iter().any(|w| {
-            w.props.attrs.get(GENERATED_PSEUDO_ATTR).map(String::as_str) == Some("placeholder")
+            w.props.attrs.get(GENERATED_PSEUDO_ATTR).map(String::as_str) == Some("selection")
         }),
-        "::placeholder must not materialize a generated box"
+        "::selection must not materialize a generated box"
     );
 }
 

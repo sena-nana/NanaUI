@@ -1652,6 +1652,12 @@ pub struct ComputedStyle {
     /// node or one of its ancestors (distinguishes explicit `default` from
     /// the initial value used by editable controls).
     pub cursor_specified: bool,
+    /// CSS `user-select` after inheritance (initial `auto`).
+    pub user_select: nana_ui_core::UserSelectSpec,
+    /// Author `::selection` background after inheritance. `None` uses theme accent.
+    pub selection_background: Option<[f32; 4]>,
+    /// Author `::selection` foreground after inheritance. `None` keeps text color.
+    pub selection_color: Option<[f32; 4]>,
     pub font_size: f32,
     pub font_weight: Option<u16>,
     pub italic: bool,
@@ -1683,6 +1689,9 @@ impl Default for ComputedStyle {
             pointer_events: nana_ui_core::PointerEventsSpec::Auto,
             cursor: nana_ui_core::CursorSpec::Default,
             cursor_specified: false,
+            user_select: nana_ui_core::UserSelectSpec::Auto,
+            selection_background: None,
+            selection_color: None,
             font_size: UI_BASE_TEXT_SIZE,
             font_weight: None,
             italic: false,
@@ -3006,6 +3015,29 @@ impl CustomRenderNode {
     }
 }
 
+/// One document-level text selection. Not a second TextInput.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DocumentTextSelection {
+    pub node: StableNodeId,
+    pub start: usize,
+    pub end: usize,
+    pub lines: Vec<LayoutBox>,
+}
+
+impl DocumentTextSelection {
+    pub fn is_empty(&self) -> bool {
+        self.start >= self.end
+    }
+
+    pub fn ordered(&self) -> (usize, usize) {
+        if self.start <= self.end {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtractedNode {
     pub id: StableNodeId,
@@ -3035,6 +3067,11 @@ pub struct ExtractedNode {
     /// File-drop hover overlay resolved from the theme. Scene paints this as a
     /// fill + border on the target box; it is not the node's own background.
     pub drop_hover: Option<DropHoverOverlay>,
+    /// Document-level text selection highlights in paragraph-local coordinates.
+    pub document_text_selection: Vec<LayoutBox>,
+    /// Fill for [`Self::document_text_selection`]: author `::selection` background,
+    /// else theme `accent_soft`.
+    pub document_text_selection_color: [f32; 4],
 }
 
 /// Theme-resolved drop-target hover overlay.

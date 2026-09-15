@@ -10,6 +10,8 @@ mod window;
 #[cfg(feature = "ws")]
 mod ws;
 
+#[cfg(all(feature = "clipboard", target_os = "android"))]
+pub use clipboard::AndroidClipboard;
 #[cfg(all(feature = "clipboard", not(target_os = "android")))]
 pub use clipboard::OsClipboard;
 #[cfg(feature = "clipboard")]
@@ -26,11 +28,11 @@ pub use fetch::{
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 pub use window::{
-    DisplayBounds, DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, SystemAppearance,
-    TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon,
-    WindowIconError, WindowId, WindowLevel, WindowModeState, WindowResizeEdge, WindowRole,
-    clamp_position_to_displays, clear_registered_application_icon, fit_window_to_displays,
-    register_application_icon, resolve_window_icon, window_resize_edge,
+    DisplayBounds, DisplayId, DisplayInfo, FullscreenMode, FullscreenRequest, MousePassthroughMode,
+    SystemAppearance, TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent,
+    WindowGeometry, WindowIcon, WindowIconError, WindowId, WindowLevel, WindowModeState,
+    WindowResizeEdge, WindowRole, clamp_position_to_displays, clear_registered_application_icon,
+    fit_window_to_displays, register_application_icon, resolve_window_icon, window_resize_edge,
 };
 #[cfg(feature = "ws")]
 pub use ws::{
@@ -60,21 +62,22 @@ pub struct PlatformCapabilities {
     pub control_slot: bool,
     /// Runtime controls (Text + Input + Switch + Button) can paint into the slot.
     pub control_widget: bool,
-    /// NativeActivity (or host) pointer events route into the slot control.
+    /// Host pointer events route into the slot control.
     pub control_input: bool,
 }
 
 #[cfg(feature = "experimental-android")]
 impl PlatformCapabilities {
-    /// Android ARM64 MVP: Surface + Rust JS engine + slot controls/input.
+    /// Android ARM64 host: Surface + Rust JS engine + slot controls/input.
     ///
-    /// `ime` stays false on NativeActivity (no InputConnection); KeyEvent text
-    /// is a separate path under `control_input`, not a soft-IME claim.
-    /// `clipboard` stays false until a real Android clipboard backend exists.
+    /// `ime` and `clipboard` are true once GameActivity InputConnection and
+    /// JNI `ClipboardManager` are wired. This is not a second product paint
+    /// kernel: the host still paints Runtime / UiScene through
+    /// `SceneWgpuPainter`.
     pub const fn android_mvp() -> Self {
         Self {
-            ime: false,
-            clipboard: false,
+            ime: true,
+            clipboard: true,
             vulkan_surface: true,
             rust_js_engine: true,
             desktop_shell: false,
@@ -94,8 +97,8 @@ mod tests {
     #[test]
     fn android_capabilities_do_not_claim_unwired_native_services() {
         let caps = PlatformCapabilities::android_mvp();
-        assert!(!caps.ime);
-        assert!(!caps.clipboard);
+        assert!(caps.ime);
+        assert!(caps.clipboard);
         assert!(!caps.desktop_shell);
     }
 
@@ -135,5 +138,5 @@ pub enum SurfacePhase {
 
 /// Backend protocol for framework adapters. Applications use WindowService.
 pub mod host {
-    pub use crate::window::WindowCommand;
+    pub use crate::window::{MousePassthroughMode, WindowCommand};
 }

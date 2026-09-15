@@ -59,6 +59,7 @@ def click(point):
     assert (actual.x, actual.y) == point, ((actual.x, actual.y), point)
     u.mouse_event(2, 0, 0, 0, 0); u.mouse_event(4, 0, 0, 0, 0)
 try:
+    overlay_ready = wait_for("ready", window=1)
     wait_for("passthrough", window=99, success=False)
     command("fail"); wait_for("open_failed", window=2)
     time.sleep(1)
@@ -68,8 +69,12 @@ try:
     initial_focus = u.GetForegroundWindow()
     assert initial_focus != layer, "Overlay stole focus on creation"
     rect = Rect(); assert u.GetWindowRect(layer, c.byref(rect))
+    scale = float(overlay_ready["scale"])
+    hit = overlay_ready["hit"]
     point = (rect.left + 160, rect.top + 100)
     clear_point = (rect.left + 200, rect.top + 200)
+    opaque = (int(rect.left + (hit["x"] + hit["w"] / 2) * scale),
+              int(rect.top + (hit["y"] + hit["h"] / 2) * scale))
     before = pixel(clear_point)
     assert before == 0x00FF00, f"Transparent layer obscures green reference: {before:#x}"
     click(point); wait_for("pointer_down", 5, window=1)
@@ -82,6 +87,19 @@ try:
     time.sleep(.3)
     assert not u.GetWindowLongW(layer, -20) & 0x20, "Native passthrough was not cleared"
     click(point); wait_for("pointer_down", 5, window=1)
+    command("forward"); wait_for("passthrough", window=1, enabled=True, success=True)
+    time.sleep(.3)
+    assert u.GetWindowLongW(layer, -20) & 0x20, "Forward did not enable WS_EX_TRANSPARENT"
+    click(clear_point); wait_for("pointer_down", 5, window=0)
+    assert u.SetCursorPos(*opaque); time.sleep(.3)
+    wait_for("passthrough", window=1, enabled=False, success=True)
+    assert not u.GetWindowLongW(layer, -20) & 0x20, "Forward did not recover hit-testing"
+    click(opaque); wait_for("pointer_down", 5, window=1)
+    assert u.SetCursorPos(*clear_point); time.sleep(.3)
+    wait_for("passthrough", window=1, enabled=True, success=True)
+    click(clear_point); wait_for("pointer_down", 5, window=0)
+    command("forward-off"); wait_for("passthrough", window=1, enabled=False, success=True)
+    time.sleep(.3)
     before_resize = Rect(); assert u.GetWindowRect(layer, c.byref(before_resize))
     edge = (before_resize.right - 3, before_resize.bottom - 3)
     assert u.SetCursorPos(*edge); time.sleep(.1); u.mouse_event(2, 0, 0, 0, 0)

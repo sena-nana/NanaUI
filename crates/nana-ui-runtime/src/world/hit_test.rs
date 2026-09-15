@@ -616,9 +616,7 @@ fn transformed_point(
 }
 
 impl UiWorld {
-    /// Current viewport geometry for layout-time anchors. The hit index is
-    /// published only after the frame settles, so it cannot serve this query.
-    pub(crate) fn viewport_layout_box(&self, target: StableNodeId) -> Option<LayoutBox> {
+    fn layout_projection_transform(&self, target: StableNodeId) -> Option<([f32; 6], [f32; 2])> {
         if !self.is_mounted(target) {
             return None;
         }
@@ -664,8 +662,14 @@ impl UiWorld {
                 );
             }
         }
+        Some(transform)
+    }
+
+    /// Current viewport geometry for layout-time anchors. The hit index is
+    /// published only after the frame settles, so it cannot serve this query.
+    pub(crate) fn viewport_layout_box(&self, target: StableNodeId) -> Option<LayoutBox> {
+        let ([a, by, c, d, e, f], [g, h]) = self.layout_projection_transform(target)?;
         let b = self.layout_box(target)?;
-        let ([a, by, c, d, e, f], [g, h]) = transform;
         let mut x = f32::INFINITY;
         let mut y = f32::INFINITY;
         let mut right = f32::NEG_INFINITY;
@@ -699,7 +703,8 @@ impl UiWorld {
     }
 
     /// Map a window point into this node's untransformed layout coordinates.
-    /// Uses the current hit projection, including inherited scroll offsets.
+    /// Uses the current hit projection when it exists, otherwise the same
+    /// ancestor scroll/transform walk as [`Self::viewport_layout_box`].
     pub fn pointer_layout_position(
         &self,
         target: StableNodeId,
@@ -709,11 +714,20 @@ impl UiWorld {
         if !self.is_mounted(target) {
             return None;
         }
-        let document = self.document_of(target)?;
-        let index = self.hit_test_index.get(&document)?;
-        let entry = &index.entries.get(&target)?.entry;
-        let shift = index.inherited_shift(target);
-        transformed_point(entry.transform, entry.persp, x - shift[0], y - shift[1])
+        if let Some(document) = self.document_of(target)
+            && let Some(index) = self.hit_test_index.get(&document)
+            && let Some(indexed) = index.entries.get(&target)
+        {
+            let shift = index.inherited_shift(target);
+            return transformed_point(
+                indexed.entry.transform,
+                indexed.entry.persp,
+                x - shift[0],
+                y - shift[1],
+            );
+        }
+        let (transform, persp) = self.layout_projection_transform(target)?;
+        transformed_point(transform, persp, x, y)
     }
 
     /// Map layout geometry to window coordinates through the current hit projection.

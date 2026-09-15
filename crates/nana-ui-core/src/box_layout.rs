@@ -1538,6 +1538,45 @@ impl CursorSpec {
     }
 }
 
+/// CSS `user-select` subset. Inherited, like [`CursorSpec`].
+///
+/// `auto` leaves ordinary `TextContent` unselectable (not a second TextInput).
+/// `text` allows document-level drag selection on that node's text.
+/// `all` selects the whole text node on press (no drag required).
+/// `contain` is selectable like `text`, but a drag must not jump to a neighbor.
+/// `none` keeps the node (and inherited descendants) out of the selection.
+/// Unknown keywords fail closed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserSelectSpec {
+    #[default]
+    Auto,
+    Text,
+    All,
+    Contain,
+    None,
+}
+
+impl UserSelectSpec {
+    pub fn parse(input: &str) -> Option<Self> {
+        Some(match input.trim().to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "text" => Self::Text,
+            "all" => Self::All,
+            "contain" => Self::Contain,
+            "none" => Self::None,
+            _ => return None,
+        })
+    }
+
+    pub fn allows_document_select(self) -> bool {
+        matches!(self, Self::Text | Self::All | Self::Contain)
+    }
+
+    pub fn selects_whole_node_on_press(self) -> bool {
+        matches!(self, Self::All)
+    }
+}
+
 impl PointerEventsSpec {
     pub fn parse(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
@@ -3133,6 +3172,9 @@ pub struct LayoutStyle {
     /// CSS `cursor`; unspecified values inherit from the parent.
     #[serde(default)]
     pub cursor: Option<CursorSpec>,
+    /// CSS `user-select`; unspecified values inherit from the parent.
+    #[serde(default)]
+    pub user_select: Option<UserSelectSpec>,
     /// `white-space: nowrap`（与 [`Self::white_space`] 同步）。
     #[serde(default)]
     pub white_space_nowrap: bool,
@@ -3185,7 +3227,8 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub font_features: Option<Vec<FontFeatureSetting>>,
     /// CSS `font-variation-settings`. `None` = inherit; `Some([])` = `normal`.
-    /// Shaping applies `wght` / `wdth` only.
+    /// Declared axes are passed to shaping; axes missing from the face are
+    /// ignored. `wght` also merges into [`Self::font_weight`].
     #[serde(default)]
     pub font_variation_settings: Option<Vec<FontVariationSetting>>,
     /// CSS `font-kerning`. `None` = inherit.
@@ -3194,10 +3237,9 @@ pub struct LayoutStyle {
     /// CSS `line-break` subset. `None` = inherit. `strict` / `loose` skipped.
     #[serde(default)]
     pub line_break: Option<LineBreakSpec>,
-    /// `font-variation-settings` axes other than `wght`. cosmic-text 0.19
-    /// `FontSystem` only instantiates `wght` (via [`Self::font_weight`]);
-    /// `BEVL` / `wdth` / other axes fail this declaration only and are never
-    /// remapped to weight.
+    /// Malformed `font-variation-settings` (unparseable). Declared axes that
+    /// the loaded face does not provide are skipped at shape time and never
+    /// remapped onto `wght`.
     #[serde(default)]
     pub unsupported_font_variation: bool,
     /// `::placeholder` color on a text input (RGBA 0..=1). Not a generated box.
@@ -3207,6 +3249,14 @@ pub struct LayoutStyle {
     /// [`Self::placeholder_color`] (or theme faint) at TextInput paint.
     #[serde(default)]
     pub placeholder_opacity: Option<f32>,
+    /// Author `::selection` / `::-moz-selection` background (RGBA 0..=1).
+    /// Unset uses the theme accent at document-text highlight paint.
+    #[serde(default)]
+    pub selection_background: Option<[f32; 4]>,
+    /// Author `::selection` / `::-moz-selection` foreground (RGBA 0..=1).
+    /// Unset keeps the node's ordinary text color.
+    #[serde(default)]
+    pub selection_color: Option<[f32; 4]>,
     /// `grid-template-columns` 轻量轨道（侧栏|主区）。
     pub grid_columns: Option<Vec<GridTrack>>,
     /// `grid-template-rows` 轻量轨道（堆叠区；Column 主轴）。
@@ -3369,6 +3419,7 @@ impl Default for LayoutStyle {
             line_clamp: None,
             pointer_events: None,
             cursor: None,
+            user_select: None,
             white_space_nowrap: false,
             white_space: WhiteSpaceSpec::Normal,
             word_break: None,
@@ -3392,6 +3443,8 @@ impl Default for LayoutStyle {
             unsupported_font_variation: false,
             placeholder_color: None,
             placeholder_opacity: None,
+            selection_background: None,
+            selection_color: None,
             grid_columns: None,
             grid_rows: None,
             grid_columns_unsupported: None,

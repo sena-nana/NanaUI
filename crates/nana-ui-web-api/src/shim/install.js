@@ -152,6 +152,13 @@
   HTMLAudioElementShim.prototype = Object.create(HTMLMediaElementShim.prototype);
   HTMLAudioElementShim.prototype.constructor = HTMLAudioElementShim;
   globalThis.HTMLAudioElement = HTMLAudioElementShim;
+  globalThis.AudioContext = AudioContextShim;
+  globalThis.webkitAudioContext = AudioContextShim;
+  globalThis.AudioBuffer = AudioBufferShim;
+  globalThis.AudioBufferSourceNode = AudioBufferSourceNodeShim;
+  globalThis.GainNode = GainNodeShim;
+  globalThis.ScriptProcessorNode = ScriptProcessorNodeShim;
+  globalThis.AudioDestinationNode = AudioDestinationNodeShim;
   globalThis.Blob = BlobShim;
   globalThis.Image = ImageShim;
   globalThis.ImageBitmap = ImageBitmapShim;
@@ -215,6 +222,13 @@
   win.HTMLMediaElement = HTMLMediaElementShim;
   win.HTMLVideoElement = HTMLVideoElementShim;
   win.HTMLAudioElement = HTMLAudioElementShim;
+  win.AudioContext = AudioContextShim;
+  win.webkitAudioContext = AudioContextShim;
+  win.AudioBuffer = AudioBufferShim;
+  win.AudioBufferSourceNode = AudioBufferSourceNodeShim;
+  win.GainNode = GainNodeShim;
+  win.ScriptProcessorNode = ScriptProcessorNodeShim;
+  win.AudioDestinationNode = AudioDestinationNodeShim;
   win.Blob = BlobShim;
   win.Image = ImageShim;
   win.ImageBitmap = ImageBitmapShim;

@@ -461,6 +461,8 @@ pub struct UiWorld {
     drop_targets: HashMap<StableNodeId, nana_ui_core::DropAccepts>,
     /// Innermost file-drop hover target, if any. Scene paints overlay chrome.
     drop_hover: Option<(StableNodeId, nana_ui_core::DropEffect)>,
+    /// Document-level text selection (not a second TextInput). One range per document.
+    document_text_selections: HashMap<DocumentId, crate::DocumentTextSelection>,
     /// Viewport each document was last laid out against.
     ///
     /// Geometry projection runs on `&UiWorld` with no window context, but
@@ -567,6 +569,7 @@ impl UiWorld {
             document_viewports: HashMap::new(),
             drop_targets: HashMap::new(),
             drop_hover: None,
+            document_text_selections: HashMap::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             live_document_roots: HashMap::new(),
@@ -922,6 +925,51 @@ impl UiWorld {
             .get(id)
             .map(|n| &n.text)
             .map(|text| text.value.as_str())
+    }
+
+    pub fn document_text_selection(
+        &self,
+        document: DocumentId,
+    ) -> Option<&crate::DocumentTextSelection> {
+        self.document_text_selections.get(&document)
+    }
+
+    pub fn set_document_text_selection(
+        &mut self,
+        document: DocumentId,
+        selection: Option<crate::DocumentTextSelection>,
+    ) {
+        if self.document_text_selections.get(&document) == selection.as_ref() {
+            return;
+        }
+        if let Some(previous) = self.document_text_selections.remove(&document)
+            && self.contains(previous.node)
+        {
+            let _ = self.mark(previous.node, DirtyMask::RENDER);
+        }
+        if let Some(selection) = selection {
+            if self.contains(selection.node) {
+                let _ = self.mark(selection.node, DirtyMask::RENDER);
+            }
+            self.document_text_selections.insert(document, selection);
+        }
+    }
+
+    pub(crate) fn drop_invalid_document_text_selections(&mut self) {
+        let stale: Vec<DocumentId> = self
+            .document_text_selections
+            .iter()
+            .filter_map(|(&document, selection)| {
+                let keep = self.contains(selection.node)
+                    && self
+                        .computed_style(selection.node)
+                        .is_some_and(|style| style.user_select.allows_document_select());
+                (!keep).then_some(document)
+            })
+            .collect();
+        for document in stale {
+            self.set_document_text_selection(document, None);
+        }
     }
 
     pub fn layout_box(&self, id: StableNodeId) -> Option<LayoutBox> {
@@ -2238,6 +2286,7 @@ fn layout_excluding_transform_and_cursor_eq(
         style.css_perspective = None;
         style.preserve_3d = false;
         style.cursor = None;
+        style.user_select = None;
         style
     };
     strip(left) == strip(right)

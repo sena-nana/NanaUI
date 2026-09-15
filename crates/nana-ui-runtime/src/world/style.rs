@@ -54,6 +54,11 @@ impl UiWorld {
             pointer_events,
             cursor: layout.cursor.unwrap_or(inherited.cursor),
             cursor_specified: layout.cursor.is_some() || inherited.cursor_specified,
+            user_select: layout.user_select.unwrap_or(inherited.user_select),
+            selection_background: layout
+                .selection_background
+                .or(inherited.selection_background),
+            selection_color: layout.selection_color.or(inherited.selection_color),
             font_size: layout.font_size.unwrap_or(inherited.font_size),
             font_weight: layout.font_weight.or(inherited.font_weight),
             italic: layout.font_italic.unwrap_or(inherited.italic),
@@ -281,6 +286,7 @@ impl UiWorld {
             self.resolve_style::<true>(id, &mut resolved)?;
         }
         self.reconcile_focus(ids);
+        self.drop_invalid_document_text_selections();
         Ok(())
     }
 }

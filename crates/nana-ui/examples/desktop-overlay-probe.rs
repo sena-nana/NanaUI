@@ -1,10 +1,11 @@
-//! Native two-window acceptance probe. Commands on stdin: lock, unlock, close, quit.
+//! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off, close, quit.
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, ThemeMode, WindowDescriptor, run_runtime,
 };
+use nana_ui_core::LengthSpec;
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{InputEvent, PointerPhase, WindowEvent, WindowId, WindowRole};
 use std::{
@@ -13,9 +14,11 @@ use std::{
 };
 
 const OVERLAY: WindowId = WindowId(1);
+const OPAQUE_HIT: (f32, f32, f32, f32) = (24.0, 24.0, 140.0, 80.0);
 #[derive(Clone)]
 enum Message {
     Lock(bool),
+    Forward(bool),
     Close,
     Fail,
     Quit,
@@ -58,7 +61,27 @@ impl RuntimeProgram for Probe {
         overlay
             .context_mut()
             .build(id, |ui| {
-                ui.child("contrast", Text::new("Native overlay pointer target"));
+                ui.with(
+                    "overlay-root",
+                    Stack::fill_column(0.0).align(nana_ui_core::AlignSpec::Start),
+                    |ui| {
+                        ui.with(
+                            "opaque-hit",
+                            Stack::column(8.0)
+                                .width(LengthSpec::Px(OPAQUE_HIT.2))
+                                .height(LengthSpec::Px(OPAQUE_HIT.3))
+                                .hittable()
+                                .with_layout(|layout| {
+                                    layout.margin_left = Some(LengthSpec::Px(OPAQUE_HIT.0));
+                                    layout.margin_top = Some(LengthSpec::Px(OPAQUE_HIT.1));
+                                    layout.background = Some([0.85, 0.15, 0.2, 1.0]);
+                                }),
+                            |ui| {
+                                ui.child("contrast", Text::new("Native overlay pointer target"));
+                            },
+                        );
+                    },
+                );
             })
             .unwrap();
         let context = context.clone();
@@ -67,6 +90,8 @@ impl RuntimeProgram for Probe {
                 let message = match line.trim() {
                     "lock" => Message::Lock(true),
                     "unlock" => Message::Lock(false),
+                    "forward" => Message::Forward(true),
+                    "forward-off" => Message::Forward(false),
                     "close" => Message::Close,
                     "fail" => Message::Fail,
                     "quit" => Message::Quit,
@@ -109,6 +134,12 @@ impl RuntimeProgram for Probe {
                 id: OVERLAY,
                 enabled,
             }]),
+            Message::Forward(enabled) => {
+                commands(vec![WindowCommand::SetMousePassthroughForward {
+                    id: OVERLAY,
+                    enabled,
+                }])
+            }
             Message::Close => commands(vec![WindowCommand::Close(OVERLAY)]),
             Message::Fail => {
                 let mut settings = WindowDescriptor::new("invalid modal");
@@ -169,9 +200,17 @@ impl RuntimeProgram for Probe {
                     context.surface_alpha_mode(),
                     wgpu::CompositeAlphaMode::Opaque
                 );
-                report(
-                    serde_json::json!({"event":"ready", "window":OVERLAY.0, "scale":geometry.scale_factor}),
-                );
+                report(serde_json::json!({
+                    "event": "ready",
+                    "window": OVERLAY.0,
+                    "scale": geometry.scale_factor,
+                    "hit": {
+                        "x": OPAQUE_HIT.0,
+                        "y": OPAQUE_HIT.1,
+                        "w": OPAQUE_HIT.2,
+                        "h": OPAQUE_HIT.3
+                    }
+                }));
                 commands(vec![WindowCommand::SetMousePassthrough {
                     id: WindowId(99),
                     enabled: true,

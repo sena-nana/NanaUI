@@ -278,6 +278,37 @@ pub fn apply_placeholder_paint(
     }
 }
 
+/// Map `::selection` / `::-moz-selection` background/color onto the originating layout.
+/// Other highlight properties stay fail-closed — this is not a CSS Highlight API.
+pub fn apply_selection_paint(
+    layout: &mut LayoutStyle,
+    blocks: &[Vec<DeclarationEntry>],
+    _percent_w: Option<f32>,
+    _percent_h: Option<f32>,
+) {
+    if blocks.is_empty() {
+        return;
+    }
+    for entries in blocks {
+        for entry in entries {
+            let key = entry.property.trim().to_ascii_lowercase();
+            match key.as_str() {
+                "color" => {
+                    if let Some(color) = crate::css_map::resolve_paint_color(&entry.value) {
+                        layout.selection_color = Some(color);
+                    }
+                }
+                "background" | "background-color" => {
+                    if let Some(color) = crate::css_map::resolve_paint_color(&entry.value) {
+                        layout.selection_background = Some(color);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Overlay `::-webkit-scrollbar` / thumb color and thickness onto the originating layout.
 pub fn apply_scrollbar_pseudo_skin(
     layout: &mut LayoutStyle,

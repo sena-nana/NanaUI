@@ -2932,7 +2932,7 @@ pub(super) fn text_input_decorations(
 impl UiWorld {
     /// Shape against the last published content box when it exists so wrap
     /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
-    pub(super) fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
+    pub(crate) fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
         let source = &self.record(id).style;
         let layout = self.record(id).layout;
         let presentation = self.text_input_presentation_source(id);
@@ -3210,12 +3210,12 @@ impl UiWorld {
     pub(super) fn shape_text_for_layout_impl(
         &mut self,
         ids: Vec<StableNodeId>,
-        shaper: &mut impl TextShaper,
+        host: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
         // Same production adapter as [`Self::shape_text`].
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
-        let mut shaper = CountingShaper::new(shaper, &mut cache, &mut glyphs);
+        let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
         let mut shaped = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
@@ -3348,11 +3348,12 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        let _shaper = shaper;
+        drop(shaper);
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
+        self.refresh_document_text_highlights(host);
         self.bump_last_counters(|counters| {
             counters.record_text_shape(runs, hits, misses, wrap_layouts);
             counters.record_cache_eviction(evictions);
@@ -3451,14 +3452,14 @@ impl UiWorld {
     pub fn shape_text(
         &mut self,
         ids: &[StableNodeId],
-        shaper: &mut impl TextShaper,
+        host: &mut impl TextShaper,
     ) -> Result<(), UiWorldError> {
         self.resolve_presentations(ids)?;
         // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,
         // tests) is wrapped once so lookup/insert hit the same UiWorld caches.
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
-        let mut shaper = CountingShaper::new(shaper, &mut cache, &mut glyphs);
+        let mut shaper = CountingShaper::new(host, &mut cache, &mut glyphs);
         if !ids.is_empty() {
             self.record_hot_path_allocation(
                 1,
@@ -3560,11 +3561,12 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        let _shaper = shaper;
+        drop(shaper);
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
+        self.refresh_document_text_highlights(host);
         self.bump_last_counters(|counters| {
             counters.record_text_shape(runs, hits, misses, wrap_layouts);
             counters.record_cache_eviction(evictions);
@@ -3599,6 +3601,71 @@ impl UiWorld {
             height: (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0),
         };
         Some((content, self.record(id).scroll_offset))
+    }
+
+    /// Content box and scroll offset used to map pointer coordinates onto
+    /// document-selected `TextContent`, matching Scene text origin (padding +
+    /// border) rather than the border box.
+    pub(crate) fn document_text_pointer_context(
+        &self,
+        id: StableNodeId,
+    ) -> Option<(LayoutBox, ScrollOffset)> {
+        Some((
+            self.component_content_box(id)?,
+            self.record(id).scroll_offset,
+        ))
+    }
+
+    pub(crate) fn document_text_highlight_lines(
+        &self,
+        node: StableNodeId,
+        start: usize,
+        end: usize,
+        shaper: &mut dyn TextShaper,
+    ) -> Vec<LayoutBox> {
+        if start >= end {
+            return Vec::new();
+        }
+        let Some(text) = self.text(node).map(str::to_owned) else {
+            return Vec::new();
+        };
+        if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            return Vec::new();
+        }
+        let style = self.computed_style(node).cloned().unwrap_or_default();
+        shaper.text_highlights(
+            node,
+            &TextContent { value: text },
+            (start, end),
+            &style,
+            self.text_shape_constraints(node),
+        )
+    }
+
+    pub(crate) fn refresh_document_text_highlights(&mut self, shaper: &mut dyn TextShaper) {
+        self.drop_invalid_document_text_selections();
+        let pending: Vec<(DocumentId, crate::DocumentTextSelection)> = self
+            .document_text_selections
+            .iter()
+            .map(|(&document, selection)| (document, selection.clone()))
+            .collect();
+        for (document, selection) in pending {
+            let lines = self.document_text_highlight_lines(
+                selection.node,
+                selection.start,
+                selection.end,
+                shaper,
+            );
+            self.set_document_text_selection(
+                document,
+                Some(crate::DocumentTextSelection {
+                    node: selection.node,
+                    start: selection.start,
+                    end: selection.end,
+                    lines,
+                }),
+            );
+        }
     }
 }
 

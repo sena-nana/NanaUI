@@ -32,7 +32,7 @@ JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布�
 
 和 Runtime 同语义的 Vue 标签会落到对应控件：`button`、`a`、`input`（含 `checkbox` / `radio` / `range` / `number`）、`textarea`、`select` + `option`、`ul`/`ol`/`menu`/`li`、`table`/`tr`/`td`/`th`、`progress`、`meter`、`hr`、`dialog`、`details`/`summary`。布局与文本骨架标签（`div`、`section`、`figure`、`figcaption`、`hgroup`、`address`、`picture`、`datalist`、`slot`、`map` 等）落到 Column / Text。未识别的标签和退役的 `nana-button` 一类别名会报错，不会当成布局盒；插件 tag 须先 `register_component`。`v-html` 会把片段解析成子节点。`Teleport to="body|html"`、`Transition`、`KeepAlive`、`Suspense` 走同一套 host ops，没有第二棵树。
 
-语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<audio>`、`<embed>`、`<object>` 不伪造浏览器，落为不可见布局盒——`<video>` / `nana-video` 在有 `data-nana-video` 时走宿主推帧（`nana.video`，槽 `video:{id}`）；无槽才显示 `poster`。应用内打开网页的拟议控件是 `webview`（`nana.webview`），不是 `<iframe>`，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。音频等宿主管线出现后再按同一路径打通。`<source>` / `<track>` / `<area>` 没有自身视觉，`<col>` / `<colgroup>` 在 Runtime Table 里没有列定义，都显式跳过。
+语义不同就换名：`search-dropdown` 不是 HTML `<search>`；`nana-scroll-view` 不是随便一个 `div`。`<iframe>`、`<audio>`、`<embed>`、`<object>` 不伪造浏览器，落为不可见布局盒——`<video>` / `nana-video` 在有 `data-nana-video` 时走宿主推帧（`nana.video`，槽 `video:{id}`）；无槽才显示 `poster`。应用内打开网页的拟议控件是 `webview`（`nana.webview`），不是 `<iframe>`，目前未实现，见 [应用内浏览器](gpu.md#应用内浏览器)。`<audio>` 不解码、不写空视频帧；PCM 播放走上面的 `AudioContext` 子集。`<source>` / `<track>` / `<area>` 没有自身视觉，`<col>` / `<colgroup>` 在 Runtime Table 里没有列定义，都显式跳过。
 
 地标标签携带 a11y landmark role：`nav` → navigation、`main` → main、`aside` → complementary、`search` → search、`header` → banner、`footer` → contentinfo（`header` / `footer` 是 `article` / `aside` / `main` / `nav` / `section` 后代时除外）；`section` / `form` 只有带可访问名时才是 region / form——名字可以来自 `aria-label`、`aria-labelledby` 或自身文本内容。class / role hints 把地标标签改成具体控件（如 `<nav role="tablist">`）时保留控件角色。显式 `role` 属性优先于标签推断。这只影响读屏与 agent a11y dump——`<search>`、`<form>` 仍是布局盒，搜索与表单控件仍用 `search-dropdown` / `form-field`。
 
@@ -52,9 +52,9 @@ JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布�
 
 为了让熟悉的写法落到桌面窗口，而不是复刻浏览器：
 
-有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）。
+有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）、Web Audio 的 PCM 子集（`AudioContext`、从 `Float32Array` 填充的 `AudioBuffer`、`AudioBufferSourceNode`、`GainNode`、`destination`、`ScriptProcessorNode` / `onaudioprocess`）。桌面输出走 cpal；无宿主或无输出设备时构造 `AudioContext` 抛 `NotSupportedError`。测试注入 mock sink，不依赖扬声器。这条路径不写 HostTexture。
 
-没有：完整 DOM / CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议。未实现的 `fetch` 选项会报错，不会假装成功（`duplex` 仍在拒绝之列——请求侧流式正文需要分块上传，宿主协议还没有这条路）。
+没有：完整 DOM / CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议、完整 Web Audio 节点图 / 空间化 / `AudioWorklet` / `decodeAudioData`。未实现的 `fetch` 选项会报错，不会假装成功（`duplex` 仍在拒绝之列——请求侧流式正文需要分块上传，宿主协议还没有这条路）。`<audio>` 仍只是播放态 shim，不解码进 mixer。
 
 `fetch()` 在响应**头**到达时就 resolve，和浏览器一样；正文随后分块到达，每一块在 `pump_frame` 里交给 JS，回调不离开引擎线程。`response.body` 是 `ReadableStream`：
 

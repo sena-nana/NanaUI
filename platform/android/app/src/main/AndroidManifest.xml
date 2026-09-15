@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.vulkan.level" android:required="false" />
+    <application
+        android:label="@string/app_name"
+        android:extractNativeLibs="false"
+        android:theme="@style/Theme.NanaAndroidHost">
+        <activity
+            android:name="app.nanaui.host.NanaActivity"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="nana_android_host" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

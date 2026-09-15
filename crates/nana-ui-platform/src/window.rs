@@ -492,10 +492,44 @@ impl WindowDescriptor {
     }
 }
 
+/// Host-owned mouse-passthrough policy. Widgets never see the native handle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MousePassthroughMode {
+    /// Window receives pointer events normally.
+    #[default]
+    Off,
+    /// Native hit-testing is off for the whole window. Overlay does not
+    /// receive pointer events and cannot recover itself.
+    Passthrough,
+    /// Native hit-testing stays off while the pointer is over empty
+    /// transparent client area. The host samples the global pointer and
+    /// restores hit-testing over opaque or interactive content.
+    Forward,
+}
+
+impl MousePassthroughMode {
+    pub fn passthrough(enabled: bool) -> Self {
+        if enabled {
+            Self::Passthrough
+        } else {
+            Self::Off
+        }
+    }
+
+    pub fn forward(enabled: bool) -> Self {
+        if enabled { Self::Forward } else { Self::Off }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowCommand {
     /// Disable native pointer hit testing. Always emits MousePassthroughChanged.
     SetMousePassthrough {
+        id: WindowId,
+        enabled: bool,
+    },
+    /// Enable host-owned Forward passthrough. Always emits MousePassthroughChanged.
+    SetMousePassthroughForward {
         id: WindowId,
         enabled: bool,
     },
@@ -629,6 +663,15 @@ mod tests {
             WindowCommand::Drag(WindowId::PRIMARY),
             WindowCommand::Drag(_)
         ));
+        assert_eq!(MousePassthroughMode::default(), MousePassthroughMode::Off);
+        assert_eq!(
+            MousePassthroughMode::forward(true),
+            MousePassthroughMode::Forward
+        );
+        assert_eq!(
+            MousePassthroughMode::passthrough(false),
+            MousePassthroughMode::Off
+        );
     }
 
     #[test]

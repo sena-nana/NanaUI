@@ -68,6 +68,7 @@ unicode-width = "0.2"
 raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"
 pollster = "1.0"
+cpal = "0.15"
 cosmic-text = "0.19"
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
@@ -78,6 +79,11 @@ accesskit_android = "0.8.0"
 accesskit_macos = "0.27.0"
 accesskit_windows = "0.35.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }
+
+# cosmic-text 0.19 Attrs has no variation-axis list; the patch forwards
+# declared axes (including custom tags such as BEVL) into Swash locations.
+[patch.crates-io]
+cosmic-text = { path = "vendor/cosmic-text" }
 
 # Release/dist split. `release` stays stock so CI and the benchmarks keep their
 # fast turnaround; `dist` is what packaging scripts build and is the only

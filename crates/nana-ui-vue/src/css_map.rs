@@ -18,6 +18,7 @@
 //! | 主题色 / 间距 / 圆角档位 | **Tokens**（`ThemeMetrics` / 语义色） | 业务 `#rrggbb` 发明正式 token |
 //! | `pointer-events` (`auto` / `none`) | **Layout** paint/hit（[`PointerEventsSpec`]） | 异形窗 / 窗口 alpha / SVG 命中模型 |
 //! | `cursor` 常用关键字 | **Layout** → Runtime/Scene host 窗口光标 | `url()` 自定义光标图 |
+//! | `user-select` (`text` / `none` / `auto` / `all` / `contain`) | **Layout** → 文档级选区（非第二套 TextInput） | 未知关键字；完整 CSS Highlight API |
 //!
 //! 纯数据 [`LayoutStyle`] / [`LengthSpec`] / [`ParentBox`] 住在 `nana-ui-core::box_layout`。
 //! **本模块只做 CSS 子集解析**；禁止把解析器放进 `nana-ui` / `nana-ui-core`。
@@ -80,7 +81,7 @@ pub use nana_ui_core::box_layout::{
     GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
     LogicalInlineEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
-    TextShadowSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
+    TextShadowSpec, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
     resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
@@ -2749,11 +2750,15 @@ impl LayoutStyleCss for LayoutStyle {
                     self.cursor = Some(cursor);
                 }
             }
-            // Window-level / chrome: fail closed. `user-select` has no L1
-            // selection gate. `-webkit-app-region` / `app-region` is
+            "user-select" | "-webkit-user-select" => {
+                if let Some(user_select) = UserSelectSpec::parse(val) {
+                    self.user_select = Some(user_select);
+                }
+            }
+            // Window chrome: fail closed. `-webkit-app-region` / `app-region` is
             // Electron caption CSS on arbitrary boxes; Nana drag is only
             // AppTitleBar → nana-window, not a CSS region map.
-            "user-select" | "-webkit-user-select" | "-webkit-app-region" | "app-region" => {}
+            "-webkit-app-region" | "app-region" => {}
             _ => {}
         }
         self.resolve_logical_box_edges();
@@ -4565,10 +4570,10 @@ pub fn parse_css_font_size(input: &str) -> Option<f32> {
         .map(|v| v.max(0.0))
 }
 
-/// CSS `font-variation-settings`. `wght` maps to [`LayoutStyle::font_weight`].
-/// `wdth` is stored and allowed; other axes set
-/// [`LayoutStyle::unsupported_font_variation`] and are never remapped to weight
-/// or stuffed into `font-feature-settings`.
+/// CSS `font-variation-settings`. `wght` also maps to [`LayoutStyle::font_weight`].
+/// Declared axes (including custom tags such as `BEVL`) are stored as-is.
+/// Missing face axes are skipped at shape time; malformed declarations set
+/// [`LayoutStyle::unsupported_font_variation`] and are never remapped onto weight.
 pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) {
     let trimmed = val.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("normal") {
@@ -4576,77 +4581,20 @@ pub(crate) fn apply_font_variation_settings(style: &mut LayoutStyle, val: &str) 
         style.font_variation_settings = Some(Vec::new());
         return;
     }
-    if let Some(axes) = parse_css_font_variation_settings(trimmed) {
-        let mut unsupported = false;
-        let mut wght = None;
-        for axis in &axes {
-            if axis.tag == *b"wght" {
-                wght = Some(axis.value);
-            } else if axis.tag != *b"wdth" {
-                unsupported = true;
-            }
-        }
-        style.font_variation_settings = Some(axes);
-        style.unsupported_font_variation = unsupported;
-        if let Some(wght) = wght {
-            style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
-        }
-        return;
-    }
-    let Some(axes) = parse_font_variation_settings(trimmed) else {
+    let Some(axes) = parse_css_font_variation_settings(trimmed) else {
         style.unsupported_font_variation = true;
         return;
     };
-    let mut unsupported = false;
-    let mut wght = None;
-    let mut stored = Vec::new();
-    for (tag, value) in axes {
-        stored.push(FontVariationSetting::new(tag, value));
-        if &tag == b"wght" {
-            wght = Some(value);
-        } else if &tag != b"wdth" {
-            unsupported = true;
-        }
-    }
-    style.font_variation_settings = Some(stored);
-    style.unsupported_font_variation = unsupported;
+    let wght = axes
+        .iter()
+        .rev()
+        .find(|axis| axis.tag == *b"wght")
+        .map(|axis| axis.value);
+    style.font_variation_settings = Some(axes);
+    style.unsupported_font_variation = false;
     if let Some(wght) = wght {
         style.font_weight = Some(wght.round().clamp(1.0, 1000.0) as u16);
     }
-}
-
-fn parse_font_variation_settings(raw: &str) -> Option<Vec<([u8; 4], f32)>> {
-    let mut out = Vec::new();
-    for chunk in raw.split(',') {
-        let chunk = chunk.trim();
-        if chunk.is_empty() {
-            continue;
-        }
-        let (tag, rest) = parse_variation_tag(chunk)?;
-        let value = rest.trim().parse::<f32>().ok()?;
-        if !value.is_finite() {
-            return None;
-        }
-        out.push((tag, value));
-    }
-    if out.is_empty() { None } else { Some(out) }
-}
-
-fn parse_variation_tag(raw: &str) -> Option<([u8; 4], &str)> {
-    let s = raw.trim();
-    let quote = s.as_bytes().first().copied()?;
-    if quote != b'"' && quote != b'\'' {
-        return None;
-    }
-    let rest = &s[1..];
-    let end = rest.find(quote as char)?;
-    let tag = &rest.as_bytes()[..end];
-    if tag.len() != 4 || !tag.iter().all(|b| b.is_ascii()) {
-        return None;
-    }
-    let mut out = [0u8; 4];
-    out.copy_from_slice(tag);
-    Some((out, rest[end + 1..].trim()))
 }
 
 /// CSS `aspect-ratio` → `Some(None)` for `auto`, `Some(Some(w/h))` for a ratio.
@@ -4870,7 +4818,7 @@ pub fn parse_css_font_feature_settings(input: &str) -> Option<Vec<FontFeatureSet
 }
 
 /// CSS `font-variation-settings` → axis list. `normal` → empty (reset).
-/// Unknown axes are stored; shaping applies `wght` / `wdth` only.
+/// Declared axes are stored as-is; shaping applies axes present on the face.
 pub fn parse_css_font_variation_settings(input: &str) -> Option<Vec<FontVariationSetting>> {
     let expanded = expand_css_var_fallback(input.trim());
     let s = expanded.trim();
@@ -7442,22 +7390,42 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     #[test]
     fn user_select_and_app_region_fail_closed() {
         let mut layout = LayoutStyle::default();
-        let before = layout.clone();
         layout.apply_css_text(
             "user-select:none;-webkit-user-select:none;-webkit-app-region:drag;app-region:drag",
             None,
             None,
         );
+        assert_eq!(layout.user_select, Some(UserSelectSpec::None));
+        assert_eq!(layout.pointer_events, None);
+        let mut expected = LayoutStyle::default();
+        expected.user_select = Some(UserSelectSpec::None);
         assert_eq!(
-            layout, before,
-            "window chrome CSS must not mutate LayoutStyle"
+            layout, expected,
+            "app-region must not punch a drag map or mutate other fields"
         );
         layout.apply_css_text("app-region:no-drag;-webkit-app-region:no-drag", None, None);
         assert_eq!(
-            layout, before,
+            layout, expected,
             "app-region:no-drag must not punch a drag map"
         );
-        assert_eq!(layout.pointer_events, None);
+        layout.apply_css_text("user-select:text;-webkit-user-select:text", None, None);
+        assert_eq!(layout.user_select, Some(UserSelectSpec::Text));
+        layout.apply_css_text("user-select:auto", None, None);
+        assert_eq!(layout.user_select, Some(UserSelectSpec::Auto));
+        layout.apply_css_text("user-select:all", None, None);
+        assert_eq!(layout.user_select, Some(UserSelectSpec::All));
+        layout.apply_css_text(
+            "user-select:contain;-webkit-user-select:contain",
+            None,
+            None,
+        );
+        assert_eq!(layout.user_select, Some(UserSelectSpec::Contain));
+        layout.apply_css_text("user-select:element", None, None);
+        assert_eq!(
+            layout.user_select,
+            Some(UserSelectSpec::Contain),
+            "unknown user-select keywords fail closed"
+        );
     }
 
     #[test]
@@ -8632,7 +8600,11 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
     fn font_variation_bevl_does_not_become_wght() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("font-variation-settings: \"BEVL\" 50", None, None);
-        assert!(layout.unsupported_font_variation);
+        assert!(!layout.unsupported_font_variation);
+        assert_eq!(
+            layout.font_variation_settings.as_deref(),
+            Some(&[FontVariationSetting::new(*b"BEVL", 50.0)][..])
+        );
         assert_eq!(
             layout.font_weight, None,
             "BEVL must not silently become font-weight / wght"
@@ -8647,13 +8619,22 @@ html[data-theme="dark"], [data-theme="dark"] { --bg: #181818; }
             None,
         );
         assert_eq!(layout.font_weight, Some(600));
-        assert!(layout.unsupported_font_variation);
+        assert!(!layout.unsupported_font_variation);
         layout.apply_css_text(
             "font-variation-settings: \"wght\" 350, \"BEVL\" 50",
             None,
             None,
         );
         assert_eq!(layout.font_weight, Some(350));
+        assert_eq!(
+            layout.font_variation_settings.as_ref().map(|axes| axes
+                .iter()
+                .map(|axis| (axis.tag, axis.value))
+                .collect::<Vec<_>>()),
+            Some(vec![(*b"wght", 350.0), (*b"BEVL", 50.0)])
+        );
+        assert!(!layout.unsupported_font_variation);
+        layout.apply_css_text("font-variation-settings: nope", None, None);
         assert!(layout.unsupported_font_variation);
     }
 }

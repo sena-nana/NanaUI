@@ -2808,7 +2808,7 @@ mod tests {
         assert!(!layout.unsupported_font_variation);
         assert_eq!(layout.font_weight, Some(700));
         layout.apply_css_text("font-variation-settings: \"BEVL\" 1", None, None);
-        assert!(layout.unsupported_font_variation);
+        assert!(!layout.unsupported_font_variation);
         assert_eq!(
             layout.font_weight,
             Some(700),

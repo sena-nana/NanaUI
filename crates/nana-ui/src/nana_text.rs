@@ -2,8 +2,8 @@
 
 use cosmic_text::{
     Affinity, Align, Attrs, AttrsList, Buffer, BufferLine, Cursor, Ellipsize, EllipsizeHeightLimit,
-    Family, FeatureTag, FontFeatures, FontSystem, LineEnding, LineIter, Metrics, Shaping, Stretch,
-    Style, Weight, Wrap,
+    Family, FeatureTag, FontFeatures, FontSystem, FontVariations, LineEnding, LineIter, Metrics,
+    Shaping, Stretch, Style, VariationTag, Weight, Wrap,
 };
 use nana_ui_core::{
     DirSpec, FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec,
@@ -1065,6 +1065,13 @@ pub(crate) fn shape_attrs<'a>(
     if kerning == FontKerningSpec::None || !features.is_empty() {
         attrs = attrs.font_features(ot_features);
     }
+    if !variations.is_empty() {
+        let mut cosmic_vars = FontVariations::new();
+        for axis in variations {
+            cosmic_vars.set(VariationTag::new(&axis.tag), axis.value);
+        }
+        attrs = attrs.font_variations(cosmic_vars);
+    }
     attrs
 }
 
@@ -2017,6 +2024,81 @@ mod tests {
         );
         let missing = register_host_font_file("/definitely/not/a/font.ttf");
         assert!(matches!(missing, Err(HostFontError::Io(_))));
+    }
+
+    fn first_glyph_width(shaper: &mut NanaTextShaper, style: &ComputedStyle) -> f32 {
+        shaper.with_shaped_layout(
+            "A",
+            style,
+            TextShapeConstraints {
+                shaping: TextShaping::Advanced,
+                ..TextShapeConstraints::default()
+            },
+            |buffer| {
+                buffer
+                    .layout_runs()
+                    .next()
+                    .and_then(|run| run.glyphs.first())
+                    .map(|glyph| glyph.w)
+                    .unwrap_or(0.0)
+            },
+        )
+    }
+
+    #[test]
+    fn custom_variation_axes_change_outlines_without_becoming_wght() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes = include_bytes!("nana_text/fixtures/nana-wdth-bevl.ttf");
+        assert!(
+            register_host_font_bytes(bytes.to_vec()).unwrap() > 0,
+            "variable-font fixture must load"
+        );
+        let used = shaped_face_families("NanaTestVF", "A");
+        assert!(
+            used.iter().any(|name| name == "NanaTestVF"),
+            "shaper must hit NanaTestVF, used={used:?}"
+        );
+        let mut shaper = NanaTextShaper::default();
+        let base = ComputedStyle {
+            font_family: Some("NanaTestVF".into()),
+            font_size: 20.0,
+            font_weight: Some(400),
+            ..ComputedStyle::default()
+        };
+        let wdth_narrow = ComputedStyle {
+            font_variations: vec![FontVariationSetting::new(*b"wdth", 50.0)],
+            ..base.clone()
+        };
+        let wdth_wide = ComputedStyle {
+            font_variations: vec![FontVariationSetting::new(*b"wdth", 200.0)],
+            ..base.clone()
+        };
+        let bevl_off = ComputedStyle {
+            font_variations: vec![FontVariationSetting::new(*b"BEVL", 0.0)],
+            ..base.clone()
+        };
+        let bevl_on = ComputedStyle {
+            font_variations: vec![FontVariationSetting::new(*b"BEVL", 100.0)],
+            ..base.clone()
+        };
+        let narrow = first_glyph_width(&mut shaper, &wdth_narrow);
+        let wide = first_glyph_width(&mut shaper, &wdth_wide);
+        let unbeveled = first_glyph_width(&mut shaper, &bevl_off);
+        let beveled = first_glyph_width(&mut shaper, &bevl_on);
+        assert!(
+            wide > narrow + 1.0,
+            "wdth must change advance, narrow={narrow} wide={wide}"
+        );
+        assert!(
+            (beveled - unbeveled).abs() > 1.0,
+            "BEVL must change outlines/advance, off={unbeveled} on={beveled}"
+        );
+        assert_eq!(bevl_on.font_weight, Some(400));
+        assert_eq!(bevl_off.font_weight, Some(400));
+        assert!(
+            FontVariationSetting::wght_value(&bevl_on.font_variations).is_none(),
+            "BEVL must not be remapped onto wght"
+        );
     }
 
     #[test]

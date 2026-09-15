@@ -131,7 +131,7 @@ impl AndroidShellStub {
         true
     }
 
-    /// Whether NativeActivity pointer events route into the slot controls.
+    /// Whether host pointer events route into the slot controls.
     pub const fn control_input_available() -> bool {
         true
     }

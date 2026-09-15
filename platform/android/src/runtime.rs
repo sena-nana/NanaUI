@@ -2,7 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use android_activity::input::{InputEvent, KeyAction, Keycode, MetaState, MotionAction};
+use android_activity::input::{
+    ImeOptions, InputEvent, InputType, KeyAction, Keycode, MetaState, MotionAction,
+    TextInputAction, TextInputState, TextSpan,
+};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 use nana_ui_platform::SurfacePhase;
 use nana_ui_vue::VueHost;
@@ -11,6 +14,7 @@ use crate::engine::smoke_engine_only;
 use crate::gpu::GpuSurface;
 use crate::shell::{AndroidShellStub, scale_factor_from_density_dpi};
 use crate::slot_ax::SlotAccessibility;
+use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer, ime_events_from_buffer_delta};
 use crate::slot_input::{
     SlotKeyMods, SlotTouchKind, android_keycode_is_modifier, logical_key_from_android_keycode,
 };
@@ -28,6 +32,10 @@ struct HostState {
     /// Mirrors the soft keyboard: `true` after we asked InputMethodManager to
     /// show it while the slot text input held focus.
     ime_shown: bool,
+    /// Last GameTextInput buffer we acknowledged (for ImeEvent diffs).
+    ime_buffer: SlotImeBuffer,
+    /// Last EditorInfo pushed to GameActivity.
+    editor_info: Option<SlotEditorInfo>,
 }
 
 impl HostState {
@@ -42,6 +50,8 @@ impl HostState {
             last_paint: Instant::now() - Duration::from_secs(1),
             phase: SurfacePhase::Pending,
             ime_shown: false,
+            ime_buffer: SlotImeBuffer::default(),
+            editor_info: None,
         }
     }
 
@@ -139,6 +149,8 @@ impl HostState {
         self.ax = None;
         self.phase = SurfacePhase::Destroyed;
         self.ime_shown = false;
+        self.ime_buffer = SlotImeBuffer::default();
+        self.editor_info = None;
         log::info!("nana-android-host: surface destroyed");
     }
 
@@ -194,17 +206,35 @@ impl HostState {
         Ok(())
     }
 
-    /// Mirror Runtime text-input focus onto the soft keyboard.
+    /// Mirror Runtime text-input focus onto GameTextInput / the soft keyboard.
     ///
-    /// Printable commits then flow through `ImeEvent::Commit` on the slot
-    /// Runtime. NativeActivity has no InputConnection, so there is no
-    /// composition/preedit; this is deliberately not a second text protocol.
+    /// Composition then flows through `ImeEvent::{Preedit,Commit,DeleteSurrounding}`
+    /// on the slot Runtime. GameTextInput's buffer is a host mirror, not a
+    /// second editor.
     fn sync_soft_input(&mut self, app: &AndroidApp) {
         let Some(painter) = self.slot.as_ref() else {
             self.ime_shown = false;
+            self.editor_info = None;
             return;
         };
         let focused = painter.text_input_focused();
+        let next_info = painter.editor_info();
+        if focused && next_info != self.editor_info {
+            if let Some(info) = next_info {
+                apply_editor_info(app, info);
+                self.editor_info = Some(info);
+            }
+        }
+        if focused {
+            if let Some(buffer) = painter.ime_buffer() {
+                if buffer != self.ime_buffer {
+                    set_text_input_state(app, &buffer);
+                    self.ime_buffer = buffer;
+                }
+            }
+        } else {
+            self.editor_info = None;
+        }
         match (focused, self.ime_shown) {
             (true, false) => {
                 app.show_soft_input(true);
@@ -214,6 +244,7 @@ impl HostState {
             (false, true) => {
                 app.hide_soft_input(false);
                 self.ime_shown = false;
+                self.ime_buffer = SlotImeBuffer::default();
                 log::debug!("nana-android-host: soft input hide (focus left text input)");
             }
             _ => {}
@@ -242,14 +273,13 @@ impl HostState {
         painter.push_touch(slot, kind, physical_x, physical_y, pointer_id)
     }
 
-    /// NativeActivity KeyEvent → Runtime keyboard / IME (US-QWERTY subset +
-    /// editing keys).
+    /// GameActivity KeyEvent → Runtime keyboard (US-QWERTY subset + editing keys).
     ///
-    /// System keys (Back, …) stay `Unhandled`. NativeActivity has no
-    /// InputConnection: soft-keyboard commits arrive here as hardware-style
-    /// KeyEvents and the slot maps printable downs to [`nana_ui_platform::ImeEvent::Commit`].
-    /// Keys are Handled only while the slot holds keyboard focus (last Down was
-    /// inside the slot); otherwise they remain available to VueHost.
+    /// System keys (Back, …) stay `Unhandled`. While the slot text input is
+    /// focused, printable commits arrive as GameTextInput `TextEvent`s and are
+    /// not synthesized from KeyEvents (that would double-commit CJK). Keys are
+    /// Handled only while the slot holds keyboard focus; otherwise they remain
+    /// available to VueHost.
     fn handle_key(
         &mut self,
         action: KeyAction,
@@ -280,8 +310,70 @@ impl HostState {
         let Some(painter) = self.slot.as_mut() else {
             return false;
         };
+        if down
+            && painter.text_input_focused()
+            && logical
+                .as_ref()
+                .is_some_and(|key| key.committed_text().is_some())
+        {
+            // InputConnection owns printable text; swallowing avoids a second
+            // Commit beside the TextEvent path.
+            return true;
+        }
         let repeat = down && repeat_count > 0;
         painter.push_key(down, logical, mods, repeat)
+    }
+
+    /// GameTextInput state change → `dispatch_ime` (Preedit / Commit / DeleteSurrounding).
+    fn handle_text_event(&mut self, state: &TextInputState) -> bool {
+        let Some(painter) = self.slot.as_mut() else {
+            return false;
+        };
+        if !painter.text_input_focused() {
+            return false;
+        }
+        let next = slot_ime_buffer_from_android(state);
+        let events = ime_events_from_buffer_delta(&self.ime_buffer, &next);
+        if events.is_empty() {
+            self.ime_buffer = next;
+            return false;
+        }
+        let mut handled = false;
+        for event in &events {
+            if painter.push_ime(event) {
+                handled = true;
+            }
+        }
+        if let Some(buffer) = painter.ime_buffer() {
+            self.ime_buffer = buffer;
+        } else {
+            self.ime_buffer = next;
+        }
+        handled
+    }
+
+    fn handle_text_action(&mut self, action: TextInputAction) -> bool {
+        if !matches!(
+            action,
+            TextInputAction::Done
+                | TextInputAction::Go
+                | TextInputAction::Send
+                | TextInputAction::Next
+        ) {
+            return false;
+        }
+        let Some(painter) = self.slot.as_mut() else {
+            return false;
+        };
+        if !painter.text_input_focused() {
+            return false;
+        }
+        painter.push_key(
+            true,
+            Some(crate::slot_input::SlotLogicalKey::Enter),
+            SlotKeyMods::default(),
+            false,
+        )
     }
 }
 
@@ -361,7 +453,7 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                         if state.handle_motion(action, x, y, pointer_id) {
                             // Re-ask on every tap on the focused field: the IME
                             // may have been dismissed (Back) since the last
-                            // focus change and native-activity has no
+                            // focus change and GameActivity has no
                             // visibility query to distinguish that state.
                             if matches!(action, MotionAction::Up | MotionAction::PointerUp)
                                 && state
@@ -391,6 +483,27 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                             InputStatus::Unhandled
                         }
                     }
+                    InputEvent::TextEvent(text) => {
+                        if state.handle_text_event(text) {
+                            if let Some(buffer) =
+                                state.slot.as_ref().and_then(|painter| painter.ime_buffer())
+                            {
+                                set_text_input_state(&app, &buffer);
+                            }
+                            need_paint = true;
+                            InputStatus::Handled
+                        } else {
+                            InputStatus::Unhandled
+                        }
+                    }
+                    InputEvent::TextAction(action) => {
+                        if state.handle_text_action(*action) {
+                            need_paint = true;
+                            InputStatus::Handled
+                        } else {
+                            InputStatus::Unhandled
+                        }
+                    }
                     _ => InputStatus::Unhandled,
                 });
                 if !read {
@@ -408,4 +521,35 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn slot_ime_buffer_from_android(state: &TextInputState) -> SlotImeBuffer {
+    SlotImeBuffer {
+        text: state.text.clone(),
+        selection_start: state.selection.start,
+        selection_end: state.selection.end,
+        compose: state.compose_region.map(|span| (span.start, span.end)),
+    }
+}
+
+fn set_text_input_state(app: &AndroidApp, buffer: &SlotImeBuffer) {
+    app.set_text_input_state(TextInputState {
+        text: buffer.text.clone(),
+        selection: TextSpan {
+            start: buffer.selection_start,
+            end: buffer.selection_end,
+        },
+        compose_region: buffer.compose.map(|(start, end)| TextSpan { start, end }),
+    });
+}
+
+fn apply_editor_info(app: &AndroidApp, info: SlotEditorInfo) {
+    let input_type = InputType::from_bits_truncate(info.input_type);
+    let action = if info.action == crate::slot_ime::IME_ACTION_NONE {
+        TextInputAction::None
+    } else {
+        TextInputAction::Done
+    };
+    let options = ImeOptions::from_bits_truncate(info.ime_options);
+    app.set_ime_editor_info(input_type, action, options);
 }

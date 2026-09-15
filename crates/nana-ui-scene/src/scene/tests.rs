@@ -50,6 +50,8 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 
@@ -1528,6 +1530,66 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
             ..
         }
     ));
+}
+
+#[test]
+fn document_selection_fill_paints_under_glyphs() {
+    let mut text = node(1, None, &[]);
+    text.text = Some(TextContent {
+        value: "Hello".into(),
+    });
+    style_mut(&mut text).color = Some([1.0, 1.0, 1.0, 1.0]);
+    text.document_text_selection = vec![LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 16.0,
+    }];
+    text.document_text_selection_color = [1.0, 0.0, 0.0, 1.0];
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([text], []);
+    let fill_id = PrimitiveId {
+        node: id(1),
+        slot: 1,
+    };
+    let glyph_id = PrimitiveId {
+        node: id(1),
+        slot: 2,
+    };
+    assert!(
+        matches!(
+            scene.primitive(fill_id).map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::QuadBatch {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..
+            })
+        ),
+        "author ::selection background must remain a fill behind the text run"
+    );
+    assert!(
+        matches!(
+            scene.primitive(glyph_id).map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::Text { content, .. }) if content == "Hello"
+        ),
+        "glyph run stays on slot 2"
+    );
+    assert!(
+        fill_id.slot < glyph_id.slot,
+        "selection fill slot must sort under the glyph slot"
+    );
+    let order = scene
+        .primitives()
+        .map(|primitive| primitive.id)
+        .collect::<Vec<_>>();
+    let fill_at = order.iter().position(|id| *id == fill_id);
+    let glyphs_at = order.iter().position(|id| *id == glyph_id);
+    assert!(
+        fill_at
+            .zip(glyphs_at)
+            .is_some_and(|(fill, glyphs)| fill < glyphs),
+        "opaque ::selection fill must paint before glyphs, order={order:?}"
+    );
 }
 
 fn editor_input_with_markers_and_line_labels() -> ExtractedNode {

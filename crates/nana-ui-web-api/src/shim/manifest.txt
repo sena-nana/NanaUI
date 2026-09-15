@@ -3,6 +3,7 @@ events.js
 timers_storage.js
 document.js
 canvas_media.js
+audio.js
 navigation.js
 fetch.js
 websocket.js

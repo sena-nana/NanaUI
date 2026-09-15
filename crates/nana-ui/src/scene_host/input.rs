@@ -49,12 +49,31 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let WinitWindowEvent::ModifiersChanged(modifiers) = &event {
             self.input_mut(id).modifiers = modifiers.state();
         }
+        if self.forward_os_passthrough_ignores_pointer(id, &event) {
+            // Sampling owns the pointer while OS hit-testing is still off.
+            // Down must not reach widgets until recover flips hit-testing on.
+            return;
+        }
         if let WinitWindowEvent::PointerMoved { position, .. }
-        | WinitWindowEvent::PointerEntered { position, .. } = &event
+        | WinitWindowEvent::PointerEntered { position, .. }
+        | WinitWindowEvent::PointerButton { position, .. } = &event
         {
             let scale = self.scale_factor(id);
             let point = position.to_logical::<f32>(f64::from(scale));
             self.input_mut(id).cursor = (point.x, point.y);
+        }
+        if let WinitWindowEvent::PointerLeft {
+            position: Some(position),
+            ..
+        } = &event
+        {
+            let scale = self.scale_factor(id);
+            let point = position.to_logical::<f32>(f64::from(scale));
+            self.input_mut(id).cursor = (point.x, point.y);
+        }
+        if self.forward_pointer_action_for(id, &event) == ForwardPointerAction::RestorePassthrough {
+            self.restore_forward_passthrough(event_loop, id);
+            return;
         }
         if let Some(input) = self.normalized_input(id, &event) {
             if self.consume_frame_resize(event_loop, id, &input) {

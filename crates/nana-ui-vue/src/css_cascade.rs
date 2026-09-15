@@ -500,7 +500,7 @@ pub struct UnsupportedCssReport {
     pub grid_track_lists: usize,
     /// Nodes carrying `writing-mode: sideways-*`.
     pub writing_modes: usize,
-    /// Nodes with a `font-variation-settings` axis other than `"wght"`.
+    /// Nodes with a malformed `font-variation-settings` declaration.
     pub font_variations: usize,
 }
 
@@ -1939,7 +1939,8 @@ fn parse_generated_pseudo_selector(raw: &str) -> Option<(Selector, GeneratedPseu
     if selector_has_interactive_pseudo(s) || selector_has_deferred_pseudo(&base) {
         return None;
     }
-    let originating_selector = parse_selector_chain(&base)?;
+    let originating = if base.is_empty() { "*" } else { base.as_str() };
+    let originating_selector = parse_selector_chain(originating)?;
     Some((originating_selector, pseudo))
 }
 
@@ -2005,6 +2006,8 @@ fn parse_selector_chain(s: &str) -> Option<Selector> {
 fn strip_subject_generated_pseudo(s: &str) -> Option<(String, GeneratedPseudo)> {
     let lower = s.to_ascii_lowercase();
     for (suffix, pseudo) in [
+        ("::-moz-selection", GeneratedPseudo::Selection),
+        ("::selection", GeneratedPseudo::Selection),
         ("::before", GeneratedPseudo::Before),
         ("::after", GeneratedPseudo::After),
         ("::placeholder", GeneratedPseudo::Placeholder),
@@ -2013,9 +2016,11 @@ fn strip_subject_generated_pseudo(s: &str) -> Option<(String, GeneratedPseudo)> 
     ] {
         if lower.ends_with(suffix) {
             let base = s[..s.len().wrapping_sub(suffix.len())].trim();
-            if !base.is_empty() {
-                return Some((base.to_string(), pseudo));
+            // `::selection` may be bare (originating `*`). Boxes still need a subject.
+            if base.is_empty() && !matches!(pseudo, GeneratedPseudo::Selection) {
+                continue;
             }
+            return Some((base.to_string(), pseudo));
         }
     }
     None
@@ -3211,6 +3216,34 @@ mod tests {
     }
 
     #[test]
+    fn selection_pseudo_parses_background_and_color() {
+        let (sheet, report) = parse_stylesheet_full(
+            "::selection { background: #ff0000; color: #ffffff; caret-color: blue } ::-moz-selection { background: #00ff00 }",
+            0,
+        );
+        assert_eq!(report.skipped_selectors, 0);
+        assert_eq!(sheet.generated_pseudo_rules.len(), 2);
+        assert!(
+            sheet
+                .generated_pseudo_rules
+                .iter()
+                .all(|rule| rule.pseudo == crate::css_interactive::GeneratedPseudo::Selection)
+        );
+        assert!(
+            sheet.generated_pseudo_rules[0]
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "background")
+        );
+        assert!(
+            sheet.generated_pseudo_rules[0]
+                .declaration_entries
+                .iter()
+                .any(|e| e.property == "color")
+        );
+    }
+
+    #[test]
     fn ancestor_has_is_skipped() {
         let (_, report) = parse_stylesheet_with_report(".card:has(.x) .child { color: red }", 0);
         assert_eq!(report.skipped_selectors, 1);
@@ -3315,9 +3348,9 @@ mod tests {
         assert!(nested.grid_columns_unsupported.is_some());
         report.observe(&nested);
 
-        // A non-`wght` variation axis fails closed on that declaration only.
+        // A malformed variation declaration fails closed on that declaration only.
         let mut variation = LayoutStyle::default();
-        variation.apply_css_text(r#"font-variation-settings: "BEVL" 40"#, None, None);
+        variation.apply_css_text("font-variation-settings: nope", None, None);
         assert!(variation.unsupported_font_variation);
         report.observe(&variation);
 

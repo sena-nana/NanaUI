@@ -2,8 +2,7 @@
 //!
 //! Desktop uses the OS clipboard via `arboard` ([`OsClipboard`]). Android does
 //! not compile arboard; [`default_shared_clipboard`] installs
-//! [`UnsupportedClipboard`]. Keep `PlatformCapabilities::clipboard = false`
-//! until a real Android clipboard path exists.
+//! [`AndroidClipboard`] (JNI `ClipboardManager`).
 
 use std::sync::{Arc, Mutex};
 
@@ -21,11 +20,11 @@ pub fn shared_clipboard<C: ClipboardHost + 'static>(clipboard: C) -> SharedClipb
     Arc::new(Mutex::new(Box::new(clipboard)))
 }
 
-/// Platform default: OS clipboard on desktop; unsupported on Android.
+/// Platform default: OS clipboard on desktop; JNI ClipboardManager on Android.
 pub fn default_shared_clipboard() -> SharedClipboardHost {
     #[cfg(target_os = "android")]
     {
-        shared_clipboard(UnsupportedClipboard)
+        shared_clipboard(AndroidClipboard)
     }
     #[cfg(not(target_os = "android"))]
     {
@@ -33,7 +32,7 @@ pub fn default_shared_clipboard() -> SharedClipboardHost {
     }
 }
 
-/// Always-unavailable clipboard (Android MVP).
+/// Always-unavailable clipboard (tests / hosts that opt out).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedClipboard;
 
@@ -106,6 +105,140 @@ impl Default for OsClipboard {
     }
 }
 
+/// Android system clipboard via `ClipboardManager`.
+///
+/// Reads/writes fail honestly when the JNI Activity context is missing (unit
+/// tests, or a call before `android_main`). This is not a second pasteboard.
+#[cfg(target_os = "android")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AndroidClipboard;
+
+#[cfg(target_os = "android")]
+impl ClipboardHost for AndroidClipboard {
+    fn read_text(&mut self) -> Option<String> {
+        android_clipboard_text(None)
+    }
+
+    fn write_text(&mut self, text: &str) -> bool {
+        android_clipboard_text(Some(text)).is_some()
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_clipboard_text(write: Option<&str>) -> Option<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        android_clipboard_text_inner(write)
+    }))
+    .ok()
+    .flatten()
+}
+
+#[cfg(target_os = "android")]
+fn android_clipboard_text_inner(write: Option<&str>) -> Option<String> {
+    use std::mem::ManuallyDrop;
+
+    use jni::JavaVM;
+    use jni::objects::{JObject, JString, JValue};
+
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { JavaVM::from_raw(ctx.vm().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let context =
+        ManuallyDrop::new(unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) });
+    let service = env.new_string("clipboard").ok()?;
+    let manager = env
+        .call_method(
+            &*context,
+            "getSystemService",
+            "(Ljava/lang/String;)Ljava/lang/Object;",
+            &[JValue::Object(&service)],
+        )
+        .ok()?
+        .l()
+        .ok()?;
+    if manager.is_null() {
+        return None;
+    }
+    match write {
+        Some(text) => {
+            let label = env.new_string("nana").ok()?;
+            let value = env.new_string(text).ok()?;
+            let clip_class = env.find_class("android/content/ClipData").ok()?;
+            let clip = env
+                .call_static_method(
+                    clip_class,
+                    "newPlainText",
+                    "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;",
+                    &[JValue::Object(&label), JValue::Object(&value)],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            env.call_method(
+                &manager,
+                "setPrimaryClip",
+                "(Landroid/content/ClipData;)V",
+                &[JValue::Object(&clip)],
+            )
+            .ok()?;
+            Some(text.to_owned())
+        }
+        None => {
+            let clip = env
+                .call_method(
+                    &manager,
+                    "getPrimaryClip",
+                    "()Landroid/content/ClipData;",
+                    &[],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            if clip.is_null() {
+                return None;
+            }
+            let count = env
+                .call_method(&clip, "getItemCount", "()I", &[])
+                .ok()?
+                .i()
+                .ok()?;
+            if count <= 0 {
+                return None;
+            }
+            let item = env
+                .call_method(
+                    &clip,
+                    "getItemAt",
+                    "(I)Landroid/content/ClipData$Item;",
+                    &[JValue::Int(0)],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            let sequence = env
+                .call_method(
+                    &item,
+                    "coerceToText",
+                    "(Landroid/content/Context;)Ljava/lang/CharSequence;",
+                    &[JValue::Object(&*context)],
+                )
+                .ok()?
+                .l()
+                .ok()?;
+            if sequence.is_null() {
+                return None;
+            }
+            let jstr = env
+                .call_method(&sequence, "toString", "()Ljava/lang/String;", &[])
+                .ok()?
+                .l()
+                .ok()?;
+            let jstr = JString::from(jstr);
+            env.get_string(&jstr).ok().map(|s| s.into())
+        }
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 impl ClipboardHost for OsClipboard {
     fn read_text(&mut self) -> Option<String> {
@@ -143,9 +276,11 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "android")]
-    fn android_default_clipboard_is_unsupported() {
+    fn android_default_clipboard_uses_jni_backend() {
         let host = default_shared_clipboard();
         let mut clip = host.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Host `cargo test` has no Activity context; JNI must fail closed
+        // rather than report a successful pasteboard round-trip.
         assert!(clip.read_text().is_none());
         assert!(!clip.write_text("nana"));
     }

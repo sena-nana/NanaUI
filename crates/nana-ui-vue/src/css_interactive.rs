@@ -2,8 +2,8 @@
 //!
 //! Rules land in [`ParsedStylesheet`] buckets at parse time. Static cascade in
 //! [`crate::css_cascade`] ignores them until a later bridge / Runtime agent wires
-//! hover restyle, `::before`/`::after` boxes, `::placeholder` input paint, and
-//! animation timelines.
+//! hover restyle, `::before`/`::after` boxes, `::placeholder` input paint,
+//! `::selection` highlight colors, and animation timelines.
 
 use std::collections::BTreeMap;
 
@@ -68,11 +68,13 @@ pub struct InteractiveStyleRule {
 ///
 /// `::before` / `::after` (including legacy single-colon) materialize boxes.
 /// `::placeholder` is paint-only on Runtime TextInput — never a generated child.
+/// `::selection` / `::-moz-selection` is paint-only highlight color — never a box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum GeneratedPseudo {
     Before,
     After,
     Placeholder,
+    Selection,
 }
 
 impl GeneratedPseudo {
@@ -81,6 +83,7 @@ impl GeneratedPseudo {
             "before" => Some(Self::Before),
             "after" => Some(Self::After),
             "placeholder" => Some(Self::Placeholder),
+            "selection" | "-moz-selection" => Some(Self::Selection),
             _ => None,
         }
     }
@@ -344,6 +347,7 @@ pub struct GeneratedPseudoMatch {
     pub before: Vec<Vec<DeclarationEntry>>,
     pub after: Vec<Vec<DeclarationEntry>>,
     pub placeholder: Vec<Vec<DeclarationEntry>>,
+    pub selection: Vec<Vec<DeclarationEntry>>,
 }
 
 const MOTION_PROPERTIES: &[&str] = &[
@@ -515,6 +519,7 @@ pub fn matched_generated_pseudo(
             GeneratedPseudo::Before => out.before.push(entries),
             GeneratedPseudo::After => out.after.push(entries),
             GeneratedPseudo::Placeholder => out.placeholder.push(entries),
+            GeneratedPseudo::Selection => out.selection.push(entries),
         }
     }
     out

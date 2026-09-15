@@ -23,9 +23,9 @@ use std::time::{Duration, Instant};
 use nana_ui_core::{AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
-    DisplayBounds, FullscreenRequest, ImeEvent, InputEvent, InputModifiers, PointerPhase,
-    PointerType, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent, WindowGeometry,
-    WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
+    DisplayBounds, FullscreenRequest, ImeEvent, InputEvent, InputModifiers, MousePassthroughMode,
+    PointerPhase, PointerType, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent,
+    WindowGeometry, WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
     clamp_position_to_displays, clear_registered_application_icon, register_application_icon,
     window_resize_edge,
 };
@@ -140,6 +140,8 @@ struct WindowContext {
     applied_appearance: Option<windows::WindowAppearance>,
     cursor_override: Option<CursorIcon>,
     cursor_visible_override: Option<bool>,
+    passthrough_mode: MousePassthroughMode,
+    os_mouse_passthrough: bool,
     material_override: Option<nana_window::MaterialEffect>,
     surface: HostedGpuSurface,
     geometry: WindowGeometry,
@@ -605,6 +607,8 @@ fn initialize<Program: RuntimeProgram>(
         applied_appearance: None,
         cursor_override: None,
         cursor_visible_override: None,
+        passthrough_mode: MousePassthroughMode::Off,
+        os_mouse_passthrough: false,
         material_override: None,
         surface,
         geometry,
@@ -1062,6 +1066,27 @@ fn frame_resize_edge_for(
     window_resize_edge(geometry.logical_size, x, y, RESIZE_HANDLE_SIZE)
 }
 
+fn window_cursor_override(cursor: crate::WindowCursor) -> (Option<CursorIcon>, Option<bool>) {
+    use crate::WindowCursor;
+    match cursor {
+        WindowCursor::Automatic => (None, None),
+        WindowCursor::Default => (Some(CursorIcon::Default), None),
+        WindowCursor::Pointer => (Some(CursorIcon::Pointer), None),
+        WindowCursor::Text => (Some(CursorIcon::Text), None),
+        WindowCursor::Move => (Some(CursorIcon::Move), None),
+        WindowCursor::Grab => (Some(CursorIcon::Grab), None),
+        WindowCursor::Grabbing => (Some(CursorIcon::Grabbing), None),
+        WindowCursor::NotAllowed => (Some(CursorIcon::NotAllowed), None),
+        WindowCursor::Crosshair => (Some(CursorIcon::Crosshair), None),
+        WindowCursor::Help => (Some(CursorIcon::Help), None),
+        WindowCursor::Wait => (Some(CursorIcon::Wait), None),
+        WindowCursor::Progress => (Some(CursorIcon::Progress), None),
+        WindowCursor::ZoomIn => (Some(CursorIcon::ZoomIn), None),
+        WindowCursor::ZoomOut => (Some(CursorIcon::ZoomOut), None),
+        WindowCursor::None => (Some(CursorIcon::Default), Some(false)),
+    }
+}
+
 fn scene_cursor_icon(
     frame_edge: Option<WindowResizeEdge>,
     handle: Option<(f32, f32)>,
@@ -1426,9 +1451,55 @@ fn allows_modal_parent_event(event: &WinitWindowEvent) -> bool {
     )
 }
 
+/// Host-owned Forward passthrough: OS pointer must not reach widgets until
+/// sampling has recovered hit-testing. Down is never synthesized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardPointerAction {
+    Dispatch,
+    RestorePassthrough,
+    IgnoreUntilRecovered,
+}
+
+fn forward_pointer_event(event: &WinitWindowEvent) -> bool {
+    matches!(
+        event,
+        WinitWindowEvent::PointerMoved { .. }
+            | WinitWindowEvent::PointerEntered { .. }
+            | WinitWindowEvent::PointerLeft { .. }
+            | WinitWindowEvent::PointerButton { .. }
+    )
+}
+
+fn forward_pointer_action(
+    mode: MousePassthroughMode,
+    os_passthrough: bool,
+    hits_content: bool,
+    event: &WinitWindowEvent,
+) -> ForwardPointerAction {
+    if mode != MousePassthroughMode::Forward || !forward_pointer_event(event) {
+        return ForwardPointerAction::Dispatch;
+    }
+    if os_passthrough {
+        return ForwardPointerAction::IgnoreUntilRecovered;
+    }
+    match event {
+        WinitWindowEvent::PointerLeft { .. } => ForwardPointerAction::RestorePassthrough,
+        WinitWindowEvent::PointerMoved { .. }
+        | WinitWindowEvent::PointerEntered { .. }
+        | WinitWindowEvent::PointerButton { .. } => {
+            if hits_content {
+                ForwardPointerAction::Dispatch
+            } else {
+                ForwardPointerAction::RestorePassthrough
+            }
+        }
+        _ => ForwardPointerAction::Dispatch,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutedWindowCommand {
-    SetMousePassthrough(WindowId),
+    SetMousePassthrough(WindowId, MousePassthroughMode),
     Open(WindowId),
     Focus(WindowId),
     Close(WindowId),
@@ -1450,8 +1521,14 @@ enum RoutedWindowCommand {
 fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWindowCommand {
     let known = |id: WindowId| known.contains(&id);
     match command {
-        WindowCommand::SetMousePassthrough { id, .. } => {
-            RoutedWindowCommand::SetMousePassthrough(*id)
+        WindowCommand::SetMousePassthrough { id, enabled } => {
+            RoutedWindowCommand::SetMousePassthrough(
+                *id,
+                MousePassthroughMode::passthrough(*enabled),
+            )
+        }
+        WindowCommand::SetMousePassthroughForward { id, enabled } => {
+            RoutedWindowCommand::SetMousePassthrough(*id, MousePassthroughMode::forward(*enabled))
         }
         WindowCommand::Open { id, .. } if known(*id) => RoutedWindowCommand::Focus(*id),
         WindowCommand::Open { id, .. } => RoutedWindowCommand::Open(*id),
@@ -2260,15 +2337,15 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        DisplayBounds, ImeApply, InputTracker, RoutedWindowCommand, ime_apply, input_pointer_hit,
-        invalidate_program_host_textures, mouse_button_code, mouse_button_mask, platform_ime_event,
-        platform_input_key, platform_input_modifiers, platform_window_event,
-        remove_image_target_index, replace_image_target_index, resolved_scene_ime_request,
-        route_window_command, scene_clear_color, scene_runtime_input_update,
-        scene_window_attributes, screen_position, should_deliver_program_ime,
-        suppress_caption_after_create, surface_image_keys, tablet_pointer_id, window_level,
-        window_surface_effect, window_wants_transparent_surface, windows_scene_chrome,
-        windows_to_redraw, winit_icon,
+        DisplayBounds, ForwardPointerAction, ImeApply, InputTracker, RoutedWindowCommand,
+        ime_apply, input_pointer_hit, invalidate_program_host_textures, mouse_button_code,
+        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
+        platform_window_event, remove_image_target_index, replace_image_target_index,
+        resolved_scene_ime_request, route_window_command, scene_clear_color,
+        scene_runtime_input_update, scene_window_attributes, screen_position,
+        should_deliver_program_ime, suppress_caption_after_create, surface_image_keys,
+        tablet_pointer_id, window_cursor_override, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
@@ -2276,9 +2353,9 @@ mod tests {
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
-        ImeEvent, InputDisposition, InputEvent, PointerPhase, PointerType, TextInputPurpose,
-        TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry, WindowIcon, WindowId,
-        WindowResizeEdge,
+        ImeEvent, InputDisposition, InputEvent, MousePassthroughMode, PointerPhase, PointerType,
+        TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry,
+        WindowIcon, WindowId, WindowResizeEdge,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -3467,8 +3544,54 @@ mod tests {
             (CursorIcon::EwResize, true)
         );
         assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::Help), false),
+            (CursorIcon::Help, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::Progress), false),
+            (CursorIcon::Progress, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::ZoomIn), false),
+            (CursorIcon::ZoomIn, true)
+        );
+        assert_eq!(
+            scene_cursor_icon(None, None, Some(CursorSpec::ZoomOut), false),
+            (CursorIcon::ZoomOut, true)
+        );
+        assert_eq!(
             scene_cursor_icon(None, None, None, false),
             (CursorIcon::Default, true)
+        );
+    }
+
+    #[test]
+    fn window_cursor_matches_css_cursor_spec() {
+        use crate::WindowCursor;
+        use winit::cursor::CursorIcon;
+        assert_eq!(
+            window_cursor_override(WindowCursor::Automatic),
+            (None, None)
+        );
+        assert_eq!(
+            window_cursor_override(WindowCursor::Help),
+            (Some(CursorIcon::Help), None)
+        );
+        assert_eq!(
+            window_cursor_override(WindowCursor::Progress),
+            (Some(CursorIcon::Progress), None)
+        );
+        assert_eq!(
+            window_cursor_override(WindowCursor::ZoomIn),
+            (Some(CursorIcon::ZoomIn), None)
+        );
+        assert_eq!(
+            window_cursor_override(WindowCursor::ZoomOut),
+            (Some(CursorIcon::ZoomOut), None)
+        );
+        assert_eq!(
+            window_cursor_override(WindowCursor::None),
+            (Some(CursorIcon::Default), Some(false))
         );
     }
 
@@ -3721,8 +3844,57 @@ mod tests {
                     &WindowCommand::SetMousePassthrough { id, enabled: true },
                     &[WindowId::PRIMARY]
                 ),
-                RoutedWindowCommand::SetMousePassthrough(id)
+                RoutedWindowCommand::SetMousePassthrough(id, MousePassthroughMode::Passthrough)
+            );
+            assert_eq!(
+                route_window_command(
+                    &WindowCommand::SetMousePassthroughForward { id, enabled: true },
+                    &[WindowId::PRIMARY]
+                ),
+                RoutedWindowCommand::SetMousePassthrough(id, MousePassthroughMode::Forward)
+            );
+            assert_eq!(
+                route_window_command(
+                    &WindowCommand::SetMousePassthroughForward { id, enabled: false },
+                    &[WindowId::PRIMARY]
+                ),
+                RoutedWindowCommand::SetMousePassthrough(id, MousePassthroughMode::Off)
             );
         }
+    }
+
+    fn pointer_down_event() -> WinitWindowEvent {
+        WinitWindowEvent::PointerButton {
+            device_id: None,
+            state: ElementState::Pressed,
+            position: PhysicalPosition::new(20.0, 40.0),
+            primary: true,
+            button: ButtonSource::Mouse(MouseButton::Left),
+            is_macos_activation_click: false,
+        }
+    }
+
+    #[test]
+    fn forward_passthrough_drops_down_until_hit_testing_recovers() {
+        use super::forward_pointer_action;
+        let down = pointer_down_event();
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, true, true, &down),
+            ForwardPointerAction::IgnoreUntilRecovered,
+            "OS pointer, including Down, must not reach widgets while hit-testing is still off"
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, false, true, &down),
+            ForwardPointerAction::Dispatch,
+            "Down is delivered only after sampling recovered hit-testing over content"
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Forward, false, false, &down),
+            ForwardPointerAction::RestorePassthrough
+        );
+        assert_eq!(
+            forward_pointer_action(MousePassthroughMode::Off, true, true, &down),
+            ForwardPointerAction::Dispatch
+        );
     }
 }

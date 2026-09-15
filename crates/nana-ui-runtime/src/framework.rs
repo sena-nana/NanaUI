@@ -63,6 +63,7 @@ use crate::{
 
 mod assemble;
 mod build;
+mod document_text;
 mod overlay;
 pub(crate) mod text_edit;
 mod text_history;
@@ -2058,7 +2059,19 @@ impl AppContext {
             return Ok(false);
         }
         match request.action {
-            AccessibilityAction::Click => self.activate_node(request.target),
+            AccessibilityAction::Click => {
+                if self.activate_node(request.target)? {
+                    return Ok(true);
+                }
+                // Text fields have no Activate handler; Click means focus so
+                // the IME / TalkBack editing session can attach.
+                if self.view_entity::<TextInput>(request.target).is_some()
+                    || self.view_entity::<TextArea>(request.target).is_some()
+                {
+                    return self.focus_node(document, request.target);
+                }
+                Ok(false)
+            }
             AccessibilityAction::Focus => self.focus_node(document, request.target),
             AccessibilityAction::SetValue(value) => {
                 if let Some(entity) = self.view_entity::<TextInput>(request.target) {

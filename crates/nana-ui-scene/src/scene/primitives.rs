@@ -330,6 +330,29 @@ impl UiScene {
                 {
                     text_bounds = scene_rect(*content);
                 }
+                if !node.document_text_selection.is_empty() {
+                    // Slot 1 sits under the glyph run at slot 2 (same as
+                    // TextInput selection): CSS `::selection` background is
+                    // behind text; span color still tints the glyphs.
+                    self.insert_primitive(visual_quad_batch(
+                        &VisualPrimitiveContext {
+                            node: id,
+                            transform,
+                            clips: &clips,
+                            opacity,
+                            z_index: node.z_index,
+                            document_order: node_order,
+                        },
+                        1,
+                        node.document_text_selection.iter().map(|line| SceneRect {
+                            x: text_bounds.x + line.x,
+                            y: text_bounds.y + line.y,
+                            width: line.width,
+                            height: line.height,
+                        }),
+                        VisualQuadStyle::solid(node.document_text_selection_color),
+                    ));
+                }
                 self.insert_primitive(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 2 },
                     node: id,

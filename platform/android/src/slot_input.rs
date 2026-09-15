@@ -1,11 +1,13 @@
-//! NativeActivity pointer / key → NanaUI Runtime control-slot (host-testable).
+//! GameActivity pointer / key / GameTextInput → NanaUI Runtime control-slot
+//! (host-testable).
 //!
 //! - Touch samples → platform [`InputEvent::Pointer`] in **logical** px.
 //! - Editing keys → platform [`InputEvent::Keyboard`]
 //!   (US-QWERTY subset + named editing keys).
 //! - Printable commits while the slot text input is focused →
-//!   [`ImeEvent::Commit`], so NativeActivity KeyEvents reuse the desktop IME
-//!   path. There is no InputConnection, so no composition/preedit.
+//!   [`ImeEvent::Commit`] so hardware KeyEvents reuse the desktop IME path.
+//!   Composition (CJK) arrives from GameTextInput and is mapped in
+//!   [`crate::slot_ime`].
 //!
 //! Hit-testing uses the same viewport-bottom rect as [`crate::control_slot`].
 //! The soft keyboard is driven by the activity loop's focus mirror;
@@ -96,7 +98,7 @@ pub fn pointer_in_slot(slot: PhysicalRect, physical_x: f32, physical_y: f32) -> 
     physical_x >= x0 && physical_x < x1 && physical_y >= y0 && physical_y < y1
 }
 
-/// Routes NativeActivity input to the NanaUI control-slot only.
+/// Routes GameActivity input to the NanaUI control-slot only.
 ///
 /// Pointer events outside the slot stay `Unhandled` so VueHost can receive them.
 /// Keyboard events are accepted only while the slot holds keyboard focus (last
@@ -204,7 +206,7 @@ pub fn touch_to_pointer_event(
 /// Where a control-slot key sample should go.
 ///
 /// Printable commits while the slot text input is focused become
-/// [`ImeEvent::Commit`] so NativeActivity KeyEvents reuse
+/// [`ImeEvent::Commit`] so hardware KeyEvents reuse
 /// [`nana_ui::RuntimeInputAdapter::dispatch_ime`]. Editing keys and shortcuts
 /// stay [`InputEvent::Keyboard`]. There is no second Android text buffer.
 #[derive(Debug, Clone, PartialEq)]

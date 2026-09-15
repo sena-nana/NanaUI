@@ -1,10 +1,12 @@
 //! OpenType / CSS typography subset stored on [`crate::LayoutStyle`].
 //!
-//! Honest: cosmic-text can apply feature tags and kerning, and can map `wght` /
-//! `wdth` onto weight/stretch. Layout consumes `writing-mode: vertical-rl|lr`
-//! for box axes; cosmic-text 0.19 has no vertical glyph orientation, so shaping
-//! stays horizontal (not a rotated-box stand-in). Japanese `line-break:
-//! strict|loose` are **not** applied.
+//! Honest: cosmic-text applies feature tags and kerning, and applies declared
+//! variation axes that exist on the loaded face (`wght`, `wdth`, custom tags
+//! such as `BEVL`). `wght` also maps onto weight. Axes missing from the face
+//! are skipped (not remapped onto `wght`). Layout consumes `writing-mode:
+//! vertical-rl|lr` for box axes; cosmic-text 0.19 has no vertical glyph
+//! orientation, so shaping stays horizontal (not a rotated-box stand-in).
+//! Japanese `line-break: strict|loose` are **not** applied.
 
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};

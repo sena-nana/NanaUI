@@ -50,7 +50,7 @@ use crate::css_interactive_apply::{
     ActiveCssTransition, CssComputedMotion, CssMotionComplete, CssPaintSnapshot,
     InteractiveRuntimeSnapshot, animation_elapsed_secs, apply_generated_pseudo_entries,
     apply_interactive_layers, apply_placeholder_paint, apply_scrollbar_pseudo_skin,
-    build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
+    apply_selection_paint, build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
     generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
     parse_transition_properties, resolve_computed_motion, transition_elapsed_secs,
 };
@@ -372,7 +372,7 @@ impl MessageBridge {
             GeneratedPseudo::Before => "before",
             GeneratedPseudo::After => "after",
             // Paint-only; this helper is only called for before/after boxes.
-            GeneratedPseudo::Placeholder => "placeholder",
+            GeneratedPseudo::Placeholder | GeneratedPseudo::Selection => "placeholder",
         };
         let text = blocks
             .iter()
@@ -435,7 +435,9 @@ impl MessageBridge {
                 .get(&origin)
                 .and_then(|w| w.children.first().copied())
                 .filter(|id| *id != child),
-            GeneratedPseudo::After | GeneratedPseudo::Placeholder => None,
+            GeneratedPseudo::After | GeneratedPseudo::Placeholder | GeneratedPseudo::Selection => {
+                None
+            }
         };
         self.insert_child(child, origin, anchor);
     }

@@ -4,10 +4,10 @@
 //! same contract `run_runtime` uses on desktop. The Android Activity still owns
 //! the window and event loop; this type does not call `run_runtime` (winit).
 //! Soft keyboard show/hide is driven by the host from [`Self::text_input_focused`];
-//! printable commits map to [`ImeEvent::Commit`] via
-//! [`RuntimeInputAdapter::dispatch_ime`]. NativeActivity has no InputConnection,
-//! so there is no composition/preedit. Accessibility name/role/value is the
-//! same Runtime projection desktop hosts publish.
+//! GameTextInput composition maps to [`ImeEvent`] via
+//! [`RuntimeInputAdapter::dispatch_ime`]. Accessibility name/role/value is the
+//! same Runtime projection desktop hosts publish; Click/Focus/SetValue/SetSelection
+//! activate Button/Switch/TextInput.
 
 #![cfg_attr(not(target_os = "android"), allow(dead_code))]
 
@@ -21,9 +21,10 @@ use nana_ui::runtime::{
 };
 use nana_ui::{AccessibilityNode, NanaTextShaper, RuntimeAnimationClock, RuntimeInputAdapter};
 use nana_ui_core::{AlignSpec, FlexDirection, JustifySpec, LengthSpec, PhysicalRect};
-use nana_ui_platform::ImeEvent;
+use nana_ui_platform::{ImeEvent, default_shared_clipboard};
 
 use crate::control_slot::{CONTROL_SLOT_INSET, CONTROL_SLOT_LOGICAL_HEIGHT};
+use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer, editor_info_from_request};
 use crate::slot_input::{
     SlotInputGate, SlotKeyDispatch, SlotKeyMods, SlotLogicalKey, SlotTouchKind, logical_point,
     pointer_in_slot, slot_key_to_dispatch, touch_to_pointer_event,
@@ -105,7 +106,7 @@ impl SlotRuntime {
         let mut runtime = Self {
             document,
             shaper: NanaTextShaper::default(),
-            adapter: RuntimeInputAdapter::default(),
+            adapter: RuntimeInputAdapter::default().with_clipboard(default_shared_clipboard()),
             clock: RuntimeAnimationClock::now(),
             physical_size: (physical_size.0.max(1), physical_size.1.max(1)),
             scale: scale.max(0.25),
@@ -257,10 +258,8 @@ impl SlotRuntime {
 
     /// Inject a desktop IME event into the focused Runtime editor.
     ///
-    /// NativeActivity never synthesizes Preedit; tests (and a future
-    /// InputConnection host) call this so composition still uses
-    /// [`RuntimeInputAdapter::dispatch_ime`].
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// GameActivity TextEvents (and tests) call this so composition uses
+    /// [`RuntimeInputAdapter::dispatch_ime`] instead of a second buffer.
     pub fn push_ime(&mut self, event: &ImeEvent) -> Result<bool, FrameworkError> {
         if !self.gate.accept_key() {
             return Ok(false);
@@ -330,6 +329,70 @@ impl SlotRuntime {
         }
         self.ime_enabled = false;
         self.dispatch_ime_event(&ImeEvent::Disabled)
+    }
+
+    /// GameTextInput mirror of the focused editor (committed text + preedit).
+    pub fn ime_buffer(&self) -> Option<SlotImeBuffer> {
+        let document = self.document.document();
+        let (target, state) = self.document.context().focused_text_input(document)?;
+        if !self
+            .document
+            .context()
+            .world()
+            .accessibility(target)
+            .is_some_and(|node| node.editable)
+        {
+            return None;
+        }
+        let mut text = state.value.clone();
+        let mut selection_start = state.selection.anchor.min(text.len());
+        let mut selection_end = state.selection.focus.min(text.len());
+        let compose = self.document.context().world().ime(target).and_then(|ime| {
+            if ime.text.is_empty() {
+                return None;
+            }
+            let at = selection_end.min(text.len());
+            if !text.is_char_boundary(at) {
+                return None;
+            }
+            text.insert_str(at, &ime.text);
+            let start = at;
+            let end = at + ime.text.len();
+            if let Some((rel_start, rel_end)) = ime.selection {
+                selection_start = (start + rel_start).min(end);
+                selection_end = (start + rel_end).min(end);
+            } else {
+                selection_start = end;
+                selection_end = end;
+            }
+            Some((start, end))
+        });
+        Some(SlotImeBuffer {
+            text,
+            selection_start,
+            selection_end,
+            compose,
+        })
+    }
+
+    /// `EditorInfo` password / multiline flags for the focused editor.
+    pub fn editor_info(&self) -> Option<SlotEditorInfo> {
+        if !self.text_input_focused() {
+            return None;
+        }
+        let document = self.document.document();
+        let (target, _) = self.document.context().focused_text_input(document)?;
+        let world = self.document.context().world();
+        let password = world.standard_visual(target).is_some_and(|visual| {
+            matches!(
+                visual,
+                nana_ui::runtime::StandardVisual::TextInput { secure: true, .. }
+            )
+        });
+        let multiline = world
+            .accessibility(target)
+            .is_some_and(|node| node.multiline);
+        Some(editor_info_from_request(password, multiline))
     }
 
     fn pointer_hits_text_input(&self, physical_x: f32, physical_y: f32) -> bool {
@@ -687,5 +750,110 @@ mod tests {
             .expect("click")
         );
         assert_eq!(slot.press_count(), 1);
+    }
+
+    #[test]
+    fn accessibility_click_toggles_slot_switch() {
+        let mut slot = runtime();
+        let nodes = slot.accessibility_nodes();
+        let target = node_with_role(&nodes, AccessibilityRole::Switch).id;
+        assert!(!slot.switch_on());
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::Click,
+            })
+            .expect("click")
+        );
+        assert!(slot.switch_on());
+    }
+
+    #[test]
+    fn accessibility_click_focuses_text_input() {
+        let mut slot = runtime();
+        let nodes = slot.accessibility_nodes();
+        let target = node_with_role(&nodes, AccessibilityRole::TextInput).id;
+        assert!(!slot.text_input_focused());
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::Click,
+            })
+            .expect("click")
+        );
+        assert!(slot.text_input_focused());
+    }
+
+    #[test]
+    fn accessibility_set_value_and_selection_edit_text_input() {
+        let mut slot = runtime();
+        let nodes = slot.accessibility_nodes();
+        let target = node_with_role(&nodes, AccessibilityRole::TextInput).id;
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::Focus,
+            })
+            .expect("focus")
+        );
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::SetValue("你好".into()),
+            })
+            .expect("set value")
+        );
+        assert_eq!(slot.input_value(), "你好");
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::SetSelection(nana_ui::runtime::TextSelection {
+                    anchor: 0,
+                    focus: "你".len(),
+                }),
+            })
+            .expect("set selection")
+        );
+        let nodes = slot.accessibility_nodes();
+        let field = node_with_role(&nodes, AccessibilityRole::TextInput);
+        assert_eq!(field.value.as_deref(), Some("你好"));
+        assert_eq!(
+            field
+                .selection
+                .map(|selection| (selection.anchor, selection.focus)),
+            Some((0, "你".len()))
+        );
+    }
+
+    #[test]
+    fn editor_info_mirrors_single_line_text_input() {
+        let mut slot = runtime();
+        assert!(slot.editor_info().is_none());
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        let info = slot.editor_info().expect("focused editor info");
+        assert_eq!(
+            info,
+            editor_info_from_request(false, false),
+            "slot field is a single-line non-password input"
+        );
+    }
+
+    #[test]
+    fn ime_buffer_mirrors_preedit_without_committing() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(
+            slot.push_ime(&ImeEvent::Preedit {
+                text: "你".into(),
+                selection: Some((0, "你".len())),
+            })
+            .expect("preedit")
+        );
+        let buffer = slot.ime_buffer().expect("focused buffer");
+        assert_eq!(buffer.text, "你");
+        assert_eq!(buffer.compose, Some((0, "你".len())));
+        assert!(slot.input_value().is_empty());
     }
 }

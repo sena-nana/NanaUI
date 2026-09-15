@@ -41,7 +41,7 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowDescriptor::system_capt
 2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 
-窗口光标还会消费 L1 CSS `cursor` 的常用关键字：`default`、`pointer`、`text`、`move`、`grab`、`grabbing`、`not-allowed`、`crosshair`、`help`、`wait`、`progress`、`zoom-in`、`zoom-out`、`none`。该属性按 CSS 继承；未知关键字和 `url()` 光标 fail-closed。光标优先级低于窗口边框缩放和分割/停靠/工作区 resize 手柄，高于未声明 cursor 时 TextInput 的 I 型光标；`none` 只隐藏系统光标，不加载自定义图片。
+窗口光标还会消费 L1 CSS `cursor` 的常用关键字：`default`、`pointer`、`text`、`move`、`grab`、`grabbing`、`not-allowed`、`crosshair`、`help`、`wait`、`progress`、`zoom-in`、`zoom-out`、`none`。该属性按 CSS 继承；未知关键字和 `url()` 光标 fail-closed。`WindowCursor` 程序化入口与上述关键字对齐，并多一个 `Automatic` 以恢复 Runtime/CSS 选择。光标优先级低于窗口边框缩放和分割/停靠/工作区 resize 手柄，高于未声明 cursor 时 TextInput 的 I 型光标；`none` 只隐藏系统光标，不加载自定义图片。
 
 ### 实时缩放
 
@@ -237,7 +237,7 @@ pub enum FullscreenMode {
 
 `WindowDescriptor::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`。不需要 `DesktopShell` 才能使用边缘缩放。
 
-`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误；窗口若在处理 `Ready` 时被应用关闭，凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID，并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 通过原生窗口命中测试实现穿透，每次都回报 `MousePassthroughChanged { id, enabled, result }`（未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。
+`WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误；窗口若在处理 `Ready` 时被应用关闭，凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID，并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 关闭整窗原生命中测试（Windows `WS_EX_TRANSPARENT`），overlay 收不到指针，也无法按命中自己收回。`SetMousePassthroughForward { id, enabled }` 是宿主持有的 Forward 模式：OS 穿透保持开启，宿主在窗口线程采样全局指针（Windows `GetCursorPos`、macOS `mouseLocationOutsideOfEventStream`、Linux X11 `XQueryPointer`；Wayland 当前采不到则无法自动收回），换算为 overlay 逻辑坐标后走现有 `pointer_target`。命中 `pointer-events` 非 `none` 的不透明/可交互内容时 `set_cursor_hittest(true)` 收回；离开该区域或窗口后再穿透。采样到的 Move 仍可喂 overlay hover/光标，按下必须在收回之后才由本窗接收，底层窗口在穿透期间可点。控件拿不到 HWND。`WindowHandle::set_mouse_passthrough_mode` 对应 `MousePassthroughMode::{Off, Passthrough, Forward}`。每次命中测试变化都回报 `MousePassthroughChanged { id, enabled, result }`（`enabled` 为当前 OS 穿透是否开启，未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。异形窗 / per-pixel alpha OS 形状不是这条合同。
 
 `RuntimeProgram::window_material_mode_for(id)` 与 `appearance_backdrop_opacity_for(id)` 默认调用现有全局方法，允许主窗和透明工具窗分别配置。宿主在创建、外观变化、Surface 恢复时都按目标窗口调用；背景透明不改变前景文字的不透明度。纯透明窗口的内容背景由应用 Runtime 节点绘制。
 
@@ -250,7 +250,7 @@ cargo build -p nana-ui --example desktop-overlay-probe --features hosted,bundled
 python scripts/validate-desktop-overlay.py
 ```
 
-探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。
+探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由、Forward 在不透明命中区收回并收到后续 click、以及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。Windows 是 Issue 必测平台；macOS 覆盖行为测试与文档。
 
 ## Runtime 中的原生网页内容
 

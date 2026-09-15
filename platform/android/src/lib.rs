@@ -1,8 +1,9 @@
 //! Experimental Android ARM64 host — not a current NanaUI product target.
 //!
-//! NativeActivity + `ANativeWindow` Surface + V8 (wgpu 30 / Vulkan). Desktop
-//! builds expose [`smoke_engine_only`] for host-side compile/smoke without NDK UI.
-//! The control slot is NanaUI Runtime + UiScene + `SceneWgpuPainter`.
+//! GameActivity + GameTextInput InputConnection + `ANativeWindow` Surface + V8
+//! (wgpu 30 / Vulkan). Desktop builds expose [`smoke_engine_only`] for host-side
+//! compile/smoke without NDK UI. The control slot is NanaUI Runtime + UiScene +
+//! `SceneWgpuPainter` — not a second product paint kernel.
 
 #![cfg_attr(target_os = "android", allow(clippy::unnecessary_wraps))]
 
@@ -16,6 +17,7 @@ mod runtime;
 mod shell;
 #[cfg(target_os = "android")]
 mod slot_ax;
+mod slot_ime;
 mod slot_input;
 #[cfg(target_os = "android")]
 mod slot_paint;
@@ -32,7 +34,7 @@ pub use engine::{EngineBootReport, smoke_engine_only};
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 
-/// NativeActivity entry — linked from the AndroidManifest `android.app.lib_name`.
+/// GameActivity entry — linked from the AndroidManifest `android.app.lib_name`.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: AndroidApp) {
@@ -55,8 +57,8 @@ mod android_not_product {
         assert!(!crate::AndroidShellStub::desktop_shell_available());
         let caps = nana_ui_platform::PlatformCapabilities::android_mvp();
         assert!(!caps.desktop_shell);
-        assert!(!caps.ime);
-        assert!(!caps.clipboard);
+        assert!(caps.ime);
+        assert!(caps.clipboard);
 
         #[cfg(target_os = "android")]
         {

@@ -1274,12 +1274,15 @@ impl UiWorld {
                     || previous.layout.line_break != style.layout.line_break;
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
-                    || previous.layout.opacity != style.layout.opacity;
+                    || previous.layout.opacity != style.layout.opacity
+                    || previous.layout.selection_background != style.layout.selection_background
+                    || previous.layout.selection_color != style.layout.selection_color;
                 let paint_visibility_changed =
                     previous.layout.paint.visibility != style.layout.paint.visibility;
                 let pointer_events_changed =
                     previous.layout.pointer_events != style.layout.pointer_events;
                 let cursor_changed = previous.layout.cursor != style.layout.cursor;
+                let user_select_changed = previous.layout.user_select != style.layout.user_select;
                 let omits_box_changed = previous.layout.omits_box() != style.layout.omits_box();
                 let transform_changed = previous.layout.transform != style.layout.transform
                     || previous.layout.transform_3d != style.layout.transform_3d
@@ -1350,6 +1353,9 @@ impl UiWorld {
                     // but no layout, hit-test, or render extraction is required.
                     self.mark_subtree(*id, DirtyMask::STYLE);
                 }
+                if user_select_changed {
+                    self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
                 if transform_changed {
                     // Scene extract and hit-test read `layout.transform`; LAYOUT
                     // does not, so paint-transform is not a layout dirty.
@@ -1395,6 +1401,14 @@ impl UiWorld {
                     *id,
                     DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
                 );
+                if let Some(document) = self.nodes.get(*id).map(|node| node.document)
+                    && self
+                        .document_text_selections
+                        .get(&document)
+                        .is_some_and(|selection| selection.node == *id)
+                {
+                    self.set_document_text_selection(document, None);
+                }
             }
             UiMutation::WriteLayout { id, layout } => {
                 self.record_mut(*id).layout = *layout;

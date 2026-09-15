@@ -1036,6 +1036,7 @@ const fn supports_click(role: AccessibilityRole) -> bool {
         AccessibilityRole::Button
             | AccessibilityRole::Checkbox
             | AccessibilityRole::Switch
+            | AccessibilityRole::TextInput
             | AccessibilityRole::Tab
             | AccessibilityRole::MenuItem
             | AccessibilityRole::Radio
@@ -1708,6 +1709,8 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
+        assert!(input.supports_action(Action::Click));
+        assert!(input.supports_action(Action::Focus));
         assert!(input.supports_action(Action::SetValue));
 
         let mut read_only = node(5, Some(1), &[]);

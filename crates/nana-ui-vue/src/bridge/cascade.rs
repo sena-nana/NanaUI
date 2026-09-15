@@ -556,16 +556,18 @@ impl MessageBridge {
         {
             layout.inherit_typography_from(&parent.props.layout);
         }
-        if matches!(
-            kind,
-            WidgetKind::Input | WidgetKind::NumberInput | WidgetKind::Textarea
-        ) && !self.cascade.generated_pseudo_rules.is_empty()
-        {
+        if !self.cascade.generated_pseudo_rules.is_empty() {
             let matched = crate::css_interactive::matched_generated_pseudo(
                 &self.cascade.generated_pseudo_rules,
                 &ctx,
             );
-            apply_placeholder_paint(&mut layout, &matched.placeholder, cb_w, cb_h);
+            apply_selection_paint(&mut layout, &matched.selection, cb_w, cb_h);
+            if matches!(
+                kind,
+                WidgetKind::Input | WidgetKind::NumberInput | WidgetKind::Textarea
+            ) {
+                apply_placeholder_paint(&mut layout, &matched.placeholder, cb_w, cb_h);
+            }
         }
         // Preserve explicit hidden flag from the `hidden` attribute.
         if hidden {

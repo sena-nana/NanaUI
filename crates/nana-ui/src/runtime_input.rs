@@ -414,6 +414,16 @@ impl RuntimeInputAdapter {
                             )?
                         {
                             true
+                        } else if let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
+                            && context.document_text_pointer_drag(
+                                document,
+                                *pointer_id,
+                                *x,
+                                *y,
+                                shaper,
+                            )?
+                        {
+                            true
                         } else {
                             context.update_scrollbar_drag(document, *pointer_id, *x, *y)?
                                 || context.update_range_drag(document, *pointer_id, *x)?
@@ -557,20 +567,34 @@ impl RuntimeInputAdapter {
                         }
                         if *button == 0
                             && !activation_click
-                            && let Some(focus) = focus_target
                             && let Some(shaper) = reborrow_text_shaper(&mut text_shaper)
                         {
-                            context.text_editor_pointer_press(
-                                document,
-                                focus,
-                                *pointer_id,
-                                *x,
-                                *y,
-                                modifiers.shift,
-                                modifiers.alt,
-                                now,
-                                shaper,
-                            )?;
+                            let editor = if let Some(focus) = focus_target {
+                                context.text_editor_pointer_press(
+                                    document,
+                                    focus,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    modifiers.shift,
+                                    modifiers.alt,
+                                    now,
+                                    shaper,
+                                )?
+                            } else {
+                                false
+                            };
+                            if editor {
+                                context.clear_document_text_selection(document);
+                            } else {
+                                context.document_text_pointer_press(
+                                    document,
+                                    *pointer_id,
+                                    *x,
+                                    *y,
+                                    shaper,
+                                )?;
+                            }
                         }
                         if let Some(target) = hit {
                             if *button == 0
@@ -753,6 +777,7 @@ impl RuntimeInputAdapter {
                             )?;
                         }
                         context.text_editor_pointer_release(*pointer_id);
+                        context.document_text_pointer_release(*pointer_id);
                         if drop_handled {
                             context.release_pointer(document, *pointer_id);
                             return Ok(InputDisposition {
@@ -827,6 +852,7 @@ impl RuntimeInputAdapter {
                             context.image_viewer_pointer_up(viewer, *pointer_id)?;
                         }
                         context.text_editor_pointer_release(*pointer_id);
+                        context.document_text_pointer_release(*pointer_id);
                         let scrollbar = context.end_scrollbar_drag(document, *pointer_id, true)?;
                         let range = context.end_range_drag(document, *pointer_id, true)?;
                         let xy_pad = context.end_xy_pad_drag(document, *pointer_id, true)?;
@@ -1238,9 +1264,10 @@ impl RuntimeInputAdapter {
             return context.select_all_focused_text(document);
         }
         if key.eq_ignore_ascii_case("c") {
-            return Ok(context
+            let text = context
                 .focused_selected_text(document)
-                .is_some_and(|text| self.write_clipboard(&text)));
+                .or_else(|| context.document_selected_text(document));
+            return Ok(text.is_some_and(|text| !text.is_empty() && self.write_clipboard(&text)));
         }
         if key.eq_ignore_ascii_case("x") {
             let Some(text) = context.focused_selected_text(document) else {
@@ -1586,7 +1613,7 @@ mod tests {
         NodeKind, NodeStyle, OverlayHost, OverlayHostState, RangeField, ScrollAxes, ScrollMetrics,
         ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Table,
         TableCell, TableRow, Text, TextArea, TextChanged, TextFindScope, TextInput,
-        TextSearchOptions, TextSelection,
+        TextSearchOptions, TextSelection, UserSelectSpec,
     };
     #[cfg(feature = "calendar")]
     use nana_ui_runtime::{CalendarHeatmap, CalendarHeatmapDatum};
@@ -2547,6 +2574,297 @@ mod tests {
         assert_eq!(
             clipboard.lock().unwrap().read_text().as_deref(),
             Some("NanaNana")
+        );
+    }
+
+    fn document_text_pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
+        InputEvent::Pointer {
+            phase,
+            pointer_id: 7,
+            pointer_type: PointerType::Mouse,
+            x,
+            y,
+            screen_x: x,
+            screen_y: y,
+            button: 0,
+            buttons: u16::from(phase != PointerPhase::Up),
+            pressure: 1.0,
+            tangential_pressure: 0.0,
+            tilt_x: 0,
+            tilt_y: 0,
+            twist: 0,
+            is_primary: true,
+            activation_click: false,
+            modifiers: InputModifiers::default(),
+        }
+    }
+
+    fn mount_document_text(
+        context: &mut AppContext,
+        value: &str,
+        user_select: UserSelectSpec,
+    ) -> (DocumentId, nana_ui_runtime::StableNodeId) {
+        let document = DocumentId::new(1).unwrap();
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).user_select = Some(user_select);
+        let label = context
+            .create_component(document, Text::new(value).style(style))
+            .unwrap();
+        let node = label.stable_id();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            node,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 400.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.resolve_styles(&[node]).unwrap();
+        (document, node)
+    }
+
+    fn dispatch_document_pointer(
+        adapter: &mut RuntimeInputAdapter,
+        context: &mut AppContext,
+        document: DocumentId,
+        shaper: &mut MeasureTextShaper,
+        phase: PointerPhase,
+        x: f32,
+        y: f32,
+        millis: u64,
+    ) {
+        adapter
+            .dispatch_with_shaper(
+                context,
+                document,
+                &document_text_pointer(phase, x, y),
+                Duration::from_millis(millis),
+                Some(shaper),
+            )
+            .unwrap();
+    }
+
+    fn copy_shortcut() -> InputEvent {
+        InputEvent::Keyboard {
+            pressed: true,
+            key: "c".into(),
+            text: None,
+            code: "c".into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+        }
+    }
+
+    #[test]
+    fn user_select_text_drag_copies_and_empty_or_none_leave_the_pasteboard() {
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        clipboard.lock().unwrap().write_text("keep-me");
+        let primary = |key: &str| InputEvent::Keyboard {
+            pressed: true,
+            key: key.into(),
+            text: None,
+            code: key.into(),
+            repeat: false,
+            modifiers: InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+        };
+
+        let mut context = AppContext::new();
+        let (document, node) =
+            mount_document_text(&mut context, "Hello copy", UserSelectSpec::Text);
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        dispatch_document_pointer(
+            &mut adapter,
+            &mut context,
+            document,
+            &mut shaper,
+            PointerPhase::Down,
+            2.0,
+            16.0,
+            1_000,
+        );
+        dispatch_document_pointer(
+            &mut adapter,
+            &mut context,
+            document,
+            &mut shaper,
+            PointerPhase::Move,
+            380.0,
+            16.0,
+            1_010,
+        );
+        dispatch_document_pointer(
+            &mut adapter,
+            &mut context,
+            document,
+            &mut shaper,
+            PointerPhase::Up,
+            380.0,
+            16.0,
+            1_020,
+        );
+        assert_eq!(
+            context.document_selected_text(document).as_deref(),
+            Some("Hello copy")
+        );
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &primary("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("Hello copy")
+        );
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &primary("x"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(context.world().text(node), Some("Hello copy"));
+
+        let mut none_context = AppContext::new();
+        let (none_document, _) =
+            mount_document_text(&mut none_context, "Hello copy", UserSelectSpec::None);
+        clipboard.lock().unwrap().write_text("keep-me");
+        let mut none_shaper = MeasureTextShaper;
+        let mut none_adapter =
+            RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        dispatch_document_pointer(
+            &mut none_adapter,
+            &mut none_context,
+            none_document,
+            &mut none_shaper,
+            PointerPhase::Down,
+            2.0,
+            16.0,
+            2_000,
+        );
+        dispatch_document_pointer(
+            &mut none_adapter,
+            &mut none_context,
+            none_document,
+            &mut none_shaper,
+            PointerPhase::Move,
+            380.0,
+            16.0,
+            2_010,
+        );
+        dispatch_document_pointer(
+            &mut none_adapter,
+            &mut none_context,
+            none_document,
+            &mut none_shaper,
+            PointerPhase::Up,
+            380.0,
+            16.0,
+            2_020,
+        );
+        assert!(none_context.document_selected_text(none_document).is_none());
+        assert!(
+            !none_adapter
+                .dispatch(&mut none_context, none_document, &primary("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("keep-me")
+        );
+
+        let mut empty_context = AppContext::new();
+        let (empty_document, _) =
+            mount_document_text(&mut empty_context, "Hello copy", UserSelectSpec::Text);
+        let mut empty_shaper = MeasureTextShaper;
+        let mut empty_adapter =
+            RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        dispatch_document_pointer(
+            &mut empty_adapter,
+            &mut empty_context,
+            empty_document,
+            &mut empty_shaper,
+            PointerPhase::Down,
+            2.0,
+            16.0,
+            3_000,
+        );
+        dispatch_document_pointer(
+            &mut empty_adapter,
+            &mut empty_context,
+            empty_document,
+            &mut empty_shaper,
+            PointerPhase::Up,
+            2.0,
+            16.0,
+            3_010,
+        );
+        assert!(
+            empty_context
+                .document_selected_text(empty_document)
+                .is_none()
+        );
+        assert!(
+            !empty_adapter
+                .dispatch(&mut empty_context, empty_document, &primary("c"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("keep-me")
+        );
+    }
+
+    #[test]
+    fn user_select_all_click_copies_without_drag() {
+        let clipboard = shared_clipboard(MemoryClipboard::new());
+        clipboard.lock().unwrap().write_text("keep-me");
+        let mut context = AppContext::new();
+        let (document, _) = mount_document_text(&mut context, "Hello copy", UserSelectSpec::All);
+        let mut shaper = MeasureTextShaper;
+        let mut adapter = RuntimeInputAdapter::default().with_clipboard(Arc::clone(&clipboard));
+        dispatch_document_pointer(
+            &mut adapter,
+            &mut context,
+            document,
+            &mut shaper,
+            PointerPhase::Down,
+            2.0,
+            16.0,
+            1_000,
+        );
+        dispatch_document_pointer(
+            &mut adapter,
+            &mut context,
+            document,
+            &mut shaper,
+            PointerPhase::Up,
+            2.0,
+            16.0,
+            1_010,
+        );
+        assert_eq!(
+            context.document_selected_text(document).as_deref(),
+            Some("Hello copy")
+        );
+        let copied = adapter
+            .dispatch(&mut context, document, &copy_shortcut())
+            .unwrap();
+        assert!(copied.prevent_default);
+        assert_eq!(
+            clipboard.lock().unwrap().read_text().as_deref(),
+            Some("Hello copy")
         );
     }
 

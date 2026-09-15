@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 publish = false
-description = "Experimental frozen Android ARM64 host (not a current NanaUI product target)"
+description = "Experimental Android ARM64 GameActivity host (phase 2 IME/clipboard/a11y; not a product paint kernel)"
 license = "MIT OR Apache-2.0"
 
 [lib]
@@ -38,7 +38,7 @@ pollster.workspace = true
 raw-window-handle.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-android-activity = { version = "0.6", features = ["native-activity"] }
+android-activity = { version = "0.6", features = ["game-activity"] }
 android_logger = "0.15"
 accesskit.workspace = true
 accesskit_android = { workspace = true, features = ["embedded-dex"] }
@@ -46,7 +46,7 @@ accesskit_android = { workspace = true, features = ["embedded-dex"] }
 [package.metadata.android]
 package = "app.nanaui.host"
 apk_name = "nana-android-host"
-# NativeActivity loads libnana_android_host.so and calls android_main.
+# GameActivity loads libnana_android_host.so and calls android_main.
 app_name = "NanaUI"
 # Keep min SDK aligned with NDK API 24 linker.
 min_sdk_version = 24

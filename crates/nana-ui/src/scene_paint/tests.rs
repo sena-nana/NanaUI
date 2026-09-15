@@ -3036,6 +3036,8 @@ fn overflow_parent(
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 
@@ -3086,6 +3088,8 @@ fn translucent_parent(
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 
@@ -3130,6 +3134,8 @@ fn overflowing_text_child(
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 
@@ -3182,6 +3188,8 @@ fn host_texture_child(
         standard_visual_foreground: None,
         custom_render: Some(CustomRenderNode::new("nana.host-texture", resource, 1)),
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 
@@ -3247,6 +3255,8 @@ fn extracted_div(
         standard_visual_foreground: None,
         custom_render: None,
         drop_hover: None,
+        document_text_selection: Vec::new(),
+        document_text_selection_color: [0.0; 4],
     }
 }
 

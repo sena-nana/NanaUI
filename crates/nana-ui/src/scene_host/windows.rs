@@ -10,11 +10,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) {
         let known = self.known_window_ids();
         match route_window_command(&command, &known) {
-            RoutedWindowCommand::SetMousePassthrough(id) => {
-                let WindowCommand::SetMousePassthrough { enabled, .. } = command else {
-                    return;
-                };
-                let _ = self.set_mouse_passthrough(event_loop, id, enabled);
+            RoutedWindowCommand::SetMousePassthrough(id, mode) => {
+                let _ = self.set_mouse_passthrough_mode(event_loop, id, mode);
             }
             RoutedWindowCommand::Ignore => {}
             RoutedWindowCommand::Open(id) => {
@@ -154,12 +151,37 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
     }
-    fn set_mouse_passthrough(
+    fn set_mouse_passthrough_mode(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        mode: MousePassthroughMode,
+    ) -> Result<(), crate::WindowError> {
+        if let Some(host) = self.window_contexts.get_mut(&id) {
+            host.passthrough_mode = mode;
+        }
+        let enabled = matches!(
+            mode,
+            MousePassthroughMode::Passthrough | MousePassthroughMode::Forward
+        );
+        self.apply_os_mouse_passthrough(event_loop, id, enabled, true)
+    }
+
+    fn apply_os_mouse_passthrough(
         &mut self,
         event_loop: &dyn ActiveEventLoop,
         id: WindowId,
         enabled: bool,
+        emit_always: bool,
     ) -> Result<(), crate::WindowError> {
+        if !emit_always
+            && self
+                .window_contexts
+                .get(&id)
+                .is_some_and(|host| host.os_mouse_passthrough == enabled)
+        {
+            return Ok(());
+        }
         let result = self
             .mutate_native_style(id, |window| {
                 window
@@ -167,6 +189,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     .map_err(window_request_error)
             })
             .unwrap_or(Err(crate::WindowError::WindowClosed));
+        if result.is_ok()
+            && let Some(host) = self.window_contexts.get_mut(&id)
+        {
+            host.os_mouse_passthrough = enabled;
+        }
         let update = self.program.window_event(
             WindowEvent::MousePassthroughChanged {
                 id,
@@ -177,6 +204,164 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
         self.apply_update(event_loop, update, None);
         result
+    }
+
+    fn forward_hits_content(&mut self, id: WindowId) -> bool {
+        let cursor = self
+            .window_contexts
+            .get(&id)
+            .map(|host| host.input.cursor)
+            .unwrap_or((0.0, 0.0));
+        if self.frame_resize_edge_at(id, cursor.0, cursor.1).is_some() {
+            return true;
+        }
+        self.program
+            .read_document(id, |document| {
+                document
+                    .context()
+                    .pointer_target(document.document(), cursor.0, cursor.1)
+                    .is_some()
+            })
+            .unwrap_or(false)
+    }
+
+    fn sample_client_pointer(&self, id: WindowId) -> Option<(f32, f32)> {
+        let window = self.window(id)?;
+        let geometry = self.geometry_of(id);
+        nana_window::pointer_in_client_area(
+            window.as_ref(),
+            f64::from(geometry.scale_factor),
+            geometry.logical_size,
+        )
+    }
+
+    pub(super) fn passthrough_forward_wakeup(&self) -> Option<Instant> {
+        self.window_contexts
+            .values()
+            .any(|host| {
+                host.passthrough_mode == MousePassthroughMode::Forward && host.os_mouse_passthrough
+            })
+            .then(|| Instant::now() + Duration::from_millis(8))
+    }
+
+    pub(super) fn sample_passthrough_forward(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let ids: Vec<_> = self
+            .window_contexts
+            .iter()
+            .filter(|(_, host)| {
+                host.passthrough_mode == MousePassthroughMode::Forward && host.os_mouse_passthrough
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            if !self.window_contexts.contains_key(&id) {
+                continue;
+            }
+            let Some(point) = self.sample_client_pointer(id) else {
+                continue;
+            };
+            self.input_mut(id).cursor = point;
+            if self.forward_hits_content(id) {
+                let _ = self.apply_os_mouse_passthrough(event_loop, id, false, false);
+                if !self.window_contexts.contains_key(&id) {
+                    continue;
+                }
+                self.dispatch_forward_move(event_loop, id, point);
+            } else {
+                self.sync_window_cursor(id);
+            }
+        }
+    }
+
+    fn dispatch_forward_move(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        point: (f32, f32),
+    ) {
+        self.input_mut(id).cursor = point;
+        let origin = self
+            .window(id)
+            .and_then(|window| window_screen_origin(window.as_ref()));
+        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
+        let buttons = self.input_of(id).buttons;
+        let input = self.input_of(id).pointer_event(
+            mapped_pointer(1, PointerType::Mouse, true, None),
+            PointerPhase::Move,
+            -1,
+            buttons,
+            false,
+            modifiers,
+            origin,
+            None,
+        );
+        let _ = self.dispatch_input(event_loop, id, input);
+        if self.window_contexts.contains_key(&id) {
+            self.sync_window_cursor(id);
+        }
+    }
+
+    fn dispatch_forward_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
+        let origin = self
+            .window(id)
+            .and_then(|window| window_screen_origin(window.as_ref()));
+        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
+        let buttons = std::mem::take(&mut self.input_mut(id).buttons);
+        let input = self.input_of(id).pointer_event(
+            mapped_pointer(1, PointerType::Mouse, true, None),
+            PointerPhase::Cancel,
+            -1,
+            buttons,
+            false,
+            modifiers,
+            origin,
+            Some(0.0),
+        );
+        let _ = self.dispatch_input(event_loop, id, input);
+        self.reset_window_cursor(id);
+    }
+
+    pub(super) fn forward_os_passthrough_ignores_pointer(
+        &self,
+        id: WindowId,
+        event: &WinitWindowEvent,
+    ) -> bool {
+        let Some(host) = self.window_contexts.get(&id) else {
+            return false;
+        };
+        forward_pointer_action(
+            host.passthrough_mode,
+            host.os_mouse_passthrough,
+            false,
+            event,
+        ) == ForwardPointerAction::IgnoreUntilRecovered
+    }
+
+    pub(super) fn forward_pointer_action_for(
+        &mut self,
+        id: WindowId,
+        event: &WinitWindowEvent,
+    ) -> ForwardPointerAction {
+        let (mode, os_passthrough) = match self.window_contexts.get(&id) {
+            Some(host) => (host.passthrough_mode, host.os_mouse_passthrough),
+            None => return ForwardPointerAction::Dispatch,
+        };
+        let hits_content = mode == MousePassthroughMode::Forward
+            && !os_passthrough
+            && forward_pointer_event(event)
+            && self.forward_hits_content(id);
+        forward_pointer_action(mode, os_passthrough, hits_content, event)
+    }
+
+    pub(super) fn restore_forward_passthrough(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) {
+        self.dispatch_forward_leave(event_loop, id);
+        if self.window_contexts.contains_key(&id) {
+            let _ = self.apply_os_mouse_passthrough(event_loop, id, true, false);
+        }
     }
 
     pub(super) fn open_window(
@@ -299,6 +484,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 applied_appearance: None,
                 cursor_override: None,
                 cursor_visible_override: None,
+                passthrough_mode: MousePassthroughMode::Off,
+                os_mouse_passthrough: false,
                 material_override: None,
                 surface,
                 geometry,
@@ -937,7 +1124,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 };
                 match request {
                     Request::Displays(reply) => {
-                        reply.finish(Ok(super::display::display_infos(event_loop)));
+                        reply.finish(Ok(display::display_infos(event_loop)));
                     }
                     Request::Material(id, generation, effect, reply) => {
                         if !self.windows.is_current(id, generation) {
@@ -1114,21 +1301,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Control::Cursor(cursor) => {
                 let host = self.window_contexts.get_mut(&id).unwrap();
-                host.cursor_override = match cursor {
-                    WindowCursor::Automatic => {
-                        host.cursor_visible_override = None;
-                        None
-                    }
-                    WindowCursor::Default => Some(CursorIcon::Default),
-                    WindowCursor::Pointer => Some(CursorIcon::Pointer),
-                    WindowCursor::Text => Some(CursorIcon::Text),
-                    WindowCursor::Move => Some(CursorIcon::Move),
-                    WindowCursor::Grab => Some(CursorIcon::Grab),
-                    WindowCursor::Grabbing => Some(CursorIcon::Grabbing),
-                    WindowCursor::NotAllowed => Some(CursorIcon::NotAllowed),
-                    WindowCursor::Crosshair => Some(CursorIcon::Crosshair),
-                    WindowCursor::Wait => Some(CursorIcon::Wait),
-                };
+                let (icon, visible) = window_cursor_override(cursor);
+                host.cursor_override = icon;
+                if cursor == WindowCursor::Automatic || visible.is_some() {
+                    host.cursor_visible_override = visible;
+                } else if host.cursor_visible_override == Some(false) {
+                    host.cursor_visible_override = None;
+                }
                 self.sync_window_cursor_now(id);
             }
             Control::Redraw => window.request_redraw(),
@@ -1160,7 +1339,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 window.drag_window().map_err(window_request_error)?;
             }
             Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {
-                self.set_mouse_passthrough(event_loop, id, enabled)?;
+                self.set_mouse_passthrough_mode(
+                    event_loop,
+                    id,
+                    MousePassthroughMode::passthrough(enabled),
+                )?;
+            }
+            Control::Command(WindowCommand::SetMousePassthroughForward { enabled, .. }) => {
+                self.set_mouse_passthrough_mode(
+                    event_loop,
+                    id,
+                    MousePassthroughMode::forward(enabled),
+                )?;
             }
             Control::Command(WindowCommand::Move { position, .. })
                 if !position.0.is_finite() || !position.1.is_finite() =>

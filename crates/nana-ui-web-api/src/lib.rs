@@ -6,6 +6,7 @@
 
 #![allow(clippy::field_reassign_with_default)]
 
+mod audio;
 mod canvas;
 mod fetch;
 mod media;
@@ -17,6 +18,10 @@ use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostValue, JsException, RuntimeArtifact};
 
+pub use audio::{
+    AudioError, AudioId, AudioRuntime, MockAudioSink, SharedAudioRuntime, shared_audio_runtime,
+    shared_audio_runtime_unsupported, shared_audio_runtime_with_mock,
+};
 pub use canvas::{
     CanvasBitmap, CanvasError, CanvasId, CanvasResourceKind, CanvasRuntime, CanvasUpload,
     SharedCanvasRuntime, shared_canvas_runtime,
@@ -449,7 +454,7 @@ pub fn shared_web_api_state_with_local_storage(local_storage: SharedStorage) -> 
 /// Register storage / timer / documentElement / location / clipboard host ops.
 ///
 /// Clipboard defaults to the platform backend ([`default_shared_clipboard`]): OS
-/// pasteboard on desktop, unsupported on Android.
+/// pasteboard on desktop, JNI `ClipboardManager` on Android.
 pub fn register_web_api_host_ops(api: &mut HostApiRegistry, state: SharedWebApiState) {
     register_web_api_host_ops_with_resources(
         api,
@@ -472,6 +477,12 @@ pub fn register_web_api_host_ops_with_resources(
     register_clipboard_host_ops(api, clipboard);
     canvas::register_canvas_host_ops(api, canvas);
     media::register_media_host_ops(api, shared_media_runtime());
+    audio::register_audio_host_ops(api, shared_audio_runtime());
+}
+
+/// Register Web Audio host ops against a caller-owned mixer (tests inject a mock sink).
+pub fn register_audio_host_ops(api: &mut HostApiRegistry, audio: SharedAudioRuntime) {
+    audio::register_audio_host_ops(api, audio);
 }
 
 /// Register media element / getUserMedia host ops against a caller-owned store.
@@ -773,6 +784,11 @@ mod tests {
         assert!(WEB_API_SHIM_JS.contains("mediaDevicesGetUserMedia"));
         assert!(WEB_API_SHIM_JS.contains("HTMLVideoElement"));
         assert!(WEB_API_SHIM_JS.contains("HTMLAudioElement"));
+        assert!(WEB_API_SHIM_JS.contains("AudioContext"));
+        assert!(WEB_API_SHIM_JS.contains("audioContextCreate"));
+        assert!(WEB_API_SHIM_JS.contains("createBufferSource"));
+        assert!(WEB_API_SHIM_JS.contains("createScriptProcessor"));
+        assert!(WEB_API_SHIM_JS.contains("NotSupportedError"));
     }
 
     #[test]

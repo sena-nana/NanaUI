@@ -4734,6 +4734,8 @@ mod atom_tests {
 pub(super) struct TextEditSession {
     /// Live text drag-selection: pointer id, node, and the anchor offset.
     pub(super) text_pointer_drag: Option<(u64, StableNodeId, usize)>,
+    /// Document-level `user-select` drag: pointer, document, node, anchor.
+    pub(super) document_select_drag: Option<(u64, DocumentId, StableNodeId, usize)>,
     /// Live minimap navigation drag: pointer id, node, and editor kind.
     pub(super) text_minimap_drag: Option<(u64, StableNodeId, TextEditorKind)>,
     /// 拖拽移动选中文本的状态机（多行编辑器、单选区、非 IME；按下落在

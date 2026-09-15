@@ -3046,6 +3046,7 @@ impl NanaTreeDocument {
                             crate::css_interactive::GeneratedPseudo::Before => "before",
                             crate::css_interactive::GeneratedPseudo::After => "after",
                             crate::css_interactive::GeneratedPseudo::Placeholder => "placeholder",
+                            crate::css_interactive::GeneratedPseudo::Selection => "selection",
                         }
                         .into(),
                     )]),

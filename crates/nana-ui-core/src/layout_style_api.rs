@@ -11,8 +11,8 @@ use crate::box_layout::{
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec,
     LogicalInlineEdges, MaskImage, MixBlendMode, OutlineSpec, OverflowSpec, OverflowWrapSpec,
     PaintMat4, PaintStyle, PaintTransform, PointerEventsSpec, PositionSpec, TextAlignSpec,
-    TextDecorationLine, TextShadowSpec, TransformBox, TransformOrigin, VisibilitySpec,
-    WhiteSpaceSpec, WordBreakSpec,
+    TextDecorationLine, TextShadowSpec, TransformBox, TransformOrigin, UserSelectSpec,
+    VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
 };
 
 macro_rules! set_opt {
@@ -111,6 +111,7 @@ impl LayoutStyle {
         flex_basis: LengthSpec,
         line_clamp: u16,
         pointer_events: PointerEventsSpec,
+        user_select: UserSelectSpec,
         word_break: WordBreakSpec,
         overflow_wrap: OverflowWrapSpec,
         aspect_ratio: f32,
@@ -125,6 +126,8 @@ impl LayoutStyle {
         font_features: Vec<FontFeatureSetting>,
         placeholder_color: [f32; 4],
         placeholder_opacity: f32,
+        selection_background: [f32; 4],
+        selection_color: [f32; 4],
         grid_columns: Vec<GridTrack>,
         grid_rows: Vec<GridTrack>,
         grid_columns_unsupported: GridTrackListUnsupported,

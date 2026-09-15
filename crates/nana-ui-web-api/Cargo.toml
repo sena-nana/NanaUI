@@ -21,3 +21,6 @@ tiny-skia.workspace = true
 nana-svg-raster.workspace = true
 image.workspace = true
 cosmic-text.workspace = true
+
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+cpal.workspace = true

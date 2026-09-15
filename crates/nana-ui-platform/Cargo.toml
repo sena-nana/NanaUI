@@ -23,10 +23,14 @@ url = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 tungstenite = { workspace = true, optional = true }
 
-# Desktop OS clipboard only. Android does not compile arboard; hosts use
-# UnsupportedClipboard until a real Android backend exists.
+# Desktop OS clipboard only. Android does not compile arboard; the Android
+# host uses JNI ClipboardManager ([`AndroidClipboard`]).
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = { version = "3.6", default-features = false, optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1.1"
 
 [dev-dependencies]
 serde_json.workspace = true
