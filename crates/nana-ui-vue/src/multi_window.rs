@@ -1029,7 +1029,7 @@ impl VueRuntime {
                     .windows
                     .get(&id)
                     .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
-                Ok(geometry_value(&entry.geometry))
+                Ok(geometry_value(&entry.geometry, entry.options.always_on_top))
             });
         }
         {
@@ -1358,7 +1358,7 @@ impl VueRuntime {
             entry.geometry.x = x as f64;
             entry.geometry.y = y as f64;
         }
-        let payload = geometry_value(&entry.geometry);
+        let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
             state.emit("window-geometry", HostValue::Object(map));
@@ -1383,7 +1383,7 @@ impl VueRuntime {
             .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
         entry.geometry.fullscreen = mode.fullscreen.is_some();
         entry.options.always_on_top = mode.level == nana_ui_platform::WindowLevel::AlwaysOnTop;
-        let payload = geometry_value(&entry.geometry);
+        let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
             state.emit("window-geometry", HostValue::Object(map));
@@ -1413,7 +1413,7 @@ impl VueRuntime {
             entry.geometry.x = x as f64;
             entry.geometry.y = y as f64;
         }
-        let payload = geometry_value(&entry.geometry);
+        let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
             state.emit("window-geometry", HostValue::Object(map));
@@ -1661,7 +1661,7 @@ fn host_bytes(value: &HostValue) -> Option<Vec<u8>> {
     })
 }
 
-fn geometry_value(geometry: &VueWindowGeometry) -> HostValue {
+fn geometry_value(geometry: &VueWindowGeometry, always_on_top: bool) -> HostValue {
     HostValue::Object(
         [
             ("x".into(), HostValue::Number(geometry.x)),
@@ -1673,6 +1673,7 @@ fn geometry_value(geometry: &VueWindowGeometry) -> HostValue {
                 HostValue::Number(geometry.scale_factor),
             ),
             ("fullscreen".into(), HostValue::Bool(geometry.fullscreen)),
+            ("alwaysOnTop".into(), HostValue::Bool(always_on_top)),
             ("minimized".into(), HostValue::Bool(geometry.minimized)),
             ("maximized".into(), HostValue::Bool(geometry.maximized)),
         ]
@@ -2028,6 +2029,11 @@ mod tests {
             &[HostValue::Number(0.0), HostValue::Bool(true)],
         )
         .expect("set fullscreen");
+        api.call(
+            "windowSetAlwaysOnTop",
+            &[HostValue::Number(0.0), HostValue::Bool(true)],
+        )
+        .expect("set always on top");
         let geometry = api
             .call("windowGeometry", &[HostValue::Number(0.0)])
             .unwrap()
@@ -2039,9 +2045,13 @@ mod tests {
             geometry.get("width").and_then(HostValue::as_f64),
             Some(640.0)
         );
-        // Fullscreen is what the host reports, not what was requested.
+        // Fullscreen and always-on-top are what the host reports, not what was requested.
         assert_eq!(
             geometry.get("fullscreen").and_then(HostValue::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            geometry.get("alwaysOnTop").and_then(HostValue::as_bool),
             Some(false)
         );
         let commands = runtime.drain_window_commands();
@@ -2085,6 +2095,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             geometry.get("fullscreen").and_then(HostValue::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            geometry.get("alwaysOnTop").and_then(HostValue::as_bool),
             Some(true)
         );
     }

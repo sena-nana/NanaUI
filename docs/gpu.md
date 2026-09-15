@@ -96,7 +96,7 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 - **容量。** 一个窗口需要 3 个 slot：在途复制、正在显示、已替换但未 present。每多一个绑定同一交换的窗口加 2 个。
 - **Lease 顺序。** `prepare` 换帧后，旧帧留到 `presented` 才释放；两次 present 之间最多换一次。lease 归还后，生产端要等 UI 那次提交完成才复用该 slot。隐藏 tick 只 prepare 不 present，所以最多换一次就停住，生产端随后看到 `PoolFull`。
 - **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧，旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）；被拒绝的帧不确认唤醒，所以隐藏窗口不会每帧被叫醒，策略变化时由应用请求重绘。
-- **唤醒。** `notify` 在生产线程调用，只负责调度窗口：`context.window().request_redraw()` 或 `context.dispatch(..)`，不要在里面等。
+- **唤醒。** `notify` 在生产线程调用，只负责调度窗口：`drop(window.request_redraw())` 或 `context.dispatch(..)`，不要在里面等。
 - **设备重建。** `rebuild_gpu` 后用新上下文重建 exchange 和 binding。代次不同的 inbox 不会被绑定。已发出的 lease 继续有效；最后一个持有者释放后，旧 Device / Queue 在后台线程销毁。
 - **诊断。** `FrameExchange::stats()` 给出 submitted / published / superseded / pool_full / stale_epoch 与占用高水位，读取不在帧路径上分配。
 
