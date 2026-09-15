@@ -1017,11 +1017,22 @@ fn apply_window_surface(
     material
 }
 
-fn drag_scene_window(window: &dyn winit::window::Window) {
+/// Starts a native window drag; `Ok` means the drag started and the platform
+/// now owns the button release.
+fn drag_scene_window(window: &dyn winit::window::Window) -> Result<(), winit::error::RequestError> {
     if nana_window::drag_custom_title_bar(window) {
-        return;
+        return Ok(());
     }
-    let _ = window.drag_window();
+    // winit's AppKit drag uses `currentEvent` without checking it is still the
+    // press, so it would report a drag AppKit ignored as started.
+    #[cfg(target_os = "macos")]
+    {
+        Err(winit::error::RequestError::Ignored)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        window.drag_window()
+    }
 }
 
 fn resize_scene_window(window: &dyn winit::window::Window, edge: WindowResizeEdge) {
@@ -1896,6 +1907,21 @@ impl InputTracker {
         self.primary_touch = None;
     }
 
+    /// Ends the mouse gesture whose release the platform will not deliver.
+    fn cancel_mouse(&mut self, screen_origin: Option<(f32, f32)>) -> InputEvent {
+        let buttons = std::mem::take(&mut self.buttons);
+        self.pointer_event(
+            mapped_pointer(1, PointerType::Mouse, true, None),
+            PointerPhase::Cancel,
+            -1,
+            buttons,
+            false,
+            platform_input_modifiers(self.modifiers),
+            screen_origin,
+            Some(0.0),
+        )
+    }
+
     fn set_cursor_physical(&mut self, position: PhysicalPosition<f64>, scale: f32) {
         let point = position.to_logical::<f32>(f64::from(scale));
         self.cursor = (point.x, point.y);
@@ -2758,6 +2784,50 @@ mod tests {
         assert_eq!(mouse_button_mask(0), 1);
         assert_eq!(mouse_button_mask(1), 4);
         assert_eq!(mouse_button_mask(2), 2);
+    }
+
+    #[test]
+    fn mouse_cancel_ends_a_press_whose_release_never_arrives() {
+        let mut tracker = InputTracker::default();
+        tracker.map(
+            &WinitWindowEvent::PointerButton {
+                device_id: None,
+                state: ElementState::Pressed,
+                position: PhysicalPosition::new(20.0, 10.0),
+                primary: true,
+                button: ButtonSource::Mouse(MouseButton::Left),
+                is_macos_activation_click: false,
+            },
+            1.0,
+            None,
+        );
+        let InputEvent::Pointer {
+            phase,
+            pointer_type,
+            buttons,
+            ..
+        } = tracker.cancel_mouse(None)
+        else {
+            panic!("expected pointer");
+        };
+        assert_eq!(phase, PointerPhase::Cancel);
+        assert_eq!(pointer_type, PointerType::Mouse);
+        assert_eq!(buttons, 1);
+
+        let Some(InputEvent::Pointer { phase, buttons, .. }) = tracker.map(
+            &WinitWindowEvent::PointerMoved {
+                device_id: None,
+                position: PhysicalPosition::new(60.0, 10.0),
+                primary: true,
+                source: PointerSource::Mouse,
+            },
+            1.0,
+            None,
+        ) else {
+            panic!("expected pointer");
+        };
+        assert_eq!(phase, PointerPhase::Move);
+        assert_eq!(buttons, 0);
     }
 
     #[test]

@@ -50,6 +50,9 @@ pub fn prepare_custom_title_bar<W: HasWindowHandle + ?Sized>(window: &W) -> bool
 }
 
 /// Performs one explicit NanaUI titlebar drag.
+///
+/// Returns `true` only when a native drag started. The platform then owns the
+/// button release, so the caller must end its pointer gesture itself.
 pub fn drag_custom_title_bar<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     drag(window)
 }
@@ -348,7 +351,7 @@ fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> b
 #[cfg(target_os = "macos")]
 fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     use objc2::MainThreadMarker;
-    use objc2_app_kit::NSApplication;
+    use objc2_app_kit::{NSApplication, NSEventType};
 
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
@@ -359,6 +362,12 @@ fn drag<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
     let Some(event) = NSApplication::sharedApplication(mtm).currentEvent() else {
         return false;
     };
+    // AppKit silently ignores a drag started from any other event, e.g. when
+    // the press was queued and handled outside its own mouseDown dispatch.
+    let kind = event.r#type();
+    if kind != NSEventType::LeftMouseDown && kind != NSEventType::LeftMouseDragged {
+        return false;
+    }
 
     window.setMovable(true);
     window.performWindowDragWithEvent(&event);

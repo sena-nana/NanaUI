@@ -145,8 +145,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 apply_application_icon(&nana_app_icon::resolved_application_icon(None));
             }
             RoutedWindowCommand::Drag(id) => {
-                if let Some(window) = self.window(id) {
-                    drag_scene_window(window.as_ref());
+                if let Some(window) = self.window(id).cloned()
+                    && drag_scene_window(window.as_ref()).is_ok()
+                {
+                    self.dispatch_pointer_cancel(event_loop, id);
                 }
             }
         }
@@ -302,23 +304,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     fn dispatch_forward_leave(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
+        self.dispatch_pointer_cancel(event_loop, id);
+        self.reset_window_cursor(id);
+    }
+
+    /// Cancels the mouse gesture when the platform takes its release away (a
+    /// native window drag or forward passthrough), so the tracker buttons,
+    /// runtime press/capture, title-bar drag and the program all see it end.
+    fn dispatch_pointer_cancel(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         let origin = self
             .window(id)
             .and_then(|window| window_screen_origin(window.as_ref()));
-        let modifiers = platform_input_modifiers(self.input_of(id).modifiers);
-        let buttons = std::mem::take(&mut self.input_mut(id).buttons);
-        let input = self.input_of(id).pointer_event(
-            mapped_pointer(1, PointerType::Mouse, true, None),
-            PointerPhase::Cancel,
-            -1,
-            buttons,
-            false,
-            modifiers,
-            origin,
-            Some(0.0),
-        );
+        let input = self.input_mut(id).cancel_mouse(origin);
         let _ = self.dispatch_input(event_loop, id, input);
-        self.reset_window_cursor(id);
     }
 
     pub(super) fn forward_os_passthrough_ignores_pointer(
@@ -1336,7 +1334,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
             Control::Command(WindowCommand::Drag(_)) => {
-                window.drag_window().map_err(window_request_error)?;
+                drag_scene_window(window.as_ref()).map_err(window_request_error)?;
+                self.dispatch_pointer_cancel(event_loop, id);
             }
             Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {
                 self.set_mouse_passthrough_mode(
