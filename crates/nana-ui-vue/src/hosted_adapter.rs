@@ -500,6 +500,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             event,
             WindowEvent::Moved { .. }
                 | WindowEvent::MousePassthroughChanged { .. }
+                | WindowEvent::SkipTaskbarChanged { .. }
                 | WindowEvent::AppearanceChanged { .. }
                 | WindowEvent::FileDialogRejected { .. }
                 | WindowEvent::FileDialogCompleted { .. }
@@ -601,7 +602,8 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             WindowEvent::OpenFailed { id, .. } => {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
             }
-            WindowEvent::MousePassthroughChanged { .. } => {}
+            WindowEvent::MousePassthroughChanged { .. }
+            | WindowEvent::SkipTaskbarChanged { .. } => {}
             WindowEvent::ModeChanged { id, mode } => {
                 self.vue.record_platform_mode(VueWindowId(id.0), &mode)?;
             }

@@ -1,9 +1,10 @@
-//! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off, close, quit.
+//! Native two-window acceptance probe. Commands on stdin: lock, unlock, forward, forward-off,
+//! taskbar-show, taskbar-hide, hide, show, close, quit.
 //! Run through the Scene host; inspect output plus native pointer/compositor behavior.
 use nana_ui::runtime::{DocumentId, FrameworkError, RuntimeDocument, Stack, Text};
 use nana_ui::{
     DocumentAccessError, MaterialEffect, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, ThemeMode, WindowDescriptor, run_runtime,
+    RuntimeProgramUpdate, ThemeMode, WindowDescriptor, WindowHandle, run_runtime,
 };
 use nana_ui_core::LengthSpec;
 use nana_ui_platform::host::WindowCommand;
@@ -19,6 +20,8 @@ const OPAQUE_HIT: (f32, f32, f32, f32) = (24.0, 24.0, 140.0, 80.0);
 enum Message {
     Lock(bool),
     Forward(bool),
+    SkipTaskbar(bool),
+    Visible(bool),
     Close,
     Fail,
     Quit,
@@ -26,6 +29,7 @@ enum Message {
 struct Probe {
     primary: RuntimeDocument,
     overlay: RuntimeDocument,
+    overlay_window: Option<WindowHandle>,
 }
 fn report(value: serde_json::Value) {
     println!("{value}");
@@ -92,6 +96,10 @@ impl RuntimeProgram for Probe {
                     "unlock" => Message::Lock(false),
                     "forward" => Message::Forward(true),
                     "forward-off" => Message::Forward(false),
+                    "taskbar-show" => Message::SkipTaskbar(false),
+                    "taskbar-hide" => Message::SkipTaskbar(true),
+                    "hide" => Message::Visible(false),
+                    "show" => Message::Visible(true),
                     "close" => Message::Close,
                     "fail" => Message::Fail,
                     "quit" => Message::Quit,
@@ -100,7 +108,14 @@ impl RuntimeProgram for Probe {
                 context.dispatch(message);
             }
         });
-        Ok((Self { primary, overlay }, vec![]))
+        Ok((
+            Self {
+                primary,
+                overlay,
+                overlay_window: None,
+            },
+            vec![],
+        ))
     }
     fn with_document<R>(
         &self,
@@ -139,6 +154,17 @@ impl RuntimeProgram for Probe {
                     id: OVERLAY,
                     enabled,
                 }])
+            }
+            Message::SkipTaskbar(skip_taskbar) => commands(vec![WindowCommand::SetSkipTaskbar {
+                id: OVERLAY,
+                skip_taskbar,
+            }]),
+            Message::Visible(visible) => {
+                if let Some(window) = &self.overlay_window {
+                    // The host thread cannot wait; the change shows up natively.
+                    let _request = window.set_visible(visible);
+                }
+                RuntimeProgramUpdate::default()
             }
             Message::Close => commands(vec![WindowCommand::Close(OVERLAY)]),
             Message::Fail => {
@@ -183,6 +209,7 @@ impl RuntimeProgram for Probe {
                 settings.always_on_top = true;
                 settings.focus_on_show = false;
                 settings.constrain_to_work_area = true;
+                settings.skip_taskbar = true;
                 settings.role = WindowRole::Tool;
                 assert_eq!(context.material().effect, MaterialEffect::Solid);
                 report(serde_json::json!({"event":"primary_ready"}));
@@ -196,6 +223,7 @@ impl RuntimeProgram for Probe {
                 geometry,
             } => {
                 assert_eq!(context.material().effect, MaterialEffect::Transparent);
+                self.overlay_window = Some(context.window());
                 assert_ne!(
                     context.surface_alpha_mode(),
                     wgpu::CompositeAlphaMode::Opaque
@@ -234,6 +262,16 @@ impl RuntimeProgram for Probe {
                 } else {
                     RuntimeProgramUpdate::default()
                 }
+            }
+            WindowEvent::SkipTaskbarChanged {
+                id,
+                skip_taskbar,
+                result,
+            } => {
+                report(
+                    serde_json::json!({"event":"skip_taskbar", "window":id.0, "skip":skip_taskbar, "success":result.is_ok(), "error":result.err()}),
+                );
+                RuntimeProgramUpdate::default()
             }
             WindowEvent::Closed { id } => {
                 report(serde_json::json!({"event":"closed", "window":id.0}));

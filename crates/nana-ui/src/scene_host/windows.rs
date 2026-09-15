@@ -13,6 +13,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             RoutedWindowCommand::SetMousePassthrough(id, mode) => {
                 let _ = self.set_mouse_passthrough_mode(event_loop, id, mode);
             }
+            RoutedWindowCommand::SetSkipTaskbar(id, skip) => {
+                let _ = self.set_skip_taskbar(event_loop, id, skip);
+            }
             RoutedWindowCommand::Ignore => {}
             RoutedWindowCommand::Open(id) => {
                 let WindowCommand::Open { settings, .. } = command else {
@@ -26,7 +29,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.program
                         .sync_animation_clock(self.animation_clock.epoch());
                     self.apply_update(event_loop, update, None);
-                    self.sync_window_mode(event_loop, id);
+                    self.finish_ready(event_loop, id);
                 }
             }
             RoutedWindowCommand::Focus(id) => self.focus_window(id),
@@ -206,6 +209,62 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
         self.apply_update(event_loop, update, None);
         result
+    }
+
+    /// After `Ready`: deliver the descriptor's taskbar outcome, then the initial
+    /// mode. A failed taskbar request does not undo creation.
+    pub(super) fn finish_ready(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
+        if let Some(result) = self
+            .window_contexts
+            .get_mut(&id)
+            .and_then(|host| host.skip_taskbar_report.take())
+        {
+            self.emit_skip_taskbar_changed(event_loop, id, &result);
+        }
+        self.sync_window_mode(event_loop, id);
+    }
+
+    /// Always emits `SkipTaskbarChanged`, including for a missing window.
+    pub(super) fn set_skip_taskbar(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        skip: bool,
+    ) -> Result<(), crate::WindowError> {
+        let result = self
+            .window(id)
+            .map(|window| native_skip_taskbar(window.as_ref(), skip))
+            .unwrap_or(Err(crate::WindowError::WindowClosed));
+        if let Some(host) = self.window_contexts.get_mut(&id) {
+            // An explicit request supersedes a descriptor outcome not yet delivered.
+            host.skip_taskbar_report = None;
+            if result.is_ok() {
+                host.skip_taskbar = skip;
+            }
+        }
+        self.emit_skip_taskbar_changed(event_loop, id, &result);
+        result
+    }
+
+    fn emit_skip_taskbar_changed(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        result: &Result<(), crate::WindowError>,
+    ) {
+        let skip_taskbar = self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.skip_taskbar);
+        let update = self.program.window_event(
+            WindowEvent::SkipTaskbarChanged {
+                id,
+                skip_taskbar,
+                result: result.clone().map_err(|error| error.to_string()),
+            },
+            &self.context_for(id),
+        );
+        self.apply_update(event_loop, update, None);
     }
 
     fn forward_hits_content(&mut self, id: WindowId) -> bool {
@@ -475,6 +534,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             WindowLevel::Normal
         };
         let pending_fullscreen = settings.fullscreen;
+        let skip_taskbar_report = descriptor_skip_taskbar(window.as_ref(), &settings);
         self.window_contexts.insert(
             id,
             WindowContext {
@@ -497,6 +557,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 level,
                 mode: None,
                 pending_fullscreen,
+                skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
+                skip_taskbar_report,
             },
         );
         #[cfg(target_os = "windows")]
@@ -1210,7 +1272,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .map_err(WindowError::InitializationFailed)?;
         let update = self.program.window_event(event, &self.context_for(id));
         self.apply_update(event_loop, update, None);
-        self.sync_window_mode(event_loop, id);
+        self.finish_ready(event_loop, id);
         // `Ready` has been delivered, so creation itself succeeded; a window its
         // own `Ready` handling closed resolves as closed, not as a failed creation.
         if self.shutting_down {
@@ -1358,6 +1420,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     "position must be finite".into(),
                 ));
             }
+            Control::Command(WindowCommand::SetSkipTaskbar { skip_taskbar, .. }) => {
+                self.set_skip_taskbar(event_loop, id, skip_taskbar)?;
+            }
             Control::Command(WindowCommand::SetFullscreen { fullscreen, .. }) => {
                 self.set_window_fullscreen(event_loop, id, fullscreen)?;
             }
@@ -1456,6 +1521,31 @@ mod appearance_tests {
         assert!(apply(&mut cached, original).is_err());
         assert_eq!(calls.get(), 2);
     }
+}
+
+fn native_skip_taskbar(
+    window: &dyn winit::window::Window,
+    skip: bool,
+) -> Result<(), crate::WindowError> {
+    nana_window::set_skip_taskbar(window, skip).map_err(|error| match error {
+        nana_window::SkipTaskbarError::Unsupported(reason) => {
+            crate::WindowError::Unsupported(reason)
+        }
+        nana_window::SkipTaskbarError::Failed(reason) => {
+            crate::WindowError::OperationFailed(reason)
+        }
+    })
+}
+
+/// Apply `WindowDescriptor::skip_taskbar` while the window is still hidden, so
+/// its first show is covered. The outcome is delivered by `finish_ready`.
+pub(super) fn descriptor_skip_taskbar(
+    window: &dyn winit::window::Window,
+    settings: &WindowDescriptor,
+) -> Option<Result<(), crate::WindowError>> {
+    settings
+        .skip_taskbar
+        .then(|| native_skip_taskbar(window, true))
 }
 
 fn window_request_error(error: winit::error::RequestError) -> crate::WindowError {

@@ -1178,6 +1178,7 @@ impl VueRuntime {
                         fullscreen: None,
                         focus_on_show: true,
                         constrain_to_work_area: false,
+                        skip_taskbar: false,
                         resizable: options.resizable,
                         role: match options.role {
                             VueWindowRole::Main => WindowRole::Main,

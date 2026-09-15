@@ -158,6 +158,10 @@ struct WindowContext {
     mode: Option<WindowModeState>,
     /// Fullscreen applied once the window is visible and not fullscreen.
     pending_fullscreen: Option<FullscreenRequest>,
+    /// Taskbar entry state last applied successfully.
+    skip_taskbar: bool,
+    /// Descriptor outcome, applied before the first show and delivered after `Ready`.
+    skip_taskbar_report: Option<Result<(), crate::WindowError>>,
 }
 
 impl Drop for WindowContext {
@@ -602,6 +606,7 @@ fn initialize<Program: RuntimeProgram>(
     let mut window_ids = HashMap::new();
     window_ids.insert(window.id(), WindowId::PRIMARY);
     let animation_clock = RuntimeAnimationClock::now();
+    let skip_taskbar_report = windows::descriptor_skip_taskbar(window.as_ref(), &settings);
     let primary = WindowContext {
         surface_retry: None,
         applied_appearance: None,
@@ -626,6 +631,8 @@ fn initialize<Program: RuntimeProgram>(
         },
         mode: None,
         pending_fullscreen: settings.fullscreen,
+        skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
+        skip_taskbar_report,
     };
     pending_native.0 = None;
     let mut ready = WindowManager {
@@ -698,7 +705,7 @@ fn initialize<Program: RuntimeProgram>(
         window.set_visible(ready.settings.visible);
         apply_client_chrome_after_create(window.as_ref(), &ready.settings);
         window.request_redraw();
-        ready.sync_window_mode(event_loop, WindowId::PRIMARY);
+        ready.finish_ready(event_loop, WindowId::PRIMARY);
     }
     Ok(ready)
 }
@@ -1511,6 +1518,7 @@ fn forward_pointer_action(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoutedWindowCommand {
     SetMousePassthrough(WindowId, MousePassthroughMode),
+    SetSkipTaskbar(WindowId, bool),
     Open(WindowId),
     Focus(WindowId),
     Close(WindowId),
@@ -1540,6 +1548,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::SetMousePassthroughForward { id, enabled } => {
             RoutedWindowCommand::SetMousePassthrough(*id, MousePassthroughMode::forward(*enabled))
+        }
+        WindowCommand::SetSkipTaskbar { id, skip_taskbar } => {
+            RoutedWindowCommand::SetSkipTaskbar(*id, *skip_taskbar)
         }
         WindowCommand::Open { id, .. } if known(*id) => RoutedWindowCommand::Focus(*id),
         WindowCommand::Open { id, .. } => RoutedWindowCommand::Open(*id),
@@ -3907,8 +3918,18 @@ mod tests {
         .expect("scene host recovery test requires a WGPU device")
     }
     #[test]
-    fn passthrough_command_routes_missing_windows_for_failure_acknowledgement() {
+    fn acknowledged_commands_route_missing_windows_for_failure_reports() {
         for id in [WindowId::PRIMARY, WindowId(20)] {
+            assert_eq!(
+                route_window_command(
+                    &WindowCommand::SetSkipTaskbar {
+                        id,
+                        skip_taskbar: true,
+                    },
+                    &[WindowId::PRIMARY]
+                ),
+                RoutedWindowCommand::SetSkipTaskbar(id, true)
+            );
             assert_eq!(
                 route_window_command(
                     &WindowCommand::SetMousePassthrough { id, enabled: true },

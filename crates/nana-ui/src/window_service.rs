@@ -374,6 +374,15 @@ impl WindowHandle {
     pub fn set_window_level(&self, level: WindowLevel) -> WindowRequest<()> {
         self.control(Control::Level(level))
     }
+    /// Show or hide the taskbar entry. Platforms without a per-window entry
+    /// fail with `Unsupported`; the effective state also arrives as
+    /// `WindowEvent::SkipTaskbarChanged`.
+    pub fn set_skip_taskbar(&self, skip_taskbar: bool) -> WindowRequest<()> {
+        self.control(Control::Command(WindowCommand::SetSkipTaskbar {
+            id: self.id,
+            skip_taskbar,
+        }))
+    }
     pub fn set_cursor(&self, cursor: WindowCursor) -> WindowRequest<()> {
         self.control(Control::Cursor(cursor))
     }

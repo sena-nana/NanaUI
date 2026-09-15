@@ -1643,6 +1643,7 @@ fn runtime_dock_window_commands(
                     fullscreen: None,
                     focus_on_show: true,
                     constrain_to_work_area: false,
+                    skip_taskbar: false,
                     resizable: true,
                     role: WindowRole::Tool,
                     modal: false,

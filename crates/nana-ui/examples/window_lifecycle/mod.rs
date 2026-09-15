@@ -240,6 +240,17 @@ impl ApplicationState for App {
                     .set_window_level(WindowLevel::Normal)
                     .wait()
                     .map_err(|e| e.to_string())?;
+                for skip in [true, false] {
+                    let outcome = second.set_skip_taskbar(skip).wait();
+                    let reported = if cfg!(target_os = "windows") {
+                        outcome.is_ok()
+                    } else {
+                        matches!(outcome, Err(WindowError::Unsupported(_)))
+                    };
+                    if !reported {
+                        return Err(format!("skip taskbar {skip} reported {outcome:?}"));
+                    }
+                }
                 let mut opens_fullscreen = descriptor("Opens fullscreen");
                 opens_fullscreen.fullscreen = Some(FullscreenRequest {
                     mode: FullscreenMode::Simple,

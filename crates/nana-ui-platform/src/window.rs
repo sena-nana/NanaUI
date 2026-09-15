@@ -127,6 +127,13 @@ pub enum WindowEvent {
         enabled: bool,
         result: Result<(), String>,
     },
+    /// Acknowledges a taskbar-entry request, including failures. `skip_taskbar`
+    /// is the effective state: a failed request leaves the previous value.
+    SkipTaskbarChanged {
+        id: WindowId,
+        skip_taskbar: bool,
+        result: Result<(), String>,
+    },
     Ready {
         id: WindowId,
         geometry: WindowGeometry,
@@ -427,6 +434,10 @@ pub struct WindowDescriptor {
     pub focus_on_show: bool,
     /// Keep the complete restored frame inside the nearest display work area.
     pub constrain_to_work_area: bool,
+    /// Keep this window out of the taskbar. The outcome is reported through
+    /// [`WindowEvent::SkipTaskbarChanged`]; platforms without a per-window
+    /// taskbar entry report `Unsupported` instead of pretending.
+    pub skip_taskbar: bool,
     pub resizable: bool,
     pub role: WindowRole,
     pub modal: bool,
@@ -462,6 +473,7 @@ impl WindowDescriptor {
             fullscreen: None,
             focus_on_show: true,
             constrain_to_work_area: false,
+            skip_taskbar: false,
             resizable: true,
             role: WindowRole::Main,
             modal: false,
@@ -569,6 +581,11 @@ pub enum WindowCommand {
         id: WindowId,
         always_on_top: bool,
     },
+    /// Show or hide the taskbar entry. Always emits SkipTaskbarChanged.
+    SetSkipTaskbar {
+        id: WindowId,
+        skip_taskbar: bool,
+    },
     /// Per-window icon. `None` reapplies the registered or default mark.
     SetIcon {
         id: WindowId,
@@ -658,6 +675,7 @@ mod tests {
     fn client_chrome_is_the_default_window_contract() {
         let settings = WindowDescriptor::new("Scene");
         assert!(!settings.system_caption);
+        assert!(!settings.skip_taskbar);
         assert!(settings.icon.is_none());
         assert!(matches!(
             WindowCommand::Drag(WindowId::PRIMARY),

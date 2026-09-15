@@ -90,6 +90,10 @@ fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
     }
 }
 
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 fn extend_frame(hwnd: HWND, margin: i32) {
     let margins = MARGINS {
         cxLeftWidth: margin,
@@ -161,10 +165,6 @@ pub(crate) fn install_menu_bar<W: HasWindowHandle + ?Sized>(window: &W, bar: &cr
     let Some(handle) = hwnd(window) else {
         return;
     };
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain(std::iter::once(0)).collect()
-    }
 
     /// Appends one level of the model. Returns the built popup.
     unsafe fn build(menu: &crate::Menu) -> windows_sys::Win32::UI::WindowsAndMessaging::HMENU {
@@ -380,4 +380,198 @@ unsafe extern "system" fn dialog_hook(code: i32, wparam: usize, lparam: isize) -
         }
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
+}
+
+/// Subclass id for the taskbar hook. Distinct from the menu hook.
+const TASKBAR_SUBCLASS_ID: usize = 0x6e61_7462;
+
+#[derive(Clone, Copy)]
+enum TaskbarTab {
+    /// Only confirm the taskbar object is available.
+    Check,
+    Add,
+    Delete,
+}
+
+pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    skip: bool,
+) -> Result<(), crate::SkipTaskbarError> {
+    use windows_sys::Win32::UI::Shell::{GetWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        ChangeWindowMessageFilterEx, IsWindowVisible, MSGFLT_ALLOW,
+    };
+
+    let failed = |reason: &str| Err(crate::SkipTaskbarError::Failed(reason.into()));
+    let Some(hwnd) = hwnd(window) else {
+        return failed("window has no Win32 handle");
+    };
+    // The hook's reference data records whether the window had a button.
+    let mut had_button = 0;
+    let hooked = unsafe {
+        GetWindowSubclass(
+            hwnd,
+            Some(taskbar_subclass_proc),
+            TASKBAR_SUBCLASS_ID,
+            &mut had_button,
+        )
+    } != 0;
+    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+    if !skip {
+        if !hooked {
+            return Ok(());
+        }
+        // Windows the shell never gives a button (such as owned dialogs) stay
+        // without one. A failed AddTab keeps the hook, so the entry stays hidden;
+        // a hidden window gets its button back on the next show.
+        if visible && had_button != 0 {
+            update_taskbar_tab(hwnd, TaskbarTab::Add)?;
+        }
+        remove_taskbar_hook(hwnd);
+        return Ok(());
+    }
+    if !hooked {
+        // Explorer sends `TaskbarButtonCreated` once a button is in place — on
+        // every show and after an Explorer restart — so deleting it there does
+        // not race the shell creating it.
+        let message = taskbar_button_created_message();
+        if message == 0 {
+            return failed("RegisterWindowMessageW(TaskbarButtonCreated) failed");
+        }
+        // Explorer cannot deliver the message to an elevated window otherwise.
+        if unsafe { ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, std::ptr::null_mut()) }
+            == 0
+        {
+            return failed("ChangeWindowMessageFilterEx failed for TaskbarButtonCreated");
+        }
+        let had_button = usize::from(shell_gives_taskbar_button(hwnd));
+        if unsafe {
+            SetWindowSubclass(
+                hwnd,
+                Some(taskbar_subclass_proc),
+                TASKBAR_SUBCLASS_ID,
+                had_button,
+            )
+        } == 0
+        {
+            return failed("SetWindowSubclass failed for the taskbar hook");
+        }
+    }
+    // A hidden window has no button yet; the hook removes the one its show creates.
+    let tab = if visible {
+        TaskbarTab::Delete
+    } else {
+        TaskbarTab::Check
+    };
+    let result = update_taskbar_tab(hwnd, tab);
+    // Only undo a hook this request installed; an earlier success stays in force.
+    if result.is_err() && !hooked {
+        remove_taskbar_hook(hwnd);
+    }
+    result
+}
+
+fn remove_taskbar_hook(hwnd: HWND) {
+    use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
+
+    unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
+}
+
+/// Whether the shell gives this window a taskbar button on its own: an
+/// `WS_EX_APPWINDOW` window always has one, otherwise only an unowned window
+/// without `WS_EX_TOOLWINDOW`. winit marks owned windows as popups without
+/// `WS_EX_APPWINDOW`, so modal dialogs have none.
+fn shell_gives_taskbar_button(hwnd: HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_OWNER, GetWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+    if ex_style & WS_EX_APPWINDOW != 0 {
+        return true;
+    }
+    let owned = !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null();
+    !owned && ex_style & WS_EX_TOOLWINDOW == 0
+}
+
+/// Balances a successful `CoInitializeEx`; a thread already in another
+/// apartment can still create the object and is left as it is.
+struct ComApartment(bool);
+
+impl ComApartment {
+    fn enter() -> Result<Self, crate::SkipTaskbarError> {
+        use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+        use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx};
+
+        let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+            return Err(crate::SkipTaskbarError::Failed(format!(
+                "CoInitializeEx failed: {hr:?}"
+            )));
+        }
+        Ok(Self(hr.is_ok()))
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { windows::Win32::System::Com::CoUninitialize() };
+        }
+    }
+}
+
+fn update_taskbar_tab(hwnd: HWND, tab: TaskbarTab) -> Result<(), crate::SkipTaskbarError> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
+
+    let _apartment = ComApartment::enter()?;
+    let failed = |step: &str, error: windows::core::Error| {
+        crate::SkipTaskbarError::Failed(format!("{step}: {error}"))
+    };
+    let hwnd = windows::Win32::Foundation::HWND(hwnd);
+    unsafe {
+        let list: ITaskbarList = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| failed("CoCreateInstance(TaskbarList)", error))?;
+        list.HrInit()
+            .map_err(|error| failed("ITaskbarList::HrInit", error))?;
+        match tab {
+            TaskbarTab::Check => Ok(()),
+            TaskbarTab::Add => list
+                .AddTab(hwnd)
+                .map_err(|error| failed("ITaskbarList::AddTab", error)),
+            TaskbarTab::Delete => list
+                .DeleteTab(hwnd)
+                .map_err(|error| failed("ITaskbarList::DeleteTab", error)),
+        }
+    }
+}
+
+fn taskbar_button_created_message() -> u32 {
+    use windows_sys::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+
+    static MESSAGE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *MESSAGE
+        .get_or_init(|| unsafe { RegisterWindowMessageW(wide("TaskbarButtonCreated").as_ptr()) })
+}
+
+unsafe extern "system" fn taskbar_subclass_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    _id: usize,
+    _data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::Shell::DefSubclassProc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::WM_NCDESTROY;
+
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+    if message == WM_NCDESTROY {
+        remove_taskbar_hook(hwnd);
+    } else if message == taskbar_button_created_message() {
+        // The request that installed the hook already reported its outcome.
+        let _ = update_taskbar_tab(hwnd, TaskbarTab::Delete);
+    }
+    result
 }

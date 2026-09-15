@@ -205,7 +205,7 @@ pub enum FullscreenMode {
 
 描述符全屏在窗口可见之后才应用（窗口先以隐藏状态创建并完成文档初始化）。不要用描述符表达“这块屏必须存在”，那是显式请求的合同。
 
-`window-service-lifecycle` / `embedded-window-lifecycle` 覆盖枚举非空、指定屏全屏后收到 `ModeChanged`、置顶、退出全屏、非法 `DisplayId`、描述符全屏。macOS 绿色按钮、第二块屏、拔屏，以及 Windows 多屏，需要人工核对。
+`window-service-lifecycle` / `embedded-window-lifecycle` 覆盖枚举非空、指定屏全屏后收到 `ModeChanged`、置顶、`set_skip_taskbar` 的平台结果（Windows 成功，其他平台 `Unsupported`）、退出全屏、非法 `DisplayId`、描述符全屏。macOS 绿色按钮、第二块屏、拔屏，以及 Windows 多屏，需要人工核对。
 
 ### 嵌入已有宿主
 
@@ -243,6 +243,12 @@ pub enum FullscreenMode {
 
 `WindowDescriptor::constrain_to_work_area = true` 用于完整恢复工具窗：部分出屏的位置也会校正，尺寸超出屏幕时会缩小。Windows 使用扣除任务栏的原生工作区；其他平台当前回退显示器边界。默认 `false` 保留原有“与任意屏幕有交集即保留位置”的行为。
 
+`WindowDescriptor::skip_taskbar = true` 让窗口不出现在任务栏，默认 `false`，主窗照常显示。运行中用 `WindowCommand::SetSkipTaskbar { id, skip_taskbar }` 或 `WindowHandle::set_skip_taskbar` 切换。描述符里的设置在窗口首次显示前应用，结果在 `Ready` 之后回报，失败不撤销创建。每次请求（包括描述符应用和未知窗口）都回报 `WindowEvent::SkipTaskbarChanged { id, skip_taskbar, result }`：`skip_taskbar` 是当前实际状态，失败时保持原值；描述符结果送达前的显式请求会取代它；`WindowHandle` 请求返回同一结果，平台不支持为 `Unsupported`，系统拒绝为 `OperationFailed`。
+
+- Windows：宿主通过 `ITaskbarList` 删除或恢复任务栏按钮，每一步 HRESULT 失败都回报。每当 Explorer 放好按钮并发来 `TaskbarButtonCreated`（每次显示、Explorer 重启后）就再删除一次，不与系统创建按钮竞争。重复请求失败时保留已生效的隐藏；`skip_taskbar: false` 只恢复由这条合同隐藏过的按钮，不会给本来没有任务栏按钮的窗口（例如模态子窗）加按钮。不改 `WS_EX_TOOLWINDOW`，Alt+Tab 行为和标题栏样式不变。
+- macOS：返回 `Unsupported`。Dock 按应用显示图标，普通窗口没有逐窗 Dock 项；但窗口最小化后仍会进入 Dock，应用图标也始终在 Dock 里。隐藏应用 Dock 图标是应用级激活策略，不属于这条逐窗合同。
+- Linux：返回 `Unsupported`。
+
 原生验收探针（会短暂移动鼠标到探针自身窗口）：
 
 ```powershell
@@ -250,7 +256,7 @@ cargo build -p nana-ui --example desktop-overlay-probe --features hosted,bundled
 python scripts/validate-desktop-overlay.py
 ```
 
-探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由、Forward 在不透明命中区收回并收到后续 click、以及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。Windows 是 Issue 必测平台；macOS 覆盖行为测试与文档。
+探针验证主窗 Solid/Opaque 与工具窗 Transparent/PreMultiplied、首次不抢焦点、工具窗不在任务栏（UI Automation 比较任务栏按钮快照，不依赖窗口标题、按钮合并设置和系统语言，需要 `comtypes`；切换 `SetSkipTaskbar` 与隐藏后再显示都复核）、创建失败反馈、穿透开关反馈、实际鼠标 1→0→1 路由、Forward 在不透明命中区收回并收到后续 click、以及透明区域与关闭后的底层屏幕像素一致。结果写入 `target/desktop-overlay-native.json`；它不替代具体产品布局的视觉验收。Windows 是 Issue 必测平台；macOS 覆盖行为测试与文档。
 
 ## Runtime 中的原生网页内容
 

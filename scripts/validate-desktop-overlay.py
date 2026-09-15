@@ -27,6 +27,49 @@ class Rect(c.Structure):
 class Point(c.Structure):
     _fields_ = [(n, c.c_long) for n in ("x", "y")]
 original_pointer = Point(); u.GetCursorPos(c.byref(original_pointer))
+try:
+    import comtypes.client
+except ImportError as error:
+    raise SystemExit("Taskbar check needs comtypes (pip install comtypes)") from error
+comtypes.client.GetModule("UIAutomationCore.dll")
+from comtypes.gen.UIAutomationClient import (CUIAutomation, IUIAutomation, PropertyConditionFlags_MatchSubstring,
+    TreeScope_Children, TreeScope_Descendants, UIA_ClassNamePropertyId)
+automation = comtypes.client.CreateObject(CUIAutomation, interface=IUIAutomation)
+u.FindWindowExW.argtypes = [c.c_void_p, c.c_void_p, c.c_wchar_p, c.c_wchar_p]
+u.FindWindowExW.restype = c.c_void_p
+def elements(found):
+    return [found.GetElement(i) for i in range(found.Length)]
+def taskbar_buttons():
+    """Names of the task-list buttons only, so the clock and tray icons do not count.
+
+    Buttons are compared as a whole rather than by window title: combined
+    buttons are named after the app and window count, in the system language.
+    """
+    tray = u.FindWindowW("Shell_TrayWnd", None)
+    assert tray, "Shell_TrayWnd not found; verify the taskbar manually"
+    # Windows 11 exposes XAML task-list button peers.
+    buttons = elements(automation.ElementFromHandle(tray).FindAll(TreeScope_Descendants,
+        automation.CreatePropertyConditionEx(UIA_ClassNamePropertyId, "TaskListButton", PropertyConditionFlags_MatchSubstring)))
+    if not buttons:
+        # Windows 10: children of the MSTaskListWClass toolbar.
+        bar = u.FindWindowExW(u.FindWindowExW(u.FindWindowExW(tray, None, "ReBarWindow32", None), None, "MSTaskSwWClass", None), None, "MSTaskListWClass", None)
+        if bar:
+            buttons = elements(automation.ElementFromHandle(bar).FindAll(TreeScope_Children, automation.CreateTrueCondition()))
+    assert buttons, "No taskbar buttons found through UI Automation; verify the taskbar manually"
+    return tuple(sorted(e.CurrentName or "" for e in buttons))
+def settled_taskbar(expect, message, timeout=10, settle=1.5):
+    """Snapshot once `expect` has held for `settle` seconds, so a re-added button is caught."""
+    deadline, held_since = time.monotonic() + timeout, None
+    while time.monotonic() < deadline:
+        state = taskbar_buttons()
+        if expect(state):
+            held_since = time.monotonic() if held_since is None else held_since
+            if time.monotonic() - held_since >= settle: return state
+        else:
+            held_since = None
+        time.sleep(.1)
+    raise AssertionError(f"{message}: {taskbar_buttons()}")
+taskbar_before_probe = taskbar_buttons()
 lines, inbox = [], queue.Queue()
 process = subprocess.Popen(["target/debug/examples/desktop-overlay-probe.exe"], stdin=subprocess.PIPE,
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -61,6 +104,7 @@ def click(point):
 try:
     overlay_ready = wait_for("ready", window=1)
     wait_for("passthrough", window=99, success=False)
+    wait_for("skip_taskbar", window=1, skip=True, success=True)
     command("fail"); wait_for("open_failed", window=2)
     time.sleep(1)
     base = u.FindWindowW(None, "NanaUI overlay probe base")
@@ -68,6 +112,9 @@ try:
     assert base and layer
     initial_focus = u.GetForegroundWindow()
     assert initial_focus != layer, "Overlay stole focus on creation"
+    # The probe's own change proves UI Automation sees its buttons.
+    taskbar_base_only = settled_taskbar(lambda state: state != taskbar_before_probe,
+        "Probe windows never changed the taskbar")
     rect = Rect(); assert u.GetWindowRect(layer, c.byref(rect))
     scale = float(overlay_ready["scale"])
     hit = overlay_ready["hit"]
@@ -109,6 +156,15 @@ try:
     u.mouse_event(4, 0, 0, 0, 0); time.sleep(.3)
     after_resize = Rect(); assert u.GetWindowRect(layer, c.byref(after_resize))
     assert after_resize.right > before_resize.right + 20 and after_resize.bottom > before_resize.bottom + 20, "Native resize did not track pointer"
+    # Showing the overlay's entry must change the taskbar and hiding it must
+    # restore the startup state, which proves the overlay started hidden.
+    command("taskbar-show"); wait_for("skip_taskbar", window=1, skip=False, success=True)
+    settled_taskbar(lambda state: state != taskbar_base_only, "Overlay entry did not appear on the taskbar")
+    command("taskbar-hide"); wait_for("skip_taskbar", window=1, skip=True, success=True)
+    settled_taskbar(lambda state: state == taskbar_base_only, "Overlay entry stayed on the taskbar")
+    command("hide"); time.sleep(.5)
+    command("show"); time.sleep(.5)
+    settled_taskbar(lambda state: state == taskbar_base_only, "Overlay entry returned after the window was shown again")
     command("close"); wait_for("closed", window=1); time.sleep(.3)
     after = pixel(clear_point)
     assert before == locked == after, (before, locked, after)

@@ -40,6 +40,49 @@ pub use menu::{
 pub use pointer::pointer_in_client_area;
 pub use size_move::LiveSizeMove;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipTaskbarError {
+    /// The platform has no per-window taskbar entry to hide.
+    Unsupported(String),
+    /// The platform refused or failed the request; the entry is unchanged.
+    Failed(String),
+}
+
+impl std::fmt::Display for SkipTaskbarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(reason) => write!(f, "skip taskbar unsupported: {reason}"),
+            Self::Failed(reason) => write!(f, "skip taskbar failed: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SkipTaskbarError {}
+
+/// Show or hide the window's taskbar entry.
+///
+/// On Windows a hidden entry stays hidden when the window is shown again or
+/// Explorer restarts. Other platforms return `Unsupported`.
+pub fn set_skip_taskbar<W: raw_window_handle::HasWindowHandle + ?Sized>(
+    window: &W,
+    skip: bool,
+) -> Result<(), SkipTaskbarError> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::set_skip_taskbar(window, skip)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, skip);
+        let reason = if cfg!(target_os = "macos") {
+            "the Dock shows the application, not individual windows"
+        } else {
+            "this backend has no per-window taskbar entry"
+        };
+        Err(SkipTaskbarError::Unsupported(reason.into()))
+    }
+}
+
 /// macOS Dock / application icon from PNG bytes. No-op on other platforms.
 ///
 /// winit's window icon is ignored on macOS; this talks to `NSApplication`.
