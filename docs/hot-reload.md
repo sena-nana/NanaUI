@@ -143,7 +143,7 @@ let session = nana_ui_dev::restored_handoff()
 顺序是有讲究的，改动前先读这一节。实现在 [`crates/nana-ui-vue/src/dev.rs`](../crates/nana-ui-vue/src/dev.rs)。
 
 1. 向 `globalThis.__nanaDevSaveState` 要一段状态串（应用可选提供）。
-2. 关掉除主窗口外的所有窗口。**重载是整 runtime 粒度**：一个 isolate、一张模块图被所有 Vue 窗口共享，单窗口重载在这个结构下不可表达。辅窗由重新求值的 artifact 自己打开回来。
+2. 关掉除主窗口外的所有窗口，隔离窗口也不例外。**重载是整 runtime 粒度**：所有 Vue 窗口（包括各自有独立 JavaScript 上下文的隔离窗口）都跑在这一个要被替换的引擎里，单窗口重载在这个结构下不可表达。辅窗由重新求值的 artifact 自己打开回来。
 3. `clearMount` 拆树。这是已有的生产 op：逐个卸载原生子树、从文档移除（保留 `html`/`body` 脚手架）、丢 layout box、从 bridge 反注册。焦点、IME、指针捕获、进行中的动画由 `UiWorld` 在同一次 despawn 里清掉。
 4. 清掉比节点活得久的东西：作者样式表、排队的 bridge 事件、定时器、rAF、在途 fetch、开着的 socket、进程级滚动偏移。**漏清一项只会在二十次重载之后才显形**，所以有专门的回归测试盯着计数。
 5. **先 shutdown 旧引擎，再造新引擎。** V8 创建 isolate 时进入、drop 时退出，且要求严格 LIFO；先造后丢会在第一次重载就 abort 进程。

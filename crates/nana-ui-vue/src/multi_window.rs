@@ -10,7 +10,8 @@ use std::time::Instant;
 
 use nana_js_engine::{
     HostApiRegistry, HostCallObserver, HostEventSender, HostValue, JsDiagnosticEvent,
-    JsDiagnosticLevel, JsDiagnosticSink, JsEngine, JsEngineError, JsException, RuntimeArtifact,
+    JsDiagnosticLevel, JsDiagnosticSink, JsEngine, JsEngineError, JsException, JsRealmId,
+    RuntimeArtifact,
 };
 use nana_ui_core::ThemeMode;
 
@@ -40,6 +41,26 @@ pub enum VueWindowRole {
     Dialog,
 }
 
+/// Which JavaScript realm a new Vue window's script runs in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VueWindowIsolation {
+    /// The opener's realm: globals, timers and `localStorage` are shared.
+    #[default]
+    Shared,
+    /// A realm of its own that evaluates the application artifact again, with
+    /// private in-memory `localStorage`.
+    Isolated,
+}
+
+impl VueWindowIsolation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Isolated => "isolated",
+        }
+    }
+}
+
 /// Engine-neutral native window options accepted from `Nana.windows.create`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VueWindowOptions {
@@ -59,6 +80,7 @@ pub struct VueWindowOptions {
     pub parent: Option<VueWindowId>,
     pub role: VueWindowRole,
     pub icon: Option<WindowIcon>,
+    pub isolation: VueWindowIsolation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -106,6 +128,7 @@ impl Default for VueWindowOptions {
             parent: None,
             role: VueWindowRole::Main,
             icon: None,
+            isolation: VueWindowIsolation::Shared,
         }
     }
 }
@@ -151,6 +174,10 @@ impl VueWindowOptions {
                 ("width".into(), HostValue::Number(self.width)),
                 ("height".into(), HostValue::Number(self.height)),
                 ("ready".into(), HostValue::Bool(false)),
+                (
+                    "isolation".into(),
+                    HostValue::string(self.isolation.as_str()),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -213,6 +240,22 @@ struct WindowEntry {
     options: VueWindowOptions,
     geometry: VueWindowGeometry,
     ready: bool,
+    /// Home window of the realm that runs this document's script.
+    realm: VueWindowId,
+    /// Home window of the realm that called `windowCreate`.
+    opener: VueWindowId,
+}
+
+/// One JavaScript realm, keyed by its home window: `PRIMARY` for the main
+/// realm, an isolated window's own id otherwise. It lives until the last
+/// window running in it closes.
+struct VueRealm {
+    /// `None` until an isolated realm's script has been evaluated.
+    js: Option<JsRealmId>,
+    events: Option<HostEventSender>,
+    local_storage: nana_ui_web_api::SharedStorage,
+    /// Opener-supplied `Nana.windows.current().params`, as JSON.
+    params_json: Option<String>,
 }
 
 struct VueRuntimeState {
@@ -220,7 +263,10 @@ struct VueRuntimeState {
     canvas: nana_ui_web_api::SharedCanvasRuntime,
     video: crate::video::SharedVideoRuntime,
     media: nana_ui_web_api::SharedMediaRuntime,
-    local_storage: nana_ui_web_api::SharedStorage,
+    realms: BTreeMap<VueWindowId, VueRealm>,
+    /// Engine realms whose last window closed, disposed once their final
+    /// lifecycle events are delivered.
+    released_realms: Vec<JsRealmId>,
     /// Application sheets replayed into every window, keyed so a replace
     /// updates the entry a late-created window will inherit.
     stylesheets: Vec<(Option<String>, String)>,
@@ -238,7 +284,6 @@ struct VueRuntimeState {
     media_gpu: Option<crate::media_gpu::MediaGpuBridge>,
     next_id: u64,
     commands: VecDeque<VueWindowCommand>,
-    events: Option<HostEventSender>,
     diagnostic_sink: Option<JsDiagnosticSink>,
     host_call_observer: Option<HostCallObserver>,
     /// Scene [`RuntimeAnimationClock`] epoch applied to every attached document.
@@ -249,6 +294,8 @@ impl VueRuntimeState {
     fn create_window(
         &mut self,
         options: VueWindowOptions,
+        caller: VueWindowId,
+        params_json: Option<String>,
     ) -> Result<(VueWindowId, NodeHandle), JsException> {
         // 2^21 document namespaces * 2^32 local ids stay below Number::MAX_SAFE_INTEGER.
         if self.next_id >= (1 << 21) - 1 {
@@ -259,8 +306,38 @@ impl VueRuntimeState {
         {
             return Err(JsException::new("parent Vue window does not exist"));
         }
+        let local_storage = match options.isolation {
+            VueWindowIsolation::Shared if params_json.is_some() => {
+                return Err(JsException::new(
+                    "window params are only delivered to isolated windows",
+                ));
+            }
+            VueWindowIsolation::Shared => Arc::clone(
+                &self
+                    .realms
+                    .get(&caller)
+                    .ok_or_else(|| JsException::new("the calling JavaScript realm is closed"))?
+                    .local_storage,
+            ),
+            VueWindowIsolation::Isolated => nana_ui_web_api::shared_storage(),
+        };
         let id = VueWindowId(self.next_id);
         self.next_id += 1;
+        let realm = match options.isolation {
+            VueWindowIsolation::Shared => caller,
+            VueWindowIsolation::Isolated => {
+                self.realms.insert(
+                    id,
+                    VueRealm {
+                        js: None,
+                        events: None,
+                        local_storage: Arc::clone(&local_storage),
+                        params_json,
+                    },
+                );
+                id
+            }
+        };
         let mut host = VueHost::with_document_id_and_shared_resources(
             id.document_id(),
             options.width.round().max(1.0) as u32,
@@ -268,7 +345,7 @@ impl VueRuntimeState {
             1.0,
             Arc::clone(&self.canvas),
             Arc::clone(&self.media),
-            Arc::clone(&self.local_storage),
+            local_storage,
         );
         host.share_video_runtime(Arc::clone(&self.video));
         #[cfg(feature = "scene-view")]
@@ -315,6 +392,8 @@ impl VueRuntimeState {
                 },
                 options: options.clone(),
                 ready: false,
+                realm,
+                opener: caller,
             },
         );
         self.commands
@@ -337,26 +416,67 @@ impl VueRuntimeState {
             .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))
     }
 
+    /// Every realm holding a `Nana.windows` handle to `id`: the one running its
+    /// document and the one that opened it.
+    fn window_event_senders(&self, id: VueWindowId) -> Vec<HostEventSender> {
+        let Some(entry) = self.windows.get(&id) else {
+            return Vec::new();
+        };
+        let mut realms = vec![entry.realm];
+        if entry.opener != entry.realm {
+            realms.push(entry.opener);
+        }
+        realms
+            .into_iter()
+            .filter_map(|realm| self.realms.get(&realm)?.events.clone())
+            .collect()
+    }
+
     #[cfg(feature = "hosted")]
-    fn emit(&self, name: &str, payload: HostValue) {
-        if let Some(events) = &self.events {
-            events.send(name, payload);
+    fn emit_window(&self, id: VueWindowId, name: &str, payload: HostValue) {
+        for events in self.window_event_senders(id) {
+            events.send(name, payload.clone());
         }
     }
 
-    fn emit_reliable(&self, name: &str, payload: HostValue) -> Result<(), JsEngineError> {
-        if let Some(events) = &self.events {
-            events
-                .send_reliable(name, payload)
-                .map_err(|_| JsEngineError::new(format!("host event queue is full: {name}")))?;
+    /// Remove a window, returning the senders its final lifecycle event is owed to.
+    fn remove_window(&mut self, id: VueWindowId) -> Result<Vec<HostEventSender>, JsEngineError> {
+        let senders = self.window_event_senders(id);
+        let entry = self
+            .windows
+            .remove(&id)
+            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+        let realm = entry.realm;
+        // The main realm outlives its windows, as the engine does.
+        if realm != VueWindowId::PRIMARY
+            && !self.windows.values().any(|entry| entry.realm == realm)
+            && let Some(js) = self.realms.remove(&realm).and_then(|realm| realm.js)
+        {
+            self.released_realms.push(js);
         }
-        Ok(())
+        Ok(senders)
     }
+}
+
+fn send_reliable(
+    senders: &[HostEventSender],
+    name: &str,
+    payload: HostValue,
+) -> Result<(), JsEngineError> {
+    for events in senders {
+        events
+            .send_reliable(name, payload.clone())
+            .map_err(|_| JsEngineError::new(format!("host event queue is full: {name}")))?;
+    }
+    Ok(())
 }
 
 /// Owns all Vue window roots that execute inside one attached JS engine.
 pub struct VueRuntime {
     state: Arc<Mutex<VueRuntimeState>>,
+    /// The composed application script, evaluated again by isolated windows.
+    artifact: Option<RuntimeArtifact>,
+    application_api: HostApiRegistry,
 }
 
 impl Default for VueRuntime {
@@ -413,6 +533,8 @@ impl VueRuntime {
                             ..VueWindowGeometry::default()
                         },
                         ready: true,
+                        realm: VueWindowId::PRIMARY,
+                        opener: VueWindowId::PRIMARY,
                     },
                 )]
                 .into_iter()
@@ -420,7 +542,18 @@ impl VueRuntime {
                 canvas,
                 video,
                 media,
-                local_storage,
+                realms: [(
+                    VueWindowId::PRIMARY,
+                    VueRealm {
+                        js: Some(JsRealmId::MAIN),
+                        events: None,
+                        local_storage,
+                        params_json: None,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                released_realms: Vec::new(),
                 stylesheets: Vec::new(),
                 #[cfg(feature = "scene-view")]
                 components,
@@ -436,11 +569,12 @@ impl VueRuntime {
                 media_gpu: None,
                 next_id: 1,
                 commands: VecDeque::new(),
-                events: None,
                 diagnostic_sink: None,
                 host_call_observer: None,
                 host_animation_epoch: None,
             })),
+            artifact: None,
+            application_api: HostApiRegistry::new(),
         }
     }
 
@@ -491,7 +625,19 @@ impl VueRuntime {
         for (index, failure) in failures.iter().enumerate() {
             let document = crate::DocumentId::from_node(crate::NodeHandle(failure.id));
             let window_id = document.0.saturating_sub(1);
-            if let Err(error) = state.emit_reliable(
+            // The realm rendering the node; a closed window's error goes to the main realm.
+            let realm = state
+                .windows
+                .get(&VueWindowId(window_id))
+                .map_or(VueWindowId::PRIMARY, |entry| entry.realm);
+            let senders = state
+                .realms
+                .get(&realm)
+                .and_then(|realm| realm.events.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Err(error) = send_reliable(
+                &senders,
                 "native-component-error",
                 HostValue::Object(
                     [
@@ -613,6 +759,22 @@ impl VueRuntime {
         let primary = hosts
             .first()
             .ok_or_else(|| JsEngineError::new("primary Vue window is missing"))?;
+        // The main realm hears of the lost device through the primary host;
+        // isolated realms hold WebGPU objects of their own.
+        let isolated = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?
+            .realms
+            .iter()
+            .filter(|(id, _)| **id != VueWindowId::PRIMARY)
+            .filter_map(|(_, realm)| realm.js)
+            .collect::<Vec<_>>();
+        for js in isolated {
+            if let Ok(notify) = engine.resolve_function_in(js, "__nanaWebGpuDeviceLost") {
+                engine.invoke(notify, &[HostValue::String(message.to_owned())])?;
+            }
+        }
         let generation = {
             let mut primary = primary
                 .lock()
@@ -787,14 +949,21 @@ impl VueRuntime {
         Some(snapshot)
     }
 
-    /// Framework registry: primary-document DOM ops plus explicit multi-window routing.
+    /// Main-realm framework registry: primary-document DOM ops plus explicit
+    /// multi-window routing.
     pub fn host_api_registry(&self) -> HostApiRegistry {
-        // Engine registrations must not retain a closed primary document. Resolve
+        self.realm_host_api_registry(VueWindowId::PRIMARY)
+    }
+
+    /// Framework registry of the realm whose home window is `realm`. Bare DOM
+    /// ops address that window; `windowCall` reaches only this realm's windows.
+    fn realm_host_api_registry(&self, realm: VueWindowId) -> HostApiRegistry {
+        // Engine registrations must not retain a closed home document. Resolve
         // the live window on each call, just as explicit windowCall routing does.
         let state = self.state.lock().expect("Vue runtime state");
         let operations = state
             .windows
-            .get(&VueWindowId::PRIMARY)
+            .get(&realm)
             .or_else(|| state.windows.values().next())
             .map(|entry| {
                 entry
@@ -816,10 +985,12 @@ impl VueRuntime {
                         .lock()
                         .map_err(state_poisoned)?
                         .windows
-                        .get(&VueWindowId::PRIMARY)
+                        .get(&realm)
                         .and_then(|entry| entry.api.get_async(&operation))
                         .cloned()
-                        .ok_or_else(|| JsException::new("primary Vue window is closed"))?;
+                        .ok_or_else(|| {
+                            JsException::new("the Vue window of this JavaScript realm is closed")
+                        })?;
                     handler(args, context)
                 });
             } else {
@@ -828,10 +999,12 @@ impl VueRuntime {
                         .lock()
                         .map_err(state_poisoned)?
                         .windows
-                        .get(&VueWindowId::PRIMARY)
+                        .get(&realm)
                         .and_then(|entry| entry.api.get(&operation))
                         .cloned()
-                        .ok_or_else(|| JsException::new("primary Vue window is closed"))?;
+                        .ok_or_else(|| {
+                            JsException::new("the Vue window of this JavaScript realm is closed")
+                        })?;
                     handler(args)
                 });
             }
@@ -850,31 +1023,43 @@ impl VueRuntime {
                     .and_then(HostValue::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let registry = state
-                    .lock()
-                    .map_err(state_poisoned)?
-                    .windows
-                    .get(&id)
-                    .map(|entry| entry.api.clone())
-                    .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
+                let registry = {
+                    let state = state.lock().map_err(state_poisoned)?;
+                    let entry = state
+                        .windows
+                        .get(&id)
+                        .ok_or_else(|| JsException::new(format!("unknown Vue window {}", id.0)))?;
+                    // Another realm holds no event bridge or node cache for this document.
+                    if entry.realm != realm {
+                        return Err(JsException::new(format!(
+                            "Vue window {} belongs to another JavaScript realm",
+                            id.0
+                        )));
+                    }
+                    entry.api.clone()
+                };
                 registry.call(operation, &call_args)
             });
         }
         {
             let state = Arc::clone(&self.state);
             api.register("windowCreate", move |args| {
+                let request = args.first().and_then(HostValue::as_object);
                 let mut options = VueWindowOptions::from_host_value(args.first());
-                if let Some(icon) = optional_icon(
-                    args.first()
-                        .and_then(HostValue::as_object)
-                        .and_then(|map| map.get("icon")),
-                )? {
+                options.isolation =
+                    window_isolation_arg(request.and_then(|map| map.get("isolation")))?;
+                if let Some(icon) = optional_icon(request.and_then(|map| map.get("icon")))? {
                     options.icon = Some(icon);
                 }
-                let (id, mount_root) = state
-                    .lock()
-                    .map_err(state_poisoned)?
-                    .create_window(options.clone())?;
+                let params_json = request
+                    .and_then(|map| map.get("paramsJson"))
+                    .and_then(HostValue::as_str)
+                    .map(str::to_owned);
+                let (id, mount_root) = state.lock().map_err(state_poisoned)?.create_window(
+                    options.clone(),
+                    realm,
+                    params_json,
+                )?;
                 Ok(options.to_host_value(id, mount_root))
             });
         }
@@ -1040,6 +1225,7 @@ impl VueRuntime {
                     state
                         .windows
                         .iter()
+                        .filter(|(_, entry)| entry.realm == realm)
                         .map(|(id, entry)| {
                             HostValue::Object(
                                 [
@@ -1061,6 +1247,34 @@ impl VueRuntime {
                 ))
             });
         }
+        {
+            let state = Arc::clone(&self.state);
+            api.register("windowCurrent", move |_| {
+                let state = state.lock().map_err(state_poisoned)?;
+                let Some(entry) = state.windows.get(&realm) else {
+                    return Ok(HostValue::Null);
+                };
+                let mount_root = entry
+                    .host
+                    .lock()
+                    .map_err(|_| JsException::new("Vue window host poisoned"))?
+                    .mount_root();
+                let mut descriptor = entry.options.to_host_value(realm, mount_root);
+                if let HostValue::Object(map) = &mut descriptor {
+                    map.insert("width".into(), HostValue::Number(entry.geometry.width));
+                    map.insert("height".into(), HostValue::Number(entry.geometry.height));
+                    map.insert("ready".into(), HostValue::Bool(entry.ready));
+                    if let Some(params) = state
+                        .realms
+                        .get(&realm)
+                        .and_then(|realm| realm.params_json.clone())
+                    {
+                        map.insert("paramsJson".into(), HostValue::String(params));
+                    }
+                }
+                Ok(descriptor)
+            });
+        }
         api
     }
 
@@ -1069,9 +1283,7 @@ impl VueRuntime {
         engine: &mut E,
     ) -> Result<(), JsEngineError> {
         engine.register_host_api(&self.host_api_registry())?;
-        if let Ok(mut state) = self.state.lock() {
-            state.events = engine.host_event_sender();
-        }
+        self.set_realm_events(VueWindowId::PRIMARY, engine.host_event_sender());
         self.bind_event_bridges(engine)
     }
 
@@ -1081,24 +1293,57 @@ impl VueRuntime {
         artifact: RuntimeArtifact,
         application_api: &HostApiRegistry,
     ) -> Result<(), JsEngineError> {
-        let mut api = self.host_api_registry();
-        api.try_extend(application_api)?;
-        engine.register_host_api(&api)?;
-        if let Ok(mut state) = self.state.lock() {
-            state.events = engine.host_event_sender();
-        }
-        if artifact.is_binary_release() {
-            engine.initialize(artifact)?;
+        self.application_api = application_api.clone();
+        engine.register_host_api(&self.realm_api(VueWindowId::PRIMARY)?)?;
+        self.set_realm_events(VueWindowId::PRIMARY, engine.host_event_sender());
+        let composed = if artifact.is_binary_release() {
+            artifact
         } else {
             let source = artifact.source_utf8()?;
-            let composed = if source.contains("__nanaWebApi") {
+            if source.contains("__nanaWebApi") {
                 artifact
             } else {
                 compose_vue_artifact(artifact.name.clone(), source)
-            };
-            engine.initialize(composed)?;
-        }
+            }
+        };
+        self.artifact = Some(composed.clone());
+        engine.initialize(composed)?;
         self.bind_event_bridges(engine)
+    }
+
+    fn set_realm_events(&self, realm: VueWindowId, events: Option<HostEventSender>) {
+        if let Ok(mut state) = self.state.lock()
+            && let Some(realm) = state.realms.get_mut(&realm)
+        {
+            realm.events = events;
+        }
+    }
+
+    /// Framework and application host APIs as one realm sees them.
+    fn realm_api(&self, realm: VueWindowId) -> Result<HostApiRegistry, JsEngineError> {
+        let mut api = self.realm_host_api_registry(realm);
+        api.try_extend(&self.application_api)?;
+        Ok(api)
+    }
+
+    /// Re-register the complete host API in every running realm, e.g. after the
+    /// GPU-bound operations changed.
+    pub fn register_host_apis<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let realms = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?
+            .realms
+            .iter()
+            .filter_map(|(id, realm)| Some((*id, realm.js?)))
+            .collect::<Vec<_>>();
+        for (realm, js) in realms {
+            engine.register_host_api_in(js, &self.realm_api(realm)?)?;
+        }
+        Ok(())
     }
 
     fn bind_event_bridges<E: JsEngine + ?Sized>(
@@ -1111,6 +1356,7 @@ impl VueRuntime {
             .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?
             .windows
             .iter()
+            .filter(|(_, entry)| entry.realm == VueWindowId::PRIMARY)
             .map(|(id, entry)| (*id, Arc::clone(&entry.host)))
             .collect::<Vec<_>>();
         for (id, host) in hosts {
@@ -1120,29 +1366,169 @@ impl VueRuntime {
             if id == VueWindowId::PRIMARY {
                 host.bind_event_bridge(engine)?;
             } else {
-                host.bind_event_bridge_for_window(engine, id.0)?;
+                host.bind_event_bridge_for_window(engine, JsRealmId::MAIN, id.0)?;
             }
         }
         Ok(())
     }
 
-    /// Bind JS callbacks for windows created after engine initialization.
+    /// Bind JS callbacks for windows created after engine initialization. An
+    /// isolated window's realm is created and its script evaluated here, so the
+    /// host must call this with no JavaScript on the stack.
     pub fn bind_window<E: JsEngine + ?Sized>(
         &self,
         engine: &mut E,
         id: VueWindowId,
     ) -> Result<(), JsEngineError> {
-        let host = self
-            .host(id)
-            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+        let (host, home, js) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+            let entry = state
+                .windows
+                .get(&id)
+                .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+            (
+                Arc::clone(&entry.host),
+                entry.realm,
+                state.realms.get(&entry.realm).and_then(|realm| realm.js),
+            )
+        };
+        let Some(js) = js else {
+            if home == id {
+                return self.boot_isolated_realm(engine, id);
+            }
+            return Err(JsEngineError::new(format!(
+                "the JavaScript realm of Vue window {} is not running",
+                id.0
+            )));
+        };
+        let mut host = host
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?;
         if id == VueWindowId::PRIMARY {
-            host.lock()
-                .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                .bind_event_bridge(engine)
+            host.bind_event_bridge(engine)
         } else {
-            host.lock()
-                .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
-                .bind_event_bridge_for_window(engine, id.0)
+            host.bind_event_bridge_for_window(engine, js, id.0)
+        }
+    }
+
+    /// Create an isolated window's realm and run the application in it. On
+    /// failure the realm is disposed and the opener's `create()` rejects.
+    fn boot_isolated_realm<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+        id: VueWindowId,
+    ) -> Result<(), JsEngineError> {
+        let booted = engine.create_realm().and_then(|js| {
+            self.run_isolated_realm(engine, id, js)
+                .inspect_err(|_| drop(engine.dispose_realm(js)))
+        });
+        if let Err(error) = &booted {
+            if let Ok(mut state) = self.state.lock()
+                && let Some(realm) = state.realms.get_mut(&id)
+            {
+                realm.js = None;
+                realm.events = None;
+            }
+            let _ = self.notify_window_open_failed(id, error.to_string());
+        }
+        booted
+    }
+
+    fn run_isolated_realm<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+        id: VueWindowId,
+        js: JsRealmId,
+    ) -> Result<(), JsEngineError> {
+        let artifact = self
+            .artifact
+            .clone()
+            .filter(|artifact| !artifact.is_binary_release())
+            .ok_or_else(|| {
+                JsEngineError::new(
+                    "isolated Vue windows need the application's UTF-8 source artifact",
+                )
+            })?;
+        let host = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+            let realm = state
+                .realms
+                .get_mut(&id)
+                .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
+            realm.js = Some(js);
+            realm.events = engine.host_event_sender_in(js);
+            state
+                .windows
+                .get(&id)
+                .map(|entry| Arc::clone(&entry.host))
+                .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?
+        };
+        engine.register_host_api_in(js, &self.realm_api(id)?)?;
+        // Read by the shim and renderer while the application script loads.
+        engine.initialize_in(
+            js,
+            RuntimeArtifact::from_source(
+                "nana-window-identity.js",
+                format!("globalThis.__nanaHomeWindowId = {};", id.0),
+            ),
+        )?;
+        engine.initialize_in(js, artifact)?;
+        host.lock()
+            .map_err(|_| JsEngineError::new("Vue window host poisoned"))?
+            .bind_event_bridge_for_window(engine, js, id.0)
+    }
+
+    /// Deliver the final lifecycle events of realms whose last window closed,
+    /// then dispose them. Must run with no JavaScript on the stack.
+    pub fn dispose_released_realms<E: JsEngine + ?Sized>(
+        &self,
+        engine: &mut E,
+    ) -> Result<(), JsEngineError> {
+        let released = std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?
+                .released_realms,
+        );
+        if released.is_empty() {
+            return Ok(());
+        }
+        let delivered = engine.run_microtasks();
+        for js in released {
+            let _ = engine.dispose_realm(js);
+        }
+        delivered
+    }
+
+    /// Detach isolated realms from an engine that is about to be replaced.
+    ///
+    /// Their windows are closing but still pumped until the host confirms, so
+    /// their hosts must also drop function ids that belong to the old engine.
+    #[cfg(feature = "dev-reload")]
+    pub(crate) fn forget_isolated_realms(&self) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        state.released_realms.clear();
+        for (id, realm) in &mut state.realms {
+            if *id != VueWindowId::PRIMARY {
+                realm.js = None;
+                realm.events = None;
+            }
+        }
+        for entry in state.windows.values() {
+            if entry.realm != VueWindowId::PRIMARY
+                && let Ok(mut host) = entry.host.lock()
+            {
+                host.callbacks = Default::default();
+            }
         }
     }
 
@@ -1252,7 +1638,9 @@ impl VueRuntime {
             .get_mut(&id)
             .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?;
         entry.ready = true;
-        state.emit_reliable(
+        let senders = state.window_event_senders(id);
+        send_reliable(
+            &senders,
             "window-ready",
             HostValue::Object(
                 [("id".into(), HostValue::Number(id.0 as f64))]
@@ -1269,9 +1657,7 @@ impl VueRuntime {
             .state
             .lock()
             .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
-        if state.windows.remove(&id).is_none() {
-            return Err(JsEngineError::new(format!("unknown Vue window {}", id.0)));
-        }
+        let senders = state.remove_window(id)?;
         if let Some(sink) = &state.diagnostic_sink {
             sink(JsDiagnosticEvent {
                 source: "nana.window".into(),
@@ -1280,7 +1666,8 @@ impl VueRuntime {
                 stack: None,
             });
         }
-        state.emit_reliable(
+        send_reliable(
+            &senders,
             "window-closed",
             HostValue::Object(
                 [("id".into(), HostValue::Number(id.0 as f64))]
@@ -1308,10 +1695,9 @@ impl VueRuntime {
             .state
             .lock()
             .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
-        if state.windows.remove(&id).is_none() {
-            return Err(JsEngineError::new(format!("unknown Vue window {}", id.0)));
-        }
-        state.emit_reliable(
+        let senders = state.remove_window(id)?;
+        send_reliable(
+            &senders,
             "window-open-failed",
             HostValue::Object(
                 [
@@ -1362,7 +1748,7 @@ impl VueRuntime {
         let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
-            state.emit("window-geometry", HostValue::Object(map));
+            state.emit_window(id, "window-geometry", HostValue::Object(map));
         }
         Ok(())
     }
@@ -1387,7 +1773,7 @@ impl VueRuntime {
         let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
-            state.emit("window-geometry", HostValue::Object(map));
+            state.emit_window(id, "window-geometry", HostValue::Object(map));
         }
         Ok(())
     }
@@ -1417,7 +1803,7 @@ impl VueRuntime {
         let payload = geometry_value(&entry.geometry, entry.options.always_on_top);
         if let HostValue::Object(mut map) = payload {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
-            state.emit("window-geometry", HostValue::Object(map));
+            state.emit_window(id, "window-geometry", HostValue::Object(map));
         }
         Ok(())
     }
@@ -1578,6 +1964,19 @@ impl VueRuntime {
             .into_iter()
             .filter_map(|host| host.lock().ok()?.next_wakeup())
             .min()
+    }
+}
+
+fn window_isolation_arg(value: Option<&HostValue>) -> Result<VueWindowIsolation, JsException> {
+    match value {
+        None | Some(HostValue::Null) | Some(HostValue::Undefined) => Ok(VueWindowIsolation::Shared),
+        Some(value) => match value.as_str() {
+            Some("shared") => Ok(VueWindowIsolation::Shared),
+            Some("isolated") => Ok(VueWindowIsolation::Isolated),
+            _ => Err(JsException::new(
+                "window isolation must be \"shared\" or \"isolated\"",
+            )),
+        },
     }
 }
 
@@ -2073,6 +2472,201 @@ mod tests {
         )));
     }
 
+    fn object(entries: &[(&str, HostValue)]) -> HostValue {
+        HostValue::Object(
+            entries
+                .iter()
+                .map(|(key, value)| ((*key).into(), value.clone()))
+                .collect(),
+        )
+    }
+
+    fn strings(values: &[&str]) -> Vec<HostValue> {
+        values
+            .iter()
+            .map(|value| HostValue::string(*value))
+            .collect()
+    }
+
+    fn created_id(descriptor: HostValue) -> VueWindowId {
+        VueWindowId(
+            descriptor
+                .as_object()
+                .and_then(|map| map.get("id"))
+                .and_then(HostValue::as_f64)
+                .expect("window id") as u64,
+        )
+    }
+
+    fn window_call(
+        api: &HostApiRegistry,
+        id: VueWindowId,
+        operation: &str,
+        args: &[&str],
+    ) -> Result<HostValue, JsException> {
+        api.call(
+            "windowCall",
+            &[
+                HostValue::Number(id.0 as f64),
+                HostValue::string(operation),
+                HostValue::Array(strings(args)),
+            ],
+        )
+    }
+
+    fn listed_ids(api: &HostApiRegistry) -> Vec<u64> {
+        api.call("windowList", &[])
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| created_id(window.clone()).0)
+            .collect()
+    }
+
+    #[test]
+    fn isolated_window_has_private_storage_and_realm_scoped_documents() {
+        let runtime = VueRuntime::default();
+        let main = runtime.host_api_registry();
+        let shared = created_id(main.call("windowCreate", &[]).unwrap());
+        let isolated = created_id(
+            main.call(
+                "windowCreate",
+                &[object(&[
+                    ("isolation", HostValue::string("isolated")),
+                    ("paramsJson", HostValue::string(r#"{"doc":7}"#)),
+                ])],
+            )
+            .unwrap(),
+        );
+        let realm = runtime.realm_host_api_registry(isolated);
+
+        main.call("storageSet", &strings(&["local", "who", "main"]))
+            .unwrap();
+        assert!(matches!(
+            realm
+                .call("storageGet", &strings(&["local", "who"]))
+                .unwrap(),
+            HostValue::Null
+        ));
+        realm
+            .call("storageSet", &strings(&["local", "who", "isolated"]))
+            .unwrap();
+        assert_eq!(
+            main.call("storageGet", &strings(&["local", "who"]))
+                .unwrap()
+                .as_str(),
+            Some("main")
+        );
+        assert_eq!(
+            window_call(&main, shared, "storageGet", &["local", "who"])
+                .unwrap()
+                .as_str(),
+            Some("main")
+        );
+
+        // Bare ops render into the realm's own window; other realms' documents are out of reach.
+        realm.call("createElement", &strings(&["section"])).unwrap();
+        assert!(window_call(&main, isolated, "createElement", &["section"]).is_err());
+        assert!(window_call(&realm, shared, "createElement", &["section"]).is_err());
+        assert_eq!(listed_ids(&main), [0, shared.0]);
+        assert_eq!(listed_ids(&realm), [isolated.0]);
+
+        let current = realm.call("windowCurrent", &[]).unwrap();
+        let current = current.as_object().unwrap();
+        assert_eq!(
+            current.get("id").and_then(HostValue::as_f64),
+            Some(isolated.0 as f64)
+        );
+        assert_eq!(
+            current.get("isolation").and_then(HostValue::as_str),
+            Some("isolated")
+        );
+        assert_eq!(
+            current.get("paramsJson").and_then(HostValue::as_str),
+            Some(r#"{"doc":7}"#)
+        );
+        let main_current = main.call("windowCurrent", &[]).unwrap();
+        let main_current = main_current.as_object().unwrap();
+        assert_eq!(
+            main_current.get("id").and_then(HostValue::as_f64),
+            Some(0.0)
+        );
+        assert_eq!(
+            main_current.get("isolation").and_then(HostValue::as_str),
+            Some("shared")
+        );
+        assert!(!main_current.contains_key("paramsJson"));
+
+        // A shared window opened from the isolated realm joins that realm.
+        let child = created_id(realm.call("windowCreate", &[]).unwrap());
+        assert_eq!(
+            window_call(&realm, child, "storageGet", &["local", "who"])
+                .unwrap()
+                .as_str(),
+            Some("isolated")
+        );
+        assert_eq!(listed_ids(&realm), [isolated.0, child.0]);
+    }
+
+    #[test]
+    fn isolated_window_lifecycle_reaches_owner_and_opener_and_releases_storage() {
+        let runtime = VueRuntime::default();
+        let main_events = HostEventSender::default();
+        runtime.set_realm_events(VueWindowId::PRIMARY, Some(main_events.clone()));
+        let isolated = created_id(
+            runtime
+                .host_api_registry()
+                .call(
+                    "windowCreate",
+                    &[object(&[("isolation", HostValue::string("isolated"))])],
+                )
+                .unwrap(),
+        );
+        let realm_events = HostEventSender::default();
+        runtime.set_realm_events(isolated, Some(realm_events.clone()));
+        let storage =
+            Arc::downgrade(&runtime.state.lock().unwrap().realms[&isolated].local_storage);
+
+        runtime.notify_window_ready(isolated).unwrap();
+        runtime.notify_window_closed(isolated).unwrap();
+
+        for events in [&main_events, &realm_events] {
+            let names = events
+                .drain()
+                .into_iter()
+                .map(|event| event.name)
+                .collect::<Vec<_>>();
+            assert_eq!(names, ["window-ready", "window-closed"]);
+        }
+        assert!(runtime.host(isolated).is_none());
+        assert!(
+            storage.upgrade().is_none(),
+            "closed isolated window retained its localStorage"
+        );
+    }
+
+    #[test]
+    fn isolated_create_rejects_unknown_isolation_and_shared_params() {
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        assert!(
+            api.call(
+                "windowCreate",
+                &[object(&[("isolation", HostValue::string("isolate"))])],
+            )
+            .is_err()
+        );
+        assert!(
+            api.call(
+                "windowCreate",
+                &[object(&[("paramsJson", HostValue::string("{}"))])],
+            )
+            .is_err()
+        );
+        assert_eq!(runtime.window_ids(), [VueWindowId::PRIMARY]);
+    }
+
     #[cfg(feature = "hosted")]
     #[test]
     fn host_reported_mode_becomes_window_geometry() {
@@ -2109,7 +2703,14 @@ mod tests {
     fn native_component_render_failure_keeps_identity_and_structured_error() {
         let runtime = VueRuntime::default();
         let sender = HostEventSender::with_capacity(2);
-        runtime.state.lock().unwrap().events = Some(sender.clone());
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .realms
+            .get_mut(&VueWindowId::PRIMARY)
+            .unwrap()
+            .events = Some(sender.clone());
         let node = runtime
             .host(VueWindowId::PRIMARY)
             .unwrap()
@@ -2157,7 +2758,14 @@ mod tests {
         sender
             .send_reliable("window-ready", HostValue::Null)
             .unwrap();
-        runtime.state.lock().unwrap().events = Some(sender.clone());
+        runtime
+            .state
+            .lock()
+            .unwrap()
+            .realms
+            .get_mut(&VueWindowId::PRIMARY)
+            .unwrap()
+            .events = Some(sender.clone());
         let node = runtime
             .host(VueWindowId::PRIMARY)
             .unwrap()

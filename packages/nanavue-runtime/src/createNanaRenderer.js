@@ -757,8 +757,13 @@ function defaultMountContainer(windowId = 0) {
   );
 }
 
+/** The window this JavaScript realm renders into: 0, or an isolated window's own id. */
+function homeWindowId() {
+  return Number(globalThis.__nanaHomeWindowId || 0);
+}
+
 export function createApp(rootComponent, rootProps) {
-  return createRendererForWindow(0).createApp(rootComponent, rootProps);
+  return createRendererForWindow(homeWindowId()).createApp(rootComponent, rootProps);
 }
 
 export function installEventBridge() {
@@ -884,12 +889,23 @@ function createWindowHandle(descriptor) {
   if (cached) return cached;
   const width = Number(descriptor.width) || 800;
   const height = Number(descriptor.height) || 600;
-  const context =
-    typeof globalThis.__nanaCreateWindowContext === "function"
+  const isolation = descriptor.isolation === "isolated" ? "isolated" : "shared";
+  const params = descriptor.paramsJson == null ? null : JSON.parse(String(descriptor.paramsJson));
+  // An isolated window's document belongs to its own JavaScript realm; the
+  // opener only controls the native window.
+  const remote = isolation === "isolated" && id !== homeWindowId();
+  const context = remote
+    ? { window: null, document: null }
+    : typeof globalThis.__nanaCreateWindowContext === "function"
       ? globalThis.__nanaCreateWindowContext(id, width, height, 1)
       : contextForWindow(id);
-  const renderer = createRendererForWindow(id);
-  const root = defaultMountContainer(id);
+  const renderer = remote ? null : createRendererForWindow(id);
+  const root = remote ? null : defaultMountContainer(id);
+  const remoteMount = () => {
+    const error = new Error("isolated window content is mounted by its own JavaScript realm");
+    error.name = "InvalidAccessError";
+    throw error;
+  };
   let app = null;
   let resolveReady;
   let rejectReady;
@@ -927,15 +943,20 @@ function createWindowHandle(descriptor) {
       closedSettled = true;
       resolveClosed(detail || { reason: "closed" });
     },
+    isolation,
+    params,
     mount(component, props) {
+      if (remote) return remoteMount();
       if (app && typeof app.unmount === "function") app.unmount();
       app = renderer.createApp(component, props || null);
       return withNanaWindowContext(id, () => app.mount(root));
     },
     render(vnode) {
+      if (remote) return remoteMount();
       return withNanaWindowContext(id, () => renderer.render(vnode, root));
     },
     unmount() {
+      if (remote) return;
       try {
         withNanaWindowContext(id, () => {
           if (app && typeof app.unmount === "function") app.unmount();
@@ -1061,10 +1082,18 @@ globalThis.Nana.windows = {
     if (!globalThis.Nana.host || typeof globalThis.Nana.host.invoke !== "function") {
       throw new Error("Nana.host.invoke is required for Nana.windows.create");
     }
-    const descriptor = await globalThis.Nana.host.invoke("windowCreate", [options || {}]);
+    // The host bridge drops `key` / `ref` / `on*` fields, so params travel as JSON.
+    const { params, ...request } = options || {};
+    if (params !== undefined) request.paramsJson = JSON.stringify(params);
+    const descriptor = await globalThis.Nana.host.invoke("windowCreate", [request]);
     const handle = createWindowHandle(descriptor);
     await handle.ready;
     return handle;
+  },
+  /** The window this JavaScript realm renders into, with the params it was opened with. */
+  current() {
+    const descriptor = hostCall("windowCurrent", []);
+    return descriptor ? createWindowHandle(descriptor) : null;
   },
   get(id) {
     return nanaWindowHandles.get(Number(id)) || null;

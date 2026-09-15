@@ -1,6 +1,8 @@
   const win = new WindowShim();
   const windowContexts = new Map();
-  windowContexts.set(0, { window: win, document: win.document });
+  // An isolated window's realm renders into that window; every other realm into window 0.
+  const homeWindowId = Number(globalThis.__nanaHomeWindowId || 0);
+  windowContexts.set(homeWindowId, { window: win, document: win.document });
 
   function scopedObject(target, windowId) {
     if (!target || typeof target !== "object" || typeof Proxy === "undefined") return target;

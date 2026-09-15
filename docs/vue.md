@@ -18,7 +18,33 @@ createApp({
 }).mount();
 ```
 
-Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vue_as_nana`）把这份脚本和 V8 引擎交给**同一个** `run_runtime`。`VueRuntimeProgram` 需要 feature `hosted`（隐含 `scene-view`，把 UiScene 交给 `SceneWgpuPainter`）。后打开的窗口共用这一套 JavaScript 和同一份 GPU，不必另起引擎。
+Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vue_as_nana`）把这份脚本和 V8 引擎交给**同一个** `run_runtime`。`VueRuntimeProgram` 需要 feature `hosted`（隐含 `scene-view`，把 UiScene 交给 `SceneWgpuPainter`）。后打开的窗口默认共用这一套 JavaScript，也可以要求独立的 JavaScript 上下文，见下文[多窗口与 JavaScript 隔离](#多窗口与-javascript-隔离)；两种都共用同一个引擎和同一份 GPU。
+
+## 多窗口与 JavaScript 隔离
+
+`Nana.windows.create({ isolation })` 选择新窗口的 JavaScript 上下文：`"shared"`（默认）或 `"isolated"`。拼错的取值直接报错，不会悄悄退回共享。
+
+**共享（默认）。** 新窗口与打开它的脚本在同一个全局环境里，下列状态跨窗口：JavaScript 全局与模块状态（Vue / Pinia store、组件注册）、`Nana.host.on` 监听与宿主事件队列、`setTimeout` / `setInterval` / `requestAnimationFrame` 的回调表与编号、`fetch` / `WebSocket` 的 JS 对象、`localStorage`、宿主资源句柄、`Nana.dialogs` provider 与 `Nana.components.onError` 监听。仍然每扇窗一份的是：文档、`window` / `document` 对象、`sessionStorage`、定时器与网络请求在宿主侧的调度、焦点与 IME。
+
+**隔离。** 新窗口得到自己的 JavaScript 上下文：同一份应用脚本在里面**重新执行一遍**，全局变量、模块状态、定时器、`localStorage` 都与其他窗口互不可见。`localStorage` 只在内存里，窗口关闭即释放。脚本用 `Nana.windows.current()` 判断自己身在哪扇窗：
+
+```js
+const current = Nana.windows.current(); // { id, isolation, params, ... }
+createApp(current.params?.view === "settings" ? Settings : Main).mount();
+```
+
+打开方通过 `params` 传入初始数据，须可 JSON 序列化（循环引用在 `create()` 时抛 `TypeError`）：
+
+```js
+const settings = await Nana.windows.create({ isolation: "isolated", params: { view: "settings" } });
+settings.focus();
+```
+
+打开方拿到的句柄可以控制窗口（`focus` / `close` / `setBounds` / `ready` / `closed` 等），但不能 `mount`——窗口内容由它自己的上下文挂载，句柄上的 `window` / `document` / `root` 为 `null`。在隔离窗口里再打开的共享窗口属于这个隔离上下文。`Nana.windows.list()` 只列出当前上下文里的窗口。一个隔离上下文在它最后一扇窗口关闭、`window-closed` 送达并完成卸载后销毁。
+
+**两种模式都跨窗的**：GPU Device / Queue 以及 WebGPU、Canvas、SVG、媒体、视频运行时，原生组件与宿主纹理注册表，应用样式表，动画时钟，诊断输出，你注册的宿主命令（它们的 Rust 状态），以及按窗口 id 生效的窗口控制。所有上下文还共用同一个 V8 堆、同一个线程和同一个微任务队列：隔离的是状态，**不是**性能或故障——一个窗口里的死循环仍会卡住所有窗口。窗口控制也不是安全边界，同一份脚本、同一个进程。
+
+隔离窗口需要以源码形式加载的应用脚本；V8 snapshot 形式的脚本和不支持多上下文的引擎会让 `create()` 以 `WindowOpenError` 失败。
 
 JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布尔）。`windowGeometry().fullscreen` 和窗口的 `alwaysOnTop` 现在是宿主观察到的值：请求入队时不再乐观写入，要等 `WindowEvent::ModeChanged` 回流。调用后立刻读几何可能仍是旧值。
 

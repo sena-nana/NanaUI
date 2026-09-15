@@ -310,9 +310,11 @@ Surface 创建、验证或材质 alpha 配置失败只暂停对应窗口，并�
 
 宿主直接销毁 `EmbeddedRuntime` 时，会先关闭请求队列并完成等待中的请求，再销毁应用状态。因此应用析构可以等待正在等待窗口请求的工作线程，未处理和后续请求均得到 `HostStopped`。`embedded-window-lifecycle --probe-host-stop` 覆盖这一退出顺序。
 
+隔离窗口（`Nana.windows.create({ isolation: "isolated" })`，见 [Vue](vue.md#多窗口与-javascript-隔离)）的脚本在 `initialize_window` 里、窗口显示之前于它自己的 JavaScript 上下文中执行；执行失败按创建失败回滚，打开方收到 `window-open-failed`。关闭时 `window-closed` 同时送到它自己的上下文和打开方的上下文，卸载完成后，若这是该上下文里最后一扇窗口，上下文与其私有 `localStorage` 随即销毁。
+
 Vue 主窗口也遵循独立关闭语义：原生关闭确认后释放对应文档、JS 定时器和监听器，其他 Vue 窗口及共享引擎继续存活。主窗口 DOM 操作在调用时解析存活文档，不会因引擎保留宿主操作而延长已关闭文档的生命周期。最后一个窗口的关闭通知仍会在引擎销毁前派发；材质和背景透明度按目标窗口读取。
 
 
-`vue-hosted-acceptance --window-lifecycle-probe` 使用实际 Vue 组件验证主窗口独立关闭：两个 Surface 首先 present，主窗口关闭后检查 Vue 卸载钩子、文档和 JS 上下文释放，再确认附加窗口继续 present，最后检查其关闭通知与缓存释放。探针会将附加窗口置前，避免启动时被主窗口完全遮挡而等待不到首帧。
+`vue-hosted-acceptance --window-lifecycle-probe` 使用实际 Vue 组件验证主窗口独立关闭：两个 Surface 首先 present，主窗口关闭后检查 Vue 卸载钩子、文档和 JS 上下文释放，再确认附加窗口继续 present，最后检查其关闭通知与缓存释放。探针会将附加窗口置前，避免启动时被主窗口完全遮挡而等待不到首帧。加 `--isolated` 时附加窗口以隔离模式打开：两个 Surface 仍在同一 GPU generation 上 present，并在主窗口关闭前核对隔离窗口自己的上下文执行了应用、读不到主上下文写入的 `localStorage`、定时器照常触发。
 
 Vue 窗口关闭时会卸载该窗口通过 `createApp().mount()` 或窗口 handle 挂载的应用，清理节点身份缓存、样式、动画、定时器及监听器。原生文档已先行销毁，因此同步卸载范围中的文档操作只完成 JS 侧清理；业务需要持久化数据时应在关闭请求阶段处理。普通存活窗口的卸载和宿主错误语义保持正常。

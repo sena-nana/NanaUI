@@ -14,7 +14,7 @@ const shimSrc = loadShimSource();
 
 
 
-async function loadRuntime(createRenderer) {
+async function loadRuntime(createRenderer, globals = {}) {
   const hostListeners = new Map();
   const sandbox = {
     console,
@@ -59,6 +59,8 @@ async function loadRuntime(createRenderer) {
     },
     render() {},
   }));
+
+  Object.assign(sandbox, globals);
 
   vm.runInNewContext(shimSrc, sandbox, { filename: "shim.js" });
   Object.assign(sandbox, await loadRenderer(sandbox));
@@ -635,6 +637,76 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
       () => sandbox.window.open("https://example.com"),
       /window.open\(url\)/,
     );
+  });
+
+  test("isolated windows carry params as JSON and stay unmountable for the opener", async () => {
+    const sandbox = await loadRuntime();
+    const calls = [];
+    sandbox.__nanaHost.call = (name, args) => {
+      calls.push([name, Array.from(args || [])]);
+      return null;
+    };
+    let request;
+    sandbox.Nana.host.invoke = async (name, args) => {
+      assert.equal(name, "windowCreate");
+      request = args[0];
+      return { id: 2, mountRoot: 2 * 4294967296 + 2, width: 320, height: 240, ready: true, isolation: "isolated" };
+    };
+
+    const handle = await sandbox.Nana.windows.create({
+      title: "设置",
+      isolation: "isolated",
+      params: { key: "doc-1", onSave: true },
+    });
+    assert.equal(request.params, undefined);
+    assert.equal(request.isolation, "isolated");
+    assert.equal(request.paramsJson, JSON.stringify({ key: "doc-1", onSave: true }));
+    assert.equal(handle.isolation, "isolated");
+    assert.equal(handle.document, null);
+    assert.equal(handle.root, null);
+    assert.throws(() => handle.mount({}), (error) => error.name === "InvalidAccessError");
+    handle.focus();
+    assert.ok(calls.some(([name, args]) => name === "windowFocus" && args[0] === 2));
+    assert.ok(!calls.some(([name]) => name === "windowCall"));
+  });
+
+  test("an isolated realm mounts createApp into its own window", async () => {
+    const mounted = [];
+    const sandbox = await loadRuntime(() => ({
+      createApp() {
+        return {
+          mount(root) { mounted.push(root.__nid); },
+          unmount() { mounted.push("unmounted"); },
+        };
+      },
+      render() {},
+    }), { __nanaHomeWindowId: 3 });
+    const rootId = 3 * 4294967296 + 2;
+    const calls = [];
+    sandbox.__nanaHost.call = (name, args = []) => {
+      calls.push([name, Array.from(args)]);
+      if (name === "windowCurrent") {
+        return { id: 3, mountRoot: rootId, width: 320, height: 240, ready: true, isolation: "isolated", paramsJson: '{"view":"settings"}' };
+      }
+      const operation = name === "windowCall" ? args[1] : name;
+      if (operation === "mountRoot") return rootId;
+      if (operation === "nodeKind") return "element";
+      if (operation === "elementTag") return "body";
+      return null;
+    };
+
+    const current = sandbox.Nana.windows.current();
+    assert.equal(current.id, 3);
+    assert.equal(current.isolation, "isolated");
+    assert.equal(current.params.view, "settings");
+    assert.equal(current.document, sandbox.document);
+
+    sandbox.createApp({}).mount();
+    assert.deepEqual(mounted, [rootId]);
+    assert.ok(calls.some(([name, args]) => name === "windowCall" && args[0] === 3 && args[1] === "mountRoot"));
+
+    sandbox.__hostListeners.get("window-closed")({ id: 3 });
+    assert.deepEqual(mounted, [rootId, "unmounted"]);
   });
 
   test("closing a window clears scoped observers and window listeners", async () => {

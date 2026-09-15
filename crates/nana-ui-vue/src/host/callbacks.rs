@@ -92,23 +92,31 @@ impl VueHost {
         self.callbacks.lifecycle_pump = engine.resolve_function("__nanaPumpLifecycle").ok();
         Ok(())
     }
-    /// Resolve event functions for an auxiliary Vue window while retaining the
-    /// same engine context and function table.
+    /// Resolve event functions for an auxiliary Vue window in the realm that
+    /// runs its script. The ids stay bound to that realm.
     pub fn bind_event_bridge_for_window<E: JsEngine + ?Sized>(
         &mut self,
         engine: &mut E,
+        realm: JsRealmId,
         window_id: u64,
     ) -> Result<(), JsEngineError> {
         self.callbacks.event_window_id = Some(window_id);
-        self.callbacks.fire_event = Some(engine.resolve_function("__nanaFireWindowEvent")?);
-        self.callbacks.drain_timers = engine.resolve_function("__nanaDrainTimers").ok();
-        self.callbacks.drain_fetch = engine.resolve_function("__nanaDrainFetch").ok();
-        self.callbacks.drain_ws = engine.resolve_function("__nanaDrainWs").ok();
-        self.callbacks.apply_theme = engine.resolve_function("__nanaApplyWindowTheme").ok();
-        self.callbacks.notify_layout = engine.resolve_function("__nanaNotifyLayout").ok();
-        self.callbacks.motion_complete = engine.resolve_function("__nanaMotionComplete").ok();
-        self.callbacks.motion_cancel = engine.resolve_function("__nanaMotionCancel").ok();
-        self.callbacks.lifecycle_pump = engine.resolve_function("__nanaPumpWindowLifecycle").ok();
+        self.callbacks.fire_event =
+            Some(engine.resolve_function_in(realm, "__nanaFireWindowEvent")?);
+        self.callbacks.drain_timers = engine.resolve_function_in(realm, "__nanaDrainTimers").ok();
+        self.callbacks.drain_fetch = engine.resolve_function_in(realm, "__nanaDrainFetch").ok();
+        self.callbacks.drain_ws = engine.resolve_function_in(realm, "__nanaDrainWs").ok();
+        self.callbacks.apply_theme = engine
+            .resolve_function_in(realm, "__nanaApplyWindowTheme")
+            .ok();
+        self.callbacks.notify_layout = engine.resolve_function_in(realm, "__nanaNotifyLayout").ok();
+        self.callbacks.motion_complete = engine
+            .resolve_function_in(realm, "__nanaMotionComplete")
+            .ok();
+        self.callbacks.motion_cancel = engine.resolve_function_in(realm, "__nanaMotionCancel").ok();
+        self.callbacks.lifecycle_pump = engine
+            .resolve_function_in(realm, "__nanaPumpWindowLifecycle")
+            .ok();
         Ok(())
     }
     /// Rust → Vue theme inject (bridge + document + web-api + optional `__nanaApplyTheme`).

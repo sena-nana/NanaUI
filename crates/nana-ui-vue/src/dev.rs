@@ -114,16 +114,19 @@ impl VueRuntime {
 
     /// Close every window except the primary one.
     ///
-    /// Reload is whole-runtime, not per-window: one isolate and one module graph
-    /// are shared by every Vue window, so a per-window reload is not
-    /// expressible. Auxiliary windows come back when the reloaded artifact opens
-    /// them again.
+    /// Reload is whole-runtime, not per-window: every Vue window, isolated ones
+    /// included, runs in the one engine being replaced, so a per-window reload is
+    /// not expressible. Auxiliary windows come back when the reloaded artifact
+    /// opens them again.
     pub fn dev_close_auxiliary_windows(&self) -> Vec<nana_ui_platform::host::WindowCommand> {
         for id in self.window_ids() {
             if id != VueWindowId::PRIMARY {
                 let _ = self.request_close(id);
             }
         }
+        // Their realms die with the old engine; the new engine numbers realms
+        // afresh, so no stale id may reach it.
+        self.forget_isolated_realms();
         self.drain_runtime_window_commands()
     }
 }

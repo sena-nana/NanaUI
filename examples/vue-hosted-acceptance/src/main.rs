@@ -239,6 +239,7 @@ impl RuntimeProgram for AcceptanceProgram {
         let chrome_probe = std::env::args().any(|argument| argument == "--chrome-probe");
         let hybrid = !chrome_probe && std::env::args().any(|argument| argument == "--hybrid");
         let lifecycle_probe = std::env::args().any(|arg| arg == "--window-lifecycle-probe");
+        let isolated_probe = lifecycle_probe && std::env::args().any(|arg| arg == "--isolated");
         let auto_windows = !lifecycle_probe
             && !chrome_probe
             && std::env::args().any(|argument| argument == "--windows");
@@ -259,9 +260,10 @@ impl RuntimeProgram for AcceptanceProgram {
             let open = runtime
                 .engine_mut()
                 .resolve_function("__nanaHostedAcceptanceControl.openAuxiliaryWindow")?;
-            runtime
-                .engine_mut()
-                .invoke(open, &[HostValue::Bool(true)])?;
+            runtime.engine_mut().invoke(
+                open,
+                &[HostValue::Bool(true), HostValue::Bool(isolated_probe)],
+            )?;
             runtime.engine_mut().run_microtasks()?;
         }
         Ok((
@@ -269,7 +271,8 @@ impl RuntimeProgram for AcceptanceProgram {
                 inner: VueRuntimeProgram::from_runtime(runtime),
                 input_probe,
                 composition: None,
-                lifecycle: lifecycle_probe.then(|| window_lifecycle::Probe::new(context)),
+                lifecycle: lifecycle_probe
+                    .then(|| window_lifecycle::Probe::new(context, isolated_probe)),
             },
             Vec::new(),
         ))

@@ -1,8 +1,11 @@
 //! Real Surface acceptance for closing the primary Vue document independently.
+//!
+//! With `--isolated` the auxiliary window runs in its own JavaScript realm on the
+//! same GPU, and must not see the main realm's `localStorage`.
 use nana_js_engine::{HostValue, JsEngine};
 use nana_ui::{RuntimeProgram, RuntimeProgramContext, WindowHandle, WindowRequest};
 use nana_ui_platform::WindowId;
-use nana_ui_vue::{VueMessage, VueRuntimeProgram};
+use nana_ui_vue::{VueMessage, VueRuntimeProgram, VueWindowId};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,10 +20,12 @@ pub struct Probe {
     primary_closed: bool,
     presented_after_close: bool,
     closing: Option<WindowRequest<()>>,
+    isolated: bool,
 }
 impl Probe {
-    pub fn new(context: &RuntimeProgramContext<VueMessage>) -> Self {
+    pub fn new(context: &RuntimeProgramContext<VueMessage>, isolated: bool) -> Self {
         Self {
+            isolated,
             primary: context.window(),
             auxiliary: None,
             focusing: None,
@@ -96,6 +101,43 @@ impl Probe {
             );
         }
         if id == WindowId::PRIMARY {
+            if self.isolated {
+                let auxiliary = self
+                    .auxiliary
+                    .as_ref()
+                    .expect("auxiliary window ready")
+                    .id();
+                let storage = |key: &str| {
+                    program
+                        .runtime()
+                        .vue()
+                        .host(VueWindowId(auxiliary.0))
+                        .expect("isolated auxiliary document")
+                        .lock()
+                        .unwrap()
+                        .host_api_registry()
+                        .call(
+                            "storageGet",
+                            &[HostValue::string("local"), HostValue::string(key)],
+                        )
+                        .unwrap()
+                };
+                assert_eq!(
+                    storage("nana.acceptance.realm").as_str(),
+                    Some("isolated"),
+                    "isolated realm did not run the application"
+                );
+                assert_eq!(
+                    storage("nana.acceptance.sawMain").as_str(),
+                    Some("null"),
+                    "isolated realm saw the main realm's localStorage"
+                );
+                assert_eq!(
+                    storage("nana.acceptance.timer").as_str(),
+                    Some("fired"),
+                    "isolated realm timer did not fire"
+                );
+            }
             assert!(
                 program
                     .runtime_mut()
@@ -126,6 +168,11 @@ pub fn verify() {
         "Vue native lifecycle probe did not finish"
     );
     println!(
-        "Vue native lifecycle passed: primary released, auxiliary presented, final JS close delivered"
+        "Vue native lifecycle passed: primary released, auxiliary presented, final JS close delivered{}",
+        if std::env::args().any(|arg| arg == "--isolated") {
+            ", isolated realm kept its own localStorage"
+        } else {
+            ""
+        }
     );
 }

@@ -245,7 +245,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use nana_js_engine::{
     HostApiRegistry, HostCallObserver, HostValue, JsDiagnosticEvent, JsDiagnosticLevel,
-    JsDiagnosticSink, JsEngine, JsEngineError, JsFunctionId, RuntimeArtifact,
+    JsDiagnosticSink, JsEngine, JsEngineError, JsFunctionId, JsRealmId, RuntimeArtifact,
 };
 #[cfg(feature = "scene-view")]
 use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
@@ -277,8 +277,8 @@ pub mod prelude {
         KeyboardEventKind, KeyboardInput, PointerEventKind, PointerInput, PointerType, WheelInput,
     };
     pub use crate::multi_window::{
-        VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowOptions,
-        VueWindowRole,
+        VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowIsolation,
+        VueWindowOptions, VueWindowRole,
     };
     #[cfg(feature = "scene-view")]
     pub use crate::{NanaTextureHandle, NativeComponentRegistry};
@@ -348,7 +348,8 @@ pub use measure::{
     LayoutNode, MeasuredBox, measure_grid_auto_contribution, measure_layout, node_from_css,
 };
 pub use multi_window::{
-    VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowOptions, VueWindowRole,
+    VueRuntime, VueWindowCommand, VueWindowGeometry, VueWindowId, VueWindowIsolation,
+    VueWindowOptions, VueWindowRole,
 };
 pub use nana_ui_core::ThemeMode;
 pub use nana_ui_web_api::{compose_runtime_artifact as compose_vue_artifact, shim_artifact};

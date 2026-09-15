@@ -528,8 +528,10 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             geometry.physical_size.1.max(1),
             geometry.scale_factor.max(0.01),
         )?;
-        self.vue.record_platform_geometry(id, &geometry)?;
+        // An isolated window's script runs here, against the real viewport and
+        // before the host publishes the window.
         self.vue.bind_window(&mut self.engine, id)?;
+        self.vue.record_platform_geometry(id, &geometry)?;
         Ok(())
     }
 
@@ -600,7 +602,9 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                     .emit_native_ime_from_runtime(&mut self.engine, &event)?;
             }
             WindowEvent::OpenFailed { id, .. } => {
-                self.vue.notify_window_closed(VueWindowId(id.0))?;
+                let closed = self.vue.notify_window_closed(VueWindowId(id.0));
+                self.vue.dispose_released_realms(&mut self.engine)?;
+                closed?;
             }
             WindowEvent::MousePassthroughChanged { .. }
             | WindowEvent::SkipTaskbarChanged { .. } => {}
@@ -621,7 +625,11 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.vue.notify_window_closed(VueWindowId(id.0))?;
                 // The last closed document cannot supply another frame pump.
                 // Deliver its reliable lifecycle event while the engine is alive.
-                self.engine.run_microtasks()?;
+                let delivered = self.engine.run_microtasks();
+                // An isolated realm whose last window this was is released even
+                // when one of its listeners threw during that delivery.
+                self.vue.dispose_released_realms(&mut self.engine)?;
+                delivered?;
             }
             WindowEvent::Moved { id, geometry } => {
                 self.vue
@@ -781,9 +789,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
     }
 
     fn register_complete_host_api(&mut self) -> Result<(), JsEngineError> {
-        let mut api = self.vue.host_api_registry();
-        api.try_extend(&self.application_api)?;
-        self.engine.register_host_api(&api)
+        self.vue.register_host_apis(&mut self.engine)
     }
 }
 
@@ -1420,6 +1426,188 @@ mod tests {
         );
         assert_eq!(runtime.vue.window_ids(), survivors);
         assert!(runtime.vue.drain_runtime_window_commands().is_empty());
+    }
+
+    /// Supports realms; records which realm each invoked function belongs to.
+    #[derive(Default)]
+    struct RealmEngine {
+        next_realm: u64,
+        functions: Vec<nana_js_engine::JsRealmId>,
+        invoked: Vec<nana_js_engine::JsRealmId>,
+        disposed: Vec<nana_js_engine::JsRealmId>,
+        fail_microtasks: bool,
+    }
+
+    impl JsEngine for RealmEngine {
+        fn initialize(&mut self, _: RuntimeArtifact) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn register_host_api(&mut self, _: &HostApiRegistry) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn resolve_function(
+            &mut self,
+            name: &str,
+        ) -> Result<nana_js_engine::JsFunctionId, JsEngineError> {
+            self.resolve_function_in(nana_js_engine::JsRealmId::MAIN, name)
+        }
+        fn invoke(
+            &mut self,
+            target: nana_js_engine::JsFunctionId,
+            _: &[nana_js_engine::HostValue],
+        ) -> Result<nana_js_engine::HostValue, JsEngineError> {
+            let realm = self
+                .functions
+                .get(target.0 as usize)
+                .copied()
+                .ok_or_else(|| JsEngineError::new("unknown function"))?;
+            self.invoked.push(realm);
+            Ok(nana_js_engine::HostValue::Bool(true))
+        }
+        fn run_microtasks(&mut self) -> Result<(), JsEngineError> {
+            if self.fail_microtasks {
+                Err(JsEngineError::new("a window-closed listener threw"))
+            } else {
+                Ok(())
+            }
+        }
+        fn create_realm(&mut self) -> Result<nana_js_engine::JsRealmId, JsEngineError> {
+            self.next_realm += 1;
+            Ok(nana_js_engine::JsRealmId(self.next_realm))
+        }
+        fn dispose_realm(&mut self, realm: nana_js_engine::JsRealmId) -> Result<(), JsEngineError> {
+            self.disposed.push(realm);
+            Ok(())
+        }
+        fn register_host_api_in(
+            &mut self,
+            _: nana_js_engine::JsRealmId,
+            _: &HostApiRegistry,
+        ) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn initialize_in(
+            &mut self,
+            _: nana_js_engine::JsRealmId,
+            _: RuntimeArtifact,
+        ) -> Result<(), JsEngineError> {
+            Ok(())
+        }
+        fn resolve_function_in(
+            &mut self,
+            realm: nana_js_engine::JsRealmId,
+            _: &str,
+        ) -> Result<nana_js_engine::JsFunctionId, JsEngineError> {
+            self.functions.push(realm);
+            Ok(nana_js_engine::JsFunctionId(
+                self.functions.len() as u64 - 1,
+            ))
+        }
+        fn interrupt(&mut self) {}
+        fn request_gc(&mut self) {}
+        fn shutdown(&mut self) {}
+    }
+
+    fn window_geometry() -> WindowGeometry {
+        WindowGeometry {
+            physical_position: None,
+            physical_size: (320, 240),
+            logical_position: None,
+            logical_size: (320.0, 240.0),
+            scale_factor: 1.0,
+            maximized: false,
+        }
+    }
+
+    fn isolated_create_request() -> nana_js_engine::HostValue {
+        nana_js_engine::HostValue::Object(
+            [(
+                "isolation".into(),
+                nana_js_engine::HostValue::string("isolated"),
+            )]
+            .into_iter()
+            .collect(),
+        )
+    }
+
+    /// Window 1 open in an isolated realm that has evaluated its script.
+    fn runtime_with_isolated_window() -> VueHostedRuntime<RealmEngine> {
+        let mut engine = RealmEngine::default();
+        let mut vue = VueRuntime::new(400, 300, 1.0);
+        vue.initialize(
+            &mut engine,
+            RuntimeArtifact::from_source("app.js", "void 0;"),
+            &HostApiRegistry::new(),
+        )
+        .unwrap();
+        vue.host_api_registry()
+            .call("windowCreate", &[isolated_create_request()])
+            .unwrap();
+        let mut runtime = VueHostedRuntime {
+            engine,
+            vue,
+            application_api: HostApiRegistry::new(),
+        };
+        runtime
+            .prepare_window_creation(WindowId(1), window_geometry())
+            .unwrap();
+        runtime
+    }
+
+    #[test]
+    fn closing_isolated_window_disposes_its_realm_even_when_delivery_throws() {
+        let mut runtime = runtime_with_isolated_window();
+        runtime.engine.fail_microtasks = true;
+        assert!(
+            runtime
+                .handle_window_event(WindowEvent::Closed { id: WindowId(1) })
+                .is_err()
+        );
+        assert_eq!(runtime.engine.disposed, [nana_js_engine::JsRealmId(1)]);
+    }
+
+    #[cfg(feature = "dev-reload")]
+    #[test]
+    fn dev_reload_unbinds_closing_isolated_windows_from_the_engine() {
+        let mut runtime = runtime_with_isolated_window();
+        runtime.vue.dev_close_auxiliary_windows();
+        runtime.engine.invoked.clear();
+        runtime.pump().unwrap();
+        assert!(
+            runtime
+                .engine
+                .invoked
+                .iter()
+                .all(|realm| *realm == nana_js_engine::JsRealmId::MAIN),
+            "a closing isolated window still invoked functions of the replaced engine"
+        );
+    }
+
+    #[test]
+    fn isolated_window_fails_creation_on_engine_without_realms() {
+        let mut engine = InputEngine::default();
+        let mut vue = VueRuntime::new(400, 300, 1.0);
+        vue.initialize(
+            &mut engine,
+            RuntimeArtifact::from_source("app.js", "void 0;"),
+            &HostApiRegistry::new(),
+        )
+        .unwrap();
+        vue.host_api_registry()
+            .call("windowCreate", &[isolated_create_request()])
+            .unwrap();
+        let mut runtime = VueHostedRuntime {
+            engine,
+            vue,
+            application_api: HostApiRegistry::new(),
+        };
+
+        assert!(
+            runtime
+                .prepare_window_creation(WindowId(1), window_geometry())
+                .is_err()
+        );
+        assert_eq!(runtime.vue.window_ids(), [VueWindowId::PRIMARY]);
     }
 
     #[test]

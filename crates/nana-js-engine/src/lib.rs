@@ -183,8 +183,31 @@ globalThis.Nana.resources = {
 "#;
 
 /// Opaque handle for a JS function retained by the host.
+///
+/// A function id is bound to the realm it was resolved in; invoking it runs in
+/// that realm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct JsFunctionId(pub u64);
+
+/// One JavaScript global environment inside an engine. Realms share the
+/// engine's thread, heap and microtask queue, but not globals or host state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct JsRealmId(pub u64);
+
+impl JsRealmId {
+    /// The realm every non-`_in` [`JsEngine`] method addresses.
+    pub const MAIN: Self = Self(0);
+}
+
+fn main_realm_only(realm: JsRealmId) -> Result<(), JsEngineError> {
+    if realm == JsRealmId::MAIN {
+        Ok(())
+    } else {
+        Err(JsEngineError::new(
+            "this JS engine does not support separate realms",
+        ))
+    }
+}
 
 /// Opaque handle for a JS object retained by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1215,12 +1238,67 @@ pub trait JsEngine {
         args: &[HostValue],
     ) -> Result<HostValue, JsEngineError>;
 
-    /// Drain engine microtask / job queues (Vue `nextTick`, Promises, etc.).
+    /// Drain engine microtask / job queues (Vue `nextTick`, Promises, etc.) and
+    /// settle host calls and events of every realm.
     fn run_microtasks(&mut self) -> Result<(), JsEngineError>;
 
     /// Return a thread-safe sender for host-to-JS events when supported.
     fn host_event_sender(&self) -> Option<HostEventSender> {
         None
+    }
+
+    /// Create a fresh global environment with its own host API, bridge state,
+    /// resources and event queue.
+    fn create_realm(&mut self) -> Result<JsRealmId, JsEngineError> {
+        Err(JsEngineError::new(
+            "this JS engine does not support separate realms",
+        ))
+    }
+
+    /// Cancel a realm's pending host work, release its resources and drop its
+    /// globals. [`JsRealmId::MAIN`] ends with [`Self::shutdown`] instead.
+    fn dispose_realm(&mut self, realm: JsRealmId) -> Result<(), JsEngineError> {
+        let _ = realm;
+        Err(JsEngineError::new(
+            "this JS engine does not support separate realms",
+        ))
+    }
+
+    /// [`Self::register_host_api`] for one realm.
+    fn register_host_api_in(
+        &mut self,
+        realm: JsRealmId,
+        api: &HostApiRegistry,
+    ) -> Result<(), JsEngineError> {
+        main_realm_only(realm)?;
+        self.register_host_api(api)
+    }
+
+    /// [`Self::initialize`] for one realm.
+    fn initialize_in(
+        &mut self,
+        realm: JsRealmId,
+        artifact: RuntimeArtifact,
+    ) -> Result<(), JsEngineError> {
+        main_realm_only(realm)?;
+        self.initialize(artifact)
+    }
+
+    /// [`Self::resolve_function`] for one realm; the id stays bound to it.
+    fn resolve_function_in(
+        &mut self,
+        realm: JsRealmId,
+        name: &str,
+    ) -> Result<JsFunctionId, JsEngineError> {
+        main_realm_only(realm)?;
+        self.resolve_function(name)
+    }
+
+    /// [`Self::host_event_sender`] for one realm.
+    fn host_event_sender_in(&self, realm: JsRealmId) -> Option<HostEventSender> {
+        (realm == JsRealmId::MAIN)
+            .then(|| self.host_event_sender())
+            .flatten()
     }
 
     /// Context-owned resources exposed through host handles when supported.

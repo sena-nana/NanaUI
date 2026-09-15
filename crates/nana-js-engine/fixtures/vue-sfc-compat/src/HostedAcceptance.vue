@@ -48,17 +48,21 @@ function toggleStructuralSwap() {
   structuralSwap.value = structuralSwap.value === "a" ? "b" : "a";
 }
 
-async function openAuxiliaryWindow(independent = false) {
+async function openAuxiliaryWindow(independent = false, isolated = false) {
   if (auxiliaryWindow) return auxiliaryWindow;
+  // An isolated window must not see this realm's storage.
+  if (isolated) localStorage.setItem("nana.acceptance.realm", "main");
   auxiliaryWindow = await Nana.windows.create({
     title: "NanaUI Vue auxiliary acceptance",
     width: 480,
     height: 300,
     transparent: true,
     ...(independent ? {} : { modal: true, parentId: 0 }),
+    ...(isolated ? { isolation: "isolated" } : {}),
   });
   auxiliaryIndependent = independent;
-  auxiliaryWindow.mount(AuxiliaryAcceptance);
+  // An isolated window mounts itself from its own realm (see main.ts).
+  if (!isolated) auxiliaryWindow.mount(AuxiliaryAcceptance);
   auxiliaryWindow.closed.then(() => { auxiliaryWindow = null; });
   return auxiliaryWindow;
 }

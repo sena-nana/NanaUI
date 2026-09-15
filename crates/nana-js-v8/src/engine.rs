@@ -4,20 +4,86 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, Once};
 
 use nana_js_engine::{
     HostApiRegistry, HostCancellationToken, HostEventSender, HostInvocation, HostPendingCall,
     HostRequestContext, HostRequestId, HostResourceHandle, HostResourceRegistry, HostValue,
     JsDiagnosticEvent, JsDiagnosticLevel, JsDiagnosticSink, JsEngine, JsEngineError, JsException,
-    JsFunctionId, RuntimeArtifact,
+    JsFunctionId, JsRealmId, RuntimeArtifact,
 };
 
-struct HostApiSlot {
+/// A settled host request: its id and what JavaScript receives.
+type HostCompletion = (u64, Result<HostValue, JsException>);
+
+/// Host-side state of one V8 context, stored in that context's slot so native
+/// callbacks serve the realm that called them.
+struct RealmHost {
     api: Mutex<HostApiRegistry>,
-    state: Mutex<HostBridgeState>,
+    bridge: Mutex<HostBridgeState>,
     resources: HostResourceRegistry,
-    diagnostics: Mutex<Option<JsDiagnosticSink>>,
+    events: HostEventSender,
+}
+
+impl RealmHost {
+    fn new() -> Self {
+        Self {
+            api: Mutex::new(HostApiRegistry::new()),
+            bridge: Mutex::new(HostBridgeState::default()),
+            resources: HostResourceRegistry::new(),
+            events: HostEventSender::default(),
+        }
+    }
+
+    fn take_completions(&self) -> Result<Vec<HostCompletion>, JsEngineError> {
+        let mut state = self
+            .bridge
+            .lock()
+            .map_err(|_| JsEngineError::new("host bridge state poisoned"))?;
+        let mut completed = Vec::new();
+        for (&id, request) in &state.pending {
+            let result = match request {
+                PendingHostRequest::Ready(result) => Some(result.clone()),
+                PendingHostRequest::Waiting(pending) => pending.try_take(),
+            };
+            if let Some(result) = result {
+                completed.push((id, result));
+            }
+        }
+        for (id, _) in &completed {
+            state.pending.remove(id);
+        }
+        Ok(completed)
+    }
+
+    fn cancel_pending(&self) {
+        if let Ok(mut state) = self.bridge.lock() {
+            for request in state.pending.values() {
+                if let PendingHostRequest::Waiting(pending) = request {
+                    pending.cancel();
+                }
+            }
+            state.pending.clear();
+        }
+    }
+
+    fn release(&self) {
+        self.cancel_pending();
+        self.resources.clear();
+        self.events.clear();
+    }
+}
+
+struct V8Realm {
+    host: Rc<RealmHost>,
+    /// `None` for the main realm until the isolate exists.
+    context: Option<v8::Global<v8::Context>>,
+}
+
+/// Message and promise-rejection callbacks are isolate-wide.
+struct DiagnosticsSlot {
+    sink: Mutex<Option<JsDiagnosticSink>>,
 }
 
 #[derive(Default)]
@@ -35,6 +101,18 @@ enum PendingHostRequest {
     Ready(Result<HostValue, JsException>),
     Waiting(HostPendingCall),
 }
+
+const REALM_PREAMBLE_JS: &str = r#"
+if (typeof globalThis.process === "undefined") {
+  globalThis.process = { env: { NODE_ENV: "production" } };
+}
+if (typeof globalThis.console === "undefined") {
+  globalThis.console = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
+}
+if (typeof globalThis.queueMicrotask !== "function") {
+  globalThis.queueMicrotask = function (fn) { Promise.resolve().then(fn); };
+}
+"#;
 
 /// Serialize isolate create/drop vs `SnapshotCreator`.
 ///
@@ -54,17 +132,17 @@ fn isolate_gate() -> &'static V8IsolateGate {
 }
 
 /// V8 engine implementing [`JsEngine`].
+///
+/// One isolate; every [`JsRealmId`] is a separate V8 context in it.
 pub struct V8Engine {
     inspector_session: Option<v8::inspector::V8InspectorSession>,
     inspector: Option<v8::inspector::V8Inspector>,
     inspector_transport: Option<V8InspectorTransport>,
     isolate: Option<v8::OwnedIsolate>,
-    context: Option<v8::Global<v8::Context>>,
-    host_api: HostApiRegistry,
-    functions: BTreeMap<u64, String>,
+    realms: BTreeMap<JsRealmId, V8Realm>,
+    next_realm_id: u64,
+    functions: BTreeMap<u64, (JsRealmId, String)>,
     next_function_id: u64,
-    resources: HostResourceRegistry,
-    events: HostEventSender,
     diagnostics: Option<JsDiagnosticSink>,
     shut_down: bool,
 }
@@ -123,6 +201,14 @@ impl Default for V8Engine {
     }
 }
 
+fn inspector_context_name(realm: JsRealmId) -> String {
+    if realm == JsRealmId::MAIN {
+        "NanaUI".into()
+    } else {
+        format!("NanaUI realm {}", realm.0)
+    }
+}
+
 impl V8Engine {
     pub fn new() -> Self {
         Self {
@@ -130,12 +216,18 @@ impl V8Engine {
             inspector: None,
             inspector_transport: None,
             isolate: None,
-            context: None,
-            host_api: HostApiRegistry::new(),
+            realms: [(
+                JsRealmId::MAIN,
+                V8Realm {
+                    host: Rc::new(RealmHost::new()),
+                    context: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            next_realm_id: 1,
             functions: BTreeMap::new(),
             next_function_id: 1,
-            resources: HostResourceRegistry::new(),
-            events: HostEventSender::default(),
             diagnostics: None,
             shut_down: false,
         }
@@ -152,6 +244,12 @@ impl V8Engine {
 
     fn ensure_isolate(&mut self) -> Result<(), JsEngineError> {
         self.ensure_isolate_from_snapshot(None)
+    }
+
+    fn realm(&self, realm: JsRealmId) -> Result<&V8Realm, JsEngineError> {
+        self.realms
+            .get(&realm)
+            .ok_or_else(|| JsEngineError::new(format!("unknown JS realm {}", realm.0)))
     }
 
     fn ensure_isolate_from_snapshot(
@@ -179,32 +277,33 @@ impl V8Engine {
             isolate.set_capture_stack_trace_for_uncaught_exceptions(true, 64);
             isolate.add_message_listener(v8_message_callback);
             isolate.set_promise_reject_callback(v8_promise_reject_callback);
-            isolate.set_slot(HostApiSlot {
-                api: Mutex::new(self.host_api.clone()),
-                state: Mutex::new(HostBridgeState::default()),
-                resources: self.resources.clone(),
-                diagnostics: Mutex::new(self.diagnostics.clone()),
+            isolate.set_slot(DiagnosticsSlot {
+                sink: Mutex::new(self.diagnostics.clone()),
             });
             isolate.set_slot(ResourceFinalizerSlot::default());
 
+            let host = Rc::clone(&self.realm(JsRealmId::MAIN)?.host);
             let global = {
                 v8::scope!(let scope, &mut isolate);
                 let context = v8::Context::new(scope, Default::default());
+                context.set_slot(host);
                 let scope = &v8::ContextScope::new(scope, context);
                 v8::Global::new(scope, context)
             };
 
-            self.context = Some(global);
+            if let Some(main) = self.realms.get_mut(&JsRealmId::MAIN) {
+                main.context = Some(global);
+            }
             self.isolate = Some(isolate);
             *live += 1;
             drop(live);
-            self.install_shims_and_host()?;
+            self.install_realm(JsRealmId::MAIN)?;
         }
         Ok(())
     }
 
     fn drop_isolate(&mut self) {
-        if self.isolate.is_none() && self.context.is_none() {
+        if self.isolate.is_none() {
             return;
         }
         let gate = isolate_gate();
@@ -215,7 +314,11 @@ impl V8Engine {
         self.inspector_session = None;
         self.inspector = None;
         self.inspector_transport = None;
-        self.context = None;
+        // Contexts are handles into the isolate: release them first.
+        self.realms.retain(|id, _| *id == JsRealmId::MAIN);
+        for realm in self.realms.values_mut() {
+            realm.context = None;
+        }
         self.isolate = None;
         if *live > 0 {
             *live -= 1;
@@ -227,8 +330,8 @@ impl V8Engine {
     pub fn set_diagnostic_sink(&mut self, sink: Option<JsDiagnosticSink>) {
         self.diagnostics = sink.clone();
         if let Some(isolate) = self.isolate.as_mut()
-            && let Some(slot) = isolate.get_slot::<HostApiSlot>()
-            && let Ok(mut current) = slot.diagnostics.lock()
+            && let Some(slot) = isolate.get_slot::<DiagnosticsSlot>()
+            && let Ok(mut current) = slot.sink.lock()
         {
             *current = sink;
         }
@@ -251,18 +354,19 @@ impl V8Engine {
         let inspector = v8::inspector::V8Inspector::create(isolate, client);
         {
             v8::scope!(let scope, isolate);
-            let context = v8::Local::new(
-                scope,
-                self.context
-                    .as_ref()
-                    .ok_or_else(|| JsEngineError::new("V8 context missing"))?,
-            );
-            inspector.context_created(
-                context,
-                1,
-                v8::inspector::StringView::from(&b"NanaUI"[..]),
-                v8::inspector::StringView::empty(),
-            );
+            for (id, realm) in &self.realms {
+                let Some(context) = realm.context.as_ref() else {
+                    continue;
+                };
+                let context = v8::Local::new(scope, context);
+                let name = inspector_context_name(*id);
+                inspector.context_created(
+                    context,
+                    1,
+                    v8::inspector::StringView::from(name.as_bytes()),
+                    v8::inspector::StringView::empty(),
+                );
+            }
         }
         let channel = v8::inspector::Channel::new(Box::new(InspectorChannel {
             messages: Arc::clone(&transport.messages),
@@ -291,17 +395,17 @@ impl V8Engine {
             .inspector_session
             .as_ref()
             .expect("inspector session initialized");
+        let context = self
+            .realm(JsRealmId::MAIN)?
+            .context
+            .clone()
+            .ok_or_else(|| JsEngineError::new("V8 context missing"))?;
         let isolate = self
             .isolate
             .as_mut()
             .ok_or_else(|| JsEngineError::new("V8 isolate missing"))?;
         v8::scope!(let scope, isolate);
-        let context = v8::Local::new(
-            scope,
-            self.context
-                .as_ref()
-                .ok_or_else(|| JsEngineError::new("V8 context missing"))?,
-        );
+        let context = v8::Local::new(scope, context);
         let _scope = &mut v8::ContextScope::new(scope, context);
         session.dispatch_protocol_message(v8::inspector::StringView::from(message.as_bytes()));
         Ok(())
@@ -344,20 +448,7 @@ impl V8Engine {
             let context = v8::Context::new(scope, Default::default());
             {
                 let scope = &mut v8::ContextScope::new(scope, context);
-                eval_script(
-                    scope,
-                    r#"
-                    if (typeof globalThis.process === "undefined") {
-                      globalThis.process = { env: { NODE_ENV: "production" } };
-                    }
-                    if (typeof globalThis.console === "undefined") {
-                      globalThis.console = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
-                    }
-                    if (typeof globalThis.queueMicrotask !== "function") {
-                      globalThis.queueMicrotask = function (fn) { Promise.resolve().then(fn); };
-                    }
-                    "#,
-                )?;
+                eval_script(scope, REALM_PREAMBLE_JS)?;
                 eval_script(scope, &source)?;
             }
             scope.set_default_context(context);
@@ -376,203 +467,80 @@ impl V8Engine {
         Ok(RuntimeArtifact::from_v8_snapshot(name, bytes))
     }
 
-    fn sync_host_slot(&mut self) -> Result<(), JsEngineError> {
-        let isolate = self
-            .isolate
-            .as_mut()
-            .ok_or_else(|| JsEngineError::new("V8 isolate missing"))?;
-        if let Some(slot) = isolate.get_slot_mut::<HostApiSlot>() {
-            *slot
-                .api
-                .lock()
-                .map_err(|_| JsEngineError::new("host api slot poisoned"))? = self.host_api.clone();
-            *slot
-                .diagnostics
-                .lock()
-                .map_err(|_| JsEngineError::new("diagnostic sink slot poisoned"))? =
-                self.diagnostics.clone();
-        } else {
-            isolate.set_slot(HostApiSlot {
-                api: Mutex::new(self.host_api.clone()),
-                state: Mutex::new(HostBridgeState::default()),
-                resources: self.resources.clone(),
-                diagnostics: Mutex::new(self.diagnostics.clone()),
-            });
-        }
-        if isolate.get_slot::<ResourceFinalizerSlot>().is_none() {
-            isolate.set_slot(ResourceFinalizerSlot::default());
-        }
-        Ok(())
-    }
-
-    fn install_shims_and_host(&mut self) -> Result<(), JsEngineError> {
-        self.sync_host_slot()?;
-        with_context(self, |scope| {
+    fn install_realm(&mut self, realm: JsRealmId) -> Result<(), JsEngineError> {
+        with_realm(self, realm, |scope| {
             install_host_bridge(scope)?;
-            eval_script(
-                scope,
-                r##"
-                if (typeof globalThis.process === "undefined") {
-                  globalThis.process = { env: { NODE_ENV: "production" } };
-                }
-                if (typeof globalThis.console === "undefined") {
-                  globalThis.console = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
-                }
-                if (typeof globalThis.queueMicrotask !== "function") {
-                  globalThis.queueMicrotask = function (fn) { Promise.resolve().then(fn); };
-                }
-                "##,
-            )?;
-            Ok(())
+            eval_script(scope, REALM_PREAMBLE_JS)
         })
     }
 
     fn drain_host_bridge(&mut self) -> Result<(), JsEngineError> {
-        let completions = {
-            let isolate = self
-                .isolate
-                .as_mut()
-                .ok_or_else(|| JsEngineError::new("V8 isolate missing"))?;
-            let Some(slot) = isolate.get_slot::<HostApiSlot>() else {
-                return Err(JsEngineError::new("host api slot missing"));
-            };
-            let mut state = slot
-                .state
-                .lock()
-                .map_err(|_| JsEngineError::new("host bridge state poisoned"))?;
-            let mut completed = Vec::new();
-            let mut completed_ids = Vec::new();
-            for (&id, request) in &state.pending {
-                let result = match request {
-                    PendingHostRequest::Ready(result) => Some(result.clone()),
-                    PendingHostRequest::Waiting(pending) => pending.try_take(),
-                };
-                if let Some(result) = result {
-                    completed_ids.push(id);
-                    completed.push((id, result));
+        let realms = self
+            .realms
+            .iter()
+            .filter(|(_, realm)| realm.context.is_some())
+            .map(|(id, realm)| (*id, Rc::clone(&realm.host)))
+            .collect::<Vec<_>>();
+        for (realm, host) in realms {
+            let completions = host.take_completions()?;
+            let events = host.events.drain();
+            if completions.is_empty() && events.is_empty() {
+                continue;
+            }
+            with_realm(self, realm, |scope| {
+                if !completions.is_empty() {
+                    let settle = lookup_function(scope, "__nanaHostSettle")?;
+                    for (id, result) in completions {
+                        let (ok, value) = match result {
+                            Ok(value) => (true, value),
+                            Err(exception) => (false, exception.to_host_value()),
+                        };
+                        call_function(
+                            scope,
+                            settle,
+                            &[
+                                HostValue::String(id.to_string()),
+                                HostValue::Bool(ok),
+                                value,
+                            ],
+                        )?;
+                    }
                 }
-            }
-            for id in completed_ids {
-                state.pending.remove(&id);
-            }
-            completed
-        };
-        let events = self.events.drain();
-        if completions.is_empty() && events.is_empty() {
-            return Ok(());
+                if !events.is_empty() {
+                    let emit = lookup_function(scope, "__nanaHostEmit")?;
+                    for event in events {
+                        call_function(
+                            scope,
+                            emit,
+                            &[HostValue::String(event.name), event.payload],
+                        )?;
+                    }
+                }
+                Ok(())
+            })?;
         }
-
-        with_context(self, |scope| {
-            if !completions.is_empty() {
-                let settle = lookup_function(scope, "__nanaHostSettle")?;
-                for (id, result) in completions {
-                    let (ok, value) = match result {
-                        Ok(value) => (true, value),
-                        Err(exception) => (false, exception.to_host_value()),
-                    };
-                    call_function(
-                        scope,
-                        settle,
-                        &[
-                            HostValue::String(id.to_string()),
-                            HostValue::Bool(ok),
-                            value,
-                        ],
-                    )?;
-                }
-            }
-            if !events.is_empty() {
-                let emit = lookup_function(scope, "__nanaHostEmit")?;
-                for event in events {
-                    call_function(scope, emit, &[HostValue::String(event.name), event.payload])?;
-                }
-            }
-            Ok(())
-        })
+        Ok(())
     }
 
-    fn cancel_pending_host_requests(&mut self) {
-        let Some(isolate) = self.isolate.as_mut() else {
-            return;
-        };
-        let Some(slot) = isolate.get_slot::<HostApiSlot>() else {
-            return;
-        };
-        if let Ok(mut state) = slot.state.lock() {
-            for request in state.pending.values() {
-                if let PendingHostRequest::Waiting(pending) = request {
-                    pending.cancel();
-                }
-            }
-            state.pending.clear();
+    fn release_realms(&mut self) {
+        for realm in self.realms.values() {
+            realm.host.release();
         }
+        self.functions.clear();
     }
 }
 
 impl JsEngine for V8Engine {
     fn initialize(&mut self, artifact: RuntimeArtifact) -> Result<(), JsEngineError> {
-        use nana_js_engine::RuntimeArtifactKind;
-        match artifact.kind {
-            RuntimeArtifactKind::V8Snapshot => {
-                if self.isolate.is_some() {
-                    return Err(JsEngineError::new(
-                        "V8Engine already initialized; V8Snapshot requires a fresh isolate",
-                    ));
-                }
-                // Restore heap from StartupData, then install host bridge (host-free snapshot).
-                self.ensure_isolate_from_snapshot(Some(&artifact.bytes))?;
-                return Ok(());
-            }
-            RuntimeArtifactKind::SourceUtf8 => {}
-        }
-        self.ensure_isolate()?;
-        let source = artifact.source_utf8()?.to_string();
-        with_context(self, |scope| {
-            install_host_bridge(scope)?;
-            eval_script(
-                scope,
-                r#"
-                if (typeof globalThis.process === "undefined") {
-                  globalThis.process = { env: { NODE_ENV: "production" } };
-                }
-                if (typeof globalThis.console === "undefined") {
-                  globalThis.console = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
-                }
-                if (typeof globalThis.queueMicrotask !== "function") {
-                  globalThis.queueMicrotask = function (fn) { Promise.resolve().then(fn); };
-                }
-                "#,
-            )?;
-            eval_script(scope, &source)?;
-            Ok(())
-        })
+        self.initialize_in(JsRealmId::MAIN, artifact)
     }
 
     fn register_host_api(&mut self, api: &HostApiRegistry) -> Result<(), JsEngineError> {
-        self.host_api = api.clone();
-        if self.isolate.is_some() {
-            self.sync_host_slot()?;
-            with_context(self, install_host_bridge)?;
-        }
-        Ok(())
+        self.register_host_api_in(JsRealmId::MAIN, api)
     }
 
     fn resolve_function(&mut self, name: &str) -> Result<JsFunctionId, JsEngineError> {
-        self.ensure_isolate()?;
-        let name_owned = name.to_string();
-        with_context(self, |scope| {
-            let value = lookup_path(scope, &name_owned)?;
-            if !value.is_function() {
-                return Err(JsEngineError::new(format!(
-                    "`{name_owned}` is not a function"
-                )));
-            }
-            Ok(())
-        })?;
-        let id = self.next_function_id;
-        self.next_function_id += 1;
-        self.functions.insert(id, name_owned);
-        Ok(JsFunctionId(id))
+        self.resolve_function_in(JsRealmId::MAIN, name)
     }
 
     fn invoke(
@@ -580,12 +548,12 @@ impl JsEngine for V8Engine {
         target: JsFunctionId,
         args: &[HostValue],
     ) -> Result<HostValue, JsEngineError> {
-        let name = self
+        let (realm, name) = self
             .functions
             .get(&target.0)
             .cloned()
             .ok_or_else(|| JsEngineError::new(format!("unknown JsFunctionId {}", target.0)))?;
-        with_context(self, |scope| {
+        with_realm(self, realm, |scope| {
             let value = lookup_path(scope, &name)?;
             let func = v8::Local::<v8::Function>::try_from(value)
                 .map_err(|_| JsEngineError::new(format!("`{name}` is not a function")))?;
@@ -617,11 +585,155 @@ impl JsEngine for V8Engine {
     }
 
     fn host_event_sender(&self) -> Option<HostEventSender> {
-        Some(self.events.clone())
+        self.host_event_sender_in(JsRealmId::MAIN)
     }
 
     fn host_resources(&self) -> Option<HostResourceRegistry> {
-        Some(self.resources.clone())
+        self.realms
+            .get(&JsRealmId::MAIN)
+            .map(|realm| realm.host.resources.clone())
+    }
+
+    fn create_realm(&mut self) -> Result<JsRealmId, JsEngineError> {
+        self.ensure_isolate()?;
+        let id = JsRealmId(self.next_realm_id);
+        self.next_realm_id += 1;
+        let host = Rc::new(RealmHost::new());
+        let isolate = self
+            .isolate
+            .as_mut()
+            .ok_or_else(|| JsEngineError::new("V8 isolate missing"))?;
+        let context = {
+            v8::scope!(let scope, isolate);
+            let context = v8::Context::new(scope, Default::default());
+            context.set_slot(Rc::clone(&host));
+            if let Some(inspector) = &self.inspector {
+                let name = inspector_context_name(id);
+                inspector.context_created(
+                    context,
+                    1,
+                    v8::inspector::StringView::from(name.as_bytes()),
+                    v8::inspector::StringView::empty(),
+                );
+            }
+            let scope = &v8::ContextScope::new(scope, context);
+            v8::Global::new(scope, context)
+        };
+        self.realms.insert(
+            id,
+            V8Realm {
+                host,
+                context: Some(context),
+            },
+        );
+        if let Err(error) = self.install_realm(id) {
+            let _ = self.dispose_realm(id);
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    fn dispose_realm(&mut self, realm: JsRealmId) -> Result<(), JsEngineError> {
+        if realm == JsRealmId::MAIN {
+            return Err(JsEngineError::new(
+                "the main JS realm ends with engine shutdown",
+            ));
+        }
+        let removed = self
+            .realms
+            .remove(&realm)
+            .ok_or_else(|| JsEngineError::new(format!("unknown JS realm {}", realm.0)))?;
+        removed.host.release();
+        self.functions.retain(|_, (owner, _)| *owner != realm);
+        if let (Some(context), Some(isolate)) = (removed.context, self.isolate.as_mut()) {
+            v8::scope!(let scope, isolate);
+            let context = v8::Local::new(scope, context);
+            if let Some(inspector) = &self.inspector {
+                inspector.context_destroyed(context);
+            }
+            // Jobs this realm left in the shared microtask queue now fail their
+            // host calls instead of reaching released windows.
+            context.remove_slot::<RealmHost>();
+        }
+        Ok(())
+    }
+
+    fn register_host_api_in(
+        &mut self,
+        realm: JsRealmId,
+        api: &HostApiRegistry,
+    ) -> Result<(), JsEngineError> {
+        let target = self.realm(realm)?;
+        *target
+            .host
+            .api
+            .lock()
+            .map_err(|_| JsEngineError::new("host api slot poisoned"))? = api.clone();
+        if target.context.is_some() {
+            with_realm(self, realm, install_host_bridge)?;
+        }
+        Ok(())
+    }
+
+    fn initialize_in(
+        &mut self,
+        realm: JsRealmId,
+        artifact: RuntimeArtifact,
+    ) -> Result<(), JsEngineError> {
+        use nana_js_engine::RuntimeArtifactKind;
+        match artifact.kind {
+            RuntimeArtifactKind::V8Snapshot => {
+                if realm != JsRealmId::MAIN {
+                    return Err(JsEngineError::new(
+                        "V8 snapshot artifacts can only initialize the main realm",
+                    ));
+                }
+                if self.isolate.is_some() {
+                    return Err(JsEngineError::new(
+                        "V8Engine already initialized; V8Snapshot requires a fresh isolate",
+                    ));
+                }
+                // Restore heap from StartupData, then install host bridge (host-free snapshot).
+                self.ensure_isolate_from_snapshot(Some(&artifact.bytes))?;
+                return Ok(());
+            }
+            RuntimeArtifactKind::SourceUtf8 => {}
+        }
+        self.ensure_isolate()?;
+        let source = artifact.source_utf8()?.to_string();
+        with_realm(self, realm, |scope| {
+            install_host_bridge(scope)?;
+            eval_script(scope, REALM_PREAMBLE_JS)?;
+            eval_script(scope, &source)
+        })
+    }
+
+    fn resolve_function_in(
+        &mut self,
+        realm: JsRealmId,
+        name: &str,
+    ) -> Result<JsFunctionId, JsEngineError> {
+        self.ensure_isolate()?;
+        let name_owned = name.to_string();
+        with_realm(self, realm, |scope| {
+            let value = lookup_path(scope, &name_owned)?;
+            if !value.is_function() {
+                return Err(JsEngineError::new(format!(
+                    "`{name_owned}` is not a function"
+                )));
+            }
+            Ok(())
+        })?;
+        let id = self.next_function_id;
+        self.next_function_id += 1;
+        self.functions.insert(id, (realm, name_owned));
+        Ok(JsFunctionId(id))
+    }
+
+    fn host_event_sender_in(&self, realm: JsRealmId) -> Option<HostEventSender> {
+        self.realms
+            .get(&realm)
+            .map(|realm| realm.host.events.clone())
     }
 
     fn interrupt(&mut self) {
@@ -637,10 +749,7 @@ impl JsEngine for V8Engine {
     }
 
     fn shutdown(&mut self) {
-        self.cancel_pending_host_requests();
-        self.resources.clear();
-        self.events.clear();
-        self.functions.clear();
+        self.release_realms();
         self.drop_isolate();
         self.shut_down = true;
     }
@@ -648,23 +757,22 @@ impl JsEngine for V8Engine {
 
 impl Drop for V8Engine {
     fn drop(&mut self) {
-        self.cancel_pending_host_requests();
-        self.resources.clear();
-        self.events.clear();
+        self.release_realms();
         self.drop_isolate();
     }
 }
 
-fn with_context<T>(
+fn with_realm<T>(
     engine: &mut V8Engine,
+    realm: JsRealmId,
     f: impl for<'s> FnOnce(&mut v8::PinScope<'s, '_>) -> Result<T, JsEngineError>,
 ) -> Result<T, JsEngineError> {
     engine.ensure_isolate()?;
     let context = engine
+        .realm(realm)?
         .context
-        .as_ref()
-        .ok_or_else(|| JsEngineError::new("V8 context missing"))?
-        .clone();
+        .clone()
+        .ok_or_else(|| JsEngineError::new("V8 context missing"))?;
     let isolate = engine
         .isolate
         .as_mut()
@@ -674,6 +782,11 @@ fn with_context<T>(
     let local_context = v8::Local::new(handle_scope, context);
     let scope = &mut v8::ContextScope::new(handle_scope, local_context);
     f(scope)
+}
+
+/// Host state of the realm whose code is currently running.
+fn realm_host(scope: &mut v8::PinScope) -> Option<Rc<RealmHost>> {
+    scope.get_current_context().get_slot::<RealmHost>()
 }
 
 extern "C" fn v8_message_callback<'s>(
@@ -724,8 +837,8 @@ extern "C" fn v8_promise_reject_callback(message: v8::PromiseRejectMessage) {
 
 fn diagnostic_sink(scope: &mut v8::PinScope) -> Option<JsDiagnosticSink> {
     scope
-        .get_slot::<HostApiSlot>()
-        .and_then(|slot| slot.diagnostics.lock().ok()?.clone())
+        .get_slot::<DiagnosticsSlot>()
+        .and_then(|slot| slot.sink.lock().ok()?.clone())
 }
 
 fn diagnostic_exception(
@@ -794,7 +907,7 @@ fn host_call_direct_callback(
             return;
         }
     };
-    let result = match scope.get_slot::<HostApiSlot>() {
+    let result = match realm_host(scope) {
         Some(slot) => match slot.api.lock() {
             Ok(api) => api.call(&name, &host_args),
             Err(_) => Err(JsException::new("host api slot poisoned")),
@@ -823,12 +936,12 @@ fn host_invoke_callback(
             return;
         }
     };
-    let Some(slot) = scope.get_slot::<HostApiSlot>() else {
+    let Some(slot) = realm_host(scope) else {
         throw_host_error(scope, "host api slot missing");
         return;
     };
     let id = {
-        let Ok(mut state) = slot.state.lock() else {
+        let Ok(mut state) = slot.bridge.lock() else {
             throw_host_error(scope, "host bridge state poisoned");
             return;
         };
@@ -845,7 +958,7 @@ fn host_invoke_callback(
         HostInvocation::Ready(result) => PendingHostRequest::Ready(result),
         HostInvocation::Pending(pending) => PendingHostRequest::Waiting(pending),
     };
-    let Ok(mut state) = slot.state.lock() else {
+    let Ok(mut state) = slot.bridge.lock() else {
         throw_host_error(scope, "host bridge state poisoned");
         return;
     };
@@ -862,10 +975,10 @@ fn host_cancel_callback(
 ) {
     let id = v8_string(scope, args.get(0)).parse::<u64>().ok();
     let cancelled = id.is_some_and(|id| {
-        let Some(slot) = scope.get_slot::<HostApiSlot>() else {
+        let Some(slot) = realm_host(scope) else {
             return false;
         };
-        let Ok(mut state) = slot.state.lock() else {
+        let Ok(mut state) = slot.bridge.lock() else {
             return false;
         };
         let Some(request) = state.pending.remove(&id) else {
@@ -888,9 +1001,7 @@ fn host_release_resource_callback(
         .ok()
         .and_then(|value| value.as_resource().cloned());
     let released = handle.is_some_and(|handle| {
-        scope
-            .get_slot::<HostApiSlot>()
-            .is_some_and(|slot| slot.resources.release(&handle))
+        realm_host(scope).is_some_and(|slot| slot.resources.release(&handle))
     });
     rv.set(v8::Boolean::new(scope, released).into());
 }
@@ -911,7 +1022,7 @@ fn host_raw_callback(
         .map(|s| s.to_rust_string_lossy(scope))
         .unwrap_or_else(|| "[]".into());
 
-    let result = match scope.get_slot::<HostApiSlot>() {
+    let result = match realm_host(scope) {
         Some(slot) => match slot.api.lock() {
             Ok(api) => {
                 let args_value =
@@ -1216,8 +1327,7 @@ fn host_resource_to_v8<'s>(
         "kind",
         &HostValue::String(handle.kind.clone()),
     )?;
-    let resources = scope
-        .get_slot::<HostApiSlot>()
+    let resources = realm_host(scope)
         .map(|slot| slot.resources.clone())
         .ok_or_else(|| JsEngineError::new("V8 host resource slot is unavailable"))?;
     let released_handle = handle.clone();
@@ -1441,6 +1551,152 @@ mod tests {
                     .len(),
                 3
             );
+            runtime.engine_mut().shutdown();
+        });
+    }
+
+    fn window_local_storage(
+        runtime: &nana_ui_vue::VueHostedRuntime<V8Engine>,
+        window: u64,
+        key: &str,
+    ) -> HostValue {
+        runtime
+            .vue()
+            .host(nana_ui_vue::VueWindowId(window))
+            .unwrap()
+            .lock()
+            .unwrap()
+            .host_api_registry()
+            .call(
+                "storageGet",
+                &[HostValue::string("local"), HostValue::string(key)],
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn vue_isolated_window_keeps_storage_globals_and_timers_private() {
+        with_serial_v8_tests(|| {
+            let source = format!(
+                "{}\n{}",
+                nana_ui_web_api::WEB_API_SHIM_JS,
+                r#"
+                globalThis.__nanaFireEvent = () => {};
+                globalThis.__nanaFireWindowEvent = () => {};
+                if (!globalThis.__nanaHomeWindowId) {
+                    localStorage.setItem('who', 'main');
+                    globalThis.__closed = [];
+                    globalThis.__mainFired = 0;
+                    globalThis.__mainTimer = setTimeout(() => __mainFired++, 0);
+                    Nana.host.on('window-closed', event => __closed.push(event.id));
+                    __nanaHost.call('windowCreate', []);
+                    __nanaHost.call('windowCreate', [{ isolation: 'isolated', paramsJson: '{"doc":7}' }]);
+                    globalThis.__mainProbe = () => ({
+                        who: localStorage.getItem('who'),
+                        leak: typeof globalThis.__leak,
+                        timer: __mainTimer,
+                        fired: __mainFired,
+                        closed: __closed,
+                    });
+                } else {
+                    const current = __nanaHost.call('windowCurrent', []);
+                    localStorage.setItem('params', current.paramsJson);
+                    localStorage.setItem('sawMain', String(localStorage.getItem('who')));
+                    localStorage.setItem('who', 'isolated');
+                    globalThis.__leak = true;
+                    const own = setTimeout(() => localStorage.setItem('cancelled', 'fired'), 0);
+                    localStorage.setItem('ownTimer', String(own));
+                    clearTimeout(own);
+                    setTimeout(() => localStorage.setItem('timer', 'fired'), 0);
+                }
+            "#
+            );
+            let mut runtime = nana_ui_vue::VueHostedRuntime::new(
+                V8Engine::new(),
+                RuntimeArtifact::from_source("isolated-window.js", source),
+                HostApiRegistry::new(),
+                400,
+                300,
+                1.0,
+            )
+            .unwrap();
+            let isolated = nana_ui_platform::WindowId(2);
+            runtime
+                .prepare_window_creation(
+                    isolated,
+                    nana_ui_platform::WindowGeometry {
+                        physical_position: None,
+                        physical_size: (320, 240),
+                        logical_position: None,
+                        logical_size: (320.0, 240.0),
+                        scale_factor: 1.0,
+                        maximized: false,
+                    },
+                )
+                .unwrap();
+            runtime.pump().unwrap();
+
+            assert_eq!(
+                window_local_storage(&runtime, 2, "who").as_str(),
+                Some("isolated")
+            );
+            assert_eq!(
+                window_local_storage(&runtime, 2, "sawMain").as_str(),
+                Some("null")
+            );
+            assert_eq!(
+                window_local_storage(&runtime, 2, "params").as_str(),
+                Some(r#"{"doc":7}"#)
+            );
+            // Both realms handed out timer id 1; cancelling one left the other alone.
+            assert_eq!(
+                window_local_storage(&runtime, 2, "ownTimer").as_str(),
+                Some("1")
+            );
+            assert_eq!(
+                window_local_storage(&runtime, 2, "timer").as_str(),
+                Some("fired")
+            );
+            assert!(matches!(
+                window_local_storage(&runtime, 2, "cancelled"),
+                HostValue::Null
+            ));
+            assert_eq!(
+                window_local_storage(&runtime, 1, "who").as_str(),
+                Some("main"),
+                "a shared window must keep sharing the main realm's storage"
+            );
+
+            let probe = runtime
+                .engine_mut()
+                .resolve_function("__mainProbe")
+                .unwrap();
+            let result = runtime.engine_mut().invoke(probe, &[]).unwrap();
+            let result = result.as_object().unwrap();
+            assert_eq!(result.get("who").and_then(HostValue::as_str), Some("main"));
+            assert_eq!(
+                result.get("leak").and_then(HostValue::as_str),
+                Some("undefined")
+            );
+            assert_eq!(result.get("timer").and_then(HostValue::as_f64), Some(1.0));
+            assert_eq!(result.get("fired").and_then(HostValue::as_f64), Some(1.0));
+
+            runtime
+                .handle_window_event(nana_ui_platform::WindowEvent::Closed { id: isolated })
+                .unwrap();
+            assert_eq!(
+                runtime.vue().window_ids(),
+                [nana_ui_vue::VueWindowId(0), nana_ui_vue::VueWindowId(1)]
+            );
+            let result = runtime.engine_mut().invoke(probe, &[]).unwrap();
+            let closed = result
+                .as_object()
+                .unwrap()
+                .get("closed")
+                .and_then(HostValue::as_array)
+                .cloned()
+                .unwrap();
+            assert_eq!(closed, [HostValue::Number(2.0)]);
             runtime.engine_mut().shutdown();
         });
     }
