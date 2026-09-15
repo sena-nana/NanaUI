@@ -231,7 +231,7 @@ pub enum FullscreenMode {
 - `WindowLevel` 从 `nana_ui::window_service` 下沉到 `nana_ui_platform`，`nana_ui` 再导出。全屏和置顶的有效值走 `WindowEvent::ModeChanged`，不要自己记一份请求镜像。
 - LiliaBilibili `app/presentation.rs` 仍按 `SetFullscreen { fullscreen: bool }` 编译；下次升级 pin 时改为 `fullscreen: on.then(FullscreenRequest::default)`，并在 `WindowEvent` match 中处理 `ModeChanged`。
 
-窗口配置持久化继续由应用负责，框架不选择配置目录或写盘。
+窗口几何可以交给框架：`WindowDescriptor::persist_key("main")` 会在创建前从 `localStorage` 键 `nana.window.main` 恢复位置 / 尺寸 / 最大化，并在移动、缩放后写回。全屏、最小化，以及 Win32 最小化常见的 `-32000` 原点都不写。目录由宿主选择：`app_data_dir("YourApp")` 得到平台数据目录，再 `FileStore::open` 注入 `run_runtime_with_store`（落成 `local-storage.bin`）。不注入则全程内存，进程退出即丢。Dock 布局与 `AppearanceSettings` 走同一张表（`nana.dock.*` / `nana.appearance.*`）。`Nana.storage` 的 `get` / `set` / `clear` / `remove` / `keys` 不会动这些 key。
 
 ### 独立透明工具窗
 

@@ -36,7 +36,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 ## 圆角
 
-`AppearanceSettings` 暴露四级圆角：微型 / 控件 / 卡片 / 页面，默认 2 / 6 / 10 / 14。`standard_radius` 仍是 md（10）的别名，只改这一档不会重算另外三档。遗留 JSON 若只有 `standard_radius`，仍按旧规则一次推导 ±4 / ±8。
+`AppearanceSettings` 暴露四级圆角：微型 / 控件 / 卡片 / 页面，默认 2 / 6 / 10 / 14。`standard_radius` 仍是 md（10）的别名，只改这一档不会重算另外三档。遗留 JSON 若只有 `standard_radius`，仍按旧规则一次推导 ±4 / ±8。应用可用 `save_to_store` / `restore_from_store` 把这份设置写进 `localStorage`（`nana.appearance.{key}`）。
 
 主区域贴着展开的侧栏时，挨着侧栏的那两个角收成直角，另一侧保持页面圆角。这由工作区表面统一画，不靠页面自己设相同圆角。
 

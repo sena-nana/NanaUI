@@ -49,7 +49,7 @@
 
 ## Tab、列表拖放、动作
 
-`Tabs::on_reorder` 用「被移动的值 + 其后的值（`None` 表示末尾）」描述结果。跨窗口拖 Tab 用 `TabDragGroup` / `TabDragSurface`；选择、顺序、持久化仍由应用持有。接收方可用 `accepts_external_drop(false)` 只允许拖出、拒绝外部落入。
+`Tabs::on_reorder` 用「被移动的值 + 其后的值（`None` 表示末尾）」描述结果。跨窗口拖 Tab 用 `TabDragGroup` / `TabDragSurface`；选择、顺序仍由应用持有，可用 `DockWorkspace::save_to_store` 写进 `localStorage`。接收方可用 `accepts_external_drop(false)` 只允许拖出、拒绝外部落入。
 
 `ReorderList` 是纵向列表的同一套 before-value 合同，不跨窗口。树拖放回传稳定节点和 `before / inside / after`，不推断文件系统语义。
 

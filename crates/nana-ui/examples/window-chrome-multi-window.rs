@@ -52,6 +52,7 @@ impl Smoke {
             focus_on_show: true,
             constrain_to_work_area: false,
             skip_taskbar: false,
+            persist_key: None,
         }
     }
 

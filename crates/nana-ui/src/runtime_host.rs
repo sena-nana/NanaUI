@@ -4,11 +4,13 @@
 //! [`run_runtime`] is the product host entry and delegates to
 //! [`crate::run_runtime_scene`].
 
+use std::cell::RefCell;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Instant;
 
+use nana_ui_core::{SharedStore, memory_store};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{InputEvent, SystemAppearance, WindowEvent, WindowGeometry, WindowId};
 use nana_ui_runtime::{
@@ -63,6 +65,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
+    store: SharedStore,
 }
 
 // Cloning host handles never clones a message. A derived implementation would
@@ -79,6 +82,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
+            store: Arc::clone(&self.store),
         }
     }
 }
@@ -108,7 +112,13 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             dispatch,
             tasks,
             system_appearance,
+            store: memory_store(),
         }
+    }
+
+    pub(crate) fn with_store(mut self, store: SharedStore) -> Self {
+        self.store = store;
+        self
     }
 
     pub(crate) fn with_windows(mut self, windows: &crate::WindowService) -> Self {
@@ -154,6 +164,12 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// [`WindowEvent::AppearanceChanged`]: nana_ui_platform::WindowEvent::AppearanceChanged
     pub const fn system_appearance(&self) -> Option<SystemAppearance> {
         self.system_appearance
+    }
+
+    /// Process-level persistence. Default is memory-only; hosts inject a
+    /// file-backed store through [`run_runtime_with_store`].
+    pub fn store(&self) -> &SharedStore {
+        &self.store
     }
 
     pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
@@ -764,8 +780,53 @@ pub fn run_runtime<Program: RuntimeProgram>(
     crate::run_runtime_scene::<Program>(settings)
 }
 
+thread_local! {
+    static PENDING_HOST_STORE: RefCell<Option<SharedStore>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn take_pending_store() -> SharedStore {
+    PENDING_HOST_STORE
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_else(memory_store)
+}
+
+/// Same as [`run_runtime`], with a host-injected persistent store.
+pub fn run_runtime_with_store<Program: RuntimeProgram>(
+    settings: WindowDescriptor,
+    store: SharedStore,
+) -> Result<(), crate::HostedRunError> {
+    PENDING_HOST_STORE.with(|slot| {
+        *slot.borrow_mut() = Some(store);
+    });
+    let _clear_if_unused = PendingHostStoreGuard;
+    crate::run_runtime_scene::<Program>(settings)
+}
+
+struct PendingHostStoreGuard;
+
+impl Drop for PendingHostStoreGuard {
+    fn drop(&mut self) {
+        PENDING_HOST_STORE.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_store_guard_clears_untaken_slot() {
+        super::PENDING_HOST_STORE.with(|slot| {
+            *slot.borrow_mut() = Some(nana_ui_core::memory_store());
+        });
+        {
+            let _guard = super::PendingHostStoreGuard;
+        }
+        super::PENDING_HOST_STORE.with(|slot| {
+            assert!(slot.borrow().is_none());
+        });
+    }
+
     #[test]
     fn context_clone_accepts_move_only_messages() {
         fn requires_clone<T: Clone>() {}

@@ -27,6 +27,7 @@ pub mod menu_bar;
 pub mod motion;
 pub mod number_field;
 pub mod overlay;
+pub mod persist;
 pub mod scrollbar;
 pub mod selection;
 pub mod semantics;
@@ -95,6 +96,11 @@ pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
 pub use motion::Easing;
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
+pub use persist::{
+    KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, MemoryStore, PersistentStore,
+    SharedStore, StoreError, appearance_storage_key, dock_storage_key, is_framework_storage_key,
+    memory_store, shared_store, window_storage_key,
+};
 pub use scrollbar::{
     SCROLLBAR_METRICS, ScrollbarAxis, ScrollbarMetrics, ScrollbarSkin, ScrollbarTrack,
     ScrollbarVisibility, scrollbar_track,

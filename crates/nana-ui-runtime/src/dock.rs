@@ -9,8 +9,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, OverflowSpec, PositionSpec,
-    SemanticColorRole,
+    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, OverflowSpec, PersistentStore,
+    PositionSpec, SemanticColorRole, StoreError, dock_storage_key,
 };
 
 use crate::tabs::{TabOption, Tabs};
@@ -488,6 +488,28 @@ impl DockWorkspace {
         restored.item_limits = self.item_limits.clone();
         *self = restored;
         Ok(())
+    }
+
+    /// Write this workspace into [`dock_storage_key`].
+    pub fn save_to_store(&self, store: &dyn PersistentStore, key: &str) -> Result<(), StoreError> {
+        let json = self
+            .layout_json()
+            .map_err(|error| StoreError::new(error.to_string()))?;
+        store.set(&dock_storage_key(key), json)
+    }
+
+    /// Restore from [`dock_storage_key`]. Returns `false` when absent.
+    pub fn restore_from_store(
+        &mut self,
+        store: &dyn PersistentStore,
+        key: &str,
+    ) -> Result<bool, StoreError> {
+        let Some(json) = store.get(&dock_storage_key(key))? else {
+            return Ok(false);
+        };
+        self.restore_layout_json(&json)
+            .map_err(|error| StoreError::new(error.to_string()))?;
+        Ok(true)
     }
 }
 
@@ -3607,6 +3629,40 @@ mod tests {
         assert_eq!(restored.floating[0].width, 360.0);
         let again = restored.layout_json().expect("second serialize");
         assert_eq!(json, again);
+    }
+
+    #[test]
+    fn dock_workspace_roundtrip_through_store() {
+        let store = nana_ui_core::MemoryStore::new();
+        let mut workspace = DockWorkspace::new(DockNode::split(
+            DockAxis::Horizontal,
+            0.25,
+            DockNode::tabs(
+                ["scenes", "sources"],
+                "scenes",
+                [("scenes", None), ("sources", None)],
+            ),
+            DockNode::item("editor", None),
+        ));
+        workspace.hidden.push(Arc::from("controls"));
+        workspace
+            .save_to_store(&store, "gallery")
+            .expect("dock saves");
+        let mut restored = DockWorkspace::new(DockNode::item("placeholder", None));
+        assert!(
+            restored
+                .restore_from_store(&store, "gallery")
+                .expect("dock restores")
+        );
+        assert_eq!(
+            restored.layout_json().expect("restored serializes"),
+            workspace.layout_json().expect("original serializes")
+        );
+        assert!(
+            !restored
+                .restore_from_store(&store, "missing")
+                .expect("missing key")
+        );
     }
 
     #[test]

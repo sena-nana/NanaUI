@@ -20,14 +20,16 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use nana_ui_core::{AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
+use nana_ui_core::{
+    AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, SharedStore, TITLE_BAR_HEIGHT,
+};
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{
     DisplayBounds, FullscreenRequest, ImeEvent, InputEvent, InputModifiers, MousePassthroughMode,
     PointerPhase, PointerType, SystemAppearance, TextInputPurpose, TextInputRequest, WindowEvent,
     WindowGeometry, WindowIcon, WindowId, WindowLevel, WindowModeState, WindowResizeEdge,
-    clamp_position_to_displays, clear_registered_application_icon, register_application_icon,
-    window_resize_edge,
+    clamp_position_to_displays, clear_registered_application_icon, persist_live_window_geometry,
+    register_application_icon, restore_window_geometry, window_resize_edge,
 };
 use nana_ui_runtime::{
     AccessibilityUpdate, AppTitleBar, Entity, FrameworkError, LayoutViewport, StableNodeId, Task,
@@ -213,6 +215,7 @@ struct WindowManager<Program: RuntimeProgram> {
     chrome: HashMap<WindowId, WindowChromeSession>,
     bind_after_present: HashSet<WindowId>,
     startup_failure: Arc<Mutex<Option<String>>>,
+    store: SharedStore,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
     #[cfg(target_os = "macos")]
@@ -224,6 +227,7 @@ impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
         // App destructors may join workers waiting for window requests. Resolve
         // those requests before Rust drops `program` (the first field).
         self.window_requests.take();
+        let _ = self.store.flush();
     }
 }
 
@@ -503,10 +507,12 @@ fn initialize<Program: RuntimeProgram>(
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
     message_rx: Receiver<Program::Message>,
-    settings: WindowDescriptor,
+    mut settings: WindowDescriptor,
     startup_failure: Arc<Mutex<Option<String>>>,
     shared_gpu: Option<crate::HostedGpuShared>,
 ) -> Result<WindowManager<Program>, String> {
+    let store = crate::runtime_host::take_pending_store();
+    restore_window_geometry(&mut settings, store.as_ref());
     crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
     if settings.parent.is_some() {
         return Err("initial window cannot have a parent".into());
@@ -575,7 +581,8 @@ fn initialize<Program: RuntimeProgram>(
         surface.alpha_mode(),
         window.theme().map(system_appearance_from_winit),
     )
-    .with_windows(&windows);
+    .with_windows(&windows)
+    .with_store(Arc::clone(&store));
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
     // the inbox before the initialized program can join request-waiting workers.
@@ -674,6 +681,7 @@ fn initialize<Program: RuntimeProgram>(
         chrome: HashMap::new(),
         bind_after_present: HashSet::new(),
         startup_failure,
+        store,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
         #[cfg(target_os = "macos")]
@@ -748,6 +756,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .map(system_appearance_from_winit),
         )
         .with_windows(&self.windows)
+        .with_store(Arc::clone(&self.store))
     }
 
     fn apply_update(
@@ -788,6 +797,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             self.request_redraw(id);
         }
+        let _ = self.store.flush();
     }
 
     fn known_window_ids(&self) -> Vec<WindowId> {

@@ -2464,6 +2464,7 @@ dependencies = [
  "jni 0.21.1",
  "nana-ui-core",
  "ndk-context",
+ "serde",
  "serde_json",
  "tungstenite",
  "ureq",

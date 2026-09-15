@@ -28,6 +28,23 @@ thread_local! {
     static PENDING_VUE_BOOTSTRAP: RefCell<Option<Box<dyn Any>>> = RefCell::new(None);
 }
 
+struct PendingVueBootstrapGuard;
+
+impl Drop for PendingVueBootstrapGuard {
+    fn drop(&mut self) {
+        PENDING_VUE_BOOTSTRAP.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+fn install_pending_vue_bootstrap(bootstrap: Box<dyn Any>) -> PendingVueBootstrapGuard {
+    PENDING_VUE_BOOTSTRAP.with(|slot| {
+        *slot.borrow_mut() = Some(bootstrap);
+    });
+    PendingVueBootstrapGuard
+}
+
 /// A single-engine Vue runtime suitable for embedding in `RuntimeProgram`.
 pub struct VueHostedRuntime<E: JsEngine> {
     engine: E,
@@ -57,9 +74,29 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         physical_height: u32,
         scale_factor: f32,
     ) -> Result<Self, JsEngineError> {
+        Self::with_store(
+            engine,
+            artifact,
+            application_api,
+            physical_width,
+            physical_height,
+            scale_factor,
+            nana_ui_core::memory_store(),
+        )
+    }
+
+    pub fn with_store(
+        engine: E,
+        artifact: RuntimeArtifact,
+        application_api: HostApiRegistry,
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        store: nana_ui_core::SharedStore,
+    ) -> Result<Self, JsEngineError> {
         let mut runtime = Self {
             engine,
-            vue: VueRuntime::new(physical_width, physical_height, scale_factor),
+            vue: VueRuntime::with_store(physical_width, physical_height, scale_factor, store),
             application_api,
         };
         runtime
@@ -895,6 +932,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             engine,
             artifact,
             application_api,
+            Arc::clone(context.store()),
         )
     }
 
@@ -907,14 +945,16 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
+        store: nana_ui_core::SharedStore,
     ) -> Result<Self, JsEngineError> {
-        let mut runtime = VueHostedRuntime::new(
+        let mut runtime = VueHostedRuntime::with_store(
             engine,
             artifact,
             application_api,
             physical_width,
             physical_height,
             scale_factor,
+            store,
         )?;
         runtime.bind_host_gpu(gpu)?;
         if let Some(geometry) = platform_geometry {
@@ -994,17 +1034,15 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
     ) -> Result<(), nana_ui::HostedRunError> {
         let factory: std::sync::Arc<dyn Fn() -> E + Send + Sync> = std::sync::Arc::new(engine);
         let first = factory();
-        PENDING_VUE_BOOTSTRAP.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new(VueBootstrap {
-                engine: first,
-                artifact: artifact.clone(),
-                application_api,
-                dev: Some(DevState {
-                    engine: factory,
-                    last_good: Some(std::sync::Arc::new(artifact)),
-                }),
-            }));
-        });
+        let _clear_if_unused = install_pending_vue_bootstrap(Box::new(VueBootstrap {
+            engine: first,
+            artifact: artifact.clone(),
+            application_api,
+            dev: Some(DevState {
+                engine: factory,
+                last_good: Some(std::sync::Arc::new(artifact)),
+            }),
+        }));
         nana_ui::run_runtime::<Self>(settings)
     }
 
@@ -1080,16 +1118,33 @@ impl<E: JsEngine + 'static> VueRuntimeProgram<E> {
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
     ) -> Result<(), nana_ui::HostedRunError> {
-        PENDING_VUE_BOOTSTRAP.with(|slot| {
-            *slot.borrow_mut() = Some(Box::new(VueBootstrap {
-                engine,
-                artifact,
-                application_api,
-                #[cfg(feature = "dev-reload")]
-                dev: None,
-            }));
-        });
+        let _clear_if_unused = install_pending_vue_bootstrap(Box::new(VueBootstrap {
+            engine,
+            artifact,
+            application_api,
+            #[cfg(feature = "dev-reload")]
+            dev: None,
+        }));
         nana_ui::run_runtime::<Self>(settings)
+    }
+
+    /// Same as [`Self::run`], with a host-injected persistent store for
+    /// `localStorage`, `Nana.storage`, and window geometry.
+    pub fn run_with_store(
+        settings: WindowDescriptor,
+        engine: E,
+        artifact: RuntimeArtifact,
+        application_api: HostApiRegistry,
+        store: nana_ui_core::SharedStore,
+    ) -> Result<(), nana_ui::HostedRunError> {
+        let _clear_if_unused = install_pending_vue_bootstrap(Box::new(VueBootstrap {
+            engine,
+            artifact,
+            application_api,
+            #[cfg(feature = "dev-reload")]
+            dev: None,
+        }));
+        nana_ui::run_runtime_with_store::<Self>(settings, store)
     }
 }
 
@@ -1366,6 +1421,19 @@ mod tests {
     use nana_ui::{
         TitleBarDragTracker, WindowChromeAction, WindowChromeState, apply_title_bar_pointer,
     };
+
+    #[test]
+    fn pending_vue_bootstrap_guard_clears_untaken_slot() {
+        super::PENDING_VUE_BOOTSTRAP.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(()));
+        });
+        {
+            let _guard = super::PendingVueBootstrapGuard;
+        }
+        super::PENDING_VUE_BOOTSTRAP.with(|slot| {
+            assert!(slot.borrow().is_none());
+        });
+    }
 
     #[derive(Default)]
     struct InputEngine {

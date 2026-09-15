@@ -438,6 +438,9 @@ pub struct WindowDescriptor {
     /// [`WindowEvent::SkipTaskbarChanged`]; platforms without a per-window
     /// taskbar entry report `Unsupported` instead of pretending.
     pub skip_taskbar: bool,
+    /// Host-chosen identity for restoring this window's last frame. Window
+    /// ids are not stable across process restarts; this key is.
+    pub persist_key: Option<String>,
     pub resizable: bool,
     pub role: WindowRole,
     pub modal: bool,
@@ -474,6 +477,7 @@ impl WindowDescriptor {
             focus_on_show: true,
             constrain_to_work_area: false,
             skip_taskbar: false,
+            persist_key: None,
             resizable: true,
             role: WindowRole::Main,
             modal: false,
@@ -500,6 +504,13 @@ impl WindowDescriptor {
 
     pub fn icon(mut self, icon: WindowIcon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Remember this window's last size, position and maximized state.
+    pub fn persist_key(mut self, key: impl Into<String>) -> Self {
+        let key = key.into();
+        self.persist_key = (!key.is_empty()).then_some(key);
         self
     }
 }

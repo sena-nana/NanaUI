@@ -26,7 +26,7 @@ Rust 宿主用 `nana_ui_vue::prelude`：`VueRuntimeProgram::run`（或 `mount_vu
 
 **共享（默认）。** 新窗口与打开它的脚本在同一个全局环境里，下列状态跨窗口：JavaScript 全局与模块状态（Vue / Pinia store、组件注册）、`Nana.host.on` 监听与宿主事件队列、`setTimeout` / `setInterval` / `requestAnimationFrame` 的回调表与编号、`fetch` / `WebSocket` 的 JS 对象、`localStorage`、宿主资源句柄、`Nana.dialogs` provider 与 `Nana.components.onError` 监听。仍然每扇窗一份的是：文档、`window` / `document` 对象、`sessionStorage`、定时器与网络请求在宿主侧的调度、焦点与 IME。
 
-**隔离。** 新窗口得到自己的 JavaScript 上下文：同一份应用脚本在里面**重新执行一遍**，全局变量、模块状态、定时器、`localStorage` 都与其他窗口互不可见。`localStorage` 只在内存里，窗口关闭即释放。脚本用 `Nana.windows.current()` 判断自己身在哪扇窗：
+**隔离。** 新窗口得到自己的 JavaScript 上下文：同一份应用脚本在里面**重新执行一遍**，全局变量、模块状态、定时器、`localStorage` 都与其他窗口互不可见。`localStorage` 和 `Nana.storage` 只在内存里，窗口关闭即释放。脚本用 `Nana.windows.current()` 判断自己身在哪扇窗：
 
 ```js
 const current = Nana.windows.current(); // { id, isolation, params, ... }
@@ -78,9 +78,9 @@ JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布�
 
 为了让熟悉的写法落到桌面窗口，而不是复刻浏览器：
 
-有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）、Web Audio 的 PCM 子集（`AudioContext`、从 `Float32Array` 填充的 `AudioBuffer`、`AudioBufferSourceNode`、`GainNode`、`destination`、`ScriptProcessorNode` / `onaudioprocess`）。桌面输出走 cpal；无宿主或无输出设备时构造 `AudioContext` 抛 `NotSupportedError`。测试注入 mock sink，不依赖扬声器。这条路径不写 HostTexture。
+有：`window` / `document` 的一个子集、事件、定时器、`requestAnimationFrame`、本地存储（NanaUI 的存储就是这份 `localStorage`；默认内存，宿主注入 `FileStore` 后主上下文可落盘）、`Nana.storage`（同一张表上的 JSON 助手）、桌面剪贴板、`fetch`（响应头到了就 resolve，正文可以边到边读）、Web Audio 的 PCM 子集（`AudioContext`、从 `Float32Array` 填充的 `AudioBuffer`、`AudioBufferSourceNode`、`GainNode`、`destination`、`ScriptProcessorNode` / `onaudioprocess`）。桌面输出走 cpal；无宿主或无输出设备时构造 `AudioContext` 抛 `NotSupportedError`。测试注入 mock sink，不依赖扬声器。这条路径不写 HostTexture。
 
-没有：完整 DOM / CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、Tauri invoke / 插件 / 窗口协议、完整 Web Audio 节点图 / 空间化 / `AudioWorklet` / `decodeAudioData`。未实现的 `fetch` 选项会报错，不会假装成功（`duplex` 仍在拒绝之列——请求侧流式正文需要分块上传，宿主协议还没有这条路）。`<audio>` 仍只是播放态 shim，不解码进 mixer。
+没有：完整 DOM / CSSOM、流式**请求**体、cookie、浏览器 CORS、Service Worker、IndexedDB（`indexedDB.open` / `deleteDatabase` / `databases` / `cmp` 抛 `NotSupportedError`，结构化持久数据走 `Nana.storage` 或你注册的 `HostApiRegistry`）、Tauri invoke / 插件 / 窗口协议、完整 Web Audio 节点图 / 空间化 / `AudioWorklet` / `decodeAudioData`。未实现的 `fetch` 选项会报错，不会假装成功（`duplex` 仍在拒绝之列——请求侧流式正文需要分块上传，宿主协议还没有这条路）。`<audio>` 仍只是播放态 shim，不解码进 mixer。
 
 `fetch()` 在响应**头**到达时就 resolve，和浏览器一样；正文随后分块到达，每一块在 `pump_frame` 里交给 JS，回调不离开引擎线程。`response.body` 是 `ReadableStream`：
 
@@ -118,7 +118,22 @@ cargo test -p nana-js-v8 --features engine --locked vue_native_websocket -- --te
 
 受管的不只是 JS：同一个 `fetch_host` 也是这个文档在引擎里的资源出口（按 mount / 窗口各自生效，不是进程级）——`url()` 图片、`<img src>`、`mask-image`、`border-image` 走的是同一份 `FetchPolicy`，同样逐跳复核重定向，也同样可取消——painter 拆掉或图片不再被引用时，在飞的请求会被 shutdown，不会挂到超时才收场。没注入 host 就一张远程图都不取，`data:`、`file:` 与相对路径不受影响。`@font-face` 不取远程，只认 `local()`、`data:` 和 jail 内的本机文件。
 
-NanaUI 不内置登录、设置存储或任何产品业务。你在宿主里注册自己的命令（`HostApiRegistry`），再交给 Vue 调用。框架自带的接口名和你注册的名字不能冲突，冲突时启动失败。
+NanaUI 不内置登录或任何产品业务。存储就是一份 `localStorage`：宿主注入 `PersistentStore`（默认内存；`FileStore::open(app_data_dir("YourApp")?)` 落成目录里的 `local-storage.bin`）。`Nana.storage` 是同一张表上的 JSON 助手（`set` 写入 `JSON.stringify` 后的字符串）。Dock / Appearance / 窗口几何也写进这张表，key 分别为 `nana.dock.{persistKey}`、`nana.appearance.{persistKey}`、`nana.window.{persistKey}`。`Nana.storage` 的 `get` / `set` / `clear` / `remove` / `keys` 会留下这些框架 key；`localStorage` 仍能读、写、删它们。隔离窗口仍是私有内存桶。你还可以注册自己的命令（`HostApiRegistry`）交给 Vue 调用。框架自带的接口名和你注册的名字不能冲突，冲突时启动失败。
+
+```js
+await Nana.storage.set("session", { user: "nana" });
+const session = await Nana.storage.get("session"); // { user: "nana" } 或 null
+```
+
+```rust
+VueRuntimeProgram::run_with_store(
+    settings.persist_key("main"),
+    engine,
+    artifact,
+    application_api,
+    shared_store(FileStore::open(app_data_dir("YourApp")?)?),
+)?;
+```
 
 ## 扩展控件
 

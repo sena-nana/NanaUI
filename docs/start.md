@@ -125,8 +125,9 @@ fn main() -> Result<(), nana_ui::HostedRunError> {
 | 东西 | 放哪 |
 | --- | --- |
 | 按钮是否 loading、输入框当前值 | 对应控件（`update_component`）或你的 view state |
-| 打开了哪个文档、登录态、设置值 | 应用自己的结构，NanaUI 不替你存盘 |
+| 打开了哪个文档、登录态、设置值 | 应用自己的结构；通用键值就是 `localStorage` / `Nana.storage`（同一张表） |
 | 侧栏宽度、Region 折叠 | `WorkspaceModel`，见 [工作区](workspace.md) |
+| 窗口位置 / 尺寸 | `WindowDescriptor::persist_key`，见 [窗口](window.md) |
 | 这一帧的实时画面 | 你的 GPU 资源 + `HostTextureRegistry`，见 [实时画面](gpu.md) |
 
 `RuntimeProgram::Message` 是跨窗口 / GPU / 持久化的宿主消息，不是每个点击的总线。

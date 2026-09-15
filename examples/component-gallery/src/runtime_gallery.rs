@@ -990,6 +990,7 @@ impl GalleryState {
         if self.dock_locked != locked {
             self.dock_locked = locked;
         }
+        self.persist_dock();
     }
 
     #[cfg(test)]

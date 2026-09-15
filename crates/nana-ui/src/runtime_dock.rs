@@ -94,6 +94,7 @@ fn floating_window_settings(title: &str, surface: &DockFloatingSurface) -> Windo
         focus_on_show: true,
         constrain_to_work_area: false,
         skip_taskbar: false,
+        persist_key: None,
         resizable: true,
         role: WindowRole::Tool,
         modal: false,

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nana_js_engine::{HostApiRegistry, HostValue, JsException, RuntimeArtifact};
+use nana_ui_core::{PersistentStore, SharedStore, is_framework_storage_key, memory_store};
 
 pub use audio::{
     AudioError, AudioId, AudioRuntime, MockAudioSink, SharedAudioRuntime, shared_audio_runtime,
@@ -148,66 +149,103 @@ impl WebApiState {
         self.socket.set_host(socket_host);
     }
 
-    pub fn storage_get(&self, bucket: &str, key: &str) -> Option<String> {
+    pub fn storage_get(&self, bucket: &str, key: &str) -> Result<Option<String>, JsException> {
         if bucket == "local" {
-            return self
-                .local_storage
-                .lock()
-                .ok()
-                .and_then(|storage| storage.get(key).cloned());
+            return self.local_storage.get(key).map_err(store_js_error);
         }
-        self.storage.get(bucket).and_then(|m| m.get(key).cloned())
+        Ok(self.storage.get(bucket).and_then(|m| m.get(key).cloned()))
     }
 
-    pub fn storage_set(&mut self, bucket: &str, key: &str, value: String) {
+    pub fn storage_set(
+        &mut self,
+        bucket: &str,
+        key: &str,
+        value: String,
+    ) -> Result<(), JsException> {
         if bucket == "local" {
-            if let Ok(mut storage) = self.local_storage.lock() {
-                storage.insert(key.to_string(), value);
-            }
-            return;
+            enforce_local_storage_quota(self.local_storage.as_ref(), key, &value)?;
+            self.local_storage.set(key, value).map_err(store_js_error)?;
+            return Ok(());
         }
         self.storage
             .entry(bucket.to_string())
             .or_default()
             .insert(key.to_string(), value);
+        Ok(())
     }
 
-    pub fn storage_remove(&mut self, bucket: &str, key: &str) {
+    pub fn storage_remove(&mut self, bucket: &str, key: &str) -> Result<(), JsException> {
         if bucket == "local" {
-            if let Ok(mut storage) = self.local_storage.lock() {
-                storage.remove(key);
-            }
-            return;
+            self.local_storage.remove(key).map_err(store_js_error)?;
+            return Ok(());
         }
         if let Some(map) = self.storage.get_mut(bucket) {
             map.remove(key);
         }
+        Ok(())
     }
 
-    pub fn storage_clear(&mut self, bucket: &str) {
+    pub fn storage_clear(&mut self, bucket: &str) -> Result<(), JsException> {
         if bucket == "local" {
-            if let Ok(mut storage) = self.local_storage.lock() {
-                storage.clear();
-            }
-            return;
+            self.local_storage.clear().map_err(store_js_error)?;
+            return Ok(());
         }
         if let Some(map) = self.storage.get_mut(bucket) {
             map.clear();
         }
+        Ok(())
     }
 
-    pub fn storage_keys(&self, bucket: &str) -> Vec<String> {
-        if bucket == "local" {
-            return self
-                .local_storage
-                .lock()
-                .map(|storage| storage.keys().cloned().collect())
-                .unwrap_or_default();
+    pub fn storage_clear_nana(&mut self) -> Result<(), JsException> {
+        let keys = self.storage_keys_nana()?;
+        for key in keys {
+            self.local_storage.remove(&key).map_err(store_js_error)?;
         }
-        self.storage
+        Ok(())
+    }
+
+    pub fn storage_get_nana(&self, key: &str) -> Result<Option<String>, JsException> {
+        if is_framework_storage_key(key) {
+            return Ok(None);
+        }
+        self.storage_get("local", key)
+    }
+
+    pub fn storage_set_nana(&mut self, key: &str, value: String) -> Result<(), JsException> {
+        if is_framework_storage_key(key) {
+            return Ok(());
+        }
+        self.storage_set("local", key, value)
+    }
+
+    pub fn storage_remove_nana(&mut self, key: &str) -> Result<(), JsException> {
+        if is_framework_storage_key(key) {
+            return Ok(());
+        }
+        self.storage_remove("local", key)
+    }
+
+    pub fn storage_keys_nana(&self) -> Result<Vec<String>, JsException> {
+        Ok(self
+            .storage_keys("local")?
+            .into_iter()
+            .filter(|key| !is_framework_storage_key(key))
+            .collect())
+    }
+
+    pub fn storage_keys(&self, bucket: &str) -> Result<Vec<String>, JsException> {
+        if bucket == "local" {
+            return self.local_storage.keys().map_err(store_js_error);
+        }
+        Ok(self
+            .storage
             .get(bucket)
             .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default()
+            .unwrap_or_default())
+    }
+
+    pub fn persist_store(&self) -> SharedStorage {
+        Arc::clone(&self.local_storage)
     }
 
     pub fn document_dataset(&self) -> &BTreeMap<String, String> {
@@ -430,10 +468,44 @@ impl DueTimers {
 
 /// Shared handle used by VueHost and examples.
 pub type SharedWebApiState = Arc<Mutex<WebApiState>>;
-pub type SharedStorage = Arc<Mutex<BTreeMap<String, String>>>;
+pub type SharedStorage = SharedStore;
 
+/// In-memory `localStorage` bucket. Isolated Vue windows always get a fresh one.
 pub fn shared_storage() -> SharedStorage {
-    Arc::new(Mutex::new(BTreeMap::new()))
+    memory_store()
+}
+
+const LOCAL_STORAGE_QUOTA: usize = 5 * 1024 * 1024;
+
+fn store_js_error(error: nana_ui_core::StoreError) -> JsException {
+    JsException::new(error.to_string())
+}
+
+fn enforce_local_storage_quota(
+    store: &dyn PersistentStore,
+    key: &str,
+    value: &str,
+) -> Result<(), JsException> {
+    let keys = store.keys().map_err(store_js_error)?;
+    let mut total = key.len() + value.len();
+    for existing in keys {
+        if existing == key {
+            continue;
+        }
+        total += existing.len();
+        total += store
+            .get(&existing)
+            .map_err(store_js_error)?
+            .map(|value| value.len())
+            .unwrap_or(0);
+        if total > LOCAL_STORAGE_QUOTA {
+            break;
+        }
+    }
+    if total > LOCAL_STORAGE_QUOTA {
+        return Err(JsException::new("localStorage quota exceeded").with_name("QuotaExceededError"));
+    }
+    Ok(())
 }
 
 pub fn shared_web_api_state() -> SharedWebApiState {
@@ -538,7 +610,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
             let bucket = arg_str(args, 0).unwrap_or_else(|| "local".into());
             let key = arg_str(args, 1).unwrap_or_default();
             let guard = lock(&state)?;
-            Ok(match guard.storage_get(&bucket, &key) {
+            Ok(match guard.storage_get(&bucket, &key)? {
                 Some(v) => HostValue::String(v),
                 None => HostValue::Null,
             })
@@ -550,7 +622,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
             let bucket = arg_str(args, 0).unwrap_or_else(|| "local".into());
             let key = arg_str(args, 1).unwrap_or_default();
             let value = arg_str(args, 2).unwrap_or_default();
-            lock(&state)?.storage_set(&bucket, &key, value);
+            lock(&state)?.storage_set(&bucket, &key, value)?;
             Ok(HostValue::Null)
         });
     }
@@ -559,7 +631,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         api.register("storageRemove", move |args| {
             let bucket = arg_str(args, 0).unwrap_or_else(|| "local".into());
             let key = arg_str(args, 1).unwrap_or_default();
-            lock(&state)?.storage_remove(&bucket, &key);
+            lock(&state)?.storage_remove(&bucket, &key)?;
             Ok(HostValue::Null)
         });
     }
@@ -567,7 +639,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("storageClear", move |args| {
             let bucket = arg_str(args, 0).unwrap_or_else(|| "local".into());
-            lock(&state)?.storage_clear(&bucket);
+            lock(&state)?.storage_clear(&bucket)?;
             Ok(HostValue::Null)
         });
     }
@@ -575,7 +647,51 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
         let state = Arc::clone(&state);
         api.register("storageKeys", move |args| {
             let bucket = arg_str(args, 0).unwrap_or_else(|| "local".into());
-            let keys = lock(&state)?.storage_keys(&bucket);
+            let keys = lock(&state)?.storage_keys(&bucket)?;
+            Ok(HostValue::Array(
+                keys.into_iter().map(HostValue::String).collect(),
+            ))
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        api.register("nanaStorageGet", move |args| {
+            let key = arg_str(args, 0).unwrap_or_default();
+            let guard = lock(&state)?;
+            Ok(match guard.storage_get_nana(&key)? {
+                Some(v) => HostValue::String(v),
+                None => HostValue::Null,
+            })
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        api.register("nanaStorageSet", move |args| {
+            let key = arg_str(args, 0).unwrap_or_default();
+            let value = arg_str(args, 1).unwrap_or_default();
+            lock(&state)?.storage_set_nana(&key, value)?;
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        api.register("nanaStorageRemove", move |args| {
+            let key = arg_str(args, 0).unwrap_or_default();
+            lock(&state)?.storage_remove_nana(&key)?;
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        api.register("nanaStorageClear", move |_| {
+            lock(&state)?.storage_clear_nana()?;
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        api.register("nanaStorageKeys", move |_| {
+            let keys = lock(&state)?.storage_keys_nana()?;
             Ok(HostValue::Array(
                 keys.into_iter().map(HostValue::String).collect(),
             ))
@@ -712,7 +828,7 @@ fn register_web_api_storage_and_timer_ops(api: &mut HostApiRegistry, state: Shar
                     ),
                     (
                         "storageKeys".into(),
-                        HostValue::Number(guard.storage_keys("local").len() as f64),
+                        HostValue::Number(guard.storage_keys("local")?.len() as f64),
                     ),
                 ]
                 .into_iter()
@@ -767,6 +883,8 @@ mod tests {
     #[test]
     fn shim_is_nonempty_and_mentions_window() {
         assert!(WEB_API_SHIM_JS.contains("localStorage"));
+        assert!(WEB_API_SHIM_JS.contains("indexedDB"));
+        assert!(WEB_API_SHIM_JS.contains("use Nana.storage"));
         assert!(WEB_API_SHIM_JS.contains("matchMedia"));
         assert!(WEB_API_SHIM_JS.contains("hostCall(\"evaluateMediaQuery\""));
         assert!(WEB_API_SHIM_JS.contains("evaluateMediaQueryLocal"));
@@ -929,6 +1047,363 @@ mod tests {
             )
             .unwrap();
         assert_eq!(got.as_str(), Some("v"));
+    }
+
+    #[test]
+    fn nana_storage_is_the_same_map_as_local_storage() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call(
+            "nanaStorageSet",
+            &[HostValue::string("doc"), HostValue::string("{\"n\":1}")],
+        )
+        .unwrap();
+        let via_local = api
+            .call(
+                "storageGet",
+                &[HostValue::string("local"), HostValue::string("doc")],
+            )
+            .unwrap();
+        assert_eq!(via_local.as_str(), Some("{\"n\":1}"));
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string("who"),
+                HostValue::string("nana"),
+            ],
+        )
+        .unwrap();
+        let via_nana = api
+            .call("nanaStorageGet", &[HostValue::string("who")])
+            .unwrap();
+        assert_eq!(via_nana.as_str(), Some("nana"));
+        api.call("storageClear", &[HostValue::string("local")])
+            .unwrap();
+        assert!(matches!(
+            api.call("nanaStorageGet", &[HostValue::string("doc")])
+                .unwrap(),
+            HostValue::Null
+        ));
+    }
+
+    #[test]
+    fn injected_store_survives_a_new_web_api_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "nana-web-api-store-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = nana_ui_platform::FileStore::open(&dir).unwrap();
+        let shared = nana_ui_core::shared_store(store);
+        {
+            let state = shared_web_api_state_with_local_storage(Arc::clone(&shared));
+            let mut api = HostApiRegistry::new();
+            register_web_api_host_ops(&mut api, Arc::clone(&state));
+            api.call(
+                "storageSet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string("k"),
+                    HostValue::string("persist-me"),
+                ],
+            )
+            .unwrap();
+            api.call(
+                "nanaStorageSet",
+                &[HostValue::string("doc"), HostValue::string("{\"n\":1}")],
+            )
+            .unwrap();
+            shared.flush().unwrap();
+        }
+        drop(shared);
+        let store = nana_ui_core::shared_store(nana_ui_platform::FileStore::open(&dir).unwrap());
+        let state = shared_web_api_state_with_local_storage(store);
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, state);
+        let got = api
+            .call(
+                "storageGet",
+                &[HostValue::string("local"), HostValue::string("k")],
+            )
+            .unwrap();
+        assert_eq!(got.as_str(), Some("persist-me"));
+        let doc = api
+            .call("nanaStorageGet", &[HostValue::string("doc")])
+            .unwrap();
+        assert_eq!(doc.as_str(), Some("{\"n\":1}"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn local_storage_set_rejects_quota() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        let huge = "x".repeat(LOCAL_STORAGE_QUOTA + 1);
+        let error = api
+            .call(
+                "storageSet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string("k"),
+                    HostValue::string(huge),
+                ],
+            )
+            .expect_err("over-quota set must fail");
+        assert_eq!(error.name, "QuotaExceededError");
+        assert!(error.message.contains("quota exceeded"));
+        let got = api
+            .call(
+                "storageGet",
+                &[HostValue::string("local"), HostValue::string("k")],
+            )
+            .unwrap();
+        assert!(matches!(got, HostValue::Null | HostValue::Undefined));
+    }
+
+    #[test]
+    fn nana_storage_clear_keeps_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string("session"),
+                HostValue::string("user"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(nana_ui_core::window_storage_key("main")),
+                HostValue::string(
+                    "{\"version\":1,\"x\":1.0,\"y\":2.0,\"width\":3.0,\"height\":4.0}",
+                ),
+            ],
+        )
+        .unwrap();
+        api.call("nanaStorageClear", &[]).unwrap();
+        assert!(matches!(
+            api.call("nanaStorageGet", &[HostValue::string("session")])
+                .unwrap(),
+            HostValue::Null
+        ));
+        let window = api
+            .call(
+                "storageGet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string(nana_ui_core::window_storage_key("main")),
+                ],
+            )
+            .unwrap();
+        assert!(window.as_str().is_some());
+        let nana_keys = api.call("nanaStorageKeys", &[]).unwrap();
+        let listed = nana_keys.as_array().expect("keys array");
+        assert!(
+            listed
+                .iter()
+                .filter_map(HostValue::as_str)
+                .all(|key| !nana_ui_core::is_framework_storage_key(key))
+        );
+        api.call(
+            "nanaStorageRemove",
+            &[HostValue::string(nana_ui_core::window_storage_key("main"))],
+        )
+        .unwrap();
+        let still = api
+            .call(
+                "storageGet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string(nana_ui_core::window_storage_key("main")),
+                ],
+            )
+            .unwrap();
+        assert!(still.as_str().is_some());
+    }
+
+    #[test]
+    fn nana_storage_keys_then_remove_keeps_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string("session"),
+                HostValue::string("user"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(nana_ui_core::dock_storage_key("gallery")),
+                HostValue::string("layout"),
+            ],
+        )
+        .unwrap();
+        let keys = api.call("nanaStorageKeys", &[]).unwrap();
+        for key in keys.as_array().expect("keys array") {
+            api.call("nanaStorageRemove", &[key.clone()]).unwrap();
+        }
+        assert!(matches!(
+            api.call("nanaStorageGet", &[HostValue::string("session")])
+                .unwrap(),
+            HostValue::Null
+        ));
+        let dock = api
+            .call(
+                "storageGet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string(nana_ui_core::dock_storage_key("gallery")),
+                ],
+            )
+            .unwrap();
+        assert_eq!(dock.as_str(), Some("layout"));
+    }
+
+    #[test]
+    fn nana_storage_set_skips_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        let window_key = nana_ui_core::window_storage_key("main");
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(window_key.clone()),
+                HostValue::string("geometry"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "nanaStorageSet",
+            &[
+                HostValue::string(window_key.clone()),
+                HostValue::string("1"),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            api.call("nanaStorageGet", &[HostValue::string(window_key.clone())])
+                .unwrap(),
+            HostValue::Null
+        ));
+        let via_local = api
+            .call(
+                "storageGet",
+                &[HostValue::string("local"), HostValue::string(window_key)],
+            )
+            .unwrap();
+        assert_eq!(via_local.as_str(), Some("geometry"));
+    }
+
+    #[test]
+    fn local_storage_remove_still_deletes_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(nana_ui_core::window_storage_key("main")),
+                HostValue::string("{}"),
+            ],
+        )
+        .unwrap();
+        api.call(
+            "storageRemove",
+            &[
+                HostValue::string("local"),
+                HostValue::string(nana_ui_core::window_storage_key("main")),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            api.call(
+                "storageGet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string(nana_ui_core::window_storage_key("main")),
+                ],
+            )
+            .unwrap(),
+            HostValue::Null
+        ));
+    }
+
+    #[test]
+    fn local_storage_clear_wipes_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(nana_ui_core::window_storage_key("main")),
+                HostValue::string("{}"),
+            ],
+        )
+        .unwrap();
+        api.call("storageClear", &[HostValue::string("local")])
+            .unwrap();
+        assert!(matches!(
+            api.call(
+                "storageGet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string(nana_ui_core::window_storage_key("main")),
+                ],
+            )
+            .unwrap(),
+            HostValue::Null
+        ));
+    }
+
+    #[test]
+    fn local_storage_quota_counts_framework_keys() {
+        let state = shared_web_api_state();
+        let mut api = HostApiRegistry::new();
+        register_web_api_host_ops(&mut api, Arc::clone(&state));
+        let dock_key = nana_ui_core::dock_storage_key("gallery");
+        let huge = "x".repeat(LOCAL_STORAGE_QUOTA - dock_key.len());
+        api.call(
+            "storageSet",
+            &[
+                HostValue::string("local"),
+                HostValue::string(dock_key.clone()),
+                HostValue::string(huge),
+            ],
+        )
+        .unwrap();
+        let error = api
+            .call(
+                "storageSet",
+                &[
+                    HostValue::string("local"),
+                    HostValue::string("user"),
+                    HostValue::string("hello"),
+                ],
+            )
+            .expect_err("framework keys count toward quota");
+        assert_eq!(error.name, "QuotaExceededError");
     }
 
     #[test]

@@ -199,6 +199,17 @@
     };
     globalThis.DOMException.prototype = Object.create(Error.prototype);
   }
+  function unsupportedIndexedDB() {
+    throw new DOMException("IndexedDB is not implemented by Nana; use Nana.storage", "NotSupportedError");
+  }
+  const indexedDB = {
+    open: unsupportedIndexedDB,
+    deleteDatabase: unsupportedIndexedDB,
+    databases: unsupportedIndexedDB,
+    cmp: unsupportedIndexedDB,
+  };
+  win.indexedDB = indexedDB;
+  globalThis.indexedDB = indexedDB;
   if (globalThis.URL) {
     globalThis.URL.createObjectURL = function (resource) {
       const id = resourceId(resource);

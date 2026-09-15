@@ -3526,6 +3526,65 @@ mod tests {
     }
 
     #[test]
+    fn indexed_db_throws_not_supported_and_nana_storage_roundtrips() {
+        with_serial_v8_tests(|| {
+            use nana_ui_web_api::{
+                WEB_API_SHIM_JS, register_web_api_host_ops, shared_web_api_state,
+            };
+
+            let mut api = HostApiRegistry::new();
+            register_web_api_host_ops(&mut api, shared_web_api_state());
+            let mut engine = V8Engine::new();
+            engine.register_host_api(&api).unwrap();
+            engine
+                .initialize(RuntimeArtifact::from_source(
+                    "storage.js",
+                    format!(
+                        "{WEB_API_SHIM_JS}\n{}",
+                        r#"
+                globalThis.__nanaProbe = {
+                  indexedDb() {
+                    try {
+                      indexedDB.open("nana");
+                      return "no-throw";
+                    } catch (error) {
+                      return error.name;
+                    }
+                  },
+                  start() {
+                    return Nana.storage.set("doc", { n: 1 }).then(function () {
+                      return Nana.storage.get("doc");
+                    }).then(function (value) {
+                      globalThis.__stored = value;
+                      return value;
+                    });
+                  },
+                  read() { return globalThis.__stored; }
+                };
+                "#
+                    ),
+                ))
+                .unwrap();
+            let indexed = engine.resolve_function("__nanaProbe.indexedDb").unwrap();
+            let name = engine.invoke(indexed, &[]).unwrap();
+            assert_eq!(name.as_str(), Some("NotSupportedError"));
+            let start = engine.resolve_function("__nanaProbe.start").unwrap();
+            let read = engine.resolve_function("__nanaProbe.read").unwrap();
+            engine.invoke(start, &[]).unwrap();
+            for _ in 0..32 {
+                engine.run_microtasks().unwrap();
+                let value = engine.invoke(read, &[]).unwrap();
+                if let Some(obj) = value.as_object() {
+                    assert_eq!(obj.get("n").and_then(HostValue::as_f64), Some(1.0));
+                    engine.shutdown();
+                    return;
+                }
+            }
+            panic!("Nana.storage promise did not settle");
+        });
+    }
+
+    #[test]
     fn form_data_bodies_encode_as_multipart_with_a_generated_boundary() {
         with_serial_v8_tests(|| {
             use nana_ui_vue::VueHost;

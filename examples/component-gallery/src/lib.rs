@@ -36,8 +36,8 @@ use nana_ui::{
     AppearanceEvent, DockWorkspace, DockWorkspaceEvent, GraphCanvasEvent, GraphEdge, GraphEndpoint,
     GraphMinimapEvent, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind, GraphPortSide,
     GraphSelection, GraphSize, GraphViewport, MaterialOutcome, PaneChromeActionKind, RoutedInput,
-    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SplitAxis,
-    SplitPaneAction, SplitPaneController,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, SharedStore,
+    SplitAxis, SplitPaneAction, SplitPaneController, memory_store,
 };
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{InputEvent, WindowDescriptor, WindowEvent, WindowId, WindowRole};
@@ -281,6 +281,7 @@ pub struct GalleryState {
     settings_runtime: Option<runtime_settings::GallerySettingsRuntime>,
     gallery_runtime: Option<runtime_gallery::GalleryRuntime>,
     overlay_runtime: Option<runtime_overlays::GalleryOverlaysRuntime>,
+    store: SharedStore,
 }
 
 impl Default for GalleryState {
@@ -361,6 +362,7 @@ impl GalleryState {
             settings_runtime: None,
             gallery_runtime: None,
             overlay_runtime: None,
+            store: memory_store(),
         };
         state.refresh_gallery_runtime();
         state
@@ -368,6 +370,24 @@ impl GalleryState {
 
     pub fn theme_mode(&self) -> ThemeMode {
         self.theme
+    }
+
+    fn persist_appearance(&self) {
+        let _ = self
+            .appearance
+            .save_to_store(self.store.as_ref(), "gallery");
+    }
+
+    fn persist_dock(&self) {
+        let _ = self.dock.save_to_store(self.store.as_ref(), "gallery");
+    }
+
+    fn restore_from_store(&mut self) {
+        let _ = self
+            .appearance
+            .restore_from_store(self.store.as_ref(), "gallery");
+        let _ = self.dock.restore_from_store(self.store.as_ref(), "gallery");
+        self.dock_locked = self.dock.locked;
     }
 
     /// Flush retained Runtime documents so snapshot tooling can paint `UiScene`.
@@ -533,27 +553,34 @@ impl GalleryState {
             GalleryMessage::SetTheme(theme) => self.theme = theme,
             GalleryMessage::SetStandardRadius(radius) => {
                 self.appearance.set_standard_radius(f32::from(radius));
+                self.persist_appearance();
             }
             GalleryMessage::SetWorkspaceCorners(enabled) => {
                 self.appearance.set_workspace_corners_enabled(enabled);
+                self.persist_appearance();
             }
             GalleryMessage::SetWindowMaterial(mode) => {
                 self.appearance.set_window_material(mode);
+                self.persist_appearance();
             }
             GalleryMessage::SetBackdropTarget(target) => {
                 self.appearance.set_backdrop_target(target);
+                self.persist_appearance();
             }
             GalleryMessage::SetBackdropOpacity(opacity) => {
                 self.appearance.set_backdrop_opacity(opacity);
+                self.persist_appearance();
             }
             GalleryMessage::SetTitlebarFollowsSidebar(enabled) => {
                 self.appearance.set_titlebar_follows_sidebar(enabled);
+                self.persist_appearance();
             }
             GalleryMessage::ResetAppearance => {
                 // Match Lilia `resetAppearanceDefaults` / AppearanceEvent::Reset:
                 // appearance fields + ThemeMode::Light (not ThemeMode::default).
                 self.appearance.reset();
                 self.theme = AppearanceSettings::RESET_THEME;
+                self.persist_appearance();
             }
             GalleryMessage::SelectSection(section) => {
                 self.section = section;
@@ -1214,6 +1241,11 @@ impl RuntimeProgram for GalleryApp {
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error> {
         let mut app = Self::new();
+        app.state.store = context.store().clone();
+        app.state.restore_from_store();
+        if app.state.gallery_runtime.is_some() {
+            app.state.refresh_gallery_runtime();
+        }
         let size = context.geometry().logical_size;
         if size.0 > 0.0 && size.1 > 0.0 {
             let _ = app.apply_message(GalleryMessage::Workspace(WorkspaceAction::WindowResized {
@@ -1644,6 +1676,7 @@ fn runtime_dock_window_commands(
                     focus_on_show: true,
                     constrain_to_work_area: false,
                     skip_taskbar: false,
+                    persist_key: None,
                     resizable: true,
                     role: WindowRole::Tool,
                     modal: false,

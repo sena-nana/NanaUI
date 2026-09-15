@@ -81,6 +81,7 @@ pub struct VueWindowOptions {
     pub role: VueWindowRole,
     pub icon: Option<WindowIcon>,
     pub isolation: VueWindowIsolation,
+    pub persist_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -129,6 +130,7 @@ impl Default for VueWindowOptions {
             role: VueWindowRole::Main,
             icon: None,
             isolation: VueWindowIsolation::Shared,
+            persist_key: None,
         }
     }
 }
@@ -163,6 +165,11 @@ impl VueWindowOptions {
             Some("dialog") => VueWindowRole::Dialog,
             _ => VueWindowRole::Main,
         };
+        if let Some(key) = map.get("persistKey").and_then(HostValue::as_str)
+            && !key.is_empty()
+        {
+            options.persist_key = Some(key.to_string());
+        }
         options
     }
 
@@ -487,10 +494,23 @@ impl Default for VueRuntime {
 
 impl VueRuntime {
     pub fn new(physical_width: u32, physical_height: u32, scale_factor: f32) -> Self {
+        Self::with_store(
+            physical_width,
+            physical_height,
+            scale_factor,
+            nana_ui_web_api::shared_storage(),
+        )
+    }
+
+    pub fn with_store(
+        physical_width: u32,
+        physical_height: u32,
+        scale_factor: f32,
+        local_storage: nana_ui_web_api::SharedStorage,
+    ) -> Self {
         let canvas = nana_ui_web_api::shared_canvas_runtime();
         let video = crate::video::shared_video_runtime();
         let media = nana_ui_web_api::shared_media_runtime();
-        let local_storage = nana_ui_web_api::shared_storage();
         let primary = VueHost::with_document_id_and_shared_resources(
             VueWindowId::PRIMARY.document_id(),
             physical_width,
@@ -1565,6 +1585,7 @@ impl VueRuntime {
                         focus_on_show: true,
                         constrain_to_work_area: false,
                         skip_taskbar: false,
+                        persist_key: options.persist_key,
                         resizable: options.resizable,
                         role: match options.role {
                             VueWindowRole::Main => WindowRole::Main,
@@ -2344,6 +2365,67 @@ mod tests {
             .notify_window_closed(VueWindowId(id))
             .expect("confirm close");
         assert!(runtime.host(VueWindowId(id)).is_none());
+    }
+
+    #[test]
+    fn persist_key_is_parsed_and_forwarded_to_native_open() {
+        let options = VueWindowOptions::from_host_value(Some(&object(&[(
+            "persistKey",
+            HostValue::string("tool"),
+        )])));
+        assert_eq!(options.persist_key.as_deref(), Some("tool"));
+
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        api.call(
+            "windowCreate",
+            &[object(&[("persistKey", HostValue::string("tool"))])],
+        )
+        .unwrap();
+        let commands = runtime.drain_runtime_window_commands();
+        let nana_ui_platform::host::WindowCommand::Open { settings, .. } = &commands[0] else {
+            panic!("expected native open, got {commands:?}");
+        };
+        assert_eq!(settings.persist_key.as_deref(), Some("tool"));
+    }
+
+    #[test]
+    fn injected_store_is_used_by_shared_windows_not_isolated() {
+        let store = nana_ui_core::memory_store();
+        store.set("who", "seed".into()).unwrap();
+        let runtime = VueRuntime::with_store(800, 600, 1.0, Arc::clone(&store));
+        let main = runtime.host_api_registry();
+        assert_eq!(
+            main.call("storageGet", &strings(&["local", "who"]))
+                .unwrap()
+                .as_str(),
+            Some("seed")
+        );
+
+        let isolated = created_id(
+            main.call(
+                "windowCreate",
+                &[object(&[("isolation", HostValue::string("isolated"))])],
+            )
+            .unwrap(),
+        );
+        let realm = runtime.realm_host_api_registry(isolated);
+        assert!(matches!(
+            realm
+                .call("storageGet", &strings(&["local", "who"]))
+                .unwrap(),
+            HostValue::Null
+        ));
+        realm
+            .call("storageSet", &strings(&["local", "who", "isolated"]))
+            .unwrap();
+        assert_eq!(
+            main.call("storageGet", &strings(&["local", "who"]))
+                .unwrap()
+                .as_str(),
+            Some("seed")
+        );
+        assert_eq!(store.get("who").unwrap().as_deref(), Some("seed"));
     }
 
     #[test]

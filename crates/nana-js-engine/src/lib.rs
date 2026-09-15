@@ -180,6 +180,39 @@ globalThis.Nana.resources = {
     return Boolean(globalThis.__nanaHostReleaseResourceRaw(handle));
   }
 };
+globalThis.Nana.storage = {
+  get(key) {
+    return Promise.resolve().then(function () {
+      const raw = globalThis.Nana.host.call("nanaStorageGet", [String(key)]);
+      if (raw == null) return null;
+      return JSON.parse(raw);
+    });
+  },
+  set(key, value) {
+    return Promise.resolve().then(function () {
+      const encoded = JSON.stringify(value);
+      if (typeof encoded !== "string") {
+        throw new TypeError("Nana.storage value must be JSON-serializable");
+      }
+      globalThis.Nana.host.call("nanaStorageSet", [String(key), encoded]);
+    });
+  },
+  remove(key) {
+    return Promise.resolve().then(function () {
+      globalThis.Nana.host.call("nanaStorageRemove", [String(key)]);
+    });
+  },
+  clear() {
+    return Promise.resolve().then(function () {
+      globalThis.Nana.host.call("nanaStorageClear", []);
+    });
+  },
+  keys() {
+    return Promise.resolve().then(function () {
+      return globalThis.Nana.host.call("nanaStorageKeys", []) || [];
+    });
+  }
+};
 "#;
 
 /// Opaque handle for a JS function retained by the host.

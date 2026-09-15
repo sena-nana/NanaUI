@@ -228,6 +228,6 @@ Agent 会话支持 `reload`，不需要窗口也不需要 GPU：
 ## 已知空缺
 
 - **Vue 组件状态不跨 JS 重载存活。** 真 HMR 需要应用打包器侧的 `import.meta.hot` 模块图记账加宿主侧模块注册表；这里 V8 求值的是一段扁平 classic script，没有模块图可打补丁。
-- **`localStorage` 和 `location` 有意保留**（符合浏览器刷新语义）；`documentElement` 的 dataset 与内联 style 有意清掉（那是上一版应用写的，新版不该继承），主题在重载后立即重新注入。
+- **`localStorage` 和 `location` 有意保留**（符合浏览器刷新语义；注入 `FileStore` 时 `localStorage` 也跨进程）。`documentElement` 的 dataset 与内联 style 有意清掉（那是上一版应用写的，新版不该继承），主题在重载后立即重新注入。
 - **L3 没有 `rebuild` 钩子。** 数据驱动的应用要"进程不动、重读数据文件、重建树"，正确做法是先 `AppContext::remove_view(root)` 再 `build` —— 连续两次 `build` 会叠出两棵互相覆盖的树，因为 root 层的 keyed child 不会被复用也不会被回收。框架没有提供默认实现：唯一正确的公开 despawn 需要类型化的 `Entity<V>`，应用自己持有 root 才能调，而一个默认实现只能是错的。应用可以自己写这两行。
 - **重载不能在 JS 在栈上时发生**，推迟到下一次 `RuntimeProgram::update`。

@@ -19,6 +19,8 @@ path = "src/lib.rs"
 
 [dependencies]
 nana-ui-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 url = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 tungstenite = { workspace = true, optional = true }

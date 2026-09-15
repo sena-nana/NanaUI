@@ -275,7 +275,7 @@ pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
     FrameDemand, HostFailure, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
+    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime, run_runtime_with_store,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]
@@ -333,6 +333,13 @@ pub use nana_ui_scene::DocumentAccessError;
 
 pub use nana_ui_core::{
     FileDialogError, FileDialogKind, FileDialogRequest, FileDialogResult, FileFilter,
+    KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, MemoryStore, PersistentStore,
+    SharedStore, StoreError, appearance_storage_key, dock_storage_key, is_framework_storage_key,
+    memory_store, shared_store, window_storage_key,
+};
+pub use nana_ui_platform::{
+    FileStore, PersistedWindowGeometry, app_data_dir, persist_live_window_geometry,
+    restore_window_geometry,
 };
 
 #[cfg(feature = "hosted")]

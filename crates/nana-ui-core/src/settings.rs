@@ -4,6 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::icon::Icon;
+use crate::persist::{PersistentStore, StoreError, appearance_storage_key};
 use crate::theme::{ThemeMetrics, ThemeMode, UI_METRICS};
 
 /// CSS px for the four exposed radius steps (micro / control / card / page).
@@ -246,6 +247,28 @@ impl AppearanceSettings {
     pub fn restore_json(&mut self, value: &str) -> Result<(), serde_json::Error> {
         *self = serde_json::from_str(value)?;
         Ok(())
+    }
+
+    /// Write this appearance into [`appearance_storage_key`].
+    pub fn save_to_store(&self, store: &dyn PersistentStore, key: &str) -> Result<(), StoreError> {
+        let json = self
+            .to_json()
+            .map_err(|error| StoreError::new(error.to_string()))?;
+        store.set(&appearance_storage_key(key), json)
+    }
+
+    /// Restore from [`appearance_storage_key`]. Returns `false` when absent.
+    pub fn restore_from_store(
+        &mut self,
+        store: &dyn PersistentStore,
+        key: &str,
+    ) -> Result<bool, StoreError> {
+        let Some(json) = store.get(&appearance_storage_key(key))? else {
+            return Ok(false);
+        };
+        self.restore_json(&json)
+            .map_err(|error| StoreError::new(error.to_string()))?;
+        Ok(true)
     }
 }
 
@@ -644,6 +667,7 @@ mod tests {
         AppearanceSettings, BackdropTarget, SettingsError, SettingsModel, SettingsState,
         SettingsTab, SettingsTabId, WindowMaterialMode,
     };
+    use crate::persist::MemoryStore;
     use crate::theme::UI_METRICS;
 
     fn model() -> SettingsModel {
@@ -858,5 +882,30 @@ mod tests {
         assert_eq!(restored.radius_xs(), 4.0);
         assert_eq!(restored.radius_sm(), 8.0);
         assert_eq!(restored.radius_lg(), 16.0);
+    }
+
+    #[test]
+    fn appearance_settings_roundtrip_through_store() {
+        let store = MemoryStore::new();
+        let original = AppearanceSettings::default();
+        original
+            .save_to_store(&store, "gallery")
+            .expect("appearance saves");
+        let mut restored = AppearanceSettings::new(4.0);
+        assert!(
+            restored
+                .restore_from_store(&store, "gallery")
+                .expect("appearance restores")
+        );
+        assert_eq!(
+            restored.to_json().unwrap(),
+            original.to_json().unwrap(),
+            "store roundtrip must preserve appearance JSON"
+        );
+        assert!(
+            !restored
+                .restore_from_store(&store, "missing")
+                .expect("missing key")
+        );
     }
 }

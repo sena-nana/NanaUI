@@ -437,6 +437,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return Err("window identity is already live".into());
         }
         crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
+        let mut settings = settings;
+        restore_window_geometry(&mut settings, self.store.as_ref());
         if let Some(parent) = settings.parent
             && (self.window(parent).is_none() || self.closing_windows.contains(&parent))
         {
@@ -519,7 +521,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             surface.alpha_mode(),
             window.theme().map(system_appearance_from_winit),
         )
-        .with_windows(&self.windows);
+        .with_windows(&self.windows)
+        .with_store(Arc::clone(&self.store));
         if let Err(error) = self.program.initialize_window(id, &context) {
             self.windows.unregister(id);
             self.program.discard_window(id);
@@ -768,7 +771,28 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if maximized != previous.maximized {
             self.sync_title_bar_maximized(id, maximized);
         }
+        if changed {
+            self.persist_geometry(id);
+        }
         changed
+    }
+
+    fn persist_geometry(&self, id: WindowId) {
+        let Some(host) = self.window_contexts.get(&id) else {
+            return;
+        };
+        let fullscreen = host
+            .mode
+            .as_ref()
+            .is_some_and(|mode| mode.fullscreen.is_some());
+        let minimized = host.surface.window().is_minimized() == Some(true);
+        let _ = persist_live_window_geometry(
+            self.store.as_ref(),
+            &host.settings,
+            &host.geometry,
+            fullscreen,
+            minimized,
+        );
     }
     /// Pins transaction presents while the OS's own frame-resize gesture is
     /// moving the window, and reports whether that gesture is active.
