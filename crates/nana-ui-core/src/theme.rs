@@ -37,6 +37,32 @@ pub mod space {
     pub const PAGE: f32 = 24.0;
 }
 
+/// Product type scale: font size and weight steps shared by desktop shells.
+///
+/// [`BODY`] is [`UI_BASE_TEXT_SIZE`]. Card-title and metric display sizes
+/// stay with the application when they are product-specific.
+pub mod type_scale {
+    use super::UI_BASE_TEXT_SIZE;
+
+    /// Caption / meta line (timestamps, counts, badges).
+    pub const META: f32 = 12.0;
+    /// Body copy. Same value as [`UI_BASE_TEXT_SIZE`].
+    pub const BODY: f32 = UI_BASE_TEXT_SIZE;
+    /// Section title inside a page or card.
+    pub const SECTION: f32 = 14.0;
+    /// In-page heading (profile name, dialog title).
+    pub const HEADING: f32 = 16.0;
+    /// Display / hero line.
+    pub const DISPLAY: f32 = 20.0;
+
+    /// Regular body weight.
+    pub const REGULAR: u16 = 400;
+    /// Medium emphasis (labels, card titles).
+    pub const MEDIUM: u16 = 500;
+    /// Semibold headings.
+    pub const SEMIBOLD: u16 = 600;
+}
+
 /// Non-color design tokens shared by layout and interaction primitives.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ThemeMetrics {
@@ -149,5 +175,12 @@ mod tests {
         let encoded = serde_json::to_string(&ThemeMode::Light).expect("theme serializes");
         let restored: ThemeMode = serde_json::from_str(&encoded).expect("theme restores");
         assert_eq!(restored, ThemeMode::Light);
+    }
+
+    #[test]
+    fn type_scale_body_matches_base_text_size() {
+        assert_eq!(super::type_scale::BODY, super::UI_BASE_TEXT_SIZE);
+        assert_eq!(super::type_scale::REGULAR, 400);
+        assert_eq!(super::type_scale::SEMIBOLD, 600);
     }
 }

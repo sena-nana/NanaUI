@@ -14,7 +14,7 @@ use nana_ui_core::{
     SemanticColorRole, UI_METRICS,
 };
 
-use crate::gpu_slots::HOST_TEXTURE_RENDERER;
+use crate::gpu_slots::{HOST_TEXTURE_RENDERER, pack_gpu_revision};
 use crate::popover::{MENU_OVERLAY_Z_INDEX, trigger_button_style};
 use crate::view_components::project_common;
 use crate::{
@@ -40,6 +40,10 @@ pub struct HoverCard {
     /// Host-texture resource for an avatar trigger. The circular chrome comes
     /// from the style; an empty resource renders the neutral placeholder.
     pub trigger_image: Option<Arc<str>>,
+    /// Host texture generation and in-place content version. Together they
+    /// form the Scene revision, matching [`crate::Avatar`] / [`crate::Thumbnail`].
+    pub generation: u64,
+    pub version: u64,
     pub trigger_size: f32,
     pub open: bool,
     pub placement: PopoverPlacement,
@@ -59,6 +63,8 @@ impl HoverCard {
             trigger: Arc::from(""),
             trigger_icon: None,
             trigger_image: None,
+            generation: 0,
+            version: 0,
             trigger_size: crate::avatar::DEFAULT_SIZE,
             open: false,
             placement: PopoverPlacement::Right,
@@ -144,15 +150,31 @@ impl HoverCard {
         self
     }
 
+    /// Records that the host refreshed the trigger slot's pixels in place.
+    pub fn invalidate_content(&mut self) -> u64 {
+        self.version = self.version.saturating_add(1);
+        self.version
+    }
+
+    /// Records that the host replaced the underlying trigger view.
+    pub fn replace_view(&mut self, generation: u64) -> u64 {
+        self.generation = generation;
+        self.generation
+    }
+
+    pub const fn revision(&self) -> u64 {
+        pack_gpu_revision(self.generation, self.version)
+    }
+
     /// Image trigger resource without the placeholder check, mirroring
-    /// [`Avatar::custom_render`].
+    /// [`crate::Avatar::custom_render`].
     fn custom_render(&self) -> Option<CustomRenderNode> {
         let resource = self.trigger_image.as_deref()?.trim();
         if resource.is_empty() {
             return None;
         }
         Some(
-            CustomRenderNode::new(HOST_TEXTURE_RENDERER, Arc::from(resource), 0)
+            CustomRenderNode::new(HOST_TEXTURE_RENDERER, Arc::from(resource), self.revision())
                 .with_fit(ContentFit::Cover),
         )
     }
@@ -978,5 +1000,20 @@ mod tests {
         assert!(layout.transform.is_none());
         assert!(layout.opacity.is_none() || layout.opacity == Some(1.0));
         assert_eq!(layout.z_index, Some(MENU_OVERLAY_Z_INDEX));
+    }
+
+    #[test]
+    fn late_host_texture_moves_the_trigger_revision() {
+        let mut card = HoverCard::new().trigger_image("user.avatar", "账户");
+        let first = card.custom_render().expect("ready slot").revision;
+
+        card.replace_view(1);
+        let replaced = card.custom_render().expect("ready slot").revision;
+        assert_ne!(first, replaced, "a replaced view is a new revision");
+
+        card.invalidate_content();
+        let refreshed = card.custom_render().expect("ready slot").revision;
+        assert_ne!(replaced, refreshed, "in-place pixels are a new revision");
+        assert_eq!(refreshed, pack_gpu_revision(1, 1));
     }
 }

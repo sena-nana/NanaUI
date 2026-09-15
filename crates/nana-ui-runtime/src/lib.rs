@@ -237,7 +237,7 @@ pub use nana_ui_core::{
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport, WINDOW_CONTROL_GAP, WINDOW_CONTROL_WIDTH, WhiteSpaceSpec,
     WordBreakSpec, WorkCounters, custom_window_controls_width, graph_node_fitted_height,
-    port_tangent, tree_navigation_event,
+    port_tangent, space, tree_navigation_event, type_scale,
 };
 pub use overlay_surfaces::{
     ConfirmDialog, ConfirmIntent, ConfirmSlots, Drawer, ModalBehavior, ModalInitialFocus,

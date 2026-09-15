@@ -8,14 +8,15 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    ContentFit, ControlSize, LengthSpec, OverflowSpec, SemanticColorRole, ThemeMetrics,
+    AlignSpec, ContentFit, ControlSize, LengthSpec, OverflowSpec, PointerEventsSpec, PositionSpec,
+    SemanticColorRole, ThemeMetrics, UI_METRICS, space,
 };
 
 use crate::gpu_slots::pack_gpu_revision;
 use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, CustomRenderNode, HOST_TEXTURE_RENDERER,
-    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual,
+    InteractionState, MutationQueue, NodeKind, NodeStyle, StableNodeId, Stack, StandardVisual,
     TextContent, UiWorld,
 };
 
@@ -37,7 +38,8 @@ pub enum ThumbnailState {
 
 /// Compact image control for [`crate::ListItem`] leading slots.
 ///
-/// Pointer events stay off so the parent row owns hit-testing.
+/// Pointer events stay off so the parent row owns hit-testing. Overlay children
+/// (see [`Self::badge`]) are clipped to this box's radius.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Thumbnail {
     pub resource: Arc<str>,
@@ -117,6 +119,26 @@ impl Thumbnail {
         self
     }
 
+    /// Corner overlay chrome for duration, viewer counts, and similar cover
+    /// metadata. Absolute, not hittable, clipped by this thumbnail's radius.
+    pub fn badge() -> Stack {
+        Stack::row(0.0)
+            .surface(SemanticColorRole::Background)
+            .radius(UI_METRICS.radius_sm)
+            .with_layout(|layout| {
+                layout.position = PositionSpec::Absolute;
+                layout.offset_right = Some(LengthSpec::Px(space::SM));
+                layout.offset_bottom = Some(LengthSpec::Px(space::SM));
+                layout.z_index = Some(2);
+                layout.padding_left = Some(LengthSpec::Px(space::SM));
+                layout.padding_right = Some(LengthSpec::Px(space::SM));
+                layout.padding_top = Some(LengthSpec::Px(space::XXS));
+                layout.padding_bottom = Some(LengthSpec::Px(space::XXS));
+                layout.align_items = AlignSpec::Center;
+                layout.pointer_events = Some(PointerEventsSpec::None);
+            })
+    }
+
     /// Records that the host refreshed the slot's pixels in place.
     ///
     /// The packed [`Self::revision`] is the Scene's conflict key for a
@@ -189,6 +211,9 @@ impl Thumbnail {
         layout.border_radius.get_or_insert(metrics.radius_xs);
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
+        if !layout.position.establishes_containing_block() {
+            layout.position = PositionSpec::Relative;
+        }
         style
     }
 }
@@ -451,5 +476,48 @@ mod tests {
         let refreshed = control.custom_render().expect("ready slot").revision;
         assert_ne!(replaced, refreshed, "in-place pixels are a new revision");
         assert_eq!(refreshed, pack_gpu_revision(1, 1));
+    }
+
+    #[test]
+    fn badge_is_absolute_and_not_hittable_inside_the_cover() {
+        let mut context = AppContext::new();
+        let thumbnail = context
+            .create_component(
+                document(),
+                Thumbnail::empty().style({
+                    let mut style = NodeStyle::default();
+                    let layout = Arc::make_mut(&mut style.layout);
+                    layout.width = Some(LengthSpec::Px(160.0));
+                    layout.height = Some(LengthSpec::Px(90.0));
+                    style
+                }),
+            )
+            .unwrap();
+        let badge = context
+            .create_detached_component(document(), Thumbnail::badge())
+            .unwrap();
+        context.append_child(thumbnail, badge).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(240.0, 120.0))
+            .unwrap();
+        let cover = context.world().layout_box(thumbnail.stable_id()).unwrap();
+        let badge_box = context.world().layout_box(badge.stable_id()).unwrap();
+        let cover_style = context.world().node_style(thumbnail.stable_id()).unwrap();
+        assert_eq!(cover_style.layout.position, PositionSpec::Relative);
+        assert_eq!(
+            context.world().interaction(badge.stable_id()),
+            Some(InteractionState {
+                pointer_events: false,
+                focusable: false,
+            })
+        );
+        assert!(
+            badge_box.x + badge_box.width <= cover.x + cover.width + 0.5,
+            "badge={badge_box:?} cover={cover:?}"
+        );
+        assert!(
+            badge_box.y + badge_box.height <= cover.y + cover.height + 0.5,
+            "badge={badge_box:?} cover={cover:?}"
+        );
     }
 }
