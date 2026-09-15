@@ -38,7 +38,7 @@ Windows 上有两条互斥的 chrome 路径，由 `WindowDescriptor::system_capt
 命中顺序（逻辑像素，已含当前 `scale_factor`）：
 
 1. 自绘窗口按钮（AccessKit 名称 `Minimize`、`Maximize`/`Restore`、`Close`）优先，不启动拖拽；客户区最外 8px 缩放区域与实际按钮相交时同样让位；按钮之外的边角继续支持窗口缩放。
-2. 标题栏空白处按下后移动超过 4px 才发出 `WindowChromeAction::Drag`；Scene host 调用 `nana_window::drag_custom_title_bar`，失败再 `winit::drag_window`。
+2. 标题栏空白处发出 `WindowChromeAction::Drag`：macOS 在按下时即交给 AppKit，且 `currentEvent` 必须仍是左键按下或拖动，否则不拖；其他平台按下后移动超过 4px 才发出。Scene host 调用 `nana_window::drag_custom_title_bar`，非 macOS 失败再 `winit::drag_window`。原生拖窗接管按键释放，拖动开始后 host 立即补发一次 `PointerPhase::Cancel`，结束按键掩码、Runtime 按压/捕获、标题栏手势与程序侧手势；`WindowService::begin_drag` 同样适用。
 3. 无系统 caption、可缩放、未最大化、非全屏时，客户区最外 `RESIZE_HANDLE_SIZE`（8px）走 `LiveFrameResize`（macOS `setFrame`、Windows `SetWindowPos`），不进入系统嵌套 size-move 循环；系统 caption 窗口不叠第二套缩放命中。
 
 窗口光标还会消费 L1 CSS `cursor` 的常用关键字：`default`、`pointer`、`text`、`move`、`grab`、`grabbing`、`not-allowed`、`crosshair`、`help`、`wait`、`progress`、`zoom-in`、`zoom-out`、`none`。该属性按 CSS 继承；未知关键字和 `url()` 光标 fail-closed。`WindowCursor` 程序化入口与上述关键字对齐，并多一个 `Automatic` 以恢复 Runtime/CSS 选择。光标优先级低于窗口边框缩放和分割/停靠/工作区 resize 手柄，高于未声明 cursor 时 TextInput 的 I 型光标；`none` 只隐藏系统光标，不加载自定义图片。

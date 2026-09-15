@@ -383,6 +383,8 @@ impl WindowHandle {
     pub fn request_redraw(&self) -> WindowRequest<()> {
         self.control(Control::Redraw)
     }
+    /// Starts a native drag from the press being handled; the host then ends the
+    /// gesture with a pointer `Cancel`. macOS requires a left-button press event.
     pub fn begin_drag(&self) -> WindowRequest<()> {
         self.control(Control::Command(WindowCommand::Drag(self.id)))
     }

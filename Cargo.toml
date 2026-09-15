@@ -69,6 +69,8 @@ raw-window-handle = "0.6.2"
 windows-sys = "0.61.2"
 pollster = "1.0"
 cpal = "0.15"
+# Fork adds font variation axes; unlike [patch] it reaches downstream consumers.
+# Keep cryoglyph on the same rev.
 cosmic-text = { git = "https://github.com/sena-nana/cosmic-text.git", rev = "061c738ebc28789963f61e82b313717ac67ffd66" }
 objc2 = "0.6.4"
 objc2-app-kit = { version = "0.3.2", default-features = false }
