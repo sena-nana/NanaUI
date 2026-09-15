@@ -3198,9 +3198,11 @@ impl Divider {
         let layout = Arc::new(match self.orientation {
             crate::SelectionOrientation::Horizontal => nana_ui_core::LayoutStyle {
                 width: Some(nana_ui_core::LengthSpec::Fill),
+                min_width: Some(nana_ui_core::LengthSpec::Px(0.0)),
                 height: Some(nana_ui_core::LengthSpec::Px(thickness)),
                 min_height: Some(nana_ui_core::LengthSpec::Px(thickness)),
                 flex_shrink: Some(0.0),
+                align_self: Some(nana_ui_core::AlignSpec::Stretch),
                 margin_left: Some(nana_ui_core::LengthSpec::Px(inset)),
                 margin_right: Some(nana_ui_core::LengthSpec::Px(inset)),
                 ..base
@@ -3209,7 +3211,9 @@ impl Divider {
                 width: Some(nana_ui_core::LengthSpec::Px(thickness)),
                 min_width: Some(nana_ui_core::LengthSpec::Px(thickness)),
                 height: Some(nana_ui_core::LengthSpec::Fill),
+                min_height: Some(nana_ui_core::LengthSpec::Px(0.0)),
                 flex_shrink: Some(0.0),
+                align_self: Some(nana_ui_core::AlignSpec::Stretch),
                 margin_top: Some(nana_ui_core::LengthSpec::Px(inset)),
                 margin_bottom: Some(nana_ui_core::LengthSpec::Px(inset)),
                 ..base
@@ -3954,6 +3958,31 @@ impl Stack {
         .shrink(0.0)
     }
 
+    /// 弹性空隙：把其后的兄弟推到行尾。基准宽度必须是 0，否则会铺满把兄弟挤出。
+    pub fn spacer() -> Self {
+        Self::row(0.0).with_layout(|layout| {
+            layout.width = Some(nana_ui_core::LengthSpec::Px(0.0));
+            layout.min_width = Some(nana_ui_core::LengthSpec::Px(0.0));
+            layout.flex_grow = Some(1.0);
+            layout.flex_shrink = Some(1.0);
+        })
+    }
+
+    /// 舞台叠层：铺满已定位的父级、脱流、不命中、裁剪。弹幕/HUD 容器用这个，
+    /// 节点池与每帧内容仍由应用挂。
+    pub fn overlay_layer() -> Self {
+        Self::row(0.0).with_layout(|layout| {
+            layout.position = nana_ui_core::PositionSpec::Absolute;
+            layout.offset_top = Some(nana_ui_core::LengthSpec::Px(0.0));
+            layout.offset_left = Some(nana_ui_core::LengthSpec::Px(0.0));
+            layout.width = Some(nana_ui_core::LengthSpec::Percent(100.0));
+            layout.height = Some(nana_ui_core::LengthSpec::Percent(100.0));
+            layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+            layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
+            layout.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
+        })
+    }
+
     pub fn gap(mut self, gap: f32) -> Self {
         Arc::make_mut(&mut self.style.layout).gap =
             Some(nana_ui_core::LengthSpec::Px(gap.max(0.0)));
@@ -4550,4 +4579,58 @@ fn replace_padding_xy(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32) {
     layout.padding_right = layout.padding_left;
     layout.padding_top = Some(LengthSpec::Px(y.max(0.0)));
     layout.padding_bottom = layout.padding_top;
+}
+
+#[cfg(test)]
+mod stack_preset_tests {
+    use super::*;
+    use crate::{AppContext, DocumentId, LayoutViewport};
+
+    #[test]
+    fn spacer_is_zero_width_flex_grow() {
+        let spacer = Stack::spacer();
+        let layout = spacer.node_style().layout;
+        assert_eq!(layout.width, Some(nana_ui_core::LengthSpec::Px(0.0)));
+        assert_eq!(layout.flex_grow, Some(1.0));
+        assert_eq!(layout.min_width, Some(nana_ui_core::LengthSpec::Px(0.0)));
+    }
+
+    #[test]
+    fn overlay_layer_fills_clips_and_does_not_hit() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let layer = context
+            .create_component(document, Stack::overlay_layer())
+            .unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(320.0, 180.0))
+            .unwrap();
+        let style = context.world().node_style(layer.stable_id()).unwrap();
+        assert_eq!(style.layout.position, nana_ui_core::PositionSpec::Absolute);
+        assert_eq!(style.layout.overflow_x, nana_ui_core::OverflowSpec::Hidden);
+        assert_eq!(
+            style.layout.pointer_events,
+            Some(nana_ui_core::PointerEventsSpec::None)
+        );
+        assert_eq!(
+            context.world().interaction(layer.stable_id()),
+            Some(InteractionState {
+                pointer_events: false,
+                focusable: false,
+            })
+        );
+    }
+
+    #[test]
+    fn horizontal_divider_stretches_on_the_cross_axis() {
+        let divider = Divider::horizontal();
+        assert_eq!(
+            divider.style.layout.width,
+            Some(nana_ui_core::LengthSpec::Fill)
+        );
+        assert_eq!(
+            divider.style.layout.align_self,
+            Some(nana_ui_core::AlignSpec::Stretch)
+        );
+    }
 }

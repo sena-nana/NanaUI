@@ -3,8 +3,8 @@
 //! Built-in controls are play, progress (seek or live meter), volume, settings
 //! and fullscreen. Applications append scene-specific widgets into named slots.
 //! An empty or fully hidden `secondary` slot collapses the bar to a single row.
-//! Idle hide stays a host-fed [`crate::OverlayVisibility`] policy; this control
-//! only exposes chrome and events.
+//! Idle hide is [`crate::OverlayVisibility`] held on this control and driven by
+//! [`crate::AppContext::sync_overlay_visibility`].
 
 use std::sync::Arc;
 
@@ -19,8 +19,8 @@ use crate::view_components::{
 };
 use crate::{
     AccessibilityRole, AccessibilityState, ActionMenu, AppContext, ComponentView, Divider, Entity,
-    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, Progress,
-    StableNodeId, UiWorld,
+    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, OverlayVisibility,
+    Popover, Progress, StableNodeId, UiWorld,
 };
 
 const BAR_MAX_WIDTH: f32 = 820.0;
@@ -101,6 +101,8 @@ pub struct MediaTransportBar {
     pub fullscreen_exit_label: Arc<str>,
     pub style: NodeStyle,
     pub(crate) slots: MediaTransportSlots,
+    pub(crate) visibility: OverlayVisibility,
+    pub(crate) menu_was_open: bool,
 }
 
 impl MediaTransportBar {
@@ -124,6 +126,8 @@ impl MediaTransportBar {
             fullscreen_exit_label: Arc::from("退出全屏"),
             style: overlay_style(),
             slots: MediaTransportSlots::default(),
+            visibility: OverlayVisibility::default(),
+            menu_was_open: false,
         }
     }
 
@@ -225,6 +229,8 @@ impl ComponentView for MediaTransportBar {
 
     fn reconcile(&mut self, mut next: Self) {
         next.slots = self.slots.clone();
+        next.visibility = self.visibility.clone();
+        next.menu_was_open = self.menu_was_open;
         *self = next;
     }
 

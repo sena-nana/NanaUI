@@ -14,7 +14,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 | 中 | 32px | 表单、按钮、选择、常规操作 |
 | 大 | 36px | 需要强调、由你显式选的场合 |
 
-标准正文 13px（`UI_BASE_TEXT_SIZE`）。标题栏 36px，窗口按钮 28px，侧栏导航行 28px。多行内容按内容长，里面的单行操作仍走这三档。
+标准正文 13px（`UI_BASE_TEXT_SIZE` / `type_scale::BODY`）。产品字号阶梯是 `nana_ui::theme::type_scale`：`META` 12、`BODY` 13、`SECTION` 14、`HEADING` 16、`DISPLAY` 20，字重 `REGULAR` 400 / `MEDIUM` 500 / `SEMIBOLD` 600。间距走 `nana_ui::theme::space`。标题栏 36px，窗口按钮 28px，侧栏导航行 28px。多行内容按内容长，里面的单行操作仍走这三档。
 
 ## 颜色
 
@@ -24,7 +24,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 卡片默认没有描边。需要抬起来用阴影。选中卡片用柔和选中底，不用强调色包边。Vue CSS 的单层 `box-shadow`（outset 与 inset）/ `text-shadow`（仅 outset）已映射到绘制；inset 走内阴影 SDF，有子节点时 dest 合成组 overlay，不是把 outset 画进盒子里冒充。
 
-颜色来自共享的 `ThemeTokens` / `SemanticPalette`（`nana_ui::theme`），不是每个控件一份样式表。
+颜色来自共享的 `ThemeTokens` / `SemanticPalette`（`nana_ui::theme`），不是每个控件一份样式表。间距标度是 `nana_ui::theme::space`，字号/字重是 `nana_ui::theme::type_scale`；消费方不要直依赖 `nana-ui-core`，也不要复制字面量。
 
 ## 字体
 

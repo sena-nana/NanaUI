@@ -390,7 +390,9 @@ struct SceneOrderKey {
     /// `(z_index, document_order)` for each isolating stacking group from
     /// outermost to innermost, then this primitive's node. Opacity groups,
     /// `isolation: isolate`, and positioned + `z-index` keep a subtree
-    /// contiguous against siblings. Not full CSS Appendix E.
+    /// contiguous against siblings, except `position: fixed` surfaces which
+    /// paint in the root stacking context so Popover/menu chrome is not trapped
+    /// in a parent card. Not full CSS Appendix E.
     stack: Vec<(i32, usize)>,
     /// Collection identity must not lift scrolling text above sticky bands,
     /// minimaps or popup surfaces owned by the same component.
@@ -1401,6 +1403,12 @@ fn group_prefix(
             let z_index = candidate.z_index;
             let order = node_order.get(&id).copied().unwrap_or(0);
             stack.push((z_index, order));
+        }
+        if candidate.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
+            // Triggered menus and overlay surfaces are viewport-fixed. Their
+            // paint order must not stay inside a parent's isolation group, or
+            // a later sibling card would cover an open Popover.
+            break;
         }
         current = candidate.parent;
     }
