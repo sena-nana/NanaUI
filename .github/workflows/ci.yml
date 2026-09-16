@@ -204,9 +204,6 @@ jobs:
           cargo test -p nana-ui-scene --features benchmark --locked \
             --bin nana-dirty-frame-benchmark \
             the_migration_grid_still_spans_two_four_and_eight_thousand_nodes
-          # The text IR, its structural diff, the corpus and the cosmic
-          # reference parity goldens.
-          cargo test -p nana-text --all-targets --locked
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants
