@@ -397,25 +397,19 @@ pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
     window: &W,
     skip: bool,
 ) -> Result<(), crate::SkipTaskbarError> {
-    use windows_sys::Win32::UI::Shell::{GetWindowSubclass, SetWindowSubclass};
+    use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ChangeWindowMessageFilterEx, IsWindowVisible, MSGFLT_ALLOW,
+        ChangeWindowMessageFilterEx, IsWindowVisible, MSGFLT_ALLOW, SetPropW,
     };
 
     let failed = |reason: &str| Err(crate::SkipTaskbarError::Failed(reason.into()));
     let Some(hwnd) = hwnd(window) else {
         return failed("window has no Win32 handle");
     };
-    // The hook's reference data records whether the window had a button.
-    let mut had_button = 0;
-    let hooked = unsafe {
-        GetWindowSubclass(
-            hwnd,
-            Some(taskbar_subclass_proc),
-            TASKBAR_SUBCLASS_ID,
-            &mut had_button,
-        )
-    } != 0;
+    let (hooked, had_button) = match taskbar_hook_state(hwnd) {
+        Some(had_button) => (true, had_button),
+        None => (false, 0),
+    };
     let visible = unsafe { IsWindowVisible(hwnd) } != 0;
     if !skip {
         if !hooked {
@@ -456,6 +450,12 @@ pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
         {
             return failed("SetWindowSubclass failed for the taskbar hook");
         }
+        // Stored `+ 1` so a window without a button still reads as hooked.
+        let prop = wide(TASKBAR_HOOK_PROP);
+        if unsafe { SetPropW(hwnd, prop.as_ptr(), (had_button + 1) as _) } == 0 {
+            unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
+            return failed("SetPropW failed for the taskbar hook");
+        }
     }
     // A hidden window has no button yet; the hook removes the one its show creates.
     let tab = if visible {
@@ -473,8 +473,34 @@ pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
 
 fn remove_taskbar_hook(hwnd: HWND) {
     use windows_sys::Win32::UI::Shell::RemoveWindowSubclass;
+    use windows_sys::Win32::UI::WindowsAndMessaging::RemovePropW;
 
     unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
+    let prop = wide(TASKBAR_HOOK_PROP);
+    unsafe { RemovePropW(hwnd, prop.as_ptr()) };
+}
+
+/// Window property recording that the taskbar hook is installed, holding
+/// `had_button + 1`.
+///
+/// This replaces reading the hook's reference data back with
+/// `GetWindowSubclass`. comctl32 exports that function by name only from the
+/// v6 side-by-side assembly, which a process gets through a Common-Controls
+/// manifest; without one the loader binds `System32\comctl32.dll` v5.82, where
+/// it is ordinal-only. windows-sys imports by name, so every hosted binary
+/// without that manifest -- `cargo run --example`, tests, any downstream app
+/// that does not embed one -- failed to start with STATUS_ENTRYPOINT_NOT_FOUND
+/// before `main`. `SetWindowSubclass`, `RemoveWindowSubclass` and
+/// `DefSubclassProc` do resolve by name there.
+const TASKBAR_HOOK_PROP: &str = "NanaUI.TaskbarHook";
+
+/// `Some(had_button)` when the taskbar hook is installed on `hwnd`.
+fn taskbar_hook_state(hwnd: HWND) -> Option<usize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetPropW;
+
+    let prop = wide(TASKBAR_HOOK_PROP);
+    let stored = unsafe { GetPropW(hwnd, prop.as_ptr()) } as usize;
+    stored.checked_sub(1)
 }
 
 /// Whether the shell gives this window a taskbar button on its own: an
