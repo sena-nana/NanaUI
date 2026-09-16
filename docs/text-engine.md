@@ -250,6 +250,15 @@ Issue #33 收敛后的基线（Windows，2026-09-13，见 [脏帧](runtime-dirty
 | 4,002 | 0.557 ms | 11.47 ms |
 | 8,002 | 1.811 ms | 31.75 ms |
 
+Phase 0 落地后复测（Windows，2026-09-16，另一台机器，p50；三格都是 `text_shaped == 0`、
+`cache_lookups == 0`、`skipped_unchanged` 等于非空文本节点数）：
+
+| 节点 | TextShape | Layout | TextShape / Layout |
+| ---: | ---: | ---: | ---: |
+| 2,002 | 0.117 ms | 3.11 ms | 3.8% |
+| 4,002 | 0.593 ms | 8.55 ms | 6.9% |
+| 8,002 | 0.814 ms | 18.55 ms | 4.4% |
+
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
