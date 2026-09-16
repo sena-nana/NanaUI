@@ -367,15 +367,24 @@ mod tests {
             .unwrap();
         assert!(context.next_animation_deadline().is_some());
         let frame = context.advance_animations(Duration::from_millis(700));
-        assert!(frame.component_updates.contains(&id));
+        // The pulse rides the compositor overlay, so the remounted skeleton
+        // reports a sample and leaves the logical style untouched rather than
+        // landing in `component_updates` -- see
+        // `skeleton_pulse_lives_on_compositor_overlay`.
+        assert!(frame.samples.iter().any(|sample| sample.target == id));
+        assert_eq!(context.world().node_style(id).unwrap().layout.opacity, None);
         assert!(
             context
                 .world()
-                .node_style(id)
-                .unwrap()
-                .layout
-                .opacity
-                .is_some_and(|value| (value - 0.48).abs() < 1e-4)
+                .presentation_applied_value(
+                    id,
+                    crate::AnimatableProperty::Opacity,
+                    Duration::from_millis(700),
+                )
+                .is_some_and(|value| matches!(
+                    value,
+                    crate::MotionValue::Scalar(value) if (value - 0.48).abs() < 1e-4
+                ))
         );
     }
 

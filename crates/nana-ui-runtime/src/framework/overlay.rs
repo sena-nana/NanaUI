@@ -1355,6 +1355,14 @@ mod tests {
             Some(MountState::Mounted)
         );
         assert!(context.active_runtime_overlay(document).is_none());
+        // The dialog's fade is a presentation overlay, so parking retains it to
+        // be retired by its own completion deadline instead of cancelling it --
+        // see `parked_node_keeps_unfinished_presentation_overlay`. What must not
+        // survive is either the overlay's authority or the deadline itself: a
+        // single advance settles the fade and the runtime goes idle again.
+        assert!(context.next_animation_deadline().is_some());
+        context.advance_animations(std::time::Duration::from_millis(500));
+        assert!(context.active_runtime_overlay(document).is_none());
         assert_eq!(context.next_animation_deadline(), None);
     }
 
