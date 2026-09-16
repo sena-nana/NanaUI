@@ -571,10 +571,10 @@ impl Mixer {
         for sample in output.iter_mut() {
             *sample = sample.clamp(-1.0, 1.0);
         }
-        if let Some(capture) = &self.capture {
-            if let Ok(mut samples) = capture.lock() {
-                samples.extend_from_slice(output);
-            }
+        if let Some(capture) = &self.capture
+            && let Ok(mut samples) = capture.lock()
+        {
+            samples.extend_from_slice(output);
         }
     }
 
@@ -679,7 +679,6 @@ impl Mixer {
         let src_channels = buffer.channels.len();
         let out_ch = out_channels.max(1) as usize;
         {
-            let buffer = buffer;
             for frame in 0..frames {
                 if cursor >= buf_len as f64 {
                     if looped && buf_len > 0 {
@@ -1321,8 +1320,10 @@ fn parse_pcm(value: Option<&HostValue>) -> Result<Vec<f32>, JsException> {
                 return Err(JsException::new("PCM bytes must be a multiple of 4"));
             }
             Ok(bytes
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
                 .collect())
         }
         Some(HostValue::Array(items)) => Ok(items

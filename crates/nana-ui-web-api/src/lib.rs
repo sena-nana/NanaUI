@@ -1257,7 +1257,8 @@ mod tests {
         .unwrap();
         let keys = api.call("nanaStorageKeys", &[]).unwrap();
         for key in keys.as_array().expect("keys array") {
-            api.call("nanaStorageRemove", &[key.clone()]).unwrap();
+            api.call("nanaStorageRemove", std::slice::from_ref(key))
+                .unwrap();
         }
         assert!(matches!(
             api.call("nanaStorageGet", &[HostValue::string("session")])
