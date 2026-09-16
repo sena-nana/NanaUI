@@ -161,6 +161,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # nana-ui-vue pulls nana-ui-web-api, which pulls cpal for Web Audio, and
+      # alsa-sys needs the ALSA headers to build. Without this the job dies in
+      # its first cargo command and every invariant below it silently never
+      # runs -- which is how it stayed red from 3e365146b onwards.
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libasound2-dev
       - name: Work-counter and virtualization invariants
         run: |
           # libtest is substring match; `|` is not a regex and `--exact` needs
