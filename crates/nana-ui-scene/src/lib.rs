@@ -18,8 +18,14 @@ pub use graph::{
 pub use icon::{IconGeometry, IconPathCommand, IconShape, icon_geometry};
 pub use runtime_document::{RuntimeDocument, RuntimeFrameUpdate};
 pub use scene::{
-    AffineTransform, ClipRegion, FilterGroup, FramePlan, InsetShadowOverlay, OpacityGroup,
-    PrimitiveId, QuadSurfacePaint, SceneDelta, SceneDeltaStats, SceneDraw, ScenePrimitive,
-    ScenePrimitiveKind, SceneRect, SceneTextOpenType, SceneTextSpan, StrokeCap, StrokePattern,
-    UiScene,
+    AffineTransform, ClipRegion, CompositorLayer, CompositorLayerId, CompositorLayerKind,
+    CompositorMotionBinding, CompositorPaintEncode, FilterGroup, FramePlan, InsetShadowOverlay,
+    LAYER_DEMOTE_HOLD, LAYER_PROMOTE_HOLD, OpacityGroup, PrimitiveId, QuadSurfacePaint, SceneDelta,
+    SceneDeltaStats, SceneDraw, ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextOpenType,
+    SceneTextSpan, StrokeCap, StrokePattern, UiScene,
+};
+
+pub use nana_ui_core::{
+    MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE, MOTION_GPU_TIME_SIZE,
+    MotionGpuDescriptor, MotionGpuKeyframe, MotionGpuTime, MotionGpuValue,
 };

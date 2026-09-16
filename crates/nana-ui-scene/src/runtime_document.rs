@@ -70,6 +70,20 @@ impl RuntimeDocument {
         Arc::clone(&self.scene)
     }
 
+    /// Lightweight compositor present clock. Does not run style/layout.
+    pub fn sync_presentation_clock(&mut self, now: std::time::Duration) {
+        self.context.world_mut().sync_presentation_clock(now);
+    }
+
+    /// Host hook after device/surface generation changes.
+    pub fn set_surface_generation(&mut self, generation: u64) {
+        Arc::make_mut(&mut self.scene).set_surface_generation(generation);
+    }
+
+    pub fn compositor_needs_tick(&self) -> bool {
+        self.scene.compositor_needs_tick()
+    }
+
     /// Drain one Runtime frame: host shaping, framework layout. A viewport
     /// change relayouts from the roots and reuses every subtree the new size
     /// did not move.
@@ -244,6 +258,22 @@ impl RuntimeDocument {
                 .time_stage_duration(FrameStage::Extract, started.elapsed());
             scene
         };
+        {
+            let world = self.context.world();
+            let presentation = world.presentation_store();
+            let descriptors = world.motion_descriptors();
+            let now = world.animation_now();
+            if !presentation.is_empty() || self.scene.compositor_needs_tick() {
+                // `context` and `scene` are disjoint: bind compositor overlays
+                // from the live stores. Cloning the descriptor slab would copy
+                // Occupied boxes / keyframes every compositor-only frame.
+                Arc::make_mut(&mut self.scene).apply_presentation(
+                    presentation,
+                    now,
+                    Some(descriptors),
+                );
+            }
+        }
         self.context.finish_frame_profile();
         let cursor_changed = self.context.take_window_cursor_dirty();
         Ok(RuntimeFrameUpdate {
@@ -301,13 +331,189 @@ fn restore_work(context: &mut AppContext, consumed: Vec<SystemWork>) {
 mod tests {
     use std::sync::Arc;
 
+    use std::time::Duration;
+
+    use nana_ui_core::motion::{AnimatableProperty, Easing, MotionTo, MotionValue};
     use nana_ui_core::{CursorSpec, LayoutStyle, LengthSpec};
     use nana_ui_runtime::{
-        Button, ComputedStyle, MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent,
-        TextMetrics,
+        AnimationId, AnimationSpec, Button, ComputedStyle, MotionEvaluatorBackend, MutationQueue,
+        NodeKind, NodeStyle, StableNodeId, TextContent, TextMetrics,
     };
 
     use super::*;
+
+    #[test]
+    fn flush_steady_compositor_frames_do_not_rebuild_descriptor_slab() {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let root = StableNodeId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(root, document_id, NodeKind::Document);
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                root,
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(0.0),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+        );
+        runtime.context_mut().world_mut().commit(queue).unwrap();
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::ZERO);
+        runtime.flush_with(|_, _| Ok(())).expect("extract");
+
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::from_millis(16));
+        runtime.flush_with(|_, _| Ok(())).expect("promote");
+        let layer = runtime
+            .scene()
+            .compositor_layer(root)
+            .expect("compositor layer after promote hold");
+        let epoch = runtime
+            .context()
+            .world()
+            .motion_descriptors()
+            .structure_epoch();
+        let capacity = runtime
+            .context()
+            .world()
+            .motion_descriptors()
+            .slot_capacity();
+        let generation = layer.bindings[0].generation;
+        let cache = layer.cache_generation;
+        let identity = layer.id;
+
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::from_millis(32));
+        runtime.flush_with(|_, _| Ok(())).expect("steady 32ms");
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::from_millis(48));
+        runtime.flush_with(|_, _| Ok(())).expect("steady 48ms");
+
+        let descriptors = runtime.context().world().motion_descriptors();
+        assert_eq!(descriptors.structure_epoch(), epoch);
+        assert_eq!(descriptors.slot_capacity(), capacity);
+        let layer = runtime
+            .scene()
+            .compositor_layer(root)
+            .expect("steady layer");
+        assert_eq!(layer.id, identity);
+        assert_eq!(layer.cache_generation, cache);
+        assert_eq!(layer.bindings[0].generation, generation);
+    }
+
+    #[test]
+    fn compositor_overlay_present_skips_style_layout_and_cpu_sampling() {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let root = StableNodeId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(root, document_id, NodeKind::Document);
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                root,
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(0.0),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+        );
+        runtime.context_mut().world_mut().commit(queue).unwrap();
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::ZERO);
+        runtime.flush_with(|_, _| Ok(())).expect("extract");
+        runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::from_millis(16));
+        runtime.flush_with(|_, _| Ok(())).expect("promote");
+        assert!(runtime.compositor_needs_tick());
+        let completion = runtime.context().next_animation_deadline();
+        assert_eq!(completion, Some(Duration::from_millis(400)));
+
+        runtime.sync_presentation_clock(Duration::from_millis(48));
+        let idle = runtime
+            .flush_with(|_, _| Ok(()))
+            .expect("compositor present");
+        assert!(
+            idle.is_idle(),
+            "compositor overlay present must not run style/layout passes"
+        );
+        assert_eq!(runtime.scene().motion_gpu_now(), Duration::from_millis(48));
+        assert!(runtime.compositor_needs_tick());
+        assert_eq!(
+            runtime.context().next_animation_deadline(),
+            completion,
+            "compositor present must not consume CPU animation deadlines"
+        );
+        let skipped = runtime
+            .context_mut()
+            .world_mut()
+            .advance_animations(Duration::from_millis(48));
+        assert_eq!(skipped.animation_deadlines_scanned, 0);
+        assert!(skipped.samples.is_empty());
+        let frame = runtime.context().world().last_motion_frame_counters();
+        assert!(
+            frame.compositor_steady_is_quiet(),
+            "compositor present must not attribute Runtime work: {frame:?}"
+        );
+        assert_eq!(
+            runtime
+                .scene()
+                .compositor_work_counters()
+                .compositor_layers_active,
+            1
+        );
+        let mut inspector = runtime.context().world().inspect_motion();
+        runtime.scene().annotate_motion_inspector(&mut inspector);
+        let opacity = inspector
+            .iter()
+            .find(|entry| entry.property == AnimatableProperty::Opacity)
+            .expect("opacity");
+        assert_eq!(opacity.evaluator, MotionEvaluatorBackend::Gpu);
+        assert_eq!(opacity.layer, Some(root.get()));
+        assert_eq!(opacity.runtime_samples_this_frame, 0);
+        assert!(opacity.format_summary().contains("Class: Compositor"));
+        assert!(opacity.format_summary().contains("Layer: #1"));
+    }
+
+    #[test]
+    fn set_surface_generation_does_not_extract() {
+        let document_id = DocumentId::new(1).unwrap();
+        let mut runtime = RuntimeDocument::new(document_id);
+        let root = StableNodeId::new(1).unwrap();
+        let mut queue = MutationQueue::new();
+        queue.create(root, document_id, NodeKind::Document);
+        runtime.context_mut().world_mut().commit(queue).unwrap();
+        runtime.flush_with(|_, _| Ok(())).expect("extract");
+        runtime.set_surface_generation(3);
+        assert_eq!(runtime.scene().surface_generation(), 3);
+        let idle = runtime.flush_with(|_, _| Ok(())).expect("after generation");
+        assert!(idle.is_idle());
+    }
 
     #[test]
     fn flush_reports_cursor_changes_only_for_cursor_mutations() {

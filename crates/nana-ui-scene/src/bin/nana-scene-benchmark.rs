@@ -10,6 +10,8 @@ use serde::Serialize;
 
 const FRAME_BUDGET_MS: f64 = 16.67;
 
+#[path = "scene_benchmark/compositor.rs"]
+mod compositor;
 #[path = "scene_benchmark/high_refresh.rs"]
 mod high_refresh;
 
@@ -52,6 +54,10 @@ fn main() {
     let output = std::env::args().skip_while(|arg| arg != "--output").nth(1);
     if std::env::args().any(|arg| arg == "--high-refresh") {
         high_refresh::run(output);
+        return;
+    }
+    if std::env::args().any(|arg| arg == "--compositor") {
+        compositor::run(output);
         return;
     }
     let mut rows = [100, 500, 1000, 5000]
@@ -204,6 +210,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 

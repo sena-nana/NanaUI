@@ -1,7 +1,13 @@
 mod attributes;
 mod composition;
+mod compositor;
 use attributes::DrawAttributes;
 pub use attributes::SceneDraw;
+use compositor::CompositorRegistry;
+pub use compositor::{
+    CompositorLayer, CompositorLayerId, CompositorLayerKind, CompositorMotionBinding,
+    CompositorPaintEncode, LAYER_DEMOTE_HOLD, LAYER_PROMOTE_HOLD,
+};
 mod visibility;
 pub use composition::FramePlan;
 use visibility::VisibilityIndex;
@@ -270,6 +276,17 @@ pub enum ScenePrimitiveKind {
     },
 }
 
+impl ScenePrimitiveKind {
+    /// Only Quad pipelines bind `motion.wgsl` `evaluate()`. Text / Icon /
+    /// Mesh / HostTexture still consume CPU compositor presentation.
+    pub fn evaluates_compositor_motion_on_gpu(&self) -> bool {
+        matches!(
+            self,
+            Self::Quad { .. } | Self::QuadBatch { .. } | Self::QuadColorBatch { .. }
+        )
+    }
+}
+
 /// Optional dash and per-point colors for [`ScenePrimitiveKind::Stroke`].
 ///
 /// Empty `dash` is solid. Empty `colors` uses the stroke's uniform `color`.
@@ -443,6 +460,7 @@ pub struct UiScene {
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
+    compositor: CompositorRegistry,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -465,6 +483,7 @@ impl Default for UiScene {
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
+            compositor: CompositorRegistry::default(),
             instance: next_scene_instance(),
         }
     }
@@ -488,6 +507,7 @@ impl Clone for UiScene {
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
             ordered: self.ordered.clone(),
+            compositor: self.compositor.clone(),
             instance: next_scene_instance(),
         }
     }
@@ -595,6 +615,7 @@ impl UiScene {
                 removed_nodes += 1;
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
+                self.forget_compositor_node(id);
             }
         }
         let mut updated_nodes = 0;
@@ -682,6 +703,7 @@ impl UiScene {
             // place: their order keys are derived from it, and a key computed
             // against the new node would leave stale entries in `ordered`.
             self.remove_node_primitives(node.id);
+            self.retain_compositor_requests(&node);
             self.nodes.insert(node.id, node);
             updated_nodes += 1;
         }
@@ -724,6 +746,7 @@ impl UiScene {
                     .entry(id)
                     .or_insert_with(|| self.node_structure(id));
                 rebuilt_primitives += self.rebuild_node_primitives(id);
+                self.invalidate_compositor_cache(id);
             }
             // Rebuilt nodes re-enter `ordered` at their own key, so a reorder is
             // only needed when keys the delta did not touch also moved.
@@ -903,6 +926,21 @@ impl UiScene {
         &self,
         node: &ExtractedNode,
     ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
+        self.project_ancestor_state(node, false)
+    }
+
+    fn draw_ancestor_state(
+        &self,
+        node: &ExtractedNode,
+    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
+        self.project_ancestor_state(node, true)
+    }
+
+    fn project_ancestor_state(
+        &self,
+        node: &ExtractedNode,
+        visual: bool,
+    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
         let mut ancestors = Vec::new();
         let mut parent = node.parent;
         let mut visited = HashSet::new();
@@ -935,13 +973,21 @@ impl UiScene {
         let mut blocks_3d = false;
         for (index, ancestor) in ancestors.into_iter().enumerate() {
             if !is_opacity_group(&self.nodes, ancestor) {
-                opacity *= local_opacity(ancestor);
+                opacity *= if visual {
+                    self.resolved_local_opacity(ancestor)
+                } else {
+                    local_opacity(ancestor)
+                };
             }
             if index < geometry_start {
                 continue;
             }
             let layout = ancestor.layout;
-            let local = node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false);
+            let local = if visual {
+                self.resolved_local_transform(ancestor, false)
+            } else {
+                node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false)
+            };
             transform = transform.then(local);
             if ancestor.source_style.layout.fails_closed_3d_context() {
                 blocks_3d = true;
