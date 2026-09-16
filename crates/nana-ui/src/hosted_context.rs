@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 static NEXT_DEVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -104,6 +104,10 @@ pub struct HostedGpuResources {
     queue: Arc<wgpu::Queue>,
     // Shared so per-frame context clones do not copy the adapter's strings.
     adapter_info: Arc<wgpu::AdapterInfo>,
+    /// Serializes off-thread `Queue` work against `Surface::configure`.
+    /// wgpu waits for GPU idle before recreating a configured swapchain; a
+    /// concurrent submit from another thread panics with `GpuWaitTimeout`.
+    submit: Arc<RwLock<()>>,
 }
 
 impl HostedGpuResources {
@@ -114,13 +118,28 @@ impl HostedGpuResources {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
     ) -> Self {
+        Self::from_parts(
+            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            adapter,
+            device,
+            queue,
+        )
+    }
+
+    fn from_parts(
+        generation: u64,
+        adapter: wgpu::Adapter,
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+    ) -> Self {
         let adapter_info = Arc::new(adapter.get_info());
         Self {
-            generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            generation,
             adapter,
             device,
             queue,
             adapter_info,
+            submit: Arc::new(RwLock::new(())),
         }
     }
 
@@ -145,6 +164,20 @@ impl HostedGpuResources {
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
+    }
+
+    /// Off-thread producers hold a read lock around `queue.submit` /
+    /// `write_texture` / `write_buffer`, and drop it before `poll(Wait)`.
+    /// The UI thread must not take a read lock: it configures on this thread
+    /// and `RwLock` is not reentrant.
+    pub fn submit_lock(&self) -> Arc<RwLock<()>> {
+        Arc::clone(&self.submit)
+    }
+
+    fn lock_reconfigure(&self) -> RwLockWriteGuard<'_, ()> {
+        self.submit
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
     }
 }
 
@@ -252,6 +285,7 @@ impl HostedGpuSurface {
     }
 
     fn reconfigure(&mut self, resources: &HostedGpuResources) {
+        let _gate = resources.lock_reconfigure();
         self.surface
             .configure(resources.device(), &self.configuration);
         self.needs_target_commit = true;
@@ -506,14 +540,12 @@ impl HostedGpuContext {
                 });
             }
         });
-        let adapter_info = Arc::new(adapter.get_info());
-        let resources = HostedGpuResources {
-            generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+        let resources = HostedGpuResources::from_parts(
+            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
             adapter,
-            device: Arc::new(device),
-            queue: Arc::new(queue),
-            adapter_info,
-        };
+            Arc::new(device),
+            Arc::new(queue),
+        );
         let primary = configure_surface(
             window,
             surface,
@@ -613,16 +645,14 @@ impl HostedGpuShared {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
     ) -> Self {
-        let adapter_info = Arc::new(adapter.get_info());
         Self {
             instance,
-            resources: HostedGpuResources {
-                generation: NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            resources: HostedGpuResources::from_parts(
+                NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
                 adapter,
                 device,
                 queue,
-                adapter_info,
-            },
+            ),
             device_lost: Arc::new(AtomicBool::new(false)),
             device_lost_report: Arc::new(Mutex::new(None)),
         }
@@ -777,6 +807,7 @@ fn configure_surface(
         view_formats: vec![],
         desired_maximum_frame_latency: 1,
     };
+    let _gate = resources.lock_reconfigure();
     surface.configure(resources.device(), &configuration);
     target.commit()?;
     Ok(HostedGpuSurface {
@@ -950,10 +981,34 @@ pub(crate) fn alpha_mode_needs_surface_recreate(
 #[cfg(test)]
 mod tests {
     use super::{
-        alpha_mode_needs_surface_recreate, live_resize_frame_latency, live_resize_policy_change,
-        preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
-        surface_size_changed,
+        alpha_mode_needs_surface_recreate, live_resize_frame_latency,
+        live_resize_policy_change, preferred_alpha_mode, preferred_live_present_mode,
+        preferred_surface_format, surface_size_changed,
     };
+    use std::sync::{Arc, RwLock};
+
+    #[test]
+    fn reconfigure_lock_excludes_concurrent_submit() {
+        let lock = Arc::new(RwLock::new(()));
+        let (started, waiting) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let writer = Arc::clone(&lock);
+        let thread = std::thread::spawn(move || {
+            let _write = writer.write().unwrap();
+            started.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        waiting
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reconfigure lock acquired");
+        assert!(
+            lock.try_read().is_err(),
+            "submit must wait while the surface is reconfiguring"
+        );
+        release.send(()).unwrap();
+        thread.join().unwrap();
+        assert!(lock.try_read().is_ok());
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

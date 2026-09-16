@@ -92,7 +92,7 @@ fn window_frame_presented(..) -> RuntimeProgramUpdate {
 ```
 
 - **是 GPU 内复制，不是零拷贝。** `copy_from` 在 slot 池里做一次 `copy_texture_to_texture`，不回读 CPU。源纹理需要 `COPY_SRC`、单采样、单层 2D、非深度格式，否则返回 `IncompatibleSource`，不会触发 wgpu 校验错误。
-- **谁都不等谁。** 池满时 `copy_from` 直接返回 `PoolFull`；UI 读最新帧只做指针交换；GPU 完成通过 `on_submitted_work_done` 回报，只在生产端 `poll` 里处理。
+- **谁都不等谁。** 池满时 `copy_from` 直接返回 `PoolFull`；UI 读最新帧只做指针交换；GPU 完成通过 `on_submitted_work_done` 回报，只在生产端 `poll` 里处理。生产线程的 `copy_from`（以及任何 `queue.submit`）必须持 `gpu.submit_lock()` 的读锁，并在 `poll(Wait)` 前放下。
 - **容量。** 一个窗口需要 3 个 slot：在途复制、正在显示、已替换但未 present。每多一个绑定同一交换的窗口加 2 个。
 - **Lease 顺序。** `prepare` 换帧后，旧帧留到 `presented` 才释放；两次 present 之间最多换一次。lease 归还后，生产端要等 UI 那次提交完成才复用该 slot。隐藏 tick 只 prepare 不 present，所以最多换一次就停住，生产端随后看到 `PoolFull`。
 - **Epoch 与接受策略。** `E` 是应用自己的代次（视口、场景……）。`set_epoch` 立刻隐藏旧帧，旧 epoch 的在途复制不会发布。`accept` 是窗口的策略（可见、未过期）；被拒绝的帧不确认唤醒，所以隐藏窗口不会每帧被叫醒，策略变化时由应用请求重绘。
@@ -217,6 +217,7 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 - 把 GPU 内容攒到帧尾一次性画，打乱和按钮的前后关系
 - 同一资源在一帧里提交互相冲突的 revision（整帧会失败，不会挑一个用）
 - 在 UI 线程等生产端或 GPU 完成来拿帧；用 `FrameInbox` 取最新帧
+- 离线程对共享 Device 的 `queue.submit` / `write_texture` / `write_buffer` 不持 `HostedGpuResources::submit_lock()` 读锁（窗口缩放时 `Surface::configure` 会等 GPU 空闲，并发提交会 `GpuWaitTimeout`）。读锁不得跨 `device.poll(Wait)` 或长时间 sleep；UI 线程自己的绘制提交不要拿这把锁
 - 在 `window_frame_presented` 之前丢掉仍可能被采样的帧，或让 slot 在 binding 销毁后继续指向已归还的纹理
 - 为 Android 另写一套 renderer，或把实验 GameActivity 宿主当成产品 GPU 路径。该宿主仍把 UiScene 交给 `SceneWgpuPainter`，不调用桌面的 `run_runtime`，也不是当前产品目标（见 [Android](android.md)）
 - 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
