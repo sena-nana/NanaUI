@@ -1072,6 +1072,18 @@ impl GalleryState {
             .and_then(GalleryRuntime::drop_target_center)
     }
 
+    /// DIAGNOSTIC (Issue #89 CI triage): text and metrics of an arbitrary node,
+    /// to identify the node a flush error names.
+    #[cfg(test)]
+    pub(crate) fn gallery_node_debug(&self, raw: u64) -> Option<(String, String)> {
+        let id = StableNodeId::new(raw)?;
+        let runtime = self.gallery_runtime.as_ref()?;
+        let world = runtime.document.context().world();
+        let text = world.text(id)?.to_string();
+        let metrics = format!("{:?}", world.text_metrics(id));
+        Some((text, metrics))
+    }
+
     /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::flush_result`].
     #[cfg(test)]
     pub(crate) fn gallery_flush_result(&mut self) -> Option<Result<(), String>> {

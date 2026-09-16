@@ -504,6 +504,24 @@ fn gallery_rich_text_surfaces_cover_issue31_examples() {
         let bounds = state.gallery_drop_target_box();
         let hint_box = state.gallery_drop_hint_box();
         let flush = state.gallery_flush_result();
+        // A flush error names the node it rejected; report that node's text and
+        // stored metrics, plus the faces the shaper resolves for that exact
+        // string. `InvalidText` means non-finite or negative metrics.
+        let culprit = flush
+            .as_ref()
+            .and_then(|result| result.as_ref().err())
+            .and_then(|error| {
+                let start = error.find("StableNodeId(")? + "StableNodeId(".len();
+                let end = error[start..].find(')')? + start;
+                error[start..end].parse::<u64>().ok()
+            })
+            .map(|raw| {
+                let debug = state.gallery_node_debug(raw);
+                let faces = debug
+                    .as_ref()
+                    .map(|(text, _)| nana_ui::shaped_face_families("sans-serif", text));
+                format!("node {raw} = {debug:?} faces={faces:?}")
+            });
         let viewport = state.gallery_viewport_size();
         let faces = nana_ui::shaped_face_families("sans-serif", "Drop files here 放入");
         let mut probes = Vec::new();
@@ -524,7 +542,7 @@ fn gallery_rich_text_surfaces_cover_issue31_examples() {
             }
         }
         panic!(
-            "file-drag hover found no drop target at the drop target's own centre\n               centre   = ({x:.2}, {y:.2})\n               box      = {bounds:?}\n               hint box = {hint_box:?}\n               flush    = {flush:?}\n               viewport = {viewport:?}\n               probes   = {probes:?}\n               faces    = {faces:?}"
+            "file-drag hover found no drop target at the drop target's own centre\n               centre   = ({x:.2}, {y:.2})\n               box      = {bounds:?}\n               hint box = {hint_box:?}\n               flush    = {flush:?}\n               culprit  = {culprit:?}\n               viewport = {viewport:?}\n               probes   = {probes:?}\n               faces    = {faces:?}"
         );
     }
     assert!(state.gallery_dispatch_file_drag(FileDragKind::Drop, &paths, Some((x, y))));
