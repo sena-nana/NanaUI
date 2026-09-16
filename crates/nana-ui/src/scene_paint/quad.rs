@@ -134,6 +134,13 @@ pub(super) struct QuadPipeline {
     pending_paint: Vec<QuadPaintData>,
     uploaded_paint: Vec<QuadPaintData>,
     pending_urls: Vec<Option<String>>,
+    motion_layout: wgpu::BindGroupLayout,
+    #[allow(
+        dead_code,
+        reason = "keeps dummy motion buffers alive for the shared layout"
+    )]
+    motion_dummy: wgpu::BindGroup,
+    motion_ids: (u32, u32),
 }
 
 impl QuadPipeline {
@@ -141,6 +148,8 @@ impl QuadPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("nana-ui.scene.quad.solid.shader"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
+                include_str!("shader/motion.wgsl"),
+                "\n",
                 include_str!("shader/color.wgsl"),
                 "\n",
                 include_str!("shader/quad.wgsl"),
@@ -256,9 +265,46 @@ impl QuadPipeline {
         });
         let mut url_bind_groups = HashMap::new();
         url_bind_groups.insert(None, bind_group);
+        let motion_layout = super::motion::motion_bind_layout(device);
+        let dummy_desc = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.quad.motion.descriptors"),
+            size: 272,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dummy_kf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.quad.motion.keyframes"),
+            size: 80,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let dummy_time = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("nana-ui.scene.quad.motion.time"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let motion_dummy = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nana-ui.scene.quad.motion.dummy"),
+            layout: &motion_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: dummy_desc.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: dummy_kf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: dummy_time.as_entire_binding(),
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.quad.solid.pipeline"),
-            bind_group_layouts: &[Some(&bind_layout)],
+            bind_group_layouts: &[Some(&bind_layout), Some(&motion_layout)],
             immediate_size: 0,
         });
         let pipeline = solid_pipeline(device, &shader, &layout, format, 1);
@@ -288,6 +334,9 @@ impl QuadPipeline {
             pending_paint: Vec::new(),
             uploaded_paint: Vec::new(),
             pending_urls: Vec::new(),
+            motion_layout,
+            motion_dummy,
+            motion_ids: (0, 0),
         }
     }
 
@@ -295,7 +344,16 @@ impl QuadPipeline {
         self.pending.clear();
         self.pending_paint.clear();
         self.pending_urls.clear();
+        self.motion_ids = (0, 0);
         self.url_cache.begin_frame();
+    }
+
+    pub(super) fn motion_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.motion_layout
+    }
+
+    pub(super) fn set_motion_ids(&mut self, transform: u32, opacity: u32) {
+        self.motion_ids = (transform, opacity);
     }
 
     pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
@@ -367,22 +425,29 @@ impl QuadPipeline {
         opacity: f32,
         surface: &QuadSurfacePaint,
     ) -> Option<u32> {
-        let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
-        let _ = world.intersection(clip)?;
+        if self.motion_ids.0 == 0 {
+            let world = super::clip::transformed_aabb_projective(bounds, affine, persp);
+            let _ = world.intersection(clip)?;
+        } else {
+            let _ = clip;
+        }
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
         }
-        let translation = super::clip::is_translation_projective(affine, persp);
-        let (position, instance_affine, instance_persp, snap) = if translation {
+        let translation =
+            super::clip::is_translation_projective(affine, persp) && self.motion_ids.0 == 0;
+        let (position, instance_affine, instance_persp, pixel_snap) = if translation {
             (
                 [bounds.x + affine[4], bounds.y + affine[5]],
                 super::clip::IDENTITY_AFFINE,
                 [0.0, 0.0],
-                1,
+                1u32,
             )
         } else {
-            ([bounds.x, bounds.y], affine, persp, 0)
+            ([bounds.x, bounds.y], affine, persp, 0u32)
         };
+        let snap =
+            super::motion::pack_motion_snap(pixel_snap, self.motion_ids.0, self.motion_ids.1);
         let index = self.pending.len() as u32;
         let shadows = collect_shadows(shadow, surface);
         let split_shadows = shadows.len() > 1 || shadows.iter().any(|layer| layer.inset);
@@ -715,6 +780,7 @@ impl QuadPipeline {
         range: std::ops::Range<u32>,
         scissor: PhysicalRect,
         sample_count: u32,
+        motion: &wgpu::BindGroup,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         if range.start >= range.end {
@@ -726,6 +792,7 @@ impl QuadPipeline {
             &self.pipeline
         });
         pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.set_bind_group(1, motion, &[]);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
         let start = range.start as usize;
         let end = range.end as usize;
@@ -799,6 +866,8 @@ fn push_solid_instance(
     paint.border_color_right = pack_linear(with_opacity(border_colors[1], opacity));
     paint.border_color_bottom = pack_linear(with_opacity(border_colors[2], opacity));
     paint.border_color_left = pack_linear(with_opacity(border_colors[3], opacity));
+    paint._pad_tail0 = (snap >> 1) & 0x7fff;
+    paint._pad_tail1 = snap >> 16;
     pending_paint.push(paint);
     pending_urls.push(paint_url);
     pending.push(SolidInstance {

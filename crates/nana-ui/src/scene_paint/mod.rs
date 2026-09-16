@@ -14,6 +14,7 @@ mod host_texture;
 mod icon;
 pub(crate) mod image_url;
 mod mesh;
+mod motion;
 mod quad;
 mod text;
 pub(crate) mod url_texture_cache;
@@ -52,6 +53,7 @@ use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
 use mesh::{MeshPipeline, MeshRange, StrokeStyle};
+use motion::MotionGpuResources;
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
 
@@ -77,6 +79,7 @@ pub struct SceneWgpuPainter {
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
     quads: QuadPipeline,
+    motion: MotionGpuResources,
     meshes: MeshPipeline,
     icons: IconPipeline,
     text: TextPipeline,
@@ -103,6 +106,7 @@ pub struct SceneWgpuPainter {
 #[derive(Clone, Copy, PartialEq)]
 struct PaintedDest {
     instance: u64,
+    presentation_epoch: u64,
     viewport: ScenePaintViewport,
     size: [u32; 2],
 }
@@ -185,13 +189,16 @@ enum DrawCommand {
 
 impl SceneWgpuPainter {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        let quads = QuadPipeline::new(device, format);
+        let motion = MotionGpuResources::new(device, quads.motion_layout());
         Self {
             targets: std::collections::HashMap::new(),
             prepared_batch: None,
             device: device.clone(),
             queue: queue.clone(),
             format,
-            quads: QuadPipeline::new(device, format),
+            quads,
+            motion,
             meshes: MeshPipeline::new(device, format),
             icons: IconPipeline::new(device, format),
             text: TextPipeline::new(device, queue, format),
@@ -272,6 +279,12 @@ impl SceneWgpuPainter {
     /// `None` if this painter has not encoded, or the last `paint` was skipped.
     pub fn last_gpu_work(&self) -> Option<GpuWorkObservation> {
         self.last_gpu_work
+    }
+
+    /// Descriptor upload counters from the last encoded `paint`. Steady
+    /// timestamp frames keep `motion_descriptors_uploaded` at zero.
+    pub fn last_motion_work(&self) -> nana_ui_core::MotionWorkCounters {
+        self.motion.last_work()
     }
 
     /// Batch / upload / encode timings from the last encoded `paint`. Submit is
@@ -442,11 +455,17 @@ impl SceneWgpuPainter {
         };
         let painted = PaintedDest {
             instance,
+            presentation_epoch: scene.presentation_epoch(),
             viewport,
             size: dest_physical,
         };
 
+        let gpu_motion_live = scene
+            .motion_gpu_descriptors()
+            .iter()
+            .any(|descriptor| descriptor.is_live());
         if self.painted == Some(painted)
+            && !gpu_motion_live
             && let Some(dest) = self.dest.as_ref()
             && dest.width == dest_physical[0]
             && dest.height == dest_physical[1]
@@ -530,6 +549,16 @@ impl SceneWgpuPainter {
                     let Some(primitive) = scene.draw_primitive(id) else {
                         continue;
                     };
+                    let encode = scene.compositor_paint_encode(
+                        primitive.node,
+                        &primitive.kind,
+                        primitive.transform,
+                        primitive.paint_opacity,
+                    );
+                    let opacity = encode.opacity;
+                    let encode_transform = encode.transform;
+                    self.quads
+                        .set_motion_ids(encode.motion_ids.0, encode.motion_ids.1);
                     if sync_opacity_groups(
                         &mut commands,
                         &mut group_stack,
@@ -553,7 +582,7 @@ impl SceneWgpuPainter {
                     };
                     let frag_clip = fragment_clip(&primitive.clips, origin);
                     let (affine, persp) =
-                        paint_transform(primitive.transform.0, primitive.transform.1, origin);
+                        paint_transform(encode_transform.0, encode_transform.1, origin);
                     let bounds = local_rect(primitive.bounds);
                     // Wrapping drains and re-inserts this primitive's commands
                     // behind a `PushGroup`, so no batch may span the edit.
@@ -594,7 +623,7 @@ impl SceneWgpuPainter {
                                 *border_width,
                                 *corner_radius,
                                 *shadow,
-                                primitive.opacity,
+                                opacity,
                                 surface,
                             ) {
                                 if let Some(filter) =
@@ -672,7 +701,7 @@ impl SceneWgpuPainter {
                                     *border_width,
                                     *corner_radius,
                                     *shadow,
-                                    primitive.opacity,
+                                    opacity,
                                     surface,
                                 ) {
                                     if let Some(filter) =
@@ -777,7 +806,7 @@ impl SceneWgpuPainter {
                                         affine,
                                         persp,
                                         frag_clip,
-                                        primitive.opacity,
+                                        opacity,
                                         extra_offset,
                                     );
                                     if let Some(prepared) = prepared {
@@ -800,7 +829,7 @@ impl SceneWgpuPainter {
                                     }
                                 };
                             if let Some(shadow) = text_shadow {
-                                let base_color = with_opacity(shadow.color, primitive.opacity);
+                                let base_color = with_opacity(shadow.color, opacity);
                                 for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
                                     let scaled = [
                                         base_color[0],
@@ -855,7 +884,7 @@ impl SceneWgpuPainter {
                                     *border_width,
                                     *corner_radius,
                                     no_shadow,
-                                    primitive.opacity,
+                                    opacity,
                                     &default_surface,
                                 ) {
                                     for quad_index in index..self.quads.pending_len() {
@@ -880,7 +909,7 @@ impl SceneWgpuPainter {
                                 scale,
                                 *icon,
                                 color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                primitive.opacity,
+                                opacity,
                                 frag_clip,
                             ) {
                                 push_icon(
@@ -909,7 +938,7 @@ impl SceneWgpuPainter {
                                     scale,
                                     *icon,
                                     color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                    primitive.opacity,
+                                    opacity,
                                     frag_clip,
                                 ) {
                                     push_icon(
@@ -936,7 +965,7 @@ impl SceneWgpuPainter {
                                 mesh_affine(affine, persp),
                                 *phase,
                                 color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                primitive.opacity,
+                                opacity,
                                 frag_clip,
                             ) {
                                 push_mesh_draw(
@@ -985,7 +1014,7 @@ impl SceneWgpuPainter {
                                 },
                                 mesh_affine(affine, persp),
                                 *color,
-                                primitive.opacity,
+                                opacity,
                                 frag_clip,
                                 path_length,
                             ) {
@@ -1063,7 +1092,7 @@ impl SceneWgpuPainter {
                                         affine,
                                         persp,
                                         scissor,
-                                        primitive.opacity,
+                                        opacity,
                                         corner_radius,
                                         rounded_clip,
                                         frag_clip,
@@ -1084,7 +1113,7 @@ impl SceneWgpuPainter {
                                 let node = SceneGpuNode {
                                     id: primitive.id,
                                     custom: custom.clone(),
-                                    opacity: primitive.opacity,
+                                    opacity: opacity,
                                 };
                                 let custom_bounds = custom_paint_bounds(bounds, affine, persp);
                                 renderer.prepare(
@@ -1223,6 +1252,11 @@ impl SceneWgpuPainter {
             msaa_allocated: dest.msaa_allocated,
             ..DestPassCounts::default()
         };
+        self.motion.sync(&self.device, &self.queue, scene);
+        let motion_bytes = self.motion.last_work().motion_descriptor_bytes_uploaded;
+        if motion_bytes > 0 {
+            gpu_work.record_upload(motion_bytes);
+        }
         if gpu_interleaved {
             encode_ordered(
                 &mut EncodeOrdered {
@@ -1235,6 +1269,7 @@ impl SceneWgpuPainter {
                     device: &self.device,
                     queue: &self.queue,
                     gpu_work: &gpu_work,
+                    motion: self.motion.bind_group(),
                 },
                 encoder,
                 dest,
@@ -1254,6 +1289,7 @@ impl SceneWgpuPainter {
                             range.clone(),
                             *scissor,
                             sample_count,
+                            self.motion.bind_group(),
                             Some(&gpu_work),
                         );
                     }
@@ -1832,6 +1868,7 @@ struct EncodeOrdered<'a> {
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     gpu_work: &'a GpuWorkSink,
+    motion: &'a wgpu::BindGroup,
 }
 
 struct GroupFrame {
@@ -1940,6 +1977,7 @@ fn encode_ordered(
                                 range.clone(),
                                 *scissor,
                                 SAMPLE_COUNT,
+                                pipelines.motion,
                                 Some(pipelines.gpu_work),
                             );
                         }

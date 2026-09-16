@@ -3038,6 +3038,7 @@ fn overflow_parent(
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 
@@ -3090,6 +3091,7 @@ fn translucent_parent(
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 
@@ -3136,6 +3138,7 @@ fn overflowing_text_child(
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 
@@ -3190,6 +3193,7 @@ fn host_texture_child(
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 
@@ -3257,6 +3261,7 @@ fn extracted_div(
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 
@@ -8181,6 +8186,115 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
     assert!(
         painter.prepared_batch.is_none(),
         "target commands must not leak into the default painter state"
+    );
+}
+
+#[test]
+fn text_follows_ancestor_compositor_opacity_overlay() {
+    use std::time::Duration;
+
+    use nana_ui_core::{
+        Easing,
+        motion::{AnimatableProperty, MotionTo, MotionValue},
+    };
+    use nana_ui_runtime::{AnimationId, AnimationSpec, UiWorld};
+
+    let parent = StableNodeId::new(1).unwrap();
+    let child = StableNodeId::new(2).unwrap();
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(parent, DocumentId::new(1).unwrap(), NodeKind::Document);
+    queue.create(
+        child,
+        DocumentId::new(1).unwrap(),
+        NodeKind::Element { tag: "span".into() },
+    );
+    queue.insert(parent, child, None);
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            parent,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Opacity)
+        .with_range(
+            MotionValue::Scalar(0.0),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        ),
+    );
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::ZERO);
+    let mut extracted = world.extract_nodes(&[parent, child]);
+    for node in &mut extracted {
+        if node.id == child {
+            node.text = Some(TextContent { value: "HI".into() });
+            node.style = Arc::new(ComputedStyle {
+                color: Some([1.0, 1.0, 1.0, 1.0]),
+                font_size: 28.0,
+                ..ComputedStyle::default()
+            });
+            node.layout = LayoutBox {
+                x: 4.0,
+                y: 8.0,
+                width: 56.0,
+                height: 40.0,
+            };
+        }
+    }
+    let mut scene = UiScene::new();
+    scene.apply_delta(extracted, []);
+    scene.apply_presentation(
+        world.presentation_store(),
+        Duration::from_millis(200),
+        Some(world.motion_descriptors()),
+    );
+    let layer = scene
+        .compositor_layer(parent)
+        .expect("parent opacity layer");
+    let text = scene
+        .primitives()
+        .find(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
+        .expect("child text primitive");
+    let draw = scene.draw_primitive(text.id).expect("text draw");
+    let encode =
+        scene.compositor_paint_encode(draw.node, &draw.kind, draw.transform, draw.paint_opacity);
+    assert!(
+        (encode.opacity - draw.paint_opacity).abs() < 1e-5,
+        "Text encode must keep CPU overlay"
+    );
+    assert!(
+        (draw.paint_opacity - layer.opacity).abs() < 0.05,
+        "drawn text opacity {} must track presentation {}",
+        draw.paint_opacity,
+        layer.opacity
+    );
+
+    let (device, queue) = test_device();
+    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0, 64.0],
+        [64, 64],
+        1.0,
+    );
+    let mut brightest = 0u8;
+    for chunk in pixels.chunks_exact(4) {
+        brightest = brightest.max(chunk[0]).max(chunk[1]).max(chunk[2]);
+    }
+    assert!(
+        brightest > 20,
+        "text must paint some ink under the overlay, got {brightest}"
+    );
+    assert!(
+        brightest < 200,
+        "text must follow ancestor presentation opacity {}, not logical 1.0; brightest {brightest}",
+        layer.opacity
     );
 }
 

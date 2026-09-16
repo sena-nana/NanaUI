@@ -81,7 +81,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     var pos_snap = vec2<f32>(0.0, 0.0);
     var scale_snap = vec2<f32>(0.0, 0.0);
 
-    if bool(input.snap) {
+    if bool(input.snap & 1u) {
         pos_snap = round(pos + vec2(0.001, 0.001)) - pos;
         scale_snap = round(pos + scale + vec2(0.001, 0.001)) - pos - pos_snap - scale;
     }
@@ -90,7 +90,9 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     let unit = vertex_position(input.vertex_index);
     let local = pos + pos_snap - vec2<f32>(0.5, 0.5) + unit * (scale + scale_snap + 1.0);
     let logical = local / globals.scale;
-    let world = apply_affine(input.affine_abcd, input.affine_ef, logical);
+    let transform_id = (input.snap >> 1u) & 0x7fffu;
+    let composed = motion_compose_affine(input.affine_abcd, input.affine_ef, motion_evaluate(transform_id));
+    let world = apply_affine(composed.abcd, composed.ef, logical);
 
     out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
     out.color = premultiply(input.color);
@@ -229,6 +231,8 @@ fn solid_fs_main(
 
     let quad_color = mixed_color * quad_alpha;
 
+    let motion_opacity = motion_sample_scalar(motion_evaluate(paint._pad_tail1), 1.0);
+
     if input.shadow_color.a > 0.0 {
         let css_spread = input.shadow_spread_radius - outline_px;
         let shadow_size = max(input.scale + vec2(css_spread * 2.0), vec2(0.0));
@@ -244,12 +248,12 @@ fn solid_fs_main(
                 input.shadow_blur_radius,
                 max(-shadow_dist, 0.0),
             );
-            return mix(quad_color, input.shadow_color, clamp(0.5 - dist, 0.0, 1.0) * shadow_alpha);
+            return mix(quad_color, input.shadow_color, clamp(0.5 - dist, 0.0, 1.0) * shadow_alpha) * motion_opacity;
         }
         let shadow_alpha = 1.0 - smoothstep(-input.shadow_blur_radius, input.shadow_blur_radius, max(shadow_dist, 0.0));
 
-        return mix(quad_color, input.shadow_color, (1.0 - quad_alpha) * shadow_alpha);
+        return mix(quad_color, input.shadow_color, (1.0 - quad_alpha) * shadow_alpha) * motion_opacity;
     } else {
-        return quad_color;
+        return quad_color * motion_opacity;
     }
 }
