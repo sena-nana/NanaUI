@@ -127,13 +127,7 @@ impl UiWorld {
                 cumulative = (IDENTITY_AFFINE, [0.0, 0.0]);
                 blocks_3d = false;
             }
-            let local = if blocks_3d && layout.transform_3d.is_some() {
-                (IDENTITY_AFFINE, [0.0, 0.0])
-            } else {
-                layout
-                    .world_scene_transform(bounds.x, bounds.y, bounds.width, bounds.height)
-                    .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
-            };
+            let local = self.input_local_scene_transform(node, &layout, bounds, blocks_3d);
             cumulative = then_hit(cumulative, local);
             let own = cumulative;
             let scroll = record.scroll_offset;

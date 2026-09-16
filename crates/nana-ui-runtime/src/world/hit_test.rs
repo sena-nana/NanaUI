@@ -615,8 +615,48 @@ fn transformed_point(
     (local_x.is_finite() && local_y.is_finite()).then_some((local_x, local_y))
 }
 
+pub(super) fn project_transformed_box(
+    bounds: LayoutBox,
+    [a, by, c, d, e, f]: [f32; 6],
+    [g, h]: [f32; 2],
+) -> Option<LayoutBox> {
+    let mut x = f32::INFINITY;
+    let mut y = f32::INFINITY;
+    let mut right = f32::NEG_INFINITY;
+    let mut bottom = f32::NEG_INFINITY;
+    for (px, py) in [
+        (bounds.x, bounds.y),
+        (bounds.x + bounds.width, bounds.y),
+        (bounds.x, bounds.y + bounds.height),
+        (bounds.x + bounds.width, bounds.y + bounds.height),
+    ] {
+        let w = g * px + h * py + 1.0;
+        if !w.is_finite() || w.abs() < 1e-8 {
+            return None;
+        }
+        let tx = (a * px + c * py + e) / w;
+        let ty = (by * px + d * py + f) / w;
+        if !tx.is_finite() || !ty.is_finite() {
+            return None;
+        }
+        x = x.min(tx);
+        y = y.min(ty);
+        right = right.max(tx);
+        bottom = bottom.max(ty);
+    }
+    Some(LayoutBox {
+        x,
+        y,
+        width: right - x,
+        height: bottom - y,
+    })
+}
+
 impl UiWorld {
-    fn layout_projection_transform(&self, target: StableNodeId) -> Option<([f32; 6], [f32; 2])> {
+    pub(super) fn layout_projection_transform(
+        &self,
+        target: StableNodeId,
+    ) -> Option<([f32; 6], [f32; 2])> {
         if !self.is_mounted(target) {
             return None;
         }
@@ -636,13 +676,7 @@ impl UiWorld {
             let node = self.nodes.get(id)?;
             let style = self.hit_motion_layout(id);
             let b = node.layout;
-            let local = if blocks_3d && style.transform_3d.is_some() {
-                (IDENTITY_AFFINE, [0.0, 0.0])
-            } else {
-                style
-                    .world_scene_transform(b.x, b.y, b.width, b.height)
-                    .unwrap_or((IDENTITY_AFFINE, [0.0, 0.0]))
-            };
+            let local = self.input_local_scene_transform(id, &style, b, blocks_3d);
             transform = then_hit(transform, local);
             blocks_3d |= style.fails_closed_3d_context();
             if id != target {
@@ -667,39 +701,10 @@ impl UiWorld {
 
     /// Current viewport geometry for layout-time anchors. The hit index is
     /// published only after the frame settles, so it cannot serve this query.
+    /// Compositor transform overlays follow presentation; layout boxes stay
+    /// logical.
     pub(crate) fn viewport_layout_box(&self, target: StableNodeId) -> Option<LayoutBox> {
-        let ([a, by, c, d, e, f], [g, h]) = self.layout_projection_transform(target)?;
-        let b = self.layout_box(target)?;
-        let mut x = f32::INFINITY;
-        let mut y = f32::INFINITY;
-        let mut right = f32::NEG_INFINITY;
-        let mut bottom = f32::NEG_INFINITY;
-        for (px, py) in [
-            (b.x, b.y),
-            (b.x + b.width, b.y),
-            (b.x, b.y + b.height),
-            (b.x + b.width, b.y + b.height),
-        ] {
-            let w = g * px + h * py + 1.0;
-            if !w.is_finite() || w.abs() < 1e-8 {
-                return None;
-            }
-            let tx = (a * px + c * py + e) / w;
-            let ty = (by * px + d * py + f) / w;
-            if !tx.is_finite() || !ty.is_finite() {
-                return None;
-            }
-            x = x.min(tx);
-            y = y.min(ty);
-            right = right.max(tx);
-            bottom = bottom.max(ty);
-        }
-        Some(LayoutBox {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
-        })
+        self.presentation_input_bounds(target)
     }
 
     /// Map a window point into this node's untransformed layout coordinates.
@@ -714,7 +719,8 @@ impl UiWorld {
         if !self.is_mounted(target) {
             return None;
         }
-        if let Some(document) = self.document_of(target)
+        if !self.has_compositor_transform_overlay()
+            && let Some(document) = self.document_of(target)
             && let Some(index) = self.hit_test_index.get(&document)
             && let Some(indexed) = index.entries.get(&target)
         {
@@ -739,6 +745,15 @@ impl UiWorld {
     ) -> Option<(f32, f32)> {
         if !self.is_mounted(target) {
             return None;
+        }
+        if self.has_compositor_transform_overlay() {
+            let ([a, b, c, d, e, f], [g, h]) = self.layout_projection_transform(target)?;
+            let w = g * x + h * y + 1.0;
+            if !w.is_finite() || w.abs() < 1e-8 {
+                return None;
+            }
+            let result = ((a * x + c * y + e) / w, (b * x + d * y + f) / w);
+            return (result.0.is_finite() && result.1.is_finite()).then_some(result);
         }
         let document = self.document_of(target)?;
         let index = self.hit_test_index.get(&document)?;
@@ -773,13 +788,20 @@ impl UiWorld {
         let shift = index.inherited_shift(target);
         let menu_hit = index.entries.get(&target).is_some_and(|node| {
             node.entry.menu.is_some_and(|menu| {
-                transformed_contains(
-                    menu,
-                    node.entry.transform,
-                    node.entry.persp,
-                    x - shift[0],
-                    y - shift[1],
-                )
+                if self.has_compositor_transform_overlay() {
+                    self.layout_projection_transform(target)
+                        .is_some_and(|(transform, persp)| {
+                            transformed_contains(menu, transform, persp, x, y)
+                        })
+                } else {
+                    transformed_contains(
+                        menu,
+                        node.entry.transform,
+                        node.entry.persp,
+                        x - shift[0],
+                        y - shift[1],
+                    )
+                }
             })
         });
         let mut chain = Vec::new();
@@ -804,7 +826,10 @@ impl UiWorld {
                 .children
                 .iter()
                 .any(|child| self.is_mounted(*child));
-            let opacity = style.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+            let opacity = self
+                .sampled_compositor_opacity(id)
+                .unwrap_or_else(|| style.opacity.unwrap_or(1.0))
+                .clamp(0.0, 1.0);
             let filter_group = style
                 .paint
                 .filter
@@ -832,17 +857,148 @@ impl UiWorld {
         groups
     }
 
+    fn visit_presentation_roots(
+        &self,
+        index: &HitIndex,
+        x: f32,
+        y: f32,
+        emit: &mut impl FnMut(StableNodeId) -> bool,
+    ) -> bool {
+        for slot in (0..index.roots.len()).rev() {
+            let Some(id) = index.roots[slot] else {
+                continue;
+            };
+            if self.visit_presentation_hits(
+                index,
+                id,
+                (IDENTITY_AFFINE, [0.0, 0.0]),
+                false,
+                x,
+                y,
+                emit,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn visit_presentation_hits(
+        &self,
+        index: &HitIndex,
+        id: StableNodeId,
+        parent_hit: ([f32; 6], [f32; 2]),
+        parent_blocks_3d: bool,
+        x: f32,
+        y: f32,
+        emit: &mut impl FnMut(StableNodeId) -> bool,
+    ) -> bool {
+        let Some(indexed) = index.entries.get(&id) else {
+            return false;
+        };
+        if self.motion_blocks_input(id) {
+            return false;
+        }
+        let Some(record) = self.nodes.get(id) else {
+            return false;
+        };
+        let style = self.hit_motion_layout(id);
+        let (parent_hit, parent_blocks_3d) = if style.position == PositionSpec::Fixed {
+            ((IDENTITY_AFFINE, [0.0, 0.0]), false)
+        } else {
+            (parent_hit, parent_blocks_3d)
+        };
+        let layout = record.layout;
+        let local = self.input_local_scene_transform(id, &style, layout, parent_blocks_3d);
+        let (transform, persp) = then_hit(parent_hit, local);
+        let node = &indexed.entry;
+        if !node
+            .self_clips
+            .iter()
+            .all(|(bounds, _)| transformed_contains(*bounds, parent_hit.0, parent_hit.1, x, y))
+        {
+            return false;
+        }
+        let menu_hit = node
+            .menu
+            .is_some_and(|menu| transformed_contains(menu, transform, persp, x, y));
+        let children_ok = node
+            .child_clips
+            .iter()
+            .all(|(bounds, _)| transformed_contains(*bounds, transform, persp, x, y));
+        let child_transform = then_hit(
+            (transform, persp),
+            (
+                [
+                    1.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    -record.scroll_offset.x,
+                    -record.scroll_offset.y,
+                ],
+                [0.0, 0.0],
+            ),
+        );
+        let child_blocks_3d = parent_blocks_3d || style.fails_closed_3d_context();
+        let menu_z = node.z_index.max(1000);
+        let mut emitted_menu = !menu_hit;
+        if children_ok {
+            for slot in (0..indexed.children.len()).rev() {
+                let Some(child) = indexed.children[slot] else {
+                    continue;
+                };
+                if !emitted_menu
+                    && index
+                        .entries
+                        .get(&child)
+                        .is_some_and(|child| child.entry.z_index <= menu_z)
+                {
+                    emitted_menu = true;
+                    if emit(id) {
+                        return true;
+                    }
+                }
+                if self.visit_presentation_hits(
+                    index,
+                    child,
+                    child_transform,
+                    child_blocks_3d,
+                    x,
+                    y,
+                    emit,
+                ) {
+                    return true;
+                }
+            }
+        }
+        if !emitted_menu && emit(id) {
+            return true;
+        }
+        if node.hittable && transformed_contains(layout, transform, persp, x, y) {
+            return emit(id);
+        }
+        false
+    }
+
     pub fn hit_test_candidates(&self, document: DocumentId, x: f32, y: f32) -> Vec<StableNodeId> {
         let Some(forest) = self.hit_test_index.get(&document) else {
             return Vec::new();
         };
         let mut candidates = Vec::new();
-        forest.visit_roots(x, y, &mut |id| {
-            candidates.push(id);
-            false
-        });
+        if self.has_compositor_transform_overlay() {
+            self.visit_presentation_roots(forest, x, y, &mut |id| {
+                candidates.push(id);
+                false
+            });
+        } else {
+            forest.visit_roots(x, y, &mut |id| {
+                candidates.push(id);
+                false
+            });
+        }
         candidates.retain(|id| !self.motion_blocks_input(*id));
-        if forest.viewport_hit_at(x, y) {
+        if forest.viewport_hit_at(x, y) || self.has_compositor_transform_overlay() {
             candidates
                 .sort_by_cached_key(|id| std::cmp::Reverse(self.hit_paint_key(forest, *id, x, y)));
         }
@@ -867,10 +1023,17 @@ impl UiWorld {
         }
         let forest = self.hit_test_index.get(&document)?;
         let mut found = None;
-        forest.visit_roots(x, y, &mut |id| {
-            found = Some(id);
-            true
-        });
+        if self.has_compositor_transform_overlay() {
+            self.visit_presentation_roots(forest, x, y, &mut |id| {
+                found = Some(id);
+                true
+            });
+        } else {
+            forest.visit_roots(x, y, &mut |id| {
+                found = Some(id);
+                true
+            });
+        }
         found
     }
 }
@@ -1401,6 +1564,10 @@ impl UiWorld {
 #[cfg(test)]
 #[path = "hit_test/build_tests.rs"]
 mod build_tests;
+
+#[cfg(test)]
+#[path = "hit_test/presentation_tests.rs"]
+mod presentation_tests;
 
 #[cfg(test)]
 mod connector_tests {
