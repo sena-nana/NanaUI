@@ -1138,9 +1138,20 @@ fn first_line_ascent(buffer: &Buffer) -> Option<f32> {
 fn metrics_of(buffer: &Buffer) -> TextMetrics {
     let (width, height, _) = measure(buffer);
     TextMetrics {
-        width: width.max(0.0),
-        height,
-        ascent: first_line_ascent(buffer),
+        width: finite_or_zero(width),
+        height: finite_or_zero(height),
+        ascent: first_line_ascent(buffer).filter(|ascent| ascent.is_finite()),
+    }
+}
+
+/// The runtime rejects a non-finite or negative metric outright
+/// (`UiWorldError::InvalidText`), which costs the whole document's flush. This
+/// module owes it a value it can lay out with; see [`finite_line_width`].
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
     }
 }
 
@@ -1194,8 +1205,8 @@ fn single_char(text: &str) -> Option<char> {
 
 fn metrics_from_advance(advance: f32, style: &ComputedStyle, _char_count: usize) -> TextMetrics {
     TextMetrics {
-        width: advance.max(0.0),
-        height: resolved_line_height(style),
+        width: finite_or_zero(advance),
+        height: finite_or_zero(resolved_line_height(style)),
         ascent: None,
     }
 }
@@ -1226,15 +1237,43 @@ fn resolved_line_height(style: &ComputedStyle) -> f32 {
     }
 }
 
+/// A line width that can be laid out with, given a shaper that can report one
+/// that cannot.
+///
+/// macOS ships `GB18030Bitmap`, a bitmap-only CJK face with no scalable
+/// metrics. cosmic's CJK fallback is locale-dependent and reaches it under
+/// `Family::Monospace` when the locale is `en-US` -- a CI runner's default,
+/// while a `zh-*` locale picks `PingFangSC` and never sees it. Scaling an
+/// advance by its zero units-per-em yields `w == inf` and `x_offset == NaN`,
+/// and an infinite width fails the runtime's `validate_text_metrics`, so one
+/// label shaped through that face aborts the whole document's layout flush.
+///
+/// Measure what is measurable instead: sum the advances that are finite. That
+/// under-reports a label drawn entirely in such a face, which is a cosmetic
+/// loss on one platform and locale, where propagating the infinity is a dead
+/// document on all of them.
+fn finite_line_width(line_w: f32, glyph_widths: impl Iterator<Item = f32>) -> f32 {
+    if line_w.is_finite() {
+        return line_w.max(0.0);
+    }
+    glyph_widths
+        .filter(|width| width.is_finite())
+        .fold(0.0f32, |total, width| total + width.max(0.0))
+}
+
 fn measure(buffer: &Buffer) -> (f32, f32, bool) {
     buffer
         .layout_runs()
         .fold((0.0, 0.0, false), |(width, height, has_rtl), run| {
-            (
-                run.line_w.max(width),
-                height + run.line_height,
-                has_rtl || run.rtl,
-            )
+            let line_w = finite_line_width(run.line_w, run.glyphs.iter().map(|glyph| glyph.w));
+            // The buffer's own `Metrics::line_height` is clamped positive in
+            // `shape_buffer`, but a per-line override comes from the face.
+            let line_height = if run.line_height.is_finite() {
+                run.line_height.max(0.0)
+            } else {
+                0.0
+            };
+            (line_w.max(width), height + line_height, has_rtl || run.rtl)
         })
 }
 
@@ -1509,6 +1548,102 @@ mod tests {
             second,
             NanaTextShaper::default().text_position(node(), &text, 4, &style, constraints)
         );
+    }
+
+    #[test]
+    fn a_finite_line_width_is_reported_as_measured() {
+        assert_eq!(
+            finite_line_width(41.5, [10.0, 31.5].into_iter()),
+            41.5,
+            "a usable line width must not be recomputed from the glyphs"
+        );
+        assert_eq!(finite_line_width(-3.0, [].into_iter()), 0.0);
+    }
+
+    #[test]
+    fn an_infinite_line_width_falls_back_to_the_glyphs_that_can_be_measured() {
+        // `GB18030Bitmap` has no scalable metrics, so its glyphs come back with
+        // `w == inf`. A label mixing it with a usable face must still measure
+        // the usable part rather than poisoning the document's flush.
+        assert_eq!(
+            finite_line_width(f32::INFINITY, [12.0, f32::INFINITY, 8.0].into_iter()),
+            20.0
+        );
+        assert_eq!(
+            finite_line_width(f32::INFINITY, [f32::INFINITY, f32::INFINITY].into_iter()),
+            0.0,
+            "a label drawn entirely in such a face measures zero, not infinity"
+        );
+        assert_eq!(
+            finite_line_width(f32::NAN, [12.0, f32::NAN].into_iter()),
+            12.0
+        );
+    }
+
+    #[test]
+    fn the_runtime_never_sees_a_non_finite_or_negative_metric() {
+        for value in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN, -1.0] {
+            let sanitized = finite_or_zero(value);
+            assert!(
+                sanitized.is_finite() && sanitized >= 0.0,
+                "{value} sanitized to {sanitized}"
+            );
+        }
+        assert_eq!(finite_or_zero(16.0), 16.0);
+    }
+
+    /// The real path behind `UiWorldError::InvalidText` on macOS CI.
+    ///
+    /// cosmic's CJK fallback is locale-dependent: pinning `en-US` (a runner's
+    /// default, where a developer's machine is often `zh-*`) sends
+    /// `Family::Monospace` to `GB18030Bitmap` instead of `PingFangSC`. This
+    /// asserts the shaper's own output stays layout-usable through that face.
+    /// The pure cases above carry the guard; this one is the witness that the
+    /// system font set can still produce it.
+    #[test]
+    #[cfg(all(target_os = "macos", feature = "bundled-fonts"))]
+    fn shaping_cjk_through_a_bitmap_only_system_face_stays_finite() {
+        let mut db = cosmic_text::fontdb::Database::new();
+        db.load_system_fonts();
+        for source in crate::ui_font_sources() {
+            db.load_font_source(cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(
+                source,
+            )));
+        }
+        db.set_sans_serif_family(nana_ui_core::fonts::UI_FONT_FAMILY);
+        let mut fonts = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        let mut buffer = Buffer::new(&mut fonts, Metrics::new(12.0, 16.0));
+        buffer.set_size(Some(f32::INFINITY), Some(f32::INFINITY));
+        buffer.set_wrap(Wrap::None);
+        buffer.set_ellipsize(Ellipsize::None);
+        buffer.set_text(
+            "统一",
+            &Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut fonts, false);
+
+        let raw_is_unusable = buffer
+            .layout_runs()
+            .any(|run| !run.line_w.is_finite() || run.glyphs.iter().any(|g| !g.w.is_finite()));
+        let metrics = metrics_of(&buffer);
+        assert!(
+            metrics.width.is_finite() && metrics.width >= 0.0,
+            "width {} must be layout-usable (raw unusable: {raw_is_unusable})",
+            metrics.width
+        );
+        assert!(
+            metrics.height.is_finite() && metrics.height > 0.0,
+            "height {} must be layout-usable (raw unusable: {raw_is_unusable})",
+            metrics.height
+        );
+        if !raw_is_unusable {
+            eprintln!(
+                "note: this macOS font set no longer reaches a bitmap-only face; \
+                 the guard now rests on the `finite_line_width` cases alone"
+            );
+        }
     }
 
     fn assert_positive_finite(metrics: TextMetrics) {
