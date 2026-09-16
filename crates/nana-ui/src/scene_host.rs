@@ -2324,14 +2324,10 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     }
     /// Called by the embedding host after it replaces its device.
     ///
-    /// Always adopts `graphics`. Each window's surface is rebound in place,
-    /// releasing its old swap chain before configuring the new one: DXGI allows
-    /// one swap chain per HWND, so the replacement cannot be tried out while the
-    /// old surface is kept as a fallback -- and after device loss that old
-    /// surface could not present anyway. Windows whose rebind failed recover
-    /// individually. Returns the first error when no window could present on
-    /// the replacement, so the host can report it; the switch has still
-    /// happened.
+    /// Always adopts `graphics`: surfaces are rebound in place, and DXGI's one
+    /// swap chain per HWND leaves no old surface to fall back to. Windows whose
+    /// rebind failed recover individually; the error is returned only when
+    /// every window failed.
     pub fn replace_gpu(&mut self, graphics: crate::HostedGpuShared) -> Result<(), String> {
         let outcomes: Vec<_> = self
             .manager
@@ -2339,17 +2335,14 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
             .iter_mut()
             .map(|(&id, host)| (id, graphics.recreate_surface(&mut host.surface)))
             .collect();
-        let all_failed =
-            !outcomes.is_empty() && outcomes.iter().all(|(_, outcome)| outcome.is_err());
-        let first_error = outcomes
-            .iter()
-            .find_map(|(_, outcome)| outcome.as_ref().err())
+        let all_failed = outcomes.iter().all(|(_, outcome)| outcome.is_err());
+        let error = outcomes
+            .first()
+            .and_then(|(_, outcome)| outcome.as_ref().err())
+            .filter(|_| all_failed)
             .map(ToString::to_string);
         self.manager.switch_gpu(graphics, outcomes);
-        match first_error {
-            Some(error) if all_failed => Err(error),
-            _ => Ok(()),
-        }
+        error.map_or(Ok(()), Err)
     }
     /// Displays connected now.
     pub fn displays(&self, event_loop: &dyn ActiveEventLoop) -> Vec<nana_ui_platform::DisplayInfo> {

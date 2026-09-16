@@ -3348,8 +3348,6 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        // `CountingShaper` has no `Drop`, so an explicit `drop` would not end
-        // its borrows any earlier than this last field read already does.
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
@@ -3562,8 +3560,6 @@ impl UiWorld {
         }
         let runs = shaper.runs;
         let wrap_layouts = shaper.wrap_layouts;
-        // `CountingShaper` has no `Drop`, so an explicit `drop` would not end
-        // its borrows any earlier than this last field read already does.
         let (hits, misses, evictions) = cache.take_counters();
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;

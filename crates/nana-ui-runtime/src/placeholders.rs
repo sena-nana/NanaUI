@@ -317,9 +317,7 @@ mod tests {
         assert_eq!(presentation_opacity(&context, id), Some(1.0));
         let pulse = crate::component_animation_id(crate::component_animation_kinds::SKELETON, id)
             .expect("skeleton pulse id");
-        // An infinite compositor pulse has no completion, so it owes the
-        // Runtime no CPU wake: the compositor presents it through
-        // `compositor_needs_tick`. It stays active all the same.
+        // No completion, so no CPU wake; the compositor keeps presenting it.
         assert_eq!(steady.next_deadline, None);
         assert!(context.world().animation_is_active(pulse));
 
@@ -348,8 +346,6 @@ mod tests {
         )
         .expect("skeleton pulse id");
         context.advance_animations(Duration::from_millis(48));
-        // The pulse owes no CPU wake (see `skeleton_pulse_lives_on_compositor_overlay`),
-        // so whether it was reclaimed shows in the animation table, not the deadline.
         assert!(context.world().animation_is_active(pulse));
 
         context.remove_view(skeleton).unwrap();
@@ -378,10 +374,7 @@ mod tests {
             .unwrap();
         assert!(context.next_animation_deadline().is_some());
         let frame = context.advance_animations(Duration::from_millis(700));
-        // The pulse rides the compositor overlay, so the remounted skeleton
-        // reports a sample and leaves the logical style untouched rather than
-        // landing in `component_updates` -- see
-        // `skeleton_pulse_lives_on_compositor_overlay`.
+        // Compositor overlay: sampled, but logical style is never written.
         assert!(frame.samples.iter().any(|sample| sample.target == id));
         assert_eq!(context.world().node_style(id).unwrap().layout.opacity, None);
         assert!(

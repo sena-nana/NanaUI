@@ -398,8 +398,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
             return;
         };
-        // Rebound in place: each old swap chain is released before its
-        // replacement is configured. See `HostedGpuSurface::rebind`.
         let mut outcomes = vec![(base, Ok(()))];
         for &id in recovery_windows.iter().filter(|&&id| id != base) {
             let surface = &mut self.window_contexts.get_mut(&id).unwrap().surface;
@@ -410,8 +408,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     /// Adopt a replacement device. Windows whose surface failed on it recover
     /// individually; every other window presents on the new device immediately.
-    /// Adopt `graphics`. Each window's surface has already been rebound onto
-    /// it in place; `outcomes` says which of those rebinds failed.
+    /// Adopt `graphics`, onto which every window's surface was already rebound.
     pub(super) fn switch_gpu(
         &mut self,
         graphics: crate::HostedGpuShared,
@@ -527,8 +524,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
 /// Preserve the retained native target until a complete replacement is ready.
 /// A failed attempt consumes its deadline, so repeated loop wakes cannot spin.
-/// `rebind` recovers `surface` in place; it must leave it untouched when it
-/// fails before releasing the old swap chain.
 fn retry_surface<T, E>(
     surface: &mut T,
     deadline: &mut Option<Instant>,

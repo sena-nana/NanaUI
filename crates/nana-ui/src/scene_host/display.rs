@@ -75,10 +75,7 @@ fn descriptor_fullscreen(
 }
 
 /// winit resets the NSWindow level across a native fullscreen transition.
-///
-/// Pure enough to test on every host, but its only non-test caller is the
-/// macOS branch below, so the lib build elsewhere legitimately sees it as
-/// dead. Narrow the allowance to exactly that build.
+/// Tested on every host; only the macOS branch calls it outside tests.
 #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
 fn should_restore_level_after_fullscreen_change(
     level: WindowLevel,

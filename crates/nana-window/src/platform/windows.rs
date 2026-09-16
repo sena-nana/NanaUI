@@ -406,10 +406,8 @@ pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
     let Some(hwnd) = hwnd(window) else {
         return failed("window has no Win32 handle");
     };
-    let (hooked, had_button) = match taskbar_hook_state(hwnd) {
-        Some(had_button) => (true, had_button),
-        None => (false, 0),
-    };
+    let hook = taskbar_hook_state(hwnd);
+    let (hooked, had_button) = (hook.is_some(), hook.unwrap_or(0));
     let visible = unsafe { IsWindowVisible(hwnd) } != 0;
     if !skip {
         if !hooked {
@@ -450,7 +448,6 @@ pub(crate) fn set_skip_taskbar<W: HasWindowHandle + ?Sized>(
         {
             return failed("SetWindowSubclass failed for the taskbar hook");
         }
-        // Stored `+ 1` so a window without a button still reads as hooked.
         let prop = wide(TASKBAR_HOOK_PROP);
         if unsafe { SetPropW(hwnd, prop.as_ptr(), (had_button + 1) as _) } == 0 {
             unsafe { RemoveWindowSubclass(hwnd, Some(taskbar_subclass_proc), TASKBAR_SUBCLASS_ID) };
@@ -480,18 +477,10 @@ fn remove_taskbar_hook(hwnd: HWND) {
     unsafe { RemovePropW(hwnd, prop.as_ptr()) };
 }
 
-/// Window property recording that the taskbar hook is installed, holding
-/// `had_button + 1`.
-///
-/// This replaces reading the hook's reference data back with
-/// `GetWindowSubclass`. comctl32 exports that function by name only from the
-/// v6 side-by-side assembly, which a process gets through a Common-Controls
-/// manifest; without one the loader binds `System32\comctl32.dll` v5.82, where
-/// it is ordinal-only. windows-sys imports by name, so every hosted binary
-/// without that manifest -- `cargo run --example`, tests, any downstream app
-/// that does not embed one -- failed to start with STATUS_ENTRYPOINT_NOT_FOUND
-/// before `main`. `SetWindowSubclass`, `RemoveWindowSubclass` and
-/// `DefSubclassProc` do resolve by name there.
+/// Holds `had_button + 1` while the taskbar hook is installed. Replaces
+/// `GetWindowSubclass`, which comctl32 v5.82 (the default without a
+/// Common-Controls v6 manifest) exports only by ordinal, so a by-name import
+/// stopped every hosted binary from loading.
 const TASKBAR_HOOK_PROP: &str = "NanaUI.TaskbarHook";
 
 /// `Some(had_button)` when the taskbar hook is installed on `hwnd`.

@@ -239,17 +239,10 @@ impl UiWorld {
         self.install_presentation_overlay(&spec);
     }
 
-    /// Index the CPU wake for animation `id`.
-    ///
-    /// `Duration::MAX` means "no CPU wake until replaced": a paused hold, or a
-    /// compositor overlay with no completion, such as an infinite skeleton
-    /// pulse. The compositor keeps presenting it through
-    /// `compositor_needs_tick`, separately from these deadlines. Indexing MAX
-    /// would make `next_animation_deadline` report `Some(~584 942 417 355 s)`
-    /// for a world with no CPU work at all. Hosts happened to survive that --
-    /// `epoch.checked_add(MAX)` overflows to `None` -- but every other reader
-    /// saw a deadline that does not exist. The animation itself stays in
-    /// `animations`, which is what pause, resume, retarget and cancel consult.
+    /// `Duration::MAX` means no CPU wake (a paused hold, or a compositor
+    /// overlay without completion, which `compositor_needs_tick` presents), so
+    /// it stays out of the index instead of reporting a deadline ~584 billion
+    /// years away.
     fn index_animation_deadline(&mut self, deadline: Duration, id: AnimationId) {
         if deadline != Duration::MAX {
             self.animation_deadlines.insert((deadline, id));

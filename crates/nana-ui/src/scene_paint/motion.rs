@@ -13,21 +13,17 @@ use nana_ui_scene::UiScene;
 
 use super::buffer_upload::upload_changed;
 
+/// The eval pipeline and readback serve only the CPU/GPU parity tests, so
+/// they are dead outside test builds.
 pub(super) struct MotionGpuResources {
     descriptors: wgpu::Buffer,
     keyframes: wgpu::Buffer,
     time: wgpu::Buffer,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
-    #[allow(
-        dead_code,
-        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
-    )]
+    #[cfg_attr(not(test), allow(dead_code))]
     dummy_group: wgpu::BindGroup,
-    #[allow(
-        dead_code,
-        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
-    )]
+    #[cfg_attr(not(test), allow(dead_code))]
     eval_pipeline: Option<wgpu::RenderPipeline>,
     descriptor_capacity: usize,
     keyframe_capacity: usize,
@@ -182,10 +178,7 @@ impl MotionGpuResources {
     }
 
     /// Test/devtools only. Product present must not call this.
-    #[allow(
-        dead_code,
-        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
-    )]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn evaluate_readback(
         &mut self,
         device: &wgpu::Device,
@@ -280,10 +273,7 @@ impl MotionGpuResources {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) struct MotionGpuReadback {
     pub pixels: [[f32; 4]; 2],
 }
@@ -421,10 +411,7 @@ fn create_eval_pipeline(
     )
 }
 
-#[allow(
-    dead_code,
-    reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
-)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn readback_rgba32(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -664,7 +651,7 @@ mod tests {
 
     #[expect(
         clippy::too_many_arguments,
-        reason = "Parity fixture: device/queue/world/scene are the harness, the rest is one track sampled at a list of timestamps"
+        reason = "parity fixture: GPU harness plus one track and its timestamps"
     )]
     fn assert_cpu_gpu_eval_parity(
         device: &wgpu::Device,
