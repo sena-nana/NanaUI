@@ -1,12 +1,11 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use crate::view_components::project_common;
 use crate::{
     AccessibilityRole, AccessibilityState, AnimationDirection, AnimationFillMode,
     AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, ComponentView,
     Easing, InteractionState, LengthSpec, MutationQueue, NodeKind, NodeStyle, SemanticColorRole,
     StableNodeId, StandardVisual, UiWorld, component_animation_id, component_animation_kinds,
+    view_components::project_common,
 };
 
 fn sanitize_surface_height(height: f32) -> f32 {
@@ -48,9 +47,6 @@ pub struct Skeleton {
     pub width: LengthSpec,
     pub height: f32,
     pub style: NodeStyle,
-    /// Runtime-sampled pulse phase in `0.0..=1.0`. Phase 0 is the steady
-    /// full-opacity frame; the animation dispatch owns this field.
-    pub(crate) pulse: f32,
 }
 
 impl Skeleton {
@@ -60,6 +56,7 @@ impl Skeleton {
         direction: AnimationDirection::Alternate,
         fill_mode: AnimationFillMode::None,
         play_state: AnimationPlayState::Running,
+        paused_at: None,
     };
 
     pub fn new(width: impl Into<LengthSpec>, height: f32) -> Self {
@@ -67,7 +64,6 @@ impl Skeleton {
             width: sanitize_surface_width(width.into()),
             height: sanitize_surface_height(height),
             style: NodeStyle::default(),
-            pulse: 0.0,
         }
     }
 
@@ -75,25 +71,21 @@ impl Skeleton {
     /// hashed animation ID would be zero.
     pub(crate) fn pulse_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
         let animation = component_animation_id(component_animation_kinds::SKELETON, id)?;
-        Some(AnimationSpec::new(
-            animation,
-            id,
-            start,
-            nana_ui_core::motion::SKELETON_PULSE / 2,
-            crate::framework::COMPONENT_FRAME_INTERVAL,
-            Easing::EaseInOutCubic,
-        ))
-    }
-
-    /// Layout opacity for one pulse phase. Phase 0 maps to `None` so the
-    /// steady frame's projected style stays identical to a static skeleton.
-    fn pulse_opacity(pulse: f32) -> Option<f32> {
-        let pulse = if pulse.is_finite() {
-            pulse.clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        (pulse > 0.0).then_some(1.0 - PULSE_OPACITY_SWING * pulse)
+        Some(
+            AnimationSpec::new(
+                animation,
+                id,
+                start,
+                nana_ui_core::motion::SKELETON_PULSE / 2,
+                crate::framework::COMPONENT_FRAME_INTERVAL,
+                Easing::EaseInOutCubic,
+            )
+            .with_property(crate::AnimatableProperty::Opacity)
+            .with_range(
+                crate::MotionValue::Scalar(1.0),
+                crate::MotionTo::Value(crate::MotionValue::Scalar(1.0 - PULSE_OPACITY_SWING)),
+            ),
+        )
     }
 
     pub fn fill_width(height: f32) -> Self {
@@ -138,8 +130,9 @@ impl ComponentView for Skeleton {
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         // Freshly created nodes (not yet committed) and mounted projections
         // start the pulse once; a running timeline is never restarted, so
-        // repeated projections and per-frame phase writes cannot reset it.
-        // Parked nodes skip the start: their timeline is (re)started on mount.
+        // repeated projections cannot reset it. Parked nodes skip the start:
+        // their timeline is (re)started on mount. Opacity lives on the
+        // compositor overlay, not logical layout.
         let startable = !world.contains(id) || world.is_mounted(id);
         if startable
             && let Some(spec) = Self::pulse_animation(id, Duration::ZERO)
@@ -147,10 +140,7 @@ impl ComponentView for Skeleton {
         {
             mutations.start_animation_with_playback(spec, Self::PULSE_PLAYBACK);
         }
-        let mut style = self.effective_style(world);
-        if let Some(opacity) = Self::pulse_opacity(self.pulse) {
-            Arc::make_mut(&mut style.layout).opacity = Some(opacity);
-        }
+        let style = self.effective_style(world);
         project_common(
             id,
             world,
@@ -256,8 +246,7 @@ impl ComponentView for LevelMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DocumentId;
-    use crate::framework::AppContext;
+    use crate::{DocumentId, framework::AppContext};
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
@@ -300,9 +289,19 @@ mod tests {
     }
 
     #[test]
-    fn skeleton_pulse_samples_drive_layout_opacity_and_reproject() {
-        fn projected_opacity(context: &AppContext, id: StableNodeId) -> Option<f32> {
+    fn skeleton_pulse_lives_on_compositor_overlay() {
+        fn logical_opacity(context: &AppContext, id: StableNodeId) -> Option<f32> {
             context.world().node_style(id).unwrap().layout.opacity
+        }
+        fn presentation_opacity(context: &AppContext, id: StableNodeId) -> Option<f32> {
+            match context.world().presentation_applied_value(
+                id,
+                crate::AnimatableProperty::Opacity,
+                context.world().animation_now(),
+            ) {
+                Some(crate::MotionValue::Scalar(value)) => Some(value),
+                _ => None,
+            }
         }
 
         let mut context = AppContext::new();
@@ -312,13 +311,10 @@ mod tests {
         let id = skeleton.stable_id();
         let _ = context.take_system_work();
 
-        // The first sample is the steady frame: phase 0 leaves layout opacity
-        // unset, dirties nothing, and schedules follow-up frames instead of
-        // spinning on a zero deadline.
         let steady = context.advance_animations(Duration::ZERO);
         assert!(steady.has_updates());
-        assert_eq!(projected_opacity(&context, id), None);
-        assert!(context.take_system_work().is_empty());
+        assert_eq!(logical_opacity(&context, id), None);
+        assert_eq!(presentation_opacity(&context, id), Some(1.0));
         assert!(
             steady
                 .next_deadline
@@ -326,14 +322,14 @@ mod tests {
         );
 
         context.advance_animations(Duration::from_millis(350));
-        assert!((projected_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
-        assert!(!context.take_system_work().is_empty());
+        assert_eq!(logical_opacity(&context, id), None);
+        assert!((presentation_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
         context.advance_animations(Duration::from_millis(700));
-        assert!((projected_opacity(&context, id).unwrap() - 0.48).abs() < 1e-4);
+        assert!((presentation_opacity(&context, id).unwrap() - 0.48).abs() < 1e-4);
         context.advance_animations(Duration::from_millis(1050));
-        assert!((projected_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
+        assert!((presentation_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
         context.advance_animations(Duration::from_millis(1400));
-        assert_eq!(projected_opacity(&context, id), None);
+        assert!((presentation_opacity(&context, id).unwrap() - 1.0).abs() < 1e-4);
         assert!(context.next_animation_deadline().is_some());
     }
 

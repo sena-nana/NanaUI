@@ -17,17 +17,19 @@ mod text_input;
 mod value_input;
 mod virtualize;
 mod virtualize_retained;
-use std::any::{Any, TypeId};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::fmt;
-use std::future::Future;
-use std::hash::Hash;
-use std::marker::PhantomData;
-use std::ops::Range;
-use std::panic::Location;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    any::{Any, TypeId},
+    collections::{HashMap, HashSet, VecDeque},
+    fmt,
+    future::Future,
+    hash::Hash,
+    marker::PhantomData,
+    ops::Range,
+    panic::Location,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use futures_core::Stream;
 use nana_ui_core::{
@@ -40,10 +42,6 @@ use nana_ui_core::{
 
 #[cfg(test)]
 use crate::Dialog;
-use crate::component_registry::{
-    ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
-    RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
-};
 use crate::{
     AccessibilityAction, AccessibilityActionRequest, ActionMenu, ActionMenuItem, Activate,
     AnimationFrame, BreadcrumbSegment, Button, Checkbox, Chip, CodeEditing, CommandPalette,
@@ -59,6 +57,10 @@ use crate::{
     TableRow, Tabs, TextArea, TextChanged, TextInput, TextInputState, TextPresenter, TextSelection,
     ToggleChanged, Tooltip, TreeView, UiWorld, UiWorldError, Workspace, XYPad, XYPadDragState,
     XYPadEvent,
+    component_registry::{
+        ComponentBindKind, ComponentBindRequest, ComponentRegistry, ComponentTypeId,
+        RegisterableComponent, SemanticSpec, alias_entry, registerable_entry, tag_entry,
+    },
 };
 
 mod assemble;
@@ -80,7 +82,6 @@ pub use text_history::TextEditOrigin;
 
 const MAX_EVENTS_PER_UPDATE: usize = 16_384;
 pub(crate) const COMPONENT_FRAME_INTERVAL: Duration = Duration::from_millis(16);
-const LOADING_CYCLE: Duration = Duration::from_millis(800);
 
 pub trait View: Send + 'static {}
 
@@ -420,6 +421,7 @@ type ErasedEventHandler = Box<
             &mut MutationQueue,
             &mut VecDeque<BoxedEvent>,
             &mut Vec<ProgramMessage>,
+            Duration,
         ) + Send,
 >;
 struct EventHandler {
@@ -472,9 +474,6 @@ struct ComponentLifecycle {
     chart_tooltips: HashMap<StableNodeId, StableNodeId>,
     hover_cards: HashMap<StableNodeId, HoverCardLifecycle>,
     loading: HashMap<StableNodeId, LoadingComponent>,
-    next_loading_frame: Option<Duration>,
-    workspace_transitions: HashMap<StableNodeId, ()>,
-    next_workspace_frame: Option<Duration>,
     overlay_pointer_sequences: HashSet<(DocumentId, u64)>,
     overlay_outside_presses: HashMap<(DocumentId, u64), (StableNodeId, u64)>,
     overlay_activation_tokens: HashMap<StableNodeId, u64>,
@@ -604,6 +603,7 @@ pub struct ViewContext<'a, V: View> {
     mutations: &'a mut MutationQueue,
     events: &'a mut VecDeque<BoxedEvent>,
     program_messages: &'a mut Vec<ProgramMessage>,
+    now: Duration,
 }
 
 impl<V: View> ViewContext<'_, V> {
@@ -613,6 +613,15 @@ impl<V: View> ViewContext<'_, V> {
 
     pub fn mutations(&mut self) -> &mut MutationQueue {
         self.mutations
+    }
+
+    /// L3 motion handle for this view. Compiles to Motion IR.
+    pub fn node(&mut self) -> crate::NodeMotion<'_> {
+        self.mutations.node(self.entity.id, self.now)
+    }
+
+    pub fn transition(&mut self) -> crate::TransitionBuilder<'_> {
+        self.node().transition()
     }
 
     pub fn emit<E: Send + 'static>(&mut self, event: E) {
@@ -1707,21 +1716,27 @@ impl AppContext {
         let now = self.component_lifecycle.now;
         let id = entity.id;
         self.update_component(entity, |section, cx| {
+            let from = section.animation_progress;
             section.state.toggle(now);
-            section.animation_progress = section.state.expansion(now);
-            if let Some(animation) = crate::AnimationId::new(id.get()) {
-                cx.mutations().start_animation(crate::AnimationSpec {
-                    id: animation,
-                    target: id,
-                    start: now,
-                    duration: crate::SidebarSectionState::animation_duration(),
-                    frame_interval: COMPONENT_FRAME_INTERVAL,
-                    easing: crate::Easing::EaseInOutCubic,
-                    iteration_count: crate::AnimationIteration::ONCE,
-                    direction: crate::AnimationDirection::Normal,
-                    fill_mode: crate::AnimationFillMode::None,
-                    play_state: crate::AnimationPlayState::Running,
-                });
+            let to = if section.state.expanded() { 1.0 } else { 0.0 };
+            if let Some(animation) =
+                crate::component_animation_id(crate::component_animation_kinds::SIDEBAR, id)
+            {
+                cx.mutations().start_animation(
+                    crate::AnimationSpec::new(
+                        animation,
+                        id,
+                        now,
+                        crate::SidebarSectionState::animation_duration(),
+                        COMPONENT_FRAME_INTERVAL,
+                        crate::Easing::EaseInOutCubic,
+                    )
+                    .with_range(
+                        crate::MotionValue::Scalar(from),
+                        crate::MotionTo::Value(crate::MotionValue::Scalar(to)),
+                    )
+                    .with_interrupt(crate::MotionInterrupt::Retarget),
+                );
             }
             cx.emit(ToggleChanged {
                 checked: section.state.expanded(),
@@ -2360,6 +2375,7 @@ impl AppContext {
                 mutations: &mut mutations,
                 events: &mut events,
                 program_messages: &mut program_messages,
+                now: self.component_lifecycle.now,
             },
         );
         self.inherit_segmented_option_surface(entity.id, &mut staged);
@@ -2444,6 +2460,7 @@ impl AppContext {
                 mutations: &mut mutations,
                 events: &mut events,
                 program_messages: &mut program_messages,
+                now: self.component_lifecycle.now,
             },
         );
         self.inherit_segmented_option_surface(entity.id, view);
@@ -2550,9 +2567,6 @@ impl AppContext {
         self.component_lifecycle
             .tooltips
             .retain(|_, tooltip| !removed.contains(&tooltip.overlay));
-        if self.component_lifecycle.loading.is_empty() {
-            self.component_lifecycle.next_loading_frame = None;
-        }
         self.assembled.retain(|parent, slots| {
             if removed.contains(parent) {
                 return false;

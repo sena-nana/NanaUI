@@ -52,6 +52,7 @@ mod layout_engine;
 pub use layout_engine::plan_stats;
 mod browser_view;
 mod menus;
+mod motion_api;
 mod mutation;
 mod native_content;
 pub use browser_view::BrowserView;
@@ -107,9 +108,20 @@ mod world;
 mod xy_pad;
 
 pub use animation::{
-    AnimationDirection, AnimationFillMode, AnimationFrame, AnimationId, AnimationIteration,
-    AnimationPlayState, AnimationPlayback, AnimationSample, AnimationSpec, Easing,
-    component_animation_id, component_animation_kinds,
+    AnimatableProperty, AnimationClass, AnimationDirection, AnimationEvent, AnimationEventKind,
+    AnimationFillMode, AnimationFrame, AnimationId, AnimationIteration, AnimationPlayState,
+    AnimationPlayback, AnimationSample, AnimationSpec, CompiledMotion, DecayParams, Easing,
+    FlipRect, Keyframe, MOTION_DESCRIPTOR_VERSION, MotionCodecError, MotionCodecId,
+    MotionCodecInfo, MotionCodecRegistry, MotionCurve, MotionDescriptor, MotionDescriptorError,
+    MotionDescriptorStore, MotionEvaluatorBackend, MotionGraph, MotionHandle, MotionInspectorEntry,
+    MotionInterrupt, MotionSample, MotionTargetId, MotionTiming, MotionTo, MotionTrack,
+    MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters, PresentationOverlay,
+    PresentationPair, PresentationSlot, PresentationStore, Spring, SpringParams, StepJump,
+    Timeline, classify_animatable_property, compile_motion_descriptor, component_animation_id,
+    component_animation_kinds, cpu_fallback_reason, decode_motion_track, evaluate_descriptor,
+    evaluate_progress, evaluate_track, evaluate_track_at, invert_flip_translate,
+    layout_flip_hold_spec, layout_flip_play_spec, layout_flip_spec, loading_animation,
+    retarget_track, track_completion_deadline, workspace_animation,
 };
 pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
 pub use bars::{StatusBar, Toolbar};
@@ -144,9 +156,9 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
     ComputedStyle, CustomRenderNode, DocumentTextSelection, DropHoverOverlay, EventListeners,
-    EventRoute, ExtractedNode, ExtractedTextSpan, ImeComposition, InteractionState,
-    InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper, MenuSurfaceKind,
-    ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
+    EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan, ImeComposition,
+    InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper,
+    MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
     PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset, ScrollbarBar,
     SelectMenuGeometry, SelectOptionData, SelectOptionGeometry, SemanticPaint, StandardVisual,
     TextAtomChip, TextAtomClosed, TextAtomSpan, TextCodeFold, TextColorSwatchSpan, TextCompletion,
@@ -216,6 +228,7 @@ pub use menus::{
     ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,
     resolve_anchored_origin,
 };
+pub use motion_api::{FlipBuilder, NodeMotion, SpringBuilder, TimelineBuilder, TransitionBuilder};
 pub use mutation::{MutationQueue, UiMutation};
 pub use nana_ui_core::{
     ActionId, ActionPickerNavigation, AlignSpec, CommandPaletteEvent, CommandPaletteItem,

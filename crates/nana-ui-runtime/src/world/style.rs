@@ -163,19 +163,11 @@ impl UiWorld {
                     .map(|role| self.style_model.color(role).as_rgba_array())
             });
         if let Some(transition) = self.hover_transitions.get(&id) {
-            let progress = crate::Easing::EaseOutCubic.sample(
-                (self
-                    .animation_now
-                    .saturating_sub(transition.start)
-                    .as_secs_f32()
-                    / nana_ui_core::motion::HOVER_COLOR.as_secs_f32())
-                .clamp(0.0, 1.0),
-            );
             let [color, background, border_color] = std::array::from_fn(|i| {
                 interpolate_color(
                     transition.from[i],
                     [color, background, border_color][i],
-                    progress,
+                    transition.progress,
                 )
             });
             return (foreground, color, background, border_color);
@@ -336,7 +328,9 @@ impl UiWorld {
 #[derive(Clone, Copy)]
 pub(super) struct HoverTransition {
     pub from: [Option<[f32; 4]>; 3],
-    pub start: Duration,
+    /// Motion IR sample progress. Style interpolation reads this; it does not
+    /// sample `animation_now` on its own clock.
+    pub progress: f32,
     pub inherits_color: bool,
 }
 
@@ -388,15 +382,20 @@ impl UiWorld {
                 id,
                 HoverTransition {
                     from,
-                    start: self.animation_now,
+                    progress: 0.0,
                     inherits_color: from[0] != to[0],
                 },
             );
-            self.start_component_animation(
+            self.start_component_track(
                 id,
                 crate::component_animation_kinds::HOVER,
                 nana_ui_core::motion::HOVER_COLOR,
                 crate::Easing::EaseOutCubic,
+                crate::AnimatableProperty::Progress,
+                crate::MotionValue::Scalar(0.0),
+                crate::MotionValue::Scalar(1.0),
+                crate::MotionInterrupt::Retarget,
+                None,
             );
             self.mark_hover_paint(id);
         }

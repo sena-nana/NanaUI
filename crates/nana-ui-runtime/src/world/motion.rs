@@ -1,34 +1,32 @@
 //! Retained surface presence: input closes immediately, paint survives the exit.
 use super::*;
-use nana_ui_core::motion as tokens;
+use nana_ui_core::{PaintTransform, motion as tokens};
+
+use crate::MotionTargetId;
 
 #[derive(Clone, Copy)]
 pub(super) struct SurfaceMotion {
     pub open: bool,
     menu: bool,
-    start: Duration,
-    from: [f32; 2],
-    value: [f32; 2],
     pub running: bool,
 }
 
-impl SurfaceMotion {
-    fn sample(&self, now: Duration) -> [f32; 2] {
-        let elapsed = now.saturating_sub(self.start).as_secs_f32();
-        let opacity_duration = if self.menu {
-            tokens::MENU_OPACITY
-        } else {
-            tokens::OVERLAY_FADE
-        };
-        let opacity = crate::Easing::EaseOutCubic
-            .sample((elapsed / opacity_duration.as_secs_f32()).clamp(0.0, 1.0));
-        let pop = crate::Easing::MENU_POP
-            .sample((elapsed / tokens::MENU_POP.as_secs_f32()).clamp(0.0, 1.0));
-        let to = f32::from(self.open);
-        [
-            self.from[0] + (to - self.from[0]) * opacity,
-            self.from[1] + (to - self.from[1]) * pop,
-        ]
+#[derive(Clone, Copy, Default)]
+struct LayoutClassOverlay {
+    width: Option<f32>,
+    height: Option<f32>,
+    padding: Option<f32>,
+    margin: Option<f32>,
+}
+
+fn scale_transform(scale: f32) -> PaintTransform {
+    PaintTransform {
+        a: scale,
+        b: 0.0,
+        c: 0.0,
+        d: scale,
+        e: 0.0,
+        f: 0.0,
     }
 }
 
@@ -44,11 +42,32 @@ impl UiWorld {
         {
             return;
         }
-        let from = self
-            .surface_motion
-            .get(&id)
-            .map(|motion| motion.value)
-            .unwrap_or([f32::from(!open); 2]);
+        let from_opacity = MotionTargetId::new(id.get())
+            .and_then(|target| {
+                self.presentation.applied_value(
+                    target,
+                    crate::AnimatableProperty::Opacity,
+                    self.animation_now,
+                )
+            })
+            .and_then(|value| match value {
+                crate::MotionValue::Scalar(value) => Some(value),
+                _ => None,
+            })
+            .unwrap_or(f32::from(!open));
+        let from_pop = MotionTargetId::new(id.get())
+            .and_then(|target| {
+                self.presentation.applied_value(
+                    target,
+                    crate::AnimatableProperty::Transform,
+                    self.animation_now,
+                )
+            })
+            .and_then(|value| match value {
+                crate::MotionValue::Transform(transform) => Some(transform.a),
+                _ => None,
+            })
+            .unwrap_or(if open { 0.9 } else { 1.0 });
         if open {
             self.closing_surfaces.remove(&id);
         } else {
@@ -60,22 +79,39 @@ impl UiWorld {
             SurfaceMotion {
                 open,
                 menu,
-                start: self.animation_now,
-                from,
-                value: from,
                 running: true,
             },
         );
-        self.start_component_animation(
+        let to_opacity = f32::from(open);
+        self.start_component_track(
             id,
             crate::component_animation_kinds::SURFACE,
             if menu {
-                tokens::MENU_POP
+                tokens::MENU_OPACITY
             } else {
                 tokens::OVERLAY_FADE
             },
-            crate::Easing::Linear,
+            crate::Easing::EaseOutCubic,
+            crate::AnimatableProperty::Opacity,
+            crate::MotionValue::Scalar(from_opacity),
+            crate::MotionValue::Scalar(to_opacity),
+            crate::MotionInterrupt::Retarget,
+            None,
         );
+        if menu {
+            let to_scale = if open { 1.0 } else { 0.9 };
+            self.start_component_track(
+                id,
+                crate::component_animation_kinds::SURFACE_POP,
+                tokens::MENU_POP,
+                crate::Easing::MENU_POP,
+                crate::AnimatableProperty::Transform,
+                crate::MotionValue::Transform(scale_transform(from_pop)),
+                crate::MotionValue::Transform(scale_transform(to_scale)),
+                crate::MotionInterrupt::Retarget,
+                None,
+            );
+        }
         self.mark_subtree(id, DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT);
     }
 
@@ -129,18 +165,36 @@ impl UiWorld {
     }
 
     pub(super) fn advance_surface_motion(&mut self, sample: &crate::AnimationSample) {
+        let Some(motion) = self.surface_motion.get(&sample.target) else {
+            return;
+        };
+        if !sample.finished {
+            return;
+        }
+        let opacity_done =
+            crate::component_animation_id(crate::component_animation_kinds::SURFACE, sample.target)
+                .is_none_or(|id| !self.animation_is_active(id) || sample.id == id);
+        let pop_done = !motion.menu
+            || crate::component_animation_id(
+                crate::component_animation_kinds::SURFACE_POP,
+                sample.target,
+            )
+            .is_none_or(|id| !self.animation_is_active(id) || sample.id == id);
+        if !(opacity_done && pop_done) {
+            return;
+        }
         let Some(motion) = self.surface_motion.get_mut(&sample.target) else {
             return;
         };
-        motion.value = motion.sample(self.animation_now);
-        motion.running = !sample.finished;
-        if sample.finished {
+        motion.running = false;
+        if !motion.open {
             self.closing_surfaces.remove(&sample.target);
         }
         self.mark_subtree(
             sample.target,
             DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT,
         );
+        self.account_animation_dirty(DirtyMask::STYLE | DirtyMask::RENDER | DirtyMask::INPUT);
     }
 
     pub(super) fn motion_layout(
@@ -148,30 +202,124 @@ impl UiWorld {
         id: StableNodeId,
         source: &Arc<LayoutStyle>,
     ) -> Arc<LayoutStyle> {
-        let Some(motion) = self.surface_motion.get(&id) else {
-            return source.clone();
+        let Some(overlay) = self.layout_class_overlay(id) else {
+            return Arc::clone(source);
         };
-        if !motion.running || motion.value == [1.0; 2] {
-            return source.clone();
+        let mut layout = (**source).clone();
+        if let Some(width) = overlay.width {
+            layout.width = Some(LengthSpec::Px(width));
         }
-        let mut source = source.clone();
-        let layout = Arc::make_mut(&mut source);
-        layout.opacity = Some(layout.opacity.unwrap_or(1.0) * motion.value[0]);
-        if motion.menu {
-            let scale = 0.9 + 0.1 * motion.value[1];
-            let transform = layout.transform.get_or_insert_default();
-            transform.a *= scale;
-            transform.b *= scale;
-            transform.c *= scale;
-            transform.d *= scale;
-            layout
-                .transform_origin
-                .get_or_insert(nana_ui_core::TransformOrigin {
-                    x: nana_ui_core::LengthSpec::Px(0.0),
-                    y: nana_ui_core::LengthSpec::Px(0.0),
-                });
+        if let Some(height) = overlay.height {
+            layout.height = Some(LengthSpec::Px(height));
         }
-        source
+        if let Some(padding) = overlay.padding {
+            layout.padding = Some(LengthSpec::Px(padding));
+        }
+        if let Some(margin) = overlay.margin {
+            layout.margin = Some(LengthSpec::Px(margin));
+        }
+        Arc::new(layout)
+    }
+
+    fn layout_class_overlay(&self, id: StableNodeId) -> Option<LayoutClassOverlay> {
+        let now = self.animation_now;
+        let mut overlay = LayoutClassOverlay::default();
+        let mut any = false;
+        for animation in self.animations.values() {
+            if animation.spec.target != id
+                || animation.spec.property.animation_class() != crate::AnimationClass::Layout
+            {
+                continue;
+            }
+            let Some(track) = animation.spec.to_motion_track() else {
+                continue;
+            };
+            let sample = nana_ui_core::motion::evaluate_track(&track, now);
+            let Some(crate::MotionValue::Scalar(px)) = sample
+                .applied_value()
+                .or(sample.finished.then_some(sample.value))
+            else {
+                continue;
+            };
+            if !px.is_finite() {
+                continue;
+            }
+            match animation.spec.property {
+                crate::AnimatableProperty::Width => overlay.width = Some(px),
+                crate::AnimatableProperty::Height => overlay.height = Some(px),
+                crate::AnimatableProperty::Padding => overlay.padding = Some(px),
+                crate::AnimatableProperty::Margin => overlay.margin = Some(px),
+                _ => continue,
+            }
+            any = true;
+        }
+        any.then_some(overlay)
+    }
+
+    pub(super) fn apply_layout_class_sample(&mut self, sample: &crate::AnimationSample) -> bool {
+        if sample.property.animation_class() != crate::AnimationClass::Layout {
+            return false;
+        }
+        let Some(crate::MotionValue::Scalar(px)) = sample
+            .applied_value()
+            .or(sample.finished.then_some(sample.value))
+        else {
+            return false;
+        };
+        if !px.is_finite() || !self.contains(sample.target) {
+            return false;
+        }
+        let length = LengthSpec::Px(px);
+        let layout = Arc::make_mut(&mut self.record_mut(sample.target).style.layout);
+        let changed = match sample.property {
+            crate::AnimatableProperty::Width => {
+                let changed = layout.width != Some(length);
+                layout.width = Some(length);
+                changed
+            }
+            crate::AnimatableProperty::Height => {
+                let changed = layout.height != Some(length);
+                layout.height = Some(length);
+                changed
+            }
+            crate::AnimatableProperty::Padding => {
+                let changed = layout.padding != Some(length);
+                layout.padding = Some(length);
+                changed
+            }
+            crate::AnimatableProperty::Margin => {
+                let changed = layout.margin != Some(length);
+                layout.margin = Some(length);
+                changed
+            }
+            _ => return false,
+        };
+        if !changed {
+            return false;
+        }
+        self.mark_subtree(
+            sample.target,
+            DirtyMask::LAYOUT | DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,
+        );
+        self.account_animation_dirty(DirtyMask::LAYOUT | DirtyMask::RENDER);
+        true
+    }
+
+    pub(super) fn advance_loading_phase(&mut self, sample: &crate::AnimationSample) {
+        let Some(mut visual) = self.standard_visual(sample.target) else {
+            return;
+        };
+        match &mut visual {
+            StandardVisual::Button { loading_phase, .. }
+            | StandardVisual::Switch { loading_phase, .. }
+            | StandardVisual::Card { loading_phase, .. } => {
+                *loading_phase = sample.progress;
+            }
+            _ => return,
+        }
+        self.nodes.set_visual(sample.target, Some(visual));
+        self.mark(sample.target, DirtyMask::RENDER);
+        self.account_animation_dirty(DirtyMask::RENDER);
     }
 }
 
@@ -190,11 +338,20 @@ mod tests {
     }
 
     fn alpha(cx: &AppContext, id: StableNodeId) -> f32 {
-        cx.world().extract_nodes(&[id])[0]
-            .source_style
-            .layout
-            .opacity
-            .unwrap_or(1.0)
+        match cx.world().presentation_applied_value(
+            id,
+            crate::AnimatableProperty::Opacity,
+            cx.world().animation_now(),
+        ) {
+            Some(crate::MotionValue::Scalar(value)) => value,
+            _ => 1.0,
+        }
+    }
+
+    fn logical_opacity(cx: &AppContext, id: StableNodeId) -> Option<f32> {
+        cx.world()
+            .node_style(id)
+            .and_then(|style| style.layout.opacity)
     }
 
     #[test]
@@ -206,15 +363,19 @@ mod tests {
             .unwrap();
         tick(&mut cx, 0);
         assert_eq!(alpha(&cx, menu.stable_id()), 0.0);
+        assert_eq!(logical_opacity(&cx, menu.stable_id()), None);
         tick(&mut cx, 80);
         let opening = alpha(&cx, menu.stable_id());
         assert!((opening - 0.875).abs() < 1e-5);
-        let pop = cx.world().extract_nodes(&[menu.stable_id()])[0]
-            .source_style
-            .layout
-            .transform
-            .unwrap()
-            .a;
+        assert_eq!(logical_opacity(&cx, menu.stable_id()), None);
+        let pop = match cx.world().presentation_applied_value(
+            menu.stable_id(),
+            crate::AnimatableProperty::Transform,
+            cx.world().animation_now(),
+        ) {
+            Some(crate::MotionValue::Transform(transform)) => transform.a,
+            _ => panic!("menu pop must live on the transform overlay"),
+        };
         assert!(pop > 0.9 && pop < 1.0);
         cx.update_component(menu, |menu, _| menu.popover.open = false)
             .unwrap();
@@ -385,6 +546,13 @@ mod tests {
             .unwrap();
         tick(&mut cx, 0);
         assert_eq!(cx.world().computed_style(id).unwrap().background, idle);
+        assert!(
+            cx.world().animation_is_active(
+                crate::component_animation_id(crate::component_animation_kinds::HOVER, id)
+                    .expect("hover animation id")
+            ),
+            "hover color is a Motion IR track, not a parallel timer"
+        );
         tick(&mut cx, 60);
         let middle = cx.world().computed_style(id).unwrap().background;
         assert_ne!(middle, idle);
@@ -452,5 +620,66 @@ mod tests {
             }
         }
         assert_eq!(world.next_animation_deadline(), None);
+    }
+
+    #[test]
+    fn l3_transition_spring_and_timeline_compile_to_motion_ir() {
+        use crate::{
+            AnimationPlayback, MotionCurve, MotionGraph, MotionTargetId, MotionTiming, MotionTrack,
+            MotionTrackId, Spring, Timeline,
+        };
+
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Motion")).unwrap();
+        let id = button.stable_id();
+        cx.update_component(button, |_, ctx| {
+            ctx.transition()
+                .opacity(0.0)
+                .duration(Duration::from_millis(100))
+                .ease(crate::Easing::Linear);
+        })
+        .unwrap();
+        tick(&mut cx, 0);
+        assert_eq!(logical_opacity(&cx, id), None);
+        assert!((alpha(&cx, id) - 1.0).abs() < 1e-5);
+        tick(&mut cx, 50);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4);
+        tick(&mut cx, 100);
+        assert!((alpha(&cx, id) - 0.0).abs() < 1e-5);
+
+        cx.update_component(button, |_, ctx| {
+            ctx.node().motion(Spring::to(1.0)).opacity();
+        })
+        .unwrap();
+        tick(&mut cx, 100);
+        let spring_start = alpha(&cx, id);
+        tick(&mut cx, 250);
+        let spring_later = alpha(&cx, id);
+        assert!(spring_later > spring_start);
+
+        let track = MotionTrack::transition(
+            MotionTrackId::new(1).unwrap(),
+            MotionTargetId::new(1).unwrap(),
+            crate::AnimatableProperty::Opacity,
+            crate::MotionValue::Scalar(1.0),
+            crate::MotionValue::Scalar(0.25),
+            MotionTiming::new(
+                Duration::ZERO,
+                Duration::from_millis(80),
+                Duration::from_millis(16),
+            ),
+            MotionCurve::Easing(crate::Easing::Linear),
+            AnimationPlayback::default(),
+        );
+        cx.update_component(button, |_, ctx| {
+            ctx.node()
+                .timeline(Timeline::parallel([MotionGraph::track(track)]));
+        })
+        .unwrap();
+        tick(&mut cx, 250);
+        tick(&mut cx, 290);
+        let sequenced = alpha(&cx, id);
+        assert!(sequenced < 1.0 && sequenced > 0.25);
     }
 }

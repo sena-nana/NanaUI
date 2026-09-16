@@ -108,7 +108,7 @@ impl<'a> ValidationPlan<'a> {
                 self.source
                     .animations
                     .iter()
-                    .map(|(&id, animation)| (id, animation.spec))
+                    .map(|(&id, animation)| (id, animation.spec.clone()))
                     .collect(),
             );
         }
@@ -381,13 +381,24 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::StartAnimation { animation } => {
                     self.node(animation.target)?;
-                    if !animation.is_valid() || self.is_parked(animation.target) {
+                    if !animation.is_valid() {
                         return Err(UiWorldError::InvalidAnimation(animation.id));
                     }
-                    self.animations_mut().insert(animation.id, *animation);
+                    if self.is_parked(animation.target) && !animation.uses_presentation_overlay() {
+                        return Err(UiWorldError::InvalidAnimation(animation.id));
+                    }
+                    self.animations_mut()
+                        .insert(animation.id, animation.clone());
                 }
-                UiMutation::StopAnimation { id } => {
+                UiMutation::StopAnimation { id } | UiMutation::FinishAnimation { id } => {
                     if self.animations_mut().remove(id).is_none() {
+                        return Err(UiWorldError::MissingAnimation(*id));
+                    }
+                }
+                UiMutation::ReverseAnimation { id }
+                | UiMutation::PauseAnimation { id }
+                | UiMutation::ResumeAnimation { id } => {
+                    if !self.animations_mut().contains_key(id) {
                         return Err(UiWorldError::MissingAnimation(*id));
                     }
                 }
@@ -641,8 +652,9 @@ impl<'a> ValidationPlan<'a> {
                 .retain(|_, target| !parked.contains(target));
         }
         if self.animations.is_some() || !self.source.animations.is_empty() {
-            self.animations_mut()
-                .retain(|_, animation| !parked.contains(&animation.target));
+            self.animations_mut().retain(|_, animation| {
+                !parked.contains(&animation.target) || animation.uses_presentation_overlay()
+            });
         }
         for id in subtree {
             self.clear_overlay_references(id);
@@ -1228,21 +1240,9 @@ impl UiWorld {
                     }
                     self.input.pointer_hover.retain(|_, target| *target != id);
                     self.input.pointer_press.retain(|_, target| *target != id);
-                    let cancelled = self
-                        .animations
-                        .iter()
-                        .filter_map(|(&animation_id, animation)| {
-                            (animation.spec.target == id)
-                                .then_some((animation_id, animation.next_deadline))
-                        })
-                        .collect::<Vec<_>>();
-                    for (animation_id, deadline) in cancelled {
-                        self.animations.remove(&animation_id);
-                        self.animation_deadlines.remove(&(deadline, animation_id));
-                    }
+                    self.cancel_animations_for_removed(id);
                     self.surface_motion.remove(&id);
                     self.closing_surfaces.remove(&id);
-                    self.switch_transitions.remove(&id);
                     self.hover_transitions.remove(&id);
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
@@ -1489,12 +1489,16 @@ impl UiWorld {
                 ) = (self.nodes.visual(*id), visual.as_ref())
                     && old != next
                 {
-                    self.switch_transitions.insert(*id, *thumb_progress);
-                    self.start_component_animation(
+                    self.start_component_track(
                         *id,
                         crate::component_animation_kinds::SWITCH,
                         nana_ui_core::motion::OVERLAY_FADE,
                         crate::Easing::EaseOutCubic,
+                        crate::AnimatableProperty::Progress,
+                        crate::MotionValue::Scalar(*thumb_progress),
+                        crate::MotionValue::Scalar(f32::from(*next)),
+                        crate::MotionInterrupt::Retarget,
+                        None,
                     );
                 }
 
@@ -1713,20 +1717,22 @@ impl UiWorld {
                     });
             }
             UiMutation::StartAnimation { animation } => {
-                let active = ActiveAnimation::new(*animation);
-                let next_deadline = active.next_deadline;
-                if let Some(previous) = self.animations.insert(animation.id, active) {
-                    self.animation_deadlines
-                        .remove(&(previous.next_deadline, animation.id));
-                }
-                self.animation_deadlines
-                    .insert((next_deadline, animation.id));
+                self.install_animation(animation.clone());
             }
             UiMutation::StopAnimation { id } => {
-                if let Some(animation) = self.animations.remove(id) {
-                    self.animation_deadlines
-                        .remove(&(animation.next_deadline, *id));
-                }
+                self.cancel_animation(*id);
+            }
+            UiMutation::FinishAnimation { id } => {
+                self.finish_animation(*id);
+            }
+            UiMutation::ReverseAnimation { id } => {
+                self.reverse_animation(*id);
+            }
+            UiMutation::PauseAnimation { id } => {
+                self.pause_animation(*id);
+            }
+            UiMutation::ResumeAnimation { id } => {
+                self.resume_animation(*id);
             }
             UiMutation::RequestFocus { document, target } => {
                 if let Some(target) = target {
@@ -2196,6 +2202,7 @@ impl UiWorld {
         }
         self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
+        self.close_prior_animation_event_frame();
         self.generation = self.generation.wrapping_add(1);
         report.generation = self.generation;
         for mutation in queue.as_slice() {

@@ -1,13 +1,12 @@
-use crate::components::TextSnippetSession;
 use crate::{
     AccessibilityState, AnimationId, AnimationPlayback, AnimationSpec, ComponentTypeId,
     CustomRenderNode, DocumentId, HighlightRequest, ImeComposition, InteractionState, LayoutBox,
     NodeKind, NodeStyle, OverlayHostState, ScrollMetrics, ScrollOffset, StableNodeId,
     StandardVisual, TextCodeFold, TextCompletion, TextContent, TextHover, TextInlay,
-    TextInputState, TextSelection, TextSignatureHelp,
+    TextInputState, TextSelection, TextSignatureHelp, components::TextSnippetSession,
 };
 use nana_ui_core::ThemeMode;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 /// One retained-tree mutation. Mutations are validated as a batch before the
 /// authoritative world changes.
@@ -115,6 +114,18 @@ pub enum UiMutation {
         animation: AnimationSpec,
     },
     StopAnimation {
+        id: AnimationId,
+    },
+    FinishAnimation {
+        id: AnimationId,
+    },
+    ReverseAnimation {
+        id: AnimationId,
+    },
+    PauseAnimation {
+        id: AnimationId,
+    },
+    ResumeAnimation {
         id: AnimationId,
     },
     RequestFocus {
@@ -372,8 +383,63 @@ impl MutationQueue {
         self.start_animation(animation.with_playback(playback));
     }
 
+    /// FLIP: layout is already `last`; compositor transform plays invert → identity.
+    pub fn start_layout_flip(
+        &mut self,
+        target: StableNodeId,
+        first: nana_ui_core::FlipRect,
+        last: nana_ui_core::FlipRect,
+        now: Duration,
+        duration: Duration,
+        easing: crate::Easing,
+    ) {
+        if let Some(spec) = crate::layout_flip_spec(target, first, last, now, duration, easing) {
+            self.start_animation(spec);
+        }
+    }
+
+    pub fn hold_layout_flip(
+        &mut self,
+        target: StableNodeId,
+        invert: nana_ui_core::PaintTransform,
+        now: Duration,
+    ) {
+        if let Some(spec) = crate::layout_flip_hold_spec(target, invert, now) {
+            self.start_animation(spec);
+        }
+    }
+
+    pub fn play_layout_flip(
+        &mut self,
+        target: StableNodeId,
+        invert: nana_ui_core::PaintTransform,
+        now: Duration,
+        duration: Duration,
+        easing: crate::Easing,
+    ) {
+        if let Some(spec) = crate::layout_flip_play_spec(target, invert, now, duration, easing) {
+            self.start_animation(spec);
+        }
+    }
+
     pub fn stop_animation(&mut self, id: AnimationId) {
         self.mutations.push(UiMutation::StopAnimation { id });
+    }
+
+    pub fn finish_animation(&mut self, id: AnimationId) {
+        self.mutations.push(UiMutation::FinishAnimation { id });
+    }
+
+    pub fn reverse_animation(&mut self, id: AnimationId) {
+        self.mutations.push(UiMutation::ReverseAnimation { id });
+    }
+
+    pub fn pause_animation(&mut self, id: AnimationId) {
+        self.mutations.push(UiMutation::PauseAnimation { id });
+    }
+
+    pub fn resume_animation(&mut self, id: AnimationId) {
+        self.mutations.push(UiMutation::ResumeAnimation { id });
     }
 
     pub fn request_focus(&mut self, document: DocumentId, target: Option<StableNodeId>) {

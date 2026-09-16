@@ -69,7 +69,8 @@ impl AppContext {
                            event: &dyn Any,
                            mutations: &mut MutationQueue,
                            events: &mut VecDeque<BoxedEvent>,
-                           program_messages: &mut Vec<ProgramMessage>| {
+                           program_messages: &mut Vec<ProgramMessage>,
+                           now: Duration| {
             let view = view
                 .downcast_mut::<V>()
                 .expect("handler is registered for the entity view type");
@@ -84,6 +85,7 @@ impl AppContext {
                     mutations,
                     events,
                     program_messages,
+                    now,
                 },
             );
         };
@@ -150,7 +152,8 @@ impl AppContext {
                            event: &dyn Any,
                            mutations: &mut MutationQueue,
                            events: &mut VecDeque<BoxedEvent>,
-                           program_messages: &mut Vec<ProgramMessage>| {
+                           program_messages: &mut Vec<ProgramMessage>,
+                           now: Duration| {
             let view = view
                 .downcast_mut::<V>()
                 .expect("observer handler is registered for its view type");
@@ -165,6 +168,7 @@ impl AppContext {
                     mutations,
                     events,
                     program_messages,
+                    now,
                 },
             );
         };
@@ -227,7 +231,14 @@ impl AppContext {
             };
             for handler in &mut handlers {
                 if handler.observer == id {
-                    (handler.callback)(view, event.as_ref(), mutations, events, program_messages);
+                    (handler.callback)(
+                        view,
+                        event.as_ref(),
+                        mutations,
+                        events,
+                        program_messages,
+                        self.component_lifecycle.now,
+                    );
                     continue;
                 }
                 let Some(mut observer) = self.views.remove(&handler.observer) else {
@@ -239,6 +250,7 @@ impl AppContext {
                     mutations,
                     events,
                     program_messages,
+                    self.component_lifecycle.now,
                 );
                 self.views.insert(handler.observer, observer);
             }

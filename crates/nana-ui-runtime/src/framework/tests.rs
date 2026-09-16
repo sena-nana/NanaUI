@@ -1,7 +1,9 @@
 use super::*;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
 
 use crate::{
     Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
@@ -2828,8 +2830,10 @@ fn a_drop_target_covers_its_subtree_and_only_the_kinds_it_accepts() {
 
 #[test]
 fn file_drag_resolves_hover_and_drop_onto_the_registered_target() {
-    use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
     use nana_ui_core::{DropAccepts, DropEffect, FileDragKind};
 
@@ -3531,18 +3535,14 @@ fn view_mutations_schedule_host_driven_animation_frames() {
     context
         .update(entity, |_view, cx| {
             let target = cx.entity().stable_id();
-            cx.mutations().start_animation(AnimationSpec {
+            cx.mutations().start_animation(AnimationSpec::new(
                 id,
                 target,
-                start: Duration::from_millis(40),
-                duration: Duration::from_millis(80),
-                frame_interval: Duration::from_millis(10),
-                easing: Easing::Linear,
-                iteration_count: crate::AnimationIteration::ONCE,
-                direction: crate::AnimationDirection::Normal,
-                fill_mode: crate::AnimationFillMode::None,
-                play_state: crate::AnimationPlayState::Running,
-            });
+                Duration::from_millis(40),
+                Duration::from_millis(80),
+                Duration::from_millis(10),
+                Easing::Linear,
+            ));
         })
         .unwrap();
 
@@ -3972,6 +3972,7 @@ fn loading_components_schedule_only_while_loading() {
         .update_component(card, |card, _| card.loading = false)
         .unwrap();
     assert_eq!(context.next_animation_deadline(), None);
+    let _ = context.world_mut().take_animation_events();
     assert!(
         !context
             .advance_animations(Duration::from_secs(1))

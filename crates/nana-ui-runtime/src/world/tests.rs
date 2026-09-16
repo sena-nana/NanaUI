@@ -1,7 +1,11 @@
 #[cfg(feature = "graph-canvas")]
 use super::geometry::*;
 use super::*;
-use crate::{Easing, MeasureTextShaper};
+use crate::{
+    AnimatableProperty, AnimationClass, AnimationEventKind, AnimationFillMode, AnimationId,
+    AnimationPlayback, AnimationSpec, Easing, MeasureTextShaper, MotionCurve,
+    MotionEvaluatorBackend, MotionInterrupt, MotionTo, MotionValue,
+};
 use nana_ui_core::{
     CursorSpec, LayoutStyle, LengthSpec, OverflowSpec, PaintMat4, PaintTransform,
     PointerEventsSpec, SemanticColorRole,
@@ -738,18 +742,14 @@ fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
         }),
     );
     create.capture_pointer(7, node(2));
-    create.start_animation(AnimationSpec {
-        id: crate::AnimationId::new(1).unwrap(),
-        target: node(2),
-        start: Duration::from_millis(10),
-        duration: Duration::from_millis(100),
-        frame_interval: Duration::from_millis(10),
-        easing: Easing::Linear,
-        iteration_count: crate::AnimationIteration::ONCE,
-        direction: crate::AnimationDirection::Normal,
-        fill_mode: crate::AnimationFillMode::None,
-        play_state: crate::AnimationPlayState::Running,
-    });
+    create.start_animation(AnimationSpec::new(
+        crate::AnimationId::new(1).unwrap(),
+        node(2),
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        Duration::from_millis(10),
+        Easing::Linear,
+    ));
     world.commit(create).unwrap();
     world.take_system_work();
 
@@ -5392,21 +5392,17 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
 
     let animation_id = AnimationId::new(1).unwrap();
     let missing_id = AnimationId::new(2).unwrap();
-    let animation = AnimationSpec {
-        id: animation_id,
-        target: node(1),
-        start: Duration::from_millis(100),
-        duration: Duration::from_millis(100),
-        frame_interval: Duration::from_millis(16),
-        easing: Easing::EaseOutCubic,
-        iteration_count: crate::AnimationIteration::ONCE,
-        direction: crate::AnimationDirection::Normal,
-        fill_mode: crate::AnimationFillMode::None,
-        play_state: crate::AnimationPlayState::Running,
-    };
+    let animation = AnimationSpec::new(
+        animation_id,
+        node(1),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(16),
+        Easing::EaseOutCubic,
+    );
     let generation = world.generation();
     let mut invalid = MutationQueue::new();
-    invalid.start_animation(animation);
+    invalid.start_animation(animation.clone());
     invalid.stop_animation(missing_id);
     assert_eq!(
         world.commit(invalid),
@@ -5416,10 +5412,9 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     assert_eq!(world.next_animation_deadline(), None);
 
     let mut invalid_timing = MutationQueue::new();
-    invalid_timing.start_animation(AnimationSpec {
-        duration: Duration::ZERO,
-        ..animation
-    });
+    let mut invalid_spec = animation.clone();
+    invalid_spec.timing.duration = Duration::ZERO;
+    invalid_timing.start_animation(invalid_spec);
     assert_eq!(
         world.commit(invalid_timing),
         Err(UiWorldError::InvalidAnimation(animation_id))
@@ -5427,7 +5422,7 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     assert_eq!(world.generation(), generation);
 
     let mut start = MutationQueue::new();
-    start.start_animation(animation);
+    start.start_animation(animation.clone());
     world.commit(start).unwrap();
     assert_eq!(
         world.next_animation_deadline(),
@@ -5444,12 +5439,10 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     assert_eq!(first.samples[0].progress, 0.0);
     assert_eq!(first.next_deadline, Some(Duration::from_millis(116)));
 
-    let replacement = AnimationSpec {
-        target: node(2),
-        start: Duration::from_millis(150),
-        easing: Easing::Linear,
-        ..animation
-    };
+    let mut replacement = animation.clone();
+    replacement.target = node(2);
+    replacement.timing.start = Duration::from_millis(150);
+    replacement.curve = MotionCurve::Easing(Easing::Linear);
     let mut replace = MutationQueue::new();
     replace.start_animation(replacement);
     world.commit(replace).unwrap();
@@ -5466,7 +5459,7 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     assert_eq!(end.next_deadline, None);
 
     let mut start_then_stop = MutationQueue::new();
-    start_then_stop.start_animation(animation);
+    start_then_stop.start_animation(animation.clone());
     start_then_stop.stop_animation(animation_id);
     world.commit(start_then_stop).unwrap();
     assert_eq!(world.next_animation_deadline(), None);
@@ -5479,18 +5472,14 @@ fn despawning_animation_target_cancels_its_wakeup() {
     queue.create(node(1), document(1), NodeKind::Document);
     queue.create(node(2), document(1), NodeKind::Text);
     queue.insert(node(1), node(2), None);
-    queue.start_animation(AnimationSpec {
-        id: AnimationId::new(1).unwrap(),
-        target: node(2),
-        start: Duration::from_millis(10),
-        duration: Duration::from_secs(1),
-        frame_interval: Duration::from_millis(16),
-        easing: Easing::Linear,
-        iteration_count: crate::AnimationIteration::ONCE,
-        direction: crate::AnimationDirection::Normal,
-        fill_mode: crate::AnimationFillMode::None,
-        play_state: crate::AnimationPlayState::Running,
-    });
+    queue.start_animation(AnimationSpec::new(
+        AnimationId::new(1).unwrap(),
+        node(2),
+        Duration::from_millis(10),
+        Duration::from_secs(1),
+        Duration::from_millis(16),
+        Easing::Linear,
+    ));
     world.commit(queue).unwrap();
     assert_eq!(
         world.next_animation_deadline(),
@@ -5513,22 +5502,18 @@ fn advance_animations_counts_due_scheduler_lookups_not_the_idle_set() {
     }
     for index in 1..=64 {
         let due = index == 1;
-        queue.start_animation(AnimationSpec {
-            id: AnimationId::new(index).unwrap(),
-            target: node(index),
-            start: if due {
+        queue.start_animation(AnimationSpec::new(
+            AnimationId::new(index).unwrap(),
+            node(index),
+            if due {
                 Duration::ZERO
             } else {
                 Duration::from_secs(60)
             },
-            duration: Duration::from_millis(1),
-            frame_interval: Duration::from_millis(16),
-            easing: Easing::Linear,
-            iteration_count: crate::AnimationIteration::ONCE,
-            direction: crate::AnimationDirection::Normal,
-            fill_mode: crate::AnimationFillMode::None,
-            play_state: crate::AnimationPlayState::Running,
-        });
+            Duration::from_millis(1),
+            Duration::from_millis(16),
+            Easing::Linear,
+        ));
     }
     world.commit(queue).unwrap();
 
@@ -5539,18 +5524,14 @@ fn advance_animations_counts_due_scheduler_lookups_not_the_idle_set() {
 
     let mut all_due = MutationQueue::new();
     for index in 2..=64 {
-        all_due.start_animation(AnimationSpec {
-            id: AnimationId::new(index).unwrap(),
-            target: node(index),
-            start: Duration::ZERO,
-            duration: Duration::from_millis(1),
-            frame_interval: Duration::from_millis(16),
-            easing: Easing::Linear,
-            iteration_count: crate::AnimationIteration::ONCE,
-            direction: crate::AnimationDirection::Normal,
-            fill_mode: crate::AnimationFillMode::None,
-            play_state: crate::AnimationPlayState::Running,
-        });
+        all_due.start_animation(AnimationSpec::new(
+            AnimationId::new(index).unwrap(),
+            node(index),
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_millis(16),
+            Easing::Linear,
+        ));
     }
     world.commit(all_due).unwrap();
     let full = world.advance_animations(Duration::from_millis(1));
@@ -5559,36 +5540,749 @@ fn advance_animations_counts_due_scheduler_lookups_not_the_idle_set() {
     assert_eq!(full.animations_considered, 63);
 }
 
+fn opacity_overlay_spec(
+    id: u64,
+    target: StableNodeId,
+    start_ms: u64,
+    duration_ms: u64,
+    from: f32,
+    to: f32,
+) -> AnimationSpec {
+    AnimationSpec::new(
+        AnimationId::new(id).unwrap(),
+        target,
+        Duration::from_millis(start_ms),
+        Duration::from_millis(duration_ms),
+        Duration::from_millis(16),
+        Easing::Linear,
+    )
+    .with_property(AnimatableProperty::Opacity)
+    .with_range(
+        MotionValue::Scalar(from),
+        MotionTo::Value(MotionValue::Scalar(to)),
+    )
+}
+
+#[test]
+fn compositor_opacity_keeps_logical_style_and_animates_presentation() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+
+    assert_eq!(
+        world.logical_motion_value(node(1), AnimatableProperty::Opacity),
+        Some(MotionValue::Scalar(1.0))
+    );
+    let started = world.advance_animations(Duration::ZERO);
+    assert_eq!(started.samples.len(), 1);
+    assert!(!started.samples[0].finished);
+    assert_eq!(started.next_deadline, Some(Duration::from_millis(100)));
+
+    let idle = world.advance_animations(Duration::from_millis(50));
+    assert!(idle.samples.is_empty());
+    assert_eq!(idle.animation_deadlines_scanned, 0);
+    assert_eq!(idle.animations_considered, 0);
+    let pair = world
+        .presentation_pair(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(50),
+        )
+        .expect("pair");
+    assert_eq!(pair.logical, MotionValue::Scalar(1.0));
+    match pair.presentation {
+        MotionValue::Scalar(value) => assert!((value - 0.5).abs() < 1e-5),
+        other => panic!("expected scalar, got {other:?}"),
+    }
+    assert_eq!(
+        world.node_style(node(1)).unwrap().layout.opacity,
+        None,
+        "logical UiWorld opacity must not be written each frame"
+    );
+}
+
+#[test]
+fn sibling_document_cpu_deadline_does_not_sample_a_static_world() {
+    let mut animated = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(AnimationSpec::new(
+        AnimationId::new(1).unwrap(),
+        node(1),
+        Duration::ZERO,
+        Duration::from_millis(32),
+        Duration::from_millis(16),
+        Easing::Linear,
+    ));
+    animated.commit(queue).unwrap();
+    animated.advance_animations(Duration::ZERO);
+    assert!(animated.next_animation_deadline().is_some());
+
+    let mut static_world = UiWorld::new();
+    let mut idle = MutationQueue::new();
+    idle.create(node(1), document(2), NodeKind::Document);
+    static_world.commit(idle).unwrap();
+    assert_eq!(static_world.next_animation_deadline(), None);
+
+    let due = animated.next_animation_deadline().unwrap();
+    let animated_frame = animated.advance_animations(due);
+    assert!(animated_frame.has_updates());
+    let static_frame = static_world.advance_animations(due);
+    assert!(!static_frame.has_updates());
+    assert_eq!(static_frame.animation_deadlines_scanned, 0);
+    assert_eq!(static_frame.animations_considered, 0);
+}
+
+#[test]
+fn compositor_clear_layer_request_drops_extract_flag() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    world.commit(queue).unwrap();
+    world.request_compositor_layer(node(1));
+    assert!(world.extract_nodes(&[node(1)])[0].compositor.request_layer);
+    world.clear_compositor_layer_request(node(1));
+    assert!(!world.extract_nodes(&[node(1)])[0].compositor.request_layer);
+}
+
+#[test]
+fn compositor_completion_fires_from_deadline_without_per_frame_samples() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::ZERO);
+
+    let done = world.advance_animations(Duration::from_millis(100));
+    assert_eq!(done.samples.len(), 1);
+    assert!(done.samples[0].finished);
+    assert_eq!(done.animation_deadlines_scanned, 1);
+    assert_eq!(done.animations_considered, 1);
+    assert_eq!(done.events.len(), 1);
+    assert_eq!(done.events[0].kind, AnimationEventKind::Finished);
+    assert!(!world.animation_is_active(AnimationId::new(1).unwrap()));
+    assert_eq!(
+        world.presentation_applied_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(150)
+        ),
+        None
+    );
+}
+
+#[test]
+fn retarget_starts_from_current_presentation() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::from_millis(50));
+
+    let mut retarget = MutationQueue::new();
+    retarget.start_animation(
+        opacity_overlay_spec(1, node(1), 50, 100, 0.0, 0.0)
+            .with_interrupt(MotionInterrupt::Retarget),
+    );
+    world.commit(retarget).unwrap();
+    let pair = world
+        .presentation_pair(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(50),
+        )
+        .expect("pair");
+    match pair.presentation {
+        MotionValue::Scalar(value) => {
+            assert!(
+                (value - 0.5).abs() < 1e-4,
+                "retarget must continue from the current presentation, got {value}"
+            );
+        }
+        other => panic!("expected scalar, got {other:?}"),
+    }
+    let later = world
+        .presentation_motion_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(100),
+        )
+        .expect("presentation");
+    match later {
+        MotionValue::Scalar(value) => assert!(value < 0.5, "retargeting toward 0, got {value}"),
+        other => panic!("expected scalar, got {other:?}"),
+    }
+}
+
+#[test]
+fn cancel_finish_and_fill_respect_applies() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(node(2), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    queue.start_animation(
+        opacity_overlay_spec(2, node(2), 0, 100, 0.0, 1.0).with_playback(
+            AnimationPlayback::running(
+                crate::AnimationIteration::ONCE,
+                crate::AnimationDirection::Normal,
+                AnimationFillMode::Forwards,
+            ),
+        ),
+    );
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::from_millis(40));
+
+    let mut cancel = MutationQueue::new();
+    cancel.stop_animation(AnimationId::new(1).unwrap());
+    world.commit(cancel).unwrap();
+    let cancelled = world.advance_animations(Duration::from_millis(40));
+    assert_eq!(cancelled.events[0].kind, AnimationEventKind::Cancelled);
+    assert_eq!(
+        world.presentation_applied_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(40)
+        ),
+        None
+    );
+    assert_eq!(
+        world
+            .presentation_pair(
+                node(1),
+                AnimatableProperty::Opacity,
+                Duration::from_millis(40)
+            )
+            .unwrap()
+            .presentation,
+        MotionValue::Scalar(1.0)
+    );
+
+    let mut finish = MutationQueue::new();
+    finish.finish_animation(AnimationId::new(2).unwrap());
+    world.commit(finish).unwrap();
+    let finished = world.advance_animations(Duration::from_millis(40));
+    assert_eq!(finished.events[0].kind, AnimationEventKind::Finished);
+    assert_eq!(
+        world.presentation_applied_value(
+            node(2),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(40)
+        ),
+        Some(MotionValue::Scalar(1.0))
+    );
+}
+
+#[test]
+fn later_start_wins_same_property_overlay() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    queue.start_animation(opacity_overlay_spec(2, node(1), 40, 100, 0.2, 0.8));
+    world.commit(queue).unwrap();
+    let value = world
+        .presentation_applied_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(50),
+        )
+        .expect("later track");
+    match value {
+        MotionValue::Scalar(v) => assert!((v - 0.26).abs() < 1e-5, "got {v}"),
+        other => panic!("expected scalar, got {other:?}"),
+    }
+}
+
+#[test]
+fn parked_node_keeps_unfinished_presentation_overlay() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    queue.start_animation(opacity_overlay_spec(1, node(2), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::ZERO);
+
+    let mut park = MutationQueue::new();
+    park.park_subtree(node(2));
+    world.commit(park).unwrap();
+    assert!(world.presentation_retains_unmounted(node(2), Duration::from_millis(40)));
+    assert!(world.animation_is_active(AnimationId::new(1).unwrap()));
+    assert_eq!(
+        world
+            .presentation_applied_value(
+                node(2),
+                AnimatableProperty::Opacity,
+                Duration::from_millis(40)
+            )
+            .and_then(|value| match value {
+                MotionValue::Scalar(v) => Some(v),
+                _ => None,
+            })
+            .map(|v| (v - 0.4).abs() < 1e-5),
+        Some(true)
+    );
+
+    let mut despawn = MutationQueue::new();
+    despawn.despawn_subtree(node(2));
+    world.commit(despawn).unwrap();
+    assert!(!world.animation_is_active(AnimationId::new(1).unwrap()));
+    assert!(!world.presentation_retains_unmounted(node(2), Duration::from_millis(40)));
+}
+
+fn progress_clock_spec(id: u64, target: StableNodeId) -> AnimationSpec {
+    AnimationSpec::new(
+        AnimationId::new(id).unwrap(),
+        target,
+        Duration::ZERO,
+        Duration::from_secs(60),
+        Duration::from_millis(16),
+        Easing::Linear,
+    )
+}
+
+#[test]
+fn park_cancel_event_is_one_shot_and_later_advance_is_idle() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    queue.start_animation(progress_clock_spec(1, node(2)));
+    world.commit(queue).unwrap();
+    assert_eq!(world.next_animation_deadline(), Some(Duration::ZERO));
+
+    let mut park = MutationQueue::new();
+    park.park_subtree(node(2));
+    world.commit(park).unwrap();
+    assert_eq!(world.next_animation_deadline(), None);
+    let on_park = world.take_animation_events();
+    assert_eq!(on_park.len(), 1);
+    assert_eq!(on_park[0].kind, AnimationEventKind::Cancelled);
+    assert_eq!(on_park[0].target, node(2));
+
+    let remount = {
+        let mut queue = MutationQueue::new();
+        queue.insert(node(1), node(2), None);
+        queue
+    };
+    world.commit(remount).unwrap();
+    let idle = world.advance_animations(Duration::from_secs(1));
+    assert!(
+        !idle.has_updates(),
+        "park Cancelled must not leak onto a later idle advance: {idle:?}"
+    );
+    assert!(idle.events.is_empty());
+    assert!(idle.samples.is_empty());
+
+    let mut again = UiWorld::new();
+    let mut start = MutationQueue::new();
+    start.create(node(1), document(1), NodeKind::Document);
+    start.create(node(2), document(1), NodeKind::Text);
+    start.insert(node(1), node(2), None);
+    start.start_animation(progress_clock_spec(1, node(2)));
+    start.start_animation(opacity_overlay_spec(2, node(2), 0, 100, 0.0, 1.0));
+    again.commit(start).unwrap();
+
+    let mut park = MutationQueue::new();
+    park.park_subtree(node(2));
+    again.commit(park).unwrap();
+    assert!(again.presentation_retains_unmounted(node(2), Duration::from_millis(40)));
+    assert!(again.animation_is_active(AnimationId::new(2).unwrap()));
+
+    let cancel_frame = again.advance_animations(Duration::from_millis(40));
+    assert!(
+        cancel_frame
+            .events
+            .iter()
+            .any(|event| event.kind == AnimationEventKind::Cancelled && event.id.get() == 1)
+    );
+    assert!(cancel_frame.has_updates());
+    assert!(again.presentation_retains_unmounted(node(2), Duration::from_millis(40)));
+
+    let mut only_progress = UiWorld::new();
+    let mut start = MutationQueue::new();
+    start.create(node(1), document(1), NodeKind::Document);
+    start.create(node(2), document(1), NodeKind::Text);
+    start.insert(node(1), node(2), None);
+    start.start_animation(progress_clock_spec(1, node(2)));
+    only_progress.commit(start).unwrap();
+    let mut park = MutationQueue::new();
+    park.park_subtree(node(2));
+    only_progress.commit(park).unwrap();
+    let cancel_frame = only_progress.advance_animations(Duration::from_millis(40));
+    assert_eq!(cancel_frame.events.len(), 1);
+    assert_eq!(cancel_frame.events[0].kind, AnimationEventKind::Cancelled);
+    assert!(cancel_frame.has_updates());
+    let steady = only_progress.advance_animations(Duration::from_secs(1));
+    assert!(!steady.has_updates());
+    assert!(steady.events.is_empty());
+    assert_eq!(steady.animation_deadlines_scanned, 0);
+}
+
+#[test]
+fn reverse_animation_retargets_toward_the_original_from() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::from_millis(50));
+
+    let mut reverse = MutationQueue::new();
+    reverse.reverse_animation(AnimationId::new(1).unwrap());
+    world.commit(reverse).unwrap();
+    let start = world
+        .presentation_applied_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(50),
+        )
+        .expect("still applies");
+    match start {
+        MotionValue::Scalar(value) => {
+            assert!((value - 0.5).abs() < 1e-4, "got {value}");
+        }
+        other => panic!("expected scalar, got {other:?}"),
+    }
+    let later = world
+        .presentation_applied_value(
+            node(1),
+            AnimatableProperty::Opacity,
+            Duration::from_millis(100),
+        )
+        .expect("reversed");
+    match later {
+        MotionValue::Scalar(value) => assert!(value < 0.5, "got {value}"),
+        other => panic!("expected scalar, got {other:?}"),
+    }
+}
+
+fn transform_overlay_spec(id: u64, target: StableNodeId) -> AnimationSpec {
+    AnimationSpec::new(
+        AnimationId::new(id).unwrap(),
+        target,
+        Duration::ZERO,
+        Duration::from_millis(100),
+        Duration::from_millis(16),
+        Easing::Linear,
+    )
+    .with_property(AnimatableProperty::Transform)
+    .with_range(
+        MotionValue::Transform(PaintTransform::default()),
+        MotionTo::Value(MotionValue::Transform(PaintTransform {
+            a: 1.0,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            e: 40.0,
+            f: 0.0,
+        })),
+    )
+}
+
+#[test]
+fn compositor_descriptor_matches_evaluate_track_and_overlay() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    queue.start_animation(transform_overlay_spec(2, node(1)));
+    world.commit(queue).unwrap();
+
+    let opacity_id = AnimationId::new(1).unwrap();
+    let transform_id = AnimationId::new(2).unwrap();
+    let opacity_handle = world.motion_handle(opacity_id).expect("opacity binding");
+    let transform_handle = world
+        .motion_handle(transform_id)
+        .expect("transform binding");
+    let now = Duration::from_millis(50);
+    let store = world.motion_descriptor_store();
+    let opacity = store
+        .evaluate(opacity_handle, now)
+        .expect("opacity descriptor");
+    let overlay = world
+        .presentation_applied_value(node(1), AnimatableProperty::Opacity, now)
+        .expect("overlay");
+    assert_eq!(opacity.applied_value(), Some(overlay));
+    match overlay {
+        MotionValue::Scalar(v) => assert!((v - 0.5).abs() < 1e-5),
+        other => panic!("{other:?}"),
+    }
+    let transform = store
+        .evaluate(transform_handle, now)
+        .expect("transform descriptor");
+    match transform.applied_value() {
+        Some(MotionValue::Transform(value)) => assert!((value.e - 20.0).abs() < 1e-5),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn retarget_and_cancel_update_motion_descriptors() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    let id = AnimationId::new(1).unwrap();
+    let handle = world.motion_handle(id).expect("bound");
+    let generation = handle.generation();
+
+    let mut retarget = MutationQueue::new();
+    retarget.start_animation(
+        opacity_overlay_spec(1, node(1), 50, 100, 0.0, 0.0)
+            .with_interrupt(MotionInterrupt::Retarget),
+    );
+    world.commit(retarget).unwrap();
+    let after = world.motion_handle(id).expect("still bound");
+    assert_eq!(after.index(), handle.index());
+    assert_eq!(after.generation(), generation);
+    let descriptor = world
+        .motion_descriptor_store()
+        .get(after)
+        .expect("updated descriptor");
+    match descriptor.from {
+        MotionValue::Scalar(v) => assert!((v - 0.5).abs() < 1e-4, "got {v}"),
+        other => panic!("{other:?}"),
+    }
+
+    let mut cancel = MutationQueue::new();
+    cancel.stop_animation(id);
+    world.commit(cancel).unwrap();
+    world.advance_animations(Duration::from_millis(50));
+    assert!(world.motion_handle(id).is_none());
+    assert!(world.motion_descriptor_store().get(handle).is_none());
+
+    let mut restart = MutationQueue::new();
+    restart.start_animation(opacity_overlay_spec(1, node(1), 50, 100, 0.2, 0.8));
+    world.commit(restart).unwrap();
+    let reused = world.motion_handle(id).expect("reallocated");
+    assert_eq!(reused.index(), handle.index());
+    assert_ne!(reused.generation(), generation);
+    assert!(world.motion_descriptor_store().get(handle).is_none());
+}
+
+#[test]
+fn paint_and_layout_tracks_do_not_allocate_descriptors() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node(1),
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Color)
+        .with_range(
+            MotionValue::Color([0.0, 0.0, 0.0, 1.0]),
+            MotionTo::Value(MotionValue::Color([1.0, 1.0, 1.0, 1.0])),
+        ),
+    );
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(2).unwrap(),
+            node(1),
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Width)
+        .with_range(
+            MotionValue::Scalar(10.0),
+            MotionTo::Value(MotionValue::Scalar(20.0)),
+        ),
+    );
+    world.commit(queue).unwrap();
+    assert!(world.motion_handle(AnimationId::new(1).unwrap()).is_none());
+    assert!(world.motion_handle(AnimationId::new(2).unwrap()).is_none());
+    assert!(world.motion_descriptor_store().is_empty());
+    assert!(
+        world
+            .presentation_applied_value(
+                node(1),
+                AnimatableProperty::Width,
+                Duration::from_millis(50)
+            )
+            .is_none()
+    );
+}
+
+#[test]
+fn compositor_idle_frames_do_not_rebuild_descriptor_slab() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 100, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::ZERO);
+    let epoch = world.motion_descriptor_store().structure_epoch();
+    let capacity = world.motion_descriptor_store().slot_capacity();
+    let idle = world.advance_animations(Duration::from_millis(50));
+    assert!(idle.samples.is_empty());
+    assert_eq!(idle.animation_deadlines_scanned, 0);
+    assert_eq!(idle.animations_considered, 0);
+    assert_eq!(world.motion_descriptor_store().structure_epoch(), epoch);
+    assert_eq!(world.motion_descriptor_store().slot_capacity(), capacity);
+    let handle = world
+        .motion_handle(AnimationId::new(1).unwrap())
+        .expect("bound");
+    for ms in [10, 40, 70] {
+        let sample = world
+            .motion_descriptor_store()
+            .evaluate(handle, Duration::from_millis(ms))
+            .expect("steady eval");
+        assert_eq!(
+            sample.applied_value(),
+            world.presentation_applied_value(
+                node(1),
+                AnimatableProperty::Opacity,
+                Duration::from_millis(ms)
+            )
+        );
+    }
+    assert_eq!(world.motion_descriptor_store().structure_epoch(), epoch);
+}
+
+#[test]
+fn compositor_steady_frame_work_counters_are_quiet() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(opacity_overlay_spec(1, node(1), 0, 400, 0.0, 1.0));
+    world.commit(queue).unwrap();
+    let _ = world.take_system_work();
+    world.advance_animations(Duration::ZERO);
+    let _ = world.take_system_work();
+    let queries = world.presentation_values_cpu_sampled();
+    let generation = world.generation();
+    let steady = world.advance_animations(Duration::from_millis(80));
+    assert!(steady.samples.is_empty());
+    assert_eq!(steady.animation_deadlines_scanned, 0);
+    assert_eq!(steady.animations_considered, 0);
+    assert!(world.take_system_work().is_empty());
+    assert_eq!(world.generation(), generation);
+    assert_eq!(world.presentation_values_cpu_sampled(), queries);
+    let frame = world.last_motion_frame_counters();
+    assert_eq!(frame.motion_tracks_compositor, 1);
+    assert_eq!(frame.motion_tracks_cpu, 0);
+    assert!(
+        frame.compositor_steady_is_quiet(),
+        "compositor-only present must not mutate UiWorld: {frame:?}"
+    );
+}
+
+#[test]
+fn compositor_inspector_summary_matches_issue_shape() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(123), document(1), NodeKind::Document);
+    queue.start_animation(
+        transform_overlay_spec(1, node(123)).with_property(AnimatableProperty::Transform),
+    );
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::from_millis(50));
+    let entries = world.inspect_motion();
+    let transform = entries
+        .iter()
+        .find(|entry| entry.property == AnimatableProperty::Transform)
+        .expect("transform track");
+    assert_eq!(transform.node, 123);
+    assert_eq!(transform.class, AnimationClass::Compositor);
+    assert_eq!(transform.evaluator, MotionEvaluatorBackend::Gpu);
+    assert_eq!(transform.runtime_samples_this_frame, 0);
+    assert!(transform.cpu_fallback_reason.is_none());
+    assert!(transform.gpu_handle.is_some());
+    assert_eq!(
+        transform.format_summary(),
+        "Node #123 transform\nClass: Compositor\nEvaluator: GPU\nLayer: none\nRuntime samples/frame: 0"
+    );
+}
+
+#[test]
+fn layout_inspector_reports_cpu_fallback() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node(1),
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Width)
+        .with_range(
+            MotionValue::Scalar(10.0),
+            MotionTo::Value(MotionValue::Scalar(20.0)),
+        ),
+    );
+    world.commit(queue).unwrap();
+    let entry = world
+        .inspect_motion()
+        .into_iter()
+        .find(|entry| entry.property == AnimatableProperty::Width)
+        .expect("width");
+    assert_eq!(entry.evaluator, MotionEvaluatorBackend::Cpu);
+    assert!(
+        entry
+            .cpu_fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("width"))
+    );
+}
+
 #[test]
 fn infinite_animation_keeps_waking_and_paused_animation_does_not() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
     queue.create(node(1), document(1), NodeKind::Document);
     queue.create(node(2), document(1), NodeKind::Text);
-    queue.start_animation(AnimationSpec {
-        id: AnimationId::new(1).unwrap(),
-        target: node(1),
-        start: Duration::ZERO,
-        duration: Duration::from_millis(100),
-        frame_interval: Duration::from_millis(16),
-        easing: Easing::Linear,
-        iteration_count: crate::AnimationIteration::Infinite,
-        direction: crate::AnimationDirection::Alternate,
-        fill_mode: crate::AnimationFillMode::None,
-        play_state: crate::AnimationPlayState::Running,
-    });
-    queue.start_animation(AnimationSpec {
-        id: AnimationId::new(2).unwrap(),
-        target: node(2),
-        start: Duration::ZERO,
-        duration: Duration::from_millis(100),
-        frame_interval: Duration::from_millis(16),
-        easing: Easing::Linear,
-        iteration_count: crate::AnimationIteration::ONCE,
-        direction: crate::AnimationDirection::Normal,
-        fill_mode: crate::AnimationFillMode::None,
-        play_state: crate::AnimationPlayState::Paused,
-    });
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node(1),
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_playback(AnimationPlayback::running(
+            crate::AnimationIteration::Infinite,
+            crate::AnimationDirection::Alternate,
+            crate::AnimationFillMode::None,
+        )),
+    );
+    queue.start_animation(
+        AnimationSpec::new(
+            AnimationId::new(2).unwrap(),
+            node(2),
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_playback(AnimationPlayback {
+            iteration_count: crate::AnimationIteration::ONCE,
+            direction: crate::AnimationDirection::Normal,
+            fill_mode: crate::AnimationFillMode::None,
+            play_state: crate::AnimationPlayState::Paused,
+            paused_at: Some(Duration::ZERO),
+        }),
+    );
     world.commit(queue).unwrap();
 
     let first = world.advance_animations(Duration::ZERO);

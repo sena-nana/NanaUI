@@ -1,9 +1,20 @@
-use std::hash::Hasher;
-use std::time::Duration;
+use std::{hash::Hasher, time::Duration};
 
 use crate::StableNodeId;
 
-pub use nana_ui_core::motion::Easing;
+pub use nana_ui_core::motion::{
+    AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationIteration,
+    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect, Keyframe,
+    MOTION_DESCRIPTOR_VERSION, MotionCodecError, MotionCodecId, MotionCodecInfo,
+    MotionCodecRegistry, MotionCurve, MotionDescriptor, MotionDescriptorError,
+    MotionDescriptorStore, MotionEvaluatorBackend, MotionGraph, MotionHandle, MotionInspectorEntry,
+    MotionInterrupt, MotionSample, MotionTargetId, MotionTiming, MotionTo, MotionTrack,
+    MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters, PresentationOverlay,
+    PresentationPair, PresentationSlot, PresentationStore, Spring, SpringParams, StepJump,
+    Timeline, classify_animatable_property, compile_motion_descriptor, cpu_fallback_reason,
+    decode_motion_track, evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
+    invert_flip_translate, retarget_track, track_completion_deadline,
+};
 
 /// Stable identity for one logical animation. Starting the same ID again
 /// atomically replaces its active timeline.
@@ -17,6 +28,16 @@ impl AnimationId {
 
     pub const fn get(self) -> u64 {
         self.0
+    }
+
+    pub fn track_id(self) -> MotionTrackId {
+        MotionTrackId::new(self.0).expect("AnimationId is nonzero")
+    }
+}
+
+impl From<AnimationId> for MotionTrackId {
+    fn from(id: AnimationId) -> Self {
+        id.track_id()
     }
 }
 
@@ -32,6 +53,16 @@ pub mod component_animation_kinds {
     pub const SURFACE: u64 = 4;
     /// Spinner rotation timeline.
     pub const SPINNER: u64 = 5;
+    /// Menu / overlay pop transform (paired with [`SURFACE`] opacity).
+    pub const SURFACE_POP: u64 = 6;
+    /// Sidebar section height / progress.
+    pub const SIDEBAR: u64 = 7;
+    /// Workspace region collapse / expand.
+    pub const WORKSPACE: u64 = 8;
+    /// Button / switch / card loading indicator.
+    pub const LOADING: u64 = 9;
+    /// TransitionGroup / list-move FLIP compositor transform.
+    pub const FLIP: u64 = 10;
 }
 
 /// Derives the animation ID for one component-owned timeline from the
@@ -46,117 +77,139 @@ pub fn component_animation_id(kind_tag: u64, target: StableNodeId) -> Option<Ani
     AnimationId::new(hasher.finish())
 }
 
-/// CSS `animation-iteration-count`. Default is a single run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnimationIteration {
-    Count(u32),
-    Infinite,
+/// Infinite loading-indicator timeline (button / switch / card).
+pub fn loading_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+    let animation = component_animation_id(component_animation_kinds::LOADING, id)?;
+    Some(
+        AnimationSpec::new(
+            animation,
+            id,
+            start,
+            nana_ui_core::motion::LOADING_SPIN,
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_playback(AnimationPlayback {
+            iteration_count: AnimationIteration::INFINITE,
+            direction: AnimationDirection::Normal,
+            fill_mode: AnimationFillMode::None,
+            play_state: AnimationPlayState::Running,
+            paused_at: None,
+        }),
+    )
 }
 
-impl AnimationIteration {
-    pub const ONCE: Self = Self::Count(1);
-    pub const INFINITE: Self = Self::Infinite;
+/// Layout-class workspace collapse/expand scheduler. Extent values stay on
+/// [`nana_ui_core::WorkspaceModel`]; this track is the deadline authority.
+pub fn workspace_animation(id: StableNodeId, start: Duration) -> Option<AnimationSpec> {
+    let animation = component_animation_id(component_animation_kinds::WORKSPACE, id)?;
+    Some(AnimationSpec::new(
+        animation,
+        id,
+        start,
+        nana_ui_core::WORKSPACE_REGION_TRANSITION_DURATION,
+        Duration::from_millis(16),
+        Easing::EaseInOutCubic,
+    ))
 }
 
-impl Default for AnimationIteration {
-    fn default() -> Self {
-        Self::ONCE
-    }
+/// Compositor invert hold: visual First, layout already Last.
+pub fn layout_flip_hold_spec(
+    target: StableNodeId,
+    invert: nana_ui_core::PaintTransform,
+    now: Duration,
+) -> Option<AnimationSpec> {
+    let id = component_animation_id(component_animation_kinds::FLIP, target)?;
+    Some(
+        AnimationSpec::new(
+            id,
+            target,
+            now,
+            Duration::from_nanos(1),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Transform)
+        .with_range(
+            MotionValue::Transform(invert),
+            MotionTo::Value(MotionValue::Transform(invert)),
+        )
+        .with_playback(AnimationPlayback::running(
+            AnimationIteration::ONCE,
+            AnimationDirection::Normal,
+            AnimationFillMode::Both,
+        )),
+    )
 }
 
-/// CSS `animation-direction`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AnimationDirection {
-    #[default]
-    Normal,
-    Reverse,
-    Alternate,
-    AlternateReverse,
+/// Play invert → identity on the FLIP compositor track.
+pub fn layout_flip_play_spec(
+    target: StableNodeId,
+    invert: nana_ui_core::PaintTransform,
+    now: Duration,
+    duration: Duration,
+    easing: Easing,
+) -> Option<AnimationSpec> {
+    let id = component_animation_id(component_animation_kinds::FLIP, target)?;
+    Some(
+        AnimationSpec::new(id, target, now, duration, Duration::from_millis(16), easing)
+            .with_property(AnimatableProperty::Transform)
+            .with_range(
+                MotionValue::Transform(invert),
+                MotionTo::Value(MotionValue::Transform(
+                    nana_ui_core::PaintTransform::default(),
+                )),
+            )
+            .with_interrupt(MotionInterrupt::Replace),
+    )
 }
 
-impl AnimationDirection {
-    fn start_progress(self) -> f32 {
-        match self {
-            Self::Normal | Self::Alternate => 0.0,
-            Self::Reverse | Self::AlternateReverse => 1.0,
-        }
-    }
-
-    fn map_progress(self, iteration_index: u32, linear: f32) -> f32 {
-        let reverse = match self {
-            Self::Normal => false,
-            Self::Reverse => true,
-            Self::Alternate => !iteration_index.is_multiple_of(2),
-            Self::AlternateReverse => iteration_index.is_multiple_of(2),
-        };
-        if reverse { 1.0 - linear } else { linear }
-    }
-
-    fn end_progress(self, completed_iterations: u32) -> f32 {
-        if completed_iterations == 0 {
-            return self.start_progress();
-        }
-        self.map_progress(completed_iterations.saturating_sub(1), 1.0)
-    }
+/// One-shot First → Last → Invert → Play. Layout boxes stay at `last`.
+pub fn layout_flip_spec(
+    target: StableNodeId,
+    first: FlipRect,
+    last: FlipRect,
+    now: Duration,
+    duration: Duration,
+    easing: Easing,
+) -> Option<AnimationSpec> {
+    layout_flip_play_spec(
+        target,
+        invert_flip_translate(first, last),
+        now,
+        duration,
+        easing,
+    )
 }
 
-/// CSS `animation-fill-mode`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AnimationFillMode {
-    #[default]
-    None,
-    Forwards,
-    Backwards,
-    Both,
-}
-
-impl AnimationFillMode {
-    fn applies_backwards(self) -> bool {
-        matches!(self, Self::Backwards | Self::Both)
-    }
-}
-
-/// CSS `animation-play-state`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AnimationPlayState {
-    #[default]
-    Running,
-    Paused,
-}
-
-/// CSS playback longhands. Kept beside [`AnimationSpec`] so existing six-field
-/// spec literals (including CSS cascade builders) keep compiling; pass these
-/// through [`crate::MutationQueue::start_animation_with_playback`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AnimationPlayback {
-    pub iteration_count: AnimationIteration,
-    pub direction: AnimationDirection,
-    pub fill_mode: AnimationFillMode,
-    pub play_state: AnimationPlayState,
-}
-
-/// Backend-neutral animation timing. The host owns the monotonic clock and
-/// passes timestamps from the same epoch to [`crate::UiWorld::advance_animations`].
+/// Backend-neutral animation timing. This is the Motion IR timing subset:
+/// [`MotionTiming`] + [`AnimationPlayback`] are stored once (no parallel
+/// start/duration/playback fields). [`AnimationSpec::new`] still builds a
+/// progress sample for the existing CPU deadline path; property / curve /
+/// delay / keyframes compile through the same struct without forcing
+/// `Progress` / Paint.
 ///
-/// Playback longhands have no field defaults (rustc 1.92/1.97 still treats
-/// default field values as experimental). Use [`AnimationSpec::new`] for the
-/// six-field one-shot API, or write all four playback fields on every literal.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Use [`AnimationSpec::new`] for the six-field one-shot API, then
+/// [`AnimationSpec::with_playback`] / [`AnimationSpec::with_property`].
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnimationSpec {
     pub id: AnimationId,
     pub target: StableNodeId,
-    pub start: Duration,
-    pub duration: Duration,
-    pub frame_interval: Duration,
-    pub easing: Easing,
-    pub iteration_count: AnimationIteration,
-    pub direction: AnimationDirection,
-    pub fill_mode: AnimationFillMode,
-    pub play_state: AnimationPlayState,
+    pub timing: MotionTiming,
+    pub playback: AnimationPlayback,
+    pub curve: MotionCurve,
+    pub property: AnimatableProperty,
+    pub from: MotionValue,
+    pub to: MotionTo,
+    pub velocity: MotionValue,
+    /// Same-id start: replace the previous timeline, or retarget from the
+    /// current presentation sample.
+    pub interrupt: MotionInterrupt,
 }
 
 impl AnimationSpec {
     /// Six-field constructor. Playback is one-shot / normal / none / running.
+    /// Property is unit progress so existing CPU samples stay a 0..=1 track.
     pub const fn new(
         id: AnimationId,
         target: StableNodeId,
@@ -168,83 +221,90 @@ impl AnimationSpec {
         Self {
             id,
             target,
-            start,
-            duration,
-            frame_interval,
-            easing,
-            iteration_count: AnimationIteration::ONCE,
-            direction: AnimationDirection::Normal,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
+            timing: MotionTiming::new(start, duration, frame_interval),
+            playback: AnimationPlayback {
+                iteration_count: AnimationIteration::ONCE,
+                direction: AnimationDirection::Normal,
+                fill_mode: AnimationFillMode::None,
+                play_state: AnimationPlayState::Running,
+                paused_at: None,
+            },
+            curve: MotionCurve::Easing(easing),
+            property: AnimatableProperty::Progress,
+            from: MotionValue::Scalar(0.0),
+            to: MotionTo::Value(MotionValue::Scalar(1.0)),
+            velocity: MotionValue::Scalar(0.0),
+            interrupt: MotionInterrupt::Replace,
         }
     }
 
     pub fn with_playback(mut self, playback: AnimationPlayback) -> Self {
-        self.iteration_count = playback.iteration_count;
-        self.direction = playback.direction;
-        self.fill_mode = playback.fill_mode;
-        self.play_state = playback.play_state;
+        self.playback = playback;
         self
     }
 
-    pub(crate) fn end(self) -> Option<Duration> {
-        match self.iteration_count {
-            AnimationIteration::Infinite => None,
-            AnimationIteration::Count(0) => Some(self.start),
-            AnimationIteration::Count(count) => {
-                self.start.checked_add(self.duration.saturating_mul(count))
-            }
-        }
+    pub fn with_property(mut self, property: AnimatableProperty) -> Self {
+        self.property = property;
+        self
     }
 
-    pub(crate) fn is_valid(self) -> bool {
-        if self.duration.is_zero() || self.frame_interval.is_zero() {
-            return false;
-        }
-        match self.iteration_count {
-            AnimationIteration::Count(0) => false,
-            AnimationIteration::Infinite => true,
-            AnimationIteration::Count(_) => self.end().is_some(),
-        }
+    pub fn with_curve(mut self, curve: MotionCurve) -> Self {
+        self.curve = curve;
+        self
     }
 
-    fn running(self) -> bool {
-        self.play_state == AnimationPlayState::Running
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.timing.delay = delay;
+        self
     }
 
-    fn local_linear(self, now: Duration) -> (f32, bool) {
-        if now < self.start {
-            return (self.direction.start_progress(), false);
-        }
-        let elapsed = now.saturating_sub(self.start);
-        match self.iteration_count {
-            AnimationIteration::Infinite => {
-                let duration = self.duration.as_secs_f32();
-                if duration <= 0.0 {
-                    return (self.direction.end_progress(1), false);
-                }
-                let t = elapsed.as_secs_f32() / duration;
-                let iteration_index = t.floor() as u32;
-                let linear = (t - iteration_index as f32).clamp(0.0, 1.0);
-                (self.direction.map_progress(iteration_index, linear), false)
-            }
-            AnimationIteration::Count(count) => {
-                let Some(end) = self.end() else {
-                    return (self.direction.end_progress(count), true);
-                };
-                if now >= end {
-                    return (self.direction.end_progress(count), true);
-                }
-                let duration = self.duration.as_secs_f32();
-                if duration <= 0.0 {
-                    return (self.direction.end_progress(count), true);
-                }
-                let t = elapsed.as_secs_f32() / duration;
-                let iteration_index = (t.floor() as u32).min(count.saturating_sub(1));
-                let linear = (t - iteration_index as f32).clamp(0.0, 1.0);
-                (self.direction.map_progress(iteration_index, linear), false)
-            }
-        }
+    pub fn with_range(mut self, from: MotionValue, to: MotionTo) -> Self {
+        self.from = from;
+        self.to = to;
+        self
+    }
+
+    pub fn with_interrupt(mut self, interrupt: MotionInterrupt) -> Self {
+        self.interrupt = interrupt;
+        self
+    }
+
+    /// Overlay + descriptor path for compositor-safe properties only.
+    /// Paint / Layout / Progress stay on the CPU sample clock.
+    pub fn uses_presentation_overlay(&self) -> bool {
+        self.property.animation_class() == AnimationClass::Compositor
+    }
+
+    /// Compositor-safe tracks wake on start/completion, not `frame_interval`.
+    pub fn uses_completion_deadline_only(&self) -> bool {
+        self.property.animation_class() == AnimationClass::Compositor
+    }
+
+    /// Compile without dropping property, class, delay, curve, or keyframes.
+    pub fn to_motion_track(&self) -> Option<MotionTrack> {
+        Some(MotionTrack {
+            id: self.id.track_id(),
+            target: MotionTargetId::new(self.target.get())?,
+            property: self.property,
+            from: self.from,
+            to: self.to.clone(),
+            timing: self.timing,
+            curve: self.curve,
+            playback: self.playback,
+            velocity: self.velocity,
+        })
+    }
+
+    pub(crate) fn end(&self) -> Option<Duration> {
+        self.timing.end(self.playback)
+    }
+
+    pub(crate) fn is_valid(&self) -> bool {
+        self.to_motion_track().is_some_and(|track| track.is_valid())
+    }
+
+    fn running(&self) -> bool {
+        self.playback.play_state == AnimationPlayState::Running
     }
 }
 
@@ -255,6 +315,32 @@ pub struct AnimationSample {
     /// Eased progress in the inclusive range `0.0..=1.0`.
     pub progress: f32,
     pub finished: bool,
+    /// False when fill-mode does not apply a presentation value at `now`.
+    pub applies: bool,
+    pub property: AnimatableProperty,
+    pub value: MotionValue,
+}
+
+impl AnimationSample {
+    /// Presentation value only when [`Self::applies`] is true.
+    pub fn applied_value(self) -> Option<MotionValue> {
+        self.applies.then_some(self.value)
+    }
+}
+
+/// Runtime-side finished / cancelled hook. Vue JS `transitionend` /
+/// `animationend` stay on Workstream F / #63.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationEventKind {
+    Finished,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimationEvent {
+    pub id: AnimationId,
+    pub target: StableNodeId,
+    pub kind: AnimationEventKind,
 }
 
 /// Samples due at the supplied timestamp and the next time the host should
@@ -268,6 +354,9 @@ pub struct AnimationFrame {
     /// These are already committed to retained state; applications must not
     /// re-apply them.
     pub component_updates: Vec<StableNodeId>,
+    /// Completion / cancel hooks produced from deadlines or mutations since
+    /// the previous advance. Not derived by scanning idle tracks.
+    pub events: Vec<AnimationEvent>,
     pub next_deadline: Option<Duration>,
     pub animation_deadlines_scanned: usize,
     pub animations_considered: usize,
@@ -275,7 +364,7 @@ pub struct AnimationFrame {
 
 impl AnimationFrame {
     pub fn has_updates(&self) -> bool {
-        !self.samples.is_empty() || !self.component_updates.is_empty()
+        !self.samples.is_empty() || !self.component_updates.is_empty() || !self.events.is_empty()
     }
 }
 
@@ -283,39 +372,34 @@ impl AnimationFrame {
 pub(crate) struct ActiveAnimation {
     pub(crate) spec: AnimationSpec,
     pub(crate) next_deadline: Duration,
-    hold_at: Option<Duration>,
 }
 
 impl ActiveAnimation {
     pub(crate) fn new(spec: AnimationSpec) -> Self {
-        let next_deadline = if spec.fill_mode.applies_backwards() {
+        let next_deadline = if spec.playback.fill_mode.applies_backwards() {
             Duration::ZERO
         } else {
-            spec.start
+            spec.timing.effective_start().unwrap_or(spec.timing.start)
         };
         Self {
-            hold_at: matches!(spec.play_state, AnimationPlayState::Paused).then_some(spec.start),
             spec,
             next_deadline,
         }
     }
 
     pub(crate) fn has_follow_up_deadline(&self) -> bool {
-        self.spec.running() && self.hold_at.is_none()
+        self.spec.running()
     }
 
     pub(crate) fn sample(&mut self, now: Duration) -> Option<AnimationSample> {
         if now < self.next_deadline {
             return None;
         }
-        let clock = self.hold_at.unwrap_or(now);
-        let (linear, finished) = self.spec.local_linear(clock);
+        let track = self.spec.to_motion_track()?;
+        let motion = evaluate_track(&track, now);
+        let finished = motion.finished;
         if !finished && self.has_follow_up_deadline() {
-            let step = now.checked_add(self.spec.frame_interval).unwrap_or(now);
-            self.next_deadline = match self.spec.end() {
-                Some(end) => step.min(end),
-                None => step,
-            };
+            self.next_deadline = follow_up_deadline(&self.spec, &track, now);
         } else if !finished {
             // Paused hold: stay in the map, but do not wake again until replaced.
             self.next_deadline = Duration::MAX;
@@ -323,9 +407,25 @@ impl ActiveAnimation {
         Some(AnimationSample {
             id: self.spec.id,
             target: self.spec.target,
-            progress: self.spec.easing.sample(linear.clamp(0.0, 1.0)),
+            progress: motion.progress,
             finished,
+            applies: motion.applies,
+            property: self.spec.property,
+            value: motion.value,
         })
+    }
+}
+
+fn follow_up_deadline(spec: &AnimationSpec, track: &MotionTrack, now: Duration) -> Duration {
+    if spec.uses_completion_deadline_only() {
+        return track_completion_deadline(track)
+            .filter(|end| *end > now)
+            .unwrap_or(Duration::MAX);
+    }
+    let step = now.checked_add(spec.timing.frame_interval).unwrap_or(now);
+    match spec.end() {
+        Some(end) => step.min(end),
+        None => step,
     }
 }
 
@@ -345,8 +445,8 @@ mod tests {
         )
     }
 
-    fn progress_at(spec: AnimationSpec, now_ms: u64) -> AnimationSample {
-        let mut active = ActiveAnimation::new(spec);
+    fn progress_at(spec: &AnimationSpec, now_ms: u64) -> AnimationSample {
+        let mut active = ActiveAnimation::new(spec.clone());
         active.next_deadline = Duration::ZERO;
         active
             .sample(Duration::from_millis(now_ms))
@@ -356,124 +456,112 @@ mod tests {
     #[test]
     fn default_animation_playback_is_one_shot_normal_running() {
         let spec = spec(100, 100);
-        assert_eq!(spec.iteration_count, AnimationIteration::ONCE);
-        assert_eq!(spec.direction, AnimationDirection::Normal);
-        assert_eq!(spec.fill_mode, AnimationFillMode::None);
-        assert_eq!(spec.play_state, AnimationPlayState::Running);
+        assert_eq!(spec.playback.iteration_count, AnimationIteration::ONCE);
+        assert_eq!(spec.playback.direction, AnimationDirection::Normal);
+        assert_eq!(spec.playback.fill_mode, AnimationFillMode::None);
+        assert_eq!(spec.playback.play_state, AnimationPlayState::Running);
         assert_eq!(spec.end(), Some(Duration::from_millis(200)));
-        let mid = progress_at(spec, 150);
+        let mid = progress_at(&spec, 150);
         assert!((mid.progress - 0.5).abs() < f32::EPSILON);
         assert!(!mid.finished);
-        let end = progress_at(spec, 200);
+        let end = progress_at(&spec, 200);
         assert_eq!(end.progress, 1.0);
         assert!(end.finished);
     }
 
     #[test]
     fn animation_iteration_count_repeats_before_finish() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::Count(2),
-            direction: AnimationDirection::Normal,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
-            ..spec(0, 100)
-        };
-        let first = progress_at(spec, 50);
+        let spec = spec(0, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::Count(2),
+            AnimationDirection::Normal,
+            AnimationFillMode::None,
+        ));
+        let first = progress_at(&spec, 50);
         assert!((first.progress - 0.5).abs() < f32::EPSILON);
         assert!(!first.finished);
-        let second = progress_at(spec, 150);
+        let second = progress_at(&spec, 150);
         assert!((second.progress - 0.5).abs() < f32::EPSILON);
         assert!(!second.finished);
-        let done = progress_at(spec, 200);
+        let done = progress_at(&spec, 200);
         assert_eq!(done.progress, 1.0);
         assert!(done.finished);
     }
 
     #[test]
     fn infinite_animation_never_finishes() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::INFINITE,
-            direction: AnimationDirection::Normal,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
-            ..spec(0, 100)
-        };
+        let spec = spec(0, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::INFINITE,
+            AnimationDirection::Normal,
+            AnimationFillMode::None,
+        ));
         assert_eq!(spec.end(), None);
         assert!(spec.is_valid());
-        let late = progress_at(spec, 10_000);
+        let late = progress_at(&spec, 10_000);
         assert!(!late.finished);
         assert!(late.progress >= 0.0 && late.progress <= 1.0);
     }
 
     #[test]
     fn reverse_direction_runs_from_one_to_zero() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::ONCE,
-            direction: AnimationDirection::Reverse,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
-            ..spec(0, 100)
-        };
-        assert!((progress_at(spec, 0).progress - 1.0).abs() < f32::EPSILON);
-        assert!((progress_at(spec, 50).progress - 0.5).abs() < f32::EPSILON);
-        let done = progress_at(spec, 100);
+        let spec = spec(0, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::ONCE,
+            AnimationDirection::Reverse,
+            AnimationFillMode::None,
+        ));
+        assert!((progress_at(&spec, 0).progress - 1.0).abs() < f32::EPSILON);
+        assert!((progress_at(&spec, 50).progress - 0.5).abs() < f32::EPSILON);
+        let done = progress_at(&spec, 100);
         assert_eq!(done.progress, 0.0);
         assert!(done.finished);
     }
 
     #[test]
     fn alternate_direction_flips_each_iteration() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::Count(2),
-            direction: AnimationDirection::Alternate,
-            fill_mode: AnimationFillMode::None,
-            play_state: AnimationPlayState::Running,
-            ..spec(0, 100)
-        };
-        assert!((progress_at(spec, 25).progress - 0.25).abs() < f32::EPSILON);
-        assert!((progress_at(spec, 125).progress - 0.75).abs() < f32::EPSILON);
-        let done = progress_at(spec, 200);
+        let spec = spec(0, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::Count(2),
+            AnimationDirection::Alternate,
+            AnimationFillMode::None,
+        ));
+        assert!((progress_at(&spec, 25).progress - 0.25).abs() < f32::EPSILON);
+        assert!((progress_at(&spec, 125).progress - 0.75).abs() < f32::EPSILON);
+        let done = progress_at(&spec, 200);
         assert_eq!(done.progress, 0.0);
         assert!(done.finished);
     }
 
     #[test]
     fn fill_mode_backwards_holds_start_progress_during_delay() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::ONCE,
-            direction: AnimationDirection::Reverse,
-            fill_mode: AnimationFillMode::Backwards,
-            play_state: AnimationPlayState::Running,
-            ..spec(50, 100)
-        };
-        let held = progress_at(spec, 10);
+        let spec = spec(50, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::ONCE,
+            AnimationDirection::Reverse,
+            AnimationFillMode::Backwards,
+        ));
+        let held = progress_at(&spec, 10);
         assert_eq!(held.progress, 1.0);
         assert!(!held.finished);
     }
 
     #[test]
     fn fill_mode_forwards_keeps_terminal_progress() {
-        let spec = AnimationSpec {
-            iteration_count: AnimationIteration::ONCE,
-            direction: AnimationDirection::Reverse,
-            fill_mode: AnimationFillMode::Forwards,
-            play_state: AnimationPlayState::Running,
-            ..spec(0, 100)
-        };
-        let done = progress_at(spec, 150);
+        let spec = spec(0, 100).with_playback(AnimationPlayback::running(
+            AnimationIteration::ONCE,
+            AnimationDirection::Reverse,
+            AnimationFillMode::Forwards,
+        ));
+        let done = progress_at(&spec, 150);
         assert_eq!(done.progress, 0.0);
         assert!(done.finished);
     }
 
     #[test]
     fn paused_animation_does_not_schedule_further_frames() {
-        let spec = AnimationSpec {
+        let spec = spec(0, 100).with_playback(AnimationPlayback {
             iteration_count: AnimationIteration::ONCE,
             direction: AnimationDirection::Normal,
             fill_mode: AnimationFillMode::None,
             play_state: AnimationPlayState::Paused,
-            ..spec(0, 100)
-        };
+            paused_at: Some(Duration::ZERO),
+        });
         let mut active = ActiveAnimation::new(spec);
         let first = active
             .sample(Duration::from_millis(0))
@@ -486,30 +574,21 @@ mod tests {
     #[test]
     fn zero_iteration_or_duration_is_invalid() {
         assert!(
-            !AnimationSpec {
-                iteration_count: AnimationIteration::Count(0),
-                direction: AnimationDirection::Normal,
-                fill_mode: AnimationFillMode::None,
-                play_state: AnimationPlayState::Running,
-                ..spec(0, 100)
-            }
-            .is_valid()
+            !spec(0, 100)
+                .with_playback(AnimationPlayback::running(
+                    AnimationIteration::Count(0),
+                    AnimationDirection::Normal,
+                    AnimationFillMode::None,
+                ))
+                .is_valid()
         );
-        assert!(
-            !AnimationSpec {
-                duration: Duration::ZERO,
-                iteration_count: AnimationIteration::ONCE,
-                direction: AnimationDirection::Normal,
-                fill_mode: AnimationFillMode::None,
-                play_state: AnimationPlayState::Running,
-                ..spec(0, 100)
-            }
-            .is_valid()
-        );
+        let mut zero = spec(0, 100);
+        zero.timing.duration = Duration::ZERO;
+        assert!(!zero.is_valid());
     }
 
     #[test]
-    fn runtime_sidebar_and_workspace_motion_stay_on_owned_clocks() {
+    fn runtime_sidebar_and_workspace_motion_share_ir_duration() {
         assert_eq!(
             crate::SidebarSectionState::animation_duration(),
             nana_ui_core::motion::SIDEBAR_COLLAPSE
@@ -544,6 +623,119 @@ mod tests {
             Some(skeleton),
             AnimationId::new(node_a.get()),
             "hashed IDs must not land in the raw node-ID namespace"
+        );
+    }
+
+    #[test]
+    fn evaluate_progress_matches_evaluate_track_on_a_paused_spec() {
+        let spec = spec(0, 100).with_playback(AnimationPlayback {
+            iteration_count: AnimationIteration::ONCE,
+            direction: AnimationDirection::Normal,
+            fill_mode: AnimationFillMode::None,
+            play_state: AnimationPlayState::Paused,
+            paused_at: Some(Duration::from_millis(50)),
+        });
+        let track = spec.to_motion_track().expect("track");
+        let now = Duration::from_millis(90);
+        let progress = evaluate_progress(spec.timing, spec.playback, spec.curve, now);
+        let motion = evaluate_track(&track, now);
+        assert!((progress.progress - 0.5).abs() < 1e-5);
+        assert_eq!(progress.progress, motion.progress);
+        assert_eq!(progress.finished, motion.finished);
+        let runtime = progress_at(&spec, 90);
+        assert!((runtime.progress - 0.5).abs() < 1e-5);
+        assert_eq!(runtime.finished, motion.finished);
+    }
+
+    #[test]
+    fn animation_spec_progress_matches_motion_track_evaluator() {
+        let spec = spec(0, 100)
+            .with_curve(MotionCurve::Easing(Easing::EaseOutCubic))
+            .with_playback(AnimationPlayback::running(
+                AnimationIteration::Count(2),
+                AnimationDirection::Alternate,
+                AnimationFillMode::None,
+            ));
+        let track = spec.to_motion_track().expect("track");
+        for ms in [0, 25, 100, 125, 200] {
+            let sample = progress_at(&spec, ms);
+            let motion = evaluate_track(&track, Duration::from_millis(ms));
+            assert_eq!(sample.finished, motion.finished);
+            assert!((sample.progress - motion.progress).abs() < 1e-6);
+            match motion.value {
+                MotionValue::Scalar(v) => {
+                    assert!((v - motion.progress).abs() < 1e-6);
+                }
+                other => panic!("progress track must be scalar, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn to_motion_track_preserves_property_delay_and_keyframes() {
+        let spec = spec(10, 100)
+            .with_delay(Duration::from_millis(40))
+            .with_property(AnimatableProperty::Opacity)
+            .with_curve(MotionCurve::Easing(Easing::EaseOutCubic))
+            .with_range(
+                MotionValue::Scalar(0.2),
+                MotionTo::Keyframes(vec![
+                    Keyframe {
+                        offset: 0.0,
+                        value: MotionValue::Scalar(0.2),
+                        easing: None,
+                    },
+                    Keyframe {
+                        offset: 1.0,
+                        value: MotionValue::Scalar(0.8),
+                        easing: None,
+                    },
+                ]),
+            );
+        let track = spec.to_motion_track().expect("track");
+        assert_eq!(track.property, AnimatableProperty::Opacity);
+        assert_eq!(track.execution_class(), AnimationClass::Compositor);
+        assert_eq!(track.timing.delay, Duration::from_millis(40));
+        assert_eq!(track.curve, MotionCurve::Easing(Easing::EaseOutCubic));
+        assert!(matches!(track.to, MotionTo::Keyframes(_)));
+        assert_ne!(track.property, AnimatableProperty::Progress);
+        assert_ne!(track.execution_class(), AnimationClass::Paint);
+    }
+
+    #[test]
+    fn sample_forwards_applies_and_applied_value_is_none_outside_fill() {
+        let spec = spec(50, 100);
+        let held = progress_at(&spec, 10);
+        assert!(!held.applies);
+        assert_eq!(held.applied_value(), None);
+        assert_eq!(held.property, AnimatableProperty::Progress);
+        let mid = progress_at(&spec, 100);
+        assert!(mid.applies);
+        assert_eq!(mid.applied_value(), Some(MotionValue::Scalar(0.5)));
+    }
+
+    #[test]
+    fn presentation_overlay_is_compositor_only() {
+        assert!(!spec(0, 100).uses_presentation_overlay());
+        assert!(
+            spec(0, 100)
+                .with_property(AnimatableProperty::Opacity)
+                .uses_presentation_overlay()
+        );
+        assert!(
+            spec(0, 100)
+                .with_property(AnimatableProperty::Transform)
+                .uses_presentation_overlay()
+        );
+        assert!(
+            !spec(0, 100)
+                .with_property(AnimatableProperty::Width)
+                .uses_presentation_overlay()
+        );
+        assert!(
+            !spec(0, 100)
+                .with_property(AnimatableProperty::Color)
+                .uses_presentation_overlay()
         );
     }
 }

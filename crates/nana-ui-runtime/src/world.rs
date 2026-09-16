@@ -8,18 +8,21 @@ mod input;
 mod motion;
 mod mutation;
 mod overlay_index;
+mod presentation;
 mod scroll_bounds;
 mod style;
 mod text;
 use hit_test::*;
 use text::*;
 
-use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt;
-use std::mem::size_of;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    cell::{Cell, RefCell},
+    collections::{BTreeSet, HashMap, HashSet},
+    fmt,
+    mem::size_of,
+    sync::Arc,
+    time::Duration,
+};
 
 use nana_ui_core::{
     ControlSize, LayoutStyle, LengthSpec, PointerEventsSpec, PositionSpec, SemanticColorRole,
@@ -31,24 +34,24 @@ use nana_ui_core::TooltipConfig;
 #[cfg(feature = "graph-canvas")]
 use nana_ui_core::{GraphPoint, GraphPortKind, GraphPortSide, GraphRect, GraphSize, cubic_point};
 
-use crate::animation::ActiveAnimation;
-use crate::components::{
-    EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
-    TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
-    TextInputPresentation, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
-    TextSwatchMark, TextWhitespaceKind, TextWhitespaceMark,
-};
-use crate::schedule::{DirtyMask, SystemWork, push_work};
-use crate::store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children};
-use crate::text_editing::clamp_boundary;
 use crate::{
     AccessibilityDelta, AccessibilityNode, AccessibilityRole, AccessibilityState, AnimationFrame,
     AnimationId, AnimationSpec, ComponentTypeId, ComputedStyle, CustomRenderNode, EventListeners,
     EventRoute, ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition,
-    InteractionState, LayoutBox, LayoutInput, MountState, MutationQueue, NodeStyle,
-    OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
+    InteractionState, LayoutBox, LayoutInput, MotionWorkCounters, MountState, MutationQueue,
+    NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
     TextContent, TextInputState, TextMetrics, TextPresentation, TextPresenter, TextShaper,
     TextVerticalAlignment, UiMutation, WorkCounters,
+    animation::ActiveAnimation,
+    components::{
+        EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
+        TextEditorRenderOptions, TextGitGutterMark, TextGitMark, TextGitMarkKind,
+        TextInputPresentation, TextMatchMark, TextMatchMarker, TextMatchSpan, TextOverlayMetrics,
+        TextSwatchMark, TextWhitespaceKind, TextWhitespaceMark,
+    },
+    schedule::{DirtyMask, SystemWork, push_work},
+    store::{Hierarchy, NodeRecord, NodeStore, ResolvedStyle, intern_empty_children},
+    text_editing::clamp_boundary,
 };
 /// Stable external node identity. Zero is reserved so missing/default IDs
 /// cannot accidentally address a live node.
@@ -421,9 +424,24 @@ pub struct UiWorld {
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
     pub(crate) animation_now: Duration,
+    presentation: nana_ui_core::motion::PresentationStore,
+    /// Input / a11y / focus queries increment this. Idle `advance_animations`
+    /// must not, including compositor-only overlays.
+    presentation_query_samples: Cell<usize>,
+    /// `presentation_query_samples` at the start of the last
+    /// [`Self::advance_animations`]. Inspector "samples/frame" is the delta.
+    presentation_samples_at_advance: Cell<usize>,
+    /// Last `advance_animations` attribution (mutations / layout / style /
+    /// extract). Track classification is recomputed live.
+    last_motion_frame: MotionWorkCounters,
+    compositor_layer_requests: HashSet<StableNodeId>,
+    motion_descriptors: nana_ui_core::motion::MotionDescriptorStore,
+    /// Mutation-scoped Finished/Cancelled not yet observed. A later successful
+    /// commit closes this batch so park-cancel does not leak onto an idle
+    /// `advance_animations`. Deadline completions still go out on that wake.
+    pending_animation_events: Vec<crate::AnimationEvent>,
     surface_motion: HashMap<StableNodeId, motion::SurfaceMotion>,
     closing_surfaces: HashSet<StableNodeId>,
-    switch_transitions: HashMap<StableNodeId, f32>,
     hover_transitions: HashMap<StableNodeId, style::HoverTransition>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
     style_model: StyleModelRef,
@@ -541,9 +559,15 @@ impl UiWorld {
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
             animation_now: Duration::ZERO,
+            presentation: nana_ui_core::motion::PresentationStore::new(),
+            presentation_query_samples: Cell::new(0),
+            presentation_samples_at_advance: Cell::new(0),
+            last_motion_frame: MotionWorkCounters::default(),
+            compositor_layer_requests: HashSet::new(),
+            motion_descriptors: nana_ui_core::motion::MotionDescriptorStore::new(),
+            pending_animation_events: Vec::new(),
             surface_motion: HashMap::new(),
             closing_surfaces: HashSet::new(),
-            switch_transitions: HashMap::new(),
             hover_transitions: HashMap::new(),
             animation_deadlines: BTreeSet::new(),
             style_model: StyleModelRef::default(),
@@ -1312,7 +1336,7 @@ impl UiWorld {
             id,
             parent: record.hierarchy.parent,
             children: Arc::clone(&record.hierarchy.children),
-            style: self.effective_layout_style(id),
+            style: self.motion_layout(id, &self.effective_layout_style(id)),
             text_metrics: has_text.then_some(record.text_metrics),
             modal: self.nodes.visual(id).and_then(|visual| {
                 let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
@@ -2089,25 +2113,11 @@ impl UiWorld {
         self.input
             .pointer_press
             .retain(|_, target| !parked.contains(target));
-
-        let cancelled = self
-            .animations
-            .iter()
-            .filter_map(|(&animation_id, animation)| {
-                parked
-                    .contains(&animation.spec.target)
-                    .then_some((animation_id, animation.next_deadline))
-            })
-            .collect::<Vec<_>>();
-        for (animation_id, deadline) in cancelled {
-            self.animations.remove(&animation_id);
-            self.animation_deadlines.remove(&(deadline, animation_id));
-        }
+        self.drop_non_overlay_animations_for_parked(&parked);
 
         for &id in subtree {
             self.surface_motion.remove(&id);
             self.closing_surfaces.remove(&id);
-            self.switch_transitions.remove(&id);
             self.hover_transitions.remove(&id);
             if self.overlay_host(id).is_some() {
                 self.write_overlay_host(id, Some(OverlayHostState::default()));

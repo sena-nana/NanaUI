@@ -288,6 +288,7 @@ impl UiWorld {
             }),
             document_text_selection,
             document_text_selection_color,
+            compositor: self.extracted_compositor(id),
         })
     }
 }

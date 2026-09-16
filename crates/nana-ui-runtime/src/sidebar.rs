@@ -1,18 +1,17 @@
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use nana_ui_core::{
     AlignSpec, ButtonKind, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
     LineHeightSpec, OverflowSpec, SemanticColorRole, TooltipConfig, UI_METRICS,
 };
 
-use crate::view_components::{
-    IconButton, List, ListItem, ListItemSlots, ScrollAxes, ScrollView, Text, project_common,
-};
 use crate::{
     AccessibilityRole, AccessibilityState, ComponentView, InteractionState, InteractionStyle,
     MutationQueue, NodeKind, NodeStyle, OverlayHostState, SemanticPaint, StableNodeId,
     StandardVisual, TextContent, TooltipVisual, UiWorld,
+    view_components::{
+        IconButton, List, ListItem, ListItemSlots, ScrollAxes, ScrollView, Text, project_common,
+    },
 };
 
 const FRAME_PADDING_TOP: f32 = nana_ui_core::space::LG;
@@ -121,37 +120,32 @@ fn sidebar_tool_button(
     button
 }
 
-/// Host-sampled expand/collapse. The host owns the clock; this type never starts a thread.
+/// Boolean expansion target. Visual progress is the SIDEBAR Motion IR track,
+/// sampled onto [`SidebarSection::animation_progress`].
 #[derive(Debug, Clone)]
 pub struct SidebarSectionState {
-    expansion: nana_ui_core::ExpansionState,
+    expanded: bool,
 }
 
 impl SidebarSectionState {
     pub fn new(expanded: bool) -> Self {
-        Self {
-            expansion: nana_ui_core::ExpansionState::new(expanded, SECTION_ANIMATION_DURATION),
-        }
+        Self { expanded }
     }
 
     pub fn expanded(&self) -> bool {
-        self.expansion.expanded()
+        self.expanded
     }
 
-    pub fn set_expanded(&mut self, expanded: bool, now: Duration) -> bool {
-        self.expansion.set_expanded(expanded, now)
+    pub fn set_expanded(&mut self, expanded: bool, _now: Duration) -> bool {
+        if self.expanded == expanded {
+            return false;
+        }
+        self.expanded = expanded;
+        true
     }
 
     pub fn toggle(&mut self, now: Duration) -> bool {
-        self.expansion.toggle(now)
-    }
-
-    pub fn is_animating(&self, now: Duration) -> bool {
-        self.expansion.is_animating_at(now)
-    }
-
-    pub fn expansion(&self, now: Duration) -> f32 {
-        self.expansion.value_at(now)
+        self.set_expanded(!self.expanded, now)
     }
 
     pub fn animation_duration() -> Duration {
@@ -650,7 +644,7 @@ pub struct SidebarSectionSlots {
     pub tools: Option<StableNodeId>,
 }
 
-/// Titled, optionally collapsible group. Expansion is host-sampled.
+/// Titled, optionally collapsible group. Expansion progress is Motion IR.
 #[derive(Debug, Clone)]
 pub struct SidebarSection {
     pub title: Arc<str>,
@@ -1487,27 +1481,52 @@ mod tests {
     }
 
     #[test]
-    fn section_state_animates_from_a_host_sample() {
-        let started = Duration::from_millis(100);
-        let mut state = SidebarSectionState::new(true);
-        assert!(state.set_expanded(false, started));
-        assert!(!state.expanded());
-        // 折叠 1/4 处取 0.9375（EaseInOutCubic 前半段 4t³ 的补值），
-        // 区别于线性的 0.75 与 ease-out-cubic 的 0.578125。
-        let quarter = state.expansion(started + SECTION_ANIMATION_DURATION / 4);
-        assert_eq!(quarter, 0.9375);
-        // 中点恰为 0.5；端点干净落地。
-        let reversed_at = started + SECTION_ANIMATION_DURATION / 2;
-        let middle = state.expansion(reversed_at);
-        assert_eq!(middle, 0.5);
-        assert_eq!(state.expansion(started + SECTION_ANIMATION_DURATION), 0.0);
-        assert!(state.set_expanded(true, reversed_at));
-        assert!(state.expanded());
-        assert_eq!(state.expansion(reversed_at), middle);
+    fn section_collapse_progress_comes_from_motion_ir() {
+        let mut context = AppContext::new();
+        let (section, _, _, _, _) = mount_section(
+            &mut context,
+            SidebarSection::new("资源").collapsible(true).expanded(true),
+            &["条目"],
+            None,
+        );
         assert_eq!(
-            state.expansion(reversed_at + SECTION_ANIMATION_DURATION),
+            context
+                .read(section, |section| section.animation_progress)
+                .unwrap(),
             1.0
         );
+        assert!(context.activate_sidebar_section(section).unwrap());
+        let id = section.stable_id();
+        let animation =
+            crate::component_animation_id(crate::component_animation_kinds::SIDEBAR, id)
+                .expect("sidebar animation id");
+        assert!(context.world().animation_is_active(animation));
+        let _ = context.advance_animations(SECTION_ANIMATION_DURATION / 4);
+        let quarter = context
+            .read(section, |section| section.animation_progress)
+            .unwrap();
+        assert!((quarter - 0.9375).abs() < 1e-5);
+        let reversed_at = SECTION_ANIMATION_DURATION / 2;
+        let _ = context.advance_animations(reversed_at);
+        let middle = context
+            .read(section, |section| section.animation_progress)
+            .unwrap();
+        assert!((middle - 0.5).abs() < 1e-5);
+        assert!(context.activate_sidebar_section(section).unwrap());
+        assert_eq!(
+            context
+                .read(section, |section| section.animation_progress)
+                .unwrap(),
+            middle
+        );
+        let _ = context.advance_animations(reversed_at + SECTION_ANIMATION_DURATION);
+        assert_eq!(
+            context
+                .read(section, |section| section.animation_progress)
+                .unwrap(),
+            1.0
+        );
+        assert!(!context.world().animation_is_active(animation));
     }
 
     #[test]
@@ -2284,9 +2303,14 @@ mod tests {
         context
             .read(section, |section| {
                 assert!(!section.state.expanded());
-                assert!(section.state.is_animating(std::time::Duration::ZERO));
             })
             .unwrap();
+        let animation = crate::component_animation_id(
+            crate::component_animation_kinds::SIDEBAR,
+            section.stable_id(),
+        )
+        .expect("sidebar animation id");
+        assert!(context.world().animation_is_active(animation));
         let _ = context.advance_animations(std::time::Duration::from_millis(80));
         context
             .read(section, |section| {

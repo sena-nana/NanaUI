@@ -597,52 +597,56 @@ impl AppContext {
             Some(kind) => {
                 self.component_lifecycle.loading.insert(id, kind);
                 if self.world.is_mounted(id)
-                    && self.component_lifecycle.next_loading_frame.is_none()
+                    && let Some(spec) = crate::loading_animation(id, self.component_lifecycle.now)
+                    && !self.world.animation_is_active(spec.id)
                 {
-                    self.component_lifecycle.next_loading_frame =
-                        Some(self.component_lifecycle.now);
+                    let mut mutations = MutationQueue::new();
+                    mutations.start_animation(spec);
+                    self.world.commit(mutations)?;
                 }
             }
             None => {
                 self.component_lifecycle.loading.remove(&id);
-                if !self
-                    .component_lifecycle
-                    .loading
-                    .keys()
-                    .any(|target| self.world.is_mounted(*target))
+                if let Some(spec) = crate::loading_animation(id, Duration::ZERO)
+                    && self.world.animation_is_active(spec.id)
                 {
-                    self.component_lifecycle.next_loading_frame = None;
+                    let mut mutations = MutationQueue::new();
+                    mutations.stop_animation(spec.id);
+                    self.world.commit(mutations)?;
                 }
             }
         }
 
-        // 工作区折叠/展开过渡由运行时帧循环接管：模型带未回收过渡的
-        // Workspace 登记进帧调度，结算后撤销，宿主无需自行驱动。
         if self
             .views
             .get(&id)
             .is_some_and(|view| view.is::<Workspace>())
         {
-            let transitioning = self
+            let origin = self
                 .views
                 .get(&id)
                 .and_then(|view| view.downcast_ref::<Workspace>())
-                .is_some_and(|workspace| workspace.model.has_active_transitions());
-            if transitioning {
-                self.component_lifecycle
-                    .workspace_transitions
-                    .insert(id, ());
+                .and_then(|workspace| workspace.model.transition_origin());
+            if let Some(origin) = origin {
                 if self.world.is_mounted(id)
-                    && self.component_lifecycle.next_workspace_frame.is_none()
+                    && let Some(spec) = crate::workspace_animation(id, origin)
                 {
-                    self.component_lifecycle.next_workspace_frame =
-                        Some(self.component_lifecycle.now);
+                    let restart = self
+                        .world
+                        .animation_timing_start(spec.id)
+                        .is_none_or(|start| start != origin);
+                    if restart {
+                        let mut mutations = MutationQueue::new();
+                        mutations.start_animation(spec);
+                        self.world.commit(mutations)?;
+                    }
                 }
-            } else {
-                self.component_lifecycle.workspace_transitions.remove(&id);
-                if self.component_lifecycle.workspace_transitions.is_empty() {
-                    self.component_lifecycle.next_workspace_frame = None;
-                }
+            } else if let Some(spec) = crate::workspace_animation(id, Duration::ZERO)
+                && self.world.animation_is_active(spec.id)
+            {
+                let mut mutations = MutationQueue::new();
+                mutations.stop_animation(spec.id);
+                self.world.commit(mutations)?;
             }
         }
         Ok(())
@@ -744,14 +748,6 @@ impl AppContext {
             tooltip.show_at = None;
             tooltip.open = false;
         }
-        if !self
-            .component_lifecycle
-            .loading
-            .keys()
-            .any(|target| self.world.is_mounted(*target))
-        {
-            self.component_lifecycle.next_loading_frame = None;
-        }
     }
 
     pub(super) fn resume_component_lifecycle(
@@ -760,9 +756,12 @@ impl AppContext {
     ) -> Result<(), FrameworkError> {
         if self.world.is_mounted(id)
             && self.component_lifecycle.loading.contains_key(&id)
-            && self.component_lifecycle.next_loading_frame.is_none()
+            && let Some(spec) = crate::loading_animation(id, self.component_lifecycle.now)
+            && !self.world.animation_is_active(spec.id)
         {
-            self.component_lifecycle.next_loading_frame = Some(self.component_lifecycle.now);
+            let mut mutations = MutationQueue::new();
+            mutations.start_animation(spec);
+            self.world.commit(mutations)?;
         }
         // Parking cancels a component's own timeline; remounting restarts it.
         // Projections only start timelines for pending or mounted nodes, and a

@@ -493,25 +493,9 @@ impl AppContext {
     }
 
     pub fn next_animation_deadline(&self) -> Option<Duration> {
-        let loading_deadline = self
-            .component_lifecycle
-            .loading
-            .keys()
-            .any(|target| self.world.is_mounted(*target))
-            .then_some(self.component_lifecycle.next_loading_frame)
-            .flatten();
-        let workspace_deadline = self
-            .component_lifecycle
-            .workspace_transitions
-            .keys()
-            .any(|target| self.world.is_mounted(*target))
-            .then_some(self.component_lifecycle.next_workspace_frame)
-            .flatten();
         self.world
             .next_animation_deadline()
             .into_iter()
-            .chain(loading_deadline)
-            .chain(workspace_deadline)
             .chain(
                 self.component_lifecycle
                     .tooltips
@@ -546,10 +530,15 @@ impl AppContext {
             .iter()
             .filter(|sample| {
                 sample.finished
-                    && crate::component_animation_id(
+                    && (crate::component_animation_id(
                         crate::component_animation_kinds::SURFACE,
                         sample.target,
                     ) == Some(sample.id)
+                        || crate::component_animation_id(
+                            crate::component_animation_kinds::SURFACE_POP,
+                            sample.target,
+                        ) == Some(sample.id))
+                    && !self.world.surface_closing(sample.target)
             })
             .map(|sample| sample.target)
             .collect::<Vec<_>>();
@@ -599,100 +588,63 @@ impl AppContext {
                 frame.component_updates.push(target);
             }
         }
-        if self
-            .component_lifecycle
-            .next_loading_frame
-            .is_some_and(|deadline| deadline <= now)
-        {
-            let phase = (now.as_secs_f32() / LOADING_CYCLE.as_secs_f32()).rem_euclid(1.0);
-            let loading = self
-                .component_lifecycle
-                .loading
-                .iter()
-                .filter(|(target, _)| self.world.is_mounted(**target))
-                .map(|(&target, &kind)| (target, kind))
-                .collect::<Vec<_>>();
-            for (target, kind) in loading {
-                let changed = match kind {
-                    LoadingComponent::Button => self
-                        .update_component(Entity::<Button>::from_stable_id(target), |button, _| {
-                            button.loading_phase = phase;
-                        })
-                        .is_ok(),
-                    LoadingComponent::Switch => self
-                        .update_component(Entity::<Switch>::from_stable_id(target), |switch, _| {
-                            switch.loading_phase = phase;
-                        })
-                        .is_ok(),
-                    LoadingComponent::Card => self
-                        .update_component(
-                            Entity::<crate::Card>::from_stable_id(target),
-                            |card, _| {
-                                card.loading_phase = phase;
-                            },
-                        )
-                        .is_ok(),
-                };
-                if changed {
-                    frame.component_updates.push(target);
-                }
+        let loading_targets = frame
+            .samples
+            .iter()
+            .filter(|sample| {
+                crate::component_animation_id(
+                    crate::component_animation_kinds::LOADING,
+                    sample.target,
+                ) == Some(sample.id)
+            })
+            .map(|sample| (sample.target, sample.progress))
+            .collect::<Vec<_>>();
+        for (target, phase) in loading_targets {
+            let Some(kind) = self.component_lifecycle.loading.get(&target).copied() else {
+                continue;
+            };
+            let changed = match kind {
+                LoadingComponent::Button => self
+                    .update_component(Entity::<Button>::from_stable_id(target), |button, _| {
+                        button.loading_phase = phase;
+                    })
+                    .is_ok(),
+                LoadingComponent::Switch => self
+                    .update_component(Entity::<Switch>::from_stable_id(target), |switch, _| {
+                        switch.loading_phase = phase;
+                    })
+                    .is_ok(),
+                LoadingComponent::Card => self
+                    .update_component(Entity::<crate::Card>::from_stable_id(target), |card, _| {
+                        card.loading_phase = phase;
+                    })
+                    .is_ok(),
+            };
+            if changed && !frame.component_updates.contains(&target) {
+                frame.component_updates.push(target);
             }
-            self.component_lifecycle.next_loading_frame = self
-                .component_lifecycle
-                .loading
-                .keys()
-                .any(|target| self.world.is_mounted(*target))
-                .then(|| now.checked_add(COMPONENT_FRAME_INTERVAL))
-                .flatten();
         }
         let section_targets = frame
             .samples
             .iter()
-            .filter(|sample| sample.id.get() == sample.target.get())
-            .map(|sample| sample.target)
-            .filter(|target| {
-                self.views
-                    .get(target)
-                    .is_some_and(|view| view.is::<SidebarSection>())
+            .filter(|sample| {
+                crate::component_animation_id(
+                    crate::component_animation_kinds::SIDEBAR,
+                    sample.target,
+                ) == Some(sample.id)
             })
+            .map(|sample| (sample.target, sample.progress, sample.value))
             .collect::<Vec<_>>();
-        for target in section_targets {
+        for (target, progress, value) in section_targets {
+            let expansion = match value {
+                crate::MotionValue::Scalar(value) => value,
+                _ => progress,
+            };
             if self
                 .update_component(
                     Entity::<SidebarSection>::from_stable_id(target),
                     |section, _| {
-                        section.animation_progress = section.state.expansion(now);
-                    },
-                )
-                .is_ok()
-            {
-                frame.component_updates.push(target);
-            }
-        }
-        let skeleton_targets = frame
-            .samples
-            .iter()
-            .map(|sample| sample.target)
-            .filter(|target| {
-                self.views
-                    .get(target)
-                    .is_some_and(|view| view.is::<crate::Skeleton>())
-            })
-            .collect::<Vec<_>>();
-        for target in skeleton_targets {
-            let Some(phase) = frame
-                .samples
-                .iter()
-                .find(|sample| sample.target == target)
-                .map(|sample| sample.progress)
-            else {
-                continue;
-            };
-            if self
-                .update_component(
-                    Entity::<crate::Skeleton>::from_stable_id(target),
-                    |skeleton, _| {
-                        skeleton.pulse = phase;
+                        section.animation_progress = expansion.clamp(0.0, 1.0);
                     },
                 )
                 .is_ok()
@@ -703,22 +655,15 @@ impl AppContext {
         let spinner_targets = frame
             .samples
             .iter()
-            .map(|sample| sample.target)
-            .filter(|target| {
-                self.views
-                    .get(target)
-                    .is_some_and(|view| view.is::<crate::Spinner>())
+            .filter(|sample| {
+                crate::component_animation_id(
+                    crate::component_animation_kinds::SPINNER,
+                    sample.target,
+                ) == Some(sample.id)
             })
+            .map(|sample| (sample.target, sample.progress))
             .collect::<Vec<_>>();
-        for target in spinner_targets {
-            let Some(phase) = frame
-                .samples
-                .iter()
-                .find(|sample| sample.target == target)
-                .map(|sample| sample.progress)
-            else {
-                continue;
-            };
+        for (target, phase) in spinner_targets {
             if self
                 .update_component(
                     Entity::<crate::Spinner>::from_stable_id(target),
@@ -727,44 +672,31 @@ impl AppContext {
                     },
                 )
                 .is_ok()
+                && !frame.component_updates.contains(&target)
             {
                 frame.component_updates.push(target);
             }
         }
-        // 工作区折叠/展开过渡：结算前的每一帧采样一次模型并重投影，
-        // 过渡全部结束后停止帧调度。
-        if self
-            .component_lifecycle
-            .next_workspace_frame
-            .is_some_and(|deadline| deadline <= now)
-        {
-            let targets = self
-                .component_lifecycle
-                .workspace_transitions
-                .keys()
-                .copied()
-                .filter(|id| self.world.is_mounted(*id))
-                .collect::<Vec<_>>();
-            let mut any_transitioning = false;
-            for id in targets {
-                let mut still_transitioning = false;
-                let advanced = self
-                    .update_component(Entity::<Workspace>::from_stable_id(id), |workspace, _| {
-                        let changed = workspace.apply(WorkspaceMutation::AdvanceAnimations, now);
-                        still_transitioning = workspace.model.has_active_transitions();
-                        changed
-                    })
-                    .unwrap_or(false);
-                any_transitioning |= still_transitioning;
-                if advanced {
-                    frame.component_updates.push(id);
-                }
+        let workspace_targets = frame
+            .samples
+            .iter()
+            .filter(|sample| {
+                crate::component_animation_id(
+                    crate::component_animation_kinds::WORKSPACE,
+                    sample.target,
+                ) == Some(sample.id)
+            })
+            .map(|sample| sample.target)
+            .collect::<Vec<_>>();
+        for id in workspace_targets {
+            let advanced = self
+                .update_component(Entity::<Workspace>::from_stable_id(id), |workspace, _| {
+                    workspace.apply(WorkspaceMutation::AdvanceAnimations, now)
+                })
+                .unwrap_or(false);
+            if advanced && !frame.component_updates.contains(&id) {
+                frame.component_updates.push(id);
             }
-            self.component_lifecycle.next_workspace_frame = if any_transitioning {
-                Some(now.checked_add(COMPONENT_FRAME_INTERVAL).unwrap_or(now))
-            } else {
-                None
-            };
         }
         frame.next_deadline = self.next_animation_deadline();
         frame

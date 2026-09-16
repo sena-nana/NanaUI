@@ -1,5 +1,7 @@
-use std::collections::BTreeSet;
-use std::sync::{Arc, LazyLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, LazyLock},
+};
 
 use nana_ui_core::{
     CardKind, ControlSize, FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon,
@@ -3072,6 +3074,18 @@ pub struct ExtractedNode {
     /// Fill for [`Self::document_text_selection`]: author `::selection` background,
     /// else theme `accent_soft`.
     pub document_text_selection_color: [f32; 4],
+    /// Compositor-class overlay bindings and optional advanced layer request.
+    /// Logical style stays on [`Self::source_style`]; presentation is not baked in.
+    pub compositor: ExtractedCompositor,
+}
+
+/// Scene layer promotion hint produced at extract. Empty for layout/paint tracks.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ExtractedCompositor {
+    /// Winning compositor-class overlay tracks at extract time.
+    pub bindings: Vec<nana_ui_core::motion::MotionTrackId>,
+    /// Advanced API: request a layer even without an overlay.
+    pub request_layer: bool,
 }
 
 /// Theme-resolved drop-target hover overlay.
