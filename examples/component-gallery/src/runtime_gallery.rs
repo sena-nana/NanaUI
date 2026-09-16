@@ -568,8 +568,54 @@ impl GalleryRuntime {
     fn flush(&mut self, (width, height): (f32, f32)) {
         self.last_viewport = LayoutViewport::new(width, height);
         if let Err(error) = self.document.flush(self.last_viewport, &mut self.text) {
+            // DIAGNOSTIC (Issue #89 CI triage, revert once understood): the
+            // culprit dump has to happen here, because `report_failure` panics
+            // under `cfg(test)` and no later diagnostic block gets to run.
+            #[cfg(test)]
+            let error = format!("{error:?} | {}", self.flush_culprit(&format!("{error:?}")));
             report_failure("layout flush", &error);
         }
+    }
+
+    /// DIAGNOSTIC (Issue #89 CI triage, revert once understood): the shaping
+    /// inputs of the node a flush error names.
+    ///
+    /// `InvalidText` rejects the metrics the shaper *returns*, not the ones
+    /// already stored, so the stored value is 0/0 on a failed flush and says
+    /// nothing. Only the inputs can explain it.
+    #[cfg(test)]
+    fn flush_culprit(&self, error: &str) -> String {
+        let Some(raw) = error
+            .find("StableNodeId(")
+            .map(|start| start + "StableNodeId(".len())
+            .and_then(|start| {
+                let end = error[start..].find(')')? + start;
+                error[start..end].parse::<u64>().ok()
+            })
+        else {
+            return "culprit: no node id in the error".to_string();
+        };
+        let Some(id) = StableNodeId::new(raw) else {
+            return format!("culprit: node {raw} is not a valid id");
+        };
+        let world = self.document.context().world();
+        let text = world.text(id);
+        let inputs = world.computed_style(id).map(|style| {
+            format!(
+                "size={} line_height={:?} spacing={} dir={:?} family={:?} word_break={:?}",
+                style.font_size,
+                style.line_height,
+                style.letter_spacing,
+                style.direction,
+                style.font_family,
+                style.word_break,
+            )
+        });
+        format!(
+            "culprit node {raw}: text={text:?} stored={:?} layout={:?} inputs={inputs:?}",
+            world.text_metrics(id),
+            world.layout_box(id),
+        )
     }
 
     pub(super) fn runtime_document(&self) -> &RuntimeDocument {
