@@ -185,7 +185,10 @@ pub fn run_case(case: &CorpusCase) -> ReferenceRun {
     // goes around *each* line rather than the whole string.
     let (shaped_text, source_lines) = shaped_lines(&text, case.constraints.base_direction);
 
-    let default_family = case.fonts.first().map(String::as_str);
+    // The family *name* of the first declared fixture. Its fixture id is not a
+    // family: querying by it resolves to no face, which silently marked every
+    // glyph of a case without `font_family` as not-fallback.
+    let default_family = case.fonts.first().and_then(|id| font_set::font_family(id));
     let attrs = attrs_for(&case.style, scale, default_family);
     if case.spans.is_empty() {
         buffer.set_text(&shaped_text, &attrs, Shaping::Advanced, None);

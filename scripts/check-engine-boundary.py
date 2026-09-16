@@ -12,7 +12,8 @@ anywhere under src/, and may borrow only the typography vocabulary from
 nana-ui-core. The cosmic reference engine is a dev dependency used from tests/,
 which is deliberately still allowed while the migration runs.
 
-nana-text's font layer (Issue #90) uses fontdb, skrifa and icu_properties, each
+nana-text's font layer (Issue #90) and shaper (Issue #91) use fontdb, skrifa,
+icu_properties, harfrust and unicode-bidi, each
 from exactly one private module, so none of their types can leak into the
 public text API.
 """
@@ -57,15 +58,18 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "WritingModeSpec",
 }
 
-# Issue #90. Each mature crate behind the font layer is named from exactly one
-# file of `crates/nana-text/src`, and that module is private. `None` means no
-# source file may name the crate at all (it is reached only through another).
+# Issues #90 and #91. Each mature crate behind the font layer and the shaper is
+# named from exactly one file of `crates/nana-text/src`, and that module is
+# private. `None` means no source file may name the crate at all (it is reached
+# only through another).
 NANA_TEXT_PRIVATE_BACKENDS = {
     "fontdb": "font/discovery.rs",
     "skrifa": "font/face.rs",
     "read_fonts": None,
     "ttf_parser": None,
     "icu_properties": "font/unicode.rs",
+    "harfrust": "shaping/opentype.rs",
+    "unicode_bidi": "shaping/bidi.rs",
 }
 
 GPU_BACKEND_PACKAGES = {

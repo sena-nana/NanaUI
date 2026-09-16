@@ -159,7 +159,13 @@ COLOR = Synthetic(
     note="Synthetic: COLR v0 + CPAL colour glyphs. U+0020 U+2764 U+1F525",
 )
 
-SYNTHETIC = [AXES, COLOR]
+NOTDEF = Synthetic(
+    name="nana-test-notdef",
+    note="Synthetic: cmap maps U+0041 and U+0042, but GSUB `ccmp` substitutes B with "
+    ".notdef, so coverage accepts a cluster that shaping cannot render. U+0020 U+0041 U+0042",
+)
+
+SYNTHETIC = [AXES, COLOR, NOTDEF]
 
 
 def _box(pen_cls, x0: int, y0: int, x1: int, y1: int):
@@ -263,7 +269,30 @@ def build_synthetic_color() -> bytes:
     return _finish(fb)
 
 
-SYNTHETIC_BUILDERS = {AXES.name: build_synthetic_axes, COLOR.name: build_synthetic_color}
+def build_synthetic_notdef() -> bytes:
+    from fontTools.feaLib.builder import addOpenTypeFeaturesFromString
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+
+    glyphs = {
+        ".notdef": _box(TTGlyphPen, 50, 0, 550, 700),
+        "space": TTGlyphPen(None).glyph(),
+        "A": _box(TTGlyphPen, 100, 0, 500, 700),
+        "B": _box(TTGlyphPen, 100, 0, 400, 700),
+    }
+    fb = _base_builder("NanaTestNotdef", glyphs, {0x20: "space", 0x41: "A", 0x42: "B"})
+    # The shaping-level miss #91 retries: the cmap says B is covered.
+    addOpenTypeFeaturesFromString(
+        fb.font,
+        "languagesystem DFLT dflt;\nfeature ccmp { sub B by .notdef; } ccmp;\n",
+    )
+    return _finish(fb)
+
+
+SYNTHETIC_BUILDERS = {
+    AXES.name: build_synthetic_axes,
+    COLOR.name: build_synthetic_color,
+    NOTDEF.name: build_synthetic_notdef,
+}
 
 
 def fetch(url: str, sha256: str | None = None) -> bytes:

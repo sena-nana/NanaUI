@@ -28,6 +28,10 @@ fontdb = "0.24"
 skrifa = "0.44"
 # Script, Emoji_Presentation, Default_Ignorable (`font/unicode.rs`).
 icu_properties = "2.3"
+# Issue #91: OpenType shaping (`shaping/opentype.rs`) and the Unicode
+# Bidirectional Algorithm (`shaping/bidi.rs`), each named from that file only.
+harfrust = "0.12"
+unicode-bidi = "0.3.18"
 
 # Migration-only. The cosmic reference engine lives under `tests/reference/`,
 # never under `src/`, so cosmic-text can never reach a product dependency edge.

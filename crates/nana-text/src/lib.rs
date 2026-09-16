@@ -1,12 +1,15 @@
-//! Nana-native text IR and the migration parity contract. Not a text engine.
+//! Nana-native text IR, font layer and shaper, and the migration parity
+//! contract. Not yet a layout engine.
 //!
 //! This crate owns the *vocabulary* the NanaUI text migration is measured in:
 //! the immutable layout IR, the stable generational handles, the caret and
 //! hit-test derivations that run on top of them, and the structural diff plus
 //! corpus that a new engine has to satisfy. Since Phase 1 (#90) it also owns
 //! the font layer ([`font`]): registration, generations, face matching,
-//! variation coordinates and coverage-driven fallback. It still ships no
-//! shaping and no layout — those arrive in later phases.
+//! variation coordinates and coverage-driven fallback — and, since Phase 2
+//! (#91), shaping ([`shaping`]): segmentation, BiDi levels, HarfRust shaping
+//! and a bounded shape cache. It still ships no line layout — that arrives in
+//! a later phase.
 //!
 //! # Boundaries
 //!
@@ -42,6 +45,7 @@ pub mod layout;
 pub mod metrics;
 pub mod parity;
 pub mod shape;
+pub mod shaping;
 pub mod source;
 pub mod style;
 

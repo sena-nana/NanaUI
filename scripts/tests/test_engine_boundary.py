@@ -92,6 +92,16 @@ class EngineBoundaryTests(unittest.TestCase):
         })
         failures = boundary.check_text_engine_sources(root)
         self.assertTrue(any("makes discovery public" in failure for failure in failures))
+    def test_the_shaper_backends_are_pinned_to_their_own_modules(self):
+        root = self.text_crate_files({
+            "shaping/mod.rs": "mod opentype;\nmod bidi;\n",
+            "shaping/opentype.rs": "use harfrust::UnicodeBuffer;\n",
+            "shaping/bidi.rs": "use unicode_bidi::BidiInfo;\n",
+            "shaping/shaper.rs": "fn level() -> unicode_bidi::Level { todo!() }\n",
+        })
+        failures = boundary.check_text_engine_sources(root)
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("shaper.rs names unicode_bidi", failures[0])
     def test_a_product_crate_reaching_a_reference_only_crate_is_rejected(self):
         # The package name, not the lib target name: a synthetic graph using
         # "css-parity" would pass while the real rule never fires.

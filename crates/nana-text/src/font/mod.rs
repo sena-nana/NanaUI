@@ -17,11 +17,12 @@ mod fallback;
 mod matching;
 mod query;
 mod system;
-mod unicode;
+pub(crate) mod unicode;
 mod variations;
 
 pub use coverage::{CoverageSet, DEFAULT_COVERAGE_BUDGET_BYTES};
 pub use fallback::{FallbackPolicy, FontAssignment, FontChoiceReason, ScriptFallbackRule};
+pub(crate) use query::canonical_bits as canonical_f32_bits;
 pub use query::{
     FamilyList, FamilyName, FontQuery, FontStretch, FontStyle, FontWeight, GenericFamily,
     LanguageTag,

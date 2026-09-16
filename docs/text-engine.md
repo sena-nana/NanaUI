@@ -6,7 +6,7 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 先把内部合同、reference backend 和 correctness corpus 固定下来，让后续每一阶段都能对着
 同一份结构化基线比较，而不是在 shaping / layout / GPU 三层同时改动时失去可比性。
 #90 是 Phase 1：`nana-text` 自有的字体层——注册、代际、匹配、变体坐标与按覆盖率的 fallback，
-见「字体层」一节。
+见「字体层」一节。#91 是 Phase 2：分段、BiDi、HarfRust shaping 与 ShapeRun cache，见「Shaping」一节。
 
 ## 这是什么
 
@@ -40,7 +40,9 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 | 结构化 diff 与容差 | **nana-text** | 迁移验收合同，必须比 cosmic 活得久 |
 | 排版词汇（变体轴 / kerning / line-break / word-break / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
 | OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（skrifa / ttf-parser） | #89 非目标明确写了不重实现 |
-| 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust） | 同上 |
+| 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust，仅 `shaping/opentype.rs`） | 同上 |
+| Unicode BiDi 算法（P–I 规则、L2 重排） | **成熟 crate**（unicode-bidi，仅 `shaping/bidi.rs`） | 同上 |
+| 分段、span 规范化、fallback 重试、ShapeKey 与 ShapeRun cache、`ShapedText` | **nana-text**（`shaping` 模块） | 何时重塑形、塑形结果能被谁复用的权威 |
 | Unicode 算法（BiDi、断行、字素簇、script / emoji 属性） | **成熟 crate**（unicode-bidi / unicode-linebreak / unicode-segmentation / icu_properties） | 同上 |
 | 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
 | 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（fontdb，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
@@ -132,6 +134,7 @@ fixture，locale 固定 `en-US`。face id 因而确定，fallback 链就是用�
 | `noto-emoji.ttf` | Noto Emoji（**单色轮廓**）subset | emoji 与 ZWJ 连字 |
 | `nana-test-axes.ttf` | 脚本用 fontTools 合成，不下载 | `wght` 100..900 / `wdth` 50..200 / `slnt` -15..0 + 两个命名实例；字体层的范围匹配与 `font-weight` 对 `wght` 优先级 |
 | `nana-test-color.ttf` | 脚本用 fontTools 合成，不下载 | COLR v0 + CPAL，覆盖 U+2764 / U+1F525；emoji fallback 优先彩色 face |
+| `nana-test-notdef.ttf` | 脚本用 fontTools 合成，不下载 | cmap 有 `A` / `B`，但 GSUB `ccmp` 把 `B` 换成 `.notdef`：覆盖率说能画、shaping 画不出，专测 #91 的 fallback 重试 |
 
 用 `python3 scripts/build-text-corpus-fonts.py` 重新生成，`--check` 验证签入的文件与脚本
 的产物一致。两端都钉死了才有意义：**输入**钉在 google/fonts 的某个 commit 上，且每个源文件
@@ -222,7 +225,9 @@ counters，所以计数变化是一次可评审的 diff。
 4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`，`skrifa` 只许出现在
    `src/font/face.rs`，`icu_properties` 只许出现在 `src/font/unicode.rs`，`read_fonts` /
    `ttf_parser` 哪都不许点名；这三个模块在 `font/mod.rs` 里不得是 `pub mod`。公开 API 因此
-   不可能带出 `fontdb::ID` 之类的第三方 ID。
+   不可能带出 `fontdb::ID` 之类的第三方 ID。#91 同理：`harfrust` 只许出现在
+   `src/shaping/opentype.rs`，`unicode_bidi` 只许出现在 `src/shaping/bidi.rs`。模块不叫
+   `harfrust`，就是因为模块名本身也会被这条规则扫到。
 
 参照引擎放在 `crates/nana-text/tests/reference/`，**不是** `src/` 下的 `#[cfg(test)] mod`：
 后者对 `tests/*.rs` 不可见，corpus harness 就用不上它。原生引擎落地后，删
@@ -338,6 +343,121 @@ family；名字解析不到 face 就跳过。hermetic 测试一律从 `FallbackP
 
 产品路径**仍未**接入字体层：`nana-ui` 继续用 cosmic-text 的 `FontSystem`。接入属于后续阶段。
 
+## Shaping（Phase 2，#91）
+
+`nana_text::shaping`：字符序列 → 不可变的 `ShapedRun`。不断行、不排版、不算 caret——那是 Phase 3。
+
+```text
+ShapeRequest { source: &TextSource, style, direction, language, scale }
+  → span 规范化：span 覆盖 base，composition span 覆盖普通 span；边界吸附到字素簇起点
+  → 字素簇 / script / BiDi 分段
+  → 每簇的字体（FontSystem::resolve_text，#90 的覆盖率选择）
+  → item = 同一 style 段 × 同一 face × 同一 BiDi level × 同一 script 的最大连续簇序列
+  → HarfRust：face bytes + 变体坐标、direction、script、language、features、kern；
+    item 之外的文本作为 pre/post context 传入，cluster 是全文字节偏移
+  → .notdef 簇段按 #90 候选表重试并拆出 fallback run
+  → Arc<ShapedText>，按 ShapeKey 缓存
+```
+
+### 输出
+
+- `ShapedText.runs` 按**逻辑序**，每个 run 带 `bidi_level`、`direction`、`script`、`font`、
+  物理 px 字号、`RunMetrics`（在该实例坐标下量）。run 内 glyph 按视觉序（HarfBuzz 约定）。
+- `ShapedText.paragraphs` 是 UBA 段落与其 base level；`visual_order(range)` 对一行 run 做 L2
+  重排。L1（行尾空白复位）属于断行，留给 Phase 3。这些就是 #59 后续 bidi / 竖排 layout 需要的
+  run / level 信息。
+- `cluster` / `cluster_end` 是源文本字节偏移，从不重写源字符串：没有做会破坏映射的规范化，
+  也就不需要 offset map。段落分隔符（`\n` / `\r\n` / U+2029 …）不出 glyph，所以 run 之间可以有缺口。
+- `ShapedText` 在 `Arc` 后面，layout 拿去读、要写 origin 时复制 run，不会原地改缓存值：
+  宽度从 400 变 300 只重跑 Phase 3。
+
+### 分段
+
+- **字素簇不被切开**：style span 的边界向前吸附到所在簇的起点；emoji ZWJ 序列、组合记号始终
+  在一个 item 里（HarfRust 自己的 cluster 合并在其上）。
+- **script**：每簇取自身 script，Common / Inherited 沿用前一个有 script 的簇，开头的沿用后面
+  第一个。标点、空格、数字不单独开 run。
+- **BiDi**：`unicode-bidi`，段落 level 由 `direction` 固定（CSS 语义，不做首强字符探测）。
+  `unicode-bidi: bidi-override` 这类方向覆盖没有 CSS 输入可接，本阶段不提供。
+- `language` 进 HarfRust（`locl` 等），也进 #90 的 fallback 语言提示。
+
+### Fallback 重试
+
+覆盖率预选之后仍可能画不出（GSUB 换成 `.notdef`、cmap 与布局表不一致）。每个 item shaping 后：
+
+```text
+找出含 glyph 0 的簇段 → 对每段取 #90 候选表里未试过、且覆盖该段的下一个 face
+ → 该段换 face，两侧剩余部分重新 shaping（上下文变了）→ 直到干净或候选用尽
+```
+
+用尽时保留 primary 的 `.notdef`，glyph 标 `MISSING`。family 列表一个 face 都解析不到时，由第一个
+已注册的 face 顶上画 `.notdef`，文本不会悄悄消失；只有字体系统里一个 face 都没有时才不出 run，
+并计入 `text_bytes_unshaped`。上限：每段最多看
+`MAX_FALLBACK_CANDIDATES_PER_RANGE = 8` 个候选，每个 item 最多 `MAX_FALLBACK_RETRIES_PER_ITEM = 32`
+次重试，所以「没有任何字体能画」的长串不会变成 文本长度 × 字体数。
+
+### ShapeKey 与 cache
+
+| 进 key | 不进 key |
+| --- | --- |
+| 文本内容（持有 source 的 `Arc<str>` + 按 revision 记忆的内容 hash） | widget 身份、`TextRevision` 本身 |
+| 每个 span 的范围与塑形相关样式：family、物理字号、weight、italic、letter-spacing、features、variations、kerning | line-height、composition 状态 |
+| `direction`、`language`、设备 scale、`FontGeneration` | max width / wrap / max lines / ellipsis 等其余约束；颜色、透明度、transform（`TextStyle` 本来就不带） |
+
+- 查找**不复制文本**：key 共享 source 的 `Arc<str>`；hash 在 `TextSource` 内按 revision 记忆，
+  同一 revision 反复查找只 hash 一次。相等性先比 hash、再比指针、最后逐字节比，hash 冲突不会被
+  当成命中。
+- 同文本不同 source（10k 个相同标签）落到同一条目。
+- 两道上限：条目数（默认 4096）和保留字节（默认 16 MiB，含 key 保留的文本）。LRU，淘汰计数。
+  超过整个字节预算的结果照常返回、不入缓存、也不挤掉别人。
+- key 里的字体纪元是「哪个 `FontSystem` × 哪一代」：`FontId` 和代际在每个系统里都从零编号，
+  一个 `Shaper` 轮流服务多个系统时不能混用。看到新的纪元时，其他纪元的条目一次性清掉（计入
+  evictions），HarfRust 的 per-face 加速数据同时丢弃。
+
+### 计数器
+
+`Shaper::counters()` → `ShapeCounters`：
+
+```text
+shape_requests / shape_runs_created / shape_glyphs_created
+shape_cache_hits / misses / evictions      shape_cache_bytes / entries（读时的量）
+bidi_runs / script_runs                     未命中时切出的 level run 与 script run
+fallback_retries / fallback_fonts_examined
+text_bytes_hashed                           每个 source revision 一次
+text_bytes_cloned_for_shape                 key 共享 Arc<str>，恒为 0；将来引入复制时必须在此计数
+text_bytes_unshaped                         字体系统没有任何 face 时未出 run 的字节（不含段落分隔符）
+```
+
+没有折进 `TextWorkCounters`：那里的 shape cache 口径要等 UiWorld 接缝真有 pass 时再填。
+
+### 与 cosmic 参照对账
+
+`tests/shaping_matches_the_cosmic_reference_goldens.rs` 用同一组 hermetic 字体、同一条
+fallback 链，把全部 26 条语料按**逻辑簇**逐字段对 golden：glyph 数、glyph id、`cluster_end`、
+`MISSING`、`FALLBACK_FONT`、bidi level、字号精确比，advance / offset 用上面的 0.05 px，face
+按双射比。按簇比与双方在哪切 run、在哪断行无关。
+
+结果：26 条全部一致。唯一成文的差异只对断行用例放行：golden 是排好的行，软换行处的空白 glyph
+与 `max_lines` 截断后的内容不在 golden 里，而不断行的 shaping 保留它们——那是 Phase 3 的事。
+变异验证：强制关掉 kerning 后该测试报 45 条 delta。
+
+对账还暴露了**参照引擎的一个缺陷**：用例没写 `font_family` 时，参照引擎拿 fixture id
+（`noto-sans-sc`）当 family 名去查「请求的 face」，查不到，于是所有 glyph 都没有
+`FALLBACK_FONT`——包括 `TX-B02` / `TX-B03` 里确实来自 Arabic fallback 字体的 glyph。已修正为
+family 名并重新 bless；golden 的变化只有这两条用例里 20 处 `flags: 0 → 2`。
+
+### 测试
+
+`tests/shaping_pipeline.rs`：`ffi` 连字与 `liga 0`、组合记号、Arabic 连写与 RTL、mixed BiDi 的
+level 与 L2 重排、RTL 下数字与标点的 level、CJK + Latin 的覆盖率 fallback 与 `FALLBACK_FONT`、
+emoji ZWJ、`wdth` 轴、缺字 `.notdef`、`.notdef` 重试（`nana-test-notdef`）、跨 script 的 style
+span、落在字素中间的 span 边界、源字节 / cluster 映射；cache 侧：10k 相同标签只 shape 一次、
+同 source 反复查找只 hash 一次且零复制、宽度 / 行高 / 同内容新 revision 不重塑形、方向 / scale /
+字体代际会重塑形并清旧代、条目与字节上限及 LRU。
+
+产品路径**仍未**接入：UiWorld 里的 paint / transform 变更不产生 shape request 这件事，要等接缝
+接上才能在产品上验证；本阶段保证的是它们根本进不了 ShapeKey。
+
 ## #33 迁移基准
 
 `nana-dirty-frame-benchmark --shape layout --position head` 的 2k / 4k / 8k 三格是 Issue #33 的
@@ -378,6 +498,15 @@ Phase 0 落地后复测（Windows，2026-09-16，另一台机器，p50；三格�
 | 4,002 | 0.593 ms | 8.55 ms | 6.9% |
 | 8,002 | 0.814 ms | 18.55 ms | 4.4% |
 
+Phase 2 落地后复测（同一台 Windows 机器，2026-09-16，p50；三格仍是 `text_shaped == 0`——
+产品路径没有接入 shaper，这一行确认的是没有回归）：
+
+| 节点 | TextShape | Layout | TextShape / Layout |
+| ---: | ---: | ---: | ---: |
+| 2,002 | 0.190 ms | 4.42 ms | 4.3% |
+| 4,002 | 0.423 ms | 9.70 ms | 4.4% |
+| 8,002 | 0.835 ms | 20.05 ms | 4.2% |
+
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
@@ -392,7 +521,7 @@ Phase 0 落地后复测（Windows，2026-09-16，另一台机器，p50；三格�
 | cluster 内部的 caret | 按字节比例插值 | 一个 glyph 可以覆盖多个源字节（连字，或多字节字符）。`caret_geometry` 先把渲染同一 cluster 的所有 cell 并成一个视觉范围——组合记号是零 advance 且与基字同 cluster，RTL 下 HarfBuzz 还会把它排在基字**前面**——再在该范围内按字节比例插值。所以 `of\|fice` 的 caret 落在 `ffi` 连字的三分之一处而不是整个连字之后，阿拉伯语带记号的 cluster 也不会塌到零宽记号上（见 `TX-B01` 的八个 caret 探针，x 随字节偏移严格递减）。落在字素内部的字节偏移本就不是合法 caret 位置，IR 没有源文本可以吸附，插值只保证单调、可区分。 |
 | caret affinity（RTL / BiDi 边界） | **记录行为，不是合同** | 边界 affinity 是引擎定义而非规范定义的。Phase 0 把参照引擎的答案记成 golden 并配 `caret_x_px` 容差。 |
 | 五个计数器 | 只有参照路径在喂 | 按设计没有产品生产者，靠对账测试防止空转。 |
-| script 标注 | `ScriptTag::UNKNOWN` | 参照引擎不导出 per-run script。`ScriptTag` 的位置留好了，由做 segmentation 的那一阶段填。 |
+| script 标注 | 参照引擎为 `ScriptTag::UNKNOWN` | 参照引擎不导出 per-run script。Phase 2 的 shaper 已填上（见「Shaping」）。 |
 | 多字体 fallback | 语料里覆盖了但很窄 | 语料的 fallback 是 VF→Noto 的 `A`/`B`，证明 `FontId` 能在 run 中途变、`FALLBACK_FONT` 会置位。按 script / 语言 / emoji 驱动的候选选择由 Phase 1 字体层提供（见「字体层」），参照引擎不走它。 |
 | #33 workload | 合同级保留，不是 perf 门禁 | 见上一节。 |
 

@@ -129,7 +129,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 2.424,
             "offset_y_px": 1.56,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 24,
@@ -139,7 +139,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 30,
@@ -149,7 +149,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.936,
             "offset_y_px": -0.12,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 9,
@@ -159,7 +159,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 29,
@@ -169,7 +169,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.74399996,
             "offset_y_px": -0.072,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 10,
@@ -179,7 +179,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 13,
@@ -189,7 +189,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 16,
@@ -199,7 +199,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 22,
@@ -209,7 +209,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           },
           {
             "glyph_id": 2,
@@ -219,7 +219,7 @@
             "advance_y_px": 0.0,
             "offset_x_px": 0.0,
             "offset_y_px": 0.0,
-            "flags": 0
+            "flags": 2
           }
         ],
         "advance_px": 61.031998,

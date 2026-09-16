@@ -7,7 +7,9 @@
 use crate::id::TextRevision;
 use crate::style::TextStyle;
 use serde::{Deserialize, Serialize};
+use std::hash::{DefaultHasher, Hasher};
 use std::ops::Range;
+use std::sync::{Arc, OnceLock};
 
 /// An IME composition marker.
 ///
@@ -35,11 +37,25 @@ pub struct TextSpan {
 }
 
 /// Authored text, its spans, and the revision they are at.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// The text is an `Arc<str>`, so a shape cache can keep it as a key without
+/// copying a byte, and its content hash is computed at most once per revision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextSource {
-    text: String,
+    text: Arc<str>,
     spans: Vec<TextSpan>,
     revision: TextRevision,
+    /// Hash of `text`, filled on first use and reset by every mutation.
+    #[serde(skip)]
+    content_hash: OnceLock<u64>,
+}
+
+/// Equality is over the text, spans and revision; whether the hash happens to
+/// be memoized yet is not part of a source's value.
+impl PartialEq for TextSource {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text && self.spans == other.spans && self.revision == other.revision
+    }
 }
 
 impl Default for TextSource {
@@ -49,11 +65,12 @@ impl Default for TextSource {
 }
 
 impl TextSource {
-    pub fn new(text: impl Into<String>) -> Self {
+    pub fn new(text: impl Into<Arc<str>>) -> Self {
         Self {
             text: text.into(),
             spans: Vec::new(),
             revision: TextRevision::INITIAL,
+            content_hash: OnceLock::new(),
         }
     }
 
@@ -71,6 +88,28 @@ impl TextSource {
         self.revision
     }
 
+    /// The shared text, for a cache that keys on it without copying.
+    pub(crate) fn shared_text(&self) -> &Arc<str> {
+        &self.text
+    }
+
+    /// Content hash of the text, and whether this call had to compute it.
+    ///
+    /// The same content hashes the same in every source and every process
+    /// (`DefaultHasher::new` has fixed keys), so two widgets showing the same
+    /// label land in the same cache bucket. A hash is only a bucket: equality
+    /// is still decided on the bytes.
+    pub(crate) fn content_hash(&self) -> (u64, bool) {
+        let mut computed = false;
+        let hash = *self.content_hash.get_or_init(|| {
+            computed = true;
+            let mut hasher = DefaultHasher::new();
+            hasher.write(self.text.as_bytes());
+            hasher.finish()
+        });
+        (hash, computed)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
     }
@@ -82,7 +121,11 @@ impl TextSource {
     pub fn replace_range(&mut self, range: Range<usize>, replacement: &str) {
         let removed = range.end - range.start;
         let added = replacement.len();
-        self.text.replace_range(range.clone(), replacement);
+        let mut text = String::with_capacity(self.text.len() - removed + added);
+        text.push_str(&self.text[..range.start]);
+        text.push_str(replacement);
+        text.push_str(&self.text[range.end..]);
+        self.text = text.into();
         self.spans
             .retain(|span| span.range.end <= range.start || span.range.start >= range.end);
         for span in &mut self.spans {
@@ -94,7 +137,7 @@ impl TextSource {
         self.bump();
     }
 
-    pub fn set_text(&mut self, text: impl Into<String>) {
+    pub fn set_text(&mut self, text: impl Into<Arc<str>>) {
         self.text = text.into();
         self.spans.clear();
         self.bump();
@@ -120,6 +163,7 @@ impl TextSource {
 
     fn bump(&mut self) {
         self.revision = self.revision.next();
+        self.content_hash = OnceLock::new();
     }
 }
 
@@ -143,6 +187,22 @@ mod tests {
         source.set_text("bye");
         assert!(source.revision() > after_composition, "set_text must bump");
         assert_eq!(source.text(), "bye");
+    }
+
+    #[test]
+    fn the_content_hash_is_computed_once_per_revision_and_shared_by_equal_text() {
+        let mut source = TextSource::new("label");
+        let (first, computed) = source.content_hash();
+        assert!(computed);
+        assert_eq!(source.content_hash(), (first, false));
+        assert_eq!(TextSource::new("label").content_hash().0, first);
+
+        source.set_spans(Vec::new());
+        let (same_text, recomputed) = source.content_hash();
+        assert!(recomputed, "a mutation resets the memo");
+        assert_eq!(same_text, first);
+        source.set_text("other");
+        assert_ne!(source.content_hash().0, first);
     }
 
     #[test]

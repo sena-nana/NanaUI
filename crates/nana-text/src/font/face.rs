@@ -5,6 +5,8 @@
 
 use super::coverage::CoverageSet;
 use super::variations::{AxisCoord, FontAxis, NamedInstance};
+use crate::metrics::RunMetrics;
+use skrifa::prelude::Size;
 use skrifa::{FontRef, MetadataProvider, Tag};
 
 /// Colour glyph tables. Presence only: painting them is a renderer concern.
@@ -78,6 +80,28 @@ pub fn read_details(data: &[u8], index: u32) -> Option<FaceDetails> {
             sbix: has(b"sbix"),
             svg: has(b"SVG "),
         },
+    })
+}
+
+/// Ascent, descent and line gap in px at `coords` and `size_px`, as positive
+/// numbers.
+pub fn read_metrics(
+    data: &[u8],
+    index: u32,
+    coords: &[AxisCoord],
+    size_px: f32,
+) -> Option<RunMetrics> {
+    let font = FontRef::from_index(data, index).ok()?;
+    let location = font.axes().location(
+        coords
+            .iter()
+            .map(|coord| (Tag::new(&coord.tag), coord.value)),
+    );
+    let metrics = font.metrics(Size::new(size_px), &location);
+    Some(RunMetrics {
+        ascent_px: metrics.ascent,
+        descent_px: metrics.descent.abs(),
+        line_gap_px: metrics.leading,
     })
 }
 

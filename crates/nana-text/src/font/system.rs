@@ -42,6 +42,7 @@ use super::variations::{
     WGHT, resolve_instance,
 };
 use crate::id::{FontGeneration, FontId, FontSourceId};
+use crate::metrics::RunMetrics;
 use crate::shape::ScriptTag;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -449,6 +450,10 @@ struct NewFace {
 }
 
 pub struct FontSystem {
+    /// Process-unique identity. `FontId`s and generations are numbered per
+    /// system from zero, so anything caching them across calls (the shaper)
+    /// has to know which system they came from.
+    instance: u64,
     faces: Arena<Arc<FaceRecord>>,
     sources: Arena<SourceRecord>,
     /// Lower-cased family name -> faces, in registration order.
@@ -475,7 +480,9 @@ impl FontSystem {
     }
 
     pub fn with_policy(policy: FallbackPolicy) -> Self {
+        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
+            instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             faces: Arena::new(),
             sources: Arena::new(),
             families: BTreeMap::new(),
@@ -498,6 +505,11 @@ impl FontSystem {
 
     pub fn generation(&self) -> FontGeneration {
         self.generation
+    }
+
+    /// Which system this is, for caches that outlive one call.
+    pub(crate) fn instance_id(&self) -> u64 {
+        self.instance
     }
 
     pub fn policy(&self) -> &FallbackPolicy {
@@ -976,33 +988,17 @@ impl FontSystem {
         assignments
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "one cluster's full fallback context"
-    )]
-    fn choose_face(
-        &mut self,
+    /// Every face worth trying for one cluster, in the order `resolve_text`
+    /// documents, without probing coverage.
+    fn candidate_list(
+        &self,
         selection: &FontSelection,
-        codepoints: &[char],
         emoji: bool,
         own_script: Option<ScriptTag>,
         script: Option<ScriptTag>,
         language: Option<&LanguageTag>,
         family_faces: &mut HashMap<Arc<str>, Option<FontId>>,
-    ) -> (Option<FontId>, FontChoiceReason) {
-        let primary_covers = selection
-            .primary
-            .is_some_and(|primary| self.covers_all(primary, codepoints));
-        // The common case: the primary face covers the cluster and nothing asks
-        // for a different face. No candidate list is built.
-        if primary_covers && (!emoji || selection.primary.is_some_and(|p| self.has_color_glyphs(p)))
-        {
-            return (selection.primary, FontChoiceReason::Primary);
-        }
-        if !primary_covers {
-            self.counters.font_fallback_attempts += 1;
-        }
-
+    ) -> Vec<(FontId, FontChoiceReason)> {
         let chain: Vec<(FontId, FontChoiceReason)> = selection
             .chain()
             .enumerate()
@@ -1092,6 +1088,88 @@ impl FontSystem {
                 FontChoiceReason::LastResort { family },
             );
         }
+
+        candidates
+    }
+
+    /// Fallback candidates for the grapheme cluster that starts `cluster_text`,
+    /// in `resolve_text` order. `inherited_script` stands in when the cluster
+    /// has no script of its own. Shaping walks this list to retry a cluster
+    /// that coverage accepted but that still shaped to `.notdef`.
+    pub(crate) fn cluster_candidates(
+        &self,
+        selection: &FontSelection,
+        cluster_text: &str,
+        inherited_script: Option<ScriptTag>,
+        language: Option<&LanguageTag>,
+    ) -> Vec<(FontId, FontChoiceReason)> {
+        let Some(cluster) = unicode::clusters(cluster_text).into_iter().next() else {
+            return Vec::new();
+        };
+        let language = language.or(selection.query.language.as_ref());
+        self.candidate_list(
+            selection,
+            cluster.emoji,
+            cluster.script,
+            cluster.script.or(inherited_script),
+            language,
+            &mut HashMap::new(),
+        )
+    }
+
+    /// True when `font` maps every non-ignorable codepoint of `text`.
+    pub(crate) fn covers_text(&mut self, font: FontId, text: &str) -> bool {
+        let codepoints: Vec<char> = text
+            .chars()
+            .filter(|ch| !unicode::is_default_ignorable(*ch))
+            .collect();
+        self.covers_all(font, &codepoints)
+    }
+
+    /// Vertical metrics of a face at an instance's coordinates and a size.
+    pub(crate) fn run_metrics(&self, instance: &FontInstance, size_px: f32) -> RunMetrics {
+        self.record(instance.font())
+            .and_then(|face| {
+                let blob = face.blob()?;
+                face::read_metrics(
+                    (*blob).as_ref(),
+                    face.meta.index,
+                    instance.coords(),
+                    size_px,
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one cluster's full fallback context"
+    )]
+    fn choose_face(
+        &mut self,
+        selection: &FontSelection,
+        codepoints: &[char],
+        emoji: bool,
+        own_script: Option<ScriptTag>,
+        script: Option<ScriptTag>,
+        language: Option<&LanguageTag>,
+        family_faces: &mut HashMap<Arc<str>, Option<FontId>>,
+    ) -> (Option<FontId>, FontChoiceReason) {
+        let primary_covers = selection
+            .primary
+            .is_some_and(|primary| self.covers_all(primary, codepoints));
+        // The common case: the primary face covers the cluster and nothing asks
+        // for a different face. No candidate list is built.
+        if primary_covers && (!emoji || selection.primary.is_some_and(|p| self.has_color_glyphs(p)))
+        {
+            return (selection.primary, FontChoiceReason::Primary);
+        }
+        if !primary_covers {
+            self.counters.font_fallback_attempts += 1;
+        }
+
+        let candidates =
+            self.candidate_list(selection, emoji, own_script, script, language, family_faces);
 
         for (font, reason) in candidates {
             if Some(font) != selection.primary {
