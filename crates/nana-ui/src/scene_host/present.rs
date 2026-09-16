@@ -403,7 +403,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let mut outcomes = vec![(base, Ok(()))];
         for &id in recovery_windows.iter().filter(|&&id| id != base) {
             let surface = &mut self.window_contexts.get_mut(&id).unwrap().surface;
-            outcomes.push((id, graphics.rebind_surface(surface)));
+            outcomes.push((id, graphics.recreate_surface(surface)));
         }
         self.switch_gpu(graphics, outcomes);
     }
@@ -475,7 +475,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         for id in self.known_window_ids() {
             let host = self.window_contexts.get_mut(&id).unwrap();
             if retry_surface(&mut host.surface, &mut host.surface_retry, now, |surface| {
-                self.graphics.rebind_surface(surface)
+                self.graphics.recreate_surface(surface)
             }) {
                 host.applied_appearance = None;
                 recovered.push(id);

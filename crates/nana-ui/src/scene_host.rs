@@ -2337,7 +2337,7 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
             .manager
             .window_contexts
             .iter_mut()
-            .map(|(&id, host)| (id, graphics.rebind_surface(&mut host.surface)))
+            .map(|(&id, host)| (id, graphics.recreate_surface(&mut host.surface)))
             .collect();
         let all_failed =
             !outcomes.is_empty() && outcomes.iter().all(|(_, outcome)| outcome.is_err());

@@ -269,10 +269,8 @@ mod windows_probe {
                 visual.set_visible(true).unwrap();
                 original.commit().unwrap();
                 graphics.recover_surface().unwrap();
-                let replacement =
-                    pollster::block_on(graphics.recreate(wgpu::Features::empty())).unwrap();
-                aux = replacement.recreate_surface(&aux).unwrap();
-                graphics = replacement;
+                pollster::block_on(graphics.recreate(wgpu::Features::empty())).unwrap();
+                graphics.recreate_surface(&mut aux).unwrap();
                 assert_eq!(visual.as_raw(), identity);
                 assert_eq!(
                     graphics.windows_composition().unwrap().window_handle(),
