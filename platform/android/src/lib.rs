@@ -17,6 +17,11 @@ mod runtime;
 mod shell;
 #[cfg(target_os = "android")]
 mod slot_ax;
+// Host-testable by design: the buffer-diff helpers have their tests in this
+// module, but their only non-test consumer (`runtime`) is Android-only, so a
+// desktop lib build legitimately sees them as dead. Narrow the allowance to
+// exactly that build rather than silencing the module everywhere.
+#[cfg_attr(all(not(target_os = "android"), not(test)), allow(dead_code))]
 mod slot_ime;
 mod slot_input;
 #[cfg(target_os = "android")]

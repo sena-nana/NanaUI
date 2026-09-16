@@ -1113,7 +1113,7 @@ impl SceneWgpuPainter {
                                 let node = SceneGpuNode {
                                     id: primitive.id,
                                     custom: custom.clone(),
-                                    opacity: opacity,
+                                    opacity,
                                 };
                                 let custom_bounds = custom_paint_bounds(bounds, affine, persp);
                                 renderer.prepare(

@@ -146,6 +146,13 @@ pub enum WindowCursor {
     None,
 }
 
+// `Command(WindowCommand)` is ~240 B against a handful of small variants. The
+// real fix is boxing it, but `Control::Command(..)` is constructed and matched
+// across every platform host, so that is a refactor of its own, not a drive-by.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Boxing `Command` would touch every platform host's match arms; tracked separately"
+)]
 pub(crate) enum Control {
     Command(WindowCommand),
     Visible(bool),

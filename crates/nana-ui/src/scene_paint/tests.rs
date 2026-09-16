@@ -8284,7 +8284,7 @@ fn text_follows_ancestor_compositor_opacity_overlay() {
         1.0,
     );
     let mut brightest = 0u8;
-    for chunk in pixels.chunks_exact(4) {
+    for chunk in pixels.as_chunks::<4>().0 {
         brightest = brightest.max(chunk[0]).max(chunk[1]).max(chunk[2]);
     }
     assert!(

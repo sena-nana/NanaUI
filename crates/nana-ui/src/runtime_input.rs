@@ -2626,6 +2626,10 @@ mod tests {
         (document, node)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Test helper: adapter, context and document are the fixture, the rest is one pointer event"
+    )]
     fn dispatch_document_pointer(
         adapter: &mut RuntimeInputAdapter,
         context: &mut AppContext,

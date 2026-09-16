@@ -83,17 +83,17 @@ pub fn ime_events_from_buffer_delta(
         } else if previous.text != next_committed.text {
             events.extend(committed_edit_events(&previous, &next_committed));
         }
-        let selection = next.compose.and_then(|(start, _)| {
+        let selection = next.compose.map(|(start, _)| {
             let rel_start = next
                 .selection_start
                 .saturating_sub(start)
                 .min(preedit.len());
             let rel_end = next.selection_end.saturating_sub(start).min(preedit.len());
             let (rel_start, rel_end) = order(rel_start, rel_end);
-            Some((
+            (
                 floor_boundary(&preedit, rel_start),
                 floor_boundary(&preedit, rel_end),
-            ))
+            )
         });
         events.push(ImeEvent::Preedit {
             text: preedit,

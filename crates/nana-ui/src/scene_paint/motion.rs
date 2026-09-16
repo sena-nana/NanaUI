@@ -19,7 +19,15 @@ pub(super) struct MotionGpuResources {
     time: wgpu::Buffer,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
+    #[allow(
+        dead_code,
+        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
+    )]
     dummy_group: wgpu::BindGroup,
+    #[allow(
+        dead_code,
+        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
+    )]
     eval_pipeline: Option<wgpu::RenderPipeline>,
     descriptor_capacity: usize,
     keyframe_capacity: usize,
@@ -174,6 +182,10 @@ impl MotionGpuResources {
     }
 
     /// Test/devtools only. Product present must not call this.
+    #[allow(
+        dead_code,
+        reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
+    )]
     pub fn evaluate_readback(
         &mut self,
         device: &wgpu::Device,
@@ -268,6 +280,10 @@ impl MotionGpuResources {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
+)]
 pub(super) struct MotionGpuReadback {
     pub pixels: [[f32; 4]; 2],
 }
@@ -405,6 +421,10 @@ fn create_eval_pipeline(
     )
 }
 
+#[allow(
+    dead_code,
+    reason = "GPU motion evaluation readback. Reachable only from `evaluate_readback`, whose only caller is the CPU/GPU parity test, so this is live or dead depending on the feature set -- `allow` rather than `expect` for exactly that reason"
+)]
 fn readback_rgba32(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -450,11 +470,11 @@ fn readback_rgba32(
         .get_mapped_range()
         .expect("motion eval readback must be mapped");
     let mut pixels = [[0.0f32; 4]; 2];
-    for i in 0..2 {
+    for (i, pixel) in pixels.iter_mut().enumerate() {
         let offset = i * 16;
         let mut words = [0u8; 16];
         words.copy_from_slice(&data[offset..offset + 16]);
-        pixels[i] = bytemuck::cast(words);
+        *pixel = bytemuck::cast(words);
     }
     pixels
 }
@@ -642,6 +662,10 @@ mod tests {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Parity fixture: device/queue/world/scene are the harness, the rest is one track sampled at a list of timestamps"
+    )]
     fn assert_cpu_gpu_eval_parity(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
