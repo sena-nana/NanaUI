@@ -4,6 +4,7 @@
 Does not reimplement Runtime. Invokes:
 
 - nana-runtime-benchmark (StaticTree complete-binary-heap via tree_mutations, Mutation including remaining §3.2 kinds, Hover, catalog_animation)
+- nana-scene-benchmark --compositor (Issue #87 compositor-only work counters; 1/100/1k/10k, retarget, churn)
 - nana-framework-benchmark (VirtualList, VirtualTree, Table / text-table, Ime, DockWorkspace, Overlay, TextEditor)
 - nana-scene-benchmark (optional StaticTree scene rows)
 - nana-gpu-scene-benchmark (gpu-scene-ui from perf/scenarios/gpu-scene-ui.json; UiOnly UI + HostTexture)
@@ -42,6 +43,12 @@ SCENE_BIN = {
     "features": "benchmark",
     "key": "scene",
 }
+COMPOSITOR_BIN = {
+    "package": "nana-ui-scene",
+    "binary": "nana-scene-benchmark",
+    "features": "benchmark",
+    "key": "scene_compositor",
+}
 GPU_SCENE_BIN = {
     "package": "nana-ui",
     "binary": "nana-gpu-scene-benchmark",
@@ -59,6 +66,8 @@ def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
     if kind in {"VirtualList", "Table", "Ime", "DockWorkspace", "Overlay", "TextEditor", "VirtualTree"}:
         return [FRAMEWORK_BIN]
     if kind == "Animation":
+        if scenario.get("params", {}).get("class") == "compositor":
+            return [COMPOSITOR_BIN]
         return [RUNTIME_BIN]
     if kind == "GpuScene":
         if scenario.get("params", {}).get("composition") == "UiOnly":
@@ -224,6 +233,8 @@ def catalog_framework_window_args(repo_root: Path) -> list[str]:
 def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path) -> list[str] | None:
     if spec["key"] == "gpu":
         return ["--scenario", str(contract.scenario_path(scenario["id"], repo_root))]
+    if spec["key"] == "scene_compositor":
+        return ["--compositor"]
     if spec["key"] == "framework" and scenario.get("kind") in {"VirtualList", "VirtualTree"}:
         return contract.nana_framework_list_window_args(scenario)
     if spec["key"] == "framework" and scenario.get("kind") == "Table":
@@ -232,6 +243,8 @@ def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path)
 
 
 def _guess_report_key(payload: dict[str, Any]) -> str:
+    if payload.get("catalog_compositor") is not None:
+        return "scene_compositor"
     if payload.get("gpu_work") is not None or payload.get("composition") in {
         "UiOnly",
         "UiLive2d",

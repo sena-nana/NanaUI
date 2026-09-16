@@ -60,6 +60,8 @@ def extract_nana(
     if kind == "Table":
         return _extract_nana_text_table(scenario, reports, source_paths)
     if kind == "Animation":
+        if params.get("class") == "compositor":
+            return _extract_nana_compositor(scenario, reports, source_paths)
         return _extract_nana_animation(scenario, reports, source_paths)
     if kind in {"Ime", "DockWorkspace", "Overlay", "TextEditor"}:
         return _extract_nana_catalog_workload(scenario, reports, source_paths)
@@ -580,6 +582,129 @@ def _extract_nana_text_table(
         mapping_notes=notes,
         metrics={key: value for key, value in metrics.items() if value is not None},
         work_counters=work_counters,
+    )
+
+
+
+def _extract_nana_compositor(
+    scenario: Mapping[str, Any],
+    reports: Mapping[str, Mapping[str, Any]],
+    source_paths: Mapping[str, Path],
+) -> dict[str, Any]:
+    payload = reports.get("scene_compositor") or reports.get("runtime")
+    if payload is None:
+        raise KeyError(
+            "nana-scene-benchmark --compositor report required "
+            "(catalog_compositor). Do not reuse catalog_animation."
+        )
+    catalog = payload.get("catalog_compositor")
+    if not isinstance(catalog, Mapping):
+        raise KeyError(
+            "nana-scene-benchmark has no catalog_compositor; "
+            "catalog_animation is not the compositor Scenario"
+        )
+    params = scenario["params"]
+    workload = params.get("workload") or "steady"
+    properties = params.get("properties") or "mixed"
+    active = params["active"]
+    case = _find_compositor_case(catalog, workload, active, properties)
+    if case.get("status") not in (None, "ok"):
+        raise KeyError(f"catalog_compositor status={case.get('status')}")
+    if case.get("tracks") not in (None, active):
+        raise KeyError(
+            f"catalog_compositor tracks={case.get('tracks')} "
+            f"does not match catalog active={active}"
+        )
+    work = case.get("work")
+    if not isinstance(work, Mapping):
+        raise KeyError("catalog_compositor.work missing")
+    for key in (
+        "uiworld_mutations_from_animation",
+        "layout_nodes_from_animation",
+        "style_processed_from_animation",
+        "render_nodes_reextracted_from_animation",
+        "presentation_values_cpu_sampled",
+        "animations_considered",
+        "animation_deadlines_scanned",
+        "motion_tracks_compositor",
+    ):
+        if key not in work or work.get(key) is None:
+            raise KeyError(f"catalog_compositor.work.{key} missing")
+    if "motion_descriptors_uploaded" in work:
+        raise KeyError(
+            "catalog_compositor must not invent motion_descriptors_uploaded; "
+            "this dump does not encode/submit"
+        )
+    notes = [
+        "Mapped onto nana-scene-benchmark --compositor catalog_compositor.",
+        "Work counters are the Issue #87 §13 gate. steady_ms is not a public CI GPU timing.",
+        "Keep #8 animations_considered / animation_deadlines_scanned on the same frame.",
+    ]
+    work_counters = {
+        "uiworld_mutations_from_animation": work["uiworld_mutations_from_animation"],
+        "layout_nodes_from_animation": work["layout_nodes_from_animation"],
+        "style_processed_from_animation": work["style_processed_from_animation"],
+        "render_nodes_reextracted_from_animation": work[
+            "render_nodes_reextracted_from_animation"
+        ],
+        "presentation_values_cpu_sampled": work["presentation_values_cpu_sampled"],
+        "motion_tracks_active": work.get("motion_tracks_active"),
+        "motion_tracks_cpu": work.get("motion_tracks_cpu"),
+        "motion_tracks_compositor": work["motion_tracks_compositor"],
+        "compositor_layers_active": work.get("compositor_layers_active"),
+        "compositor_layers_promoted": work.get("compositor_layers_promoted"),
+        "compositor_layers_demoted": work.get("compositor_layers_demoted"),
+        "compositor_cache_bytes": work.get("compositor_cache_bytes"),
+        "animations_considered": work["animations_considered"],
+        "animation_deadlines_scanned": work["animation_deadlines_scanned"],
+    }
+    return envelope(
+        runner="nana",
+        status="ok",
+        scenario_id=scenario["id"],
+        scenario=scenario,
+        equivalence="closest-legacy-reference",
+        source_binary="nana-scene-benchmark",
+        source_report=str(
+            source_paths.get("scene_compositor") or source_paths.get("runtime") or ""
+        ),
+        mapping_notes=notes,
+        metrics={"cpu_frame_ms": percentile_fields(case.get("steady_ms"))},
+        work_counters={key: value for key, value in work_counters.items() if value is not None},
+    )
+
+
+
+def _find_compositor_case(
+    catalog: Mapping[str, Any],
+    workload: str,
+    active: int,
+    properties: str,
+) -> Mapping[str, Any]:
+    if workload == "steady":
+        case = catalog.get("steady")
+        if not isinstance(case, Mapping):
+            raise KeyError("catalog_compositor.steady missing")
+        return case
+    if workload == "retarget":
+        case = catalog.get("retarget")
+        if not isinstance(case, Mapping):
+            raise KeyError("catalog_compositor.retarget missing")
+        return case
+    if workload == "churn":
+        case = catalog.get("churn")
+        if not isinstance(case, Mapping):
+            raise KeyError("catalog_compositor.churn missing")
+        return case
+    for row in catalog.get("scales") or []:
+        if (
+            isinstance(row, Mapping)
+            and row.get("tracks") == active
+            and row.get("properties") in (None, properties)
+        ):
+            return row
+    raise KeyError(
+        f"catalog_compositor.scales has no tracks={active} properties={properties!r}"
     )
 
 

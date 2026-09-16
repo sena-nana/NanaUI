@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "compositor-retarget",
+  "kind": "Animation",
+  "params": {
+    "active": 100,
+    "class": "compositor",
+    "properties": "opacity",
+    "workload": "retarget"
+  },
+  "record": ["work_counters", "steady_ms"],
+  "invariants": [
+    {
+      "name": "compositor_retarget_steady_no_uiworld_mutations",
+      "path": "work_counters.uiworld_mutations_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "After a retarget storm, the next compositor present tick must not mutate UiWorld."
+    },
+    {
+      "name": "compositor_retarget_sparse_considered",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "Retarget is a mutation; the measured frame is the following present tick."
+    }
+  ],
+  "notes": "Issue #87 retarget storm. The gated frame is the compositor present after retarget, not the commit."
+}

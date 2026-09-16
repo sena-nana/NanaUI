@@ -32,6 +32,15 @@
     "gpu-scene-ui-dense-2k",
     "gpu-scene-host-textures-64"
   ],
+  "nana_motion_ids": [
+    "compositor-steady",
+    "compositor-tracks-1",
+    "compositor-tracks-100",
+    "compositor-tracks-1k",
+    "compositor-tracks-10k",
+    "compositor-retarget",
+    "compositor-churn"
+  ],
   "issue12": {
     "same_scenario_ids": [
       "static-tree-100",

@@ -41,7 +41,7 @@ import "@nanaui/nanavue-components/controls.css";
 
 `Toast::place_in(viewport, PopoverAlignment::Center, max_width, PanelInsets { .. })` 用与 `Panel::viewport` 相同的预留合同把提示钉进空闲区域：`align` 决定它在剩余宽度里的分布，`max_width` 封顶，高度仍由内容决定并贴住预留的底边。`viewport` 是定位宿主自身的盒子。未放置的 toast 仍然填满所在行；放置过的 toast 保留自己的宽度。空闲区域由应用给出——只有应用知道它开了哪些面板。
 
-`Spinner` 自己转：挂载后由动画时钟驱动旋转相位，宿主不需要每帧递增再写回。停用改为卸载或停放该节点，不要靠不喂相位来"冻住"它。
+`Spinner` 自己转：挂载后由 Motion IR 无限 timeline 驱动旋转相位，宿主不逐帧喂 phase。停用改为卸载或停放该节点。
 
 `Panel` 是非模态任务面板，挂到独立 `OverlayHost` 的直接子节点，通过同一份 `activate_overlay` / `dismiss_overlay` 管理显示和退出动画。面板使用 Card 表面和具名 Region 无障碍语义，只有卡面命中，外部舞台和普通 Tab 顺序保持可用；不能用 Menu 或 Dialog 冒充非模态面板。可见标题、返回/关闭按钮和内容由应用装配为普通子节点，长内容使用 `ScrollView`。关闭按钮调用 `dismiss_overlay`，不直接删除节点。
 

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "compositor-churn",
+  "kind": "Animation",
+  "params": {
+    "active": 100,
+    "class": "compositor",
+    "properties": "opacity",
+    "workload": "churn"
+  },
+  "record": ["work_counters", "steady_ms"],
+  "invariants": [
+    {
+      "name": "compositor_churn_steady_no_uiworld_mutations",
+      "path": "work_counters.uiworld_mutations_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "After start/stop churn, the next compositor present tick must not mutate UiWorld."
+    },
+    {
+      "name": "compositor_churn_sparse_considered",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "Start/stop is a mutation; the measured frame is the following present tick."
+    }
+  ],
+  "notes": "Issue #87 start/stop churn. The gated frame is the compositor present after restart."
+}

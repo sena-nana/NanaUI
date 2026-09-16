@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "compositor-tracks-100",
+  "kind": "Animation",
+  "params": {
+    "active": 100,
+    "class": "compositor",
+    "properties": "mixed",
+    "workload": "scale"
+  },
+  "record": ["work_counters", "steady_ms"],
+  "invariants": [
+    {
+      "name": "compositor_scale_no_uiworld_mutations",
+      "path": "work_counters.uiworld_mutations_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "100 compositor tracks must not write UiWorld on a present tick."
+    },
+    {
+      "name": "compositor_scale_tracks",
+      "path": "work_counters.motion_tracks_compositor",
+      "op": "eq",
+      "value": 100,
+      "status": "required",
+      "note": "Echo params.active."
+    },
+    {
+      "name": "compositor_scale_sparse_considered",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "CPU consider count must not grow linearly with compositor tracks."
+    }
+  ],
+  "notes": "Issue #87 100 compositor-track scale. Work counters, not GPU timing."
+}

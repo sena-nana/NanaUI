@@ -27,6 +27,40 @@ Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆
 否则 extractor 拒绝该报告。基线与判据见
 [`docs/gpu-node-scale.md`](../docs/gpu-node-scale.md)。
 
+## Issue #87 compositor motion
+
+`catalog.json` 的 `nana_motion_ids` 列出 compositor-only 结构门禁与 1/100/1k/10k
+scale、retarget、churn。它们**不在** `harness_ids`：验收是 work counter（UiWorld /
+layout / style / extract / CPU sample 必须为 0），不是公共 CI GPU timing。
+`#8` 的 `animation.json` 稀疏门禁（`animations_considered` /
+`animation_deadlines_scanned`）继续独立存在。
+
+```bash
+python3 perf/contract.py --self-test
+python3 perf/runners/nana/run.py --print-plan --scenario compositor-steady
+python3 perf/runners/nana/run.py --scenario compositor-steady --output target/performance/issue87/nana-compositor-steady.json
+python3 perf/runners/nana/run.py --scenario compositor-tracks-1k --output target/performance/issue87/nana-compositor-tracks-1k.json
+python3 perf/runners/nana/run.py --scenario compositor-retarget --output target/performance/issue87/nana-compositor-retarget.json
+cargo run --release --locked -p nana-ui-scene --features benchmark --bin nana-scene-benchmark -- --compositor --output target/performance/issue87/compositor.json
+```
+
+`--compositor` 一次 dump 全部 scale（transform / opacity / mixed）以及 retarget / churn。
+`motion_descriptors_uploaded` 故意省略：该 binary 不 encode/submit。GPU descriptor
+不每帧重传由 `SceneWgpuPainter::last_motion_work()` 的测试覆盖，不是这条门禁。
+
+Inspector 入口：`UiWorld::inspect_motion()`（track / class / evaluator / base vs
+presentation / CPU fallback / deadline / GPU handle / layout-paint-extract 影响），
+`UiScene::annotate_motion_inspector` 补 layer 与 promotion 原因。打印合同：
+
+```text
+Node #123 transform
+Class: Compositor
+Evaluator: GPU
+Layer: #7
+Runtime samples/frame: 0
+```
+
+
 ## Vue vs Rust L3 输入成本
 
 不在这套 Scenario 里，因为它测的不是一个 toolkit 跑一个负载，而是**同一个进程里**建立

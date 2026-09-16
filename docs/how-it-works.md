@@ -67,10 +67,26 @@ scene_gpu_renderers / scene_resource_producers
 8. bind_window                   → 需要的话再填内容
 ```
 
-无变更时 flush 是空转，宿主不应空刷。动画、实时 GPU、普通 UI 的唤醒是分开的：一块实时画面在动，不该迫使整棵 Runtime 全量更新。
+无变更时 flush 是空转，宿主不应空刷。动画、实时 GPU、普通 UI 的唤醒是分开的：一块实时画面在动，不该迫使整棵 Runtime 全量更新。Motion 意图在 `nana-ui-core::motion`：同一 track + 同一时间戳，CPU 可确定性求值；spring / decay 按绝对时间解析，不依赖上一帧积分。逻辑目标状态在 `UiWorld`，呈现值在 `PresentationStore` overlay，按 node + property 按需查询。Rust L3 用 `node.transition().opacity().transform().duration().ease()`、`Spring::to` 和 `Timeline::parallel` / `sequence` 编译进这条 IR。`width` / `height` 走 Layout-class CPU，不改成 scale。列表 FLIP 是显式 presentation transform：`node.flip(first, last)` 或 Vue TransitionGroup `setPaintTransform`，逻辑框停在 Last，视觉从 Invert 回到 identity。Compositor track 的 `MotionDescriptor` 在 start/retarget/cancel 时写入 generational slab，稳态只推进时间。`SceneWgpuPainter` 把 descriptor 放到 storage buffer，Quad shader `evaluate()` 复现同一闭合解；非 Quad primitive 仍用 CPU overlay。产品 present 不回读。
+
+CPU/Layout 动画走 `next_animation_deadline`；`UiScene::compositor_needs_tick` 只把**该窗口**接到轻量 `FrameDemand::Continuous` present，不强制 Vue patch、UiWorld 全局 schedule 或 Style/Layout。静态窗口保持 `OnDemand`。最小化/遮挡时 compositor 不 Hidden-GPU 追帧，恢复后按绝对时间求值。device/surface 重建后宿主调用 `UiScene::set_surface_generation`。完成事件同样靠 deadline，不靠逐帧 CPU sample。
+
+默认执行类由 `AnimatableProperty::animation_class()` 决定，组件不能改：
+
+| 属性 | 默认 Class | 执行路径 | fallback / 性能含义 |
+| --- | --- | --- | --- |
+| `transform` / `opacity` | Compositor | overlay；Quad 走 GPU `evaluate()`；非 Quad 走 CPU overlay | 稳态不写 `UiWorld`；非 Quad 仍是 CPU presentation |
+| `clip` / `clip-path` | Compositor | overlay；shader 目前只绑 transform/opacity 的 `motion_id` | 稳态不写 `UiWorld`；clip 呈现仍 CPU overlay |
+| `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径 |
+| `color` / `background` / `blur` / `filter` / `shadow` | Paint | CPU 插值 | 可能每 sample 脏 paint/extract；不是 filter GPU |
+| `width` / `height` / `padding` / `margin` | Layout | CPU layout | 每 sample layout；不要偷成 scale |
+| `font-size` / `font-axis` | Layout | 非 compositor（排版 / 绘制也会受影响） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制 GPU |
+| `display` | Discrete | snap | 不插值 |
+
+`#8` 的 `animations_considered` / `animation_deadlines_scanned` 稀疏门禁仍有效。compositor-only 稳态结构门禁见 [`perf/README.md`](../perf/README.md) 的 `compositor-steady`。开发诊断走 `AnimatableProperty::diagnostic_hint()`，文档不硬编码整句。
 
 `FrameDemand` 指定按需、截止时间或持续刷新。窗口被遮挡或最小化时宿主仍按
-`FrameDemand` 调用 `prepare_window_frame`，不 flush、不获取 Surface、不 present。
+程序自己的 `FrameDemand` 调用 `prepare_window_frame`，不 flush、不获取 Surface、不 present。
 0 维仍 prepare，producer encode 只在尺寸可画时跑。纹理内容更新通过
 `HostTextureRegistry::slot` 取得的 `TextureSlot` 通知引用该资源的窗口。
 已落地范围与性能证据见 [高刷新重构](high-refresh-refactor.md)。

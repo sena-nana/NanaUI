@@ -7,6 +7,9 @@ from typing import Any, Mapping
 from .catalog_workloads_tests import (
     _self_test_catalog_workloads,
 )
+from .compositor_motion_tests import (
+    _self_test_compositor_motion,
+)
 from .comparison import (
     relative_gate_can_enforce,
 )
@@ -802,6 +805,7 @@ def self_test(root: Path | None = None) -> list[str]:
     if "text-table" in reserved:
         errors.append("catalog must not leave wirable text-table in required_by_issue_not_in_harness")
     errors.extend(_self_test_catalog_workloads(root, runtime_path, iced_path, reserved))
+    errors.extend(_self_test_compositor_motion(root))
 
     try:
         nana_table_legacy = extract_nana(

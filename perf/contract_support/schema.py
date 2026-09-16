@@ -822,23 +822,50 @@ def _validate_gpu_scale_ids(catalog: Mapping[str, Any], base: Path) -> list[str]
     """NanaUI-internal GPU scale rows. They are deliberately outside harness_ids:
     they have no Iced/GPUI analog and are not Issue #8 DoD. Their invariants
     still gate through the runner envelope."""
-    ids = catalog.get("nana_gpu_scale_ids")
+    return _validate_named_id_list(
+        catalog,
+        base,
+        key="nana_gpu_scale_ids",
+        must_stay_out_of_harness=True,
+    )
+
+
+
+def _validate_motion_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
+    """Issue #87 compositor work-counter rows. Outside harness_ids so weekly
+    GHA does not treat host timing as a GPU gate. Structural invariants still
+    evaluate when the scenario is run."""
+    return _validate_named_id_list(
+        catalog,
+        base,
+        key="nana_motion_ids",
+        must_stay_out_of_harness=True,
+    )
+
+
+
+def _validate_named_id_list(
+    catalog: Mapping[str, Any],
+    base: Path,
+    *,
+    key: str,
+    must_stay_out_of_harness: bool,
+) -> list[str]:
+    ids = catalog.get(key)
     if ids is None:
         return []
     if not isinstance(ids, list):
-        return ["catalog nana_gpu_scale_ids must be a list"]
+        return [f"catalog {key} must be a list"]
     errors: list[str] = []
     harness = set(catalog.get("harness_ids") or [])
     for scenario_id in ids:
         if not isinstance(scenario_id, str):
-            errors.append(f"catalog nana_gpu_scale_ids entry must be a string: {scenario_id!r}")
+            errors.append(f"catalog {key} entry must be a string: {scenario_id!r}")
             continue
-        if scenario_id in harness:
-            errors.append(
-                f"catalog nana_gpu_scale_ids {scenario_id} must stay out of harness_ids"
-            )
+        if must_stay_out_of_harness and scenario_id in harness:
+            errors.append(f"catalog {key} {scenario_id} must stay out of harness_ids")
         if not (base / f"{scenario_id}.json").is_file():
-            errors.append(f"catalog nana_gpu_scale_ids entry missing file: {scenario_id}.json")
+            errors.append(f"catalog {key} entry missing file: {scenario_id}.json")
     return errors
 
 
@@ -865,6 +892,7 @@ def validate_all_scenarios(root: Path | None = None) -> list[str]:
         if payload.get("id") != path.stem:
             errors.append(f"{path.name}: id must equal file stem")
     errors.extend(_validate_gpu_scale_ids(catalog, base))
+    errors.extend(_validate_motion_ids(catalog, base))
     issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
     same = list(issue12.get("same_scenario_ids") or [])
     unsupported = list(issue12.get("unsupported_ids") or [])

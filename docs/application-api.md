@@ -47,6 +47,9 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 `ApplicationWindow::demand` 与低层 `RuntimeProgram::frame_demand` 使用同一
 `FrameDemand`：默认 `OnDemand`，单次截止时间 `At(Instant)`，持续刷新
 `Continuous(NonZeroU32)`。120 代表请求 120Hz，不是显示器刷新率保证。
+宿主会把 `UiScene::compositor_needs_tick` 合并进该窗口的 present cadence；
+compositor overlay 不改写程序自己的 `frame_demand`，也不唤醒无关窗口。
+device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`。
 资源更新使用 `TextureSlot`；详细变更和当前验收范围见
 [高刷新重构](high-refresh-refactor.md)。
 

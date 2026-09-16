@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "compositor-tracks-1",
+  "kind": "Animation",
+  "params": {
+    "active": 1,
+    "class": "compositor",
+    "properties": "mixed",
+    "workload": "scale"
+  },
+  "record": ["work_counters", "steady_ms"],
+  "invariants": [
+    {
+      "name": "compositor_scale_no_uiworld_mutations",
+      "path": "work_counters.uiworld_mutations_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "1 compositor track must not write UiWorld on a present tick."
+    },
+    {
+      "name": "compositor_scale_tracks",
+      "path": "work_counters.motion_tracks_compositor",
+      "op": "eq",
+      "value": 1,
+      "status": "required",
+      "note": "Echo params.active. Missing stays not-evaluable."
+    },
+    {
+      "name": "compositor_scale_sparse_considered",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "CPU consider count must not grow with compositor present ticks."
+    }
+  ],
+  "notes": "Issue #87 1 compositor-track scale. nana-scene-benchmark --compositor also dumps transform-only and opacity-only rows for the same track count."
+}

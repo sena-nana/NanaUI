@@ -1,9 +1,11 @@
 #[path = "runtime_benchmark/style_sharing.rs"]
 mod style_sharing;
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use nana_ui_runtime::{
     AccessibilityRole, AccessibilityState, AnimationId, AnimationSpec, DocumentId, Easing,
@@ -276,26 +278,22 @@ fn bench_full(nodes: usize, document: DocumentId, warmup: usize, iterations: usi
         let mut animations = MutationQueue::new();
         for index in 1..=nodes {
             let due = index == 1;
-            animations.start_animation(AnimationSpec {
-                id: AnimationId::new(index as u64).unwrap(),
-                target: node(index),
-                start: if due {
+            animations.start_animation(AnimationSpec::new(
+                AnimationId::new(index as u64).unwrap(),
+                node(index),
+                if due {
                     Duration::ZERO
                 } else {
                     Duration::from_secs(60)
                 },
-                duration: if due {
+                if due {
                     Duration::from_millis(1)
                 } else {
                     Duration::from_secs(1)
                 },
-                frame_interval: Duration::from_millis(16),
-                easing: Easing::Linear,
-                iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
-                direction: nana_ui_runtime::AnimationDirection::Normal,
-                fill_mode: nana_ui_runtime::AnimationFillMode::None,
-                play_state: nana_ui_runtime::AnimationPlayState::Running,
-            });
+                Duration::from_millis(16),
+                Easing::Linear,
+            ));
         }
         world.commit(animations).unwrap();
         let started = Instant::now();
@@ -737,26 +735,22 @@ fn bench_catalog_animation(document: DocumentId) -> CatalogAnimationCase {
         let mut animations = MutationQueue::new();
         for index in 1..=CATALOG_ANIMATION_SCHEDULED {
             let due = index == CATALOG_ANIMATION_ACTIVE;
-            animations.start_animation(AnimationSpec {
-                id: AnimationId::new(index as u64).unwrap(),
-                target: node(index),
-                start: if due {
+            animations.start_animation(AnimationSpec::new(
+                AnimationId::new(index as u64).unwrap(),
+                node(index),
+                if due {
                     Duration::ZERO
                 } else {
                     Duration::from_secs(60)
                 },
-                duration: if due {
+                if due {
                     Duration::from_millis(1)
                 } else {
                     Duration::from_secs(1)
                 },
-                frame_interval: Duration::from_millis(16),
-                easing: Easing::Linear,
-                iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
-                direction: nana_ui_runtime::AnimationDirection::Normal,
-                fill_mode: nana_ui_runtime::AnimationFillMode::None,
-                play_state: nana_ui_runtime::AnimationPlayState::Running,
-            });
+                Duration::from_millis(16),
+                Easing::Linear,
+            ));
         }
         world.commit(animations).unwrap();
 

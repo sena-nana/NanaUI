@@ -41,6 +41,28 @@ Vue + JS L1/L2（可选宿主）
 nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 ```
 
+动画意图编译为 Motion IR（`nana-ui-core::motion`）。`AnimationSpec` 是这条 IR 的 timing / playback 子集（id、target、start、duration、frame interval、easing、iteration / direction / fill / pause），不是第二套 timeline。
+
+**逻辑值 ≠ 呈现值。** `UiWorld` 是逻辑 / base 权威；瞬时呈现存在 transient `PresentationStore` overlay（按 node + property 查询；`applies=false` 时用 `applied_value()`）。例如 `opacity: 0 → 1` 时逻辑透明度在开始时已是目标值，overlay 负责过渡，而不是每帧把 `UiWorld` 写成 `0.01`、`0.02`。业务读属性得到逻辑状态；绘制、命中、焦点、无障碍在需要时按同一 timestamp 求 presentation。动画完成走 start / completion **deadline**，不靠逐帧 CPU sample 才知道结束。
+
+Compositor-safe 属性按 `AnimationClass::Compositor` 分类，不得实现成每帧改 UiWorld 属性。Compositor track 另编译为 generational `MotionDescriptor` slab：start/retarget/cancel 更新 descriptor，稳态帧只按 timestamp 走同一 `evaluate_track`。产品 present 禁止 CPU readback。Scene layer / GPU Quad 分流见 [`runtime-scene.md`](runtime-scene.md)。
+
+默认执行类由 `AnimatableProperty::animation_class()` 决定，组件不能改 class：
+
+| 属性 | 默认 Class | 执行路径 | fallback / 性能含义 |
+| --- | --- | --- | --- |
+| `transform` / `opacity` | Compositor | overlay；Quad 走 GPU `evaluate()`；非 Quad 走 CPU overlay | 稳态不写 `UiWorld`；非 Quad 仍是 CPU presentation |
+| `clip` / `clip-path` | Compositor | overlay；Painter 目前只把 transform/opacity 的 `motion_id` 交给 shader | 稳态不写 `UiWorld`；clip 呈现仍 CPU overlay |
+| `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径 |
+| `color` / `background` / `blur` / `filter` / `shadow` | Paint | CPU 插值 | 可能每 sample 脏 paint/extract；不是 filter GPU |
+| `width` / `height` / `padding` / `margin` | Layout | CPU layout，写 px | 每 sample layout；不要偷成 scale |
+| `font-size` / `font-axis` | Layout | 非 compositor（排版 / 绘制也会受影响） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制 GPU |
+| `display` | Discrete | snap | 不插值 |
+
+`#8` 的 `animations_considered` / `animation_deadlines_scanned` 稀疏门禁仍有效。compositor-only 稳态结构门禁（无 query 时 UiWorld / layout / style / extract / CPU sample 均为 0）见 [`perf/README.md`](../perf/README.md) 的 `compositor-steady`。开发诊断走 `AnimatableProperty::diagnostic_hint()` 与 `UiWorld::inspect_motion()`；hint 文案以代码为准，文档不硬编码整句，也不写进产品 UI。
+
+FLIP / list-move 是显式策略，不是把 width 动画偷成 scale。
+
 `component-gallery` 是独立 Demo crate：分类导航和示例状态不属于 `nana-ui` 公共 API。
 
 ## 所有权
@@ -51,7 +73,8 @@ nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 | 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样 |
 | 业务状态、配置盘、Region / pane **内容** | 应用 |
 | 树、样式、未滚动布局、命中、焦点、IME、无障碍 | `UiWorld` |
-| 绘制图 | `UiScene` |
+| Motion IR（曲线、timing、属性分类、CPU 求值、presentation overlay、MotionDescriptor slab） | `nana-ui-core::motion`；Runtime `AnimationSpec` 是同一套 timing 子集；L3 `transition` / `Spring::to` / `Timeline` 编译进这条 IR；内建 hover/switch/spinner/surface 不再平行自管时钟；`PresentationStore` 是 IR overlay；descriptor 只覆盖 `AnimationClass::Compositor` |
+| 绘制图 | `UiScene`（`CompositorLayer` 持有 presentation 与 `CompositorMotionBinding`；`SceneWgpuPainter` 上传 MotionDescriptor storage + time uniform） |
 | 系统材质与标题栏 chrome | `nana-window` |
 | Workspace 尺寸 / 折叠 | `WorkspaceModel`（`WorkspaceController` 只做指针与时钟转换） |
 | Dock 树 | Runtime `DockWorkspace`（`nana_ui::dock::*` 是宿主适配器） |

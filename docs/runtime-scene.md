@@ -20,13 +20,33 @@ Runtime 按脏组件产生确定性工作：样式、文字、布局、命中、
 
 `RuntimeDocument::flush` 在一次帧事务里调用宿主 `TextShaper`，由 `RuntimeLayoutEngine` 按 viewport、样式和 shaping 写回 layout。viewport 变化在无应用 mutation 时也会触发布局：脏集合是 document roots 加上 `position: fixed` / `vw` / `vh` 节点，未移动的子树复用 retained cache，不丢整棵树。系统失败时已消费工作回到调度器，Scene 与无障碍增量在 settle 前不发布。
 
-局部 mutation 只传播到语义受影响的节点；遇到已有相同脏状态即停。动画以 Runtime 持有的稳定 ID 注册，宿主传入单调时间；Runtime 不建计时线程。动画、实时 GPU 和普通 UI 唤醒分开。
+局部 mutation 只传播到语义受影响的节点；遇到已有相同脏状态即停。动画以 Runtime 持有的稳定 ID 注册，宿主传入单调时间；Runtime 不建计时线程。`AnimationSpec` 是 Motion IR 的 timing 子集，进度经 `evaluate_progress` 求值，不另开一套 timeline。Rust L3 `ViewContext::transition` / `node().motion(Spring::to)` / `node().timeline(Timeline::parallel|sequence)` 编译为同一 `AnimationSpec`。内建 hover / switch / spinner / surface / skeleton / sidebar / workspace / loading 不再维护平行逐帧时钟：compositor-safe 属性走 overlay，switch thumb 与 sidebar 高度保持 Layout，完成事件走 deadline。`advance_animations` 仍按稀疏 deadline 采样：CPU/Layout/Paint 类 track 用 `frame_interval`；compositor-safe presentation track 只用 start / completion deadline（`animations_considered` / `animation_deadlines_scanned` 语义不变）。查询走 `UiWorld::presentation_pair` / `applied_value()`，禁止每帧把 transform/opacity 写进 `UiWorld`。Compositor overlay 只给 `AnimationClass::Compositor`；对应 `MotionDescriptor` 用 generational handle 绑定，稳态求值不重建 slab。动画、实时 GPU 和普通 UI 唤醒分开：`compositor_needs_tick` 接到该窗口轻量 present，不进入 CPU animation deadline。多窗口只因自身 active motion 被 redraw；device/surface 重建后 `set_surface_generation`。
 
 `WorkspaceModel` / `SplitPaneModel` / `DockWorkspace` 各自持有持久布局，只接受显式 `Duration`。host adapter 做 Instant → Duration 与指针转换，不另存一份产品状态。
+
+### 动画属性分类
+
+逻辑 / base 在 `UiWorld`，呈现值在 `PresentationStore`。完成事件走 deadline，不靠逐帧 CPU sample。默认 Class 是 `AnimatableProperty::animation_class()`，组件不能改。没有 filter GPU、也没有 Mesh GPU evaluate。
+
+| 属性 | 默认 Class | 执行路径 | fallback / 性能含义 |
+| --- | --- | --- | --- |
+| `transform` / `opacity` | Compositor | overlay；Quad（含 QuadBatch / QuadColorBatch）剥 overlay 走 GPU `evaluate()`；Text / Icon / Mesh / HostTexture 走 CPU overlay | 稳态不写 `UiWorld`；非 Quad 仍是 CPU presentation |
+| `clip` / `clip-path` | Compositor | overlay；`compositor_gpu_motion_ids` 目前只绑 transform/opacity | 稳态不写 `UiWorld`；clip 呈现仍 CPU overlay |
+| `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径 |
+| `color` / `background` / `blur` / `filter` / `shadow` | Paint | CPU 插值（`frame_interval` 稀疏采样） | 可能每 sample 脏 paint/extract；不是 filter GPU |
+| `width` / `height` / `padding` / `margin` | Layout | CPU layout，采样写 px 并脏 LAYOUT | 每 sample layout；不要偷成 scale |
+| `font-size` / `font-axis` | Layout | 非 compositor（排版 / 绘制也会受影响） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制 GPU |
+| `display` | Discrete | `snap_discrete`：结束前保持 from，结束时 rest | 不插值 |
+
+`#8` 的 `animations_considered` / `animation_deadlines_scanned` 语义不变。compositor-only 稳态结构门禁见 [`perf/README.md`](../perf/README.md) 的 `compositor-steady`。开发诊断：`AnimatableProperty::diagnostic_hint()` 与 `UiWorld::inspect_motion()`；hint 文案以代码为准，文档不硬编码整句。
 
 ## 抽取与绘制
 
 flush 将变更抽成 `ExtractedNode` 增量，`UiScene::apply_delta` 更新绘制图。`CustomRenderNode` 是一等抽取字段：`GpuTextureView`（默认）与 `GpuView` 都和 Button 一样进入 document order。
+
+Compositor-class overlay（`transform` / `opacity` / `clip` / `shader-parameter`）不写进 `ExtractedNode` 的逻辑样式。Scene 用 `UiScene::apply_presentation` 从 live `PresentationStore` / `MotionDescriptorStore` 引用绑定 `CompositorLayer`（flush 不得每帧 clone slab）。层 identity 是节点 `StableNodeId`；子树 primitive 只在 topology/primitive 变化时 invalidate（`cache_generation`）；仅时间推进不得 re-extract。Promotion 阈值：`LAYER_PROMOTE_HOLD` 16ms，`LAYER_DEMOTE_HOLD` 120ms（overlay 结束后 2ms～119ms 仍保持层，满 120ms 才 demote）。`clear_compositor_layer_request` 经 extract 把 `request_layer=false` 写回 scene，摘掉 `requested`，再走 demote hold。`OpacityGroup` / `FilterGroup` 仍是 dest 隔离组，不是 motion layer。Layer 上的 `CompositorMotionBinding { track_id, index, generation }` 对齐 D 的 `MotionHandle`（`generation == 0` 表示无 live descriptor）。Painter 按 `presentation_epoch` 失效 dest 缓存；有 live GPU descriptor 时跳过 dest blit 复用，稳态帧只写 shared time uniform，不重传整表。**只有** Quad 类 primitive 剥 overlay 并用 `motion.wgsl` `evaluate()`；Text / Icon / Mesh / HostTexture 仍用 CPU presentation，避免剥掉 overlay 却无法 GPU 还原。width/height 等 Layout 类 overlay 不 promote。
+
+Layout-class（`width` / `height` / `padding` / `margin`）走 CPU：每帧采样写 px 并脏 LAYOUT，子树量测与命中用真实几何。FLIP（`FlipRect` / `layout_flip_*` / Vue `setPaintTransform`）在 Last 布局已提交后只播 compositor translate；逻辑 `LayoutBox` 停在 Last，视觉从 Invert 回到 identity。命中跟随 presentation transform。L3 为 `node().flip(first, last)`；可选 `animate_size()` 另开 Layout-class 宽高，不是 scale。Vue TransitionGroup move 与这条 FLIP track 共用同一 Motion IR。
 
 `SceneWgpuPainter` 注入宿主 Device / Queue，在当前 dest pass 按节点顺序编码。HostTexture 不攒到帧尾，不为每个 GPU 槽单独开 pass。含 HostTexture / 自定义 GPU 节点的帧使用 `sample_count = 1`；没有 GPU 节点的帧可以用 4x MSAA 画方块和网格，文字在 resolve 之后画。不要在自定义节点两侧反复 resolve。高级的 `SceneResourceProducer` 在采样前用同一 Queue 提交。冲突 revision 拒绝整帧。
 

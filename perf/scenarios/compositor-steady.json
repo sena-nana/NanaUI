@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "id": "compositor-steady",
+  "kind": "Animation",
+  "params": {
+    "active": 1,
+    "class": "compositor",
+    "properties": "opacity",
+    "workload": "steady"
+  },
+  "record": [
+    "work_counters",
+    "steady_ms"
+  ],
+  "invariants": [
+    {
+      "name": "compositor_steady_no_uiworld_mutations",
+      "path": "work_counters.uiworld_mutations_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "After compositor start, a present tick must not mutate UiWorld. Missing stays not-evaluable."
+    },
+    {
+      "name": "compositor_steady_no_layout",
+      "path": "work_counters.layout_nodes_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Compositor-only opacity must not run LayoutSystem."
+    },
+    {
+      "name": "compositor_steady_no_style",
+      "path": "work_counters.style_processed_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Compositor-only opacity must not run StyleSystem."
+    },
+    {
+      "name": "compositor_steady_no_reextract",
+      "path": "work_counters.render_nodes_reextracted_from_animation",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "No scene/layer topology change on a timestamp frame."
+    },
+    {
+      "name": "compositor_steady_no_cpu_presentation_sample",
+      "path": "work_counters.presentation_values_cpu_sampled",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "No input/query on this frame. Hit-test may sample; this gate is present-only."
+    },
+    {
+      "name": "compositor_steady_sparse_deadlines",
+      "path": "work_counters.animation_deadlines_scanned",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "Keep the #8 sparse deadline contract. Compositor mid-duration ticks scan 0."
+    },
+    {
+      "name": "compositor_steady_sparse_considered",
+      "path": "work_counters.animations_considered",
+      "op": "lte",
+      "value": 8,
+      "status": "required",
+      "note": "Keep animations_considered. A compositor mid-duration tick considers 0."
+    }
+  ],
+  "notes": "Issue #87 §13 compositor-only steady frame. Work counters are the gate; steady_ms is a host observation. GPU descriptor upload is omitted (no encode/submit). Not #8 weekly DoD."
+}
