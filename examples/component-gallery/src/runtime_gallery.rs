@@ -810,6 +810,32 @@ impl GalleryRuntime {
         ))
     }
 
+    /// DIAGNOSTIC (Issue #89 CI triage, revert once understood): re-runs the
+    /// layout flush and hands back the error `Self::flush` discards.
+    ///
+    /// `flush` does `let _ = self.document.flush(..)`, so a failing flush
+    /// leaves every node at its default all-zero layout with nothing reported.
+    #[cfg(test)]
+    fn flush_result(&mut self, size: (f32, f32)) -> Result<(), String> {
+        self.last_viewport = LayoutViewport::new(size.0, size.1);
+        self.document
+            .flush(self.last_viewport, &mut self.text)
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    /// DIAGNOSTIC (Issue #89 CI triage): the layout box of an unrelated node,
+    /// to tell "layout never ran" apart from "layout skipped this node".
+    #[cfg(test)]
+    fn drop_hint_box(&self) -> Option<(f32, f32, f32, f32)> {
+        let bounds = self
+            .document
+            .context()
+            .world()
+            .layout_box(self.drop_hint.stable_id())?;
+        Some((bounds.x, bounds.y, bounds.width, bounds.height))
+    }
+
     /// DIAGNOSTIC (Issue #89 CI triage, revert once the macOS failure is
     /// understood): the drop target's full layout box, so a failing hover can
     /// report where the runner actually put it.
@@ -1044,6 +1070,23 @@ impl GalleryState {
         self.gallery_runtime
             .as_ref()
             .and_then(GalleryRuntime::drop_target_center)
+    }
+
+    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::flush_result`].
+    #[cfg(test)]
+    pub(crate) fn gallery_flush_result(&mut self) -> Option<Result<(), String>> {
+        let size = self.gallery_viewport_size();
+        self.gallery_runtime
+            .as_mut()
+            .map(|runtime| runtime.flush_result(size))
+    }
+
+    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::drop_hint_box`].
+    #[cfg(test)]
+    pub(crate) fn gallery_drop_hint_box(&self) -> Option<(f32, f32, f32, f32)> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::drop_hint_box)
     }
 
     /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::drop_target_box`].

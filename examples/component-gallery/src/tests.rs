@@ -502,6 +502,8 @@ fn gallery_rich_text_surfaces_cover_issue31_examples() {
         // resolved -- the gallery lays out with the real cosmic shaper over
         // system fonts, so its geometry is machine-dependent.
         let bounds = state.gallery_drop_target_box();
+        let hint_box = state.gallery_drop_hint_box();
+        let flush = state.gallery_flush_result();
         let viewport = state.gallery_viewport_size();
         let faces = nana_ui::shaped_face_families("sans-serif", "Drop files here 放入");
         let mut probes = Vec::new();
@@ -522,7 +524,7 @@ fn gallery_rich_text_surfaces_cover_issue31_examples() {
             }
         }
         panic!(
-            "file-drag hover found no drop target at the drop target's own centre\n               centre   = ({x:.2}, {y:.2})\n               box      = {bounds:?}\n               viewport = {viewport:?}\n               probes   = {probes:?}\n               faces    = {faces:?}"
+            "file-drag hover found no drop target at the drop target's own centre\n               centre   = ({x:.2}, {y:.2})\n               box      = {bounds:?}\n               hint box = {hint_box:?}\n               flush    = {flush:?}\n               viewport = {viewport:?}\n               probes   = {probes:?}\n               faces    = {faces:?}"
         );
     }
     assert!(state.gallery_dispatch_file_drag(FileDragKind::Drop, &paths, Some((x, y))));
