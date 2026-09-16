@@ -10,16 +10,16 @@
  * - CSS Transition end detection reads cascade-resolved durations via getComputedStyle
  * - VueHost::pump_frame drains nested rAF (Transition `nextFrame` is double-rAF)
  *   so `@after-leave` fires for LiliaUI Dialog / Drawer / Dropdown
- * - `transitionend` / `animationend` via Rust `__nanaMotionComplete` (primary)
- *   plus a class-armed fallback of duration+2 frames if no Runtime timeline
- *   starts (not WAAPI / Element.animate; not a parallel dispatcher)
+ * - `transitionend` / `animationend` via Rust `__nanaMotionComplete`
+ *   from the Runtime completion deadline (not WAAPI / Element.animate).
+ *   JS does not arm a parallel setTimeout clock.
  * - Transition appear/enter class tokens survive vnode `class` replace
  * - TransitionGroup FLIP uses getBoundingClientRect/layoutBox paint overlay;
  *   inline transform is not written back as Runtime LayoutBox
- * - FLIP `style.transform` is a paint-only host op (`setPaintTransform`) onto
- *   `LayoutStyle.transform` → UiScene node affine → SceneWgpuPainter
+ * - FLIP `style.transform` is a paint-only host op (`setPaintTransform`) that
+ *   starts the Runtime FLIP compositor track (Invert hold, then Play to identity)
  * - Layout long-hand CSS transitions (width/height/margin/padding) lerp through
- *   bridge.rs → LayoutStyle → incremental layout
+ *   bridge.rs → LayoutStyle → incremental layout (Layout-class CPU path, not scale)
  *
  * Vue runtime constructs that reuse the same host ops:
  * - KeepAlive moves via insert into an unparented storage node (not a second tree)
@@ -236,36 +236,15 @@ export function cancelArmedMotionEnd(nid) {
 }
 
 /**
- * Arm a fallback timeout only. Rust `__nanaMotionComplete` is the dispatcher
- * once a Runtime timeline is running. Slack is duration+2 frames so a hosted
- * wake that applies samples at T_end can complete before this fires.
- * Not WAAPI: no `element.animate`, no Animation timeline.
+ * Completion is the Runtime deadline → `__nanaMotionComplete`. JS must not
+ * arm a parallel setTimeout clock (that would be a second timeline for
+ * compositor-safe CSS motion).
  */
 export function armMotionEndFromStyles(nid, styles, dispatch) {
   const id = Number(nid);
   if (!Number.isFinite(id) || typeof dispatch !== "function") return 0;
   cancelArmedMotionEnd(id);
-  const timeout = motionEndTimeoutMs(styles);
-  if (timeout <= 0) return 0;
-  const type = motionEndTypeFromStyles(styles);
-  const resolved = resolveTransitionComputedStyles(styles);
-  const wait = motionEndFallbackWaitMs(styles);
-  if (typeof setTimeout !== "function") return wait;
-  const handle = setTimeout(() => {
-    armedMotionEnds.delete(id);
-    dispatch({
-      type,
-      elapsedTime: timeout / 1000,
-      propertyName:
-        type === "animationend"
-          ? resolved.animationName
-          : resolved.transitionProperty,
-      animationName: resolved.animationName,
-      transitionProperty: resolved.transitionProperty,
-    });
-  }, wait);
-  armedMotionEnds.set(id, handle);
-  return wait;
+  return 0;
 }
 
 function boxFromRect(rect) {
@@ -306,7 +285,7 @@ export function flipDelta(prevBox, nextBox) {
 /**
  * Apply the inverse translate as a paint overlay. Callers must not write
  * Runtime LayoutBox; the renderer sends paint-only keys through
- * `setPaintTransform` (not `patchProp` style / recascade).
+ * `setPaintTransform`, which starts the Motion IR FLIP compositor track.
  */
 export function applyFlipPaintTransform(el, prevBox, nextBox) {
   if (!el || !el.style) return { dx: 0, dy: 0, applied: false };
@@ -328,6 +307,25 @@ export function clearFlipPaintTransform(el) {
   el.style.transform = "";
   el.style.webkitTransform = "";
   el.style.transitionDuration = "";
+}
+
+/**
+ * Shared-element size pair for the Runtime Layout-class path.
+ * Position still uses FLIP translate; size is never a scale of children.
+ * Cross-node hero morph (two identities, cross-fade) is not implemented.
+ */
+export function sharedElementSizeDelta(prevBox, nextBox) {
+  const prev = boxFromRect(prevBox);
+  const next = boxFromRect(nextBox);
+  const widthChanged = prev.width !== next.width;
+  const heightChanged = prev.height !== next.height;
+  return {
+    widthFrom: prev.width,
+    widthTo: next.width,
+    heightFrom: prev.height,
+    heightTo: next.height,
+    sizeChanged: widthChanged || heightChanged,
+  };
 }
 
 /**

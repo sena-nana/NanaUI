@@ -1,20 +1,22 @@
 //! Apply parsed interactive CSS buckets onto [`LayoutStyle`] and motion contracts.
 
-use std::collections::BTreeMap;
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use nana_ui_runtime::{
-    AnimationDirection, AnimationFillMode, AnimationId, AnimationIteration, AnimationPlayState,
-    AnimationPlayback, AnimationSpec, Easing, StableNodeId,
+    AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationId,
+    AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, Easing, Keyframe,
+    MotionCurve, MotionTo, MotionValue, StableNodeId, StepJump, classify_animatable_property,
 };
 
-use crate::css_cascade::{DeclarationEntry, MatchContext};
-use crate::css_interactive::{
-    InteractivePseudo, InteractiveStyleRule, KeyframeBlock, KeyframeSelector, KeyframesRule,
-    MotionDeclarations, MotionStyleRule, ScrollbarPseudo, matched_interactive_rules,
-    matched_motion_rules, matched_scrollbar_pseudo, partition_motion_entries,
+use crate::{
+    css_cascade::{DeclarationEntry, MatchContext},
+    css_interactive::{
+        InteractivePseudo, InteractiveStyleRule, KeyframeBlock, KeyframeSelector, KeyframesRule,
+        MotionDeclarations, MotionStyleRule, ScrollbarPseudo, matched_interactive_rules,
+        matched_motion_rules, matched_scrollbar_pseudo, partition_motion_entries,
+    },
+    css_map::{LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode},
 };
-use crate::css_map::{LayoutStyle, LayoutStyleCss, css_key_is_direction_or_writing_mode};
 
 /// Resolved transition / animation longhands exposed to `getComputedStyle`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -149,6 +151,9 @@ impl CssPaintSnapshot {
         }
     }
 
+    /// Writes compositor longhands too. Recascade / tick must use
+    /// [`Self::apply_cpu_to_layout`] so opacity/transform stay on the overlay.
+    #[allow(dead_code)]
     pub fn apply_to_layout(&self, layout: &mut LayoutStyle) {
         if let Some(opacity) = self.opacity {
             layout.opacity = Some(opacity);
@@ -178,6 +183,31 @@ impl CssPaintSnapshot {
             layout.height = Some(height);
         }
     }
+
+    /// Paint / Layout longhands only. Opacity / transform stay on the
+    /// compositor overlay; writing them here would make UiWorld the visual clock.
+    pub fn apply_cpu_to_layout(&self, layout: &mut LayoutStyle) {
+        if let Some(color) = self.color {
+            layout.color = Some(color);
+        }
+        if let Some(background) = self.background {
+            layout.background = Some(background);
+        }
+        if let Some(origin) = self.transform_origin {
+            layout.transform_origin = Some(origin);
+        }
+        layout.paint.filter = self.filter;
+        if let Some(width) = self.width {
+            layout.width = Some(width);
+        }
+        if let Some(height) = self.height {
+            layout.height = Some(height);
+        }
+        if let Some(transform_3d) = self.transform_3d {
+            layout.transform_3d = Some(transform_3d);
+            layout.transform = None;
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,9 +215,57 @@ pub struct ActiveCssTransition {
     pub from: CssPaintSnapshot,
     pub to: CssPaintSnapshot,
     pub spec: AnimationSpec,
+    pub overlay_ids: Vec<AnimationId>,
+    pub cpu_id: Option<AnimationId>,
+    pub cpu_properties: Vec<String>,
+}
+
+impl ActiveCssTransition {
+    pub fn tracks_sample(&self, id: AnimationId) -> bool {
+        self.cpu_id == Some(id) || self.overlay_ids.contains(&id)
+    }
+
+    pub fn is_cpu_sample(&self, id: AnimationId) -> bool {
+        self.cpu_id == Some(id)
+    }
+
+    pub fn note_finished(&mut self, id: AnimationId) {
+        if self.cpu_id == Some(id) {
+            self.cpu_id = None;
+        }
+        self.overlay_ids.retain(|overlay| *overlay != id);
+    }
+
+    pub fn all_tracks_finished(&self) -> bool {
+        self.cpu_id.is_none() && self.overlay_ids.is_empty()
+    }
+}
+
+/// CSS transition / `@keyframes` compiled onto Motion IR tracks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledCssMotion {
+    pub cpu: Option<AnimationSpec>,
+    pub overlays: Vec<AnimationSpec>,
+}
+
+impl CompiledCssMotion {
+    pub fn is_empty(&self) -> bool {
+        self.cpu.is_none() && self.overlays.is_empty()
+    }
+
+    pub fn overlay_ids(&self) -> Vec<AnimationId> {
+        self.overlays.iter().map(|spec| spec.id).collect()
+    }
+
+    pub fn primary_spec(&self) -> Option<AnimationSpec> {
+        self.cpu.clone().or_else(|| self.overlays.first().cloned())
+    }
 }
 
 const CSS_TRANSITION_ANIMATION_BASE: u64 = 0xC000_0000_0000_0000;
+const CSS_KEYFRAMES_ANIMATION_BASE: u64 = CSS_TRANSITION_ANIMATION_BASE >> 1;
+const CSS_OVERLAY_TAG_SHIFT: u64 = 48;
+const CSS_WIDGET_ID_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 pub fn css_transition_animation_id(widget_id: u64) -> AnimationId {
     AnimationId::new(CSS_TRANSITION_ANIMATION_BASE | (widget_id & 0x3FFF_FFFF_FFFF_FFFF))
@@ -195,8 +273,40 @@ pub fn css_transition_animation_id(widget_id: u64) -> AnimationId {
 }
 
 pub fn css_keyframes_animation_id(widget_id: u64) -> AnimationId {
-    AnimationId::new((CSS_TRANSITION_ANIMATION_BASE >> 1) | (widget_id & 0x3FFF_FFFF_FFFF_FFFF))
+    AnimationId::new(CSS_KEYFRAMES_ANIMATION_BASE | (widget_id & 0x3FFF_FFFF_FFFF_FFFF))
         .expect("css keyframes animation id is nonzero")
+}
+
+fn css_overlay_tag(property: AnimatableProperty) -> u64 {
+    match property {
+        AnimatableProperty::Opacity => 1,
+        AnimatableProperty::Transform => 2,
+        AnimatableProperty::Clip => 3,
+        AnimatableProperty::ShaderParameter => 4,
+        AnimatableProperty::Width => 5,
+        AnimatableProperty::Height => 6,
+        _ => 0,
+    }
+}
+
+pub fn css_transition_overlay_id(widget_id: u64, property: AnimatableProperty) -> AnimationId {
+    let tag = css_overlay_tag(property);
+    AnimationId::new(
+        CSS_TRANSITION_ANIMATION_BASE
+            | (tag << CSS_OVERLAY_TAG_SHIFT)
+            | (widget_id & CSS_WIDGET_ID_MASK),
+    )
+    .expect("css transition overlay id is nonzero")
+}
+
+pub fn css_keyframes_overlay_id(widget_id: u64, property: AnimatableProperty) -> AnimationId {
+    let tag = css_overlay_tag(property);
+    AnimationId::new(
+        CSS_KEYFRAMES_ANIMATION_BASE
+            | (tag << CSS_OVERLAY_TAG_SHIFT)
+            | (widget_id & CSS_WIDGET_ID_MASK),
+    )
+    .expect("css keyframes overlay id is nonzero")
 }
 
 pub fn apply_interactive_declarations(
@@ -552,12 +662,40 @@ struct TransitionShorthand {
 }
 
 fn parse_transition_shorthand(raw: &str) -> Option<TransitionShorthand> {
+    let items = split_css_comma_list(raw);
+    if items.is_empty() {
+        return parse_transition_item(raw);
+    }
+    let mut properties = Vec::new();
+    let mut durations = Vec::new();
+    let mut timings = Vec::new();
+    let mut delays = Vec::new();
+    for item in items {
+        let parsed = parse_transition_item(&item)?;
+        properties.push(parsed.property);
+        durations.push(parsed.duration);
+        timings.push(parsed.timing_function);
+        delays.push(parsed.delay);
+    }
+    if durations.iter().all(|duration| duration == "0s") {
+        return None;
+    }
+    Some(TransitionShorthand {
+        property: properties.join(", "),
+        duration: durations.join(", "),
+        timing_function: timings.join(", "),
+        delay: delays.join(", "),
+    })
+}
+
+fn parse_transition_item(raw: &str) -> Option<TransitionShorthand> {
     let mut property = String::new();
     let mut duration = String::new();
     let mut timing_function = String::new();
     let mut delay = String::new();
     for token in split_css_tokens(raw) {
-        if token.ends_with("ms") || token.ends_with('s') {
+        let lower = token.to_ascii_lowercase();
+        if is_css_time_token(&lower) {
             if duration.is_empty() {
                 duration = token;
             } else {
@@ -565,11 +703,7 @@ fn parse_transition_shorthand(raw: &str) -> Option<TransitionShorthand> {
             }
             continue;
         }
-        if matches!(
-            token.as_str(),
-            "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" | "step-start" | "step-end"
-        ) || token.starts_with("cubic-bezier(")
-        {
+        if is_css_timing_function(&lower) {
             timing_function = token;
             continue;
         }
@@ -678,19 +812,92 @@ fn parse_animation_shorthand(raw: &str) -> Option<AnimationShorthand> {
 fn is_css_timing_function(token: &str) -> bool {
     matches!(
         token,
-        "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" | "step-start" | "step-end"
+        "linear"
+            | "ease"
+            | "ease-in"
+            | "ease-out"
+            | "ease-in-out"
+            | "ease-in-out-cubic"
+            | "step-start"
+            | "step-end"
     ) || token.starts_with("cubic-bezier(")
+        || token.starts_with("steps(")
+}
+
+fn is_css_time_token(token: &str) -> bool {
+    token.ends_with("ms") || token.ends_with('s')
 }
 
 fn split_css_tokens(raw: &str) -> Vec<String> {
-    raw.split_whitespace()
-        .map(|t| t.trim().trim_end_matches(',').to_string())
-        .filter(|t| !t.is_empty())
-        .collect()
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    for ch in raw.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            _ if ch.is_whitespace() && depth == 0 => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
-pub fn parse_css_time_ms(raw: &str) -> Option<f32> {
-    let trimmed = raw.trim();
+pub fn split_css_comma_list(raw: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    for ch in raw.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                let item = current.trim().to_string();
+                if !item.is_empty() {
+                    items.push(item);
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let item = current.trim().to_string();
+    if !item.is_empty() {
+        items.push(item);
+    }
+    items
+}
+
+fn css_list_at(list: &[String], index: usize) -> &str {
+    if list.is_empty() {
+        return "";
+    }
+    list.get(index)
+        .map(String::as_str)
+        .unwrap_or(list[list.len() - 1].as_str())
+}
+
+fn parse_css_time_token(trimmed: &str) -> Option<f32> {
+    let trimmed = trimmed.trim();
     if trimmed.is_empty() {
         return None;
     }
@@ -707,12 +914,107 @@ pub fn parse_css_time_ms(raw: &str) -> Option<f32> {
     None
 }
 
-pub fn easing_from_css(name: &str) -> Easing {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "linear" => Easing::Linear,
-        "ease-in-out" | "ease-in-out-cubic" => Easing::EaseInOutCubic,
-        _ => Easing::EaseOutCubic,
+pub fn parse_css_time_ms(raw: &str) -> Option<f32> {
+    let parts = split_css_comma_list(raw);
+    if parts.is_empty() {
+        return parse_css_time_token(raw);
     }
+    parts
+        .iter()
+        .filter_map(|part| parse_css_time_token(part))
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+/// CSS `transition-timing-function` / `animation-timing-function`.
+///
+/// Named keywords and `cubic-bezier()` become [`Easing`]. `steps()` lives on
+/// [`MotionCurve`]; use [`curve_from_css`] when compiling a track.
+pub fn easing_from_css(name: &str) -> Easing {
+    match curve_from_css(name) {
+        MotionCurve::Easing(easing) => easing,
+        MotionCurve::Steps { .. } | MotionCurve::Spring(_) | MotionCurve::Decay(_) => {
+            Easing::Linear
+        }
+    }
+}
+
+/// Full CSS timing function, including `steps()` / `step-start` / `step-end`.
+pub fn curve_from_css(name: &str) -> MotionCurve {
+    let token = first_timing_token(name);
+    let lower = token.to_ascii_lowercase();
+    if let Some(steps) = parse_css_steps(&lower) {
+        return MotionCurve::Steps {
+            count: steps.0,
+            jump: steps.1,
+        };
+    }
+    MotionCurve::Easing(easing_from_css_keyword(&lower))
+}
+
+fn first_timing_token(raw: &str) -> String {
+    split_css_comma_list(raw)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| raw.trim().to_string())
+}
+
+fn easing_from_css_keyword(name: &str) -> Easing {
+    match name {
+        "linear" => Easing::Linear,
+        "ease" => Easing::CubicBezier([0.25, 0.1, 0.25, 1.0]),
+        "ease-in" => Easing::CubicBezier([0.42, 0.0, 1.0, 1.0]),
+        "ease-out" => Easing::CubicBezier([0.0, 0.0, 0.58, 1.0]),
+        "ease-in-out-cubic" => Easing::EaseInOutCubic,
+        "ease-in-out" => Easing::CubicBezier([0.42, 0.0, 0.58, 1.0]),
+        "ease-out-cubic" => Easing::EaseOutCubic,
+        other => parse_cubic_bezier(other)
+            .map(Easing::CubicBezier)
+            .unwrap_or(Easing::EaseOutCubic),
+    }
+}
+
+fn parse_cubic_bezier(name: &str) -> Option<[f32; 4]> {
+    let inner = name
+        .strip_prefix("cubic-bezier(")?
+        .trim_end_matches(')')
+        .trim();
+    let mut values = [0.0f32; 4];
+    let mut count = 0usize;
+    for part in inner.split(',') {
+        let value: f32 = part.trim().parse().ok()?;
+        if count >= 4 {
+            return None;
+        }
+        if matches!(count, 0 | 2) && !(0.0..=1.0).contains(&value) {
+            return None;
+        }
+        values[count] = value;
+        count += 1;
+    }
+    (count == 4).then_some(values)
+}
+
+fn parse_css_steps(name: &str) -> Option<(u32, StepJump)> {
+    match name {
+        "step-start" => return Some((1, StepJump::Start)),
+        "step-end" => return Some((1, StepJump::End)),
+        _ => {}
+    }
+    let inner = name.strip_prefix("steps(")?.trim_end_matches(')').trim();
+    let mut parts = inner.split(',').map(str::trim);
+    let count = parts
+        .next()?
+        .parse::<u32>()
+        .ok()
+        .filter(|count| *count > 0)?;
+    let jump = match parts.next().unwrap_or("end") {
+        "start" | "jump-start" => StepJump::Start,
+        "end" | "jump-end" => StepJump::End,
+        "jump-none" => StepJump::None,
+        "jump-both" => StepJump::Both,
+        _ => return None,
+    };
+    Some((count, jump))
 }
 
 pub fn parse_transition_properties(raw: &str) -> Vec<String> {
@@ -1058,56 +1360,392 @@ fn paint_from_entries(entries: &[DeclarationEntry]) -> CssPaintSnapshot {
     CssPaintSnapshot::from_layout(&layout)
 }
 
-pub fn build_transition_spec(
+/// Compile `transition` longhands onto Motion IR. Compositor-safe properties
+/// become overlay tracks; px width/height become Layout-class CPU tracks;
+/// remaining paint longhands keep a Progress spec.
+pub fn compile_css_transition(
     widget_id: u64,
     motion: &CssComputedMotion,
+    from: &CssPaintSnapshot,
+    to: &CssPaintSnapshot,
     now: Duration,
+) -> Option<CompiledCssMotion> {
+    if !motion.has_transition() {
+        return None;
+    }
+    let listed = parse_transition_properties(&motion.transition_property);
+    let durations = split_css_comma_list(&motion.transition_duration);
+    let delays = split_css_comma_list(&motion.transition_delay);
+    let timings = split_css_comma_list(&motion.transition_timing_function);
+    let all = listed.is_empty()
+        || listed
+            .iter()
+            .any(|property| property.eq_ignore_ascii_case("all"));
+    let mut overlays = Vec::new();
+    let mut cpu_properties = Vec::new();
+    let mut cpu_index = 0usize;
+    let properties: Vec<String> = if all {
+        compositor_css_names()
+            .into_iter()
+            .chain(cpu_css_names())
+            .map(str::to_string)
+            .collect()
+    } else {
+        listed
+    };
+    for (index, property) in properties.iter().enumerate() {
+        let duration = css_list_at(&durations, index);
+        let delay = css_list_at(&delays, index);
+        let timing = css_list_at(&timings, index);
+        if let Some(animatable) = compositor_css_property(property) {
+            if !snapshot_property_changed(from, to, animatable) {
+                continue;
+            }
+            let Some(spec) = overlay_transition_spec(
+                widget_id, animatable, from, to, duration, delay, timing, now,
+            ) else {
+                continue;
+            };
+            overlays.push(spec);
+            continue;
+        }
+        if let Some(animatable) = layout_css_property(property) {
+            if !snapshot_property_changed(from, to, animatable) {
+                continue;
+            }
+            if let Some(spec) = overlay_transition_spec(
+                widget_id, animatable, from, to, duration, delay, timing, now,
+            ) {
+                overlays.push(spec);
+                continue;
+            }
+        }
+        if snapshot_cpu_property_changed(from, to, property) {
+            cpu_properties.push(property.clone());
+            cpu_index = index;
+        }
+    }
+    let cpu = if cpu_properties.is_empty() {
+        None
+    } else {
+        timing_spec(
+            css_transition_animation_id(widget_id),
+            widget_id,
+            css_list_at(&durations, cpu_index),
+            css_list_at(&delays, cpu_index),
+            css_list_at(&timings, cpu_index),
+            now,
+            None,
+        )
+    };
+    let compiled = CompiledCssMotion { cpu, overlays };
+    (!compiled.is_empty()).then_some(compiled)
+}
+
+/// Compile `@keyframes` onto Motion IR. Opacity/transform become compositor
+/// overlay keyframe tracks; remaining paint/layout longhands keep a Progress spec.
+pub fn compile_css_keyframes(
+    widget_id: u64,
+    motion: &CssComputedMotion,
+    rule: &KeyframesRule,
+    now: Duration,
+) -> Option<CompiledCssMotion> {
+    if motion.animation_name.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let playback = playback_from_computed(motion);
+    let mut overlays = Vec::new();
+    let mut has_cpu = false;
+    for name in keyframe_declared_names(rule) {
+        if let Some(property) = compositor_css_property(&name) {
+            if let Some(spec) = overlay_keyframe_spec(widget_id, property, rule, motion, now) {
+                overlays.push(spec);
+            }
+            continue;
+        }
+        if cpu_css_names()
+            .iter()
+            .any(|cpu| cpu.eq_ignore_ascii_case(&name))
+            || name.eq_ignore_ascii_case("transform-origin")
+            || name.eq_ignore_ascii_case("background-color")
+        {
+            has_cpu = true;
+        }
+    }
+    let cpu = has_cpu
+        .then(|| {
+            timing_spec(
+                css_keyframes_animation_id(widget_id),
+                widget_id,
+                &motion.animation_duration,
+                &motion.animation_delay,
+                &motion.animation_timing_function,
+                now,
+                Some(playback),
+            )
+        })
+        .flatten();
+    let compiled = CompiledCssMotion { cpu, overlays };
+    if compiled.is_empty() {
+        timing_spec(
+            css_keyframes_animation_id(widget_id),
+            widget_id,
+            &motion.animation_duration,
+            &motion.animation_delay,
+            &motion.animation_timing_function,
+            now,
+            Some(playback),
+        )
+        .map(|cpu| CompiledCssMotion {
+            cpu: Some(cpu),
+            overlays: Vec::new(),
+        })
+    } else {
+        Some(compiled)
+    }
+}
+
+fn timing_spec(
+    id: AnimationId,
+    widget_id: u64,
+    duration_raw: &str,
+    delay_raw: &str,
+    timing_raw: &str,
+    now: Duration,
+    playback: Option<AnimationPlayback>,
 ) -> Option<AnimationSpec> {
-    let duration_ms = parse_css_time_ms(&motion.transition_duration)?;
+    let duration_ms = parse_css_time_ms(duration_raw).unwrap_or(0.0);
     if duration_ms <= 0.0 {
         return None;
     }
-    let delay_ms = parse_css_time_ms(&motion.transition_delay).unwrap_or(0.0);
+    let delay_ms = parse_css_time_ms(delay_raw).unwrap_or(0.0);
     let duration = Duration::from_secs_f32(duration_ms / 1000.0);
     let delay = Duration::from_secs_f32(delay_ms / 1000.0);
     let start = now.checked_add(delay)?;
-    Some(AnimationSpec::new(
-        css_transition_animation_id(widget_id),
+    let mut spec = AnimationSpec::new(
+        id,
         StableNodeId::new(widget_id)?,
         start,
         duration,
         Duration::from_millis(16),
-        easing_from_css(&motion.transition_timing_function),
-    ))
+        easing_from_css(timing_raw),
+    )
+    .with_curve(curve_from_css(timing_raw));
+    if let Some(playback) = playback {
+        spec = spec.with_playback(playback);
+    }
+    Some(spec)
 }
 
-pub fn build_keyframes_spec(
+fn overlay_transition_spec(
     widget_id: u64,
+    property: AnimatableProperty,
+    from: &CssPaintSnapshot,
+    to: &CssPaintSnapshot,
+    duration_raw: &str,
+    delay_raw: &str,
+    timing_raw: &str,
+    now: Duration,
+) -> Option<AnimationSpec> {
+    let from_value = snapshot_motion_value(from, property)?;
+    let to_value = snapshot_motion_value(to, property)?;
+    Some(
+        timing_spec(
+            css_transition_overlay_id(widget_id, property),
+            widget_id,
+            duration_raw,
+            delay_raw,
+            timing_raw,
+            now,
+            None,
+        )?
+        .with_property(property)
+        .with_range(from_value, MotionTo::Value(to_value)),
+    )
+}
+
+fn overlay_keyframe_spec(
+    widget_id: u64,
+    property: AnimatableProperty,
+    rule: &KeyframesRule,
     motion: &CssComputedMotion,
     now: Duration,
 ) -> Option<AnimationSpec> {
-    if motion.animation_name.eq_ignore_ascii_case("none") {
-        return None;
-    }
-    let duration_ms = parse_css_time_ms(&motion.animation_duration).unwrap_or(0.0);
-    if duration_ms <= 0.0 {
-        return None;
-    }
-    let delay_ms = parse_css_time_ms(&motion.animation_delay).unwrap_or(0.0);
-    let duration = Duration::from_secs_f32(duration_ms / 1000.0);
-    let delay = Duration::from_secs_f32(delay_ms / 1000.0);
-    let start = now.checked_add(delay)?;
+    let (from, to) = motion_keyframes_for_property(rule, property)?;
     Some(
-        AnimationSpec::new(
-            css_keyframes_animation_id(widget_id),
-            StableNodeId::new(widget_id)?,
-            start,
-            duration,
-            Duration::from_millis(16),
-            easing_from_css(&motion.animation_timing_function),
-        )
-        .with_playback(playback_from_computed(motion)),
+        timing_spec(
+            css_keyframes_overlay_id(widget_id, property),
+            widget_id,
+            &motion.animation_duration,
+            &motion.animation_delay,
+            &motion.animation_timing_function,
+            now,
+            Some(playback_from_computed(motion)),
+        )?
+        .with_property(property)
+        .with_range(from, to),
     )
+}
+
+fn compositor_css_property(name: &str) -> Option<AnimatableProperty> {
+    let (property, class) = classify_animatable_property(name)?;
+    (class == AnimationClass::Compositor
+        && matches!(
+            property,
+            AnimatableProperty::Opacity | AnimatableProperty::Transform | AnimatableProperty::Clip
+        ))
+    .then_some(property)
+}
+
+fn layout_css_property(name: &str) -> Option<AnimatableProperty> {
+    let (property, class) = classify_animatable_property(name)?;
+    (class == AnimationClass::Layout
+        && matches!(
+            property,
+            AnimatableProperty::Width | AnimatableProperty::Height
+        ))
+    .then_some(property)
+}
+
+fn compositor_css_names() -> [&'static str; 2] {
+    ["opacity", "transform"]
+}
+
+fn cpu_css_names() -> [&'static str; 6] {
+    [
+        "color",
+        "background",
+        "filter",
+        "width",
+        "height",
+        "transform-origin",
+    ]
+}
+
+pub fn cpu_transition_properties(listed: &[String]) -> Vec<String> {
+    let all = listed.is_empty()
+        || listed
+            .iter()
+            .any(|property| property.eq_ignore_ascii_case("all"));
+    if all {
+        return cpu_css_names()
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+    }
+    listed
+        .iter()
+        .filter(|property| compositor_css_property(property).is_none())
+        .cloned()
+        .collect()
+}
+
+fn snapshot_motion_value(
+    snapshot: &CssPaintSnapshot,
+    property: AnimatableProperty,
+) -> Option<MotionValue> {
+    match property {
+        AnimatableProperty::Opacity => Some(MotionValue::Scalar(snapshot.opacity.unwrap_or(1.0))),
+        AnimatableProperty::Transform => Some(MotionValue::Transform(
+            snapshot.transform.unwrap_or_default(),
+        )),
+        AnimatableProperty::Width => length_px_value(snapshot.width),
+        AnimatableProperty::Height => length_px_value(snapshot.height),
+        _ => None,
+    }
+}
+
+fn length_px_value(spec: Option<nana_ui_core::LengthSpec>) -> Option<MotionValue> {
+    match spec {
+        Some(nana_ui_core::LengthSpec::Px(px)) if px.is_finite() => Some(MotionValue::Scalar(px)),
+        _ => None,
+    }
+}
+
+fn snapshot_property_changed(
+    from: &CssPaintSnapshot,
+    to: &CssPaintSnapshot,
+    property: AnimatableProperty,
+) -> bool {
+    snapshot_motion_value(from, property) != snapshot_motion_value(to, property)
+}
+
+fn snapshot_cpu_property_changed(
+    from: &CssPaintSnapshot,
+    to: &CssPaintSnapshot,
+    property: &str,
+) -> bool {
+    match property.to_ascii_lowercase().as_str() {
+        "color" => from.color != to.color,
+        "background" | "background-color" => from.background != to.background,
+        "filter" => from.filter != to.filter,
+        "width" => from.width != to.width,
+        "height" => from.height != to.height,
+        "transform-origin" => from.transform_origin != to.transform_origin,
+        "transform" => from.transform_3d != to.transform_3d,
+        _ => false,
+    }
+}
+
+fn keyframe_declared_names(rule: &KeyframesRule) -> Vec<String> {
+    let mut names = Vec::new();
+    for block in &rule.blocks {
+        for entry in &block.declaration_entries {
+            if !names
+                .iter()
+                .any(|existing: &String| existing.eq_ignore_ascii_case(&entry.property))
+            {
+                names.push(entry.property.clone());
+            }
+        }
+    }
+    names
+}
+
+fn motion_keyframes_for_property(
+    rule: &KeyframesRule,
+    property: AnimatableProperty,
+) -> Option<(MotionValue, MotionTo)> {
+    let mut stops: Vec<(f32, CssPaintSnapshot)> = rule
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            let offset = block
+                .selectors
+                .iter()
+                .map(|sel| match sel {
+                    KeyframeSelector::From => 0.0,
+                    KeyframeSelector::To => 100.0,
+                    KeyframeSelector::Percent(p) => *p,
+                })
+                .fold(f32::INFINITY, f32::min);
+            (offset < f32::INFINITY)
+                .then_some((offset, paint_from_entries(&block.declaration_entries)))
+        })
+        .collect();
+    stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut values = Vec::new();
+    for (percent, paint) in &stops {
+        let Some(value) = snapshot_motion_value(paint, property) else {
+            continue;
+        };
+        if property == AnimatableProperty::Opacity && paint.opacity.is_none() {
+            continue;
+        }
+        if property == AnimatableProperty::Transform && paint.transform.is_none() {
+            continue;
+        }
+        values.push(Keyframe {
+            offset: (percent / 100.0).clamp(0.0, 1.0),
+            value,
+            easing: None,
+        });
+    }
+    if values.is_empty() {
+        return None;
+    }
+    let from = values[0].value;
+    Some((from, MotionTo::Keyframes(values)))
 }
 
 pub fn playback_from_computed(motion: &CssComputedMotion) -> AnimationPlayback {
@@ -1116,6 +1754,7 @@ pub fn playback_from_computed(motion: &CssComputedMotion) -> AnimationPlayback {
         direction: parse_animation_direction(&motion.animation_direction),
         fill_mode: parse_animation_fill_mode(&motion.animation_fill_mode),
         play_state: parse_animation_play_state(&motion.animation_play_state),
+        paused_at: None,
     }
 }
 
@@ -1191,8 +1830,10 @@ pub fn apply_interactive_layers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::css_cascade::{MatchContext, MatchNode, parse_stylesheet_full};
-    use crate::css_interactive::{InteractiveMatchState, InteractivePseudoFlags};
+    use crate::{
+        css_cascade::{MatchContext, MatchNode, parse_stylesheet_full},
+        css_interactive::{InteractiveMatchState, InteractivePseudoFlags},
+    };
 
     #[test]
     fn transition_shorthand_parses_duration() {
@@ -1200,6 +1841,151 @@ mod tests {
         assert_eq!(parsed.property, "opacity");
         assert_eq!(parsed.duration, "0.2s");
         assert_eq!(parse_css_time_ms(&parsed.duration), Some(200.0));
+    }
+
+    #[test]
+    fn transform_opacity_shorthand_keeps_both_properties() {
+        let parsed = parse_transition_shorthand("transform 150ms ease, opacity 150ms ease")
+            .expect("transition");
+        assert_eq!(parsed.property, "transform, opacity");
+        assert_eq!(parsed.duration, "150ms, 150ms");
+        assert_eq!(parse_css_time_ms(&parsed.duration), Some(150.0));
+    }
+
+    #[test]
+    fn easing_from_css_parses_cubic_bezier_and_keywords() {
+        assert_eq!(easing_from_css("linear"), Easing::Linear);
+        assert_eq!(
+            easing_from_css("cubic-bezier(0.2, 0.8, 0.2, 1)"),
+            Easing::CubicBezier([0.2, 0.8, 0.2, 1.0])
+        );
+        assert_eq!(
+            easing_from_css("ease"),
+            Easing::CubicBezier([0.25, 0.1, 0.25, 1.0])
+        );
+    }
+
+    #[test]
+    fn curve_from_css_parses_steps() {
+        assert_eq!(
+            curve_from_css("steps(4, end)"),
+            MotionCurve::Steps {
+                count: 4,
+                jump: StepJump::End
+            }
+        );
+        assert_eq!(
+            curve_from_css("step-start"),
+            MotionCurve::Steps {
+                count: 1,
+                jump: StepJump::Start
+            }
+        );
+        assert_eq!(
+            curve_from_css("steps(2, jump-both)"),
+            MotionCurve::Steps {
+                count: 2,
+                jump: StepJump::Both
+            }
+        );
+    }
+
+    #[test]
+    fn apply_cpu_to_layout_skips_compositor_opacity() {
+        let paint = CssPaintSnapshot {
+            opacity: Some(1.0),
+            background: Some([0.0, 0.0, 1.0, 1.0]),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let mut cpu = LayoutStyle {
+            opacity: Some(0.0),
+            ..LayoutStyle::default()
+        };
+        paint.apply_cpu_to_layout(&mut cpu);
+        assert_eq!(cpu.opacity, Some(0.0));
+        assert_eq!(cpu.background, Some([0.0, 0.0, 1.0, 1.0]));
+
+        let mut all = LayoutStyle {
+            opacity: Some(0.0),
+            ..LayoutStyle::default()
+        };
+        paint.apply_to_layout(&mut all);
+        assert_eq!(all.opacity, Some(1.0));
+    }
+
+    #[test]
+    fn compile_transition_emits_compositor_overlay_not_progress() {
+        let motion = CssComputedMotion {
+            transition_property: "transform, opacity".into(),
+            transition_duration: "150ms".into(),
+            transition_delay: "0s".into(),
+            transition_timing_function: "ease".into(),
+            ..CssComputedMotion::default()
+        };
+        let from = CssPaintSnapshot {
+            opacity: Some(0.0),
+            transform: Some(nana_ui_core::PaintTransform {
+                e: 12.0,
+                ..nana_ui_core::PaintTransform::default()
+            }),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            opacity: Some(1.0),
+            transform: Some(nana_ui_core::PaintTransform::default()),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let compiled =
+            compile_css_transition(7, &motion, &from, &to, Duration::ZERO).expect("compiled");
+        assert!(compiled.cpu.is_none());
+        assert_eq!(compiled.overlays.len(), 2);
+        assert!(
+            compiled
+                .overlays
+                .iter()
+                .all(|spec| spec.uses_presentation_overlay())
+        );
+        assert!(
+            compiled
+                .overlays
+                .iter()
+                .any(|spec| spec.property == AnimatableProperty::Opacity)
+        );
+        assert!(
+            compiled
+                .overlays
+                .iter()
+                .any(|spec| spec.property == AnimatableProperty::Transform)
+        );
+    }
+
+    #[test]
+    fn compile_width_transition_stays_layout_class() {
+        use nana_ui_core::LengthSpec;
+        let motion = CssComputedMotion {
+            transition_property: "width".into(),
+            transition_duration: "200ms".into(),
+            transition_delay: "0s".into(),
+            transition_timing_function: "linear".into(),
+            ..CssComputedMotion::default()
+        };
+        let from = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(40.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            width: Some(LengthSpec::Px(80.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let compiled =
+            compile_css_transition(3, &motion, &from, &to, Duration::ZERO).expect("compiled");
+        assert!(compiled.cpu.is_none());
+        assert_eq!(compiled.overlays.len(), 1);
+        let layout = &compiled.overlays[0];
+        assert!(!layout.uses_presentation_overlay());
+        assert_eq!(layout.property, AnimatableProperty::Width);
+        assert_eq!(layout.from, MotionValue::Scalar(40.0));
+        assert_eq!(layout.to, MotionTo::Value(MotionValue::Scalar(80.0)));
     }
 
     #[test]

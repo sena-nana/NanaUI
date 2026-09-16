@@ -271,6 +271,10 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::ReleasePointer { .. } => "ReleasePointer",
         UiMutation::StartAnimation { .. } => "StartAnimation",
         UiMutation::StopAnimation { .. } => "StopAnimation",
+        UiMutation::FinishAnimation { .. } => "FinishAnimation",
+        UiMutation::ReverseAnimation { .. } => "ReverseAnimation",
+        UiMutation::PauseAnimation { .. } => "PauseAnimation",
+        UiMutation::ResumeAnimation { .. } => "ResumeAnimation",
         UiMutation::RequestFocus { .. } => "RequestFocus",
         UiMutation::RestoreFocusWithin { .. } => "RestoreFocusWithin",
         UiMutation::SetIme { .. } => "SetIme",
@@ -2297,9 +2301,8 @@ impl NanaTreeDocument {
 
     /// Paint-only CSS `transform` overlay (TransitionGroup FLIP).
     ///
-    /// Writes Runtime `LayoutStyle.transform` so extract → UiScene →
-    /// SceneWgpuPainter sees the affine. Never writes Runtime `LayoutBox`
-    /// and never recascades selectors.
+    /// Invert is a compositor presentation overlay. Never writes Runtime
+    /// `LayoutBox` and never recascades selectors.
     pub fn set_paint_transform(&mut self, el: NodeHandle, css: &str) {
         if !self.nodes.contains_key(&el.0) {
             return;
@@ -2307,14 +2310,20 @@ impl NanaTreeDocument {
         let Ok(id) = StableNodeId::try_from(el) else {
             return;
         };
-        let transform = crate::css_map::parse_inline_paint_transform(css);
-        let mut style = self.runtime.node_style(id).cloned().unwrap_or_default();
-        if style.layout.transform == transform {
+        let now = self.runtime_now();
+        if let Some(transform) = crate::css_map::parse_inline_paint_transform(css) {
+            if let Some(spec) = nana_ui_runtime::layout_flip_hold_spec(id, transform, now) {
+                self.pending.mutations.start_animation(spec);
+            }
             return;
         }
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.transform = transform;
-        self.pending.mutations.set_style(id, style);
+        if let Some(flip_id) = nana_ui_runtime::component_animation_id(
+            nana_ui_runtime::component_animation_kinds::FLIP,
+            id,
+        ) && self.world().animation_is_active(flip_id)
+        {
+            self.pending.mutations.stop_animation(flip_id);
+        }
     }
 
     fn sync_drop_accepts(&mut self, el: NodeHandle) {
@@ -3013,10 +3022,15 @@ impl NanaTreeDocument {
     }
 
     pub fn start_css_animation(&mut self, spec: nana_ui_runtime::AnimationSpec) {
-        if spec.duration.is_zero() || spec.frame_interval.is_zero() {
+        if spec.timing.duration.is_zero() || spec.timing.frame_interval.is_zero() {
             return;
         }
         self.commit_pending_with(|mutations| mutations.start_animation(spec))
+            .ok();
+    }
+
+    pub fn stop_css_animation(&mut self, id: nana_ui_runtime::AnimationId) {
+        self.commit_pending_with(|mutations| mutations.stop_animation(id))
             .ok();
     }
 

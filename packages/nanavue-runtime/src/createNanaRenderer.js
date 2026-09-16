@@ -15,7 +15,7 @@ import { withNanaWindowDisposal, defineLayoutMetrics, hostCall, layoutRect, nana
 import { appearEnterPhaseAfter, armMotionEndFromStyles, cancelArmedMotionEnd, createMotionEndEvent, isPaintOnlyStyleKey, isVueTransitionClass, preserveMotionClasses, resolveTransitionComputedStyles, vueTransitionClassKind } from "./transitionContract.js";
 
 export { hostCall } from "./layoutMetrics.js";
-export { applyFlipPaintTransform, clearFlipPaintTransform, readFlipBox } from "./transitionContract.js";
+export { applyFlipPaintTransform, clearFlipPaintTransform, readFlipBox, sharedElementSizeDelta } from "./transitionContract.js";
 
 
 

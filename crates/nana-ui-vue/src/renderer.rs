@@ -12,18 +12,20 @@ use std::sync::{Arc, Mutex};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
 use nana_ui_web_api::{SharedWebApiState, shared_web_api_state};
 
-use crate::bridge::{MessageBridge, WidgetKind, WidgetProps, widget_id};
 #[cfg(feature = "scene-view")]
 use crate::native_component::{NativeComponentRegistry, normalize_component_name};
-use crate::scroll::{
-    ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
-    shared_scroll_offset_store,
+use crate::{
+    bridge::{MessageBridge, WidgetKind, WidgetProps, widget_id},
+    scroll::{
+        ScrollIntoViewOptions, ScrollOffset, scroll_into_view, set_scroll_offset,
+        shared_scroll_offset_store,
+    },
+    tree::{
+        ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
+        query_scroll_content_size,
+    },
+    widget_map::resolve_host_tag_kind,
 };
-use crate::tree::{
-    ElementNamespace, LayoutBoxStore, NanaTreeDocument, NodeHandle, get_layout_box_from,
-    query_scroll_content_size,
-};
-use crate::widget_map::resolve_host_tag_kind;
 use nana_ui_core::ButtonKind;
 
 /// Shared handles used by DOM + semantic bridge host ops.
@@ -458,14 +460,14 @@ fn register_all(api: &mut HostApiRegistry, host: HostDocs) {
         api.register("setPaintTransform", move |args| {
             let el = arg_handle(args, 0)?;
             let css = arg_str(args, 1).unwrap_or_default();
-            {
-                let mut guard = lock_doc(&host.document)?;
-                guard.set_paint_transform(el, &css);
-            }
             let mut bridge = lock_bridge(&host.bridge)?;
+            let mut guard = lock_doc(&host.document)?;
             if bridge.contains(widget_id(el)) {
-                let mut guard = lock_doc(&host.document)?;
+                // Widget path owns Invert hold + Play. Do not also stop the
+                // FLIP id on the tree API, or TransitionGroup flashes Last.
                 bridge.set_paint_transform(widget_id(el), &css, &mut guard);
+            } else {
+                guard.set_paint_transform(el, &css);
             }
             Ok(HostValue::Null)
         });
@@ -2857,7 +2859,6 @@ mod tests {
 
     #[test]
     fn set_paint_transform_host_op_writes_runtime_style_not_layout_box() {
-        use nana_ui_core::PaintTransform;
         use nana_ui_runtime::StableNodeId;
 
         let doc = Arc::new(Mutex::new(NanaTreeDocument::new(400, 200, 1.0)));
@@ -2918,14 +2919,18 @@ mod tests {
                 .world()
                 .node_style(StableNodeId::new(id as u64).unwrap())
                 .expect("style");
-            assert_eq!(
-                style.layout.transform,
-                Some(PaintTransform {
-                    e: 12.0,
-                    f: 4.0,
-                    ..PaintTransform::default()
-                })
-            );
+            assert_eq!(style.layout.transform, None);
+            match guard.world().presentation_applied_value(
+                StableNodeId::new(id as u64).unwrap(),
+                nana_ui_runtime::AnimatableProperty::Transform,
+                guard.runtime_now(),
+            ) {
+                Some(nana_ui_runtime::MotionValue::Transform(transform)) => {
+                    assert!((transform.e - 12.0).abs() < 1e-3);
+                    assert!((transform.f - 4.0).abs() < 1e-3);
+                }
+                other => panic!("expected FLIP overlay, got {other:?}"),
+            }
         }
         api.call(
             "setPaintTransform",

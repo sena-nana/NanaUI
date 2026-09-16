@@ -219,17 +219,13 @@ impl MessageBridge {
             if motion.animation_name.eq_ignore_ascii_case("none")
                 || motion.animation_name.is_empty()
             {
-                self.motion.css_keyframes_name.remove(&id);
-            } else if self.cascade.keyframes.contains_key(&motion.animation_name)
+                self.clear_css_keyframes(id);
+            } else if let Some(rule) = self.cascade.keyframes.get(&motion.animation_name).cloned()
                 && !self.motion.css_transitions.contains_key(&id)
                 && self.should_start_keyframes(id, &motion.animation_name)
-                && let Some(spec) = build_keyframes_spec(id, &motion, now)
+                && let Some(compiled) = compile_css_keyframes(id, &motion, &rule, now)
             {
-                self.motion
-                    .css_keyframes_name
-                    .insert(id, motion.animation_name.clone());
-                doc.start_css_animation(spec);
-                self.queue_motion_cancel(id);
+                self.start_compiled_keyframes(doc, id, motion.animation_name.clone(), compiled);
             }
             let Some(from) = from_snapshots.get(&id) else {
                 continue;
@@ -243,46 +239,18 @@ impl MessageBridge {
                     continue;
                 }
                 let current = self
-                    .snapshot_widget(id)
+                    .snapshot_from_presentation(doc, id)
                     .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
-                if let Some(spec) = build_transition_spec(id, &motion, now) {
-                    self.motion.css_transition_base.insert(id, current.clone());
-                    self.motion.css_transition_progress.insert(id, 0.0);
-                    self.motion.css_transitions.insert(
-                        id,
-                        ActiveCssTransition {
-                            from: current.clone(),
-                            to,
-                            spec,
-                        },
-                    );
-                    doc.start_css_animation(spec);
-                    self.queue_motion_cancel(id);
-                    self.pin_host_driven_transition_paint(doc, id, &current);
-                    self.motion.paint_transform_overlays.remove(&id);
-                    self.motion.paint_transform_releases.remove(&id);
+                if let Some(compiled) = compile_css_transition(id, &motion, &current, &to, now) {
+                    self.start_compiled_transition(doc, id, current, to, compiled, true);
                 }
                 continue;
             }
             if from == &to {
                 continue;
             }
-            if let Some(spec) = build_transition_spec(id, &motion, now) {
-                self.motion.css_transition_base.insert(id, from.clone());
-                self.motion.css_transition_progress.insert(id, 0.0);
-                self.motion.css_transitions.insert(
-                    id,
-                    ActiveCssTransition {
-                        from: from.clone(),
-                        to,
-                        spec,
-                    },
-                );
-                doc.start_css_animation(spec);
-                self.queue_motion_cancel(id);
-                self.pin_host_driven_transition_paint(doc, id, from);
-                self.motion.paint_transform_overlays.remove(&id);
-                self.motion.paint_transform_releases.remove(&id);
+            if let Some(compiled) = compile_css_transition(id, &motion, from, &to, now) {
+                self.start_compiled_transition(doc, id, from.clone(), to, compiled, false);
             }
         }
         self.release_pending_flip_transforms(doc);
@@ -522,7 +490,10 @@ impl MessageBridge {
                 .map(|motion| parse_transition_properties(&motion.transition_property))
                 .unwrap_or_default();
             let paint = lerp_paint_for_properties(base, &transition.to, progress, &properties);
-            paint.apply_to_layout(&mut layout);
+            // Same contract as tick: compositor opacity/transform stay on the
+            // overlay. Progress is 0 for compositor-only tracks, so
+            // `apply_to_layout` would stamp the from value back onto logical.
+            paint.apply_cpu_to_layout(&mut layout);
         }
         // Custom-element contract: tag `nana-sidebar-frame` / `nana-sidebar-row`
         // mirrors the public class hints when Vue omitted `class` (host CEs often

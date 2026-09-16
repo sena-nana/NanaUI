@@ -6,6 +6,7 @@ import {
   appearEnterPhaseAfter,
   applyFlipPaintTransform,
   armMotionEndFromStyles,
+  sharedElementSizeDelta,
   cancelArmedMotionEnd,
   motionEndFallbackWaitMs,
   createMotionEndEvent,
@@ -128,6 +129,19 @@ test("FLIP delta is layout-box inverse translate, not LayoutBox writeback", () =
   assert.equal(isPaintOnlyStyleKey("width"), false);
 });
 
+test("shared-element size delta is layout-class, never a child scale", () => {
+  const prev = { left: 0, top: 0, width: 40, height: 20 };
+  const next = { left: 80, top: 10, width: 80, height: 40 };
+  assert.deepEqual(flipDelta(prev, next), { dx: -80, dy: -10 });
+  assert.deepEqual(sharedElementSizeDelta(prev, next), {
+    widthFrom: 40,
+    widthTo: 80,
+    heightFrom: 20,
+    heightTo: 40,
+    sizeChanged: true,
+  });
+});
+
 test("motion end event is a host-dispatchable Event, not WAAPI", () => {
   const target = { id: 3 };
   const event = createMotionEndEvent("transitionend", target, {
@@ -144,25 +158,21 @@ test("motion end event is a host-dispatchable Event, not WAAPI", () => {
 
 });
 
-test("armed motion end timeout dispatches once through the host callback", async () => {
+test("arming motion end does not schedule a JS timeout clock", async () => {
   const hits = [];
   const styles = { transitionDuration: "10ms", transitionProperty: "opacity" };
   const wait = armMotionEndFromStyles(9, styles, (detail) => hits.push(detail));
-  assert.equal(wait, motionEndFallbackWaitMs(styles));
-  assert.ok(wait >= 10 + 32, "fallback is duration + 2 frames, not duration+1ms");
-  await new Promise((resolve) => setTimeout(resolve, wait + 20));
-  assert.equal(hits.length, 1);
-  assert.equal(hits[0].type, "transitionend");
-  assert.equal(hits[0].propertyName, "opacity");
+  assert.equal(wait, 0);
+  await new Promise((resolve) => setTimeout(resolve, motionEndFallbackWaitMs(styles) + 20));
+  assert.equal(hits.length, 0);
 });
 
-test("host complete cancels the class-arm fallback so transitionend fires once", async () => {
+test("host complete still cancels any leftover armed handle", async () => {
   const hits = [];
   const styles = { transitionDuration: "10ms", transitionProperty: "opacity" };
-  const wait = armMotionEndFromStyles(5, styles, () => hits.push("timeout"));
+  armMotionEndFromStyles(5, styles, () => hits.push("timeout"));
   cancelArmedMotionEnd(5);
   hits.push("complete");
-  await new Promise((resolve) => setTimeout(resolve, wait + 20));
+  await new Promise((resolve) => setTimeout(resolve, motionEndFallbackWaitMs(styles) + 20));
   assert.deepEqual(hits, ["complete"]);
-
 });

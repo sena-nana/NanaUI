@@ -6026,7 +6026,6 @@ fn pointer_events_none_skips_hit_and_auto_child_punches_through() {
 
 #[test]
 fn paint_transform_overlay_does_not_write_runtime_layout_box() {
-    use nana_ui_core::PaintTransform;
     use nana_ui_runtime::StableNodeId;
 
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);
@@ -6055,14 +6054,19 @@ fn paint_transform_overlay_does_not_write_runtime_layout_box() {
         .world()
         .node_style(StableNodeId::try_from(node).unwrap())
         .expect("style");
-    assert_eq!(
-        style.layout.transform,
-        Some(PaintTransform {
-            e: 12.0,
-            f: 4.0,
-            ..PaintTransform::default()
-        })
-    );
+    assert_eq!(style.layout.transform, None);
+    match doc.world().presentation_applied_value(
+        StableNodeId::try_from(node).unwrap(),
+        nana_ui_runtime::AnimatableProperty::Transform,
+        doc.runtime_now(),
+    ) {
+        Some(nana_ui_runtime::MotionValue::Transform(transform)) => {
+            assert!((transform.e - 12.0).abs() < 1e-3);
+            assert!((transform.f - 4.0).abs() < 1e-3);
+            assert_eq!(transform.a, 1.0);
+        }
+        other => panic!("expected FLIP overlay, got {other:?}"),
+    }
     doc.set_paint_transform(node, "");
     doc.flush_host_frame();
     let cleared = doc
@@ -6070,6 +6074,15 @@ fn paint_transform_overlay_does_not_write_runtime_layout_box() {
         .node_style(StableNodeId::try_from(node).unwrap())
         .expect("cleared style");
     assert_eq!(cleared.layout.transform, None);
+    assert!(
+        doc.world()
+            .presentation_applied_value(
+                StableNodeId::try_from(node).unwrap(),
+                nana_ui_runtime::AnimatableProperty::Transform,
+                doc.runtime_now(),
+            )
+            .is_none()
+    );
     let still = doc.layout_box(node).expect("box after clear");
     assert_eq!(still.x, before.x);
     assert_eq!(still.y, before.y);

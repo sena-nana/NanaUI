@@ -4821,6 +4821,36 @@ fn transition_property_limits_lerp_to_listed_longhands() {
     assert_eq!(mid.background, Some([1.0, 0.0, 0.0, 1.0]));
 }
 
+fn presented_opacity(
+    doc: &crate::tree::NanaTreeDocument,
+    id: u64,
+    now: std::time::Duration,
+) -> f32 {
+    match doc.world().presentation_applied_value(
+        nana_ui_runtime::StableNodeId::new(id).unwrap(),
+        nana_ui_runtime::AnimatableProperty::Opacity,
+        now,
+    ) {
+        Some(nana_ui_runtime::MotionValue::Scalar(v)) => v,
+        other => panic!("expected compositor opacity overlay, got {other:?}"),
+    }
+}
+
+fn presented_transform_e(
+    doc: &crate::tree::NanaTreeDocument,
+    id: u64,
+    now: std::time::Duration,
+) -> f32 {
+    match doc.world().presentation_applied_value(
+        nana_ui_runtime::StableNodeId::new(id).unwrap(),
+        nana_ui_runtime::AnimatableProperty::Transform,
+        now,
+    ) {
+        Some(nana_ui_runtime::MotionValue::Transform(transform)) => transform.e,
+        other => panic!("expected compositor transform overlay, got {other:?}"),
+    }
+}
+
 #[test]
 fn keyframes_animation_updates_runtime_node_opacity() {
     use nana_ui_runtime::StableNodeId;
@@ -4843,19 +4873,22 @@ fn keyframes_animation_updates_runtime_node_opacity() {
         "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
              .spin { animation: spin 1s linear; width: 40px; height: 40px; }",
     );
+    doc.set_runtime_clock_for_test(Duration::ZERO);
     bridge.resolve_document_layout(&mut doc);
     doc.flush_host_frame();
-    let frame = doc.advance_css_animations(Duration::from_millis(500));
-    assert!(bridge.apply_css_animation_samples(&mut doc, frame));
-    doc.flush_host_frame();
-    let style = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("host runtime style");
-    let opacity = style.layout.opacity.expect("animated opacity");
+    let opacity = presented_opacity(&doc, host.0, Duration::from_millis(500));
     assert!(
         (opacity - 0.5).abs() < 0.08,
         "mid keyframe opacity expected ~0.5, got {opacity}"
+    );
+    assert_eq!(
+        doc.world()
+            .node_style(StableNodeId::new(host.0).unwrap())
+            .expect("host runtime style")
+            .layout
+            .opacity,
+        None,
+        "compositor keyframes must not write UiWorld logical opacity"
     );
 }
 
@@ -5346,6 +5379,179 @@ fn layout_width_transition_lerps_px_and_syncs_only_that_widget() {
 }
 
 #[test]
+fn compositor_opacity_transition_keeps_logical_and_samples_presentation() {
+    use nana_ui_runtime::StableNodeId;
+    use std::time::Duration;
+
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let btn = doc.create_element("button");
+    doc.insert(btn, root, None);
+    bridge.register(
+        btn.0,
+        WidgetKind::Button,
+        WidgetProps {
+            class_names: vec!["fade".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(
+        ".fade { opacity: 1; transition: opacity 200ms linear, transform 150ms ease; } \
+             .fade:hover { opacity: 0; transform: translateX(10px); }",
+    );
+    bridge.resolve_document_layout(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::ZERO);
+    doc.set_pointer_hover(0, Some(btn));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    let node = StableNodeId::new(btn.0).unwrap();
+    assert_eq!(
+        doc.world().node_style(node).expect("style").layout.opacity,
+        Some(0.0),
+        "logical opacity is the hover target"
+    );
+    doc.set_runtime_clock_for_test(Duration::from_millis(50));
+    assert!(
+        !bridge.tick_css_animations(&mut doc),
+        "steady compositor frames must not CPU-sample the overlay into layout"
+    );
+    let mid = presented_opacity(&doc, btn.0, Duration::from_millis(100));
+    assert!(
+        (mid - 0.5).abs() < 0.08,
+        "compositor overlay should be mid-fade, got {mid}"
+    );
+    doc.set_runtime_clock_for_test(Duration::from_millis(220));
+    let _ = bridge.tick_css_animations(&mut doc);
+    let completes = bridge.take_motion_completes();
+    assert_eq!(completes.len(), 1);
+    assert_eq!(completes[0].event_type, "transitionend");
+}
+
+#[test]
+fn compositor_recascade_keeps_logical_opacity_at_target() {
+    use nana_ui_runtime::StableNodeId;
+    use std::time::Duration;
+
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let btn = doc.create_element("button");
+    doc.insert(btn, root, None);
+    bridge.register(
+        btn.0,
+        WidgetKind::Button,
+        WidgetProps {
+            class_names: vec!["fade".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(
+        ".fade { opacity: 1; transition: opacity 200ms linear; } \
+             .fade:hover { opacity: 0; }",
+    );
+    bridge.resolve_document_layout(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::ZERO);
+    doc.set_pointer_hover(0, Some(btn));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    let node = StableNodeId::new(btn.0).unwrap();
+    assert_eq!(
+        doc.world().node_style(node).expect("style").layout.opacity,
+        Some(0.0),
+        "logical opacity is the hover target before recascade"
+    );
+    doc.set_runtime_clock_for_test(Duration::from_millis(100));
+    let mid = presented_opacity(&doc, btn.0, Duration::from_millis(100));
+    assert!(
+        (mid - 0.5).abs() < 0.08,
+        "expected mid-fade presentation before recascade, got {mid}"
+    );
+
+    bridge.reapply_layout_for(btn.0);
+    assert_eq!(
+        bridge.get(btn.0).expect("fade").props.layout.opacity,
+        Some(0.0),
+        "recascade must not write compositor from (1.0) back onto logical"
+    );
+    assert_eq!(
+        doc.world().node_style(node).expect("style").layout.opacity,
+        Some(0.0),
+        "UiWorld logical must stay at the hover target across recascade"
+    );
+    let after = presented_opacity(&doc, btn.0, Duration::from_millis(100));
+    assert!(
+        (after - mid).abs() < 0.02,
+        "recascade must not reset the compositor overlay, got {after} after mid {mid}"
+    );
+}
+
+#[test]
+fn compositor_hover_out_retargets_from_presentation() {
+    use std::time::Duration;
+
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let btn = doc.create_element("button");
+    doc.insert(btn, root, None);
+    bridge.register(
+        btn.0,
+        WidgetKind::Button,
+        WidgetProps {
+            class_names: vec!["fade".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(
+        ".fade { opacity: 1; transition: opacity 200ms linear; } \
+             .fade:hover { opacity: 0; }",
+    );
+    bridge.resolve_document_layout(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::ZERO);
+    doc.set_pointer_hover(0, Some(btn));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    doc.set_runtime_clock_for_test(Duration::from_millis(100));
+    let mid = presented_opacity(&doc, btn.0, Duration::from_millis(100));
+    assert!(
+        (mid - 0.5).abs() < 0.08,
+        "expected mid-fade presentation before hover-out, got {mid}"
+    );
+
+    doc.set_pointer_hover(0, None);
+    bridge.reapply_interactive_cascade(&mut doc);
+    let transition_to = bridge
+        .css_transition_target(btn.0)
+        .expect("hover-out must emit a compositor retarget spec");
+    assert_eq!(
+        transition_to.opacity,
+        Some(1.0),
+        "retarget destination must be rest opacity, not the previous hover target"
+    );
+    let transition_from = bridge
+        .css_transition_from(btn.0)
+        .expect("retarget must record a presentation from");
+    assert!(
+        transition_from
+            .opacity
+            .is_some_and(|opacity| (opacity - mid).abs() < 0.1),
+        "compositor hover-out from must be the mid presentation, not layout rest, got {transition_from:?}"
+    );
+    assert_eq!(
+        bridge.get(btn.0).expect("fade").props.layout.opacity,
+        Some(1.0),
+        "logical opacity after hover-out is rest, not the hover-in from"
+    );
+
+    let later = presented_opacity(&doc, btn.0, Duration::from_millis(150));
+    assert!(
+        later > mid && later < 1.0,
+        "hover-out must continue from mid presentation toward rest, got {later} after mid {mid}"
+    );
+}
+
+#[test]
 fn keyframes_finish_queues_animationend() {
     use std::time::Duration;
 
@@ -5366,10 +5572,11 @@ fn keyframes_finish_queues_animationend() {
         "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
              .spin { animation: spin 200ms linear; width: 40px; height: 40px; }",
     );
+    doc.set_runtime_clock_for_test(Duration::ZERO);
     bridge.resolve_document_layout(&mut doc);
     doc.flush_host_frame();
-    let frame = doc.advance_css_animations(Duration::from_millis(220));
-    assert!(bridge.apply_css_animation_samples(&mut doc, frame));
+    doc.set_runtime_clock_for_test(Duration::from_millis(220));
+    let _ = bridge.tick_css_animations(&mut doc);
     let completes = bridge.take_motion_completes();
     assert_eq!(completes.len(), 1);
     assert_eq!(completes[0].event_type, "animationend");
@@ -5379,7 +5586,6 @@ fn keyframes_finish_queues_animationend() {
 
 #[test]
 fn recascade_does_not_restart_same_name_keyframes() {
-    use nana_ui_runtime::StableNodeId;
     use std::time::Duration;
 
     let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
@@ -5400,18 +5606,10 @@ fn recascade_does_not_restart_same_name_keyframes() {
              .spin { animation: spin 1s linear infinite; width: 40px; height: 40px; } \
              .spin:hover { color: red; }",
     );
+    doc.set_runtime_clock_for_test(Duration::ZERO);
     bridge.resolve_document_layout(&mut doc);
     doc.flush_host_frame();
-    doc.set_runtime_clock_for_test(Duration::from_millis(250));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let mid = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("style")
-        .layout
-        .opacity
-        .expect("mid opacity");
+    let mid = presented_opacity(&doc, host.0, Duration::from_millis(250));
     assert!(
         (mid - 0.25).abs() < 0.08,
         "expected ~0.25 at 250ms, got {mid}"
@@ -5419,16 +5617,7 @@ fn recascade_does_not_restart_same_name_keyframes() {
 
     doc.set_pointer_hover(0, Some(host));
     bridge.reapply_interactive_cascade(&mut doc);
-    doc.set_runtime_clock_for_test(Duration::from_millis(500));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let later = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("style")
-        .layout
-        .opacity
-        .expect("later opacity");
+    let later = presented_opacity(&doc, host.0, Duration::from_millis(500));
     assert!(
         (later - 0.5).abs() < 0.08,
         "same-name recascade must keep the clock (expect ~0.5 at 500ms), got {later}"
@@ -5437,7 +5626,6 @@ fn recascade_does_not_restart_same_name_keyframes() {
 
 #[test]
 fn recascade_restarts_same_name_keyframes_after_finish() {
-    use nana_ui_runtime::StableNodeId;
     use std::time::Duration;
 
     let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
@@ -5461,30 +5649,21 @@ fn recascade_restarts_same_name_keyframes_after_finish() {
     bridge.resolve_document_layout(&mut doc);
     doc.flush_host_frame();
     doc.set_runtime_clock_for_test(Duration::from_millis(220));
-    assert!(bridge.tick_css_animations(&mut doc));
+    let _ = bridge.tick_css_animations(&mut doc);
     let first = bridge.take_motion_completes();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].event_type, "animationend");
 
     doc.set_pointer_hover(0, Some(host));
     bridge.reapply_interactive_cascade(&mut doc);
-    doc.set_runtime_clock_for_test(Duration::from_millis(320));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let mid = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("style")
-        .layout
-        .opacity
-        .expect("restarted opacity");
+    let mid = presented_opacity(&doc, host.0, Duration::from_millis(320));
     assert!(
         (mid - 0.5).abs() < 0.08,
         "finished same-name recascade must start again (~0.5 at 100ms), got {mid}"
     );
 
     doc.set_runtime_clock_for_test(Duration::from_millis(440));
-    assert!(bridge.tick_css_animations(&mut doc));
+    let _ = bridge.tick_css_animations(&mut doc);
     let second = bridge.take_motion_completes();
     assert_eq!(
         second.len(),
@@ -5498,7 +5677,6 @@ fn recascade_restarts_same_name_keyframes_after_finish() {
 
 #[test]
 fn flip_paint_transform_enters_runtime_and_clears_after_move_transition() {
-    use nana_ui_core::PaintTransform;
     use nana_ui_runtime::StableNodeId;
     use std::time::Duration;
 
@@ -5533,41 +5711,59 @@ fn flip_paint_transform_enters_runtime_and_clears_after_move_transition() {
     doc.flush_host_frame();
     let overlay = doc
         .world()
-        .node_style(StableNodeId::new(item.0).unwrap())
-        .expect("style");
+        .presentation_applied_value(
+            StableNodeId::new(item.0).unwrap(),
+            nana_ui_runtime::AnimatableProperty::Transform,
+            doc.runtime_now(),
+        )
+        .expect("invert overlay");
+    match overlay {
+        nana_ui_runtime::MotionValue::Transform(transform) => {
+            assert!((transform.e - 30.0).abs() < 1e-3);
+            assert_eq!(transform.a, 1.0);
+            assert_eq!(transform.d, 1.0);
+        }
+        other => panic!("expected transform overlay, got {other:?}"),
+    }
     assert_eq!(
-        overlay.layout.transform,
-        Some(PaintTransform {
-            e: 30.0,
-            ..PaintTransform::default()
-        })
+        doc.world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style")
+            .layout
+            .transform,
+        None,
+        "FLIP invert must not write logical transform"
     );
     assert_eq!(
-        overlay.layout.width, width_before,
+        doc.world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style")
+            .layout
+            .width,
+        width_before,
         "paint transform must not recascade layout"
     );
 
     bridge.set_paint_transform(item.0, "", &mut doc);
     bridge.patch_prop(item.0, "class", &HostValue::string("item item-move"));
     bridge.maybe_release_flip_paint_transform(item.0, &mut doc);
-    doc.set_runtime_clock_for_test(Duration::from_millis(100));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let mid = doc
-        .world()
-        .node_style(StableNodeId::new(item.0).unwrap())
-        .expect("style")
-        .layout
-        .transform
-        .expect("mid flip transform");
+    let mid = presented_transform_e(&doc, item.0, Duration::from_millis(100));
     assert!(
-        (mid.e - 15.0).abs() < 1.0,
-        "expected ~15px mid FLIP, got {}",
-        mid.e
+        (mid - 15.0).abs() < 1.0,
+        "expected ~15px mid FLIP, got {mid}"
+    );
+    assert_eq!(
+        doc.world()
+            .node_style(StableNodeId::new(item.0).unwrap())
+            .expect("style")
+            .layout
+            .transform,
+        None,
+        "FLIP compositor overlay must not write logical transform"
     );
 
     doc.set_runtime_clock_for_test(Duration::from_millis(220));
-    assert!(bridge.tick_css_animations(&mut doc));
+    let _ = bridge.tick_css_animations(&mut doc);
     doc.flush_host_frame();
     let done = doc
         .world()
@@ -5581,8 +5777,49 @@ fn flip_paint_transform_enters_runtime_and_clears_after_move_transition() {
 }
 
 #[test]
-fn paint_transform_does_not_restart_same_name_keyframes() {
+fn flip_clear_without_move_class_keeps_invert_hold() {
     use nana_ui_runtime::StableNodeId;
+    use std::time::Duration;
+
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let item = doc.create_element("li");
+    doc.insert(item, root, None);
+    bridge.register(
+        item.0,
+        WidgetKind::Column,
+        WidgetProps {
+            class_names: vec!["item".into()],
+            ..WidgetProps::default()
+        },
+    );
+    bridge.inject_stylesheet(".item { width: 40px; height: 16px; }");
+    bridge.resolve_document_layout(&mut doc);
+    doc.flush_host_frame();
+    doc.set_runtime_clock_for_test(Duration::ZERO);
+    bridge.set_paint_transform(item.0, "translate(30px, 0px)", &mut doc);
+    doc.flush_host_frame();
+    bridge.set_paint_transform(item.0, "", &mut doc);
+    doc.flush_host_frame();
+    match doc.world().presentation_applied_value(
+        StableNodeId::new(item.0).unwrap(),
+        nana_ui_runtime::AnimatableProperty::Transform,
+        doc.runtime_now(),
+    ) {
+        Some(nana_ui_runtime::MotionValue::Transform(transform)) => {
+            assert!(
+                (transform.e - 30.0).abs() < 1e-3,
+                "expected invert hold, got {}",
+                transform.e
+            );
+        }
+        other => panic!("clear without move class must keep Invert, got {other:?}"),
+    }
+}
+
+#[test]
+fn paint_transform_does_not_restart_same_name_keyframes() {
     use std::time::Duration;
 
     let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
@@ -5602,18 +5839,10 @@ fn paint_transform_does_not_restart_same_name_keyframes() {
         "@keyframes spin { from { opacity: 0; } to { opacity: 1; } } \
              .spin { animation: spin 1s linear infinite; width: 40px; height: 40px; }",
     );
+    doc.set_runtime_clock_for_test(Duration::ZERO);
     bridge.resolve_document_layout(&mut doc);
     doc.flush_host_frame();
-    doc.set_runtime_clock_for_test(Duration::from_millis(250));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let mid = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("style")
-        .layout
-        .opacity
-        .expect("mid opacity");
+    let mid = presented_opacity(&doc, host.0, Duration::from_millis(250));
     assert!(
         (mid - 0.25).abs() < 0.08,
         "expected ~0.25 at 250ms, got {mid}"
@@ -5621,16 +5850,7 @@ fn paint_transform_does_not_restart_same_name_keyframes() {
 
     bridge.set_paint_transform(host.0, "translate(8px, 0px)", &mut doc);
     doc.flush_host_frame();
-    doc.set_runtime_clock_for_test(Duration::from_millis(500));
-    assert!(bridge.tick_css_animations(&mut doc));
-    doc.flush_host_frame();
-    let later = doc
-        .world()
-        .node_style(StableNodeId::new(host.0).unwrap())
-        .expect("style")
-        .layout
-        .opacity
-        .expect("later opacity");
+    let later = presented_opacity(&doc, host.0, Duration::from_millis(500));
     assert!(
         (later - 0.5).abs() < 0.08,
         "paint transform must keep the keyframe clock (expect ~0.5 at 500ms), got {later}"
@@ -5638,19 +5858,20 @@ fn paint_transform_does_not_restart_same_name_keyframes() {
     assert_eq!(
         later_transform_e(&doc, host.0),
         8.0,
-        "FLIP overlay must still be on LayoutStyle.transform"
+        "FLIP overlay must still be on the compositor transform track"
     );
 }
 
 fn later_transform_e(doc: &crate::tree::NanaTreeDocument, id: u64) -> f32 {
     use nana_ui_runtime::StableNodeId;
-    doc.world()
-        .node_style(StableNodeId::new(id).unwrap())
-        .expect("style")
-        .layout
-        .transform
-        .expect("paint transform")
-        .e
+    match doc.world().presentation_applied_value(
+        StableNodeId::new(id).unwrap(),
+        nana_ui_runtime::AnimatableProperty::Transform,
+        doc.runtime_now(),
+    ) {
+        Some(nana_ui_runtime::MotionValue::Transform(transform)) => transform.e,
+        other => panic!("expected FLIP compositor overlay, got {other:?}"),
+    }
 }
 
 // --- Keyed stylesheets ------------------------------------------------------

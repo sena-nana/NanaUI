@@ -21,45 +21,49 @@ mod cascade;
 mod motion;
 mod resources;
 
-use std::cell::Cell;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use nana_ui_core::{
     AppearanceSettings, BackdropTarget, ButtonKind, CardKind, ControlSize, Icon,
     SwitchControlPosition, ThemeMode, WindowMaterialMode,
 };
 
-use crate::css_at_rule::{
-    FontFaceRule, FontFaceSrc, FsStylesheetLoader, MediaEnvironment, ParseStylesheetOptions,
-    evaluate_media_query_list, font_registration_would_exceed_cap, load_font_face_bytes,
-    parse_media_query_list,
-};
-use crate::css_cascade::{
-    MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound, StyleRule,
-    StylesheetParseReport, collect_document_custom_properties_from_rules,
-    parse_stylesheet_full_with_options, rebuild_layout_style_indexed, simple_matches,
-    stylesheet_matches, stylesheet_may_match_subject, stylesheet_needs_relative,
-};
-use crate::css_interactive::{
-    GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
-    KeyframesRule, MotionStyleRule, ParsedStylesheet, ScrollbarPseudoRule, merge_parsed_stylesheet,
-};
-use crate::css_interactive_apply::{
-    ActiveCssTransition, CssComputedMotion, CssMotionComplete, CssPaintSnapshot,
-    InteractiveRuntimeSnapshot, animation_elapsed_secs, apply_generated_pseudo_entries,
-    apply_interactive_layers, apply_placeholder_paint, apply_scrollbar_pseudo_skin,
-    apply_selection_paint, build_keyframes_spec, build_transition_spec, css_keyframes_animation_id,
-    generated_pseudo_has_content, keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
-    parse_transition_properties, resolve_computed_motion, transition_elapsed_secs,
-};
-use crate::css_map::{
-    FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox,
-};
-use crate::layout_map::kind_default_direction;
-use crate::tree::NodeHandle;
 pub use crate::widget_map::resolve_kind_from_hints;
+use crate::{
+    css_at_rule::{
+        FontFaceRule, FontFaceSrc, FsStylesheetLoader, MediaEnvironment, ParseStylesheetOptions,
+        evaluate_media_query_list, font_registration_would_exceed_cap, load_font_face_bytes,
+        parse_media_query_list,
+    },
+    css_cascade::{
+        MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound, StyleRule,
+        StylesheetParseReport, collect_document_custom_properties_from_rules,
+        parse_stylesheet_full_with_options, rebuild_layout_style_indexed, simple_matches,
+        stylesheet_matches, stylesheet_may_match_subject, stylesheet_needs_relative,
+    },
+    css_interactive::{
+        GeneratedPseudo, GeneratedPseudoRule, InteractiveMatchState, InteractiveStyleRule,
+        KeyframesRule, MotionStyleRule, ParsedStylesheet, ScrollbarPseudoRule,
+        merge_parsed_stylesheet,
+    },
+    css_interactive_apply::{
+        ActiveCssTransition, CssComputedMotion, CssMotionComplete, CssPaintSnapshot,
+        InteractiveRuntimeSnapshot, animation_elapsed_secs, apply_generated_pseudo_entries,
+        apply_interactive_layers, apply_placeholder_paint, apply_scrollbar_pseudo_skin,
+        apply_selection_paint, compile_css_keyframes, compile_css_transition,
+        cpu_transition_properties, css_keyframes_animation_id, generated_pseudo_has_content,
+        keyframe_paint_at, lerp_paint_for_properties, parse_content_text,
+        parse_transition_properties, resolve_computed_motion, transition_elapsed_secs,
+    },
+    css_map::{FlexDirection, GridTrack, LayoutStyle, LayoutStyleCss, LengthSpec, ParentBox},
+    layout_map::kind_default_direction,
+    tree::NodeHandle,
+};
 
 mod semantic;
 pub use semantic::{
@@ -484,77 +488,135 @@ impl MessageBridge {
         let mut changed_ids = Vec::new();
         for sample in frame.samples {
             let id = sample.target.get();
-            if let Some(transition) = self.motion.css_transitions.get(&id).cloned()
-                && sample.id == transition.spec.id
+            if let Some(mut transition) = self.motion.css_transitions.get(&id).cloned()
+                && transition.tracks_sample(sample.id)
             {
-                let base = self
-                    .motion
-                    .css_transition_base
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| transition.from.clone());
-                let motion = self.motion.computed_motion.get(&id).cloned();
-                let properties = motion
-                    .as_ref()
-                    .map(|motion| parse_transition_properties(&motion.transition_property))
-                    .unwrap_or_default();
-                let paint =
-                    lerp_paint_for_properties(&base, &transition.to, sample.progress, &properties);
-                if let Some(widget) = self.widgets.get_mut(&id) {
-                    paint.apply_to_layout(&mut widget.props.layout);
-                    if sample.finished
-                        && (properties.is_empty()
-                            || properties.iter().any(|p| {
-                                p.eq_ignore_ascii_case("all") || p.eq_ignore_ascii_case("transform")
-                            }))
-                    {
-                        widget.props.layout.transform = transition.to.transform;
-                        widget.props.layout.transform_3d = transition.to.transform_3d;
+                if transition.is_cpu_sample(sample.id)
+                    || matches!(
+                        sample.property,
+                        nana_ui_runtime::AnimatableProperty::Width
+                            | nana_ui_runtime::AnimatableProperty::Height
+                    )
+                {
+                    let base = self
+                        .motion
+                        .css_transition_base
+                        .get(&id)
+                        .cloned()
+                        .unwrap_or_else(|| transition.from.clone());
+                    let properties = if transition.cpu_properties.is_empty() {
+                        cpu_transition_properties(&parse_transition_properties(
+                            &self
+                                .motion
+                                .computed_motion
+                                .get(&id)
+                                .map(|motion| motion.transition_property.clone())
+                                .unwrap_or_default(),
+                        ))
+                    } else {
+                        transition.cpu_properties.clone()
+                    };
+                    // CSS transitions stay at the destination; fill-none after
+                    // the end must not snap progress back to 0.
+                    let progress = if sample.finished {
+                        1.0
+                    } else {
+                        sample.progress
+                    };
+                    let paint =
+                        lerp_paint_for_properties(&base, &transition.to, progress, &properties);
+                    if let Some(widget) = self.widgets.get_mut(&id) {
+                        paint.apply_cpu_to_layout(&mut widget.props.layout);
+                        changed_ids.push(id);
                     }
-                    changed_ids.push(id);
+                    self.motion.css_transition_progress.insert(id, progress);
                 }
-                self.motion
-                    .css_transition_progress
-                    .insert(id, sample.progress);
                 if sample.finished {
-                    if let Some(motion) = motion {
-                        self.motion.pending_motion_completes.push(
-                            CssMotionComplete::transition_end(
-                                id,
-                                &motion,
-                                transition_elapsed_secs(&motion),
-                            ),
-                        );
+                    transition.note_finished(sample.id);
+                    self.motion.css_transitions.insert(id, transition.clone());
+                    if transition.all_tracks_finished() {
+                        if let Some(motion) = self.motion.computed_motion.get(&id).cloned() {
+                            self.motion.pending_motion_completes.push(
+                                CssMotionComplete::transition_end(
+                                    id,
+                                    &motion,
+                                    transition_elapsed_secs(&motion),
+                                ),
+                            );
+                        }
+                        self.motion.css_transitions.remove(&id);
+                        self.motion.css_transition_base.remove(&id);
+                        self.motion.css_transition_progress.remove(&id);
                     }
-                    self.motion.css_transitions.remove(&id);
-                    self.motion.css_transition_base.remove(&id);
-                    self.motion.css_transition_progress.remove(&id);
+                }
+                continue;
+            }
+            let overlay_hit = self
+                .motion
+                .css_keyframes_overlays
+                .get(&id)
+                .is_some_and(|ids| ids.contains(&sample.id));
+            if overlay_hit {
+                if sample.finished {
+                    if let Some(ids) = self.motion.css_keyframes_overlays.get_mut(&id) {
+                        ids.retain(|overlay| *overlay != sample.id);
+                    }
+                    let overlays_done = self
+                        .motion
+                        .css_keyframes_overlays
+                        .get(&id)
+                        .is_none_or(|ids| ids.is_empty());
+                    let cpu_done = !self.motion.css_keyframes_cpu.contains(&id);
+                    if overlays_done && cpu_done {
+                        if let Some(motion) = self.motion.computed_motion.get(&id).cloned() {
+                            self.motion.pending_motion_completes.push(
+                                CssMotionComplete::animation_end(
+                                    id,
+                                    &motion,
+                                    animation_elapsed_secs(&motion),
+                                ),
+                            );
+                        }
+                        self.clear_css_keyframes(id);
+                    }
                 }
                 continue;
             }
             if sample.id == css_keyframes_animation_id(id) {
                 if let Some(motion) = self.motion.computed_motion.get(&id).cloned()
                     && let Some(rule) = self.cascade.keyframes.get(&motion.animation_name)
-                    && let Some(paint) = keyframe_paint_at(rule, sample.progress)
                 {
-                    if let Some(widget) = self.widgets.get_mut(&id) {
-                        paint.apply_to_layout(&mut widget.props.layout);
+                    let progress = if sample.finished {
+                        1.0
+                    } else {
+                        sample.progress
+                    };
+                    if let Some(paint) = keyframe_paint_at(rule, progress)
+                        && let Some(widget) = self.widgets.get_mut(&id)
+                    {
+                        paint.apply_cpu_to_layout(&mut widget.props.layout);
                         changed_ids.push(id);
                     }
                     if sample.finished {
-                        self.motion.pending_motion_completes.push(
-                            CssMotionComplete::animation_end(
-                                id,
-                                &motion,
-                                animation_elapsed_secs(&motion),
-                            ),
-                        );
+                        self.motion.css_keyframes_cpu.remove(&id);
+                        let overlays_done = self
+                            .motion
+                            .css_keyframes_overlays
+                            .get(&id)
+                            .is_none_or(|ids| ids.is_empty());
+                        if overlays_done {
+                            self.motion.pending_motion_completes.push(
+                                CssMotionComplete::animation_end(
+                                    id,
+                                    &motion,
+                                    animation_elapsed_secs(&motion),
+                                ),
+                            );
+                            self.clear_css_keyframes(id);
+                        }
                     }
-                }
-                if sample.finished {
-                    // Runtime already dropped the spec; stale name would skip
-                    // the next same-name start after class remove/add recascade.
-                    self.motion.css_keyframes_name.remove(&id);
+                } else if sample.finished {
+                    self.clear_css_keyframes(id);
                 }
             }
         }
@@ -1311,7 +1373,7 @@ impl MessageBridge {
         self.motion
             .pending_motion_cancels
             .retain(|queued| *queued != id);
-        self.motion.css_keyframes_name.remove(&id);
+        self.clear_css_keyframes(id);
         self.motion.paint_transform_overlays.remove(&id);
         self.motion.paint_transform_releases.remove(&id);
         if let Some(parent) = old_parent

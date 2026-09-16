@@ -14,11 +14,15 @@ pub(super) struct State {
     pub(super) css_transition_progress: HashMap<WidgetId, f32>,
     /// Finished CSS timelines waiting for host → JS `__nanaMotionComplete`.
     pub(super) pending_motion_completes: Vec<CssMotionComplete>,
-    /// Widgets whose Runtime timeline just started; host should cancel the JS fallback.
+    /// Widgets whose Runtime timeline just started; host should cancel any leftover JS arm.
     pub(super) pending_motion_cancels: Vec<WidgetId>,
     /// Last `animation-name` started per widget. Same name still playing must
     /// not `start_css_animation` again (that would reset the clock).
     pub(super) css_keyframes_name: HashMap<WidgetId, String>,
+    /// Compositor overlay IDs compiled from `@keyframes`.
+    pub(super) css_keyframes_overlays: HashMap<WidgetId, Vec<nana_ui_runtime::AnimationId>>,
+    /// Widgets whose `@keyframes` still have a CPU Progress spec.
+    pub(super) css_keyframes_cpu: HashSet<WidgetId>,
     /// TransitionGroup FLIP paint overlay. Applied after cascade; never LayoutBox.
     pub(super) paint_transform_overlays: HashMap<WidgetId, nana_ui_core::PaintTransform>,
     /// JS cleared the overlay; consume on class recascade / layout resolve.
@@ -56,6 +60,14 @@ impl MessageBridge {
             .css_transitions
             .get(&id)
             .map(|transition| transition.to.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn css_transition_from(&self, id: WidgetId) -> Option<CssPaintSnapshot> {
+        self.motion
+            .css_transitions
+            .get(&id)
+            .map(|transition| transition.from.clone())
     }
 }
 
@@ -108,7 +120,7 @@ impl MessageBridge {
         if doc.host_animation_epoch().is_some()
             && let Some(widget) = self.widgets.get_mut(&id)
         {
-            from.apply_to_layout(&mut widget.props.layout);
+            from.apply_cpu_to_layout(&mut widget.props.layout);
         }
     }
 }
@@ -131,8 +143,8 @@ impl MessageBridge {
 }
 
 impl MessageBridge {
-    /// Consume a released FLIP overlay: start a CSS transform transition when
-    /// motion exists, otherwise snap to the cascaded (no leftover translate).
+    /// Consume a released FLIP overlay: play compositor invert → identity on
+    /// the same FLIP track. Duration/easing come from the CSS move class.
     pub(crate) fn maybe_release_flip_paint_transform(
         &mut self,
         id: WidgetId,
@@ -145,47 +157,76 @@ impl MessageBridge {
             self.motion.paint_transform_releases.remove(&id);
             return;
         };
-        let mut from = self
-            .snapshot_widget(id)
-            .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
-        from.transform = Some(overlay);
-        self.motion.paint_transform_overlays.remove(&id);
-        self.motion.paint_transform_releases.remove(&id);
-        self.reapply_layout_for(id);
-        let to = self
-            .snapshot_widget(id)
-            .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
-        let now = doc.runtime_now();
-        if from.transform != to.transform
-            && let Some(motion) = self.motion.computed_motion.get(&id).cloned()
-            && let Some(spec) = build_transition_spec(id, &motion, now)
+        let motion = self.motion.computed_motion.get(&id).cloned();
+        let duration_ms = motion
+            .as_ref()
+            .and_then(|motion| {
+                crate::css_interactive_apply::parse_css_time_ms(&motion.transition_duration)
+            })
+            .unwrap_or(0.0);
+        let includes_transform = motion
+            .as_ref()
+            .map(css_transition_includes_transform)
+            .unwrap_or(false);
+        if overlay != nana_ui_core::PaintTransform::default()
+            && !css_flip_move_ready(motion.as_ref(), duration_ms, includes_transform)
         {
-            self.motion.css_transition_base.insert(id, from.clone());
-            self.motion.css_transition_progress.insert(id, 0.0);
-            self.motion.css_transitions.insert(
-                id,
-                ActiveCssTransition {
-                    from: from.clone(),
-                    to,
-                    spec,
-                },
-            );
-            doc.start_css_animation(spec);
-            self.queue_motion_cancel(id);
-            if let Some(widget) = self.widgets.get_mut(&id) {
-                from.apply_to_layout(&mut widget.props.layout);
-            }
-            self.sync_widget_layouts_for(doc, &[id]);
+            // Move class not applied yet. Keep Invert hold for the next recascade.
             return;
         }
-        self.sync_widget_layouts_for(doc, &[id]);
+        self.motion.paint_transform_overlays.remove(&id);
+        self.motion.paint_transform_releases.remove(&id);
+        let Some(node) = nana_ui_runtime::StableNodeId::new(id) else {
+            return;
+        };
+        let now = doc.runtime_now();
+        if overlay != nana_ui_core::PaintTransform::default()
+            && duration_ms > 0.0
+            && let Some(motion) = motion.as_ref()
+        {
+            let easing =
+                crate::css_interactive_apply::easing_from_css(&motion.transition_timing_function);
+            let duration = std::time::Duration::from_secs_f32(duration_ms / 1000.0);
+            if let Some(spec) =
+                nana_ui_runtime::layout_flip_play_spec(node, overlay, now, duration, easing)
+            {
+                let mut from = self
+                    .snapshot_widget(id)
+                    .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
+                from.transform = Some(overlay);
+                let to = CssPaintSnapshot::from_layout(
+                    &self
+                        .widgets
+                        .get(&id)
+                        .map(|widget| widget.props.layout.clone())
+                        .unwrap_or_default(),
+                );
+                self.start_compiled_transition(
+                    doc,
+                    id,
+                    from,
+                    to,
+                    crate::css_interactive_apply::CompiledCssMotion {
+                        cpu: None,
+                        overlays: vec![spec],
+                    },
+                    false,
+                );
+                return;
+            }
+        }
+        if let Some(flip_id) = nana_ui_runtime::component_animation_id(
+            nana_ui_runtime::component_animation_kinds::FLIP,
+            node,
+        ) {
+            doc.stop_css_animation(flip_id);
+        }
     }
 }
 
 impl MessageBridge {
-    /// Paint-only CSS `transform` (TransitionGroup FLIP). Writes `LayoutStyle.transform`
-    /// without recascade so Scene extract sees the affine and CSS animations keep
-    /// their clocks.
+    /// Paint-only CSS `transform` (TransitionGroup FLIP). Invert is a compositor
+    /// overlay; Last layout is already committed. Never writes LayoutBox.
     pub fn set_paint_transform(
         &mut self,
         id: WidgetId,
@@ -195,27 +236,29 @@ impl MessageBridge {
         if !self.widgets.contains_key(&id) {
             return;
         }
+        let Some(node) = nana_ui_runtime::StableNodeId::new(id) else {
+            return;
+        };
+        let now = doc.runtime_now();
         if let Some(transform) = crate::css_map::parse_inline_paint_transform(css) {
             self.motion.paint_transform_overlays.insert(id, transform);
             self.motion.paint_transform_releases.remove(&id);
-            if let Some(widget) = self.widgets.get_mut(&id) {
-                widget.props.layout.transform = Some(transform);
+            if let Some(spec) = nana_ui_runtime::layout_flip_hold_spec(node, transform, now) {
+                doc.start_css_animation(spec);
             }
-            self.sync_widget_layouts_for(doc, &[id]);
             return;
         }
         if self.motion.paint_transform_overlays.contains_key(&id) {
             self.motion.paint_transform_releases.insert(id);
-            if let Some(widget) = self.widgets.get_mut(&id) {
-                widget.props.layout.transform = None;
-            }
-            self.sync_widget_layouts_for(doc, &[id]);
+            self.maybe_release_flip_paint_transform(id, doc);
             return;
         }
-        if let Some(widget) = self.widgets.get_mut(&id) {
-            widget.props.layout.transform = None;
+        if let Some(id) = nana_ui_runtime::component_animation_id(
+            nana_ui_runtime::component_animation_kinds::FLIP,
+            node,
+        ) {
+            doc.stop_css_animation(id);
         }
-        self.sync_widget_layouts_for(doc, &[id]);
     }
 }
 
@@ -228,6 +271,34 @@ impl MessageBridge {
             widget.props.containing_block_height,
             self.cascade.layout_viewport,
         ))
+    }
+
+    /// Interruption from is the current visual, not logical. Compositor
+    /// opacity/transform live on the overlay; layout is already the retarget
+    /// destination, so a layout snapshot makes from==to and `compile` drops.
+    pub(super) fn snapshot_from_presentation(
+        &self,
+        doc: &crate::tree::NanaTreeDocument,
+        id: WidgetId,
+    ) -> Option<CssPaintSnapshot> {
+        let mut snapshot = self.snapshot_widget(id)?;
+        let Some(node) = nana_ui_runtime::StableNodeId::new(id) else {
+            return Some(snapshot);
+        };
+        let now = doc.runtime_now();
+        if let Some(nana_ui_runtime::MotionValue::Scalar(opacity)) = doc
+            .world()
+            .presentation_applied_value(node, nana_ui_runtime::AnimatableProperty::Opacity, now)
+        {
+            snapshot.opacity = Some(opacity);
+        }
+        if let Some(nana_ui_runtime::MotionValue::Transform(transform)) = doc
+            .world()
+            .presentation_applied_value(node, nana_ui_runtime::AnimatableProperty::Transform, now)
+        {
+            snapshot.transform = Some(transform);
+        }
+        Some(snapshot)
     }
 }
 
@@ -253,6 +324,120 @@ impl MessageBridge {
 }
 
 impl MessageBridge {
+    pub(super) fn start_compiled_transition(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        id: WidgetId,
+        from: CssPaintSnapshot,
+        to: CssPaintSnapshot,
+        compiled: crate::css_interactive_apply::CompiledCssMotion,
+        retarget: bool,
+    ) {
+        if let Some(previous) = self.motion.css_transitions.get(&id) {
+            let keep: std::collections::HashSet<_> = compiled
+                .overlays
+                .iter()
+                .map(|spec| spec.id)
+                .chain(compiled.cpu.as_ref().map(|spec| spec.id))
+                .collect();
+            if let Some(cpu_id) = previous.cpu_id
+                && !keep.contains(&cpu_id)
+            {
+                doc.stop_css_animation(cpu_id);
+            }
+            for overlay in &previous.overlay_ids {
+                if !keep.contains(overlay) {
+                    doc.stop_css_animation(*overlay);
+                }
+            }
+        }
+        self.sync_widget_layouts_for(doc, &[id]);
+        for spec in &compiled.overlays {
+            let spec = if retarget {
+                spec.clone()
+                    .with_interrupt(nana_ui_runtime::MotionInterrupt::Retarget)
+            } else {
+                spec.clone()
+            };
+            doc.start_css_animation(spec);
+        }
+        if let Some(spec) = &compiled.cpu {
+            doc.start_css_animation(spec.clone());
+        }
+        let Some(primary) = compiled.primary_spec() else {
+            return;
+        };
+        let cpu_properties = cpu_transition_properties(&parse_transition_properties(
+            &self
+                .motion
+                .computed_motion
+                .get(&id)
+                .map(|motion| motion.transition_property.clone())
+                .unwrap_or_default(),
+        ));
+        self.motion.css_transition_base.insert(id, from.clone());
+        self.motion.css_transition_progress.insert(id, 0.0);
+        self.motion.css_transitions.insert(
+            id,
+            ActiveCssTransition {
+                from: from.clone(),
+                to,
+                spec: primary,
+                overlay_ids: compiled.overlay_ids(),
+                cpu_id: compiled.cpu.as_ref().map(|spec| spec.id),
+                cpu_properties,
+            },
+        );
+        self.queue_motion_cancel(id);
+        if compiled.cpu.is_some()
+            || compiled.overlays.iter().any(|spec| {
+                spec.property.animation_class() == nana_ui_runtime::AnimationClass::Layout
+            })
+        {
+            self.pin_host_driven_transition_paint(doc, id, &from);
+        }
+        self.motion.paint_transform_overlays.remove(&id);
+        self.motion.paint_transform_releases.remove(&id);
+    }
+
+    pub(super) fn start_compiled_keyframes(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        id: WidgetId,
+        name: String,
+        compiled: crate::css_interactive_apply::CompiledCssMotion,
+    ) {
+        self.sync_widget_layouts_for(doc, &[id]);
+        for spec in &compiled.overlays {
+            doc.start_css_animation(spec.clone());
+        }
+        if let Some(spec) = &compiled.cpu {
+            doc.start_css_animation(spec.clone());
+        }
+        self.motion.css_keyframes_name.insert(id, name);
+        if compiled.overlays.is_empty() {
+            self.motion.css_keyframes_overlays.remove(&id);
+        } else {
+            self.motion
+                .css_keyframes_overlays
+                .insert(id, compiled.overlay_ids());
+        }
+        if compiled.cpu.is_some() {
+            self.motion.css_keyframes_cpu.insert(id);
+        } else {
+            self.motion.css_keyframes_cpu.remove(&id);
+        }
+        self.queue_motion_cancel(id);
+    }
+
+    pub(super) fn clear_css_keyframes(&mut self, id: WidgetId) {
+        self.motion.css_keyframes_name.remove(&id);
+        self.motion.css_keyframes_overlays.remove(&id);
+        self.motion.css_keyframes_cpu.remove(&id);
+    }
+}
+
+impl MessageBridge {
     pub(crate) fn take_motion_cancels(&mut self) -> Vec<WidgetId> {
         std::mem::take(&mut self.motion.pending_motion_cancels)
     }
@@ -268,4 +453,35 @@ impl MessageBridge {
     pub fn computed_motion_for(&self, id: WidgetId) -> Option<&CssComputedMotion> {
         self.motion.computed_motion.get(&id)
     }
+}
+
+fn css_transition_includes_transform(motion: &CssComputedMotion) -> bool {
+    if motion.transition_property.eq_ignore_ascii_case("none")
+        || motion.transition_property.is_empty()
+    {
+        return false;
+    }
+    let listed = parse_transition_properties(&motion.transition_property);
+    listed.is_empty()
+        || listed.iter().any(|property| {
+            property.eq_ignore_ascii_case("all") || property.eq_ignore_ascii_case("transform")
+        })
+}
+
+fn css_flip_move_ready(
+    motion: Option<&CssComputedMotion>,
+    duration_ms: f32,
+    includes_transform: bool,
+) -> bool {
+    if duration_ms > 0.0 && includes_transform {
+        return true;
+    }
+    let Some(motion) = motion else {
+        return false;
+    };
+    let listed = parse_transition_properties(&motion.transition_property);
+    duration_ms <= 0.0
+        && listed
+            .iter()
+            .any(|property| property.eq_ignore_ascii_case("transform"))
 }
