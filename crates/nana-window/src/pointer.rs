@@ -3,12 +3,12 @@
 //! Widgets never see HWND / NSWindow. Scene host converts the result into
 //! overlay logical coordinates and runs the existing document hit test.
 
-use raw_window_handle::HasWindowHandle;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 /// Logical client-area position of the global pointer when it is inside
 /// `window`. `None` if the pointer is outside, the query fails, or the
 /// backend cannot sample while the window is not receiving pointer events.
-pub fn pointer_in_client_area<W: HasWindowHandle + ?Sized>(
+pub fn pointer_in_client_area<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
     window: &W,
     scale_factor: f64,
     logical_size: (f32, f32),
@@ -156,12 +156,12 @@ fn macos_pointer<W: HasWindowHandle + ?Sized>(
 }
 
 #[cfg(target_os = "linux")]
-fn linux_pointer<W: HasWindowHandle + ?Sized>(
+fn linux_pointer<W: HasWindowHandle + HasDisplayHandle + ?Sized>(
     window: &W,
     scale_factor: f64,
     logical_size: (f32, f32),
 ) -> Option<(f32, f32)> {
-    use raw_window_handle::RawWindowHandle;
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     use std::os::raw::{c_int, c_uint, c_ulong};
 
     let handle = window.window_handle().ok()?;
@@ -170,6 +170,13 @@ fn linux_pointer<W: HasWindowHandle + ?Sized>(
         // receiving events. Do not invent a position from a stale cursor.
         return None;
     };
+    // raw-window-handle 0.6 keeps the X display on the *display* handle;
+    // `XlibWindowHandle` is only the window id and its visual.
+    let display = window.display_handle().ok()?;
+    let RawDisplayHandle::Xlib(display) = display.as_raw() else {
+        return None;
+    };
+    let display = display.display?;
     let xlib = x11_dl::xlib::Xlib::open().ok()?;
     let mut root = 0 as c_ulong;
     let mut child = 0 as c_ulong;
@@ -180,7 +187,7 @@ fn linux_pointer<W: HasWindowHandle + ?Sized>(
     let mut mask = 0 as c_uint;
     let queried = unsafe {
         (xlib.XQueryPointer)(
-            handle.display.cast(),
+            display.as_ptr().cast(),
             handle.window as c_ulong,
             &mut root,
             &mut child,
