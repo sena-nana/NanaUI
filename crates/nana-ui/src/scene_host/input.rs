@@ -103,24 +103,26 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.sync_window_mode(event_loop, id);
                 self.redraw(event_loop, id);
             }
-            WinitWindowEvent::CloseRequested => {
-                self.forward_window_event(event_loop, id, &event);
-                self.close_window(event_loop, id);
-            }
+            // The program decides whether and when the window goes away; an
+            // exit that first saves state answers with `Close` or `exit` later.
+            WinitWindowEvent::CloseRequested => self.forward_window_event(event_loop, id, &event),
             WinitWindowEvent::Destroyed => self.close_window(event_loop, id),
+            // A frame change that comes with a mode change (entering or
+            // leaving fullscreen) records the mode first, so the frame is
+            // persisted and reported knowing whether it is a fullscreen one.
             WinitWindowEvent::Moved(_) => {
+                self.sync_window_mode(event_loop, id);
                 self.sync_geometry(id);
                 self.forward_window_event(event_loop, id, &event);
-                self.sync_window_mode(event_loop, id);
             }
             WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
+                self.sync_window_mode(event_loop, id);
                 let geometry_changed = self.sync_geometry(id);
                 #[cfg(target_os = "macos")]
                 let native_live_resize = self.sync_native_live_resize_presents(id);
                 #[cfg(not(target_os = "macos"))]
                 let native_live_resize = false;
                 self.forward_window_event(event_loop, id, &event);
-                self.sync_window_mode(event_loop, id);
                 // Native macOS drags repaint through winit's live-resize
                 // hook, and a custom chrome drag paints its steps in-stack;
                 // both would only duplicate the per-step frame here.

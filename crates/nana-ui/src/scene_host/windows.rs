@@ -464,7 +464,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let attributes = scene_aux_window_attributes(
             &settings,
             parent.as_deref(),
-            &scene_display_bounds_with_work_area(event_loop, settings.constrain_to_work_area),
+            &scene_desktop(event_loop, settings.constrain_to_work_area),
         )?;
         let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
@@ -656,17 +656,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
     }
     pub(super) fn move_window(&self, id: WindowId, position: (f32, f32)) {
-        self.mutate_native_style(id, |window| {
-            window.set_outer_position(winit::dpi::Position::Logical(
-                winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-            ));
-        });
+        self.mutate_native_style(id, |window| move_to_desktop_position(window, position));
     }
     pub(super) fn set_window_bounds(&self, id: WindowId, position: (f32, f32), size: (f32, f32)) {
         self.mutate_native_style(id, |window| {
-            window.set_outer_position(winit::dpi::Position::Logical(
-                winit::dpi::LogicalPosition::new(f64::from(position.0), f64::from(position.1)),
-            ));
+            move_to_desktop_position(window, position);
             let _ = window.request_surface_size(winit::dpi::Size::Logical(
                 winit::dpi::LogicalSize::new(
                     f64::from(size.0.max(1.0)),
@@ -1135,6 +1129,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(action) = action else {
             return update;
         };
+        if action == WindowChromeAction::Close {
+            // The title-bar close is the same request as the system one.
+            return update.merge(
+                self.program
+                    .window_event(WindowEvent::CloseRequested { id }, &self.context_for(id)),
+            );
+        }
         let maximized = self
             .chrome
             .get(&id)
@@ -1598,4 +1599,12 @@ mod request_error_tests {
             crate::WindowError::Unsupported(_)
         ));
     }
+}
+
+fn move_to_desktop_position(window: &dyn winit::window::Window, position: (f32, f32)) {
+    let scale = desktop_scale(window.scale_factor(), window_reference_scale(window));
+    window.set_outer_position(desktop_position(
+        (f64::from(position.0), f64::from(position.1)),
+        scale,
+    ));
 }

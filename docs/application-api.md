@@ -69,7 +69,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 | `scene_resource_producers` | 高级。按图离屏；第一次可忽略 |
 | `bind_window` | present 之后填内容 |
 | `rebuild_gpu` | 设备丢失后重绑资源 |
-| `window_event` | 窗口生命周期 |
+| `window_event` | 窗口生命周期。系统关闭与标题栏关闭按钮都只发 `CloseRequested`，宿主不自行关窗；返回 `WindowCommand::Close(id)` 或 `exit()` 才关闭。默认实现立即关闭，需要先保存的程序可稍后再返回 |
 | 通过 `WindowHandle::set_menu_bar` 设置菜单 | 原生菜单栏；选中项用 `take_menu_activations()` 每帧 drain，见 [窗口](window.md#菜单栏) |
 | `input_event` | Runtime 派发之后的原始输入，唯一的输入钩子。参数 `RoutedInput` 同时带 `event`、`pointer_hit`（仅指针与滚轮）和 `disposition`；已消费事件仍派发，应用快捷键应检查 `disposition.prevent_default` |
 | `next_wakeup` / `wake` | 与重绘无关的定时工作 |

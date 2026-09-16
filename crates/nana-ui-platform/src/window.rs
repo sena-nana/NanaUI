@@ -211,11 +211,14 @@ pub struct DisplayInfo {
 }
 
 impl DisplayInfo {
-    /// Bounds in the global logical space of `WindowDescriptor::initial_position`.
-    pub fn logical_bounds(&self) -> Option<DisplayBounds> {
+    /// Bounds in the global logical space of `WindowDescriptor::initial_position`,
+    /// where `desktop_scale` converts desktop pixels to that space. The host
+    /// uses one scale for every display wherever the desktop is a single pixel
+    /// grid, so displays with different scale factors never overlap.
+    pub fn logical_bounds(&self, desktop_scale: f64) -> Option<DisplayBounds> {
         let (x, y) = self.physical_position?;
         let (width, height) = self.physical_size?;
-        let scale = self.scale_factor;
+        let scale = desktop_scale;
         if !scale.is_finite() || scale <= 0.0 {
             return None;
         }

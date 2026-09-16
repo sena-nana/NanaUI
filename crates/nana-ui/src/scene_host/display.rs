@@ -298,13 +298,13 @@ mod tests {
             primary: false,
         };
         assert_eq!(
-            display.logical_bounds(),
+            display.logical_bounds(display.scale_factor),
             Some(DisplayBounds {
                 position: (1440.0, 0.0),
                 size: (1920.0, 1080.0),
             })
         );
-        let bounds = display.logical_bounds().unwrap();
+        let bounds = display.logical_bounds(display.scale_factor).unwrap();
         assert_eq!(
             clamp_position_to_displays((0.0, 40.0), (320.0, 240.0), &[bounds]),
             (1440.0, 40.0)
@@ -313,7 +313,7 @@ mod tests {
             physical_size: None,
             ..display
         };
-        assert_eq!(unsized_display.logical_bounds(), None);
+        assert_eq!(unsized_display.logical_bounds(display.scale_factor), None);
     }
 
     #[test]

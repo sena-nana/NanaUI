@@ -552,12 +552,22 @@ pub trait RuntimeProgram: Sized + 'static {
     /// Roll back application state after an unsuccessful window creation.
     fn discard_window(&mut self, _id: WindowId) {}
 
+    /// The host never closes a window on its own. `CloseRequested`, from the
+    /// system or the title-bar close button, closes the window only when the
+    /// program answers with [`WindowCommand::Close`] or an exit; the default
+    /// answers at once, and a program that must save first answers later.
     fn window_event(
         &mut self,
-        _event: WindowEvent,
+        event: WindowEvent,
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        RuntimeProgramUpdate::default()
+        match event {
+            WindowEvent::CloseRequested { id } => RuntimeProgramUpdate {
+                window_commands: vec![WindowCommand::Close(id)],
+                ..RuntimeProgramUpdate::default()
+            },
+            _ => RuntimeProgramUpdate::default(),
+        }
     }
 
     /// Presentation cadence is independent of application task wakeups.

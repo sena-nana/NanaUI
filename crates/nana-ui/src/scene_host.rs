@@ -523,10 +523,7 @@ fn initialize<Program: RuntimeProgram>(
             .create_window(
                 scene_window_attributes(
                     &settings,
-                    &scene_display_bounds_with_work_area(
-                        event_loop,
-                        settings.constrain_to_work_area,
-                    ),
+                    &scene_desktop(event_loop, settings.constrain_to_work_area),
                 )
                 .with_visible(false),
             )
@@ -1229,10 +1226,83 @@ fn apply_text_input_request(window: &dyn winit::window::Window, apply: ImeApply)
     }
 }
 
+/// Scale between desktop pixels and the global logical space shared by
+/// `WindowDescriptor::initial_position`, `WindowGeometry::logical_position`
+/// and display bounds. macOS positions are points, already global. Elsewhere
+/// the desktop is one physical pixel grid, so one scale for every position (the
+/// primary display's) keeps logical positions unambiguous when displays use
+/// different scale factors.
+fn desktop_scale(own_scale: f64, primary_scale: Option<f64>) -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = primary_scale;
+        own_scale
+    }
+    #[cfg(not(target_os = "macos"))]
+    primary_scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(own_scale)
+}
+
+/// Scale of the display that defines the desktop space: the primary one, or the
+/// first listed when the platform names no primary, so every conversion agrees.
+fn window_reference_scale(window: &dyn winit::window::Window) -> Option<f64> {
+    window
+        .primary_monitor()
+        .or_else(|| window.available_monitors().next())
+        .map(|monitor| monitor.scale_factor())
+}
+
+fn desktop_position(position: (f64, f64), scale: f64) -> winit::dpi::Position {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = scale;
+        winit::dpi::LogicalPosition::new(position.0, position.1).into()
+    }
+    #[cfg(not(target_os = "macos"))]
+    winit::dpi::PhysicalPosition::new(
+        (position.0 * scale).round() as i32,
+        (position.1 * scale).round() as i32,
+    )
+    .into()
+}
+
+/// Live displays in the global logical space and the scale that defines it.
+struct Desktop {
+    displays: Vec<DisplayBounds>,
+    /// Per display, desktop units per logical unit of a window on it: its own
+    /// scale over the desktop scale (1 on macOS). A missing entry counts as 1.
+    size_ratios: Vec<f64>,
+    scale: f64,
+}
+
+impl Desktop {
+    /// Size ratio of the display holding `position`, or the nearest one.
+    fn size_ratio_at(&self, position: (f64, f64)) -> f64 {
+        let distance = |display: &DisplayBounds| {
+            let dx = (display.position.0 - position.0)
+                .max(position.0 - (display.position.0 + display.size.0))
+                .max(0.0);
+            let dy = (display.position.1 - position.1)
+                .max(position.1 - (display.position.1 + display.size.1))
+                .max(0.0);
+            dx * dx + dy * dy
+        };
+        self.displays
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| distance(a).total_cmp(&distance(b)))
+            .and_then(|(index, _)| self.size_ratios.get(index).copied())
+            .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+            .unwrap_or(1.0)
+    }
+}
+
 fn scene_window_attributes(
     settings: &WindowDescriptor,
-    displays: &[DisplayBounds],
+    desktop: &Desktop,
 ) -> winit::window::WindowAttributes {
+    let displays = desktop.displays.as_slice();
     let mut settings = settings.clone();
     if settings.constrain_to_work_area {
         let position = settings.initial_position.unwrap_or_else(|| {
@@ -1240,8 +1310,17 @@ fn scene_window_attributes(
                 .first()
                 .map_or((0.0, 0.0), |display| display.position)
         });
-        let (position, size) =
-            nana_ui_platform::fit_window_to_displays(position, settings.initial_size, displays);
+        // Bounds are desktop units; the size is logical on the target display.
+        let ratio = desktop.size_ratio_at(position);
+        let (position, size) = nana_ui_platform::fit_window_to_displays(
+            position,
+            (
+                settings.initial_size.0 * ratio,
+                settings.initial_size.1 * ratio,
+            ),
+            displays,
+        );
+        let size = (size.0 / ratio, size.1 / ratio);
         settings.initial_position = Some(position);
         settings.initial_size = size;
         settings.minimum_size = (
@@ -1265,8 +1344,13 @@ fn scene_window_attributes(
         ))
         .with_maximized(settings.maximized);
     if let Some((x, y)) = settings.initial_position {
-        let (x, y) = clamp_position_to_displays((x, y), settings.initial_size, displays);
-        attributes = attributes.with_position(winit::dpi::LogicalPosition::new(x, y));
+        let ratio = desktop.size_ratio_at((x, y));
+        let size = (
+            settings.initial_size.0 * ratio,
+            settings.initial_size.1 * ratio,
+        );
+        let position = clamp_position_to_displays((x, y), size, displays);
+        attributes = attributes.with_position(desktop_position(position, desktop.scale));
     }
     if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
         attributes = attributes.with_window_icon(Some(icon));
@@ -1277,11 +1361,19 @@ fn scene_window_attributes(
 
 /// Live display bounds in the global logical coordinate space, matching the
 /// coordinate space of `WindowDescriptor::initial_position`.
-fn scene_display_bounds_with_work_area(
-    event_loop: &dyn ActiveEventLoop,
-    work_area: bool,
-) -> Vec<DisplayBounds> {
-    display::display_infos(event_loop)
+fn scene_desktop(event_loop: &dyn ActiveEventLoop, work_area: bool) -> Desktop {
+    let infos = display::display_infos(event_loop);
+    // Same reference as `window_reference_scale`: primary, else first listed.
+    let primary = infos
+        .iter()
+        .find(|display| display.primary)
+        .or(infos.first())
+        .map(|display| display.scale_factor);
+    let scale = desktop_scale(
+        infos.first().map_or(1.0, |display| display.scale_factor),
+        primary,
+    );
+    let (displays, size_ratios) = infos
         .into_iter()
         .filter_map(|mut display| {
             if work_area
@@ -1292,9 +1384,17 @@ fn scene_display_bounds_with_work_area(
                 display.physical_position = Some(position);
                 display.physical_size = Some(size);
             }
-            display.logical_bounds()
+            let display_desktop_scale = desktop_scale(display.scale_factor, primary);
+            display
+                .logical_bounds(display_desktop_scale)
+                .map(|bounds| (bounds, display.scale_factor / display_desktop_scale))
         })
-        .collect()
+        .unzip();
+    Desktop {
+        displays,
+        size_ratios,
+        scale,
+    }
 }
 
 fn resolved_scene_icon(per_window: Option<&WindowIcon>) -> WindowIcon {
@@ -1430,9 +1530,9 @@ fn apply_scene_window_chrome(
 fn scene_aux_window_attributes(
     settings: &WindowDescriptor,
     parent: Option<&dyn winit::window::Window>,
-    displays: &[DisplayBounds],
+    desktop: &Desktop,
 ) -> Result<winit::window::WindowAttributes, String> {
-    let attributes = scene_window_attributes(settings, displays).with_visible(false);
+    let attributes = scene_window_attributes(settings, desktop).with_visible(false);
     #[cfg(target_os = "windows")]
     let attributes = if settings.modal {
         let parent = parent.ok_or_else(|| "modal window requires a parent".to_string())?;
@@ -1673,11 +1773,12 @@ fn window_geometry(window: &dyn winit::window::Window) -> WindowGeometry {
     let scale_factor = normalized_scale_factor(window.scale_factor() as f32);
     let physical_size = window.surface_size();
     let physical_position = window.outer_position().ok();
+    let desktop = desktop_scale(f64::from(scale_factor), window_reference_scale(window));
     WindowGeometry {
         physical_position: physical_position.map(|position| (position.x, position.y)),
         physical_size: (physical_size.width, physical_size.height),
         logical_position: physical_position.map(|position| {
-            let logical = position.to_logical::<f32>(f64::from(scale_factor));
+            let logical = position.to_logical::<f32>(desktop);
             (logical.x, logical.y)
         }),
         logical_size: (
@@ -1704,7 +1805,10 @@ fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
 }
 
 fn window_screen_origin(window: &dyn winit::window::Window) -> Option<(f32, f32)> {
-    let scale = window.scale_factor().max(0.01);
+    let scale = desktop_scale(
+        window.scale_factor().max(0.01),
+        window_reference_scale(window),
+    );
     window.outer_position().ok().map(|position| {
         let origin = position.to_logical::<f32>(scale);
         (origin.x, origin.y)
@@ -2178,6 +2282,14 @@ impl InputTracker {
                     modifiers,
                 })
             }
+            // A press synthesized on focus gain was typed into another window,
+            // e.g. the Esc that dismissed an owned native dialog; delivering it
+            // would run that shortcut a second time here.
+            WinitWindowEvent::KeyboardInput {
+                event,
+                is_synthetic: true,
+                ..
+            } if event.state == ElementState::Pressed => None,
             WinitWindowEvent::KeyboardInput { event, .. } => Some(InputEvent::Keyboard {
                 pressed: event.state == ElementState::Pressed,
                 key: platform_input_key(&event.logical_key).unwrap_or_default(),
@@ -2387,15 +2499,17 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
+    use super::desktop_scale;
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        DisplayBounds, ForwardPointerAction, ImeApply, InputTracker, RoutedWindowCommand,
-        ime_apply, input_pointer_hit, invalidate_program_host_textures, mouse_button_code,
-        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
-        platform_window_event, remove_image_target_index, replace_image_target_index,
-        resolved_scene_ime_request, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position,
+        Desktop, DisplayBounds, ForwardPointerAction, ImeApply, InputTracker, RoutedWindowCommand,
+        desktop_position, ime_apply, input_pointer_hit, invalidate_program_host_textures,
+        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
+        platform_input_modifiers, platform_window_event, remove_image_target_index,
+        replace_image_target_index, resolved_scene_ime_request, route_window_command,
+        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, suppress_caption_after_create, surface_image_keys,
         tablet_pointer_id, window_cursor_override, window_level, window_surface_effect,
         window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
@@ -2590,7 +2704,14 @@ mod tests {
         settings.maximized = true;
         settings.initial_size = (640.0, 480.0);
         settings.minimum_size = (320.0, 240.0);
-        let attributes = scene_window_attributes(&settings, &[]);
+        let attributes = scene_window_attributes(
+            &settings,
+            &Desktop {
+                displays: Vec::new(),
+                size_ratios: Vec::new(),
+                scale: 1.0,
+            },
+        );
 
         assert_eq!(attributes.title, "Scene");
         #[cfg(target_os = "macos")]
@@ -2623,7 +2744,14 @@ mod tests {
         assert!(!suppress_caption_after_create(true, true));
 
         settings.system_caption = true;
-        let caption = scene_window_attributes(&settings, &[]);
+        let caption = scene_window_attributes(
+            &settings,
+            &Desktop {
+                displays: Vec::new(),
+                size_ratios: Vec::new(),
+                scale: 1.0,
+            },
+        );
         assert!(caption.decorations);
         let transparent_caption = windows_scene_chrome(true, true);
         assert!(transparent_caption.decorations);
@@ -2652,36 +2780,81 @@ mod tests {
         let mut settings = WindowDescriptor::new("Scene");
         settings.initial_size = (888.0, 586.0);
         settings.initial_position = Some((2100.0, 40.0));
-        let main = [DisplayBounds {
-            position: (0.0, 0.0),
-            size: (1920.0, 1080.0),
-        }];
+        let main = Desktop {
+            displays: vec![DisplayBounds {
+                position: (0.0, 0.0),
+                size: (1920.0, 1080.0),
+            }],
+            size_ratios: Vec::new(),
+            scale: 1.0,
+        };
 
         let attributes = scene_window_attributes(&settings, &main);
         assert_eq!(
             attributes.position,
-            Some(winit::dpi::Position::Logical(
-                winit::dpi::LogicalPosition::new(1032.0, 40.0)
-            ))
+            Some(desktop_position((1032.0, 40.0), 1.0))
         );
 
-        let disconnected = [
-            main[0],
-            DisplayBounds {
-                position: (1920.0, 0.0),
-                size: (1080.0, 1920.0),
-            },
-        ];
+        let disconnected = Desktop {
+            displays: vec![
+                main.displays[0],
+                DisplayBounds {
+                    position: (1920.0, 0.0),
+                    size: (1080.0, 1920.0),
+                },
+            ],
+            size_ratios: Vec::new(),
+            scale: 1.0,
+        };
         let attributes = scene_window_attributes(&settings, &disconnected);
         assert_eq!(
             attributes.position,
-            Some(winit::dpi::Position::Logical(
-                winit::dpi::LogicalPosition::new(2100.0, 40.0)
-            ))
+            Some(desktop_position((2100.0, 40.0), 1.0))
         );
 
         settings.initial_position = None;
         assert_eq!(scene_window_attributes(&settings, &main).position, None);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    /// A 100% primary display with a 125% display below it: a window saved on
+    /// the second display reopens at the same desktop pixel, not on the seam.
+    fn mixed_scale_displays_share_one_desktop_space() {
+        let display = |x, y, scale, primary| nana_ui_platform::DisplayInfo {
+            id: nana_ui_platform::DisplayId(u128::from(primary)),
+            name: None,
+            physical_position: Some((x, y)),
+            physical_size: Some((1920, 1080)),
+            scale_factor: scale,
+            refresh_rate_millihertz: None,
+            primary,
+        };
+        let primary = display(0, 0, 1.0, true);
+        let below = display(-7, 1080, 1.25, false);
+        let scale = desktop_scale(below.scale_factor, Some(primary.scale_factor));
+        let displays: Vec<_> = [primary, below]
+            .iter()
+            .map(|display| display.logical_bounds(scale).unwrap())
+            .collect();
+        assert_eq!(displays[1].position, (-7.0, 1080.0));
+        assert!(displays[0].position.1 + displays[0].size.1 <= displays[1].position.1);
+
+        let mut settings = WindowDescriptor::new("Saved");
+        settings.initial_size = (1280.0, 800.0);
+        settings.initial_position = Some((116.0, 1127.0));
+        let attributes = scene_window_attributes(
+            &settings,
+            &Desktop {
+                displays,
+                size_ratios: vec![1.0, 1.25],
+                scale,
+            },
+        );
+        assert_eq!(
+            attributes.position,
+            Some(winit::dpi::PhysicalPosition::new(116, 1127).into())
+        );
     }
 
     #[test]
@@ -2802,6 +2975,38 @@ mod tests {
         assert!(!tracker.begin_cursor_sync(std::time::Instant::now()));
         std::thread::sleep(std::time::Duration::from_millis(9));
         assert!(tracker.begin_cursor_sync(std::time::Instant::now()));
+    }
+
+    #[test]
+    fn focus_gain_synthetic_press_is_not_delivered_but_real_keys_are() {
+        let escape = |state, is_synthetic| WinitWindowEvent::KeyboardInput {
+            device_id: None,
+            event: winit::event::KeyEvent {
+                physical_key: winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
+                logical_key: Key::Named(NamedKey::Escape),
+                text: None,
+                location: winit::keyboard::KeyLocation::Standard,
+                state,
+                repeat: false,
+                text_with_all_modifiers: None,
+                key_without_modifiers: Key::Named(NamedKey::Escape),
+            },
+            is_synthetic,
+        };
+        let mut tracker = InputTracker::default();
+        assert!(
+            tracker
+                .map(&escape(ElementState::Pressed, true), 1.0, None)
+                .is_none()
+        );
+        assert!(matches!(
+            tracker.map(&escape(ElementState::Released, true), 1.0, None),
+            Some(InputEvent::Keyboard { pressed: false, .. })
+        ));
+        assert!(matches!(
+            tracker.map(&escape(ElementState::Pressed, false), 1.0, None),
+            Some(InputEvent::Keyboard { pressed: true, ref key, .. }) if key == "Escape"
+        ));
     }
 
     #[test]

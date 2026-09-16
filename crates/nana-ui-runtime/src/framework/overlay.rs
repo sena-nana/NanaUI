@@ -27,6 +27,12 @@ impl RuntimeOverlayKind {
         matches!(self, Self::Dialog | Self::Menu)
     }
 
+    /// Tooltips and status announcements never take focus, so showing or
+    /// hiding one must leave focus where the user put it.
+    pub(crate) const fn is_passive(self) -> bool {
+        matches!(self, Self::Tooltip | Self::Status)
+    }
+
     const fn traps_focus(self) -> bool {
         matches!(self, Self::Dialog | Self::Menu)
     }
@@ -1386,6 +1392,52 @@ mod tests {
         context.dismiss_overlay(host).unwrap();
 
         assert_eq!(context.world.focused(document), None);
+    }
+
+    #[test]
+    /// A toast never owns focus: it must not move focus when it shows or hides,
+    /// and a control hidden while it shows cannot keep it from hiding again.
+    fn a_toast_leaves_focus_alone_and_still_hides_after_its_origin_disappears() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let origin = context
+            .create_component(document, Button::new("Import"))
+            .unwrap();
+        let other = context
+            .create_component(document, Button::new("Other"))
+            .unwrap();
+        let host = context
+            .create_component(document, OverlayHost::new())
+            .unwrap();
+        let toast = context
+            .create_component(document, Toast::new("Working", ToastTone::Info))
+            .unwrap();
+        context.append_child(host, toast).unwrap();
+        context.focus_node(document, origin.stable_id()).unwrap();
+        assert!(context.activate_overlay(host, toast).unwrap());
+        assert_eq!(context.world.focused(document), Some(origin.stable_id()));
+
+        context
+            .update_component(origin, |button, _cx| {
+                Arc::make_mut(&mut button.style.layout).hidden = true;
+            })
+            .unwrap();
+        context.focus_node(document, other.stable_id()).unwrap();
+
+        assert!(context.dismiss_overlay(host).unwrap());
+        assert_eq!(
+            context
+                .world()
+                .overlay_host(host.stable_id())
+                .unwrap()
+                .active,
+            None
+        );
+        assert_eq!(context.world.focused(document), Some(other.stable_id()));
+
+        assert!(context.activate_overlay(host, toast).unwrap());
+        assert!(context.dismiss_overlay(host).unwrap());
+        assert_eq!(context.world.focused(document), Some(other.stable_id()));
     }
 
     #[test]

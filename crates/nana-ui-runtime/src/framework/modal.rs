@@ -130,7 +130,14 @@ impl AppContext {
         let activation_focus = self.modal_initial_focus(overlay_node.document, overlay.id)?;
         self.validate_modal_slots_for_activation(overlay.id)?;
         let previous_focus = self.world.focused(overlay_node.document);
-        let restore_focus = previous.restore_focus.or(previous_focus);
+        let restore_focus = if self
+            .runtime_overlay_kind(overlay.id)
+            .is_some_and(RuntimeOverlayKind::is_passive)
+        {
+            None
+        } else {
+            previous.restore_focus.or(previous_focus)
+        };
         let next = crate::OverlayHostState {
             active: Some(overlay.id),
             restore_focus,
@@ -319,33 +326,47 @@ impl AppContext {
         dismiss_restore: Option<StableNodeId>,
         activation_focus: Option<StableNodeId>,
     ) -> Result<(), FrameworkError> {
-        let preserve_focus = next.active.is_some_and(|root| {
-            self.views
-                .get(&root)
-                .and_then(|view| view.downcast_ref::<crate::Panel>())
-                .is_some_and(|panel| !panel.focus_on_open)
-        });
-        let focus = activation_focus
-            .or_else(|| {
-                next.active
-                    .and_then(|active| self.first_overlay_focusable(document, active))
-            })
-            .or_else(|| {
-                next.restore_focus
-                    .or(dismiss_restore)
-                    .filter(|id| self.overlay_focus_candidate(document, *id))
-            });
-        let focus = if preserve_focus {
-            self.world.focused(document)
-        } else {
-            focus
+        let passive = |root: StableNodeId| {
+            self.runtime_overlay_kind(root)
+                .is_some_and(RuntimeOverlayKind::is_passive)
         };
+        let focused = self.world.focused(document);
+        let leaving = self
+            .world
+            .overlay_host(host.id)
+            .and_then(|state| state.active)
+            .filter(|previous| next.active != Some(*previous));
+        let preserve_focus = next.active.is_some_and(|root| {
+            passive(root)
+                || self
+                    .views
+                    .get(&root)
+                    .and_then(|view| view.downcast_ref::<crate::Panel>())
+                    .is_some_and(|panel| !panel.focus_on_open)
+        }) || (next.active.is_none()
+            && leaving.is_some_and(|root| {
+                passive(root) && !focused.is_some_and(|id| self.overlay_descendant(root, id))
+            }));
+        let focus = (!preserve_focus).then(|| {
+            activation_focus
+                .or_else(|| {
+                    next.active
+                        .and_then(|active| self.first_overlay_focusable(document, active))
+                })
+                .or_else(|| {
+                    next.restore_focus
+                        .or(dismiss_restore)
+                        .filter(|id| self.overlay_focus_candidate(document, *id))
+                })
+        });
         let host_id = host.id;
         let interaction = self.overlay_host_interaction(next.active);
         self.update_component(host, |_host, cx| {
             cx.mutations().set_overlay_host(host_id, next);
             cx.mutations().set_interaction(host_id, interaction);
-            cx.mutations().request_focus(document, focus);
+            if let Some(focus) = focus {
+                cx.mutations().request_focus(document, focus);
+            }
             cx.emit(OverlayChanged {
                 active: next.active,
             });
