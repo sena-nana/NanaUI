@@ -78,7 +78,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.window_contexts.contains_key(&id) {
             return;
         }
-        let demand = self.program.frame_demand(id);
+        let demand = self.window_frame_demand(id);
         update(
             self.frame_schedules.entry(id).or_default(),
             demand,
@@ -108,6 +108,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         self.resize_window(id);
         self.program.prepare_window_frame(id, &self.context_for(id));
+        self.sync_compositor_clock(id);
         self.reconcile_browser_lifetimes();
         let geometry = self.geometry_of(id);
         let material = self.material_of(id);
@@ -434,6 +435,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.native_renderers.clear();
         self.next_gpu_retry = None;
         self.render_suspended = false;
+        self.bump_surface_generation();
         for (id, error) in failed {
             self.suspend_surface(id, error);
         }
@@ -475,19 +477,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if self.render_suspended {
             return;
         }
+        let mut recovered = Vec::new();
         for id in self.known_window_ids() {
             let host = self.window_contexts.get_mut(&id).unwrap();
-            let recovered =
-                retry_surface(&mut host.surface, &mut host.surface_retry, now, |surface| {
-                    self.graphics.recreate_surface(surface)
-                });
-            if recovered {
+            if retry_surface(&mut host.surface, &mut host.surface_retry, now, |surface| {
+                self.graphics.recreate_surface(surface)
+            }) {
                 host.applied_appearance = None;
-                if let Err(error) = self.sync_window_material(id) {
-                    self.suspend_surface(id, error);
-                } else {
-                    self.request_redraw(id);
-                }
+                recovered.push(id);
+            }
+        }
+        if recovered.is_empty() {
+            return;
+        }
+        self.bump_surface_generation();
+        for id in recovered {
+            if let Err(error) = self.sync_window_material(id) {
+                self.suspend_surface(id, error);
+            } else {
+                self.request_redraw(id);
             }
         }
     }

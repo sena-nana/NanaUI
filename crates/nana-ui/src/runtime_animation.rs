@@ -59,18 +59,14 @@ mod tests {
         context
             .update(view, |_view, cx| {
                 let target = cx.entity().stable_id();
-                cx.mutations().start_animation(AnimationSpec {
-                    id: AnimationId::new(1).unwrap(),
+                cx.mutations().start_animation(AnimationSpec::new(
+                    AnimationId::new(1).unwrap(),
                     target,
-                    start: Duration::from_millis(10),
-                    duration: Duration::from_millis(20),
-                    frame_interval: Duration::from_millis(5),
-                    easing: Easing::Linear,
-                    iteration_count: nana_ui_runtime::AnimationIteration::ONCE,
-                    direction: nana_ui_runtime::AnimationDirection::Normal,
-                    fill_mode: nana_ui_runtime::AnimationFillMode::None,
-                    play_state: nana_ui_runtime::AnimationPlayState::Running,
-                });
+                    Duration::from_millis(10),
+                    Duration::from_millis(20),
+                    Duration::from_millis(5),
+                    Easing::Linear,
+                ));
             })
             .unwrap();
 

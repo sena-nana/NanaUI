@@ -1,6 +1,14 @@
 //! Scene host schedule coordination.
 
 use super::*;
+use crate::runtime_host::FrameDemand;
+use std::num::NonZeroU32;
+
+/// Compositor overlay present cadence. Display refresh still caps vsync.
+const COMPOSITOR_PRESENT_HZ: NonZeroU32 = match NonZeroU32::new(120) {
+    Some(hz) => hz,
+    None => unreachable!(),
+};
 
 pub(super) struct HostWorkWake {
     pending: std::sync::atomic::AtomicBool,
@@ -177,7 +185,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.frame_schedules.remove(&id);
                 continue;
             }
-            let demand = self.program.frame_demand(id);
+            let demand = self.window_frame_demand(id);
             let drawable = drawable_surface(self.geometry_of(id).physical_size);
             let due = self.frame_schedules.entry(id).or_default().due(demand, now);
             let tick = frame_tick(self.can_present(id), due, drawable);
@@ -192,7 +200,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 FrameTick::GpuOnly => {
                     let served = self.tick_hidden_gpu(event_loop, id);
                     let armed_at = Instant::now();
-                    let demand = self.program.frame_demand(id);
+                    let demand = self.window_frame_demand(id);
                     let schedule = self.frame_schedules.entry(id).or_default();
                     let deadline = if served {
                         schedule.advance_served(demand, armed_at)
@@ -265,6 +273,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let mut update = self.drain_all_program_messages();
         update = update.merge(self.program.wake(now, &self.context()));
         for id in self.known_window_ids() {
+            let due = self
+                .program
+                .read_document(id, |document| {
+                    self.animation_clock
+                        .next_wakeup(document.context())
+                        .is_some_and(|deadline| deadline <= now)
+                })
+                .unwrap_or(false);
+            if !due {
+                continue;
+            }
             let frame = self.program.write_document(id, |document| {
                 self.animation_clock.wake(document.context_mut(), now)
             });
@@ -284,13 +303,41 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     });
                 }
             }
-            if had_samples {
+            if cpu_wake_redraw(true, had_samples) {
                 update = update.merge(RuntimeProgramUpdate::redraw(id));
             }
         }
         update = update.merge(self.drain_all_program_messages());
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
+    }
+
+    pub(super) fn window_frame_demand(&mut self, id: WindowId) -> FrameDemand {
+        let program = self.program.frame_demand(id);
+        let compositor = self
+            .program
+            .read_document(id, |document| document.compositor_needs_tick())
+            .unwrap_or(false);
+        window_present_demand(program, compositor, self.can_present(id))
+    }
+
+    pub(super) fn sync_compositor_clock(&mut self, id: WindowId) {
+        let now = self.animation_clock.runtime_time(Instant::now());
+        let _ = self.program.write_document(id, |document| {
+            if document.compositor_needs_tick() {
+                document.sync_presentation_clock(now);
+            }
+        });
+    }
+
+    pub(super) fn bump_surface_generation(&mut self) {
+        self.surface_generation = self.surface_generation.wrapping_add(1);
+        let generation = self.surface_generation;
+        for id in self.known_window_ids() {
+            let _ = self.program.write_document(id, |document| {
+                document.set_surface_generation(generation);
+            });
+        }
     }
 }
 
@@ -303,6 +350,40 @@ enum FrameTick {
 
 pub(super) fn drawable_surface(physical_size: (u32, u32)) -> bool {
     physical_size.0 > 0 && physical_size.1 > 0
+}
+
+/// Per-window present demand. Compositor overlay may keep presenting this
+/// window without a CPU animation deadline. Hidden/minimized compositor does
+/// not drive GpuOnly ticks: resume presents at absolute time.
+pub(super) fn window_present_demand(
+    program: FrameDemand,
+    compositor_needs_tick: bool,
+    can_present: bool,
+) -> FrameDemand {
+    let compositor = if compositor_needs_tick && can_present {
+        FrameDemand::Continuous(COMPOSITOR_PRESENT_HZ)
+    } else {
+        FrameDemand::OnDemand
+    };
+    merge_frame_demand(program, compositor)
+}
+
+pub(super) fn merge_frame_demand(left: FrameDemand, right: FrameDemand) -> FrameDemand {
+    match (left, right) {
+        (FrameDemand::OnDemand, other) | (other, FrameDemand::OnDemand) => other,
+        (FrameDemand::Continuous(left), FrameDemand::Continuous(right)) => {
+            FrameDemand::Continuous(left.max(right))
+        }
+        (FrameDemand::At(left), FrameDemand::At(right)) => FrameDemand::At(left.min(right)),
+        (continuous @ FrameDemand::Continuous(_), FrameDemand::At(_))
+        | (FrameDemand::At(_), continuous @ FrameDemand::Continuous(_)) => continuous,
+    }
+}
+
+/// CPU animation wake is per-window. A due deadline on one document does not
+/// mark a static sibling for redraw.
+pub(super) fn cpu_wake_redraw(deadline_due: bool, frame_has_updates: bool) -> bool {
+    deadline_due && frame_has_updates
 }
 
 fn frame_tick(can_present: bool, demand_due: bool, drawable: bool) -> FrameTick {
@@ -437,6 +518,80 @@ mod tests {
         assert!(!drawable_surface((0, 100)));
         assert!(!drawable_surface((200, 0)));
         assert!(drawable_surface((200, 100)));
+    }
+
+    fn fps(n: u32) -> FrameDemand {
+        FrameDemand::Continuous(std::num::NonZeroU32::new(n).unwrap())
+    }
+
+    #[test]
+    fn compositor_tick_is_lightweight_present_not_cpu_wake() {
+        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true);
+        assert_eq!(demand, fps(120));
+        assert!(!super::cpu_wake_redraw(false, false));
+        assert!(!super::cpu_wake_redraw(false, true));
+    }
+
+    #[test]
+    fn compositor_tick_does_not_force_hidden_gpu_catch_up() {
+        let hidden = super::window_present_demand(FrameDemand::OnDemand, true, false);
+        assert_eq!(hidden, FrameDemand::OnDemand);
+        assert_eq!(
+            super::window_present_demand(fps(60), true, false),
+            fps(60),
+            "external GPU cadence still ticks when hidden; compositor does not add one"
+        );
+        let now = Instant::now();
+        let schedule = FrameSchedule::default();
+        assert_eq!(
+            frame_tick(false, schedule.due(hidden, now), true),
+            FrameTick::None
+        );
+    }
+
+    #[test]
+    fn static_window_is_not_redrawn_by_a_sibling_cpu_deadline() {
+        let animated = super::cpu_wake_redraw(true, true);
+        let static_window = super::cpu_wake_redraw(false, false);
+        assert!(animated);
+        assert!(!static_window);
+        assert_eq!(
+            super::window_present_demand(FrameDemand::OnDemand, false, true),
+            FrameDemand::OnDemand
+        );
+    }
+
+    #[test]
+    fn compositor_present_merges_with_program_gpu_cadence() {
+        assert_eq!(super::window_present_demand(fps(30), true, true), fps(120));
+        assert_eq!(super::window_present_demand(fps(240), true, true), fps(240));
+        let later = Instant::now() + Duration::from_millis(50);
+        assert_eq!(
+            super::window_present_demand(FrameDemand::At(later), true, true),
+            fps(120)
+        );
+        assert_eq!(
+            super::window_present_demand(FrameDemand::At(later), false, true),
+            FrameDemand::At(later)
+        );
+    }
+
+    #[test]
+    fn compositor_continuous_skips_missed_ticks_on_resume() {
+        let demand = super::window_present_demand(FrameDemand::OnDemand, true, true);
+        let mut schedule = FrameSchedule::default();
+        let start = Instant::now();
+        assert!(schedule.due(demand, start));
+        let _ = schedule.advance_served(demand, start);
+        let resumed = start + Duration::from_secs(2);
+        assert!(schedule.due(demand, resumed));
+        let next = schedule.advance_served(demand, resumed).expect("cadence");
+        assert!(next > resumed);
+        assert!(!schedule.due(demand, resumed));
+        assert_eq!(
+            frame_tick(true, schedule.due(demand, resumed), true),
+            FrameTick::None
+        );
     }
 }
 

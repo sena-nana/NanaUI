@@ -195,6 +195,7 @@ struct WindowManager<Program: RuntimeProgram> {
     file_dialogs: dialogs::FileDialogs,
     tasks: SyncSender<Task<Program::Message>>,
     animation_clock: RuntimeAnimationClock,
+    surface_generation: u64,
     frame_schedules: HashMap<WindowId, crate::runtime_host::FrameSchedule>,
     /// Host-texture slots each window's scene samples, with the subscription
     /// that wakes it; re-subscribed only when the slot set or registry changes.
@@ -663,6 +664,7 @@ fn initialize<Program: RuntimeProgram>(
         browsers: HashMap::new(),
         tasks,
         animation_clock,
+        surface_generation: 0,
         frame_schedules: HashMap::new(),
         texture_subscriptions: HashMap::new(),
         texture_redraws: Arc::new(Mutex::new(HashSet::new())),
