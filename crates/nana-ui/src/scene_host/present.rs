@@ -383,51 +383,45 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // depends on its surface. A device failure does not, so stop there.
         let mut rebuilt = None;
         for &id in &recovery_windows {
-            let surface = &self.window_contexts[&id].surface;
+            let surface = &mut self.window_contexts.get_mut(&id).unwrap().surface;
             match pollster::block_on(crate::HostedGpuShared::rebuild_for_surface(surface)) {
-                Ok((graphics, surface)) => {
-                    rebuilt = Some((id, graphics, surface));
+                Ok(graphics) => {
+                    rebuilt = Some((id, graphics));
                     break;
                 }
                 Err(HostedGpuError::Device(_)) => break,
                 Err(_) => {}
             }
         }
-        let Some((base, graphics, surface)) = rebuilt else {
+        let Some((base, graphics)) = rebuilt else {
             self.render_suspended = true;
             self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
             return;
         };
-        let surfaces = std::iter::once((base, Ok(surface)))
-            .chain(
-                recovery_windows
-                    .iter()
-                    .filter(|&&id| id != base)
-                    .map(|&id| {
-                        (
-                            id,
-                            graphics.recreate_surface(&self.window_contexts[&id].surface),
-                        )
-                    }),
-            )
-            .collect();
-        self.switch_gpu(graphics, surfaces);
+        // Rebound in place: each old swap chain is released before its
+        // replacement is configured. See `HostedGpuSurface::rebind`.
+        let mut outcomes = vec![(base, Ok(()))];
+        for &id in recovery_windows.iter().filter(|&&id| id != base) {
+            let surface = &mut self.window_contexts.get_mut(&id).unwrap().surface;
+            outcomes.push((id, graphics.rebind_surface(surface)));
+        }
+        self.switch_gpu(graphics, outcomes);
     }
 
     /// Adopt a replacement device. Windows whose surface failed on it recover
     /// individually; every other window presents on the new device immediately.
+    /// Adopt `graphics`. Each window's surface has already been rebound onto
+    /// it in place; `outcomes` says which of those rebinds failed.
     pub(super) fn switch_gpu(
         &mut self,
         graphics: crate::HostedGpuShared,
-        surfaces: Vec<(WindowId, Result<HostedGpuSurface, HostedGpuError>)>,
+        outcomes: Vec<(WindowId, Result<(), HostedGpuError>)>,
     ) {
         let mut failed = Vec::new();
-        for (id, surface) in surfaces {
-            let host = self.window_contexts.get_mut(&id).unwrap();
-            host.surface_retry = None;
-            match surface {
-                Ok(surface) => host.surface = surface,
-                Err(error) => failed.push((id, error)),
+        for (id, outcome) in outcomes {
+            self.window_contexts.get_mut(&id).unwrap().surface_retry = None;
+            if let Err(error) = outcome {
+                failed.push((id, error));
             }
         }
         self.graphics = graphics;
@@ -481,7 +475,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         for id in self.known_window_ids() {
             let host = self.window_contexts.get_mut(&id).unwrap();
             if retry_surface(&mut host.surface, &mut host.surface_retry, now, |surface| {
-                self.graphics.recreate_surface(surface)
+                self.graphics.rebind_surface(surface)
             }) {
                 host.applied_appearance = None;
                 recovered.push(id);
@@ -533,18 +527,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
 /// Preserve the retained native target until a complete replacement is ready.
 /// A failed attempt consumes its deadline, so repeated loop wakes cannot spin.
+/// `rebind` recovers `surface` in place; it must leave it untouched when it
+/// fails before releasing the old swap chain.
 fn retry_surface<T, E>(
     surface: &mut T,
     deadline: &mut Option<Instant>,
     now: Instant,
-    recreate: impl FnOnce(&T) -> Result<T, E>,
+    rebind: impl FnOnce(&mut T) -> Result<(), E>,
 ) -> bool {
     if !deadline.is_some_and(|deadline| now >= deadline) {
         return false;
     }
-    match recreate(surface) {
-        Ok(replacement) => {
-            *surface = replacement;
+    match rebind(surface) {
+        Ok(()) => {
             *deadline = None;
             true
         }
@@ -570,7 +565,7 @@ mod surface_recovery_tests {
             &mut failed_surface,
             &mut failed_deadline,
             now,
-            |_| Err::<i32, _>("unavailable")
+            |_| Err::<(), _>("unavailable")
         ));
         assert_eq!(failed_surface, 10);
         assert_eq!(failed_deadline, Some(now + GPU_RETRY_INTERVAL));
@@ -579,22 +574,23 @@ mod surface_recovery_tests {
                 &mut failed_surface,
                 &mut failed_deadline,
                 time,
-                |_| -> Result<i32, ()> { panic!("retried before deadline") }
+                |_| -> Result<(), ()> { panic!("retried before deadline") }
             ));
             assert!(!retry_surface(
                 &mut healthy_surface,
                 &mut healthy_deadline,
                 time,
-                |_| -> Result<i32, ()> { panic!("healthy window recreated") }
+                |_| -> Result<(), ()> { panic!("healthy window recreated") }
             ));
         }
         assert!(retry_surface(
             &mut failed_surface,
             &mut failed_deadline,
             now + GPU_RETRY_INTERVAL,
-            |old| {
-                assert_eq!(*old, 10);
-                Ok::<_, ()>(11)
+            |surface| {
+                assert_eq!(*surface, 10);
+                *surface = 11;
+                Ok::<_, ()>(())
             }
         ));
         assert_eq!(failed_surface, 11);

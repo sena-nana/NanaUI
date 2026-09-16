@@ -213,7 +213,7 @@ pub enum FullscreenMode {
 
 宿主在窗口线程回调中可用 `create_window(event_loop, descriptor)` 同步创建窗口，结果与 `WindowService::create_window` 相同，但不经过请求队列。整个进程只有一个事件循环：standalone 下再次调用 `run_runtime` 返回 `HostedRunError::EventLoop`（winit `RecreationAttempt`）；已有事件循环的宿主应改用 `EmbeddedRuntime`。
 
-设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后，先在窗口线程调用 `notify_device_lost()`，再转发其他窗口事件；通过 `needs_gpu_replacement()` 检查挂起状态，重建宿主设备后调用 `replace_gpu()`。替换为每个存活窗口准备 Surface；只有所有窗口都无法在新 Device 上创建 Surface 时才返回错误且不切换，否则统一切换并调用应用 GPU 重建回调，失败窗口按下文 Surface 故障恢复单独重试。
+设备恢复仍归 embedded 宿主负责：宿主收到外部 Device 丢失通知后，先在窗口线程调用 `notify_device_lost()`，再转发其他窗口事件；通过 `needs_gpu_replacement()` 检查挂起状态，重建宿主设备后调用 `replace_gpu()`。替换总是切换到新 Device：每个存活窗口的 Surface 原地重绑，先释放旧交换链再配置新的——DXGI 规定一个 HWND 只能有一个交换链，无法在保留旧 Surface 作回退的同时试建新的，而设备丢失后旧 Surface 本来也无法呈现。切换后调用应用 GPU 重建回调，重绑失败的窗口按下文 Surface 故障恢复单独重试；只有所有窗口都重绑失败时才返回第一个错误供宿主上报，但切换已经发生。
 
 `WindowHandle::with_native_handle` 将回调调度到窗口线程，仅借用回调期间有效的 raw handle。不能保存原始指针供回调结束后使用，也不会取得 `winit::Window` 所有权。
 

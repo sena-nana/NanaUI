@@ -322,6 +322,60 @@ impl HostedGpuSurface {
         Ok(())
     }
 
+    /// Move this surface onto another device, in place.
+    ///
+    /// DXGI allows one flip-model swap chain per HWND, and wgpu creates it at
+    /// `configure`, not at `create_surface`. So everything fallible that does
+    /// not need a swap chain runs first, against the unconfigured `surface`;
+    /// then the old surface, and with it the old swap chain, is dropped; only
+    /// then is the replacement configured. Configuring while the old surface
+    /// is still alive fails `CreateSwapChainForHwnd`, which wgpu reports as
+    /// `Invalid surface` and, with no error scope, panics on. Metal allows
+    /// several layers per view, so only Windows showed it.
+    /// `recover_with_alpha` has always used this order within one device.
+    ///
+    /// A failure before the swap leaves this surface untouched.
+    fn rebind(
+        &mut self,
+        surface: wgpu::Surface<'static>,
+        adapter: &wgpu::Adapter,
+        resources: &HostedGpuResources,
+    ) -> Result<(), HostedGpuError> {
+        let capabilities = surface.get_capabilities(adapter);
+        let format = preferred_surface_format(&capabilities.formats)
+            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        let alpha_mode = surface_alpha(
+            self.target.mode(),
+            &capabilities.alpha_modes,
+            self.want_transparent,
+        )?;
+        self.surface = surface;
+        let size = self.window.surface_size();
+        self.format = format;
+        self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
+        self.configuration = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            color_space: wgpu::SurfaceColorSpace::Srgb,
+            width: size.width.max(1),
+            height: size.height.max(1),
+            present_mode: self.live_present_mode,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 1,
+        };
+        {
+            let _gate = resources.lock_reconfigure();
+            self.surface
+                .configure(resources.device(), &self.configuration);
+        }
+        self.target.commit()?;
+        self.needs_target_commit = false;
+        self.needs_recovery = false;
+        self.needs_reconfigure = false;
+        Ok(())
+    }
+
     fn recover(
         &mut self,
         instance: &wgpu::Instance,
@@ -493,6 +547,36 @@ impl HostedGpuContext {
         want_transparent: bool,
         target: HostedSurfaceTarget,
     ) -> Result<Self, HostedGpuError> {
+        let (shared, surface, capabilities, format) =
+            Self::acquire_device(window.clone(), required_features, &target).await?;
+        let primary = configure_surface(
+            window,
+            surface,
+            format,
+            &capabilities,
+            &shared.resources,
+            want_transparent,
+            target,
+        )?;
+        Ok(Self { shared, primary })
+    }
+
+    /// A new instance, adapter and device chosen for `target`, plus that
+    /// target's surface on the new instance -- created but not yet configured,
+    /// so it owns no swap chain.
+    async fn acquire_device(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        target: &HostedSurfaceTarget,
+    ) -> Result<
+        (
+            HostedGpuShared,
+            wgpu::Surface<'static>,
+            wgpu::SurfaceCapabilities,
+            wgpu::TextureFormat,
+        ),
+        HostedGpuError,
+    > {
         #[allow(unused_mut)]
         let mut backends = wgpu::Backends::from_env().unwrap_or_default();
         #[cfg(target_os = "windows")]
@@ -546,25 +630,13 @@ impl HostedGpuContext {
             Arc::new(device),
             Arc::new(queue),
         );
-        let primary = configure_surface(
-            window,
-            surface,
-            format,
-            &capabilities,
-            &resources,
-            want_transparent,
-            target,
-        )?;
-
-        Ok(Self {
-            shared: HostedGpuShared {
-                instance,
-                resources,
-                device_lost,
-                device_lost_report,
-            },
-            primary,
-        })
+        let shared = HostedGpuShared {
+            instance,
+            resources,
+            device_lost,
+            device_lost_report,
+        };
+        Ok((shared, surface, capabilities, format))
     }
 
     #[cfg(target_os = "windows")]
@@ -658,17 +730,19 @@ impl HostedGpuShared {
         }
     }
 
+    /// A replacement device seeded by `surface`, which is rebound onto it in
+    /// place. See [`HostedGpuSurface::rebind`] for why not side by side.
     pub(crate) async fn rebuild_for_surface(
-        surface: &HostedGpuSurface,
-    ) -> Result<(Self, HostedGpuSurface), HostedGpuError> {
-        HostedGpuContext::new_with_target(
+        surface: &mut HostedGpuSurface,
+    ) -> Result<Self, HostedGpuError> {
+        let (shared, raw, _, _) = HostedGpuContext::acquire_device(
             surface.window.clone(),
             wgpu::Features::empty(),
-            surface.want_transparent,
-            surface.target.clone(),
+            &surface.target,
         )
-        .await
-        .map(HostedGpuContext::into_parts)
+        .await?;
+        surface.rebind(raw, shared.resources.adapter(), &shared.resources)?;
+        Ok(shared)
     }
 
     pub fn adapter(&self) -> &wgpu::Adapter {
@@ -718,7 +792,32 @@ impl HostedGpuShared {
         let target = HostedSurfaceTarget::new(mode, window.clone())?;
         self.create_surface_with_target(window, want_transparent, target)
     }
+    /// Rebind `surface` onto these GPU resources in place, releasing its old
+    /// swap chain before configuring the new one. The in-place form of
+    /// [`Self::recreate_surface`]; see [`HostedGpuSurface::rebind`].
+    pub(crate) fn rebind_surface(
+        &self,
+        surface: &mut HostedGpuSurface,
+    ) -> Result<(), HostedGpuError> {
+        #[cfg(target_os = "windows")]
+        if surface.target.mode() == HostedSurfaceMode::WindowsComposition
+            && self.resources.adapter_info().backend != wgpu::Backend::Dx12
+        {
+            return Err(HostedGpuError::Adapter(
+                "DirectComposition requires the shared DX12 device".into(),
+            ));
+        }
+        let raw = surface
+            .target
+            .create_surface(&self.instance, surface.window.clone())?;
+        surface.rebind(raw, self.resources.adapter(), &self.resources)
+    }
     /// Attach a retained native surface target to replacement GPU resources.
+    ///
+    /// The new surface is configured while `previous` is still alive. That is
+    /// fine for a DirectComposition target, but a plain-window target on DXGI
+    /// gets one swap chain per HWND, so drop `previous` first or use the
+    /// runtime's in-place rebinding.
     pub fn recreate_surface(
         &self,
         previous: &HostedGpuSurface,
