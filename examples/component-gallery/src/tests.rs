@@ -493,7 +493,38 @@ fn gallery_rich_text_surfaces_cover_issue31_examples() {
         .gallery_drop_target_center()
         .expect("drop target is laid out");
     let paths = [PathBuf::from("C:/drop/note.md")];
-    assert!(state.gallery_dispatch_file_drag(FileDragKind::Hover, &paths, Some((x, y))));
+    if !state.gallery_dispatch_file_drag(FileDragKind::Hover, &paths, Some((x, y))) {
+        // DIAGNOSTIC (Issue #89 CI triage, revert once understood). This passes
+        // on a local macOS but has failed on the macOS runner for 10+ runs. A
+        // first hover returning false means `drop_target_at` found no drop
+        // target at the target's own centre, so report where the runner put the
+        // box, whether any point inside it hits, and which faces the shaper
+        // resolved -- the gallery lays out with the real cosmic shaper over
+        // system fonts, so its geometry is machine-dependent.
+        let bounds = state.gallery_drop_target_box();
+        let viewport = state.gallery_viewport_size();
+        let faces = nana_ui::shaped_face_families("sans-serif", "Drop files here 放入");
+        let mut probes = Vec::new();
+        if let Some((bx, by, bw, bh)) = bounds {
+            for (label, px, py) in [
+                ("centre", bx + bw * 0.5, by + bh * 0.5),
+                ("top-left+2", bx + 2.0, by + 2.0),
+                ("bottom-right-2", bx + bw - 2.0, by + bh - 2.0),
+                ("left-edge+1", bx + 1.0, by + bh * 0.5),
+                ("above-box", bx + bw * 0.5, by - 4.0),
+            ] {
+                // Reset to "not hovering" so a `true` means "found a target"
+                // rather than "state happened to change".
+                state.gallery_dispatch_file_drag(FileDragKind::Cancel, &paths, None);
+                let hit =
+                    state.gallery_dispatch_file_drag(FileDragKind::Hover, &paths, Some((px, py)));
+                probes.push(format!("{label}({px:.1},{py:.1})={hit}"));
+            }
+        }
+        panic!(
+            "file-drag hover found no drop target at the drop target's own centre\n               centre   = ({x:.2}, {y:.2})\n               box      = {bounds:?}\n               viewport = {viewport:?}\n               probes   = {probes:?}\n               faces    = {faces:?}"
+        );
+    }
     assert!(state.gallery_dispatch_file_drag(FileDragKind::Drop, &paths, Some((x, y))));
     assert_eq!(
         state.gallery_drop_hint_text().as_deref(),

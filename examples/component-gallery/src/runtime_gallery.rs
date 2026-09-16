@@ -810,6 +810,19 @@ impl GalleryRuntime {
         ))
     }
 
+    /// DIAGNOSTIC (Issue #89 CI triage, revert once the macOS failure is
+    /// understood): the drop target's full layout box, so a failing hover can
+    /// report where the runner actually put it.
+    #[cfg(test)]
+    fn drop_target_box(&self) -> Option<(f32, f32, f32, f32)> {
+        let bounds = self
+            .document
+            .context()
+            .world()
+            .layout_box(self.drop.stable_id())?;
+        Some((bounds.x, bounds.y, bounds.width, bounds.height))
+    }
+
     #[cfg(test)]
     fn drop_hint_text(&self) -> Option<String> {
         self.document
@@ -1031,6 +1044,14 @@ impl GalleryState {
         self.gallery_runtime
             .as_ref()
             .and_then(GalleryRuntime::drop_target_center)
+    }
+
+    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::drop_target_box`].
+    #[cfg(test)]
+    pub(crate) fn gallery_drop_target_box(&self) -> Option<(f32, f32, f32, f32)> {
+        self.gallery_runtime
+            .as_ref()
+            .and_then(GalleryRuntime::drop_target_box)
     }
 
     #[cfg(test)]
