@@ -981,9 +981,9 @@ pub(crate) fn alpha_mode_needs_surface_recreate(
 #[cfg(test)]
 mod tests {
     use super::{
-        alpha_mode_needs_surface_recreate, live_resize_frame_latency,
-        live_resize_policy_change, preferred_alpha_mode, preferred_live_present_mode,
-        preferred_surface_format, surface_size_changed,
+        alpha_mode_needs_surface_recreate, live_resize_frame_latency, live_resize_policy_change,
+        preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
+        surface_size_changed,
     };
     use std::sync::{Arc, RwLock};
 
