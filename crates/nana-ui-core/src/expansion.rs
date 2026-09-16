@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::motion::Easing;
+use crate::motion::{AnimationPlayback, Easing, MotionCurve, MotionTiming, evaluate_progress};
 
 #[derive(Debug, Clone, Copy)]
 struct ExpansionTransition {
@@ -66,11 +66,17 @@ impl ExpansionState {
         if self.duration.is_zero() {
             return transition.to;
         }
-        let linear = (now.saturating_sub(transition.started_at).as_secs_f32()
-            / self.duration.as_secs_f32())
-        .clamp(0.0, 1.0);
-        let progress = Easing::EaseInOutCubic.sample(linear);
-        transition.from + (transition.to - transition.from) * progress
+        let sample = evaluate_progress(
+            MotionTiming::new(
+                transition.started_at,
+                self.duration,
+                Duration::from_millis(16),
+            ),
+            AnimationPlayback::default(),
+            MotionCurve::Easing(Easing::EaseInOutCubic),
+            now,
+        );
+        transition.from + (transition.to - transition.from) * sample.progress
     }
 }
 

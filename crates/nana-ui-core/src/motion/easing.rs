@@ -1,6 +1,4 @@
-//! Backend-neutral motion contracts: easing curves and shared duration tokens.
-
-use std::time::Duration;
+//! Timing functions that map linear progress in `0.0..=1.0`.
 
 /// Timing function for one animation timeline.
 ///
@@ -35,23 +33,6 @@ impl Easing {
         }
     }
 }
-
-/// Shared motion durations aligned with the LiliaUI motion spec. Surfaces wire
-/// these in per interaction; the constants only centralize the values.
-pub const HOVER_COLOR: Duration = Duration::from_millis(120);
-/// Overlay fade-in/out duration.
-pub const OVERLAY_FADE: Duration = Duration::from_millis(140);
-/// Menu opacity transition duration.
-pub const MENU_OPACITY: Duration = Duration::from_millis(160);
-/// Menu pop-in scale/translate duration.
-pub const MENU_POP: Duration = Duration::from_millis(180);
-/// Sidebar collapse/expand duration.
-pub const SIDEBAR_COLLAPSE: Duration = Duration::from_millis(260);
-/// Skeleton pulse cycle duration.
-pub const SKELETON_PULSE: Duration = Duration::from_millis(1400);
-
-/// One full turn of an indeterminate busy indicator.
-pub const SPINNER_ROTATION: Duration = Duration::from_millis(900);
 
 /// Bernstein-form cubic bezier over one axis, endpoints pinned to 0 and 1.
 fn bezier_axis(t: f32, p1: f32, p2: f32) -> f32 {

@@ -93,7 +93,21 @@ pub use layout::{
 };
 pub use menu::{MenuConfirmation, MenuSelection};
 pub use menu_bar::{Menu, MenuBar, MenuEntry, MenuShortcut};
-pub use motion::Easing;
+pub use motion::{
+    AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationIteration,
+    AnimationPlayState, AnimationPlayback, CompiledMotion, DecayParams, Easing, FlipRect, Keyframe,
+    MOTION_DESCRIPTOR_VERSION, MOTION_GPU_DESCRIPTOR_SIZE, MOTION_GPU_KEYFRAME_SIZE,
+    MOTION_GPU_TIME_SIZE, MotionCodecError, MotionCodecId, MotionCodecInfo, MotionCodecRegistry,
+    MotionCurve, MotionDescriptor, MotionDescriptorError, MotionDescriptorStore,
+    MotionEvaluatorBackend, MotionGpuDescriptor, MotionGpuKeyframe, MotionGpuTime, MotionGpuValue,
+    MotionGraph, MotionHandle, MotionInspectorEntry, MotionInterrupt, MotionSample, MotionTargetId,
+    MotionTiming, MotionTo, MotionTrack, MotionTrackId, MotionValue, MotionValueKind,
+    MotionWorkCounters, PresentationOverlay, PresentationPair, PresentationSlot, PresentationStore,
+    ProgressSample, Spring, SpringParams, StepJump, TimedProgress, Timeline,
+    classify_animatable_property, compile_motion_descriptor, cpu_fallback_reason,
+    decode_motion_track, evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
+    invert_flip_translate, retarget_track, track_completion_deadline,
+};
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
 pub use persist::{

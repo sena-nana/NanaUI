@@ -1,9 +1,11 @@
 //! Backend-neutral workspace interaction and transition authority.
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
-use crate::{Easing, RegionId, RegionPlacement, RegionState, WorkspaceGeometry, WorkspaceLayout};
+use crate::{
+    AnimationPlayback, Easing, MotionCurve, MotionTiming, RegionId, RegionPlacement, RegionState,
+    WorkspaceGeometry, WorkspaceLayout, evaluate_progress,
+};
 
 pub const WORKSPACE_REGION_TRANSITION_DURATION: Duration = crate::motion::SIDEBAR_COLLAPSE;
 
@@ -48,16 +50,32 @@ struct RegionTransition {
 }
 
 impl RegionTransition {
+    fn timing(&self) -> MotionTiming {
+        MotionTiming::new(
+            self.started_at,
+            WORKSPACE_REGION_TRANSITION_DURATION,
+            Duration::from_millis(16),
+        )
+    }
+
     fn extent_at(&self, now: Duration) -> f32 {
-        let elapsed = now.saturating_sub(self.started_at);
-        let linear = (elapsed.as_secs_f32() / WORKSPACE_REGION_TRANSITION_DURATION.as_secs_f32())
-            .clamp(0.0, 1.0);
-        let progress = Easing::EaseInOutCubic.sample(linear);
-        self.from_extent + (self.to_extent - self.from_extent) * progress
+        let sample = evaluate_progress(
+            self.timing(),
+            AnimationPlayback::default(),
+            MotionCurve::Easing(Easing::EaseInOutCubic),
+            now,
+        );
+        self.from_extent + (self.to_extent - self.from_extent) * sample.progress
     }
 
     fn finished_at(&self, now: Duration) -> bool {
-        now.saturating_sub(self.started_at) >= WORKSPACE_REGION_TRANSITION_DURATION
+        now >= self.completion_deadline()
+    }
+
+    fn completion_deadline(&self) -> Duration {
+        self.started_at
+            .checked_add(WORKSPACE_REGION_TRANSITION_DURATION)
+            .unwrap_or(self.started_at)
     }
 }
 
@@ -121,6 +139,15 @@ impl WorkspaceModel {
 
     pub fn has_active_transitions(&self) -> bool {
         !self.transitions.is_empty()
+    }
+
+    /// Earliest start among in-flight region transitions.
+    pub fn transition_origin(&self) -> Option<Duration> {
+        self.transitions
+            .values()
+            .filter(|transition| !transition.finished_at(self.now))
+            .map(|transition| transition.started_at)
+            .min()
     }
 
     pub fn region_transitioning(&self, region: &RegionId) -> bool {
