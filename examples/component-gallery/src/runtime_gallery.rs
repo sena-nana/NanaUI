@@ -1091,8 +1091,27 @@ impl GalleryState {
         let runtime = self.gallery_runtime.as_ref()?;
         let world = runtime.document.context().world();
         let text = world.text(id)?.to_string();
-        let metrics = format!("{:?}", world.text_metrics(id));
-        Some((text, metrics))
+        let stored = format!("{:?}", world.text_metrics(id));
+        // `InvalidText` rejects the metrics the shaper *returns*, not the ones
+        // already stored, so the stored value is 0/0 on a failed flush and says
+        // nothing. Re-shape the same string with the same computed style and
+        // report both the shaping inputs and the fresh result.
+        let inputs = world.computed_style(id).map(|style| {
+            format!(
+                "size={} line_height={:?} spacing={} dir={:?} family={:?} wrap={:?}",
+                style.font_size,
+                style.line_height,
+                style.letter_spacing,
+                style.direction,
+                style.font_family,
+                style.word_break,
+            )
+        });
+        let layout = format!("{:?}", world.layout_box(id));
+        Some((
+            text,
+            format!("stored={stored} inputs={inputs:?} layout={layout}"),
+        ))
     }
 
     /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::flush_result`].
