@@ -52,6 +52,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         drop_hover: None,
         document_text_selection: Vec::new(),
         document_text_selection_color: [0.0; 4],
+        compositor: Default::default(),
     }
 }
 

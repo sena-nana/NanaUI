@@ -648,8 +648,8 @@ impl ComponentView for Progress {
 
 /// Indeterminate loading indicator with an optional muted label.
 ///
-/// `phase` is stored on the visual and defaults to `0`. The host animation
-/// clock advances it; this component does not start a timer or fake dirty frames.
+/// Rotation is a Motion IR infinite timeline started on mount. The host does
+/// not tick `phase`; samples write the visual. Hide or unmount to stop.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Spinner {
     pub label: Arc<str>,
@@ -667,6 +667,7 @@ impl Spinner {
         direction: AnimationDirection::Normal,
         fill_mode: AnimationFillMode::None,
         play_state: AnimationPlayState::Running,
+        paused_at: None,
     };
 
     /// The spinner's rotation timeline anchored at `start`, or `None` when its
