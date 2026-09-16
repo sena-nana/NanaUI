@@ -65,6 +65,39 @@ jobs:
         run: cargo test -p nana-ui-devtools --features runtime-agent --all-targets --locked
       # Self-verifying real-window hosts: one event loop, shared device, close and
       # re-create. Windows runners have a desktop and the WARP adapter.
+      # DIAGNOSTIC (Issue #89 CI triage, revert once understood): the step
+      # below has never run green. It was added while this job was already red
+      # at "Run default-feature tests", and its first real execution exits
+      # 0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND) before reaching `main` -- the
+      # Windows loader could not resolve a load-time import. The `hosted`
+      # feature pulls `accesskit_windows` (uiautomationcore) and `windows` with
+      # Win32_Graphics_DirectComposition (dcomp), neither of which a Server SKU
+      # is guaranteed to ship. Name the imports and say which the runner has.
+      - name: Probe the multi-window host's DLL imports
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo build -p nana-ui --example window-service-lifecycle --features hosted,bundled-fonts --locked
+          EXE=target/debug/examples/window-service-lifecycle.exe
+          DUMPBIN=""
+          VSWHERE="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+          if [ -x "$VSWHERE" ]; then
+            FOUND=$("$VSWHERE" -latest -products '*' -find '**\dumpbin.exe' 2>/dev/null | tr -d '\r' | head -1)
+            [ -n "$FOUND" ] && DUMPBIN=$(cygpath -u "$FOUND" 2>/dev/null || printf '%s' "$FOUND")
+          fi
+          if [ -z "$DUMPBIN" ]; then
+            DUMPBIN=$(find "/c/Program Files/Microsoft Visual Studio" -name dumpbin.exe 2>/dev/null | head -1)
+          fi
+          echo "dumpbin: ${DUMPBIN:-NOT FOUND}"
+          [ -n "$DUMPBIN" ] || exit 0
+          DEPS="${RUNNER_TEMP:-/tmp}/window-host-deps.txt"
+          "$DUMPBIN" -nologo -dependents "$EXE" | tr -d '\r' | tee "$DEPS"
+          echo "--- resolving each import ---"
+          grep -oiE '[A-Za-z0-9_.-]+\.dll' "$DEPS" | sort -fu | while read -r dll; do
+            hit=$(where.exe "$dll" 2>/dev/null | tr -d '\r' | head -1)
+            printf '%-34s %s\n' "$dll" "${hit:-MISSING}"
+          done
       - name: Run multi-window lifecycle hosts
         if: runner.os == 'Windows'
         timeout-minutes: 15
