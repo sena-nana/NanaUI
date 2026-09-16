@@ -27,6 +27,11 @@ Vue + JS L1/L2（可选宿主）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 
+文本引擎骨架（Phase 0，不在产品绘制路径）
+    nana-text            文本 IR、稳定代际 ID、结构化 diff 与迁移语料。
+                         产品文本仍走 nana-ui/nana_text.rs（cosmic-text）与
+                         scene_paint/text.rs（cryoglyph）。见 [文本引擎](text-engine.md)
+
 图标目录（可选，独立构建，不在 workspace members）
     nana-icons-tabler    Tabler outline 全量 `Icon` 常量（生成物，见
                           scripts/generate_tabler_catalog.py）。应用直用常量，
@@ -34,6 +39,8 @@ Vue + JS L1/L2（可选宿主）
 ```
 
 依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
+
+`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。产品 crate 目前**不**依赖 `nana-text`；它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达。
 
 产品路径：
 

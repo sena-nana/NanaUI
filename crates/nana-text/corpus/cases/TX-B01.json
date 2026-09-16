@@ -1,0 +1,54 @@
+{
+  "id": "TX-B01",
+  "title": "arabic joins into initial medial and final forms and lays out right to left",
+  "status": "pass",
+  "category": "rtl",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-arabic"
+  ],
+  "text": "العربية",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "base_direction": "Rtl"
+  },
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 50.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 2
+    },
+    {
+      "byte": 4
+    },
+    {
+      "byte": 6
+    },
+    {
+      "byte": 8
+    },
+    {
+      "byte": 10
+    },
+    {
+      "byte": 12
+    },
+    {
+      "byte": 14
+    }
+  ]
+}

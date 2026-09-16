@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "case": "TX-E01",
+  "layout": {
+    "id": {
+      "index": 0,
+      "generation": 1
+    },
+    "kind": "editable",
+    "revision": 1,
+    "font_generation": 1,
+    "constraints": {
+      "max_width_px": null,
+      "max_height_px": null,
+      "wrap": null,
+      "word_break": "Normal",
+      "line_break": "Auto",
+      "max_lines": null,
+      "ellipsis": false,
+      "preserve_lines": false,
+      "base_direction": "Ltr",
+      "writing_mode": "HorizontalTb",
+      "tab_width": 8,
+      "scale": {
+        "px_per_logical": 1.0
+      }
+    },
+    "runs": [
+      {
+        "id": {
+          "index": 0,
+          "generation": 1
+        },
+        "source": {
+          "start": 0,
+          "end": 6
+        },
+        "direction": "ltr",
+        "bidi_level": 0,
+        "script": [
+          90,
+          122,
+          122,
+          122
+        ],
+        "font": {
+          "index": 0,
+          "generation": 1
+        },
+        "font_size_px": 24.0,
+        "glyphs": [
+          {
+            "glyph_id": 243,
+            "cluster": 0,
+            "cluster_end": 3,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 245,
+            "cluster": 3,
+            "cluster_end": 6,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          }
+        ],
+        "advance_px": 48.0,
+        "origin_x_px": 0.0,
+        "metrics": {
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "line_gap_px": 0.0
+        }
+      },
+      {
+        "id": {
+          "index": 1,
+          "generation": 1
+        },
+        "source": {
+          "start": 6,
+          "end": 12
+        },
+        "direction": "ltr",
+        "bidi_level": 0,
+        "script": [
+          90,
+          122,
+          122,
+          122
+        ],
+        "font": {
+          "index": 0,
+          "generation": 1
+        },
+        "font_size_px": 30.0,
+        "glyphs": [
+          {
+            "glyph_id": 247,
+            "cluster": 6,
+            "cluster_end": 9,
+            "advance_px": 30.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 249,
+            "cluster": 9,
+            "cluster_end": 12,
+            "advance_px": 30.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          }
+        ],
+        "advance_px": 60.0,
+        "origin_x_px": 48.0,
+        "metrics": {
+          "ascent_px": 34.8,
+          "descent_px": 8.639999,
+          "line_gap_px": 0.0
+        }
+      }
+    ],
+    "lines": [
+      {
+        "index": 0,
+        "source": {
+          "start": 0,
+          "end": 12
+        },
+        "runs": {
+          "start": 0,
+          "end": 2
+        },
+        "break_cause": "end-of-text",
+        "metrics": {
+          "baseline_y_px": 31.08,
+          "top_y_px": 0.0,
+          "height_px": 36.0,
+          "ascent_px": 34.8,
+          "descent_px": 8.639999,
+          "width_px": 108.0
+        },
+        "bounds": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 108.0,
+          "height": 36.0
+        },
+        "base_direction": "ltr"
+      }
+    ],
+    "bounds": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 108.0,
+      "height": 36.0
+    },
+    "overflow": 0
+  },
+  "hit_tests": [
+    {
+      "caret": {
+        "byte": 0,
+        "affinity": "downstream",
+        "line": 0
+      },
+      "inside": true
+    },
+    {
+      "caret": {
+        "byte": 6,
+        "affinity": "downstream",
+        "line": 0
+      },
+      "inside": true
+    }
+  ],
+  "carets": [
+    {
+      "x_px": 0.0,
+      "top_y_px": 0.0,
+      "height_px": 36.0,
+      "direction": "ltr"
+    },
+    {
+      "x_px": 48.0,
+      "top_y_px": 0.0,
+      "height_px": 36.0,
+      "direction": "ltr"
+    },
+    {
+      "x_px": 108.0,
+      "top_y_px": 0.0,
+      "height_px": 36.0,
+      "direction": "ltr"
+    }
+  ],
+  "counters": {
+    "text_nodes_considered": 1,
+    "text_nodes_shaped": 1,
+    "shape_cache_hits": null,
+    "shape_cache_misses": null,
+    "layout_cache_hits": null,
+    "layout_cache_misses": null,
+    "glyphs_resolved": 4
+  }
+}

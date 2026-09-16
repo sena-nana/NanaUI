@@ -205,7 +205,23 @@ fn row_layout() -> Arc<LayoutStyle> {
     })
 }
 
-/// A flat column of `rows` rows, each with one text label. 2 * rows + 2 nodes.
+/// The row counts swept when `--rows` is not given.
+///
+/// This is a contract, not a convenience: `--shape layout --position head` at
+/// 1000 / 2000 / 4000 rows is the Issue #33 workload, and Issue #89 keeps it as
+/// the text-migration baseline that every `nana-text` phase is re-measured
+/// against. Narrowing the grid would silently retire that baseline, so
+/// `the_migration_grid_still_spans_two_four_and_eight_thousand_nodes` asserts
+/// the three cells are still here.
+const DIRTY_FRAME_ROW_GRID: [usize; 5] = [250, 500, 1000, 2000, 4000];
+
+/// Nodes in a document of `rows` rows. See [`build`].
+const fn document_nodes(rows: usize) -> usize {
+    2 * rows + 2
+}
+
+/// A flat column of `rows` rows, each with one text label. See
+/// [`document_nodes`] for the node count.
 fn build(shape: Shape, rows: usize) -> RuntimeDocument {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
@@ -523,7 +539,7 @@ fn measure(
         shape: shape.name(),
         position: position.name(),
         rows,
-        nodes: rows * 2 + 2,
+        nodes: document_nodes(rows),
         dirty_rows,
         flush_ms: Stat::from_durations(flushes),
         stages_ms,
@@ -552,7 +568,7 @@ fn measure(
 }
 
 fn mean_count(total: usize, samples: usize) -> usize {
-    if samples == 0 { 0 } else { total / samples }
+    total.checked_div(samples).unwrap_or(0)
 }
 
 fn ns_mean_ms(total_ns: u64, samples: usize) -> f64 {
@@ -611,7 +627,7 @@ fn main() {
         );
 
     let row_counts =
-        value("--rows").map_or_else(|| vec![250usize, 500, 1000, 2000, 4000], |rows| vec![rows]);
+        value("--rows").map_or_else(|| DIRTY_FRAME_ROW_GRID.to_vec(), |rows| vec![rows]);
     let dirty_counts =
         value("--dirty").map_or_else(|| vec![1usize, 2, 8, 32, 128], |dirty| vec![dirty]);
 
@@ -708,5 +724,37 @@ fn main() {
         fs::write(path, json).expect("write report");
     } else {
         print!("{json}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #33's finding, and Issue #89's migration baseline, both live in
+    /// three cells of this sweep. They are only comparable across phases if the
+    /// sweep still contains them.
+    #[test]
+    fn the_migration_grid_still_spans_two_four_and_eight_thousand_nodes() {
+        let nodes: Vec<usize> = DIRTY_FRAME_ROW_GRID
+            .iter()
+            .copied()
+            .map(document_nodes)
+            .collect();
+        for expected in [2002, 4002, 8002] {
+            assert!(
+                nodes.contains(&expected),
+                "the Issue #33 / #89 migration benchmark must keep the {expected}-node \
+                 head-layout-dirty cell; the grid now yields {nodes:?}"
+            );
+        }
+    }
+
+    /// The baseline is quoted in docs as `--shape layout --position head`, so
+    /// those two spellings are part of the contract too.
+    #[test]
+    fn the_migration_grid_is_reachable_by_the_documented_flags() {
+        assert!(Shape::parse("layout").is_some());
+        assert!(Position::parse("head").is_some());
     }
 }

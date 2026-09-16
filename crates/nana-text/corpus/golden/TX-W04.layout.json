@@ -1,0 +1,421 @@
+{
+  "schema_version": 1,
+  "case": "TX-W04",
+  "layout": {
+    "id": {
+      "index": 0,
+      "generation": 1
+    },
+    "kind": "paragraph",
+    "revision": 1,
+    "font_generation": 1,
+    "constraints": {
+      "max_width_px": 160.0,
+      "max_height_px": null,
+      "wrap": "Glyph",
+      "word_break": "Normal",
+      "line_break": "Auto",
+      "max_lines": null,
+      "ellipsis": false,
+      "preserve_lines": false,
+      "base_direction": "Ltr",
+      "writing_mode": "HorizontalTb",
+      "tab_width": 8,
+      "scale": {
+        "px_per_logical": 1.0
+      }
+    },
+    "runs": [
+      {
+        "id": {
+          "index": 0,
+          "generation": 1
+        },
+        "source": {
+          "start": 0,
+          "end": 18
+        },
+        "direction": "ltr",
+        "bidi_level": 0,
+        "script": [
+          90,
+          122,
+          122,
+          122
+        ],
+        "font": {
+          "index": 0,
+          "generation": 1
+        },
+        "font_size_px": 24.0,
+        "glyphs": [
+          {
+            "glyph_id": 516,
+            "cluster": 0,
+            "cluster_end": 3,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3015,
+            "cluster": 3,
+            "cluster_end": 6,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 2840,
+            "cluster": 6,
+            "cluster_end": 9,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 4174,
+            "cluster": 9,
+            "cluster_end": 12,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3754,
+            "cluster": 12,
+            "cluster_end": 15,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 6227,
+            "cluster": 15,
+            "cluster_end": 18,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          }
+        ],
+        "advance_px": 144.0,
+        "origin_x_px": 0.0,
+        "metrics": {
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "line_gap_px": 0.0
+        }
+      },
+      {
+        "id": {
+          "index": 1,
+          "generation": 1
+        },
+        "source": {
+          "start": 18,
+          "end": 36
+        },
+        "direction": "ltr",
+        "bidi_level": 0,
+        "script": [
+          90,
+          122,
+          122,
+          122
+        ],
+        "font": {
+          "index": 0,
+          "generation": 1
+        },
+        "font_size_px": 24.0,
+        "glyphs": [
+          {
+            "glyph_id": 516,
+            "cluster": 18,
+            "cluster_end": 21,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3015,
+            "cluster": 21,
+            "cluster_end": 24,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 2840,
+            "cluster": 24,
+            "cluster_end": 27,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 4174,
+            "cluster": 27,
+            "cluster_end": 30,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3754,
+            "cluster": 30,
+            "cluster_end": 33,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 6227,
+            "cluster": 33,
+            "cluster_end": 36,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          }
+        ],
+        "advance_px": 144.0,
+        "origin_x_px": 0.0,
+        "metrics": {
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "line_gap_px": 0.0
+        }
+      },
+      {
+        "id": {
+          "index": 2,
+          "generation": 1
+        },
+        "source": {
+          "start": 36,
+          "end": 54
+        },
+        "direction": "ltr",
+        "bidi_level": 0,
+        "script": [
+          90,
+          122,
+          122,
+          122
+        ],
+        "font": {
+          "index": 0,
+          "generation": 1
+        },
+        "font_size_px": 24.0,
+        "glyphs": [
+          {
+            "glyph_id": 516,
+            "cluster": 36,
+            "cluster_end": 39,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3015,
+            "cluster": 39,
+            "cluster_end": 42,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 2840,
+            "cluster": 42,
+            "cluster_end": 45,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 4174,
+            "cluster": 45,
+            "cluster_end": 48,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 3754,
+            "cluster": 48,
+            "cluster_end": 51,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          },
+          {
+            "glyph_id": 6227,
+            "cluster": 51,
+            "cluster_end": 54,
+            "advance_px": 24.0,
+            "advance_y_px": 0.0,
+            "offset_x_px": 0.0,
+            "offset_y_px": 0.0,
+            "flags": 0
+          }
+        ],
+        "advance_px": 144.0,
+        "origin_x_px": 0.0,
+        "metrics": {
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "line_gap_px": 0.0
+        }
+      }
+    ],
+    "lines": [
+      {
+        "index": 0,
+        "source": {
+          "start": 0,
+          "end": 18
+        },
+        "runs": {
+          "start": 0,
+          "end": 1
+        },
+        "break_cause": "wrap",
+        "metrics": {
+          "baseline_y_px": 24.864002,
+          "top_y_px": 0.0,
+          "height_px": 28.800001,
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "width_px": 144.0
+        },
+        "bounds": {
+          "x": 0.0,
+          "y": 0.0,
+          "width": 144.0,
+          "height": 28.800001
+        },
+        "base_direction": "ltr"
+      },
+      {
+        "index": 1,
+        "source": {
+          "start": 18,
+          "end": 36
+        },
+        "runs": {
+          "start": 1,
+          "end": 2
+        },
+        "break_cause": "wrap",
+        "metrics": {
+          "baseline_y_px": 53.664,
+          "top_y_px": 28.800001,
+          "height_px": 28.800001,
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "width_px": 144.0
+        },
+        "bounds": {
+          "x": 0.0,
+          "y": 28.800001,
+          "width": 144.0,
+          "height": 28.800001
+        },
+        "base_direction": "ltr"
+      },
+      {
+        "index": 2,
+        "source": {
+          "start": 36,
+          "end": 54
+        },
+        "runs": {
+          "start": 2,
+          "end": 3
+        },
+        "break_cause": "end-of-text",
+        "metrics": {
+          "baseline_y_px": 82.464005,
+          "top_y_px": 57.600002,
+          "height_px": 28.800001,
+          "ascent_px": 27.84,
+          "descent_px": 6.9119997,
+          "width_px": 144.0
+        },
+        "bounds": {
+          "x": 0.0,
+          "y": 57.600002,
+          "width": 144.0,
+          "height": 28.800001
+        },
+        "base_direction": "ltr"
+      }
+    ],
+    "bounds": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 144.0,
+      "height": 86.4
+    },
+    "overflow": 0
+  },
+  "hit_tests": [],
+  "carets": [
+    {
+      "x_px": 0.0,
+      "top_y_px": 0.0,
+      "height_px": 28.800001,
+      "direction": "ltr"
+    },
+    {
+      "x_px": 96.0,
+      "top_y_px": 28.800001,
+      "height_px": 28.800001,
+      "direction": "ltr"
+    }
+  ],
+  "counters": {
+    "text_nodes_considered": 1,
+    "text_nodes_shaped": 1,
+    "shape_cache_hits": null,
+    "shape_cache_misses": null,
+    "layout_cache_hits": null,
+    "layout_cache_misses": null,
+    "glyphs_resolved": 18
+  }
+}

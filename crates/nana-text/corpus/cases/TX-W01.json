@@ -1,0 +1,26 @@
+{
+  "id": "TX-W01",
+  "title": "a label never wraps however narrow the container is",
+  "status": "pass",
+  "category": "wrap",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "no wrapping here at all",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "max_width_px": 80.0
+  },
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 23
+    }
+  ]
+}

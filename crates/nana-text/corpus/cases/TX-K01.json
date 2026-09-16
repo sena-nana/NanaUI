@@ -1,0 +1,37 @@
+{
+  "id": "TX-K01",
+  "title": "hangul syllables shape as precomposed single glyphs",
+  "status": "pass",
+  "category": "hangul",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-kr"
+  ],
+  "text": "한글 안녕하세요",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 40.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 3
+    },
+    {
+      "byte": 22
+    }
+  ]
+}

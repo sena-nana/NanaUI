@@ -1,0 +1,27 @@
+{
+  "id": "TX-L02",
+  "title": "latin kerning pairs pull glyph advances together",
+  "status": "pass",
+  "category": "latin",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "AVATar Yo.",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 4
+    },
+    {
+      "byte": 10
+    }
+  ]
+}

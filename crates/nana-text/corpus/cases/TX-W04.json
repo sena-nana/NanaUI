@@ -1,0 +1,29 @@
+{
+  "id": "TX-W04",
+  "title": "glyph wrap breaks a han run mid-word",
+  "status": "pass",
+  "category": "wrap",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "中文排版测试中文排版测试中文排版测试",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "max_width_px": 160.0,
+    "wrap": "Glyph"
+  },
+  "carets": [
+    {
+      "byte": 0,
+      "line": 0
+    },
+    {
+      "byte": 30,
+      "line": 1
+    }
+  ]
+}

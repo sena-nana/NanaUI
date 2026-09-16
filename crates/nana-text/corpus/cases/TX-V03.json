@@ -1,0 +1,28 @@
+{
+  "id": "TX-V03",
+  "title": "a custom axis changes outlines without becoming a weight",
+  "status": "pass",
+  "category": "variable-font",
+  "kind": "label",
+  "fonts": [
+    "nana-test-vf"
+  ],
+  "text": "AAA",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400,
+    "font_family": "NanaTestVF",
+    "variations": [
+      {
+        "tag": [
+          66,
+          69,
+          86,
+          76
+        ],
+        "value": 100.0
+      }
+    ]
+  },
+  "constraints": {}
+}

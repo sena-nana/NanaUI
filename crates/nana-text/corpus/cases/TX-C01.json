@@ -1,0 +1,37 @@
+{
+  "id": "TX-C01",
+  "title": "han ideographs shape at full width with one cluster each",
+  "status": "pass",
+  "category": "cjk",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "中文排版测试",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 30.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 3
+    },
+    {
+      "byte": 18
+    }
+  ]
+}

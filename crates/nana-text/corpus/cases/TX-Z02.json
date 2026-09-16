@@ -1,0 +1,27 @@
+{
+  "id": "TX-Z02",
+  "title": "a variation selector emoji and a plain emoji stay separate clusters",
+  "status": "pass",
+  "category": "emoji",
+  "kind": "label",
+  "fonts": [
+    "noto-emoji"
+  ],
+  "text": "❤️🔥",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 6
+    },
+    {
+      "byte": 10
+    }
+  ]
+}

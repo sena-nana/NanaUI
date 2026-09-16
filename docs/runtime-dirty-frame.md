@@ -1058,6 +1058,7 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 # 单格，便于剖析
 ./target/release/nana-dirty-frame-benchmark --shape layout --position tail --rows 4000 --dirty 1
 # Issue #33：head TextShape 零工作路径（约 2k / 4k / 8k 节点）
+# 这三格同时是 nana-text 的迁移基准，见 docs/text-engine.md#33-迁移基准
 ./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 1000 --samples 150 --warmup 30
 ./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 2000 --samples 150 --warmup 30
 ./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 4000 --samples 150 --warmup 30

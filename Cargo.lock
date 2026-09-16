@@ -2382,6 +2382,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-text"
+version = "0.1.0"
+dependencies = [
+ "cosmic-text",
+ "nana-ui-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nana-ui"
 version = "0.1.0"
 dependencies = [

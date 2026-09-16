@@ -1,0 +1,28 @@
+{
+  "id": "TX-V02",
+  "title": "a wide wdth axis lengthens the advance",
+  "status": "pass",
+  "category": "variable-font",
+  "kind": "label",
+  "fonts": [
+    "nana-test-vf"
+  ],
+  "text": "AAA",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400,
+    "font_family": "NanaTestVF",
+    "variations": [
+      {
+        "tag": [
+          119,
+          100,
+          116,
+          104
+        ],
+        "value": 200.0
+      }
+    ]
+  },
+  "constraints": {}
+}

@@ -61,6 +61,28 @@ Runtime samples/frame: 0
 ```
 
 
+## Issue #89 文本迁移基准
+
+`nana-dirty-frame-benchmark --shape layout --position head` 的 2k / 4k / 8k 三格是
+Issue #33 的原始 workload，Epic #88 把它保留为 `nana-text` 的迁移基准。
+
+它**不在** `catalog.json` 的任何 id 列表里，**没有时间门禁**，是人工前后对比：接进
+scenario 合同需要新的 `kind`、extractor 和签入 fixture，等 `nana-text` 真有引擎可测再做。
+CI 只保证它还在、还能编译、网格还没被收窄（`ci.yml` 的
+`cargo check -p nana-ui-scene --features benchmark` 与
+`the_migration_grid_still_spans_two_four_and_eight_thousand_nodes`）。
+
+```bash
+cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-frame-benchmark
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 1000 --samples 150 --warmup 30
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 2000 --samples 150 --warmup 30
+./target/release/nana-dirty-frame-benchmark --shape layout --position head --dirty 1 --rows 4000 --samples 150 --warmup 30
+```
+
+基线数字与「每阶段重跑并贴回」的规则在 [文本引擎](../docs/text-engine.md#33-迁移基准)。
+`nana-text` 自己的结构化 correctness 门禁是 `cargo test -p nana-text --all-targets`，
+与本目录的 work-counter 合同是两回事。
+
 ## Vue vs Rust L3 输入成本
 
 不在这套 Scenario 里，因为它测的不是一个 toolkit 跑一个负载，而是**同一个进程里**建立

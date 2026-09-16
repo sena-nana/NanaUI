@@ -1,0 +1,29 @@
+{
+  "id": "TX-F01",
+  "title": "a character the requested face lacks falls back and flags the glyph",
+  "status": "pass",
+  "category": "fallback",
+  "kind": "label",
+  "fonts": [
+    "nana-test-vf",
+    "noto-sans-sc"
+  ],
+  "text": "AB",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400,
+    "font_family": "NanaTestVF"
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 1
+    },
+    {
+      "byte": 2
+    }
+  ]
+}

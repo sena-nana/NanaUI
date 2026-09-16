@@ -1,0 +1,46 @@
+{
+  "id": "TX-W02",
+  "title": "explicit newlines become separate lines when preserve_lines is set",
+  "status": "pass",
+  "category": "wrap",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "one\ntwo\nthree",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "preserve_lines": true
+  },
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 0.0,
+      "y_px": 45.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0,
+      "line": 0
+    },
+    {
+      "byte": 4,
+      "line": 1
+    },
+    {
+      "byte": 8,
+      "line": 2
+    },
+    {
+      "byte": 13,
+      "line": 2
+    }
+  ]
+}

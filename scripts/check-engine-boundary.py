@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Forbid Iced or GPUI from re-entering Nana product crates.
+"""Forbid Iced or GPUI from re-entering Nana product crates, and keep
+`nana-text` free of the text engine it is replacing.
 
 The in-tree engine/iced and engine/gpui-scenario-bench trees were removed.
 Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
 nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
 or native GPU implementation crates).
+
+nana-text (Issue #89) additionally must not name cosmic-text or cryoglyph
+anywhere under src/, and may borrow only the typography vocabulary from
+nana-ui-core. The cosmic reference engine is a dev dependency used from tests/,
+which is deliberately still allowed while the migration runs.
 """
 
 from __future__ import annotations
@@ -21,6 +27,32 @@ ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
 GPUI_PACKAGES = {"gpui"}
 ICED_WINIT_MARKERS = ("iced-rs/winit",)
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
+# Issue #89. `nana-text` owns the text IR; the engine it is replacing must not
+# reach its product API. A dev edge is allowed on purpose: the cosmic reference
+# engine lives in `crates/nana-text/tests/reference/` and is deleted with it.
+TEXT_NEUTRAL_PACKAGES = {"nana-text"}
+LEGACY_TEXT_PACKAGES = {"cosmic-text", "cryoglyph", "glyphon"}
+# Migration-only crates. Nothing in the product may depend on one. These are
+# Cargo *package* names, which are not always the lib target name: the crate in
+# tools/css-parity is the package `nana-css-parity` with `[lib] name =
+# "css-parity"`, and matching the lib name here would never fire.
+REFERENCE_ONLY_PACKAGES = {"nana-css-parity"}
+# `nana-text` borrows backend-neutral typography types rather than re-declaring
+# them, so the UiWorld adapter stays a field-for-field move. Everything else in
+# nana-ui-core -- layout, style model, semantic colour, geometry, and the
+# bundled font bytes -- is a boundary violation.
+NANA_TEXT_CORE_ALLOWLIST = {
+    "DirSpec",
+    "FontFeatureSetting",
+    "FontKerningSpec",
+    "FontVariationSetting",
+    "LineBreakSpec",
+    "LineHeightSpec",
+    "TextWrapBreak",
+    "WordBreakSpec",
+    "WritingModeSpec",
+}
+
 GPU_BACKEND_PACKAGES = {
     "ash",
     "d3d12",
@@ -76,6 +108,8 @@ def check_dependency_graph(data: dict) -> list[str]:
         forbidden = ICED_PACKAGES | GPUI_PACKAGES
         if name in BACKEND_NEUTRAL_PACKAGES:
             forbidden |= GPU_BACKEND_PACKAGES
+        if name in TEXT_NEUTRAL_PACKAGES:
+            forbidden |= LEGACY_TEXT_PACKAGES
         while pending:
             dependency, path = pending.pop()
             if dependency in seen:
@@ -86,6 +120,78 @@ def check_dependency_graph(data: dict) -> list[str]:
             if package["name"].replace("_", "-") in forbidden:
                 failures.append("forbidden product dependency: " + " -> ".join(path))
             pending.extend((child, path) for child in graph.get(dependency, []))
+    return failures
+
+
+def strip_rust_comments(text: str) -> str:
+    """Blank out `//` line comments and `/* */` blocks.
+
+    The source rules below are about the API, not the prose: `lib.rs` has to be
+    able to say "this crate does not name cosmic_text" without tripping the rule
+    that checks it. String literals containing `//` would be over-stripped, but
+    nothing in the crates this runs over has one.
+    """
+    out = []
+    index = 0
+    length = len(text)
+    while index < length:
+        if text.startswith("//", index):
+            end = text.find("\n", index)
+            index = length if end == -1 else end
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            index = length if end == -1 else end + 2
+        else:
+            out.append(text[index])
+            index += 1
+    return "".join(out)
+
+
+def check_text_engine_sources(crate_root: Path) -> list[str]:
+    """`nana-text/src` must not name the engine it replaces, nor reach past the
+    typography vocabulary in nana-ui-core.
+
+    This is the mechanical form of "the core API contains no cosmic types": the
+    dependency graph alone cannot say it, because the reference engine is a
+    legitimate dev dependency.
+    """
+    failures = []
+    source_dir = crate_root / "src"
+    if not source_dir.is_dir():
+        return failures
+    for source in sorted(source_dir.rglob("*.rs")):
+        text = strip_rust_comments(source.read_text(encoding="utf-8"))
+        where = source.relative_to(ROOT) if source.is_relative_to(ROOT) else source
+        for legacy in ("cosmic_text", "cryoglyph", "glyphon"):
+            if re.search(rf"\b{legacy}\b", text):
+                failures.append(f"{where} names {legacy}; the reference engine belongs in tests/")
+        # `use nana_ui_core::{A, B}` as well as a bare `nana_ui_core::A` path.
+        for group in re.findall(r"nana_ui_core::\{([^}]*)\}", text):
+            for item in group.split(","):
+                item = item.strip().split("::")[0].split(" as ")[0].strip()
+                if item and item not in NANA_TEXT_CORE_ALLOWLIST:
+                    failures.append(f"{where} imports nana_ui_core::{item}, which is off the allowlist")
+        for item in re.findall(r"nana_ui_core::([A-Za-z_][A-Za-z0-9_]*)", text):
+            if item not in NANA_TEXT_CORE_ALLOWLIST:
+                failures.append(f"{where} names nana_ui_core::{item}, which is off the allowlist")
+    return failures
+
+
+def check_reference_only_packages(data: dict) -> list[str]:
+    """No product crate may depend on a migration-only reference crate."""
+    failures = []
+    packages = {p["id"]: p for p in data["packages"]}
+    workspace = set(data["workspace_members"])
+    for node in data["resolve"]["nodes"]:
+        if node["id"] not in workspace:
+            continue
+        name = packages[node["id"]]["name"]
+        if name in REFERENCE_ONLY_PACKAGES:
+            continue
+        for dependency in node["deps"]:
+            child = packages[dependency["pkg"]]["name"]
+            if child in REFERENCE_ONLY_PACKAGES:
+                failures.append(f"reference-only crate {child} is reachable from {name}")
     return failures
 
 
@@ -144,9 +250,12 @@ def main() -> int:
 
     root_metadata = metadata(ROOT / "Cargo.toml")
     failures.extend(check_dependency_graph(root_metadata))
+    failures.extend(check_reference_only_packages(root_metadata))
     packages = {p["name"]: p for p in root_metadata["packages"] if p["id"] in root_metadata["workspace_members"]}
     for package in packages.values():
         crate_root = Path(package["manifest_path"]).parent
+        if package["name"] in TEXT_NEUTRAL_PACKAGES:
+            failures.extend(check_text_engine_sources(crate_root))
         features = set(package["features"])
         for source in (crate_root / "src").rglob("*.rs"):
             for feature in re.findall(r'feature\s*=\s*"([^"\n]+)"', source.read_text(encoding="utf-8")):
@@ -162,9 +271,10 @@ def main() -> int:
         return 1
 
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
+    text_neutral = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
     print(
         f"Engine boundary: OK (Iced/GPUI trees removed; the pinned upstream winit; "
-        f"backend-neutral: {neutral})"
+        f"backend-neutral: {neutral}; text-engine-neutral: {text_neutral})"
     )
     return 0
 

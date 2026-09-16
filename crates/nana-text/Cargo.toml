@@ -1,0 +1,26 @@
+[package]
+name = "nana-text"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Nana-native text IR, stable text ids, and migration parity contracts"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "nana_text"
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+nana-ui-core.workspace = true
+serde = { workspace = true, features = ["derive", "rc"] }
+serde_json.workspace = true
+
+# Migration-only. The cosmic reference engine lives under `tests/reference/`,
+# never under `src/`, so cosmic-text can never reach a product dependency edge.
+# Deleting `tests/reference/` and this table is the whole removal.
+[dev-dependencies]
+cosmic-text.workspace = true
+nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }

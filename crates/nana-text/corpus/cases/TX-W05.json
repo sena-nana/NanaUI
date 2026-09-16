@@ -1,0 +1,21 @@
+{
+  "id": "TX-W05",
+  "title": "max lines truncates the wrap and records the overflow",
+  "status": "pass",
+  "category": "wrap",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "the quick brown fox jumps over the lazy dog",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "max_width_px": 160.0,
+    "wrap": "Word",
+    "max_lines": 2,
+    "ellipsis": true
+  }
+}

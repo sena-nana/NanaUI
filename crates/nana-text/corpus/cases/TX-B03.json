@@ -1,0 +1,43 @@
+{
+  "id": "TX-B03",
+  "title": "the same mixed paragraph under an rtl base direction reorders the other way",
+  "status": "pass",
+  "category": "bidi",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc",
+    "noto-sans-arabic"
+  ],
+  "text": "abc العربية def",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "base_direction": "Rtl"
+  },
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 60.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 4
+    },
+    {
+      "byte": 18
+    },
+    {
+      "byte": 22
+    }
+  ]
+}

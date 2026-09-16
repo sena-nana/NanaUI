@@ -1,0 +1,45 @@
+{
+  "id": "TX-B02",
+  "title": "a mixed paragraph reorders runs visually while clusters stay logical",
+  "status": "pass",
+  "category": "bidi",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc",
+    "noto-sans-arabic"
+  ],
+  "text": "abc العربية def",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 60.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 1000.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 4
+    },
+    {
+      "byte": 18
+    },
+    {
+      "byte": 22
+    }
+  ]
+}

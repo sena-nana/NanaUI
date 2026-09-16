@@ -1,0 +1,25 @@
+{
+  "id": "TX-F02",
+  "title": "a character no loaded face covers resolves to notdef and flags it missing",
+  "status": "pass",
+  "category": "missing-glyph",
+  "kind": "label",
+  "fonts": [
+    "nana-test-vf"
+  ],
+  "text": "AΩ",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400,
+    "font_family": "NanaTestVF"
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 1
+    }
+  ]
+}

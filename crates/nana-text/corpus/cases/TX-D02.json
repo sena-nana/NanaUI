@@ -1,0 +1,28 @@
+{
+  "id": "TX-D02",
+  "title": "a one and a half device scale scales every advance and metric",
+  "status": "pass",
+  "category": "dpi",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "Hamburgefonstiv",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "scale": {
+      "px_per_logical": 1.5
+    }
+  },
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 15
+    }
+  ]
+}

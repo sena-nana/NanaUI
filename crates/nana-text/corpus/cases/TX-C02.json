@@ -1,0 +1,27 @@
+{
+  "id": "TX-C02",
+  "title": "kana and han mix inside one run",
+  "status": "pass",
+  "category": "cjk",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "漢字とかなの混植",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 6
+    },
+    {
+      "byte": 24
+    }
+  ]
+}

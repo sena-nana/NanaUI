@@ -1,0 +1,43 @@
+{
+  "id": "TX-W03",
+  "title": "word wrap breaks between words and reports the wrap as the break cause",
+  "status": "pass",
+  "category": "wrap",
+  "kind": "paragraph",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "the quick brown fox jumps over the lazy dog",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {
+    "max_width_px": 160.0,
+    "wrap": "Word"
+  },
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 0.0,
+      "y_px": 45.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0,
+      "line": 0
+    },
+    {
+      "byte": 20,
+      "line": 2
+    },
+    {
+      "byte": 42,
+      "line": 3
+    }
+  ]
+}

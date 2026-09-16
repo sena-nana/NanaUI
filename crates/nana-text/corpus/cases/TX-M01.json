@@ -1,0 +1,30 @@
+{
+  "id": "TX-M01",
+  "title": "combining marks attach to their base without their own cluster",
+  "status": "pass",
+  "category": "combining",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "é ō",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 1
+    },
+    {
+      "byte": 3
+    },
+    {
+      "byte": 6
+    }
+  ]
+}

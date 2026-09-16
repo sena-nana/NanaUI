@@ -10,6 +10,7 @@ members = [
     "crates/nana-js-v8",
     "crates/nana-ui-web-api",
     "crates/nana-svg-raster",
+    "crates/nana-text",
     "crates/nana-ui-vue",
     "tools/css-parity",
     "crates/nana-ui-platform",
@@ -36,6 +37,7 @@ nana-js-engine = { path = "crates/nana-js-engine" }
 nana-js-v8 = { path = "crates/nana-js-v8" }
 nana-ui-web-api = { path = "crates/nana-ui-web-api" }
 nana-svg-raster = { path = "crates/nana-svg-raster" }
+nana-text = { path = "crates/nana-text" }
 nana-ui-vue = { path = "crates/nana-ui-vue" }
 nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
 nana-ui-devtools = { path = "crates/nana-ui-devtools" }

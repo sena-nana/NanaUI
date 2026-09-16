@@ -1,0 +1,34 @@
+{
+  "id": "TX-Z01",
+  "title": "a zwj sequence merges into a single glyph covering the whole cluster",
+  "status": "pass",
+  "category": "emoji",
+  "kind": "label",
+  "fonts": [
+    "noto-emoji"
+  ],
+  "text": "👩‍💻",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "hit_tests": [
+    {
+      "x_px": 0.0,
+      "y_px": 12.0
+    },
+    {
+      "x_px": 20.0,
+      "y_px": 12.0
+    }
+  ],
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 11
+    }
+  ]
+}

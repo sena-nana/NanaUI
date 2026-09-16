@@ -1,0 +1,38 @@
+{
+  "id": "TX-G02",
+  "title": "disabling liga leaves every f-ligature as separate glyphs",
+  "status": "pass",
+  "category": "ligature",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "office affluent waffle",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400,
+    "features": [
+      {
+        "tag": [
+          108,
+          105,
+          103,
+          97
+        ],
+        "value": 0
+      }
+    ]
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 2
+    },
+    {
+      "byte": 8
+    }
+  ]
+}

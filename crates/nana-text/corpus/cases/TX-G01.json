@@ -1,0 +1,27 @@
+{
+  "id": "TX-G01",
+  "title": "the liga feature merges f-ligatures into one glyph per cluster",
+  "status": "pass",
+  "category": "ligature",
+  "kind": "label",
+  "fonts": [
+    "noto-sans-sc"
+  ],
+  "text": "office affluent waffle",
+  "style": {
+    "font_size_px": 24.0,
+    "font_weight": 400
+  },
+  "constraints": {},
+  "carets": [
+    {
+      "byte": 0
+    },
+    {
+      "byte": 2
+    },
+    {
+      "byte": 8
+    }
+  ]
+}
