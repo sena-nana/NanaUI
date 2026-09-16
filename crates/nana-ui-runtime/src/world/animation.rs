@@ -52,7 +52,7 @@ impl UiWorld {
                     kind: AnimationEventKind::Finished,
                 });
             } else if let Some(next_deadline) = next_deadline {
-                self.animation_deadlines.insert((next_deadline, id));
+                self.index_animation_deadline(next_deadline, id);
             }
             if crate::component_animation_id(
                 crate::component_animation_kinds::SWITCH,
@@ -235,8 +235,25 @@ impl UiWorld {
             self.animation_deadlines
                 .remove(&(previous.next_deadline, id));
         }
-        self.animation_deadlines.insert((deadline, id));
+        self.index_animation_deadline(deadline, id);
         self.install_presentation_overlay(&spec);
+    }
+
+    /// Index the CPU wake for animation `id`.
+    ///
+    /// `Duration::MAX` means "no CPU wake until replaced": a paused hold, or a
+    /// compositor overlay with no completion, such as an infinite skeleton
+    /// pulse. The compositor keeps presenting it through
+    /// `compositor_needs_tick`, separately from these deadlines. Indexing MAX
+    /// would make `next_animation_deadline` report `Some(~584 942 417 355 s)`
+    /// for a world with no CPU work at all. Hosts happened to survive that --
+    /// `epoch.checked_add(MAX)` overflows to `None` -- but every other reader
+    /// saw a deadline that does not exist. The animation itself stays in
+    /// `animations`, which is what pause, resume, retarget and cancel consult.
+    fn index_animation_deadline(&mut self, deadline: Duration, id: AnimationId) {
+        if deadline != Duration::MAX {
+            self.animation_deadlines.insert((deadline, id));
+        }
     }
 
     pub(super) fn cancel_animation(&mut self, id: AnimationId) -> bool {
@@ -353,9 +370,7 @@ impl UiWorld {
             overlay.track.resume();
             let _ = self.motion_descriptors.bind(&overlay.track);
         }
-        if next != Duration::MAX {
-            self.animation_deadlines.insert((next, id));
-        }
+        self.index_animation_deadline(next, id);
         true
     }
 

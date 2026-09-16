@@ -315,11 +315,13 @@ mod tests {
         assert!(steady.has_updates());
         assert_eq!(logical_opacity(&context, id), None);
         assert_eq!(presentation_opacity(&context, id), Some(1.0));
-        assert!(
-            steady
-                .next_deadline
-                .is_some_and(|deadline| deadline > Duration::ZERO)
-        );
+        let pulse = crate::component_animation_id(crate::component_animation_kinds::SKELETON, id)
+            .expect("skeleton pulse id");
+        // An infinite compositor pulse has no completion, so it owes the
+        // Runtime no CPU wake: the compositor presents it through
+        // `compositor_needs_tick`. It stays active all the same.
+        assert_eq!(steady.next_deadline, None);
+        assert!(context.world().animation_is_active(pulse));
 
         context.advance_animations(Duration::from_millis(350));
         assert_eq!(logical_opacity(&context, id), None);
@@ -330,7 +332,8 @@ mod tests {
         assert!((presentation_opacity(&context, id).unwrap() - 0.74).abs() < 1e-4);
         context.advance_animations(Duration::from_millis(1400));
         assert!((presentation_opacity(&context, id).unwrap() - 1.0).abs() < 1e-4);
-        assert!(context.next_animation_deadline().is_some());
+        assert_eq!(context.next_animation_deadline(), None);
+        assert!(context.world().animation_is_active(pulse));
     }
 
     #[test]
@@ -339,10 +342,18 @@ mod tests {
         let skeleton = context
             .create_component(document(), Skeleton::fill_width(12.0))
             .unwrap();
+        let pulse = crate::component_animation_id(
+            crate::component_animation_kinds::SKELETON,
+            skeleton.stable_id(),
+        )
+        .expect("skeleton pulse id");
         context.advance_animations(Duration::from_millis(48));
-        assert!(context.next_animation_deadline().is_some());
+        // The pulse owes no CPU wake (see `skeleton_pulse_lives_on_compositor_overlay`),
+        // so whether it was reclaimed shows in the animation table, not the deadline.
+        assert!(context.world().animation_is_active(pulse));
 
         context.remove_view(skeleton).unwrap();
+        assert!(!context.world().animation_is_active(pulse));
         assert_eq!(context.next_animation_deadline(), None);
         let frame = context.advance_animations(Duration::from_millis(100_000));
         assert!(frame.samples.is_empty());
