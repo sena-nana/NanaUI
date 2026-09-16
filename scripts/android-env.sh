@@ -83,7 +83,7 @@ fi
 export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
 
 _HOST_TAG=""
-for _tag in darwin-arm64 darwin-x86_64 linux-x86_64; do
+for _tag in darwin-arm64 darwin-x86_64 linux-x86_64 windows-x86_64; do
   if [[ -d "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${_tag}" ]]; then
     _HOST_TAG="${_tag}"
     break
@@ -97,10 +97,13 @@ fi
 _NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${_HOST_TAG}/bin"
 _NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/${_HOST_TAG}/sysroot"
 _API="${ANDROID_API_LEVEL:-24}"
-_CLANG="${_NDK_BIN}/aarch64-linux-android${_API}-clang"
-_CLANGXX="${_NDK_BIN}/aarch64-linux-android${_API}-clang++"
+# The Windows NDK ships the per-API clang drivers as .cmd wrappers.
+_EXT=""
+[[ "${_HOST_TAG}" == windows-x86_64 ]] && _EXT=".cmd"
+_CLANG="${_NDK_BIN}/aarch64-linux-android${_API}-clang${_EXT}"
+_CLANGXX="${_NDK_BIN}/aarch64-linux-android${_API}-clang++${_EXT}"
 
-if [[ ! -x "${_CLANG}" ]]; then
+if [[ ! -f "${_CLANG}" ]]; then
   echo "android-env: missing ${_CLANG}" >&2
   return 1 2>/dev/null || exit 1
 fi

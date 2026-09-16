@@ -186,8 +186,9 @@ impl GpuSurface {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("nana-android-host"),
             required_features: wgpu::Features::empty(),
-            required_limits:
-                wgpu::Limits::downlevel_webgl2_defaults().using_resolution(adapter.limits()),
+            // SceneWgpuPainter exceeds downlevel limits (fragment storage buffers,
+            // 16 inter-stage variables); ask for what the adapter has, never more.
+            required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::MemoryUsage,
             trace: wgpu::Trace::Off,
             experimental_features: wgpu::ExperimentalFeatures::disabled(),

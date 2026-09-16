@@ -45,6 +45,12 @@ impl SlotKeyMods {
             shift: self.shift,
         }
     }
+
+    /// Ctrl / Alt / Meta turn a printable key into a shortcut (copy, paste,
+    /// select all) that goes to the Runtime keymap instead of text commit.
+    pub const fn is_shortcut(self) -> bool {
+        self.ctrl || self.alt || self.logo
+    }
 }
 
 /// Logical key for the control-slot (host-testable; no android-activity).
@@ -223,10 +229,9 @@ pub fn slot_key_to_dispatch(
     repeat: bool,
     text_input_focused: bool,
 ) -> SlotKeyDispatch {
-    let shortcut = mods.ctrl || mods.alt || mods.logo;
     if down
         && text_input_focused
-        && !shortcut
+        && !mods.is_shortcut()
         && let Some(text) = key.committed_text()
     {
         return SlotKeyDispatch::Ime(ImeEvent::Commit(text));

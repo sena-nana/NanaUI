@@ -43,6 +43,8 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    // Align games-activity's kotlin-stdlib-jdk8 1.6 with appcompat's stdlib 1.8 (duplicate classes).
+    implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
     // GameActivity Java + GameTextInput. Do not enable prefab: android-activity
     // already compiles its own native glue.
     implementation 'androidx.games:games-activity:4.4.0'

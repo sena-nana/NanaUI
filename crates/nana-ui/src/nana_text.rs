@@ -627,13 +627,16 @@ pub fn set_sans_serif_family(name: impl AsRef<str>) {
 }
 
 fn build_font_system() -> FontSystem {
-    #[cfg(not(feature = "bundled-fonts"))]
+    #[allow(unused_mut)]
+    let mut font_system = FontSystem::new();
+    // fontdb's system scan covers no directory on Android.
+    #[cfg(target_os = "android")]
     {
-        FontSystem::new()
+        font_system.db_mut().load_fonts_dir("/system/fonts");
+        font_system.db_mut().set_sans_serif_family("Roboto");
     }
     #[cfg(feature = "bundled-fonts")]
     {
-        let mut font_system = FontSystem::new();
         for source in crate::ui_font_sources() {
             let _ = font_system
                 .db_mut()
@@ -642,8 +645,8 @@ fn build_font_system() -> FontSystem {
                 )));
         }
         font_system.db_mut().set_sans_serif_family("Noto Sans SC");
-        font_system
     }
+    font_system
 }
 
 impl TextShaper for NanaTextShaper {

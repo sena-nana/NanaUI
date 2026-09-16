@@ -89,8 +89,9 @@ if (( AFTER_BYTES > MAX_SO_BYTES )); then
   exit 1
 fi
 
+# .properties reads backslashes as escapes (Windows ANDROID_HOME).
 cat >"${APP_DIR}/local.properties" <<EOF
-sdk.dir=${ANDROID_HOME}
+sdk.dir=$(printf '%s' "${ANDROID_HOME}" | tr '\\' /)
 EOF
 
 (
@@ -98,7 +99,7 @@ EOF
   "${GRADLE_BIN}" --no-daemon assembleDebug
 )
 
-GRADLE_APK="${APP_DIR}/build/outputs/apk/debug/app-debug.apk"
+GRADLE_APK="${APP_DIR}/build/outputs/apk/debug/nana-android-host-debug.apk"
 if [[ ! -f "${GRADLE_APK}" ]]; then
   echo "package-android-host-apk: missing ${GRADLE_APK}" >&2
   exit 1

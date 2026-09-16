@@ -51,6 +51,11 @@ dev 档会把约 390 MB 的 DWARF 和约 46 MB 的符号表内嵌进 `.so`。`pa
 | 滚动 / 虚拟列表 | 未做 | 后期 |
 | V8 Vue | 设备上设置 `RUSTY_V8_ARCHIVE` 后的发行包 | 真机；CI stub 不算 |
 
+2026-09-16 已在 Galaxy Z Fold4 外屏（Android 16）逐项通过 CJK 候选、剪贴板与
+TalkBack，证据见 #83。TalkBack 手势需人在设备上完成，adb 注入的 tap 会绕过触摸浏览。
+Gboard 拼音的候选条在键盘顶端（控制槽已随 IME inset 抬到其上方）；宿主未提供
+`CursorAnchorInfo`，浮动候选框不跟随 caret。
+
 桌面 host 配置下的 Android host `--lib` 回归验证 Rust 侧动作队列、输入、IME 映射和无障碍投影合同，不能替代上表。
 
 配置 Android NDK 的 LLVM clang 后，`cargo check --locked --no-default-features --target aarch64-linux-android` 覆盖 `nana-android-host`。构建需设置 `CC_aarch64_linux_android` 指向 NDK clang；仓库的 `scripts/android-env.sh` 会自动导出。默认 `engine-v8` 仍需要 CI / 发行提供 `RUSTY_V8_ARCHIVE`。这只是 ARM64 交叉编译合同证据。

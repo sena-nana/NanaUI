@@ -100,18 +100,21 @@ impl SlotAccessibility {
 
     /// Drain TalkBack actions and apply them through the Runtime's typed
     /// accessibility contract. Invalid or unsupported requests are ignored.
-    pub fn drain_actions(&mut self, runtime: &mut SlotRuntime) {
+    /// Returns whether anything was drained (the host then repaints).
+    pub fn drain_actions(&mut self, runtime: &mut SlotRuntime) -> bool {
         let pending = self
             .actions
             .pending
             .lock()
             .map(|mut actions| std::mem::take(&mut *actions))
             .unwrap_or_default();
+        let drained = !pending.is_empty();
         for request in pending {
             let Some(request) = self.projector.project_action(request) else {
                 continue;
             };
             let _ = runtime.apply_accessibility_action(request);
         }
+        drained
     }
 }

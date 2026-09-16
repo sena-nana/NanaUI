@@ -36,6 +36,9 @@ struct HostState {
     ime_buffer: SlotImeBuffer,
     /// Last EditorInfo pushed to GameActivity.
     editor_info: Option<SlotEditorInfo>,
+    /// Physical px the soft keyboard covers. GameActivity keeps the surface
+    /// full-window, so layout stops above this band.
+    ime_bottom_inset: u32,
 }
 
 impl HostState {
@@ -52,6 +55,7 @@ impl HostState {
             ime_shown: false,
             ime_buffer: SlotImeBuffer::default(),
             editor_info: None,
+            ime_bottom_inset: 0,
         }
     }
 
@@ -167,6 +171,15 @@ impl HostState {
         ax.push(painter.runtime());
     }
 
+    /// TalkBack activation arrives as a queued action, not input, so the loop
+    /// drains it every iteration.
+    fn drain_accessibility_actions(&mut self) -> bool {
+        let (Some(ax), Some(painter)) = (self.ax.as_mut(), self.slot.as_mut()) else {
+            return false;
+        };
+        ax.drain_actions(painter.runtime_mut())
+    }
+
     fn paint_frame(&mut self) -> Result<(), String> {
         let scale = self.shell.scale_factor();
         let (fw, fh) = {
@@ -175,9 +188,10 @@ impl HostState {
             };
             (gpu.config.width, gpu.config.height)
         };
-        self.shell.resize(fw, fh, scale);
+        let visible = (fw, fh.saturating_sub(self.ime_bottom_inset).max(1));
+        self.shell.resize(visible.0, visible.1, scale);
         if let Some(painter) = self.slot.as_mut() {
-            painter.resize((fw, fh), scale);
+            painter.resize(visible, scale);
         }
 
         if let Some(vue) = self.vue.as_mut() {
@@ -198,7 +212,7 @@ impl HostState {
         };
         gpu.present_chrome_bands_with_overlay(&bands, |view, encoder| {
             if let Some(painter) = slot.as_mut() {
-                painter.paint_slot(encoder, view);
+                painter.paint_slot(encoder, view, (fw, fh));
             }
             Ok(())
         })?;
@@ -277,7 +291,8 @@ impl HostState {
     ///
     /// System keys (Back, …) stay `Unhandled`. While the slot text input is
     /// focused, printable commits arrive as GameTextInput `TextEvent`s and are
-    /// not synthesized from KeyEvents (that would double-commit CJK). Keys are
+    /// not synthesized from KeyEvents (that would double-commit CJK); shortcuts
+    /// still reach the Runtime. Keys are
     /// Handled only while the slot holds keyboard focus; otherwise they remain
     /// available to VueHost.
     fn handle_key(
@@ -311,6 +326,7 @@ impl HostState {
             return false;
         };
         if down
+            && !mods.is_shortcut()
             && painter.text_input_focused()
             && logical
                 .as_ref()
@@ -405,6 +421,13 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                     }
                     if let Err(err) = state.paint_frame() {
                         log::warn!("nana-android-host: paint: {err}");
+                    }
+                    state.publish_accessibility();
+                }
+                MainEvent::InsetsChanged { .. } => {
+                    state.ime_bottom_inset = ime_bottom_inset(&app);
+                    if let Err(err) = state.paint_frame() {
+                        log::warn!("nana-android-host: insets paint: {err}");
                     }
                     state.publish_accessibility();
                 }
@@ -511,6 +534,9 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
                 }
             }
         }
+        if state.drain_accessibility_actions() {
+            need_paint = true;
+        }
         if need_paint {
             if let Err(err) = state.paint_frame() {
                 log::warn!("nana-android-host: input paint: {err}");
@@ -552,4 +578,75 @@ fn apply_editor_info(app: &AndroidApp, info: SlotEditorInfo) {
     };
     let options = ImeOptions::from_bits_truncate(info.ime_options);
     app.set_ime_editor_info(input_type, action, options);
+}
+
+/// Bottom px covered by the soft keyboard (decor view root insets). Before API
+/// 30 the IME is the system-window inset minus the stable (navigation) part.
+fn ime_bottom_inset(app: &AndroidApp) -> u32 {
+    use std::mem::ManuallyDrop;
+
+    use accesskit_android::jni::{self, objects::JObject, objects::JValue};
+
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        return 0;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return 0;
+    };
+    // android_main never returns to Java, so only a frame frees these locals.
+    let bottom = env.with_local_frame(8, |env| -> jni::errors::Result<i32> {
+        // `activity_as_ptr` is a global ref; never drop it as a local ref.
+        let activity = ManuallyDrop::new(unsafe {
+            JObject::from_raw(app.activity_as_ptr() as jni::sys::jobject)
+        });
+        let window = env
+            .call_method(&*activity, "getWindow", "()Landroid/view/Window;", &[])?
+            .l()?;
+        let decor = env
+            .call_method(&window, "getDecorView", "()Landroid/view/View;", &[])?
+            .l()?;
+        let insets = env
+            .call_method(
+                &decor,
+                "getRootWindowInsets",
+                "()Landroid/view/WindowInsets;",
+                &[],
+            )?
+            .l()?;
+        if insets.is_null() {
+            return Ok(0);
+        }
+        let sdk = env
+            .get_static_field("android/os/Build$VERSION", "SDK_INT", "I")?
+            .i()?;
+        if sdk >= 30 {
+            let ime = env
+                .call_static_method("android/view/WindowInsets$Type", "ime", "()I", &[])?
+                .i()?;
+            let rect = env
+                .call_method(
+                    &insets,
+                    "getInsets",
+                    "(I)Landroid/graphics/Insets;",
+                    &[JValue::Int(ime)],
+                )?
+                .l()?;
+            env.get_field(&rect, "bottom", "I")?.i()
+        } else {
+            let system = env
+                .call_method(&insets, "getSystemWindowInsetBottom", "()I", &[])?
+                .i()?;
+            let stable = env
+                .call_method(&insets, "getStableInsetBottom", "()I", &[])?
+                .i()?;
+            Ok(system - stable)
+        }
+    });
+    bottom
+        .unwrap_or_else(|error| {
+            let _ = env.exception_clear();
+            log::warn!("nana-android-host: ime insets: {error}");
+            0
+        })
+        .max(0) as u32
 }

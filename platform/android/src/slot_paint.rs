@@ -132,13 +132,19 @@ impl SlotPainter {
     }
 
     /// Draw the flushed Runtime scene over chrome already encoded on `view`.
-    pub fn paint_slot(&mut self, encoder: &mut CommandEncoder, view: &TextureView) {
+    /// `target_size` is the surface; the Runtime viewport may stop above the IME.
+    pub fn paint_slot(
+        &mut self,
+        encoder: &mut CommandEncoder,
+        view: &TextureView,
+        target_size: (u32, u32),
+    ) {
         if let Err(error) = self.runtime.flush() {
             log::warn!("nana-android-host: slot flush: {error}");
             return;
         }
         let (logical_w, logical_h) = self.runtime.logical_size();
-        let (fw, fh) = self.runtime.physical_size();
+        let (fw, fh) = target_size;
         let viewport = ScenePaintViewport {
             logical_size: [logical_w, logical_h],
             physical_size: [fw, fh],
