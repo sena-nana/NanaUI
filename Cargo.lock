@@ -1346,6 +1346,7 @@ checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
 dependencies = [
  "fontconfig-parser",
  "log",
+ "memmap2",
  "slotmap",
  "tinyvec",
 ]
@@ -2386,9 +2387,13 @@ name = "nana-text"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "fontdb 0.24.0",
+ "icu_properties",
  "nana-ui-core",
  "serde",
  "serde_json",
+ "skrifa 0.44.0",
+ "unicode-segmentation",
 ]
 
 [[package]]

@@ -3,8 +3,10 @@
 //! This crate owns the *vocabulary* the NanaUI text migration is measured in:
 //! the immutable layout IR, the stable generational handles, the caret and
 //! hit-test derivations that run on top of them, and the structural diff plus
-//! corpus that a new engine has to satisfy. It deliberately ships no shaping,
-//! no layout and no font database — those arrive in later phases.
+//! corpus that a new engine has to satisfy. Since Phase 1 (#90) it also owns
+//! the font layer ([`font`]): registration, generations, face matching,
+//! variation coordinates and coverage-driven fallback. It still ships no
+//! shaping and no layout — those arrive in later phases.
 //!
 //! # Boundaries
 //!
@@ -34,6 +36,7 @@ pub mod constraints;
 pub mod counters;
 pub mod edit;
 pub mod engine;
+pub mod font;
 pub mod id;
 pub mod layout;
 pub mod metrics;
@@ -46,7 +49,7 @@ pub use constraints::{TextConstraints, TextScale};
 pub use counters::TextWorkCounters;
 pub use edit::{Affinity, CaretGeometry, CaretPosition, HitTestResult};
 pub use engine::TextEngine;
-pub use id::{FontGeneration, FontId, ShapeRunId, TextLayoutId, TextRevision};
+pub use id::{FontGeneration, FontId, FontSourceId, ShapeRunId, TextLayoutId, TextRevision};
 pub use layout::{LineBox, LineBreakCause, OverflowFlags, TextLayout, TextRect};
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, ScriptTag, ShapedGlyph, ShapedRun};

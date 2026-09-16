@@ -17,10 +17,23 @@ default = []
 nana-ui-core.workspace = true
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json.workspace = true
+unicode-segmentation.workspace = true
+# Issue #90: mature implementations behind private modules. None of their types
+# may appear in the public API; `scripts/check-engine-boundary.py` pins each one
+# to the single `src/font/` file allowed to name it.
+# System font discovery and name/OS2 metadata parsing (`font/discovery.rs`).
+fontdb = "0.24"
+# Variation axes, named instances, colour tables, cmap (`font/face.rs`). Same
+# read-fonts line as harfrust 0.12, which Phase 2 shapes with.
+skrifa = "0.44"
+# Script, Emoji_Presentation, Default_Ignorable (`font/unicode.rs`).
+icu_properties = "2.3"
 
 # Migration-only. The cosmic reference engine lives under `tests/reference/`,
 # never under `src/`, so cosmic-text can never reach a product dependency edge.
 # Deleting `tests/reference/` and this table is the whole removal.
 [dev-dependencies]
 cosmic-text.workspace = true
-nana-ui-core = { workspace = true, features = ["bundled-font-regular"] }
+nana-ui-core = { workspace = true, features = ["bundled-fonts"] }
+# Tests read outlines back to prove resolved axis coordinates reach the face.
+skrifa = "0.44"

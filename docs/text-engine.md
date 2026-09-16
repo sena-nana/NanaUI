@@ -5,6 +5,8 @@
 Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 是其中的 Phase 0：
 先把内部合同、reference backend 和 correctness corpus 固定下来，让后续每一阶段都能对着
 同一份结构化基线比较，而不是在 shaping / layout / GPU 三层同时改动时失去可比性。
+#90 是 Phase 1：`nana-text` 自有的字体层——注册、代际、匹配、变体坐标与按覆盖率的 fallback，
+见「字体层」一节。
 
 ## 这是什么
 
@@ -39,8 +41,10 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 | 排版词汇（变体轴 / kerning / line-break / word-break / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
 | OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（skrifa / ttf-parser） | #89 非目标明确写了不重实现 |
 | 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust） | 同上 |
-| Unicode 算法（BiDi、断行、字素簇、script 判定） | **成熟 crate**（unicode-bidi / unicode-linebreak / unicode-segmentation / unicode-script） | 同上 |
-| 系统字体发现与 `@font-face` 注册 | **成熟 crate**（fontdb）+ 宿主 | nana-text 只发 `FontId` 与 `FontGeneration` |
+| Unicode 算法（BiDi、断行、字素簇、script / emoji 属性） | **成熟 crate**（unicode-bidi / unicode-linebreak / unicode-segmentation / icu_properties） | 同上 |
+| 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
+| 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（fontdb，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
+| 轴、命名实例、彩色表、cmap 读取 | **成熟 crate**（skrifa，仅 `font/face.rs`） | 与 Phase 2 的 harfrust 0.12 同一条 read-fonts 线 |
 | 字形栅格化、图集、GPU instance | 现有 cryoglyph 路径 | #89 非目标；由 Epic #88 的后续阶段接手 |
 
 `nana-text` 只许 import 这些 `nana_ui_core` 项：`DirSpec`、`FontFeatureSetting`、
@@ -117,7 +121,7 @@ fixture，locale 固定 `en-US`。face id 因而确定，fallback 链就是用�
 
 ### 字体 fixture
 
-`crates/nana-text/fonts/`，全部 OFL，合计约 18 KB：
+`crates/nana-text/fonts/`，Noto 子集为 OFL，合成字体由脚本生成，合计约 20 KB：
 
 | fixture | 来源 | 覆盖 |
 | --- | --- | --- |
@@ -126,6 +130,8 @@ fixture，locale 固定 `en-US`。face id 因而确定，fallback 链就是用�
 | `noto-sans-arabic.ttf` | Noto Sans Arabic subset | Arabic 连写（`init`/`medi`/`fina`/`rlig`/`mark`） |
 | `noto-sans-kr.ttf` | Noto Sans KR subset | 谚文音节 |
 | `noto-emoji.ttf` | Noto Emoji（**单色轮廓**）subset | emoji 与 ZWJ 连字 |
+| `nana-test-axes.ttf` | 脚本用 fontTools 合成，不下载 | `wght` 100..900 / `wdth` 50..200 / `slnt` -15..0 + 两个命名实例；字体层的范围匹配与 `font-weight` 对 `wght` 优先级 |
+| `nana-test-color.ttf` | 脚本用 fontTools 合成，不下载 | COLR v0 + CPAL，覆盖 U+2764 / U+1F525；emoji fallback 优先彩色 face |
 
 用 `python3 scripts/build-text-corpus-fonts.py` 重新生成，`--check` 验证签入的文件与脚本
 的产物一致。两端都钉死了才有意义：**输入**钉在 google/fonts 的某个 commit 上，且每个源文件
@@ -213,11 +219,124 @@ counters，所以计数变化是一次可评审的 diff。
    `glyphon` 标识符。这就是「核心 API 不出现 cosmic 类型」的机械含义——依赖图本身说不了这句话，
    因为参照引擎是一条合法的 dev 依赖。注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
 3. **allowlist**：`crates/nana-text/src/**` 引用 `nana_ui_core::` 时，只许命中上面那张表里的项。
+4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`，`skrifa` 只许出现在
+   `src/font/face.rs`，`icu_properties` 只许出现在 `src/font/unicode.rs`，`read_fonts` /
+   `ttf_parser` 哪都不许点名；这三个模块在 `font/mod.rs` 里不得是 `pub mod`。公开 API 因此
+   不可能带出 `fontdb::ID` 之类的第三方 ID。
 
 参照引擎放在 `crates/nana-text/tests/reference/`，**不是** `src/` 下的 `#[cfg(test)] mod`：
 后者对 `tests/*.rs` 不可见，corpus harness 就用不上它。原生引擎落地后，删
 `tests/reference/` 和 `Cargo.toml` 里的 `[dev-dependencies] cosmic-text` 两处即可，`src/` 完全
 不用动。
+
+## 字体层（Phase 1，#90）
+
+`nana_text::font` 输出的是**可供 Phase 2 shaping 消费的确定性字体选择**，不做 shaping。
+
+```text
+TextStyle / CSS font-* / NanaVue props
+        ↓ FontQuery::from_style
+FontQuery { families, weight, stretch, style, language }
+        ↓ FontSystem::select（按 query 缓存，代际变化即清空）
+FontSelection { primary, fallback_chain, generation, families[] }
+        ↓ FontSystem::resolve_text（覆盖率缓存）      ↓ FontSystem::instance
+FontAssignment { range, font, reason }          FontInstance { key: FontInstanceKey, ignored_axes }
+```
+
+### 来源与生命周期
+
+| 来源 | 入口 | 字节 |
+| --- | --- | --- |
+| 平台系统字体 | `load_system_fonts` / `with_system_fonts` | 首次需要 details / 覆盖率时读盘，之后常驻 |
+| 显式文件 | `register_file` | 注册时读取并校验，坏文件在注册处失败 |
+| 内存 bytes / 测试 fixture | `register_bytes(font_blob(..), &FaceDescriptor)` | `Arc` 共享 |
+
+- `FaceDescriptor` 是 `@font-face` 描述符：声明的 `family` **替换** face 自己的名字，
+  weight / stretch 是闭区间，style 限定唯一样式。
+- 每次变更（注册、卸载、`replace_bytes`、加载系统字体、换 `FallbackPolicy`）**恰好** bump
+  一次 `FontGeneration`。selection 缓存整体清空（任何新 face 都可能改变某个 family list 的结果）；
+  覆盖率缓存**只**丢被卸载的 face（无关注册不改变一个 face 的 cmap）。
+- `FontId` / `FontSourceId` 是代际句柄：卸载后槽位以更高代际重发，旧 id 被拒绝，
+  `FontInstanceKey` 因而不会与替换后的 face 混淆。
+- `face_data` 给出 `FontData`（`Send + Sync`，持有 `Arc`）。worker 持有期间卸载不释放字节；
+  `retired_font_data_alive` 报告被卸载但仍被持有的字节份数，释放时机可观察。
+- `FontSystem` 是 `&mut self` 的普通值，不是全局，不持锁。宿主需要共享时自己决定同步方式。
+
+### 匹配
+
+CSS Fonts 4 §5.2：先 `font-stretch`，再 `font-style`，再 `font-weight`，每步只保留最优距离的
+face。Issue 草案写的是 style → weight → stretch；这里按 CSS 规范的顺序，因为 CSS / Rust / NanaVue
+最终都转成同一个 `FontQuery`，和浏览器不一致的顺序会让同一份样式在两处选出不同 face。
+
+- 可变 face 以**范围**参与：`wght` 轴给 weight 区间，`wdth` 轴给 stretch 区间，`ital` / `slnt`
+  轴让 face 同时支持 normal 与 italic / oblique。
+- 400..=500 先找不超过 500 的更重 face，再找更轻，再找 500 以上；<400 先轻后重；>500 先重后轻。
+- 仍然并列时：显式注册（文件 / 内存）胜过系统扫描，再由**后注册者**胜出。整个过程不遍历
+  HashMap，同一 face 集合与 query 永远选出同一个 face。
+
+### 变体坐标与 #41
+
+每个轴的坐标，从低到高：face 默认值 → query 隐含（`wght` ← weight、`wdth` ← stretch、
+italic → `ital = 1`、oblique → `slnt = -14`，仅限 face 有该轴）→ `font-variation-settings` 显式值。
+
+- **`font-weight` 与显式 `"wght"`**：显式 `"wght"` 胜出，并且同时决定 face **选择**与坐标；
+  `"wdth"` 对 stretch 同理。这是 `nana-ui` 产品路径已有的规则（`wght` 并进 weight），保留它
+  迁移才不会换掉页面拿到的 face。其他任何轴（含 `BEVL`）不参与选择。
+- face 没有的轴 **fail-closed**：进 `FontInstance::ignored_axes`，不生效，**绝不**改写成 `wght`。
+- `FontInstanceKey { font, coords, synthesis }` 是 Phase 2 shape cache 与 glyph raster cache 的键：
+  坐标先 clamp 再省略默认值，所以渲染结果相同的两个请求键相同（`wdth 1000` 与 `wdth 200` 在上限
+  为 200 的 face 上同键）。
+- 做不到的粗体 / 斜体记在 `Synthesis` 里，由 renderer 决定怎么假。轴动画（#85）不在本阶段。
+
+测试直接用 skrifa 读回轮廓：`BEVL 42`、`wdth 150`、`wght 700` 都让 `A` 的轮廓实际变化，
+证明坐标到达了 face，而不只是被记录。
+
+### Fallback
+
+两层：`FallbackPolicy`（有序的 family 名）给候选，`resolve_text` 用 cmap 覆盖率探测；覆盖到但
+shaping 仍出 `.notdef` 的 cluster 由 Phase 2 重试。以字素簇为单位，ZWJ / 变体选择符等
+Default_Ignorable 码位不要求覆盖。primary 已覆盖且无需彩色时直接返回，不构建候选表。
+
+候选顺序：
+
+- **emoji 呈现**（VS16，或非 VS15 的 `Emoji_Presentation`）：chain 里带彩色表的 face →
+  emoji 策略 → chain 其余；
+- **其他**：chain 按序（primary 在前）；
+
+两者之后都是：该 cluster 的 script 策略（没有自身 script 的 cluster 沿用前一个有 script 的
+cluster，所以 CJK 后面的标点继续找 CJK face）＋语言提示（`ja` / `ko` / `zh-Hant` / `zh-HK`
+优先对应字形）→ 无自身 script 时的 symbol 与 emoji 策略 → last resort。都覆盖不到记
+`Missing`，渲染 primary 的 `.notdef`。
+
+`FallbackPolicy::platform_default()` 按 Windows / macOS / 其他（Linux、Android）给出常见
+family；名字解析不到 face 就跳过。hermetic 测试一律从 `FallbackPolicy::empty()` 自己搭。
+
+覆盖率缓存按 `FontId` 存折叠后的码位区间（CJK face 约 3 万映射折成几百个区间），默认预算
+4 MiB，超预算按 LRU 淘汰，每次查询是二分查找。
+
+### 诊断
+
+- `FontSelection::families`：每个尝试过的 family 名、它来自哪个请求项（含 generic 展开）、
+  解析到哪个 face。
+- `FontAssignment::reason`：`Primary` / `FamilyChain { index }` / `EmojiPolicy { family }` /
+  `ScriptPolicy { script, family }` / `SymbolPolicy` / `LastResort` / `Ignorable` / `Missing`。
+- `describe(FontId)`：来源、路径、名字、匹配用的 weight / stretch 区间、轴、命名实例、是否彩色。
+- `FontCounters`：`font_faces_registered`、`font_generation`、`font_query_hits/misses`、
+  `fallback_candidates_examined`、`coverage_cache_hits/misses/evictions`、
+  `font_fallback_attempts`、`font_fallback_misses`。
+
+### 测试
+
+- `tests/font_system_is_hermetic_and_deterministic.rs`：只用签入的 fixture 与 `nana-ui-core`
+  打包的四个 Noto Sans SC 字重，策略在测试里搭。覆盖 preferred family、weight / style /
+  stretch、可变范围、CJK / 语言提示、emoji 彩色候选、Latin + CJK 混排、缺字、`BEVL` / `wdth`、
+  `wght` 优先级、注册 / 卸载 / 替换与代际、同 query 复用、线程可移交。
+- `tests/font_system_platform_acceptance.rs`：读本机字体，`#[ignore]`，在目标平台上手动跑。
+  2026-09-16 Windows 11：扫描 315 个 face 用时 15 ms；`Hello, 世界。こんにちは 한국어 🔥`
+  分别落到 Segoe UI / Microsoft YaHei UI / Malgun Gothic / Segoe UI Emoji，无 `Missing`；
+  冷启动（读盘）约 110–140 ms，热路径约 40 µs。
+
+产品路径**仍未**接入字体层：`nana-ui` 继续用 cosmic-text 的 `FontSystem`。接入属于后续阶段。
 
 ## #33 迁移基准
 
@@ -274,7 +393,7 @@ Phase 0 落地后复测（Windows，2026-09-16，另一台机器，p50；三格�
 | caret affinity（RTL / BiDi 边界） | **记录行为，不是合同** | 边界 affinity 是引擎定义而非规范定义的。Phase 0 把参照引擎的答案记成 golden 并配 `caret_x_px` 容差。 |
 | 五个计数器 | 只有参照路径在喂 | 按设计没有产品生产者，靠对账测试防止空转。 |
 | script 标注 | `ScriptTag::UNKNOWN` | 参照引擎不导出 per-run script。`ScriptTag` 的位置留好了，由做 segmentation 的那一阶段填。 |
-| 多字体 fallback | 覆盖了但很窄 | fallback 是 VF→Noto 的 `A`/`B`，证明 `FontId` 能在 run 中途变、`FALLBACK_FONT` 会置位；不覆盖按 script 驱动的 fallback 选择。 |
+| 多字体 fallback | 语料里覆盖了但很窄 | 语料的 fallback 是 VF→Noto 的 `A`/`B`，证明 `FontId` 能在 run 中途变、`FALLBACK_FONT` 会置位。按 script / 语言 / emoji 驱动的候选选择由 Phase 1 字体层提供（见「字体层」），参照引擎不走它。 |
 | #33 workload | 合同级保留，不是 perf 门禁 | 见上一节。 |
 
 ## 怎么跑
@@ -284,6 +403,8 @@ cargo test -p nana-text --all-targets --locked
 python3 scripts/check-engine-boundary.py
 python3 -m unittest discover -s scripts/tests
 python3 scripts/build-text-corpus-fonts.py --check   # 需要 fonttools
+# 平台系统字体验收（读本机字体，不进 CI）
+cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
 ```
 
 证明产品路径没动：

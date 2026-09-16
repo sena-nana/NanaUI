@@ -11,6 +11,10 @@ nana-text (Issue #89) additionally must not name cosmic-text or cryoglyph
 anywhere under src/, and may borrow only the typography vocabulary from
 nana-ui-core. The cosmic reference engine is a dev dependency used from tests/,
 which is deliberately still allowed while the migration runs.
+
+nana-text's font layer (Issue #90) uses fontdb, skrifa and icu_properties, each
+from exactly one private module, so none of their types can leak into the
+public text API.
 """
 
 from __future__ import annotations
@@ -51,6 +55,17 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "TextWrapBreak",
     "WordBreakSpec",
     "WritingModeSpec",
+}
+
+# Issue #90. Each mature crate behind the font layer is named from exactly one
+# file of `crates/nana-text/src`, and that module is private. `None` means no
+# source file may name the crate at all (it is reached only through another).
+NANA_TEXT_PRIVATE_BACKENDS = {
+    "fontdb": "font/discovery.rs",
+    "skrifa": "font/face.rs",
+    "read_fonts": None,
+    "ttf_parser": None,
+    "icu_properties": "font/unicode.rs",
 }
 
 GPU_BACKEND_PACKAGES = {
@@ -174,6 +189,20 @@ def check_text_engine_sources(crate_root: Path) -> list[str]:
         for item in re.findall(r"nana_ui_core::([A-Za-z_][A-Za-z0-9_]*)", text):
             if item not in NANA_TEXT_CORE_ALLOWLIST:
                 failures.append(f"{where} names nana_ui_core::{item}, which is off the allowlist")
+        relative = source.relative_to(source_dir).as_posix()
+        for backend, owner in NANA_TEXT_PRIVATE_BACKENDS.items():
+            if relative != owner and re.search(rf"\b{backend}\b", text):
+                allowed = f"only {owner} may" if owner else "no source file may"
+                failures.append(f"{where} names {backend}; {allowed} name it")
+    for owner in filter(None, NANA_TEXT_PRIVATE_BACKENDS.values()):
+        owner_path = source_dir / owner
+        parent = owner_path.parent / "mod.rs"
+        if not parent.is_file():
+            continue
+        declarations = strip_rust_comments(parent.read_text(encoding="utf-8"))
+        if re.search(rf"\bpub\s+mod\s+{owner_path.stem}\b", declarations):
+            where = parent.relative_to(ROOT) if parent.is_relative_to(ROOT) else parent
+            failures.append(f"{where} makes {owner_path.stem} public; it wraps a private backend")
     return failures
 
 

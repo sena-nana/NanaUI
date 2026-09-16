@@ -61,6 +61,37 @@ class EngineBoundaryTests(unittest.TestCase):
         root = self.text_crate("use nana_ui_core::LayoutStyle;\npub struct A(LayoutStyle);\n")
         failures = boundary.check_text_engine_sources(root)
         self.assertTrue(any("nana_ui_core::LayoutStyle" in failure for failure in failures))
+    def text_crate_files(self, files):
+        root = Path(tempfile.mkdtemp())
+        for relative, source in files.items():
+            path = root / "src" / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8")
+        self.addCleanup(shutil.rmtree, root, True)
+        return root
+    def test_font_backends_are_named_only_from_their_private_module(self):
+        root = self.text_crate_files({
+            "lib.rs": "pub mod font;\n",
+            "font/mod.rs": "mod discovery;\nmod face;\n",
+            "font/discovery.rs": "fn scan() { let _ = fontdb::Database::new(); }\n",
+            "font/face.rs": "use skrifa::FontRef;\n",
+        })
+        self.assertEqual(boundary.check_text_engine_sources(root), [])
+    def test_a_font_backend_type_outside_its_module_is_rejected(self):
+        root = self.text_crate_files({
+            "lib.rs": "pub fn id() -> fontdb::ID { todo!() }\n",
+            "font/face.rs": "pub fn raw() -> read_fonts::FontRef<'static> { todo!() }\n",
+        })
+        failures = boundary.check_text_engine_sources(root)
+        self.assertTrue(any("lib.rs names fontdb" in failure for failure in failures))
+        self.assertTrue(any("face.rs names read_fonts" in failure for failure in failures))
+    def test_making_a_backend_module_public_is_rejected(self):
+        root = self.text_crate_files({
+            "font/mod.rs": "pub mod discovery;\n",
+            "font/discovery.rs": "pub use fontdb::ID;\n",
+        })
+        failures = boundary.check_text_engine_sources(root)
+        self.assertTrue(any("makes discovery public" in failure for failure in failures))
     def test_a_product_crate_reaching_a_reference_only_crate_is_rejected(self):
         # The package name, not the lib target name: a synthetic graph using
         # "css-parity" would pass while the real rule never fires.

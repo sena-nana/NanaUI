@@ -27,8 +27,9 @@ Vue + JS L1/L2（可选宿主）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 
-文本引擎骨架（Phase 0，不在产品绘制路径）
-    nana-text            文本 IR、稳定代际 ID、结构化 diff 与迁移语料。
+文本引擎骨架（Phase 0–1，不在产品绘制路径）
+    nana-text            文本 IR、稳定代际 ID、结构化 diff 与迁移语料；
+                         字体层（注册 / 代际 / 匹配 / 变体坐标 / fallback）。
                          产品文本仍走 nana-ui/nana_text.rs（cosmic-text）与
                          scene_paint/text.rs（cryoglyph）。见 [文本引擎](text-engine.md)
 

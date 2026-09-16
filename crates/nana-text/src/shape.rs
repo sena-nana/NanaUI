@@ -37,8 +37,14 @@ impl RunDirection {
 /// An ISO 15924 script tag, e.g. `*b"Latn"`.
 ///
 /// Four bytes rather than a string: it is an id, and run keys need it `Copy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ScriptTag(pub [u8; 4]);
+
+impl std::fmt::Debug for ScriptTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ScriptTag({:?})", self.as_str())
+    }
+}
 
 impl ScriptTag {
     pub const LATIN: Self = Self(*b"Latn");

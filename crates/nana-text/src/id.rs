@@ -62,6 +62,13 @@ generational_id!(
 );
 
 generational_id!(
+    /// One registration: a file, a byte buffer, or the system scan.
+    ///
+    /// Unregistering or replacing a source retires every [`FontId`] it issued.
+    FontSourceId
+);
+
+generational_id!(
     /// One shaped run.
     ///
     /// Invalidated by a change to its source bytes, its style, its
