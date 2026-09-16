@@ -568,54 +568,8 @@ impl GalleryRuntime {
     fn flush(&mut self, (width, height): (f32, f32)) {
         self.last_viewport = LayoutViewport::new(width, height);
         if let Err(error) = self.document.flush(self.last_viewport, &mut self.text) {
-            // DIAGNOSTIC (Issue #89 CI triage, revert once understood): the
-            // culprit dump has to happen here, because `report_failure` panics
-            // under `cfg(test)` and no later diagnostic block gets to run.
-            #[cfg(test)]
-            let error = format!("{error:?} | {}", self.flush_culprit(&format!("{error:?}")));
             report_failure("layout flush", &error);
         }
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage, revert once understood): the shaping
-    /// inputs of the node a flush error names.
-    ///
-    /// `InvalidText` rejects the metrics the shaper *returns*, not the ones
-    /// already stored, so the stored value is 0/0 on a failed flush and says
-    /// nothing. Only the inputs can explain it.
-    #[cfg(test)]
-    fn flush_culprit(&self, error: &str) -> String {
-        let Some(raw) = error
-            .find("StableNodeId(")
-            .map(|start| start + "StableNodeId(".len())
-            .and_then(|start| {
-                let end = error[start..].find(')')? + start;
-                error[start..end].parse::<u64>().ok()
-            })
-        else {
-            return "culprit: no node id in the error".to_string();
-        };
-        let Some(id) = StableNodeId::new(raw) else {
-            return format!("culprit: node {raw} is not a valid id");
-        };
-        let world = self.document.context().world();
-        let text = world.text(id);
-        let inputs = world.computed_style(id).map(|style| {
-            format!(
-                "size={} line_height={:?} spacing={} dir={:?} family={:?} word_break={:?}",
-                style.font_size,
-                style.line_height,
-                style.letter_spacing,
-                style.direction,
-                style.font_family,
-                style.word_break,
-            )
-        });
-        format!(
-            "culprit node {raw}: text={text:?} stored={:?} layout={:?} inputs={inputs:?}",
-            world.text_metrics(id),
-            world.layout_box(id),
-        )
     }
 
     pub(super) fn runtime_document(&self) -> &RuntimeDocument {
@@ -864,45 +818,6 @@ impl GalleryRuntime {
         ))
     }
 
-    /// DIAGNOSTIC (Issue #89 CI triage, revert once understood): re-runs the
-    /// layout flush and hands back the error `Self::flush` discards.
-    ///
-    /// `flush` does `let _ = self.document.flush(..)`, so a failing flush
-    /// leaves every node at its default all-zero layout with nothing reported.
-    #[cfg(test)]
-    fn flush_result(&mut self, size: (f32, f32)) -> Result<(), String> {
-        self.last_viewport = LayoutViewport::new(size.0, size.1);
-        self.document
-            .flush(self.last_viewport, &mut self.text)
-            .map(|_| ())
-            .map_err(|error| format!("{error:?}"))
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage): the layout box of an unrelated node,
-    /// to tell "layout never ran" apart from "layout skipped this node".
-    #[cfg(test)]
-    fn drop_hint_box(&self) -> Option<(f32, f32, f32, f32)> {
-        let bounds = self
-            .document
-            .context()
-            .world()
-            .layout_box(self.drop_hint.stable_id())?;
-        Some((bounds.x, bounds.y, bounds.width, bounds.height))
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage, revert once the macOS failure is
-    /// understood): the drop target's full layout box, so a failing hover can
-    /// report where the runner actually put it.
-    #[cfg(test)]
-    fn drop_target_box(&self) -> Option<(f32, f32, f32, f32)> {
-        let bounds = self
-            .document
-            .context()
-            .world()
-            .layout_box(self.drop.stable_id())?;
-        Some((bounds.x, bounds.y, bounds.width, bounds.height))
-    }
-
     #[cfg(test)]
     fn drop_hint_text(&self) -> Option<String> {
         self.document
@@ -1127,62 +1042,6 @@ impl GalleryState {
         self.gallery_runtime
             .as_ref()
             .and_then(GalleryRuntime::drop_target_center)
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage): text and metrics of an arbitrary node,
-    /// to identify the node a flush error names.
-    #[cfg(test)]
-    pub(crate) fn gallery_node_debug(&self, raw: u64) -> Option<(String, String)> {
-        let id = StableNodeId::new(raw)?;
-        let runtime = self.gallery_runtime.as_ref()?;
-        let world = runtime.document.context().world();
-        let text = world.text(id)?.to_string();
-        let stored = format!("{:?}", world.text_metrics(id));
-        // `InvalidText` rejects the metrics the shaper *returns*, not the ones
-        // already stored, so the stored value is 0/0 on a failed flush and says
-        // nothing. Re-shape the same string with the same computed style and
-        // report both the shaping inputs and the fresh result.
-        let inputs = world.computed_style(id).map(|style| {
-            format!(
-                "size={} line_height={:?} spacing={} dir={:?} family={:?} wrap={:?}",
-                style.font_size,
-                style.line_height,
-                style.letter_spacing,
-                style.direction,
-                style.font_family,
-                style.word_break,
-            )
-        });
-        let layout = format!("{:?}", world.layout_box(id));
-        Some((
-            text,
-            format!("stored={stored} inputs={inputs:?} layout={layout}"),
-        ))
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::flush_result`].
-    #[cfg(test)]
-    pub(crate) fn gallery_flush_result(&mut self) -> Option<Result<(), String>> {
-        let size = self.gallery_viewport_size();
-        self.gallery_runtime
-            .as_mut()
-            .map(|runtime| runtime.flush_result(size))
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::drop_hint_box`].
-    #[cfg(test)]
-    pub(crate) fn gallery_drop_hint_box(&self) -> Option<(f32, f32, f32, f32)> {
-        self.gallery_runtime
-            .as_ref()
-            .and_then(GalleryRuntime::drop_hint_box)
-    }
-
-    /// DIAGNOSTIC (Issue #89 CI triage). See [`GalleryRuntime::drop_target_box`].
-    #[cfg(test)]
-    pub(crate) fn gallery_drop_target_box(&self) -> Option<(f32, f32, f32, f32)> {
-        self.gallery_runtime
-            .as_ref()
-            .and_then(GalleryRuntime::drop_target_box)
     }
 
     #[cfg(test)]
