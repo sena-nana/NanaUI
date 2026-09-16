@@ -516,10 +516,9 @@ impl fmt::Debug for CancellableTcpTransport {
 fn update_socket_timeout(
     socket: &TcpStream,
     previous: &mut Option<Duration>,
-    timeout: NextTimeout,
+    timeout: Option<Duration>,
     set: impl FnOnce(&TcpStream, Option<Duration>) -> io::Result<()>,
 ) -> Result<(), ureq::Error> {
-    let timeout = timeout.not_zero().map(|duration| *duration);
     if *previous != timeout {
         set(socket, timeout).map_err(ureq::Error::Io)?;
         *previous = timeout;
@@ -539,7 +538,7 @@ impl Transport for CancellableTcpTransport {
         update_socket_timeout(
             &self.stream,
             &mut self.write_timeout,
-            timeout,
+            timeout.not_zero().map(|duration| *duration),
             TcpStream::set_write_timeout,
         )?;
         let result = self.stream.write_all(&self.buffers.output()[..amount]);
@@ -554,28 +553,57 @@ impl Transport for CancellableTcpTransport {
         })
     }
 
+    /// Reads in `FETCH_CANCEL_POLL_INTERVAL` slices rather than one blocking
+    /// read for the caller's whole remaining timeout.
+    ///
+    /// [`FetchCancellation::cancel`] shuts the socket down, which wakes a
+    /// blocked `read` on Unix. Winsock gives no such guarantee: a `shutdown`
+    /// from another thread need not wake a pending `recv`, so on Windows the
+    /// wait has to come back on its own to observe the flag. Without this the
+    /// worker -- and with it the closed document's fetch host and socket --
+    /// stays alive until the 30 s global timeout expires. Same shape as the
+    /// connect and resolve loops above.
     fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        update_socket_timeout(
-            &self.stream,
-            &mut self.read_timeout,
-            timeout,
-            TcpStream::set_read_timeout,
-        )?;
-        let result = self.stream.read(self.buffers.input_append_buf());
-        if self.cancellation.is_cancelled() {
-            return Err(cancelled_transport_error());
-        }
-        let amount = result.map_err(|error| match error.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                ureq::Error::Timeout(timeout.reason)
+        let deadline = timeout
+            .not_zero()
+            .and_then(|duration| std::time::Instant::now().checked_add(*duration));
+        loop {
+            if self.cancellation.is_cancelled() {
+                return Err(cancelled_transport_error());
             }
-            _ => ureq::Error::Io(error),
-        })?;
-        self.buffers.input_appended(amount);
-        Ok(amount > 0)
+            let remaining = deadline
+                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+            if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                return Err(ureq::Error::Timeout(timeout.reason));
+            }
+            let attempt = remaining
+                .map(|remaining| remaining.min(FETCH_CANCEL_POLL_INTERVAL))
+                .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
+            update_socket_timeout(
+                &self.stream,
+                &mut self.read_timeout,
+                Some(attempt),
+                TcpStream::set_read_timeout,
+            )?;
+            let result = self.stream.read(self.buffers.input_append_buf());
+            if self.cancellation.is_cancelled() {
+                return Err(cancelled_transport_error());
+            }
+            match result {
+                Ok(amount) => {
+                    self.buffers.input_appended(amount);
+                    return Ok(amount > 0);
+                }
+                // Our own slice expired, not the caller's deadline: the loop
+                // re-checks cancellation and keeps waiting.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(error) => return Err(ureq::Error::Io(error)),
+            }
+        }
     }
 
     fn is_open(&mut self) -> bool {
@@ -1303,5 +1331,54 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.kind, FetchErrorKind::RequestTooLarge);
+    }
+    /// `cancel()` shuts every registered socket down, and on Unix that alone
+    /// wakes a blocked `read`. Winsock gives no such guarantee, so this drives
+    /// `await_input` with a token whose socket was never registered -- the
+    /// portable stand-in for "shutdown did not wake the read" -- and asserts
+    /// the wait still returns on its own. Without the poll loop it blocks for
+    /// the full `after` below.
+    #[test]
+    fn a_stalled_read_observes_cancellation_without_relying_on_socket_shutdown() {
+        let listener =
+            TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind loopback");
+        let address = listener.local_addr().expect("loopback address");
+        // Accept but never answer, so the read has nothing to return.
+        let accepted = thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let stream = TcpStream::connect(address).expect("connect loopback");
+        let server = accepted.join().expect("accept thread").expect("accept");
+
+        let cancellation = FetchCancellation::new();
+        let mut transport = CancellableTcpTransport {
+            stream,
+            buffers: LazyBuffers::new(4096, 4096),
+            cancellation: cancellation.clone(),
+            read_timeout: None,
+            write_timeout: None,
+        };
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancellation.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let error = transport
+            .await_input(NextTimeout {
+                after: ureq::unversioned::transport::time::Duration::Exact(Duration::from_secs(30)),
+                reason: ureq::Timeout::Global,
+            })
+            .expect_err("a cancelled read must not succeed");
+        let waited = started.elapsed();
+        canceller.join().expect("canceller thread");
+        drop(server);
+
+        assert!(
+            matches!(&error, ureq::Error::Io(error) if error.kind() == io::ErrorKind::Interrupted),
+            "expected an interrupted read, got {error:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(5),
+            "the read must come back on its own; waited {waited:?}"
+        );
     }
 }
