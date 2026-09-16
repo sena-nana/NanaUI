@@ -567,7 +567,9 @@ impl GalleryRuntime {
 
     fn flush(&mut self, (width, height): (f32, f32)) {
         self.last_viewport = LayoutViewport::new(width, height);
-        let _ = self.document.flush(self.last_viewport, &mut self.text);
+        if let Err(error) = self.document.flush(self.last_viewport, &mut self.text) {
+            report_failure("layout flush", &error);
+        }
     }
 
     pub(super) fn runtime_document(&self) -> &RuntimeDocument {
@@ -603,11 +605,17 @@ impl GalleryRuntime {
         position: Option<(f32, f32)>,
     ) -> (bool, Vec<GalleryMessage>) {
         let document = self.document.document();
-        let changed = self
+        let changed = match self
             .document
             .context_mut()
             .dispatch_file_drag(document, kind, paths, position)
-            .unwrap_or(false);
+        {
+            Ok(changed) => changed,
+            Err(error) => {
+                report_failure("file-drag dispatch", &error);
+                false
+            }
+        };
         (changed, take_pending(&self.pending))
     }
 
@@ -954,7 +962,10 @@ impl GalleryState {
         if self.gallery_runtime.is_none() {
             match GalleryRuntime::mount(self) {
                 Ok(runtime) => self.gallery_runtime = Some(runtime),
-                Err(_) => return,
+                Err(error) => {
+                    report_failure("gallery mount", &error);
+                    return;
+                }
             }
         }
         if let Some(mut runtime) = self.gallery_runtime.take() {
@@ -1239,10 +1250,12 @@ impl DockWindowRuntime {
             *dock = runtime_dock_from_node(state, &surface.root, &contents);
         });
         let _ = context.assemble_dock(self.dock);
-        let _ = self.document.flush(
+        if let Err(error) = self.document.flush(
             LayoutViewport::new(surface.width.max(1.0), surface.height.max(1.0)),
             &mut self.text,
-        );
+        ) {
+            report_failure("dock surface flush", &error);
+        }
     }
 
     pub(super) fn runtime_document(&self) -> &RuntimeDocument {
@@ -1254,11 +1267,28 @@ impl DockWindowRuntime {
     }
 
     pub(super) fn resize(&mut self, width: f32, height: f32) {
-        let _ = self.document.flush(
+        if let Err(error) = self.document.flush(
             LayoutViewport::new(width.max(1.0), height.max(1.0)),
             &mut self.text,
-        );
+        ) {
+            report_failure("dock surface resize", &error);
+        }
     }
+}
+
+/// Reports a failure the gallery itself cannot act on.
+///
+/// Tests panic rather than continue. A swallowed flush leaves every node at its
+/// default all-zero layout, and this crate's assertions mostly read *state*
+/// rather than layout, so they keep passing against a world that was never laid
+/// out -- which is how a real shaping failure hid behind an unrelated `assert!`
+/// on macOS CI for ten runs. Failing at the source names the actual error.
+#[track_caller]
+fn report_failure(context: &str, error: &dyn std::fmt::Debug) {
+    if cfg!(test) {
+        panic!("gallery {context} failed: {error:?}");
+    }
+    eprintln!("gallery {context} failed: {error:?}");
 }
 
 fn section_root(
