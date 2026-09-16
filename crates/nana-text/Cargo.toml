@@ -32,6 +32,10 @@ icu_properties = "2.3"
 # Bidirectional Algorithm (`shaping/bidi.rs`), each named from that file only.
 harfrust = "0.12"
 unicode-bidi = "0.3.18"
+# Issue #92: UAX #14 line break opportunities (`layout/breaks.rs`), named from
+# that file only. Same version the cosmic reference engine pulls in, so the
+# migration does not carry two copies of the break tables.
+unicode-linebreak = "0.1.5"
 
 # Migration-only. The cosmic reference engine lives under `tests/reference/`,
 # never under `src/`, so cosmic-text can never reach a product dependency edge.

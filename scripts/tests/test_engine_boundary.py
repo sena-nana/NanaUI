@@ -102,6 +102,25 @@ class EngineBoundaryTests(unittest.TestCase):
         failures = boundary.check_text_engine_sources(root)
         self.assertEqual(len(failures), 1, failures)
         self.assertIn("shaper.rs names unicode_bidi", failures[0])
+    def test_the_line_breaker_is_pinned_to_its_own_module(self):
+        root = self.text_crate_files({
+            "layout/mod.rs": "mod breaks;\nmod lines;\n",
+            "layout/breaks.rs": "use unicode_linebreak::linebreaks;\n",
+            "layout/lines.rs": "fn at() -> unicode_linebreak::BreakClass { todo!() }\n",
+        })
+        failures = boundary.check_text_engine_sources(root)
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("lines.rs names unicode_linebreak", failures[0])
+    def test_making_the_line_breaker_module_public_is_rejected(self):
+        root = self.text_crate_files({
+            "layout/mod.rs": "pub mod breaks;\n",
+            "layout/breaks.rs": "pub use unicode_linebreak::BreakOpportunity;\n",
+        })
+        failures = boundary.check_text_engine_sources(root)
+        self.assertTrue(any("makes breaks public" in failure for failure in failures))
+    def test_nana_text_may_name_the_text_align_keyword(self):
+        root = self.text_crate("use nana_ui_core::TextAlignSpec;\npub struct A(TextAlignSpec);\n")
+        self.assertEqual(boundary.check_text_engine_sources(root), [])
     def test_a_product_crate_reaching_a_reference_only_crate_is_rejected(self):
         # The package name, not the lib target name: a synthetic graph using
         # "css-parity" would pass while the real rule never fires.

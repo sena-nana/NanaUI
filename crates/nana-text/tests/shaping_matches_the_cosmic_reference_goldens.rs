@@ -17,56 +17,13 @@
 //! and everything after a `max_lines` truncation. That is line layout (Phase
 //! 3), not shaping; see `diff_case`.
 
-use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, font_blob};
+mod support;
+
 use nana_text::parity::{CaseStatus, CorpusCase, DEFAULT_TOLERANCES, load_cases, load_golden};
 use nana_text::shaping::{ShapeRequest, Shaper};
-use nana_text::{FontId, GlyphFlags, ShapedRun, TextSource, TextStyle};
-use nana_ui_core::fonts::UI_FONT_REGULAR;
+use nana_text::{FontId, GlyphFlags, ShapedRun};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-use std::sync::Arc;
-
-fn fixture_family(id: &str) -> &'static str {
-    match id {
-        "noto-sans-sc" => "Noto Sans SC",
-        "nana-test-vf" => "NanaTestVF",
-        "noto-sans-arabic" => "Noto Sans Arabic",
-        "noto-sans-kr" => "Noto Sans KR",
-        "noto-emoji" => "Noto Emoji",
-        other => panic!("unknown corpus font {other}"),
-    }
-}
-
-fn fixture_bytes(id: &str) -> nana_text::font::FontBlob {
-    if id == "noto-sans-sc" {
-        return font_blob(UI_FONT_REGULAR);
-    }
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("fonts")
-        .join(format!("{id}.ttf"));
-    font_blob(std::fs::read(path).unwrap())
-}
-
-/// The case's style with its fallback chain spelled out: the requested family
-/// (or the first declared font, as the reference defaults to), then every
-/// declared font in declaration order — the reference's hermetic database is
-/// exactly that list.
-fn with_chain(style: &TextStyle, case: &CorpusCase) -> TextStyle {
-    let mut families: Vec<String> = Vec::new();
-    let first = style
-        .font_family
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| fixture_family(&case.fonts[0]).to_string());
-    families.push(format!("\"{first}\""));
-    for id in &case.fonts {
-        families.push(format!("\"{}\"", fixture_family(id)));
-    }
-    TextStyle {
-        font_family: Some(Arc::from(families.join(", "))),
-        ..style.clone()
-    }
-}
+use support::corpus::{case_source, hermetic_fonts, with_chain};
 
 #[derive(Debug, Clone, PartialEq)]
 struct Cell {
@@ -105,27 +62,8 @@ fn clusters<'a>(runs: impl Iterator<Item = &'a ShapedRun>) -> BTreeMap<u32, Vec<
 }
 
 fn diff_case(case: &CorpusCase) -> Vec<String> {
-    let mut fonts = FontSystem::with_policy(FallbackPolicy::empty());
-    for id in &case.fonts {
-        fonts
-            .register_bytes(fixture_bytes(id), &FaceDescriptor::default())
-            .unwrap();
-    }
-    let text = if case.constraints.preserve_lines {
-        case.text.clone()
-    } else {
-        case.text.replace('\n', " ")
-    };
-    let mut source = TextSource::new(text);
-    let spans = case
-        .spans
-        .iter()
-        .map(|span| nana_text::TextSpan {
-            style: with_chain(&span.style, case),
-            ..span.clone()
-        })
-        .collect();
-    source.set_spans(spans);
+    let mut fonts = hermetic_fonts(case);
+    let source = case_source(case);
     let style = with_chain(&case.style, case);
     let mut shaper = Shaper::default();
     let shaped = shaper.shape(

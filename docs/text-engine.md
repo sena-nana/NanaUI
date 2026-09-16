@@ -7,6 +7,8 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 同一份结构化基线比较，而不是在 shaping / layout / GPU 三层同时改动时失去可比性。
 #90 是 Phase 1：`nana-text` 自有的字体层——注册、代际、匹配、变体坐标与按覆盖率的 fallback，
 见「字体层」一节。#91 是 Phase 2：分段、BiDi、HarfRust shaping 与 ShapeRun cache，见「Shaping」一节。
+#92 是 Phase 3：单行 Label fast path、断行、行内视觉序、行盒度量、对齐、省略号与 layout cache，
+见「Layout」一节。
 
 ## 这是什么
 
@@ -37,11 +39,13 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 | 文本 IR（`TextKind` / `TextSource` / `TextStyle` / `TextConstraints` / `ShapedRun` / `LineBox` / `TextLayout`） | **nana-text** | 跨层长期 ABI，不能是第三方内部类型 |
 | 稳定代际 ID 与失效规则（`FontId` / `ShapeRunId` / `TextLayoutId` / `TextRevision` / `FontGeneration`） | **nana-text** | 缓存正确性的权威 |
 | 命中测试 / caret / 选区矩形 | **nana-text** | 纯函数，跑在 IR 之上；写不出来就说明 IR 缺字段 |
+| 行布局编排（断行策略、行盒合并、对齐、省略号、layout cache） | **nana-text** | 产品语义与缓存合同，必须与 `TextConstraints` 同一套词汇 |
 | 结构化 diff 与容差 | **nana-text** | 迁移验收合同，必须比 cosmic 活得久 |
-| 排版词汇（变体轴 / kerning / line-break / word-break / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
+| 排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
 | OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（skrifa / ttf-parser） | #89 非目标明确写了不重实现 |
 | 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust，仅 `shaping/opentype.rs`） | 同上 |
 | Unicode BiDi 算法（P–I 规则、L2 重排） | **成熟 crate**（unicode-bidi，仅 `shaping/bidi.rs`） | 同上 |
+| UAX #14 断行机会 | **成熟 crate**（unicode-linebreak，仅 `layout/breaks.rs`） | #92 非目标明确写了不自研断行标准表 |
 | 分段、span 规范化、fallback 重试、ShapeKey 与 ShapeRun cache、`ShapedText` | **nana-text**（`shaping` 模块） | 何时重塑形、塑形结果能被谁复用的权威 |
 | Unicode 算法（BiDi、断行、字素簇、script / emoji 属性） | **成熟 crate**（unicode-bidi / unicode-linebreak / unicode-segmentation / icu_properties） | 同上 |
 | 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
@@ -51,7 +55,7 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 
 `nana-text` 只许 import 这些 `nana_ui_core` 项：`DirSpec`、`FontFeatureSetting`、
 `FontKerningSpec`、`FontVariationSetting`、`LineBreakSpec`、`LineHeightSpec`、
-`TextWrapBreak`、`WordBreakSpec`、`WritingModeSpec`。其余（`LayoutStyle`、`ComputedStyle`、
+`TextAlignSpec`、`TextWrapBreak`、`WordBreakSpec`、`WritingModeSpec`。其余（`LayoutStyle`、`ComputedStyle`、
 语义色、几何）是边界违规，见「边界如何被机器守住」。
 
 两处例外自己定义：`TextRect`（`LogicalRect` 不能 `Serialize`，且构造时把宽高 clamp 到
@@ -227,7 +231,8 @@ counters，所以计数变化是一次可评审的 diff。
    `ttf_parser` 哪都不许点名；这三个模块在 `font/mod.rs` 里不得是 `pub mod`。公开 API 因此
    不可能带出 `fontdb::ID` 之类的第三方 ID。#91 同理：`harfrust` 只许出现在
    `src/shaping/opentype.rs`，`unicode_bidi` 只许出现在 `src/shaping/bidi.rs`。模块不叫
-   `harfrust`，就是因为模块名本身也会被这条规则扫到。
+   `harfrust`，就是因为模块名本身也会被这条规则扫到。#92 同理：`unicode_linebreak` 只许出现在
+   `src/layout/breaks.rs`。
 
 参照引擎放在 `crates/nana-text/tests/reference/`，**不是** `src/` 下的 `#[cfg(test)] mod`：
 后者对 `tests/*.rs` 不可见，corpus harness 就用不上它。原生引擎落地后，删
@@ -458,6 +463,208 @@ span、落在字素中间的 span 边界、源字节 / cluster 映射；cache �
 产品路径**仍未**接入：UiWorld 里的 paint / transform 变更不产生 shape request 这件事，要等接缝
 接上才能在产品上验证；本阶段保证的是它们根本进不了 ShapeKey。
 
+## Layout（Phase 3，#92）
+
+`nana_text::layout`：不可变的 `ShapedRun[]` + `TextConstraints` → 不可变的 `TextLayout`。
+**shaping 与 layout 解耦**：宽度、wrap、对齐、max-lines 变化只重跑这一层，不碰 HarfRust。
+
+```text
+ShapedText（#91，Arc 共享）+ TextConstraints
+  → 单行 Label fast path，或：
+  → 按 UBA 段落切段 → UAX #14 断行机会（unicode-linebreak，仅 layout/breaks.rs）
+  → 以 shaped advance 贪心断行（行尾空白在软换行处悬挂）
+  → 每行 L1（行尾空白复位）+ L2（视觉序）
+  → 行盒度量、对齐、省略号
+  → 不可变 TextLayout，按 LayoutKey 缓存
+```
+
+### 单行 Label fast path 与降级
+
+`TextKind::Label` 且满足全部条件时走 fast path：不换行、`max_lines` 为 `None` 或 `1`、
+没有 `max_height_px`、`writing_mode` 是横排、shaping 只报了一个段落。
+fast path 只做一件事：把自己的 run 累出 advance、算一次行盒、（需要时）裁一次省略号、
+出一个 `LineBox`。它不建 editor state、不扫段落结构、不找断行机会
+（`line_break_candidates` 恒为 0）、不为 color / transform 变化重排（那些根本进不了
+`LayoutKey`，见下）。
+
+任一条件不成立就降级到 paragraph path——**显式换行**（shaping 报出第二个段落）、任何 wrap、
+多行或零 `max_lines`、高度预算、需要回退的 writing mode。降级是可观测的：
+`label_fast_paths` / `paragraph_paths` 两个计数器分别计入。
+
+### 断行
+
+断行机会来自 UAX #14（`unicode-linebreak`），**是否**在某个机会处断由 shaped advance 决定，
+从不按码位数估算。段落分隔符由 shaping 的段落结构给出，不重新问 UAX #14。
+
+| 约束 | 策略 |
+| --- | --- |
+| `wrap: None` | 不换行，段落即一行；`line_break_candidates == 0` |
+| `wrap: Word` | 只在 UAX #14 机会处断；放不下的长词溢出（`CLIPPED_WIDTH`） |
+| `wrap: WordOrGlyph` 或 `word-break: break-word` | 先按词，放不下的词再按字素簇切 |
+| `wrap: Glyph`、`word-break: break-all`、`line-break: anywhere` | 每个字素簇边界都是机会 |
+
+- **行尾空白在软换行处悬挂**：不绘制、不计入行宽、不推下一行，`LineBox::source` 也不含它
+  （与参照引擎一致）。硬换行与段落末尾的空白是作者写下的内容，保留在行上。
+- 容器窄到一个字素都放不下时，仍然放一个字素——否则会产生空行与死循环。
+- 断点永远在 shaper 的 cluster 之间，因此不可能切开 UTF-8 序列、字素簇或连字。
+
+### BiDi 视觉序
+
+每行独立做 L1（行尾空白复位到段落 level）与 L2（按 level 重排），用的是 #91 已经算好的
+run level，不重跑 UBA。`LineBox::runs` 是**视觉序**的连续区间，`ShapedRun::source` 仍是
+**逻辑**字节范围，两者同时可读——caret / 选区 / 命中测试（`nana_text::edit`）直接跑在上面。
+一个 run 被行切开时，每一片保留原 run 的 `ShapeRunId`：id 说的是「这些 glyph 由哪次 shaping
+产生」，切行不产生新的 shaping。整段 run 保留 shaper 报的 `advance_px`，只有被切开的片才重新
+按 shaper 的逐 glyph advance 求和。
+
+### 行盒度量与 strut
+
+```text
+line_height = max(strut 的行高, 该行各 run 样式要求的行高)
+ascent / descent（上报值） = max(strut, 该行各 run 的字体度量)
+half_leading = (line_height - (strut.ascent + strut.descent)) / 2
+baseline     = top + half_leading + strut.ascent
+```
+
+`strut` 就是 CSS 的 strut：**基础样式自己那张 face 的度量**，由引擎接缝
+（`NativeTextEngine`）从 `FontSystem` 取。它是「禁止 baseline 因单个 emoji/CJK fallback 抖动」
+的机械实现——`Search` 与 `Search عربي` 的 baseline 完全一致，更高的 fallback face 只抬高
+上报的 ascent 与行盒，不移动基线。
+
+不给 strut 时（`LayoutRequest` 默认），基线落在该行最高 run 上，也就是参照引擎的规则；
+语料对账就跑在这一模式下，见下。空行没有 run，行高取基础样式。
+
+`line-height` 由样式解析（`LineHeightSpec` → px，未写时是 `font-size × 1.2`，与
+`nana_ui_core::text_line_box_height_px` 同一个数），span 有自己的 `line-height` 时按覆盖该
+run 首字节的 span 取——与 shaper 解析 span 重叠的顺序相同，行高与塑形不会各认一个 span。
+
+**分数 scale**：`max_width_px` / `max_height_px` 是逻辑 px，乘 `scale` 后与物理 px 的
+advance 比较；layout 全程保留浮点，**不**向整数像素取整——那是 renderer / glyph 路径的事。
+
+### 对齐
+
+`TextConstraints::align`（`nana_ui_core::TextAlignSpec`）：`start` / `end` 跟随段落方向，
+`left` / `right` 是物理方向。没有 `max_width_px` 就没有可对齐的容器，所有关键字都把行放在原点。
+
+`justify` **明确延期**：`TextAlignSpec` 里没有这个关键字，产品也无从表达，因此不半做。
+
+### 省略号
+
+`constraints.ellipsis` 为真且（行超宽 或 被 `max_lines` / `max_height_px` 截断）时：
+
+```text
+候选行 → 预留已塑形的省略号宽度 → 在 cluster 安全边界处裁 → 发出截断行 + 省略号 run
+```
+
+- 省略号走**正常** shaping / fallback / cache：接缝把 `…` 当作普通 `TextSource` 交给 shaper，
+  同一样式下 10k 个截断标签只塑形一次（测试断言 `shape_cache_misses == 2`：正文一次，省略号一次）。
+- 裁切单位是 shaper 的 cluster，所以不会切开 UTF-8、字素簇或连字；ZWJ 序列要么整段留下要么整段裁掉。
+- 省略号 run 的 `source` 是裁切点上的**空区间**，glyph 的 cluster 也是——它不占源文本的任何字节，
+  caret、命中测试与选区因此永远不会落到它身上。
+- RTL 段落里省略号放在视觉末端（左侧）。
+- 截断但没有（或没能）塑形出省略号时，只报 `TRUNCATED_LINES`，不报 `ELLIPSIZED`：没画就不声称画了。
+
+### LayoutKey 与 cache
+
+| 进 key | 不进 key |
+| --- | --- |
+| shaped runs 的**身份**（持有 `Arc<ShapedText>`，按指针比较） | widget 身份、`TextRevision` |
+| 已塑形省略号的身份 | 颜色、透明度、transform、z-index、背景（`TextStyle` 本来就不带） |
+| `TextKind` | |
+| 全部 `TextConstraints` 字段（宽高、wrap、word-break、line-break、max-lines、ellipsis、preserve-lines、direction、align、writing-mode、tab-width、scale） | |
+| 每个 run 解析后的行高、空行行高、strut | |
+
+- key **持有** `Arc<ShapedText>` 而不是裸指针：持有才让指针可比——否则同一地址可能被另一段文本复用。
+- `ConstraintsKey` 是逐字段解构写出来的，给 `TextConstraints` 加字段会在这里编译失败，而不是
+  悄悄产生一个忽略该字段的缓存。
+- LRU，条目数（默认 4096）与字节（默认 8 MiB）双上限；超过整个字节预算的结果照常返回、不入缓存。
+  shaped 文本由 shape cache 计费，layout cache 不重复计。
+- cache 还回答一个别处没有的问题：这次 miss 是**新文本**还是**同一份 shaped 换了约束**
+  （`constraint_only_relayouts`）——resize 风暴要看的就是这个数。
+
+**产品路径仍未接入**：UiWorld 里「只改颜色 / transform 的帧不产生 layout request」这件事，要等
+接缝接上才能在产品上验证；本阶段保证的是它们根本进不了 `LayoutKey`——`TextStyle` 不带 paint，
+`LayoutRequest` 也没有第二条通路。
+
+### intrinsic min/max content width
+
+`Layouter::intrinsic_widths`：`min-content` 是最宽的不可再断片段，`max-content` 是不换行时的宽度，
+都按 shaped advance 与 UAX #14 机会算，与当前约束是否允许换行无关——容器正是为了决定宽度才问这两个数。
+不缓存：它是一趟 advance 累加，没有宽度可以作 key。
+
+### writing mode 与 #59
+
+竖排 **fail-closed**：本阶段不实现 `vertical-rl` / `vertical-lr` 的 glyph orientation 与竖排字体
+度量，也不自造 Unicode Vertical_Orientation 数据表。请求竖排时 layout 按横排排出，并且**明说**：
+`TextLayout::unsupported_writing_mode` 置位，`vertical_writing_fallbacks` 计数。横排度量绝不
+冒充竖排度量。IR 这一侧已经带上 `writing_mode` 与 `base_direction`，#59 接手时不必先拆掉一个
+写死横排的假设。
+
+### 计数器
+
+`Layouter::counters()` → `LayoutCounters`：
+
+```text
+layout_requests / layout_created
+layout_cache_hits / misses / evictions      layout_cache_bytes / entries（读时的量）
+line_break_candidates                       看过的断行机会（fast path 恒 0）
+lines_created / runs_placed / ellipsis_runs_used
+constraint_only_relayouts                   同一份 shaped、新约束
+shape_runs_reused_for_layout                被 layout 读走而不是重塑形的 run
+label_fast_paths / paragraph_paths          走了哪条路（只记真正建出的 layout）
+vertical_writing_fallbacks                  竖排请求被横排兜底的次数
+```
+
+对账测试断言 `lines_created` / `runs_placed` 等于它们声称描述的 layout 的行数与 run 数，
+`TextWorkCounters::glyphs_resolved` 等于 `layout.glyph_count()`。
+
+### 引擎接缝：`NativeTextEngine`
+
+`nana_text::NativeTextEngine` 实现 `TextEngine`，把 #90 字体层、#91 shaper、#92 layouter 装在一次调用后面：
+
+- `preserve_lines: false` 时先把 `\n` / `\r` 折成空格**再**塑形（`TextSource::with_folded_newlines`）——
+  塑形与断行必须看到同一串字节；两者都是单字节，所有 span 范围、cluster 与 caret 偏移保持不变，
+  revision 也保持不变（同一次编辑的另一种读法）。`U+2028` / `U+2029` 比空格长，折叠会挪动其后所有偏移，
+  因此仍然当作换行。
+- 需要时塑形 `…`，取基础样式那张 face 的度量作 strut，填 `TextWorkCounters` 的五个口径。
+- `TextEngine::layout` 返回 `Arc<TextLayout>`：layout 不可变，同一帧里同文本同约束应当拿到**同一份**，
+  而不是它的拷贝。
+
+产品文本路径**仍未**接入：`nana-ui` 继续走 cosmic-text + cryoglyph。
+
+### 与 cosmic 参照对账
+
+`tests/layout_matches_the_cosmic_reference_goldens.rs` 用**同一个** `compare_golden`、同一批 golden、
+同一组容差，把 26 条语料的原生 layout 与 Phase 0 录下的参照 layout 逐字段比，
+并且把每条用例自带的 hit-test / caret 探针在**原生 layout** 上重跑一遍一起比。
+
+结果：26 条全部一致。只有三类 delta 被放行，且都是「两个引擎如何描述」而不是「排得不一样」：
+
+| 字段 | 原因 |
+| --- | --- |
+| `script` | 参照引擎不导出 per-run script，记的是 `Zzzz`（Phase 0 已成文的缺口） |
+| `run_count` | 切 run 的位置不同：原生按 script / style 段切，cosmic 按 face / level / size 切。glyph 相同，只是分组不同 |
+| `overflow` 的 `ELLIPSIZED` 位 | cosmic 画不出省略号，参照对「要了省略号且被截断」直接置位；对账这一跑也不提供已塑形的省略号，因此原生只报 `TRUNCATED_LINES`。其余 overflow 位逐位精确比 |
+
+`compare` 在数量不一致时**按设计**停止下潜，所以 `run_count` 放行会让那几行的几何无人比对。
+同一个测试因此再按**行 × glyph cell**（视觉序的 glyph id、cluster、cluster_end、x）比一遍，
+这种比法与分组无关，正好补上那三条用例。另有一条测试把过滤器摘掉、断言剩下的字段**只有**这三个，
+过滤器因此藏不住第四类差异。
+
+对账跑在「无 strut、无省略号」模式下：那两处正是原生引擎刻意与参照不同的地方
+（strut 稳住基线、省略号真的画出来），它们各自有自己的 fixture。
+
+### 测试
+
+`tests/layout_engine.rs`：Label fast path（10k 标签 `paragraph_paths == 0`、
+`line_break_candidates == 0`；10k 同文本标签只建一个 layout）、显式换行 / wrap / max-lines 触发降级、
+换宽度只重排不重塑形、resize 只动受影响的那一段、word wrap 不切词、长词按 `word-break` 溢出或切开、
+汉字无空格断行、显式换行与空段落、mixed BiDi 单行与换行后每行各自重排、strut 稳住 baseline（以及不给
+strut 时基线确实会动）、`line-height` 与 half-leading、分数 scale、六种对齐 × 方向、
+max-lines 与 max-height 截断、省略号的 cluster 安全裁切与零字节占用、省略号只塑形一次、
+intrinsic min/max、竖排 fail-closed、layout cache 的上限与 LRU、字体代际让旧 layout 变陈旧、
+计数器与产物对账、caret / hit-test / 选区直接跑在原生 layout 上。
+
 ## #33 迁移基准
 
 `nana-dirty-frame-benchmark --shape layout --position head` 的 2k / 4k / 8k 三格是 Issue #33 的
@@ -507,6 +714,20 @@ Phase 2 落地后复测（同一台 Windows 机器，2026-09-16，p50；三格�
 | 4,002 | 0.423 ms | 9.70 ms | 4.4% |
 | 8,002 | 0.835 ms | 20.05 ms | 4.2% |
 
+Phase 3 落地后复测（Linux 容器，4 vCPU Xeon @ 2.80 GHz，2026-09-16，p50；三格仍是
+`text_shaped == 0` / `cache_lookups == 0`）：
+
+| 节点 | TextShape | Layout | TextShape / Layout |
+| ---: | ---: | ---: | ---: |
+| 2,002 | 0.242 ms | 4.421 ms | 5.5% |
+| 4,002 | 0.743 ms | 13.064 ms | 5.7% |
+| 8,002 | 1.609 ms | 28.520 ms | 5.6% |
+
+这一轮换了机器（前三轮都在同一台 Windows 上），所以只在**本轮内部**看倍率，不与 Windows 那几轮比
+绝对值。`nana-ui-scene` 的依赖图里没有 `nana-text`（`cargo tree -p nana-ui-scene --edges normal`
+数 0），基准二进制因此不可能因本阶段改动而改变；这三行是这台机器上的新基线，下一阶段在同一台机器上
+复测才有可比性。
+
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
@@ -516,12 +737,13 @@ Phase 2 落地后复测（同一台 Windows 机器，2026-09-16，p50；三格�
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
 | 分数 DPI | 覆盖 layout，**不覆盖栅格** | `TextScale` 表达到字号缩放，这已是 layout 能表达的全部。glyph 原点的物理像素对齐在 `scene_paint/text.rs`，完全在 IR 之外。别把 `TX-D01` 读成子像素定位保证。 |
-| ellipsis | 记录 overflow，**不插入省略号字形** | cosmic 0.19 的 `Buffer` 没有 ellipsis，产品路径自己替换。`TX-W05` 断言的是 `TRUNCATED_LINES` + `ELLIPSIZED` 与截断后的行数。 |
+| ellipsis | 记录 overflow，**不插入省略号字形** | cosmic 0.19 的 `Buffer` 没有 ellipsis，产品路径自己替换。`TX-W05` 断言的是 `TRUNCATED_LINES` + `ELLIPSIZED` 与截断后的行数。Phase 3 的原生引擎真的会塑形并放置 `…`，见「Layout」。 |
 | IME preedit | span 应用是真的，composition 状态在 source 上 | `TextLayout` 只承载几何；`CompositionSegment` 留在 `TextSource` / `TextSpan`。`TX-E01` 断言 preedit span 确实产生了自己的 run，以及 composition 在 source 上可设可清。 |
 | cluster 内部的 caret | 按字节比例插值 | 一个 glyph 可以覆盖多个源字节（连字，或多字节字符）。`caret_geometry` 先把渲染同一 cluster 的所有 cell 并成一个视觉范围——组合记号是零 advance 且与基字同 cluster，RTL 下 HarfBuzz 还会把它排在基字**前面**——再在该范围内按字节比例插值。所以 `of\|fice` 的 caret 落在 `ffi` 连字的三分之一处而不是整个连字之后，阿拉伯语带记号的 cluster 也不会塌到零宽记号上（见 `TX-B01` 的八个 caret 探针，x 随字节偏移严格递减）。落在字素内部的字节偏移本就不是合法 caret 位置，IR 没有源文本可以吸附，插值只保证单调、可区分。 |
 | caret affinity（RTL / BiDi 边界） | **记录行为，不是合同** | 边界 affinity 是引擎定义而非规范定义的。Phase 0 把参照引擎的答案记成 golden 并配 `caret_x_px` 容差。 |
 | 五个计数器 | 只有参照路径在喂 | 按设计没有产品生产者，靠对账测试防止空转。 |
 | script 标注 | 参照引擎为 `ScriptTag::UNKNOWN` | 参照引擎不导出 per-run script。Phase 2 的 shaper 已填上（见「Shaping」）。 |
+| 竖排（#59） | 不做，且 fail-closed | Phase 3 的 layout 遇到 `vertical-*` 按横排排出并置位 `unsupported_writing_mode`，不把横排度量冒充成竖排。 |
 | 多字体 fallback | 语料里覆盖了但很窄 | 语料的 fallback 是 VF→Noto 的 `A`/`B`，证明 `FontId` 能在 run 中途变、`FALLBACK_FONT` 会置位。按 script / 语言 / emoji 驱动的候选选择由 Phase 1 字体层提供（见「字体层」），参照引擎不走它。 |
 | #33 workload | 合同级保留，不是 perf 门禁 | 见上一节。 |
 

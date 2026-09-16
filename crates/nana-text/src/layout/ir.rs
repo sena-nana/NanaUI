@@ -1,4 +1,6 @@
 //! The immutable result of laying text out. Retained, comparable, serializable.
+//!
+//! The IR only. The engine that fills it is [`super::Layouter`].
 
 use crate::constraints::TextConstraints;
 use crate::id::{FontGeneration, TextLayoutId, TextRevision};
@@ -132,6 +134,14 @@ pub struct TextLayout {
     pub bounds: TextRect,
     #[serde(default)]
     pub overflow: OverflowFlags,
+    /// Set when the constraints asked for a vertical writing mode (#59).
+    ///
+    /// The geometry in this layout is then horizontal-tb: the engine does not
+    /// own glyph orientation or vertical font metrics, so it says so rather
+    /// than reporting horizontal metrics as if they were vertical ones. A
+    /// consumer that cannot accept horizontal fallback checks this flag.
+    #[serde(default)]
+    pub unsupported_writing_mode: bool,
 }
 
 impl TextLayout {

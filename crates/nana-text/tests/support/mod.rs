@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod corpus;
+
 use nana_text::{
     FontGeneration, FontId, GlyphFlags, LineBox, LineBreakCause, LineMetrics, OverflowFlags,
     RunDirection, RunMetrics, ScriptTag, ShapeRunId, ShapedGlyph, ShapedRun, TextConstraints,
@@ -111,6 +113,7 @@ pub fn layout(runs: Vec<ShapedRun>, lines: Vec<LineBox>) -> TextLayout {
         lines,
         bounds,
         overflow: OverflowFlags::NONE,
+        unsupported_writing_mode: false,
     }
 }
 

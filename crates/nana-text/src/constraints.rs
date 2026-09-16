@@ -1,7 +1,9 @@
 //! What the container asks of a layout. Not style, and not device pixels
 //! policy — see [`TextScale`] for where the device scale stops.
 
-use nana_ui_core::{DirSpec, LineBreakSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec};
+use nana_ui_core::{
+    DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec,
+};
 use serde::{Deserialize, Serialize};
 
 /// Fractional device scale applied to text.
@@ -48,6 +50,13 @@ pub struct TextConstraints {
     pub preserve_lines: bool,
     #[serde(default)]
     pub base_direction: DirSpec,
+    /// Inline alignment of each line inside [`Self::max_width_px`].
+    ///
+    /// `Start` / `End` are logical and follow [`Self::base_direction`];
+    /// `Left` / `Right` are physical. With no `max_width_px` there is no box to
+    /// align in, so every keyword lays the line out at the origin.
+    #[serde(default)]
+    pub align: TextAlignSpec,
     #[serde(default)]
     pub writing_mode: WritingModeSpec,
     /// Tab expansion in spaces. Explicit because an unstated tab width is just
@@ -74,6 +83,7 @@ impl Default for TextConstraints {
             ellipsis: false,
             preserve_lines: false,
             base_direction: DirSpec::default(),
+            align: TextAlignSpec::default(),
             writing_mode: WritingModeSpec::default(),
             // Not `u8::default()`. A zero tab width is not a tab width.
             tab_width: default_tab_width(),
@@ -85,6 +95,12 @@ impl Default for TextConstraints {
 impl TextConstraints {
     pub fn wraps(&self) -> bool {
         self.wrap.is_some()
+    }
+
+    /// True when the caller asked for a writing mode the layout engine does not
+    /// implement. See [`TextLayout::unsupported_writing_mode`](crate::TextLayout::unsupported_writing_mode).
+    pub fn wants_vertical_writing(&self) -> bool {
+        self.writing_mode.is_vertical()
     }
 }
 
@@ -103,5 +119,7 @@ mod tests {
         assert!(!parsed.wraps());
         assert_eq!(parsed.tab_width, 8, "an omitted tab width is 8, not 0");
         assert_eq!(parsed.scale.px_per_logical, 1.0);
+        assert_eq!(parsed.align, TextAlignSpec::Start);
+        assert!(!parsed.wants_vertical_writing());
     }
 }

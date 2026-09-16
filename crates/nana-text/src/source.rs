@@ -156,6 +156,32 @@ impl TextSource {
         self.bump();
     }
 
+    /// This source with every `\n` and `\r` replaced by a space, or `None`
+    /// when it has neither.
+    ///
+    /// `white-space: normal` (`TextConstraints::preserve_lines == false`) says
+    /// an authored newline is a space rather than a line break. Shaping and
+    /// line breaking must see the same bytes, so the fold happens before
+    /// shaping — and both characters are one byte, as is the space, so every
+    /// span range, cluster and caret offset still addresses the same character.
+    ///
+    /// The revision is kept: this is the same edit of the same text, read under
+    /// different constraints, and a reader that treated it as a newer revision
+    /// would invalidate caches that are not stale. Only these two separators
+    /// fold; `U+2028` / `U+2029` and friends are longer than a space and would
+    /// move every offset after them, so they stay line breaks.
+    pub fn with_folded_newlines(&self) -> Option<Self> {
+        if !self.text.contains(['\n', '\r']) {
+            return None;
+        }
+        Some(Self {
+            text: self.text.replace(['\n', '\r'], " ").into(),
+            spans: self.spans.clone(),
+            revision: self.revision,
+            content_hash: OnceLock::new(),
+        })
+    }
+
     /// True when any span is currently under IME composition.
     pub fn has_composition(&self) -> bool {
         self.spans.iter().any(|span| span.composition.is_some())
@@ -203,6 +229,32 @@ mod tests {
         assert_eq!(same_text, first);
         source.set_text("other");
         assert_ne!(source.content_hash().0, first);
+    }
+
+    #[test]
+    fn folding_newlines_keeps_every_byte_offset_and_the_revision() {
+        let mut source = TextSource::new("one\ntwo");
+        source.set_spans(vec![TextSpan {
+            range: 4..7,
+            style: TextStyle::default(),
+            composition: None,
+        }]);
+        let folded = source
+            .with_folded_newlines()
+            .expect("the text has a newline");
+        assert_eq!(folded.text(), "one two");
+        assert_eq!(folded.text().len(), source.text().len());
+        assert_eq!(folded.spans()[0].range, 4..7);
+        assert_eq!(
+            folded.revision(),
+            source.revision(),
+            "folding is a reading of the same edit, not a new one"
+        );
+        assert!(
+            TextSource::new("no breaks")
+                .with_folded_newlines()
+                .is_none()
+        );
     }
 
     #[test]

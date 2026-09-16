@@ -545,6 +545,9 @@ fn to_layout(
         lines,
         bounds,
         overflow,
+        // The reference lays every case out horizontally; no corpus case asks
+        // for a vertical writing mode, and cosmic could not honour one anyway.
+        unsupported_writing_mode: false,
     }
 }
 

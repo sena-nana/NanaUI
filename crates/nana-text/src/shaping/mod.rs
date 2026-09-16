@@ -22,6 +22,9 @@ mod key;
 mod opentype;
 mod shaper;
 
+/// Rule L2 over a sequence of embedding levels. Layout reorders a line's runs
+/// with it after applying rule L1 to the line's trailing whitespace.
+pub(crate) use bidi::visual_order as bidi_visual_order;
 pub use cache::ShapeCacheBudget;
 pub use shaper::{MAX_FALLBACK_CANDIDATES_PER_RANGE, MAX_FALLBACK_RETRIES_PER_ITEM, Shaper};
 
