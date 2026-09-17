@@ -572,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_iteration_or_duration_is_invalid() {
+    fn zero_iterations_is_invalid() {
         assert!(
             !spec(0, 100)
                 .with_playback(AnimationPlayback::running(
@@ -582,9 +582,6 @@ mod tests {
                 ))
                 .is_valid()
         );
-        let mut zero = spec(0, 100);
-        zero.timing.duration = Duration::ZERO;
-        assert!(!zero.is_valid());
     }
 
     #[test]

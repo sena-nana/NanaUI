@@ -161,7 +161,8 @@ fn ease_local(curve: MotionCurve, stop: Option<Easing>, local: f32) -> f32 {
 fn timed_velocity(track: &MotionTrack, now: Duration) -> MotionValue {
     let dt = Duration::from_micros(1_000);
     let earlier = now.saturating_sub(dt);
-    if earlier == now {
+    // A zero-length run jumps; it has no finite velocity to hand a retarget.
+    if earlier == now || track.timing.duration.is_zero() {
         return track.from.zero_velocity();
     }
     let now_phase = track.timing.timed_progress(track.playback, now);
@@ -1130,6 +1131,34 @@ mod tests {
         assert!(done.applies);
         assert!(done.finished);
         assert!((done.progress - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn zero_duration_reaches_its_end_at_start_and_fill_decides_what_stays() {
+        let mut track = track(MotionCurve::Easing(Easing::EaseOutCubic));
+        track.timing.start = Duration::from_millis(50);
+        track.timing.duration = Duration::ZERO;
+        assert!(track.is_valid());
+
+        let before = evaluate_track(&track, Duration::from_millis(40));
+        assert!(!before.applies);
+        assert!(!before.finished);
+
+        for fill in [AnimationFillMode::None, AnimationFillMode::Forwards] {
+            track.playback.fill_mode = fill;
+            let at_start = evaluate_track(&track, Duration::from_millis(50));
+            assert!(at_start.applies);
+            assert!(at_start.finished);
+            assert_eq!(scalar(&at_start), 1.0);
+            assert_eq!(at_start.velocity, MotionValue::Scalar(0.0));
+            let after = evaluate_track(&track, Duration::from_millis(60));
+            assert!(after.finished);
+            assert_eq!(after.applies, fill == AnimationFillMode::Forwards);
+            assert_eq!(scalar(&after), 1.0);
+        }
+
+        track.playback.iteration_count = AnimationIteration::INFINITE;
+        assert!(!track.is_valid());
     }
 
     #[test]

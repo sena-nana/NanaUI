@@ -5414,6 +5414,7 @@ fn animations_are_atomic_deadline_driven_and_replaceable() {
     let mut invalid_timing = MutationQueue::new();
     let mut invalid_spec = animation.clone();
     invalid_spec.timing.duration = Duration::ZERO;
+    invalid_spec.playback.iteration_count = crate::AnimationIteration::INFINITE;
     invalid_timing.start_animation(invalid_spec);
     assert_eq!(
         world.commit(invalid_timing),

@@ -380,8 +380,14 @@ impl UiWorld {
             .get(&spec.id)
             .and_then(|active| active.spec.to_motion_track())
         {
-            let next = retarget_track(&previous, now, rest);
-            apply_track_to_spec(&mut spec, &next);
+            // Only the starting state carries over; timing and curve stay the
+            // new run's own, so a zero-length transition does not inherit the
+            // old duration.
+            let sample = crate::evaluate_track(&previous, now);
+            spec.from = sample.value;
+            spec.velocity = sample.velocity;
+            spec.timing.start = now;
+            spec.timing.delay = Duration::ZERO;
             return spec;
         }
         if let Some(target) = MotionTargetId::new(spec.target.get())
@@ -445,7 +451,9 @@ fn snap_spec_to_completion(spec: &mut AnimationSpec, _now: Duration) {
     spec.to = crate::MotionTo::Value(rest);
     spec.timing.delay = Duration::ZERO;
     spec.timing.start = Duration::ZERO;
-    spec.timing.duration = Duration::from_nanos(1);
+    spec.timing.duration = Duration::ZERO;
+    // An endless zero-length run is invalid and would not rebind.
+    spec.playback.iteration_count = crate::AnimationIteration::ONCE;
 }
 
 impl UiWorld {

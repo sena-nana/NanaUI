@@ -683,6 +683,47 @@ mod tests {
         assert!(sequenced < 1.0 && sequenced > 0.25);
     }
 
+    #[test]
+    fn zero_duration_l3_transition_snaps_without_style_work_and_retargets() {
+        fn fade(cx: &mut AppContext, id: StableNodeId, now_ms: u64, to: f32, duration_ms: u64) {
+            let mut queue = MutationQueue::new();
+            queue
+                .node(id, Duration::from_millis(now_ms))
+                .transition()
+                .opacity(to)
+                .duration(Duration::from_millis(duration_ms))
+                .ease(crate::Easing::Linear)
+                .start();
+            cx.commit_mutations(queue).unwrap();
+        }
+
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Chrome")).unwrap();
+        let id = button.stable_id();
+        tick(&mut cx, 0);
+
+        fade(&mut cx, id, 0, 0.0, 100);
+        tick(&mut cx, 50);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4);
+
+        fade(&mut cx, id, 50, 0.25, 0);
+        let work = cx.take_system_work();
+        cx.resolve_styles(&work.style).unwrap();
+        cx.advance_animations(Duration::from_millis(50));
+        let work = cx.take_system_work();
+        assert!(work.layout.is_empty() && work.style.is_empty());
+        assert_eq!(alpha(&cx, id), 0.25);
+        assert_eq!(logical_opacity(&cx, id), None);
+        assert_eq!(cx.next_animation_deadline(), None);
+        tick(&mut cx, 200);
+        assert_eq!(alpha(&cx, id), 0.25, "the interrupted run must not resume");
+
+        fade(&mut cx, id, 200, 1.0, 100);
+        tick(&mut cx, 250);
+        assert!((alpha(&cx, id) - 0.625).abs() < 1e-4);
+    }
+
     /// A sequence that touches one property twice compiles to two tracks. Both
     /// have to install: keying the animation on `(node, property)` alone lets
     /// the second overwrite the first in the same batch, so the opening stage

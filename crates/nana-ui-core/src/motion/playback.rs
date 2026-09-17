@@ -179,13 +179,15 @@ impl MotionTiming {
         }
     }
 
+    /// A finite zero-length run ends at its effective start, like CSS
+    /// `transition-duration: 0`; an endless one never ends and is invalid.
     pub fn is_valid(self, playback: AnimationPlayback) -> bool {
-        if self.duration.is_zero() || self.frame_interval.is_zero() {
+        if self.frame_interval.is_zero() {
             return false;
         }
         match playback.iteration_count {
             AnimationIteration::Count(0) => false,
-            AnimationIteration::Infinite => true,
+            AnimationIteration::Infinite => !self.duration.is_zero(),
             AnimationIteration::Count(_) => self.end(playback).is_some(),
         }
     }
