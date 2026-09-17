@@ -36,6 +36,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         }
+        // Presence is window state, reported even while a modal child or Forward
+        // passthrough keeps the pointer itself from reaching widgets.
+        if let Some(signal) = presence::presence_signal(&event, self.geometry_of(id).physical_size)
+        {
+            self.observe_pointer_presence(event_loop, id, signal);
+            if event_loop.exiting() || !self.window_contexts.contains_key(&id) {
+                return;
+            }
+        }
         let pointer_left = matches!(&event, WinitWindowEvent::PointerLeft { .. });
         if let Some(modal) = self.active_modal_child(id)
             && !allows_modal_parent_event(&event)

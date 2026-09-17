@@ -151,6 +151,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if let Some(window) = self.window(id).cloned()
                     && drag_scene_window(window.as_ref()).is_ok()
                 {
+                    self.begin_native_drag_presence(id);
                     self.dispatch_pointer_cancel(event_loop, id);
                 }
             }
@@ -319,8 +320,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 continue;
             }
             let Some(point) = self.sample_client_pointer(id) else {
+                self.observe_pointer_presence(event_loop, id, presence::PresenceSignal::Left);
                 continue;
             };
+            self.observe_pointer_presence(event_loop, id, presence::PresenceSignal::Inside);
+            if !self.window_contexts.contains_key(&id) {
+                continue;
+            }
             self.input_mut(id).cursor = point;
             if self.forward_hits_content(id) {
                 let _ = self.apply_os_mouse_passthrough(event_loop, id, false, false);
@@ -562,6 +568,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 pending_fullscreen,
                 skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
                 skip_taskbar_report,
+                pointer_presence: presence::PointerPresence::default(),
             },
         );
         #[cfg(target_os = "windows")]
@@ -1325,6 +1332,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 // without relying on the program to request it.
                 if visible {
                     self.request_redraw(id);
+                } else {
+                    self.hide_pointer_presence(event_loop, id);
                 }
                 let update = self.program.window_event(
                     WindowEvent::VisibilityChanged {
@@ -1422,6 +1431,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Control::Command(WindowCommand::Drag(_)) => {
                 drag_scene_window(window.as_ref()).map_err(window_request_error)?;
+                self.begin_native_drag_presence(id);
                 self.dispatch_pointer_cancel(event_loop, id);
             }
             Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {

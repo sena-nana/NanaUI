@@ -7,6 +7,7 @@ mod browser;
 mod dialogs;
 mod display;
 mod input;
+mod presence;
 mod present;
 mod schedule;
 mod windows;
@@ -164,6 +165,7 @@ struct WindowContext {
     skip_taskbar: bool,
     /// Descriptor outcome, applied before the first show and delivered after `Ready`.
     skip_taskbar_report: Option<Result<(), crate::WindowError>>,
+    pointer_presence: presence::PointerPresence,
 }
 
 impl Drop for WindowContext {
@@ -638,6 +640,7 @@ fn initialize<Program: RuntimeProgram>(
         pending_fullscreen: settings.fullscreen,
         skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
         skip_taskbar_report,
+        pointer_presence: presence::PointerPresence::default(),
     };
     pending_native.0 = None;
     let mut ready = WindowManager {

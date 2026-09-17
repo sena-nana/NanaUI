@@ -643,8 +643,11 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 self.vue.dispose_released_realms(&mut self.engine)?;
                 closed?;
             }
+            // Pages observe the pointer through their own DOM pointer events;
+            // window presence is for Rust programs with hover-revealed chrome.
             WindowEvent::MousePassthroughChanged { .. }
-            | WindowEvent::SkipTaskbarChanged { .. } => {}
+            | WindowEvent::SkipTaskbarChanged { .. }
+            | WindowEvent::PointerPresenceChanged { .. } => {}
             WindowEvent::ModeChanged { id, mode } => {
                 self.vue.record_platform_mode(VueWindowId(id.0), &mode)?;
             }

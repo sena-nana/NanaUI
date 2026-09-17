@@ -161,9 +161,20 @@ window.close().wait()?;
 
 操作返回 `WindowRequest<T>`，支持 `.await`、工作线程 `.wait()` 和窗口线程非阻塞的 `try_take()`。在窗口线程调用 `.wait()` 返回 `HostThreadWait`，不阻塞事件循环。待处理窗口请求最多 1024 个，队列满时立即返回 `QueueFull`，调用方可等待已提交请求完成后重试。关闭后的 handle 返回 `WindowClosed`，宿主释放后返回 `HostStopped`；身份及世代检查防止旧请求作用于重新创建的窗口。
 
-主窗口与附加窗口共用注册表和 Device/Queue，每个窗口独立持有 Surface、输入、IME、文档和渲染目标。默认关闭一扇窗口只释放该窗口及其原生子窗口；standalone 最后一扇窗口关闭后退出。应用仍可显式返回 `RuntimeProgramUpdate::exit()` 关闭整个应用。
+主窗口与附加窗口共用注册表和 Device/Queue，每个窗口独立持有 Surface、输入、IME、文档和渲染目标。同一纹理格式的窗口共用一个 Scene painter；各文档的 compositor motion 描述符按 `MotionDescriptorStore::source` 与结构 epoch 识别，切换绘制窗口时重新上传，不会读到另一窗口的动画。默认关闭一扇窗口只释放该窗口及其原生子窗口；standalone 最后一扇窗口关闭后退出。应用仍可显式返回 `RuntimeProgramUpdate::exit()` 关闭整个应用。
 
 `ApplicationState::window_event` 和 `RuntimeProgram::window_event` 接收框架窗口事件；指针、键盘输入通过 `RuntimeProgram::input_event` 的 `RoutedInput` 接收，附带命中与处理结果，同一输入不重复派发。缩放变化通过带新 `scale_factor` 的 `Resized` 通知。
+
+### 指针在场
+
+`WindowEvent::PointerPresenceChanged { id, inside }` 报告悬停指针（鼠标、笔）是否在该窗口客户区内，只在变化时发送，供按指针显现 chrome 的应用使用，不需要轮询光标。输入流里的离开仍归一化为 `PointerPhase::Cancel`，与手势取消无法区分，所以不要用它推断在场。
+
+- 触摸接触不报告在场。
+- 宿主发起原生拖窗（标题栏拖动、`WindowHandle::begin_drag`）时，平台移动循环产生的离开被扣下，直到平台再次报告该指针；拖动被屏幕边缘挡住后指针离开窗口的情形，要等指针回到窗口再离开才会报告。
+- 指针被捕获时，客户区外的移动不会把状态改回在场。
+- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开。
+- Forward 穿透由宿主采样全局指针，在场随采样结果更新；采样不可用的平台（Wayland）报告为不在场。
+- 有模态子窗口时父窗口仍报告在场，指针事件本身继续交给模态链处理。
 
 ### 显示器与全屏
 

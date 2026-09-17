@@ -154,6 +154,14 @@ pub enum WindowEvent {
         id: WindowId,
         focused: bool,
     },
+    /// A hovering mouse or pen pointer entered (`inside`) or left the client
+    /// area. Delivered only on change. Touch contacts never report presence,
+    /// and the leave a host-started native window drag produces is withheld
+    /// until the pointer is reported again. Hiding the window reports a leave.
+    PointerPresenceChanged {
+        id: WindowId,
+        inside: bool,
+    },
     Ime {
         id: WindowId,
         event: crate::ImeEvent,
