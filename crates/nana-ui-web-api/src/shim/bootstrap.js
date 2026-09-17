@@ -25,9 +25,13 @@
       }
     }
     const targetId = name === "windowCall" ? Number(values[0]) : windowId;
-    // Closed is delivered after native document/resource destruction. During
-    // Vue's synchronous unmount, cleanup still releases JS timers and images.
-    if (globalThis.__nanaIsWindowDisposing?.(targetId)) return null;
+    // Closed is delivered after native document/resource destruction, so the
+    // document work Vue's synchronous unmount still submits is dropped here.
+    // Releases are not: the predicate lets `wsClose`, `fetchCancel`, the timer
+    // cancels and the handle releases through, because the host keeps those
+    // registrations process-wide and nothing else would ever free them.
+    const op = name === "windowCall" ? String(values[1]) : name;
+    if (globalThis.__nanaIsHostCallSuppressed?.(targetId, op)) return null;
     if (windowId && name !== "windowCall") {
       return host.call("windowCall", [windowId, String(name), values]);
     }

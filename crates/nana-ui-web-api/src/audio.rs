@@ -174,6 +174,14 @@ struct ContextRec {
     current_frame: u64,
 }
 
+/// One pull of the output block: which nodes are on the current path (cycle
+/// guard) and what each node already rendered for this block.
+#[derive(Default)]
+struct MixBlock {
+    visiting: HashSet<u64>,
+    rendered: HashMap<u64, Vec<f32>>,
+}
+
 struct Mixer {
     next_id: u64,
     output_channels: u16,
@@ -463,6 +471,18 @@ impl Mixer {
         }
     }
 
+    fn set_source_loop(&mut self, source: u64, looped: bool) -> Result<(), AudioError> {
+        match &mut self.node_mut(source)?.kind {
+            NodeKind::BufferSource { looped: flag, .. } => {
+                *flag = looped;
+                Ok(())
+            }
+            _ => Err(AudioError::invalid_state(
+                "node is not an AudioBufferSourceNode",
+            )),
+        }
+    }
+
     fn stop_source(&mut self, source: u64) -> Result<(), AudioError> {
         match &mut self.node_mut(source)?.kind {
             NodeKind::BufferSource { playing, .. } => {
@@ -553,13 +573,13 @@ impl Mixer {
                 continue;
             }
             let destination = context.destination;
-            let mut visiting = HashSet::new();
+            let mut block = MixBlock::default();
             let contrib = self.mix_node(
                 destination,
                 frames,
                 channels as u16,
                 sample_rate,
-                &mut visiting,
+                &mut block,
             );
             for (dest, sample) in output.iter_mut().zip(contrib.iter()) {
                 *dest += *sample;
@@ -584,10 +604,17 @@ impl Mixer {
         frames: usize,
         channels: u16,
         sample_rate: u32,
-        visiting: &mut HashSet<u64>,
+        block: &mut MixBlock,
     ) -> Vec<f32> {
+        // Rendering a source advances its cursor and drains its queue, so a node
+        // reached twice in one block (fanned out through two gains) would play
+        // at double speed and hand each branch a different chunk. One render per
+        // node per block, reused by every path that reaches it.
+        if let Some(rendered) = block.rendered.get(&id) {
+            return rendered.clone();
+        }
         let mut out = vec![0.0f32; frames * channels as usize];
-        if !visiting.insert(id) {
+        if !block.visiting.insert(id) {
             return out;
         }
         enum Mix {
@@ -597,7 +624,7 @@ impl Mixer {
         }
         let (inputs, mix) = {
             let Some(node) = self.nodes.get(&id) else {
-                visiting.remove(&id);
+                block.visiting.remove(&id);
                 return out;
             };
             let mix = match &node.kind {
@@ -617,7 +644,7 @@ impl Mixer {
             }
             Mix::Sum(gain) => {
                 for input in inputs {
-                    let part = self.mix_node(input, frames, channels, sample_rate, visiting);
+                    let part = self.mix_node(input, frames, channels, sample_rate, block);
                     match gain {
                         None => {
                             for (dest, sample) in out.iter_mut().zip(part) {
@@ -633,7 +660,8 @@ impl Mixer {
                 }
             }
         }
-        visiting.remove(&id);
+        block.visiting.remove(&id);
+        block.rendered.insert(id, out.clone());
         out
     }
 
@@ -1237,6 +1265,17 @@ pub(crate) fn register_audio_host_ops(api: &mut HostApiRegistry, runtime: Shared
     }
     {
         let runtime = Arc::clone(&runtime);
+        api.register("audioBufferSourceSetLoop", move |args| {
+            let source = audio_id(args, 0)?;
+            let looped = matches!(args.get(1), Some(HostValue::Bool(true)));
+            locked!(runtime)
+                .with_mixer_mut(|mixer| mixer.set_source_loop(source, looped))
+                .map_err(js_error)?;
+            Ok(HostValue::Null)
+        });
+    }
+    {
+        let runtime = Arc::clone(&runtime);
         api.register("audioBufferSourceStop", move |args| {
             let source = audio_id(args, 0)?;
             locked!(runtime)
@@ -1457,6 +1496,128 @@ mod tests {
             .fold(0.0f32, |acc, sample| acc.max(sample.abs()));
         assert!(peak > 0.5, "gain 0.75 on a unit sine should stay audible");
         assert!(peak <= 0.75 + 1.0e-3);
+    }
+
+    /// Builds `source -> [gain, gain] -> destination` over `pcm`, both gains at
+    /// unity, and returns the ids of the context and the source.
+    fn fan_out_graph(api: &HostApiRegistry, pcm: &[f32]) -> (u64, u64) {
+        let context = api
+            .call("audioContextCreate", &[])
+            .expect("create context")
+            .as_object()
+            .cloned()
+            .expect("context object");
+        let context_id = context.get("id").and_then(HostValue::as_u64).expect("id");
+        let destination = context
+            .get("destination")
+            .and_then(HostValue::as_object)
+            .and_then(|map| map.get("id"))
+            .and_then(HostValue::as_u64)
+            .expect("destination");
+        let buffer_id = object_id(
+            &api.call(
+                "audioBufferCreate",
+                &[
+                    HostValue::BigInt(context_id),
+                    HostValue::Number(1.0),
+                    HostValue::Number(pcm.len() as f64),
+                    HostValue::Number(44_100.0),
+                ],
+            )
+            .expect("buffer"),
+        );
+        api.call(
+            "audioBufferCopyToChannel",
+            &[
+                HostValue::BigInt(buffer_id),
+                HostValue::Number(0.0),
+                HostValue::Array(pcm.iter().map(|s| HostValue::Number(*s as f64)).collect()),
+            ],
+        )
+        .expect("copy pcm");
+        let source_id = object_id(
+            &api.call("audioBufferSourceCreate", &[HostValue::BigInt(context_id)])
+                .expect("source"),
+        );
+        api.call(
+            "audioBufferSourceSetBuffer",
+            &[HostValue::BigInt(source_id), HostValue::BigInt(buffer_id)],
+        )
+        .expect("set buffer");
+        for _ in 0..2 {
+            let gain_id = object_id(
+                &api.call("audioGainCreate", &[HostValue::BigInt(context_id)])
+                    .expect("gain"),
+            );
+            api.call(
+                "audioGainSetValue",
+                &[HostValue::BigInt(gain_id), HostValue::Number(1.0)],
+            )
+            .expect("gain value");
+            api.call(
+                "audioNodeConnect",
+                &[HostValue::BigInt(source_id), HostValue::BigInt(gain_id)],
+            )
+            .expect("source -> gain");
+            api.call(
+                "audioNodeConnect",
+                &[HostValue::BigInt(gain_id), HostValue::BigInt(destination)],
+            )
+            .expect("gain -> destination");
+        }
+        (context_id, source_id)
+    }
+
+    /// Rendering advances the source cursor, so a source reached through two
+    /// gains must still be rendered once: otherwise each branch gets a
+    /// different slice and the buffer plays at double speed.
+    #[test]
+    fn a_source_fanned_out_through_two_gains_advances_once_per_block() {
+        let sink = MockAudioSink::new(44_100, 1);
+        let runtime = shared_audio_runtime_with_mock(sink.clone());
+        let mut api = HostApiRegistry::new();
+        register_audio_host_ops(&mut api, Arc::clone(&runtime));
+        let pcm = [0.1f32, 0.2, 0.3, 0.4, 0.01, 0.02, 0.03, 0.04];
+        let (_context, source) = fan_out_graph(&api, &pcm);
+        api.call("audioBufferSourceStart", &[HostValue::BigInt(source)])
+            .expect("start");
+        runtime.lock().unwrap().mix_frames(4).expect("mix");
+        let captured = sink.captured();
+        assert_eq!(captured.len(), 4);
+        for (index, sample) in captured.iter().enumerate() {
+            assert!(
+                (sample - pcm[index] * 2.0).abs() < 1.0e-5,
+                "frame {index}: both branches must carry the same sample, got {captured:?}"
+            );
+        }
+    }
+
+    /// `AudioBufferSourceNode.loop` is mixer state; without a host op the flag
+    /// stays on the JS side and every source plays through exactly once.
+    #[test]
+    fn a_looping_source_wraps_instead_of_falling_silent() {
+        let sink = MockAudioSink::new(44_100, 1);
+        let runtime = shared_audio_runtime_with_mock(sink.clone());
+        let mut api = HostApiRegistry::new();
+        register_audio_host_ops(&mut api, Arc::clone(&runtime));
+        let pcm = [0.5f32, 0.25];
+        let (_context, source) = fan_out_graph(&api, &pcm);
+        api.call(
+            "audioBufferSourceSetLoop",
+            &[HostValue::BigInt(source), HostValue::Bool(true)],
+        )
+        .expect("set loop");
+        api.call("audioBufferSourceStart", &[HostValue::BigInt(source)])
+            .expect("start");
+        runtime.lock().unwrap().mix_frames(4).expect("mix");
+        let captured = sink.captured();
+        assert_eq!(captured.len(), 4);
+        for (index, sample) in captured.iter().enumerate() {
+            assert!(
+                (sample - pcm[index % 2] * 2.0).abs() < 1.0e-5,
+                "frame {index} must wrap to the buffer start, got {captured:?}"
+            );
+        }
     }
 
     #[test]

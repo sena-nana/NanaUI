@@ -136,12 +136,22 @@
   function AudioBufferSourceNodeShim(resource) {
     AudioNodeShim.call(this, resource);
     this.buffer = null;
-    this.loop = false;
+    this._loop = false;
     this.playbackRate = { value: 1 };
     this.onended = null;
   }
   AudioBufferSourceNodeShim.prototype = Object.create(AudioNodeShim.prototype);
   AudioBufferSourceNodeShim.prototype.constructor = AudioBufferSourceNodeShim;
+  // The mixer owns the loop flag, and WebAudio lets it be flipped mid-playback:
+  // a plain field would keep the setting entirely on the JS side and every
+  // source would play through exactly once.
+  Object.defineProperty(AudioBufferSourceNodeShim.prototype, "loop", {
+    get: function () { return this._loop; },
+    set: function (value) {
+      this._loop = !!value;
+      audioHostCall("audioBufferSourceSetLoop", [this.id, this._loop]);
+    },
+  });
   AudioBufferSourceNodeShim.prototype.start = function () {
     if (this.buffer && typeof this.buffer.__nanaSyncChannels === "function") {
       this.buffer.__nanaSyncChannels();
@@ -160,6 +170,11 @@
   GainNodeShim.prototype = Object.create(AudioNodeShim.prototype);
   GainNodeShim.prototype.constructor = GainNodeShim;
 
+  // How far ahead of the wall clock the pump keeps the mixer, and the most it
+  // will render in one tick after the timer was starved.
+  const PUMP_LEAD_BLOCKS = 2;
+  const PUMP_MAX_BLOCKS_PER_TICK = 8;
+
   function ScriptProcessorNodeShim(context, resource, bufferSize, inputChannels, outputChannels) {
     AudioNodeShim.call(this, resource);
     this.bufferSize = bufferSize;
@@ -167,18 +182,42 @@
     this._context = context;
     this._inputChannels = Math.max(1, inputChannels | 0);
     this._outputChannels = Math.max(1, outputChannels | 0);
-    const interval = Math.max(10, Math.round((bufferSize / context.sampleRate) * 1000));
+    // One block per tick starves the mixer: a timer cannot tick faster than a
+    // few milliseconds and always runs late, so a 256-frame block at 48 kHz
+    // (5.3 ms of audio) was delivered every 10 ms or worse and half the output
+    // came out silent. Tick on a timer, but produce by elapsed wall time and
+    // keep a small lead, so jitter is absorbed instead of dropped.
+    const blockMs = (bufferSize / Math.max(1, context.sampleRate)) * 1000;
+    const interval = Math.max(4, Math.min(Math.round(blockMs), 50));
     const self = this;
+    let submittedThrough = 0;
     this._pump = setInterval(function () {
-      if (typeof self.onaudioprocess !== "function" || self._context.state !== "running") return;
-      const inputBuffer = localAudioBuffer(self._inputChannels, self.bufferSize, self._context.sampleRate);
-      const outputBuffer = localAudioBuffer(self._outputChannels, self.bufferSize, self._context.sampleRate);
-      self.onaudioprocess({
-        playbackTime: self._context.currentTime,
-        inputBuffer: inputBuffer,
-        outputBuffer: outputBuffer,
-      });
-      audioHostCall("audioScriptProcessorSubmit", [self.id, interleaveFloat32(outputBuffer._channels)]);
+      if (typeof self.onaudioprocess !== "function" || self._context.state !== "running") {
+        submittedThrough = 0;
+        return;
+      }
+      const now = Date.now();
+      if (submittedThrough === 0) submittedThrough = now;
+      const target = now + blockMs * PUMP_LEAD_BLOCKS;
+      let blocks = Math.ceil((target - submittedThrough) / blockMs);
+      if (blocks <= 0) return;
+      if (blocks > PUMP_MAX_BLOCKS_PER_TICK) {
+        // A stalled timer must not burst a backlog into the queue: skip ahead
+        // rather than render audio the mixer has already played past.
+        blocks = PUMP_MAX_BLOCKS_PER_TICK;
+        submittedThrough = target - blocks * blockMs;
+      }
+      for (let i = 0; i < blocks; i++) {
+        const inputBuffer = localAudioBuffer(self._inputChannels, self.bufferSize, self._context.sampleRate);
+        const outputBuffer = localAudioBuffer(self._outputChannels, self.bufferSize, self._context.sampleRate);
+        self.onaudioprocess({
+          playbackTime: self._context.currentTime,
+          inputBuffer: inputBuffer,
+          outputBuffer: outputBuffer,
+        });
+        audioHostCall("audioScriptProcessorSubmit", [self.id, interleaveFloat32(outputBuffer._channels)]);
+        submittedThrough += blockMs;
+      }
     }, interval);
   }
   ScriptProcessorNodeShim.prototype = Object.create(AudioNodeShim.prototype);

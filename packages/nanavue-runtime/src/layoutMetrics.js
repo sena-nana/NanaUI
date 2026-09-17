@@ -28,8 +28,30 @@ const disposingWindows = new Set();
 export function isNanaWindowDisposing(windowId) {
   return disposingWindows.has(Number(windowId));
 }
+
+// Releasing a handle is not a document operation, so the guard above must not
+// swallow it. The host keeps sockets, requests, timers and decoded resources in
+// process-wide state rather than per window: a release dropped during disposal
+// is leaked for the life of the process, and a socket keeps its thread running.
+const RELEASE_OPS = new Set([
+  "wsClose",
+  "fetchCancel",
+  "timeoutCancel",
+  "intervalCancel",
+  "rafCancel",
+  "objectUrlRevoke",
+  "resourceRelease",
+  "mediaRelease",
+  "mediaStreamStop",
+  "audioContextClose",
+]);
+
+/** Must this host op be dropped rather than submitted to a dying window? */
+export function isNanaHostCallSuppressed(windowId, op) {
+  return isNanaWindowDisposing(windowId) && !RELEASE_OPS.has(String(op));
+}
 // The Web API shim shares this scope for timer/image cleanup in Vue hooks.
-globalThis.__nanaIsWindowDisposing = isNanaWindowDisposing;
+globalThis.__nanaIsHostCallSuppressed = isNanaHostCallSuppressed;
 export function withNanaWindowDisposal(windowId, action) {
   const id = Number(windowId);
   if (disposingWindows.has(id)) return action();
@@ -52,7 +74,8 @@ export function hostCall(name, args) {
   let windowId = Number(globalThis.__nanaActiveWindowId || 0);
   if (!windowId && values.length) windowId = nanaWindowIdFromNode(values[0]);
   const targetId = name === "windowCall" ? Number(values[0]) : windowId;
-  if (disposingWindows.has(targetId)) return null;
+  const op = name === "windowCall" ? String(values[1]) : name;
+  if (isNanaHostCallSuppressed(targetId, op)) return null;
   if (windowId && name !== "windowCall") {
     return host.call("windowCall", [windowId, String(name), values]);
   }

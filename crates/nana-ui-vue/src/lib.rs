@@ -810,9 +810,11 @@ impl VueHost {
 
     /// Report newly-observed unsupported CSS to the diagnostics sink.
     ///
-    /// Counters only grow, so the diff against the last report is what appeared
-    /// this frame. Silent when nothing new showed up, so a page that keeps a
-    /// permanently-unsupported declaration reports it once, not every frame.
+    /// Counters that went up since the last report are what appeared this
+    /// frame; they also come back down as nodes are restyled or removed, and a
+    /// drop reports nothing. Silent when nothing new showed up, so a page that
+    /// keeps a permanently-unsupported declaration reports it once, not every
+    /// frame.
     #[cfg(feature = "scene-view")]
     fn report_unsupported_css(&mut self) {
         if self.diagnostics.sink.is_none() {

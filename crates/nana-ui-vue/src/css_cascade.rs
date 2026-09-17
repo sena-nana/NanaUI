@@ -494,10 +494,8 @@ pub struct StylesheetParseReport {
 /// unknown selectors, skipped at-rules). This covers declarations that parsed
 /// fine but name something the layout engine does not implement, which is
 /// otherwise only observable as a box that silently did not move.
-/// Counted **per node**, not per observation: a node is recascaded on every
-/// hover, focus or class change, and a counter that added on each pass would
-/// grow without bound and re-warn on every frame that recascades.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Counted **per node**, not per observation: see [`UnsupportedCssTally`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UnsupportedCssReport {
     /// Nodes whose `grid-template-columns` / `rows` hit [`GridTrackListUnsupported`].
     pub grid_track_lists: usize,
@@ -505,9 +503,6 @@ pub struct UnsupportedCssReport {
     pub writing_modes: usize,
     /// Nodes with a malformed `font-variation-settings` declaration.
     pub font_variations: usize,
-    /// What each node last contributed, so re-observing it replaces rather
-    /// than adds. Cleared for a node by [`Self::forget`].
-    seen: HashMap<u64, UnsupportedCssFlags>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -536,10 +531,26 @@ impl UnsupportedCssReport {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+}
+
+/// Accumulates an [`UnsupportedCssReport`] across the tree.
+///
+/// A node is recascaded on every hover, focus or class change, so what it
+/// contributed last time is remembered and replaced rather than added: a
+/// counter that only grew would run away and re-warn on every such frame.
+#[derive(Debug, Clone, Default)]
+pub struct UnsupportedCssTally {
+    report: UnsupportedCssReport,
+    seen: HashMap<u64, UnsupportedCssFlags>,
+}
+
+impl UnsupportedCssTally {
+    pub fn report(&self) -> UnsupportedCssReport {
+        self.report
+    }
 
     /// Records one node's resolved style, replacing whatever it contributed
-    /// last time. Called once per node per cascade pass, and a node is
-    /// recascaded whenever it is hovered, focused or restyled.
+    /// last time. Called once per node per cascade pass.
     pub fn observe(&mut self, node: u64, layout: &LayoutStyle) {
         let flags = UnsupportedCssFlags::of(layout);
         let previous = if flags.is_empty() {
@@ -548,17 +559,17 @@ impl UnsupportedCssReport {
             self.seen.insert(node, flags).unwrap_or_default()
         };
         adjust(
-            &mut self.grid_track_lists,
+            &mut self.report.grid_track_lists,
             previous.grid_track_list,
             flags.grid_track_list,
         );
         adjust(
-            &mut self.writing_modes,
+            &mut self.report.writing_modes,
             previous.writing_mode,
             flags.writing_mode,
         );
         adjust(
-            &mut self.font_variations,
+            &mut self.report.font_variations,
             previous.font_variation,
             flags.font_variation,
         );
@@ -569,9 +580,17 @@ impl UnsupportedCssReport {
         let Some(previous) = self.seen.remove(&node) else {
             return;
         };
-        adjust(&mut self.grid_track_lists, previous.grid_track_list, false);
-        adjust(&mut self.writing_modes, previous.writing_mode, false);
-        adjust(&mut self.font_variations, previous.font_variation, false);
+        adjust(
+            &mut self.report.grid_track_lists,
+            previous.grid_track_list,
+            false,
+        );
+        adjust(&mut self.report.writing_modes, previous.writing_mode, false);
+        adjust(
+            &mut self.report.font_variations,
+            previous.font_variation,
+            false,
+        );
     }
 }
 
@@ -3389,14 +3408,14 @@ mod tests {
 
     #[test]
     fn unsupported_css_report_counts_declarations_layout_ignores() {
-        let mut report = UnsupportedCssReport::default();
-        assert!(report.is_empty());
+        let mut tally = UnsupportedCssTally::default();
+        assert!(tally.report().is_empty());
 
         // `sideways-*` parses but layout has no sideways glyph orientation.
         let mut sideways = LayoutStyle::default();
         sideways.apply_css_text("writing-mode: sideways-rl", None, None);
         assert!(sideways.unsupported_writing_mode);
-        report.observe(1, &sideways);
+        tally.observe(1, &sideways);
 
         // Nested auto-fit parses but the track list cannot be expanded.
         let mut nested = LayoutStyle::default();
@@ -3406,18 +3425,18 @@ mod tests {
             None,
         );
         assert!(nested.grid_columns_unsupported.is_some());
-        report.observe(2, &nested);
+        tally.observe(2, &nested);
 
         // A malformed variation declaration fails closed on that declaration only.
         let mut variation = LayoutStyle::default();
         variation.apply_css_text("font-variation-settings: nope", None, None);
         assert!(variation.unsupported_font_variation);
-        report.observe(3, &variation);
+        tally.observe(3, &variation);
 
-        assert_eq!(report.grid_track_lists, 1);
-        assert_eq!(report.writing_modes, 1);
-        assert_eq!(report.font_variations, 1);
-        assert!(!report.is_empty());
+        assert_eq!(tally.report().grid_track_lists, 1);
+        assert_eq!(tally.report().writing_modes, 1);
+        assert_eq!(tally.report().font_variations, 1);
+        assert!(!tally.report().is_empty());
 
         // A fully supported style must not be counted, or the diagnostic fires
         // on every page.
@@ -3427,28 +3446,37 @@ mod tests {
             None,
             None,
         );
-        let before = report.clone();
-        report.observe(4, &ok);
-        assert_eq!(report, before, "supported declarations must not be counted");
+        let before = tally.report();
+        tally.observe(4, &ok);
+        assert_eq!(
+            tally.report(),
+            before,
+            "supported declarations must not be counted"
+        );
 
         // The same node observed again replaces its own contribution: a node is
         // recascaded on every hover or class change, and a counter that added
         // each time would grow without bound and re-warn every frame.
-        report.observe(1, &sideways);
-        report.observe(2, &nested);
+        tally.observe(1, &sideways);
+        tally.observe(2, &nested);
         assert_eq!(
-            report, before,
+            tally.report(),
+            before,
             "re-observing a node must not count it twice"
         );
 
         // A node whose style stops being unsupported gives its count back, and
         // so does one that goes away.
-        report.observe(1, &LayoutStyle::default());
-        assert_eq!(report.writing_modes, 0);
-        report.forget(2);
-        assert_eq!(report.grid_track_lists, 0);
-        report.forget(2);
-        assert_eq!(report.grid_track_lists, 0, "forgetting twice is harmless");
+        tally.observe(1, &LayoutStyle::default());
+        assert_eq!(tally.report().writing_modes, 0);
+        tally.forget(2);
+        assert_eq!(tally.report().grid_track_lists, 0);
+        tally.forget(2);
+        assert_eq!(
+            tally.report().grid_track_lists,
+            0,
+            "forgetting twice is harmless"
+        );
     }
 
     #[test]

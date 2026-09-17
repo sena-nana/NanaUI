@@ -87,7 +87,7 @@ pub(super) struct State {
     /// Document `@layer` order (first declared is weaker).
     /// Accumulated skipped-content counters across `inject_stylesheet` calls.
     pub(super) stylesheet_skips: StylesheetParseReport,
-    pub(super) unsupported_css: crate::css_cascade::UnsupportedCssReport,
+    pub(super) unsupported_css: crate::css_cascade::UnsupportedCssTally,
     /// Unflattened author sheets (imports already merged; `@media` kept conditional).
     pub(super) authored_sheets: Vec<AuthoredSheet>,
     /// Shared relative forest for the current recascade pass.
@@ -1086,7 +1086,7 @@ impl MessageBridge {
     }
 
     pub fn unsupported_css(&self) -> crate::css_cascade::UnsupportedCssReport {
-        self.cascade.unsupported_css.clone()
+        self.cascade.unsupported_css.report()
     }
 }
 

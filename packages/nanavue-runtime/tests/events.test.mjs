@@ -577,14 +577,22 @@ describe("Lilia dismiss / ContextMenu fan-out smoke", () => {
     }));
     const root = sandbox.wrapNode(2, "element", "body");
     sandbox.createApp({}).mount(root);
+    // The window is gone, but its host handles are not: timer and frame
+    // registrations live in process-wide state, so the cancels have to land.
+    const released = [];
     sandbox.__nanaHost.call = (name) => {
       if (name === "windowFocus") { globalControlCalls += 1; return null; }
+      if (name === "rafCancel" || name === "timeoutCancel" || name === "intervalCancel") {
+        released.push(name);
+        return null;
+      }
       throw new Error("primary already closed");
     };
     sandbox.__hostListeners.get("window-closed")({ id: 0 });
     assert.equal(unmounted, 1);
     assert.equal(sandbox.__nanaGetWindowContext(0), null);
     assert.equal(globalControlCalls, 1);
+    assert.deepEqual(released, ["rafCancel", "timeoutCancel", "intervalCancel"]);
     sandbox.__nanaHost.call = () => null;
     assert.notEqual(sandbox.wrapNode(2, "element", "body"), root);
     sandbox.__hostListeners.get("window-closed")({ id: 0 });
