@@ -11,6 +11,10 @@ use std::hash::{DefaultHasher, Hasher};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
+/// Line separators a space can stand in for byte-for-byte: each is one byte,
+/// and so is the space that replaces it.
+const FOLDED_SEPARATORS: [char; 4] = ['\n', '\r', '\u{b}', '\u{c}'];
+
 /// An IME composition marker.
 ///
 /// Orthogonal to styling: a preedit run is a *state* of the text, not a font
@@ -156,26 +160,30 @@ impl TextSource {
         self.bump();
     }
 
-    /// This source with every `\n` and `\r` replaced by a space, or `None`
-    /// when it has neither.
+    /// This source with every one-byte line separator — `\n`, `\r`, VT and FF
+    /// — replaced by a space, or `None` when it has none.
     ///
     /// `white-space: normal` (`TextConstraints::preserve_lines == false`) says
     /// an authored newline is a space rather than a line break. Shaping and
     /// line breaking must see the same bytes, so the fold happens before
-    /// shaping — and both characters are one byte, as is the space, so every
-    /// span range, cluster and caret offset still addresses the same character.
+    /// shaping — and each of these characters is one byte, as is the space, so
+    /// every span range, cluster and caret offset still addresses the same
+    /// character.
     ///
     /// The revision is kept: this is the same edit of the same text, read under
     /// different constraints, and a reader that treated it as a newer revision
-    /// would invalidate caches that are not stale. Only these two separators
-    /// fold; `U+2028` / `U+2029` and friends are longer than a space and would
-    /// move every offset after them, so they stay line breaks.
+    /// would invalidate caches that are not stale.
+    ///
+    /// `U+2028 LINE SEPARATOR` and `U+2029 PARAGRAPH SEPARATOR` are three bytes
+    /// each, so folding them to a space would move every offset after them.
+    /// They stay line breaks whatever `preserve_lines` says, and layout treats
+    /// them as such.
     pub fn with_folded_newlines(&self) -> Option<Self> {
-        if !self.text.contains(['\n', '\r']) {
+        if !self.text.contains(FOLDED_SEPARATORS) {
             return None;
         }
         Some(Self {
-            text: self.text.replace(['\n', '\r'], " ").into(),
+            text: self.text.replace(FOLDED_SEPARATORS, " ").into(),
             spans: self.spans.clone(),
             revision: self.revision,
             content_hash: OnceLock::new(),

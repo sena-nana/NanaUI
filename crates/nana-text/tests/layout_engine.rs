@@ -78,6 +78,32 @@ fn lay_out(
     engine.layout(kind, &source, style, constraints, &mut counters)
 }
 
+/// Asserts every character a wrapped layout did not deliberately drop is on
+/// some line.
+///
+/// Trailing whitespace hangs at a soft wrap, so whitespace is exempt; anything
+/// else missing is a byte range nothing can draw, select or hit-test, and no
+/// flag reports it.
+fn assert_every_character_is_on_a_line(layout: &TextLayout, text: &str) {
+    for (offset, character) in text.char_indices() {
+        if character.is_whitespace() {
+            continue;
+        }
+        assert!(
+            layout
+                .lines
+                .iter()
+                .any(|line| line.source.start <= offset && offset < line.source.end),
+            "byte {offset} ({character:?}) is on no line: {:?}",
+            layout
+                .lines
+                .iter()
+                .map(|line| line.source.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 /// The source text of each line, as the layout says it is.
 fn line_texts(layout: &TextLayout, text: &str) -> Vec<String> {
     layout
@@ -384,6 +410,193 @@ fn a_word_wider_than_the_box_overflows_under_word_wrap_and_is_cut_under_break_wo
     }
     let joined: String = line_texts(&cut, text).join("");
     assert_eq!(joined, text, "the cuts lose no bytes");
+}
+
+#[test]
+fn a_wrapping_paragraph_keeps_every_byte_even_when_a_word_overflows() {
+    // An unbreakable word wider than the box is already whole on its own line.
+    // Cutting it for an ellipsis would drop the rest of it from every line at
+    // once, leaving a hole in the middle of the paragraph that no flag reports.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "start Hamburgefonstivwordthatislong end of story";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &TextConstraints {
+            ellipsis: true,
+            ..wrapped(90.0)
+        },
+    );
+    assert_every_character_is_on_a_line(&layout, text);
+    assert!(
+        layout.overflow.contains(OverflowFlags::CLIPPED_WIDTH),
+        "the long word sticks out, and says so"
+    );
+    assert!(
+        !layout.overflow.contains(OverflowFlags::ELLIPSIZED),
+        "nothing was replaced by an ellipsis"
+    );
+    assert_eq!(engine.layout_counters().ellipsis_runs_used, 0);
+}
+
+#[test]
+fn trailing_whitespace_hangs_instead_of_overflowing_the_box() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let exact = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "Save",
+        &style,
+        &TextConstraints::default(),
+    )
+    .lines[0]
+        .metrics
+        .width_px;
+
+    let clipped = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "Save ",
+        &style,
+        &TextConstraints {
+            max_width_px: Some(exact),
+            ..TextConstraints::default()
+        },
+    );
+    assert!(
+        !clipped.overflow.contains(OverflowFlags::CLIPPED_WIDTH),
+        "a hanging trailing space is not an overflow"
+    );
+
+    let ellipsized = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "Save ",
+        &style,
+        &TextConstraints {
+            max_width_px: Some(exact),
+            ellipsis: true,
+            ..TextConstraints::default()
+        },
+    );
+    assert!(
+        !ellipsized.overflow.contains(OverflowFlags::ELLIPSIZED),
+        "and it must not cost the label its last letter"
+    );
+    assert_eq!(ellipsized.lines[0].source, 0..5);
+}
+
+#[test]
+fn empty_text_is_one_line_on_either_path() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let label = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "",
+        &style,
+        &TextConstraints::default(),
+    );
+    let paragraph = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "",
+        &style,
+        &wrapped(200.0),
+    );
+
+    for layout in [&label, &paragraph] {
+        assert_eq!(layout.lines.len(), 1, "an empty field is still a line box");
+        assert_eq!(layout.lines[0].source, 0..0);
+        assert!(layout.lines[0].metrics.height_px > 0.0);
+        assert!(layout.bounds.height > 0.0);
+        let hit = layout.hit_test(0.0, layout.lines[0].metrics.height_px * 0.5);
+        assert_eq!(hit.caret.byte, 0);
+        assert!(
+            layout.caret_geometry(hit.caret).is_some(),
+            "a caret has somewhere to go"
+        );
+    }
+    assert_eq!(
+        label.lines[0].metrics.height_px, paragraph.lines[0].metrics.height_px,
+        "the two paths agree on how tall an empty line is"
+    );
+}
+
+#[test]
+fn a_line_cut_twice_still_reports_one_ellipsis() {
+    // The first paragraph overflows and is ellipsized; the second hits the line
+    // budget, which re-places that same line with a fresh ellipsis. The
+    // counters have to describe the layout that came out, not both attempts.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "a long first line\nand a second one",
+        &style,
+        &TextConstraints {
+            max_width_px: Some(60.0),
+            max_lines: Some(1),
+            ellipsis: true,
+            preserve_lines: true,
+            ..TextConstraints::default()
+        },
+    );
+    let placed = layout
+        .runs
+        .iter()
+        .filter(|run| run.source.is_empty())
+        .count();
+    assert_eq!(placed, 1, "one ellipsis in the layout");
+    assert_eq!(
+        engine.layout_counters().ellipsis_runs_used,
+        placed,
+        "and one in the counter"
+    );
+    assert!(layout.overflow.contains(OverflowFlags::TRUNCATED_LINES));
+    assert!(layout.overflow.contains(OverflowFlags::ELLIPSIZED));
+}
+
+#[test]
+fn a_unicode_line_separator_ends_a_line_and_draws_nothing() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "one\u{2028}two";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &TextConstraints {
+            preserve_lines: true,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(line_texts(&layout, text), vec!["one", "two"]);
+    assert_eq!(layout.lines[0].break_cause, LineBreakCause::Explicit);
+    assert_eq!(
+        layout.glyph_count(),
+        6,
+        "the separator itself is not drawn: {:?}",
+        layout.runs
+    );
+
+    // A label carrying one is no longer a single line, so it takes the
+    // paragraph path like an authored newline does.
+    let label = lay_out(
+        &mut engine,
+        TextKind::Label,
+        text,
+        &style,
+        &TextConstraints::default(),
+    );
+    assert_eq!(label.lines.len(), 2);
+    assert_eq!(engine.layout_counters().label_fast_paths, 0);
 }
 
 #[test]

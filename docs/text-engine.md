@@ -494,7 +494,15 @@ fast path 只做一件事：把自己的 run 累出 advance、算一次行盒、
 ### 断行
 
 断行机会来自 UAX #14（`unicode-linebreak`），**是否**在某个机会处断由 shaped advance 决定，
-从不按码位数估算。段落分隔符由 shaping 的段落结构给出，不重新问 UAX #14。
+从不按码位数估算。
+
+硬换行有两个来源，合起来正好是 UAX #14 的全部 mandatory break：段落分隔符（`\n` / `\r` /
+`\r\n` / U+0085 / U+2029）由 shaping 的段落结构给出，不重新问 UAX #14；VT、FF 与
+U+2028 LINE SEPARATOR 段落结构不管，由 layout 在段内切开（`breaks::FORCED_BREAKS`，
+`has_forced_break` 是一次普通字符扫描，不是 UAX #14 pass，且只在**建** layout 时问一次）。
+分隔符本身落在两段之间，没有行覆盖它，因此不绘制——与 `\n` 待遇相同。这份列表由
+`forced_breaks_agree_with_uax14` 对着 `unicode-linebreak` 自己的数据逐码位校对，Unicode
+改版新增一个也漏不掉。带 forced break 的 Label 与带 `\n` 的一样降级到 paragraph path。
 
 | 约束 | 策略 |
 | --- | --- |
@@ -504,8 +512,12 @@ fast path 只做一件事：把自己的 run 累出 advance、算一次行盒、
 | `wrap: Glyph`、`word-break: break-all`、`line-break: anywhere` | 每个字素簇边界都是机会 |
 
 - **行尾空白在软换行处悬挂**：不绘制、不计入行宽、不推下一行，`LineBox::source` 也不含它
-  （与参照引擎一致）。硬换行与段落末尾的空白是作者写下的内容，保留在行上。
+  （与参照引擎一致）。硬换行与段落末尾的空白是作者写下的内容，保留在行上，但**溢出判定
+  （`CLIPPED_WIDTH` 与省略号裁切）一律按去掉行尾空白后的宽度**——断行判定本来就不数行尾空格，
+  否则 `"Save "` 会在一个装得下 `"Save"` 的盒子里被裁成 `"Sa…"`。
 - 容器窄到一个字素都放不下时，仍然放一个字素——否则会产生空行与死循环。
+- 空文本没有 BiDi 段落，但仍然出**一行**（与 Label fast path 对同一份 source 给出的行一致）：
+  空输入框也要有行盒和可落脚的 caret。
 - 断点永远在 shaper 的 cluster 之间，因此不可能切开 UTF-8 序列、字素簇或连字。
 
 ### BiDi 视觉序
@@ -550,7 +562,7 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 
 ### 省略号
 
-`constraints.ellipsis` 为真且（行超宽 或 被 `max_lines` / `max_height_px` 截断）时：
+`constraints.ellipsis` 为真，且（**不换行**时行超宽，或被 `max_lines` / `max_height_px` 截断）时：
 
 ```text
 候选行 → 预留已塑形的省略号宽度 → 在 cluster 安全边界处裁 → 发出截断行 + 省略号 run
@@ -561,6 +573,10 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 - 裁切单位是 shaper 的 cluster，所以不会切开 UTF-8、字素簇或连字；ZWJ 序列要么整段留下要么整段裁掉。
 - 省略号 run 的 `source` 是裁切点上的**空区间**，glyph 的 cluster 也是——它不占源文本的任何字节，
   caret、命中测试与选区因此永远不会落到它身上。
+- **换行开着时，超宽的行不裁**。换行的段落只会因为一个断不开的长词而超宽，而那个词整个都在这一行上：
+  裁掉它等于让这段字节从所有行里消失，`LineBox::source` 留下一个中间的洞，谁也画不出、选不中、
+  命中不到，而且没有任何 flag 说得出。这种行就让它伸出去，并置 `CLIPPED_WIDTH`。
+  省略号真正该做的截断——`max_lines` / `max_height_px`——照常，并且带 `TRUNCATED_LINES`。
 - RTL 段落里省略号放在视觉末端（左侧）。
 - 截断但没有（或没能）塑形出省略号时，只报 `TRUNCATED_LINES`，不报 `ELLIPSIZED`：没画就不声称画了。
 
@@ -622,10 +638,10 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 `nana_text::NativeTextEngine` 实现 `TextEngine`，把 #90 字体层、#91 shaper、#92 layouter 装在一次调用后面：
 
-- `preserve_lines: false` 时先把 `\n` / `\r` 折成空格**再**塑形（`TextSource::with_folded_newlines`）——
-  塑形与断行必须看到同一串字节；两者都是单字节，所有 span 范围、cluster 与 caret 偏移保持不变，
-  revision 也保持不变（同一次编辑的另一种读法）。`U+2028` / `U+2029` 比空格长，折叠会挪动其后所有偏移，
-  因此仍然当作换行。
+- `preserve_lines: false` 时先把单字节的行分隔符（`\n` / `\r` / VT / FF）折成空格**再**塑形
+  （`TextSource::with_folded_newlines`）——塑形与断行必须看到同一串字节；它们都是单字节，
+  所有 span 范围、cluster 与 caret 偏移保持不变，revision 也保持不变（同一次编辑的另一种读法）。
+  `U+2028` / `U+2029` 各三字节，折叠会挪动其后所有偏移，因此无论 `preserve_lines` 怎么写都仍是换行。
 - 需要时塑形 `…`，取基础样式那张 face 的度量作 strut，填 `TextWorkCounters` 的五个口径。
 - `TextEngine::layout` 返回 `Arc<TextLayout>`：layout 不可变，同一帧里同文本同约束应当拿到**同一份**，
   而不是它的拷贝。
@@ -656,7 +672,9 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 ### 测试
 
-`tests/layout_engine.rs`：Label fast path（10k 标签 `paragraph_paths == 0`、
+`tests/layout_engine.rs`：五条来自 code review 的回归（换行时超宽的行不因省略号丢字节、
+行尾空白悬挂不算溢出、空文本两条路径都出一行、同一行被裁两次只记一个省略号 run、
+U+2028 结束一行且不绘制），加上：Label fast path（10k 标签 `paragraph_paths == 0`、
 `line_break_candidates == 0`；10k 同文本标签只建一个 layout）、显式换行 / wrap / max-lines 触发降级、
 换宽度只重排不重塑形、resize 只动受影响的那一段、word wrap 不切词、长词按 `word-break` 溢出或切开、
 汉字无空格断行、显式换行与空段落、mixed BiDi 单行与换行后每行各自重排、strut 稳住 baseline（以及不给

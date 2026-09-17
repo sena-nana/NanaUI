@@ -168,9 +168,21 @@ struct Prepared {
     cells: Range<usize>,
     pieces: Vec<Piece>,
     width_px: f32,
+    /// Width without the trailing whitespace, which hangs. Every overflow
+    /// decision uses this one: `choose_break` already ignores trailing spaces
+    /// when it asks whether a line fits, so clipping and ellipsizing have to
+    /// ignore them too, or `"Save "` would be cut in a box that fits `"Save"`.
+    overflow_width_px: f32,
     ascent_px: f32,
     descent_px: f32,
     height_px: f32,
+}
+
+/// A line already placed, and what re-placing it would have to undo.
+struct PlacedLine {
+    cells: Range<usize>,
+    ellipsis_runs: usize,
+    overflow_width_px: f32,
 }
 
 pub(super) struct Builder<'a> {
@@ -178,13 +190,15 @@ pub(super) struct Builder<'a> {
     cells: Vec<Cell>,
     /// `prefix[i]` is the advance of `cells[..i]`.
     prefix: Vec<f32>,
+    policy: BreakPolicy,
     max_width_px: Option<f32>,
     max_height_px: Option<f32>,
     runs: Vec<ShapedRun>,
     lines: Vec<LineBox>,
-    /// Cell range of each placed line, so the last one can be re-placed with an
-    /// ellipsis when a later line turns out not to fit.
-    line_cells: Vec<Range<usize>>,
+    /// One record per placed line, so the last one can be re-placed with an
+    /// ellipsis — and every counter it moved rolled back — when a later line
+    /// turns out not to fit.
+    placed_lines: Vec<PlacedLine>,
     next_top_px: f32,
     truncated: bool,
     ellipsized: bool,
@@ -204,15 +218,17 @@ impl<'a> Builder<'a> {
         let scale = input.constraints.scale.px_per_logical;
         let max_width_px = input.constraints.max_width_px.map(|width| width * scale);
         let max_height_px = input.constraints.max_height_px.map(|height| height * scale);
+        let policy = BreakPolicy::of(input.constraints);
         Self {
             input,
             cells,
             prefix,
+            policy,
             max_width_px,
             max_height_px,
             runs: Vec::new(),
             lines: Vec::new(),
-            line_cells: Vec::new(),
+            placed_lines: Vec::new(),
             next_top_px: 0.0,
             truncated: false,
             ellipsized: false,
@@ -262,30 +278,70 @@ impl<'a> Builder<'a> {
 
     /// The full paragraph path: break opportunities, wrapping, hard breaks.
     pub fn paragraphs(mut self) -> LaidOut {
-        let policy = BreakPolicy::of(self.input.constraints);
+        // Empty text has no BiDi paragraph at all, and an empty field is still
+        // a line box with a caret position in it — the same line the Label fast
+        // path produces for the same source.
+        if self.input.paragraphs.is_empty() {
+            let prepared = self.prepare(0..0);
+            self.place_within_budget(prepared, LineBreakCause::EndOfText, 0);
+            return self.finish();
+        }
         for index in 0..self.input.paragraphs.len() {
             if self.truncated {
                 break;
             }
             let paragraph = self.input.paragraphs[index].clone();
             let last = index + 1 == self.input.paragraphs.len();
-            self.paragraph(&paragraph, policy, last);
+            self.paragraph(&paragraph, last);
         }
         self.finish()
     }
 
-    fn paragraph(&mut self, paragraph: &ShapedParagraph, policy: BreakPolicy, last: bool) {
+    /// One BiDi paragraph, split further at the forced breaks the paragraph
+    /// structure does not carry (VT, FF, U+2028).
+    ///
+    /// The separator itself falls between two segments, so no line covers it
+    /// and nothing draws it — the same treatment `\n` gets from the shaper.
+    fn paragraph(&mut self, paragraph: &ShapedParagraph, last: bool) {
         let content = content_range(self.input.text, &paragraph.range);
-        let (lo, hi) = self.cell_span(&content);
         let end_cause = if last {
             LineBreakCause::EndOfText
         } else {
             LineBreakCause::Explicit
         };
+        if !breaks::has_forced_break(&self.input.text[content.clone()]) {
+            self.segment(content, end_cause);
+            return;
+        }
+        let mut start = content.start;
+        let mut cursor = content.start;
+        while cursor < content.end {
+            let character = self.input.text[cursor..]
+                .chars()
+                .next()
+                .expect("cursor is on a character boundary");
+            let width = character.len_utf8();
+            if breaks::FORCED_BREAKS.contains(&character) {
+                self.segment(start..cursor, LineBreakCause::Explicit);
+                if self.truncated {
+                    return;
+                }
+                start = cursor + width;
+            }
+            cursor += width;
+        }
+        self.segment(start..content.end, end_cause);
+    }
 
-        // An empty paragraph — two newlines in a row, or a trailing one — still
-        // occupies a line box, and that line still starts at its own byte so a
-        // caret can land on it.
+    /// One run of text with no forced break inside it: as many lines as the
+    /// width allows.
+    fn segment(&mut self, content: Range<usize>, end_cause: LineBreakCause) {
+        let policy = self.policy;
+        let (lo, hi) = self.cell_span(&content);
+
+        // An empty segment — two newlines in a row, a trailing one, or a
+        // forced break with nothing after it — still occupies a line box, and
+        // that line still starts at its own byte so a caret can land on it.
         if lo == hi {
             let prepared = self.prepare(lo..hi);
             self.place_within_budget(prepared, end_cause, content.start);
@@ -398,6 +454,11 @@ impl<'a> Builder<'a> {
         end
     }
 
+    /// True when the container allows a line to break at all.
+    fn wraps(&self) -> bool {
+        self.policy != BreakPolicy::None
+    }
+
     fn width(&self, start: usize, end: usize) -> f32 {
         self.prefix[end] - self.prefix[start]
     }
@@ -469,13 +530,15 @@ impl<'a> Builder<'a> {
         let Some(ellipsis) = self.input.ellipsis else {
             return;
         };
-        let (Some(line), Some(cells)) = (self.lines.pop(), self.line_cells.pop()) else {
+        let (Some(line), Some(placed)) = (self.lines.pop(), self.placed_lines.pop()) else {
             return;
         };
         self.runs.truncate(line.runs.start as usize);
         self.work.runs_placed -= (line.runs.end - line.runs.start) as usize;
+        self.work.ellipsis_runs_used -= placed.ellipsis_runs;
         self.work.lines_created -= 1;
         self.next_top_px = line.metrics.top_y_px;
+        let cells = placed.cells;
         let cut = self.fit_with_ellipsis(cells.clone(), ellipsis.advance_px);
         let prepared = self.prepare(cells.start..cut);
         let empty_at = self.cells.get(cells.start).map_or(0, |cell| cell.start);
@@ -503,11 +566,14 @@ impl<'a> Builder<'a> {
     fn prepare(&self, cells: Range<usize>) -> Prepared {
         let pieces = self.pieces(cells.clone());
         let width_px = self.width(cells.start, cells.end);
+        let trimmed = self.trim(cells.start, cells.end);
+        let overflow_width_px = self.width(cells.start, trimmed);
         let (ascent_px, descent_px, height_px) = self.line_box(&pieces);
         Prepared {
             cells,
             pieces,
             width_px,
+            overflow_width_px,
             ascent_px,
             descent_px,
             height_px,
@@ -516,10 +582,16 @@ impl<'a> Builder<'a> {
 
     fn place(&mut self, prepared: Prepared, cause: LineBreakCause, empty_at: usize) {
         // A line that overflows a container which asked for an ellipsis is cut
-        // here rather than left sticking out.
-        let overflows = self
-            .max_width_px
-            .is_some_and(|max| prepared.width_px > max + WIDTH_EPSILON_PX);
+        // here rather than left sticking out — but only where the cut text is
+        // not going to be shown anywhere else. A wrapping paragraph only
+        // overflows on a word no break opportunity can split, and that word is
+        // already on this line: cutting it would drop bytes no line covers,
+        // leaving a hole in the middle of the text that nothing reports. There
+        // the line sticks out and says so with `CLIPPED_WIDTH`.
+        let overflows = !self.wraps()
+            && self
+                .max_width_px
+                .is_some_and(|max| prepared.overflow_width_px > max + WIDTH_EPSILON_PX);
         match (overflows, self.input.ellipsis) {
             (true, Some(ellipsis)) => {
                 let cut = self.fit_with_ellipsis(prepared.cells.clone(), ellipsis.advance_px);
@@ -547,6 +619,7 @@ impl<'a> Builder<'a> {
             cells,
             pieces,
             mut width_px,
+            overflow_width_px: trimmed_width_px,
             ascent_px,
             descent_px,
             height_px,
@@ -560,8 +633,10 @@ impl<'a> Builder<'a> {
 
         let ellipsis = self.input.ellipsis.filter(|_| with_ellipsis);
         let mut ordered = self.visual_order(&pieces);
+        let mut overflow_width_px = trimmed_width_px;
         if let Some(ellipsis) = ellipsis {
             width_px += ellipsis.advance_px;
+            overflow_width_px += ellipsis.advance_px;
         }
         let origin_x_px = self.align_offset(width_px);
         let top_y_px = self.next_top_px;
@@ -589,9 +664,8 @@ impl<'a> Builder<'a> {
         {
             placed.extend(runs.iter().cloned());
         }
-        if ellipsis_runs.is_some() {
-            self.work.ellipsis_runs_used += ellipsis_runs.as_ref().map_or(0, Vec::len);
-        }
+        let ellipsis_run_count = ellipsis_runs.as_ref().map_or(0, Vec::len);
+        self.work.ellipsis_runs_used += ellipsis_run_count;
         for mut run in placed {
             run.origin_x_px = cursor;
             cursor += run.advance_px;
@@ -616,7 +690,11 @@ impl<'a> Builder<'a> {
             bounds: TextRect::new(origin_x_px, top_y_px, width_px, height_px),
             base_direction: self.input.base_direction,
         });
-        self.line_cells.push(cells);
+        self.placed_lines.push(PlacedLine {
+            cells,
+            ellipsis_runs: ellipsis_run_count,
+            overflow_width_px,
+        });
         self.work.lines_created += 1;
         self.next_top_px += height_px;
     }
@@ -758,9 +836,9 @@ impl<'a> Builder<'a> {
         let mut overflow = OverflowFlags::NONE;
         if let Some(max_width) = self.max_width_px
             && self
-                .lines
+                .placed_lines
                 .iter()
-                .any(|line| line.metrics.width_px > max_width + WIDTH_EPSILON_PX)
+                .any(|line| line.overflow_width_px > max_width + WIDTH_EPSILON_PX)
         {
             overflow = overflow.with(OverflowFlags::CLIPPED_WIDTH);
         }
