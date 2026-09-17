@@ -945,6 +945,7 @@ function createWindowHandle(descriptor) {
     },
     isolation,
     params,
+    tag: typeof descriptor.tag === "string" ? descriptor.tag : null,
     mount(component, props) {
       if (remote) return remoteMount();
       if (app && typeof app.unmount === "function") app.unmount();

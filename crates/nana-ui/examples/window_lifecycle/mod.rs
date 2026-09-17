@@ -27,7 +27,13 @@ pub struct App {
     presented: mpsc::Sender<(WindowId, u64)>,
     resized: mpsc::Sender<(WindowId, (f32, f32))>,
     modes: mpsc::Sender<(WindowId, WindowModeState)>,
+    tags: mpsc::Sender<(WindowId, Option<String>)>,
 }
+/// Application window kinds, told apart by `WindowDescriptor::tag` rather
+/// than by the order of creation requests.
+const CHARACTER: &str = "character";
+const TRACKING: &str = "tracking";
+const REJECTED: &str = "rejected";
 pub fn descriptor(title: &str) -> WindowDescriptor {
     WindowDescriptor {
         title: title.into(),
@@ -36,6 +42,22 @@ pub fn descriptor(title: &str) -> WindowDescriptor {
         system_caption: !std::env::args().any(|arg| arg == "--client-chrome"),
         ..Default::default()
     }
+}
+/// Every tag the application read for `handle`: once in `build`, once on `Ready`.
+fn tagged(
+    rx: &mpsc::Receiver<(WindowId, Option<String>)>,
+    handle: &WindowHandle,
+    expected: &str,
+) -> Result<(), String> {
+    let seen: Vec<_> = rx
+        .try_iter()
+        .filter(|(id, _)| *id == handle.id())
+        .map(|(_, tag)| tag)
+        .collect();
+    if seen != [Some(expected.to_owned()), Some(expected.to_owned())] {
+        return Err(format!("window {expected} read back tags {seen:?}"));
+    }
+    Ok(())
 }
 fn presented(
     rx: &mpsc::Receiver<(WindowId, u64)>,
@@ -66,6 +88,7 @@ impl ApplicationState for App {
         let (resized_tx, resized_rx) = mpsc::channel();
         let (focused_tx, focused_rx) = mpsc::channel();
         let (modes_tx, modes_rx) = mpsc::channel();
+        let (tags_tx, tags_rx) = mpsc::channel();
         if std::env::args().any(|arg| arg == "--probe-host-stop") {
             let service = context.windows().clone();
             let worker_service = service.clone();
@@ -98,6 +121,7 @@ impl ApplicationState for App {
                 presented: tx,
                 resized: resized_tx,
                 modes: modes_tx,
+                tags: tags_tx,
             });
         }
         context.dispatch(Message::Pump);
@@ -109,23 +133,25 @@ impl ApplicationState for App {
                 let primary = context.window();
                 let mut generation = None;
                 presented(&rx, &primary, &mut generation)?;
-                let mut rejected = descriptor("Rejected");
-                rejected.initial_size.0 = 333.0;
                 if !matches!(
-                    service.create_window(rejected).wait(),
+                    service
+                        .create_window(descriptor("Rejected").tag(REJECTED))
+                        .wait(),
                     Err(WindowError::InitializationFailed(_))
                 ) {
                     return Err("document creation failure was not rolled back".into());
                 }
                 let second = service
-                    .create_window(descriptor("Second"))
+                    .create_window(descriptor("Character").tag(CHARACTER))
                     .wait()
                     .map_err(|e| e.to_string())?;
+                tagged(&tags_rx, &second, CHARACTER)?;
                 presented(&rx, &second, &mut generation)?;
                 let third = service
-                    .create_window(descriptor("Third"))
+                    .create_window(descriptor("Tracking").tag(TRACKING))
                     .wait()
                     .map_err(|e| e.to_string())?;
+                tagged(&tags_rx, &third, TRACKING)?;
                 presented(&rx, &third, &mut generation)?;
                 second
                     .set_title("Updated on worker")
@@ -334,6 +360,7 @@ impl ApplicationState for App {
             presented: tx,
             resized: resized_tx,
             modes: modes_tx,
+            tags: tags_tx,
         })
     }
     fn build(
@@ -341,20 +368,35 @@ impl ApplicationState for App {
         window: &mut ApplicationWindow,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), Self::Error> {
-        if context.geometry().logical_size.0 == 333.0 {
+        let tag = context.window_tag();
+        let _ = self
+            .tags
+            .send((context.window_id(), tag.map(str::to_owned)));
+        if tag == Some(REJECTED) {
             return Err("intentional document build failure".into());
         }
         let document = window.document.document();
+        let id = context.window_id().0;
         window
             .document
             .context_mut()
-            .build(document, |ui| {
-                ui.with("root", List::new(), |ui| {
-                    ui.child(
-                        "title",
-                        Text::new(format!("Window {}", context.window_id().0)),
-                    );
-                });
+            .build(document, |ui| match tag {
+                Some(CHARACTER) => {
+                    ui.with("root", List::new().label("Character"), |ui| {
+                        ui.child("name", Text::new(format!("Character {id}")));
+                        ui.child("model", Text::new("Model"));
+                    });
+                }
+                Some(TRACKING) => {
+                    ui.with("root", List::new().label("Tracking"), |ui| {
+                        ui.child("source", Text::new(format!("Tracking {id}")));
+                    });
+                }
+                _ => {
+                    ui.with("root", List::new(), |ui| {
+                        ui.child("title", Text::new(format!("Window {id}")));
+                    });
+                }
             })
             .map_err(|error| error.to_string())?;
         Ok(())
@@ -362,8 +404,13 @@ impl ApplicationState for App {
     fn window_event(
         &mut self,
         event: &nana_ui_platform::WindowEvent,
-        _context: &RuntimeProgramContext<Self::Message>,
+        context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        if let nana_ui_platform::WindowEvent::Ready { id, .. } = event {
+            let _ = self
+                .tags
+                .send((*id, context.window_tag().map(str::to_owned)));
+        }
         if let nana_ui_platform::WindowEvent::Closed { id } = event {
             assert!(
                 self.cleaned.contains(id),
@@ -429,7 +476,7 @@ pub fn verify() {
         .expect("lifecycle did not complete")
         .expect("lifecycle failed");
     println!(
-        "Window lifecycle passed: three windows, shared GPU, worker controls, display-targeted fullscreen and level reported by ModeChanged, primary close, stale handle, recreate and present."
+        "Window lifecycle passed: three windows, tagged character and tracking documents, shared GPU, worker controls, display-targeted fullscreen and level reported by ModeChanged, primary close, stale handle, recreate and present."
     );
 }
 

@@ -40,6 +40,13 @@ const settings = await Nana.windows.create({ isolation: "isolated", params: { vi
 settings.focus();
 ```
 
+`params` 只送给隔离窗口。窗口种类用 `tag`，共享和隔离窗口都能用：它是字符串，出现在 `create()`、`current()`、`list()` 返回的句柄上（`handle.tag`，未设置为 `null`），并原样成为 `WindowDescriptor::tag`，Rust 侧从 `RuntimeProgramContext::window_tag()` 读回，见 [窗口](window.md)。主窗口的 `tag` 取自传给 `VueRuntimeProgram::run` 的描述符，脚本首次执行时 `Nana.windows.current().tag` 就已可读。
+
+```js
+const tracking = await Nana.windows.create({ tag: "tracking", role: "tool" });
+tracking.mount(tracking.tag === "tracking" ? TrackingPanel : Main);
+```
+
 打开方拿到的句柄可以控制窗口（`focus` / `close` / `setBounds` / `ready` / `closed` 等），但不能 `mount`——窗口内容由它自己的上下文挂载，句柄上的 `window` / `document` / `root` 为 `null`。在隔离窗口里再打开的共享窗口属于这个隔离上下文。`Nana.windows.list()` 只列出当前上下文里的窗口。一个隔离上下文在它最后一扇窗口关闭、`window-closed` 送达并完成卸载后销毁。
 
 **两种模式都跨窗的**：GPU Device / Queue 以及 WebGPU、Canvas、SVG、媒体、视频运行时，原生组件与宿主纹理注册表，应用样式表，动画时钟，诊断输出，你注册的宿主命令（它们的 Rust 状态），以及按窗口 id 生效的窗口控制。所有上下文还共用同一个 V8 堆、同一个线程和同一个微任务队列：隔离的是状态，**不是**性能或故障——一个窗口里的死循环仍会卡住所有窗口。窗口控制也不是安全边界，同一份脚本、同一个进程。

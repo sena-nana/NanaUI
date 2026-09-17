@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Stable application-owned window identity. Platform backends keep their
 /// native/winit window IDs private and map them to this value.
@@ -452,6 +452,11 @@ pub struct WindowDescriptor {
     /// Host-chosen identity for restoring this window's last frame. Window
     /// ids are not stable across process restarts; this key is.
     pub persist_key: Option<String>,
+    /// Application-chosen window kind, opaque to the host. Read it back from
+    /// `RuntimeProgramContext::window_tag` while building the document and in
+    /// every later callback for this window, so service-allocated ids never
+    /// have to be matched to requests by order.
+    pub tag: Option<Arc<str>>,
     pub resizable: bool,
     pub role: WindowRole,
     pub modal: bool,
@@ -489,6 +494,7 @@ impl WindowDescriptor {
             constrain_to_work_area: false,
             skip_taskbar: false,
             persist_key: None,
+            tag: None,
             resizable: true,
             role: WindowRole::Main,
             modal: false,
@@ -515,6 +521,12 @@ impl WindowDescriptor {
 
     pub fn icon(mut self, icon: WindowIcon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Tag this window with an application-chosen kind.
+    pub fn tag(mut self, tag: impl Into<Arc<str>>) -> Self {
+        self.tag = Some(tag.into());
         self
     }
 

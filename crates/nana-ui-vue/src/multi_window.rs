@@ -82,6 +82,9 @@ pub struct VueWindowOptions {
     pub icon: Option<WindowIcon>,
     pub isolation: VueWindowIsolation,
     pub persist_key: Option<String>,
+    /// Application window kind, forwarded to `WindowDescriptor::tag` and
+    /// exposed as `tag` on the JavaScript window handle.
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -131,6 +134,7 @@ impl Default for VueWindowOptions {
             icon: None,
             isolation: VueWindowIsolation::Shared,
             persist_key: None,
+            tag: None,
         }
     }
 }
@@ -170,6 +174,10 @@ impl VueWindowOptions {
         {
             options.persist_key = Some(key.to_string());
         }
+        options.tag = map
+            .get("tag")
+            .and_then(HostValue::as_str)
+            .map(str::to_owned);
         options
     }
 
@@ -187,9 +195,15 @@ impl VueWindowOptions {
                 ),
             ]
             .into_iter()
+            .chain(tag_entry(&self.tag))
             .collect(),
         )
     }
+}
+
+fn tag_entry(tag: &Option<String>) -> Option<(String, HostValue)> {
+    tag.as_deref()
+        .map(|tag| ("tag".into(), HostValue::string(tag)))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1260,6 +1274,7 @@ impl VueRuntime {
                                     ),
                                 ]
                                 .into_iter()
+                                .chain(tag_entry(&entry.options.tag))
                                 .collect(),
                             )
                         })
@@ -1586,6 +1601,7 @@ impl VueRuntime {
                         constrain_to_work_area: false,
                         skip_taskbar: false,
                         persist_key: options.persist_key,
+                        tag: options.tag.map(Into::into),
                         resizable: options.resizable,
                         role: match options.role {
                             VueWindowRole::Main => WindowRole::Main,
@@ -1796,6 +1812,27 @@ impl VueRuntime {
             map.insert("id".into(), HostValue::Number(id.0 as f64));
             state.emit_window(id, "window-geometry", HostValue::Object(map));
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "hosted")]
+    /// Record the native `WindowDescriptor::tag` of a window the host opened
+    /// itself (the primary), so `Nana.windows.current().tag` matches Rust.
+    pub(crate) fn set_window_tag(
+        &self,
+        id: VueWindowId,
+        tag: Option<String>,
+    ) -> Result<(), JsEngineError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?;
+        state
+            .windows
+            .get_mut(&id)
+            .ok_or_else(|| JsEngineError::new(format!("unknown Vue window {}", id.0)))?
+            .options
+            .tag = tag;
         Ok(())
     }
 
@@ -2387,6 +2424,35 @@ mod tests {
             panic!("expected native open, got {commands:?}");
         };
         assert_eq!(settings.persist_key.as_deref(), Some("tool"));
+    }
+
+    #[test]
+    fn tag_is_forwarded_to_native_open_and_every_window_descriptor() {
+        let runtime = VueRuntime::default();
+        let api = runtime.host_api_registry();
+        let created = api
+            .call(
+                "windowCreate",
+                &[object(&[("tag", HostValue::string("tracking"))])],
+            )
+            .unwrap();
+        let tag = Some(&HostValue::string("tracking"));
+        assert_eq!(created.as_object().unwrap().get("tag"), tag);
+        let id = created_id(created);
+        let listed = api.call("windowList", &[]).unwrap();
+        let entry = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|window| created_id((*window).clone()) == id)
+            .unwrap();
+        assert_eq!(entry.as_object().unwrap().get("tag"), tag);
+
+        let commands = runtime.drain_runtime_window_commands();
+        let nana_ui_platform::host::WindowCommand::Open { settings, .. } = &commands[0] else {
+            panic!("expected native open, got {commands:?}");
+        };
+        assert_eq!(settings.tag.as_deref(), Some("tracking"));
     }
 
     #[test]

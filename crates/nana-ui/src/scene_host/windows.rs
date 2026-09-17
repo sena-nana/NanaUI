@@ -528,6 +528,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             window.theme().map(system_appearance_from_winit),
         )
         .with_windows(&self.windows)
+        .with_window_tag(settings.tag.clone())
         .with_store(Arc::clone(&self.store));
         if let Err(error) = self.program.initialize_window(id, &context) {
             self.windows.unregister(id);

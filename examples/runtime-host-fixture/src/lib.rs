@@ -230,6 +230,7 @@ impl Fixture {
                     constrain_to_work_area: false,
                     skip_taskbar: false,
                     persist_key: None,
+                    tag: None,
                 },
             }],
             exit: false,

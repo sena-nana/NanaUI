@@ -58,6 +58,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     /// Bound to the window generation live when the context was built, so a
     /// retained context never controls a later window with the same identity.
     window: Option<crate::WindowHandle>,
+    window_tag: Option<Arc<str>>,
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
     material: MaterialOutcome,
@@ -75,6 +76,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
         Self {
             window_id: self.window_id,
             window: self.window.clone(),
+            window_tag: self.window_tag.clone(),
             geometry: self.geometry,
             gpu: self.gpu.clone(),
             material: self.material,
@@ -105,6 +107,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         Self {
             window_id,
             window: None,
+            window_tag: None,
             geometry,
             gpu,
             material,
@@ -126,6 +129,11 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         self
     }
 
+    pub(crate) fn with_window_tag(mut self, tag: Option<Arc<str>>) -> Self {
+        self.window_tag = tag;
+        self
+    }
+
     pub fn windows(&self) -> &crate::WindowService {
         self.window_handle().service()
     }
@@ -142,6 +150,13 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
 
     pub const fn window_id(&self) -> WindowId {
         self.window_id
+    }
+
+    /// [`WindowDescriptor::tag`](crate::WindowDescriptor::tag) of this window,
+    /// available from `initialize_window` / `ApplicationState::build` on.
+    /// `None` once the window has closed.
+    pub fn window_tag(&self) -> Option<&str> {
+        self.window_tag.as_deref()
     }
 
     pub const fn geometry(&self) -> WindowGeometry {

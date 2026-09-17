@@ -582,6 +582,7 @@ fn initialize<Program: RuntimeProgram>(
         window.theme().map(system_appearance_from_winit),
     )
     .with_windows(&windows)
+    .with_window_tag(settings.tag.clone())
     .with_store(Arc::clone(&store));
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
@@ -758,6 +759,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .map(system_appearance_from_winit),
         )
         .with_windows(&self.windows)
+        .with_window_tag(
+            self.window_contexts
+                .get(&id)
+                .and_then(|host| host.settings.tag.clone()),
+        )
         .with_store(Arc::clone(&self.store))
     }
 

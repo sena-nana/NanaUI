@@ -159,6 +159,24 @@ window.close().wait()?;
 
 创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成；失败会回滚，不发送 `Ready`。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建，在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
 
+窗口 id 由服务分配，应用用 `WindowDescriptor::tag` 声明这扇窗口是哪种文档，不要靠创建请求的顺序去对应 id。标识对宿主不透明，从 `RuntimeProgramContext::window_tag()` 读回：`initialize_window` / `ApplicationState::build` 构建文档时，以及之后该窗口的每个回调（包括 `Ready`）都能读到；窗口关闭后为 `None`，按 id 持有的状态在 `window_closed` / `discard_window` 里清理。
+
+```rust
+let character = service
+    .create_window(WindowDescriptor::new("角色").tag("character"))
+    .wait()?;
+
+fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramContext<Message>) -> Result<(), Error> {
+    match context.window_tag() {
+        Some("character") => build_character(window),
+        Some("tracking") => build_tracking(window),
+        _ => build_main(window),
+    }
+}
+```
+
+程序自选 `WindowId` + `WindowCommand::Open` 仍只是框架适配器（Vue、Dock）的通道，普通应用不需要它来区分窗口种类。
+
 操作返回 `WindowRequest<T>`，支持 `.await`、工作线程 `.wait()` 和窗口线程非阻塞的 `try_take()`。在窗口线程调用 `.wait()` 返回 `HostThreadWait`，不阻塞事件循环。待处理窗口请求最多 1024 个，队列满时立即返回 `QueueFull`，调用方可等待已提交请求完成后重试。关闭后的 handle 返回 `WindowClosed`，宿主释放后返回 `HostStopped`；身份及世代检查防止旧请求作用于重新创建的窗口。
 
 主窗口与附加窗口共用注册表和 Device/Queue，每个窗口独立持有 Surface、输入、IME、文档和渲染目标。同一纹理格式的窗口共用一个 Scene painter；各文档的 compositor motion 描述符按 `MotionDescriptorStore::source` 与结构 epoch 识别，切换绘制窗口时重新上传，不会读到另一窗口的动画。默认关闭一扇窗口只释放该窗口及其原生子窗口；standalone 最后一扇窗口关闭后退出。应用仍可显式返回 `RuntimeProgramUpdate::exit()` 关闭整个应用。
@@ -230,11 +248,12 @@ pub enum FullscreenMode {
 
 `window.effects().set_material()` 返回实际 `MaterialOutcome`；穿透通过 `set_mouse_passthrough()` 控制。`window.capture().set_protected()` 请求 macOS/Windows 的原生捕获保护，其他后端返回 `Unsupported`；这不是对所有捕获方式的保证。
 
-完整示例：`window-service-lifecycle` 无需导入 winit；`embedded-window-lifecycle` 展示高级宿主适配。两个示例都自动验证三窗口真实呈现、跨线程控制、主窗关闭、失败回滚、子窗释放与再次创建。
+完整示例：`window-service-lifecycle` 无需导入 winit；`embedded-window-lifecycle` 展示高级宿主适配。两个示例都自动验证三窗口真实呈现、按 `tag` 构建的两种附加窗口文档、跨线程控制、主窗关闭、失败回滚、子窗释放与再次创建。
 
 ### 从旧接口迁移
 
 - `RuntimeWindowSettings` / `WindowSettings` 统一改为 `WindowDescriptor`，显式结构体初始化需添加 `visible` 或使用默认值。
+- `WindowDescriptor` 新增 `tag`；显式结构体初始化补 `tag: None` 或使用 `..Default::default()`。
 - 普通应用用 `WindowService` / `WindowHandle` 替代自行分配窗口 ID 和提交 `WindowCommand`。
 - `WindowCommand` 从平台 crate 根导出移入 `nana_ui_platform::host`，仅供 Vue、Dock、chrome 等框架适配器使用；适配器提交的批次仍在宿主 commit 时进入同一个 WindowManager。
 - 主窗口不再具有隐式退出特权；需要“关主窗退出”的产品应显式返回退出更新。

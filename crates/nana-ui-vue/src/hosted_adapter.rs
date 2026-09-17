@@ -94,9 +94,24 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         scale_factor: f32,
         store: nana_ui_core::SharedStore,
     ) -> Result<Self, JsEngineError> {
+        Self::from_vue(
+            engine,
+            VueRuntime::with_store(physical_width, physical_height, scale_factor, store),
+            artifact,
+            application_api,
+        )
+    }
+
+    /// State recorded on `vue` beforehand is visible to the script's first run.
+    fn from_vue(
+        engine: E,
+        vue: VueRuntime,
+        artifact: RuntimeArtifact,
+        application_api: HostApiRegistry,
+    ) -> Result<Self, JsEngineError> {
         let mut runtime = Self {
             engine,
-            vue: VueRuntime::with_store(physical_width, physical_height, scale_factor, store),
+            vue,
             application_api,
         };
         runtime
@@ -932,6 +947,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             geometry.physical_size.1.max(1),
             geometry.scale_factor.max(0.01),
             Some(geometry),
+            context.window_tag(),
             engine,
             artifact,
             application_api,
@@ -945,20 +961,15 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         physical_height: u32,
         scale_factor: f32,
         platform_geometry: Option<WindowGeometry>,
+        primary_tag: Option<&str>,
         engine: E,
         artifact: RuntimeArtifact,
         application_api: HostApiRegistry,
         store: nana_ui_core::SharedStore,
     ) -> Result<Self, JsEngineError> {
-        let mut runtime = VueHostedRuntime::with_store(
-            engine,
-            artifact,
-            application_api,
-            physical_width,
-            physical_height,
-            scale_factor,
-            store,
-        )?;
+        let vue = VueRuntime::with_store(physical_width, physical_height, scale_factor, store);
+        vue.set_window_tag(VueWindowId::PRIMARY, primary_tag.map(str::to_owned))?;
+        let mut runtime = VueHostedRuntime::from_vue(engine, vue, artifact, application_api)?;
         runtime.bind_host_gpu(gpu)?;
         if let Some(geometry) = platform_geometry {
             runtime
@@ -1472,6 +1483,18 @@ mod tests {
         fn interrupt(&mut self) {}
         fn request_gc(&mut self) {}
         fn shutdown(&mut self) {}
+    }
+
+    #[test]
+    fn primary_tag_is_exposed_to_javascript() {
+        let vue = VueRuntime::new(400, 300, 1.0);
+        vue.set_window_tag(VueWindowId::PRIMARY, Some("main".into()))
+            .unwrap();
+        let current = vue.host_api_registry().call("windowCurrent", &[]).unwrap();
+        assert_eq!(
+            current.as_object().unwrap().get("tag"),
+            Some(&nana_js_engine::HostValue::string("main"))
+        );
     }
 
     #[cfg(feature = "dev-reload")]
