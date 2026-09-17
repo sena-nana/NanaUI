@@ -150,7 +150,10 @@ export const NanaVirtualTable = {
                 },
                 ...activity.handlers(row, column),
               },
-              () => slots.default?.({ row, column, rowKey, columnKey, frozenRow, frozenColumn }) || [],
+              // An array, not a thunk: a function here makes Vue tag a plain
+              // element vnode with SLOTS_CHILDREN, which `mountElement` never
+              // renders — every cell would come out empty.
+              slots.default?.({ row, column, rowKey, columnKey, frozenRow, frozenColumn }) || [],
             );
             return frozenColumn ? h(
               VirtualTableCellPinned,

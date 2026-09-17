@@ -494,7 +494,10 @@ pub struct StylesheetParseReport {
 /// unknown selectors, skipped at-rules). This covers declarations that parsed
 /// fine but name something the layout engine does not implement, which is
 /// otherwise only observable as a box that silently did not move.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// Counted **per node**, not per observation: a node is recascaded on every
+/// hover, focus or class change, and a counter that added on each pass would
+/// grow without bound and re-warn on every frame that recascades.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UnsupportedCssReport {
     /// Nodes whose `grid-template-columns` / `rows` hit [`GridTrackListUnsupported`].
     pub grid_track_lists: usize,
@@ -502,6 +505,31 @@ pub struct UnsupportedCssReport {
     pub writing_modes: usize,
     /// Nodes with a malformed `font-variation-settings` declaration.
     pub font_variations: usize,
+    /// What each node last contributed, so re-observing it replaces rather
+    /// than adds. Cleared for a node by [`Self::forget`].
+    seen: HashMap<u64, UnsupportedCssFlags>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct UnsupportedCssFlags {
+    grid_track_list: bool,
+    writing_mode: bool,
+    font_variation: bool,
+}
+
+impl UnsupportedCssFlags {
+    fn of(layout: &LayoutStyle) -> Self {
+        Self {
+            grid_track_list: layout.grid_columns_unsupported.is_some()
+                || layout.grid_rows_unsupported.is_some(),
+            writing_mode: layout.unsupported_writing_mode,
+            font_variation: layout.unsupported_font_variation,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self == Self::default()
+    }
 }
 
 impl UnsupportedCssReport {
@@ -509,17 +537,49 @@ impl UnsupportedCssReport {
         *self == Self::default()
     }
 
-    /// Count a resolved style. Called once per node per cascade rebuild.
-    pub fn observe(&mut self, layout: &LayoutStyle) {
-        if layout.grid_columns_unsupported.is_some() || layout.grid_rows_unsupported.is_some() {
-            self.grid_track_lists += 1;
-        }
-        if layout.unsupported_writing_mode {
-            self.writing_modes += 1;
-        }
-        if layout.unsupported_font_variation {
-            self.font_variations += 1;
-        }
+    /// Records one node's resolved style, replacing whatever it contributed
+    /// last time. Called once per node per cascade pass, and a node is
+    /// recascaded whenever it is hovered, focused or restyled.
+    pub fn observe(&mut self, node: u64, layout: &LayoutStyle) {
+        let flags = UnsupportedCssFlags::of(layout);
+        let previous = if flags.is_empty() {
+            self.seen.remove(&node).unwrap_or_default()
+        } else {
+            self.seen.insert(node, flags).unwrap_or_default()
+        };
+        adjust(
+            &mut self.grid_track_lists,
+            previous.grid_track_list,
+            flags.grid_track_list,
+        );
+        adjust(
+            &mut self.writing_modes,
+            previous.writing_mode,
+            flags.writing_mode,
+        );
+        adjust(
+            &mut self.font_variations,
+            previous.font_variation,
+            flags.font_variation,
+        );
+    }
+
+    /// Drops a removed node's contribution.
+    pub fn forget(&mut self, node: u64) {
+        let Some(previous) = self.seen.remove(&node) else {
+            return;
+        };
+        adjust(&mut self.grid_track_lists, previous.grid_track_list, false);
+        adjust(&mut self.writing_modes, previous.writing_mode, false);
+        adjust(&mut self.font_variations, previous.font_variation, false);
+    }
+}
+
+fn adjust(counter: &mut usize, was: bool, is: bool) {
+    match (was, is) {
+        (false, true) => *counter += 1,
+        (true, false) => *counter = counter.saturating_sub(1),
+        _ => {}
     }
 }
 
@@ -3336,7 +3396,7 @@ mod tests {
         let mut sideways = LayoutStyle::default();
         sideways.apply_css_text("writing-mode: sideways-rl", None, None);
         assert!(sideways.unsupported_writing_mode);
-        report.observe(&sideways);
+        report.observe(1, &sideways);
 
         // Nested auto-fit parses but the track list cannot be expanded.
         let mut nested = LayoutStyle::default();
@@ -3346,13 +3406,13 @@ mod tests {
             None,
         );
         assert!(nested.grid_columns_unsupported.is_some());
-        report.observe(&nested);
+        report.observe(2, &nested);
 
         // A malformed variation declaration fails closed on that declaration only.
         let mut variation = LayoutStyle::default();
         variation.apply_css_text("font-variation-settings: nope", None, None);
         assert!(variation.unsupported_font_variation);
-        report.observe(&variation);
+        report.observe(3, &variation);
 
         assert_eq!(report.grid_track_lists, 1);
         assert_eq!(report.writing_modes, 1);
@@ -3367,9 +3427,28 @@ mod tests {
             None,
             None,
         );
-        let before = report;
-        report.observe(&ok);
+        let before = report.clone();
+        report.observe(4, &ok);
         assert_eq!(report, before, "supported declarations must not be counted");
+
+        // The same node observed again replaces its own contribution: a node is
+        // recascaded on every hover or class change, and a counter that added
+        // each time would grow without bound and re-warn every frame.
+        report.observe(1, &sideways);
+        report.observe(2, &nested);
+        assert_eq!(
+            report, before,
+            "re-observing a node must not count it twice"
+        );
+
+        // A node whose style stops being unsupported gives its count back, and
+        // so does one that goes away.
+        report.observe(1, &LayoutStyle::default());
+        assert_eq!(report.writing_modes, 0);
+        report.forget(2);
+        assert_eq!(report.grid_track_lists, 0);
+        report.forget(2);
+        assert_eq!(report.grid_track_lists, 0, "forgetting twice is harmless");
     }
 
     #[test]

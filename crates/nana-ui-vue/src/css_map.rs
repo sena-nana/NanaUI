@@ -3963,11 +3963,13 @@ fn is_content_sized_keyword(raw: &str) -> bool {
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        Some(&s[prefix.len()..])
-    } else {
-        None
-    }
+    // Compare bytes rather than slicing `s` at `prefix.len()`: stylesheet text is
+    // data-controlled, so that byte offset can land inside a multi-byte character
+    // (`\u{4e2d}1fr`, a full-width space from a CJK IME) and panic the UI thread.
+    // A match means the head is all ASCII, which makes the offset a boundary.
+    let head = s.as_bytes().get(..prefix.len())?;
+    head.eq_ignore_ascii_case(prefix.as_bytes())
+        .then(|| &s[prefix.len()..])
 }
 
 /// Does this track pattern contain a `repeat(` function token?
@@ -3977,12 +3979,16 @@ fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
 /// to keep a name like `[repeat]` from matching once a `(` follows it.
 fn contains_repeat_token(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
-    let mut index = 0usize;
     let mut in_line_names = false;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'[' => in_line_names = true,
-            b']' => in_line_names = false,
+    // Walks character starts, not raw byte offsets: stylesheet text is
+    // data-controlled, and one non-ASCII character inside the value — a
+    // full-width space from a CJK IME, a `var()` fallback in Chinese — would
+    // otherwise put the slice below on a UTF-8 continuation byte and panic the
+    // UI thread.
+    for (index, character) in pattern.char_indices() {
+        match character {
+            '[' => in_line_names = true,
+            ']' => in_line_names = false,
             _ if !in_line_names => {
                 // Only a `repeat` that starts a token is the function; `xrepeat(`
                 // is a different (invalid) ident and not our concern here.
@@ -3993,7 +3999,6 @@ fn contains_repeat_token(pattern: &str) -> bool {
             }
             _ => {}
         }
-        index += 1;
     }
     false
 }
@@ -5516,6 +5521,21 @@ pub fn parse_css_length_px(input: &str, percent_base: Option<f32>) -> Option<f32
 
 #[cfg(test)]
 mod tests {
+    /// Stylesheet text is data-controlled: one non-ASCII character in a value
+    /// used to put the scan's slice on a UTF-8 continuation byte and panic the
+    /// UI thread.
+    #[test]
+    fn a_non_ascii_track_list_does_not_panic_the_scan() {
+        assert!(!contains_repeat_token(" 中 1fr"));
+        assert!(!contains_repeat_token("минмакс(0,1fr)"));
+        assert!(contains_repeat_token("repeat(2, 1fr\u{3000})"));
+        assert!(contains_repeat_token("repeat(2, var(--w, 自动))"));
+        assert!(!contains_repeat_token("[名前] 1fr"));
+        // The token rule still holds either side of a multi-byte character.
+        assert!(!contains_repeat_token("xrepeat(2, 1fr)"));
+        assert!(contains_repeat_token("中repeat(2, 1fr)"));
+    }
+
     use super::*;
 
     #[test]

@@ -662,16 +662,20 @@ struct TransitionShorthand {
 }
 
 fn parse_transition_shorthand(raw: &str) -> Option<TransitionShorthand> {
-    let items = split_css_comma_list(raw);
+    let mut items = split_css_comma_list(raw);
     if items.is_empty() {
-        return parse_transition_item(raw);
+        items = vec![raw.to_string()];
     }
     let mut properties = Vec::new();
     let mut durations = Vec::new();
     let mut timings = Vec::new();
     let mut delays = Vec::new();
     for item in items {
-        let parsed = parse_transition_item(&item)?;
+        // CSS defaults a missing `transition-duration` to `0s` **per item**.
+        // Failing the item — and with `?`, the whole list — meant
+        // `transition: opacity, transform 200ms` lost the transform transition
+        // as well as the opacity one.
+        let parsed = parse_transition_item(&item);
         properties.push(parsed.property);
         durations.push(parsed.duration);
         timings.push(parsed.timing_function);
@@ -688,7 +692,7 @@ fn parse_transition_shorthand(raw: &str) -> Option<TransitionShorthand> {
     })
 }
 
-fn parse_transition_item(raw: &str) -> Option<TransitionShorthand> {
+fn parse_transition_item(raw: &str) -> TransitionShorthand {
     let mut property = String::new();
     let mut duration = String::new();
     let mut timing_function = String::new();
@@ -711,23 +715,24 @@ fn parse_transition_item(raw: &str) -> Option<TransitionShorthand> {
             property = token;
         }
     }
-    if duration.is_empty() {
-        return None;
-    }
-    Some(TransitionShorthand {
+    TransitionShorthand {
         property: if property.is_empty() {
             "all".into()
         } else {
             property
         },
-        duration,
+        duration: if duration.is_empty() {
+            "0s".into()
+        } else {
+            duration
+        },
         timing_function: if timing_function.is_empty() {
             "ease".into()
         } else {
             timing_function
         },
         delay: if delay.is_empty() { "0s".into() } else { delay },
-    })
+    }
 }
 
 struct AnimationShorthand {
@@ -1410,12 +1415,16 @@ pub fn compile_css_transition(
             continue;
         }
         if let Some(animatable) = layout_css_property(property) {
-            if !snapshot_property_changed(from, to, animatable) {
-                continue;
-            }
-            if let Some(spec) = overlay_transition_spec(
-                widget_id, animatable, from, to, duration, delay, timing, now,
-            ) {
+            // Deliberately not an early `continue` on "unchanged": that test
+            // reads the value through `length_px_value`, which is `None` for
+            // every non-px length, so `0%` and `60%` compare equal. Skipping
+            // here would keep the property out of `cpu_properties` as well, and
+            // a percentage width would snap instead of animating.
+            if snapshot_property_changed(from, to, animatable)
+                && let Some(spec) = overlay_transition_spec(
+                    widget_id, animatable, from, to, duration, delay, timing, now,
+                )
+            {
                 overlays.push(spec);
                 continue;
             }
@@ -1986,6 +1995,47 @@ mod tests {
         assert_eq!(layout.property, AnimatableProperty::Width);
         assert_eq!(layout.from, MotionValue::Scalar(40.0));
         assert_eq!(layout.to, MotionTo::Value(MotionValue::Scalar(80.0)));
+    }
+
+    /// A percentage width has no px value, so the overlay path cannot carry it
+    /// and `snapshot_property_changed` cannot even see the change. It has to
+    /// fall through to the CPU spec rather than being dropped, or the box snaps.
+    #[test]
+    fn a_percentage_width_transition_falls_through_to_the_cpu_spec() {
+        use nana_ui_core::LengthSpec;
+        let motion = CssComputedMotion {
+            transition_property: "width".into(),
+            transition_duration: "200ms".into(),
+            transition_delay: "0s".into(),
+            transition_timing_function: "linear".into(),
+            ..CssComputedMotion::default()
+        };
+        let from = CssPaintSnapshot {
+            width: Some(LengthSpec::Percent(0.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let to = CssPaintSnapshot {
+            width: Some(LengthSpec::Percent(60.0)),
+            ..CssPaintSnapshot::from_layout(&LayoutStyle::default())
+        };
+        let compiled =
+            compile_css_transition(11, &motion, &from, &to, Duration::ZERO).expect("compiled");
+        assert!(compiled.overlays.is_empty());
+        assert!(
+            compiled.cpu.is_some(),
+            "percentage width must still animate"
+        );
+    }
+
+    /// `transition-duration` defaults to `0s` per item. An item that omits it
+    /// is legal CSS and must not take the rest of the list down with it.
+    #[test]
+    fn an_item_without_a_duration_keeps_the_rest_of_the_list() {
+        let parsed = parse_transition_shorthand("opacity, transform 200ms").expect("transition");
+        assert_eq!(parsed.property, "opacity, transform");
+        assert_eq!(parsed.duration, "0s, 200ms");
+        assert_eq!(parsed.timing_function, "ease, ease");
+        assert_eq!(parsed.delay, "0s, 0s");
     }
 
     #[test]

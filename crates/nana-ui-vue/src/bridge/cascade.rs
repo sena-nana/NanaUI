@@ -581,7 +581,7 @@ impl MessageBridge {
         // Count declarations that parsed but name something layout does not
         // implement. Without this they are only visible as a box that silently
         // did not move.
-        self.cascade.unsupported_css.observe(&layout);
+        self.cascade.unsupported_css.observe(id, &layout);
 
         if let Some(widget) = self.widgets.get_mut(&id) {
             if widget.props.layout != layout {
@@ -1086,7 +1086,7 @@ impl MessageBridge {
     }
 
     pub fn unsupported_css(&self) -> crate::css_cascade::UnsupportedCssReport {
-        self.cascade.unsupported_css
+        self.cascade.unsupported_css.clone()
     }
 }
 
