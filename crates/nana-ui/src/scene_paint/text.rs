@@ -2271,7 +2271,7 @@ mod tests {
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device("nana-ui text affine test")
+        crate::test_gpu::device()
     }
 }
 

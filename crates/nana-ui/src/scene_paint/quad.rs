@@ -1491,7 +1491,7 @@ fn solid_pipeline(
 
 #[cfg(test)]
 fn quad_paint_test_device() -> (wgpu::Device, wgpu::Queue) {
-    crate::test_gpu::device("nana-ui quad paint test")
+    crate::test_gpu::device()
 }
 
 #[cfg(test)]

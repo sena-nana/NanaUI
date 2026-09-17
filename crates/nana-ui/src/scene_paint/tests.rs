@@ -3574,7 +3574,7 @@ fn test_target(
 }
 
 pub(super) fn test_device() -> (wgpu::Device, wgpu::Queue) {
-    crate::test_gpu::device("nana-ui scene GPU work test")
+    crate::test_gpu::device()
 }
 
 fn paint_surface_quad_node(
@@ -4844,21 +4844,27 @@ fn check_host_texture_url_mask(remote: bool) {
             pixel(&first, 64, 56, 32)[0] > 200,
             "pending mask has not been applied yet"
         );
-        awoken
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        encoder = device.create_command_encoder(&Default::default());
-        painter
-            .paint(
-                &scene,
-                &mut encoder,
-                &target_view,
-                viewport,
-                Some(&registry),
-                None,
-            )
-            .unwrap();
-        assert!(!painter.has_pending_images());
+        // The quad and host-texture URL caches each fetch the mask and share
+        // one waker, so the first wake may leave the other still pending.
+        loop {
+            awoken
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("every pending image fetch wakes the painter");
+            encoder = device.create_command_encoder(&Default::default());
+            painter
+                .paint(
+                    &scene,
+                    &mut encoder,
+                    &target_view,
+                    viewport,
+                    Some(&registry),
+                    None,
+                )
+                .unwrap();
+            if !painter.has_pending_images() {
+                break;
+            }
+        }
     }
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let left = pixel(&pixels, 64, 4, 32);

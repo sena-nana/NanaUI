@@ -1874,7 +1874,7 @@ mod tests {
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device("NanaUI GPU texture lifecycle test")
+        crate::test_gpu::device()
     }
 }
 

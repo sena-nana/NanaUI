@@ -201,8 +201,41 @@ mod tests {
     use nana_frame_exchange::{CopyOutcome, DEFAULT_CAPACITY, FrameExchange};
 
     fn test_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-        let (device, queue) = crate::test_gpu::device("NanaUI frame binding test");
+        let (device, queue) = crate::test_gpu::device();
         (Arc::new(device), Arc::new(queue))
+    }
+
+    /// Copy `source` and wait until the exchange publishes it. Other tests
+    /// share the device, and wgpu runs `on_submitted_work_done` callbacks on
+    /// whichever thread's poll collects them, so one poll here does not
+    /// guarantee this exchange's copy and slot releases have been observed.
+    fn publish_frame(
+        device: &wgpu::Device,
+        exchange: &mut FrameExchange<u64>,
+        source: &wgpu::Texture,
+        epoch: u64,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let settle = || {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "frame exchange did not settle"
+            );
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        };
+        loop {
+            match exchange.copy_from(source, epoch) {
+                CopyOutcome::Submitted => break,
+                CopyOutcome::PoolFull => {
+                    settle();
+                    exchange.poll();
+                }
+                outcome => panic!("unexpected copy outcome {outcome:?}"),
+            }
+        }
+        while !exchange.poll() {
+            settle();
+        }
     }
 
     /// A new epoch retires the bound frame and publishes its replacement at
@@ -237,12 +270,7 @@ mod tests {
             })
         };
         let publish = |exchange: &mut FrameExchange<u64>, width: u32, epoch: u64| {
-            assert_eq!(
-                exchange.copy_from(&source(width), epoch),
-                CopyOutcome::Submitted
-            );
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            assert!(exchange.poll());
+            publish_frame(&device, exchange, &source(width), epoch);
         };
         let registry = HostTextureRegistry::new();
         let size = || {
@@ -302,9 +330,7 @@ mod tests {
             view_formats: &[],
         });
         let publish = |exchange: &mut FrameExchange<u64>| {
-            assert_eq!(exchange.copy_from(&source, 0), CopyOutcome::Submitted);
-            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-            assert!(exchange.poll());
+            publish_frame(&device, exchange, &source, 0);
         };
         let registry = HostTextureRegistry::new();
         let changes = Arc::new(AtomicU64::new(0));

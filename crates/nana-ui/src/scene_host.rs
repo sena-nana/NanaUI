@@ -4190,7 +4190,7 @@ mod tests {
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device("NanaUI scene host recovery test")
+        crate::test_gpu::device()
     }
     #[test]
     fn acknowledged_commands_route_missing_windows_for_failure_reports() {
