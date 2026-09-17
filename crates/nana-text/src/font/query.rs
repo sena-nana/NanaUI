@@ -170,7 +170,7 @@ fn split_css_list(value: &str) -> Vec<CssEntry> {
 
 /// CSS `font-weight` on the 1..=1000 scale. Fractional, because a variable
 /// `wght` coordinate is.
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialOrd, Serialize, Deserialize)]
 pub struct FontWeight(pub f32);
 
 impl FontWeight {
@@ -193,6 +193,19 @@ impl Default for FontWeight {
     }
 }
 
+/// Equality is over the canonical bits, the same value [`Hash`] uses.
+///
+/// A derived `PartialEq` on the raw `f32` would break the `Eq` + `Hash`
+/// contract for a NaN weight, which `new` rejects but `Deserialize` does not:
+/// the value would hash to a bucket it can never be found in, so
+/// `FontSystem::select`'s cache would grow one permanently unreachable entry
+/// per lookup.
+impl PartialEq for FontWeight {
+    fn eq(&self, other: &Self) -> bool {
+        canonical_bits(self.0) == canonical_bits(other.0)
+    }
+}
+
 impl Eq for FontWeight {}
 
 impl Hash for FontWeight {
@@ -202,7 +215,7 @@ impl Hash for FontWeight {
 }
 
 /// CSS `font-stretch` as a percentage of normal width (`wdth` units).
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialOrd, Serialize, Deserialize)]
 pub struct FontStretch(pub f32);
 
 impl FontStretch {
@@ -221,6 +234,13 @@ impl FontStretch {
 impl Default for FontStretch {
     fn default() -> Self {
         Self::NORMAL
+    }
+}
+
+/// Equality is over the canonical bits. See [`FontWeight`]'s.
+impl PartialEq for FontStretch {
+    fn eq(&self, other: &Self) -> bool {
+        canonical_bits(self.0) == canonical_bits(other.0)
     }
 }
 

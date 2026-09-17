@@ -303,7 +303,7 @@ impl Shaper {
         segment: &StyleSegment<'_>,
         language: Option<&LanguageTag>,
         scale: f32,
-    ) -> (Vec<RawGlyph>, Option<FontInstance>) {
+    ) -> (Option<Vec<RawGlyph>>, Option<FontInstance>) {
         let variations = FontVariations::from_settings(&segment.style.variations);
         let instance = fonts.instance(font, &segment.query, &variations);
         let coords = instance
@@ -321,10 +321,11 @@ impl Shaper {
             coords,
             size_px: segment.style.font_size_px * scale,
         };
-        let glyphs = self
-            .faces
-            .shape(font, || fonts.face_data(font), &input)
-            .unwrap_or_default();
+        // `None` means the face itself is unusable — its bytes would not load
+        // or would not parse — which is not the same as a face that shaped
+        // these bytes to nothing. Conflating the two lets a broken face erase
+        // the text: no glyph, no `.notdef`, no counter.
+        let glyphs = self.faces.shape(font, || fonts.face_data(font), &input);
         (glyphs, instance)
     }
 
@@ -361,7 +362,7 @@ impl Shaper {
                     next.push(piece);
                     continue;
                 }
-                let shaped = self.shape_raw(
+                let (glyphs, instance) = self.shape_raw(
                     fonts,
                     text,
                     piece.range.clone(),
@@ -371,7 +372,9 @@ impl Shaper {
                     language,
                     scale,
                 );
-                let missing = missing_ranges(&shaped.0, &piece.range);
+                let unusable_face = glyphs.is_none();
+                let missing = unshaped_ranges(glyphs.as_deref(), &piece.range);
+                let shaped = (glyphs.unwrap_or_default(), instance);
                 let mut replacements = Vec::with_capacity(missing.len());
                 for gap in &missing {
                     let candidate = if retries < MAX_FALLBACK_RETRIES_PER_ITEM {
@@ -387,7 +390,12 @@ impl Shaper {
                 }
                 if replacements.iter().all(Option::is_none) {
                     // Clean, or nothing can do better: keep this shaping,
-                    // `.notdef` and all.
+                    // `.notdef` and all. A piece still on an unusable face has
+                    // no `.notdef` to keep, so the bytes it drops are counted
+                    // rather than left to vanish unreported.
+                    if unusable_face {
+                        self.counters.text_bytes_unshaped += piece.range.len();
+                    }
                     next.push(Piece {
                         shaped: Some(shaped),
                         ..piece
@@ -564,6 +572,21 @@ fn missing_ranges(glyphs: &[RawGlyph], range: &Range<usize>) -> Vec<Range<usize>
     missing
 }
 
+/// Cluster ranges of a piece that still need another face.
+///
+/// `None` glyphs mean the face itself is unusable — its bytes would not load
+/// or would not parse — and it draws nothing at all, not even `.notdef`. The
+/// whole piece is missing then, so the candidate list gets a turn exactly as it
+/// would for a face that shaped `.notdef`. A face that legitimately shaped
+/// these bytes to no glyphs (a lone default-ignorable) is not missing anything.
+fn unshaped_ranges(glyphs: Option<&[RawGlyph]>, range: &Range<usize>) -> Vec<Range<usize>> {
+    match glyphs {
+        Some(glyphs) => missing_ranges(glyphs, range),
+        None if range.is_empty() => Vec::new(),
+        None => vec![range.clone()],
+    }
+}
+
 /// Joins adjacent pieces on the same face so they shape as one.
 fn merge_pieces(pieces: Vec<Piece>) -> Vec<Piece> {
     let mut merged: Vec<Piece> = Vec::with_capacity(pieces.len());
@@ -573,6 +596,16 @@ fn merge_pieces(pieces: Vec<Piece>) -> Vec<Piece> {
                 // The joined range has to be shaped as a whole.
                 last.range.end = piece.range.end;
                 last.shaped = None;
+                // Both halves keep what they have ruled out. Dropping one
+                // side's list lets a face already proven to shape those bytes
+                // to `.notdef` be picked again, and each repeat burns one of
+                // the item's 32 retries — which a later cluster then no longer
+                // has.
+                for font in piece.tried {
+                    if !last.tried.contains(&font) {
+                        last.tried.push(font);
+                    }
+                }
             }
             _ => merged.push(piece),
         }
@@ -621,6 +654,53 @@ fn style_segments<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn piece(range: Range<usize>, font: u32, tried: &[u32]) -> Piece {
+        Piece {
+            range,
+            font: FontId::from_parts(font, 1),
+            tried: tried
+                .iter()
+                .map(|index| FontId::from_parts(*index, 1))
+                .collect(),
+            shaped: None,
+        }
+    }
+
+    #[test]
+    fn an_unusable_face_leaves_its_whole_piece_for_the_next_candidate() {
+        // Not the same as a face that shaped these bytes to nothing: that one
+        // is done, this one never drew anything and must not be mistaken for a
+        // clean result, or the bytes vanish with no glyph and no counter.
+        assert_eq!(unshaped_ranges(None, &(3..9)), vec![3..9]);
+        assert!(unshaped_ranges(Some(&[]), &(3..9)).is_empty());
+        assert!(unshaped_ranges(None, &(3..3)).is_empty());
+    }
+
+    #[test]
+    fn merging_two_pieces_keeps_every_face_either_had_ruled_out() {
+        let merged = merge_pieces(vec![piece(0..3, 1, &[1]), piece(3..6, 1, &[1, 2])]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].range, 0..6);
+        assert!(
+            merged[0].shaped.is_none(),
+            "the joined range has to be shaped as a whole"
+        );
+        let tried: Vec<u32> = merged[0].tried.iter().map(|font| font.index()).collect();
+        assert_eq!(
+            tried,
+            vec![1, 2],
+            "a face already proven to draw .notdef here must not be picked again"
+        );
+    }
+
+    #[test]
+    fn merging_does_not_join_pieces_on_different_faces_or_with_a_gap() {
+        let different = merge_pieces(vec![piece(0..3, 1, &[1]), piece(3..6, 2, &[2])]);
+        assert_eq!(different.len(), 2);
+        let gapped = merge_pieces(vec![piece(0..3, 1, &[1]), piece(4..6, 1, &[1])]);
+        assert_eq!(gapped.len(), 2);
+    }
 
     fn glyph(glyph_id: u32, cluster: u32) -> RawGlyph {
         RawGlyph {

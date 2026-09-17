@@ -146,7 +146,8 @@ pub struct ShapeCounters {
     /// Text bytes copied to build or store a key. The key shares the
     /// source's `Arc<str>`, so this stays 0 unless that changes.
     pub text_bytes_cloned_for_shape: usize,
-    /// Text bytes that produced no run because the font system has no face at
-    /// all. Paragraph separators are not counted.
+    /// Text bytes that produced no run at all: the font system has no face, or
+    /// the face they resolved to could not be loaded or parsed and no
+    /// candidate covered them. Paragraph separators are not counted.
     pub text_bytes_unshaped: usize,
 }

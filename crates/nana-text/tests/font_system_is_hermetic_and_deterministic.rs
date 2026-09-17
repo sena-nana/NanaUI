@@ -748,3 +748,34 @@ fn file_memory_and_malformed_registrations() {
     assert_eq!(system.counters().font_faces_registered, 1);
     assert_eq!(system.counters().font_generation, system.generation().get());
 }
+
+/// A NaN weight cannot come from `FontWeight::new`, but it can come from a
+/// deserialized query or a hand-built struct — and a type that hashes by
+/// canonical bits while comparing by raw float would key the selection cache
+/// with an entry it can never find again.
+#[test]
+fn a_non_finite_weight_or_stretch_still_equals_itself() {
+    use std::collections::HashMap;
+    use std::hash::{BuildHasher, RandomState};
+
+    for (weight, stretch) in [
+        (FontWeight(f32::NAN), FontStretch(f32::NAN)),
+        (FontWeight(400.0), FontStretch(100.0)),
+    ] {
+        assert_eq!(weight, weight, "{weight:?} must equal itself");
+        assert_eq!(stretch, stretch, "{stretch:?} must equal itself");
+        let hasher = RandomState::new();
+        assert_eq!(hasher.hash_one(weight), hasher.hash_one(weight));
+
+        let mut map: HashMap<FontWeight, u32> = HashMap::new();
+        map.insert(weight, 1);
+        map.insert(weight, 2);
+        assert_eq!(map.len(), 1, "{weight:?} keyed two entries");
+        assert_eq!(map.get(&weight), Some(&2));
+    }
+    assert_eq!(
+        FontWeight::new(f32::NAN),
+        FontWeight::NORMAL,
+        "the constructor still rejects it outright"
+    );
+}
