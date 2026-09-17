@@ -1,6 +1,7 @@
 # 文本引擎骨架（nana-text）
 
-给**改 NanaUI 文本的人**。写应用不需要看这篇：`nana-text` 现在不在产品路径上。
+给**改 NanaUI 文本的人**。写应用不需要看这篇：产品文本仍由 cosmic-text 测量、cryoglyph 绘制，
+`nana-text` 目前只经 Runtime 的保留文本节点接入，绘制切换属于 #97。
 
 Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 是其中的 Phase 0：
 先把内部合同、reference backend 和 correctness corpus 固定下来，让后续每一阶段都能对着
@@ -8,7 +9,8 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 #90 是 Phase 1：`nana-text` 自有的字体层——注册、代际、匹配、变体坐标与按覆盖率的 fallback，
 见「字体层」一节。#91 是 Phase 2：分段、BiDi、HarfRust shaping 与 ShapeRun cache，见「Shaping」一节。
 #92 是 Phase 3：单行 Label fast path、断行、行内视觉序、行盒度量、对齐、省略号与 layout cache，
-见「Layout」一节。
+见「Layout」一节。#95 是 Phase 4：UiWorld 保留文本节点、分级 dirty graph 与 retained
+`TextLayout`，见「UiWorld 保留文本节点」一节。
 
 ## 这是什么
 
@@ -213,7 +215,8 @@ Phase 0 没有产品生产者，这是设计如此。防止它们变成摆设的
 counters，所以计数变化是一次可评审的 diff。
 
 折进 `WorkCounters` 是 UiWorld 接缝上的一个函数，那才是正确时机；现在加五个没有生产者的字段，
-等于为零信号拓宽一个 CI 正在裁判的合同。
+等于为零信号拓宽一个 CI 正在裁判的合同。Phase 4 起它们由 UiWorld 的文本 pass 生产，并加了解释
+零工作帧成本的口径，见「UiWorld 保留文本节点」的计数器一节。
 
 ## 边界如何被机器守住
 
@@ -460,8 +463,8 @@ span、落在字素中间的 span 边界、源字节 / cluster 映射；cache �
 同 source 反复查找只 hash 一次且零复制、宽度 / 行高 / 同内容新 revision 不重塑形、方向 / scale /
 字体代际会重塑形并清旧代、条目与字节上限及 LRU。
 
-产品路径**仍未**接入：UiWorld 里的 paint / transform 变更不产生 shape request 这件事，要等接缝
-接上才能在产品上验证；本阶段保证的是它们根本进不了 ShapeKey。
+本阶段保证的是 paint / transform 根本进不了 ShapeKey；UiWorld 里它们不产生 shape request，
+由 Phase 4 的 dirty graph 在 Runtime 上验证（见「UiWorld 保留文本节点」）。
 
 ## Layout（Phase 3，#92）
 
@@ -645,9 +648,8 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 | 竖排（#59） | fail-closed，见上 |
 | CSS 空白折叠 | 完全不做：连续空格原样保留，因此 `preserve_lines: false` 下 CRLF 折成**两个**空格，与手写两个空格是同一回事；要折叠的调用方自己规范化文本（那时挪动偏移是它自己的事） |
 
-**产品路径仍未接入**：UiWorld 里「只改颜色 / transform 的帧不产生 layout request」这件事，要等
-接缝接上才能在产品上验证；本阶段保证的是它们根本进不了 `LayoutKey`——`TextStyle` 不带 paint，
-`LayoutRequest` 也没有第二条通路。
+UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phase 4 在 Runtime 上验证；
+本阶段保证的是它们根本进不了 `LayoutKey`——`TextStyle` 不带 paint，`LayoutRequest` 也没有第二条通路。
 
 ### intrinsic min/max content width
 
@@ -694,7 +696,8 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 - `TextEngine::layout` 返回 `Arc<TextLayout>`：layout 不可变，同一帧里同文本同约束应当拿到**同一份**，
   而不是它的拷贝。
 
-产品文本路径**仍未**接入：`nana-ui` 继续走 cosmic-text + cryoglyph。
+Runtime 通过 `NanaTextEngineShaper` 持有它（见「UiWorld 保留文本节点」）；产品宿主
+`NanaTextShaper` 仍走 cosmic-text + cryoglyph。
 
 ### 与 cosmic 参照对账
 
@@ -735,6 +738,186 @@ strut 时基线确实会动）、`line-height` 与 half-leading、分数 scale�
 max-lines 与 max-height 截断、省略号的 cluster 安全裁切与零字节占用、省略号只塑形一次、
 intrinsic min/max、竖排 fail-closed、layout cache 的上限与 LRU、字体代际让旧 layout 变陈旧、
 计数器与产物对账、caret / hit-test / 选区直接跑在原生 layout 上。
+
+## UiWorld 保留文本节点（Phase 4，#95）
+
+Runtime 对文本只保存逻辑状态、revision 与句柄；shaping / layout 的不可变结果由 `nana-text` 持有。
+
+```text
+UiWorld 节点的 TextNodeState（NodeStore 侧表，每节点一条）
+  revisions { content, shape, constraint, paint, edit }
+  stamp     解析时的 content / shape / constraint revision + 后端代际
+  layout    TextLayoutId（本 UiWorld 的 TextLayoutStore）
+        │
+        ▼
+NativeTextEngine（SharedTextEngine，跨文档 / 窗口共享）
+  ShapeRun cache ── Layout cache
+        │
+        ▼
+ExtractedNode.text_layout ──► ScenePrimitiveKind::Text { layout: Option<RetainedTextLayout> }
+```
+
+### Dirty graph
+
+`nana_ui_runtime::TextDirty` 说「什么变了」，`TextDirty::work()` 是依赖图的唯一出处，
+`TextNodeState::invalidate` 只通过它 bump revision：
+
+| 类 | 工作 | bump 的 revision |
+| --- | --- | --- |
+| `CONTENT` / `FONT` / `SHAPE_STYLE` | shape + layout + scene 几何 | content（仅 `CONTENT`）、shape、constraint |
+| `CONSTRAINT` | layout + scene 几何 | constraint |
+| `EDIT_STATE` | editor overlay（Phase 5） | edit |
+| `PAINT` | 只重新提取 paint | paint |
+| `TRANSFORM` / `OPACITY` | 只走 compositor | 无 |
+
+变更在发生处分类，而不是事后比较：
+
+- `SetText`：文本真的变了才算 `CONTENT`；`SetTextInput` / `ReplaceTextSelection` 每次都算（editor
+  状态本身每次都会变）。任何内容
+  失效使文本变空时立即释放保留的 layout（非 `Text` 元素没了文本就不再进任何文本 pass）。
+  `SetIme` / `SetTextSelection` 是 `EDIT_STATE`。
+- 计算样式落定时（`world/style.rs`）`classify_computed_style_change`：字体族 / 字号 / 字重 /
+  斜体 / 字距 / feature / 变体轴 / kerning / direction → `SHAPE_STYLE`；行高 / word-break /
+  line-break / writing-mode → `CONSTRAINT`；颜色 / 前景角色 / 选区色 → `PAINT`；opacity →
+  `OPACITY`；其余字段不产生文本工作。
+- `SetStyle` 只比较文本约束真正读的 `LayoutStyle` 字段（wrap / white-space / 省略号 / line-clamp /
+  高度与最大高度是否确定 / 边框 / padding / 对齐）。paint、transform、opacity 与它们同在一个
+  `LayoutStyle` 上，**刻意不比**。其余约束输入都会调度 layout、进 layout-scoped 趟。对齐不移动
+  任何盒子，而且只有 retained layout 读它（宿主度量不读），所以只对持有 layout 的节点记
+  `CONSTRAINT` 并标 TEXT。layout-scoped 趟跳过不可见节点，因此不可见→可见的纯文本节点由同一帧的
+  调度趟一并重新解析，不多跑一趟 flush（editor / EmptyState / ModalFrame 的文本本就每趟重测，不在
+  此列）；这一趟失败时它们留到重试。
+- `WriteLayout` 只有盒子尺寸变了才是 `CONSTRAINT`；只移动位置（#33 的 head 插入）不是。
+  布局写回的 padding、布局类动画（width / height / padding）直接写样式时同样记 `CONSTRAINT`。
+- visual 变化只在「文本走哪条路径 / 前导指示器占多宽」变了时记 `CONSTRAINT` 并标 TEXT
+  （`text_visual_key`；加一个 Checkbox 不改盒子尺寸），进度这类采样值不算。
+- 字体集合变化不逐节点 bump：解析戳里带后端代际（宿主的 shaper 类型与 `TextShaper::font_generation()`——换一个 shaper 就是另一次测量，或引擎
+  的字体系统身份 + `FontGeneration` + 语言提示代际——`set_language` 同样改变 `locl` 与 fallback）。`RuntimeDocument::flush` 每帧开头调
+  `UiWorld::observe_text_shaper`，代际一变就把测量过的已解析节点（含只量一个空行盒的空 Text
+  节点）与 EmptyState / ModalFrame / TextInput 排进这一帧（`FONT`），静止文档也会在新字体上重新结算；按字符与样式缓存的 glyph advance 与宿主路径的 `TextLayoutCache` 同时清空（它们的 key 不含测量者，换 shaper 时同样清空）。
+
+transform / opacity 不 bump 任何 revision（Runtime 也从不需要发出 `TRANSFORM`：transform 从来不是文本的
+输入），所以稳态 compositor 动画在构造上就碰不到 shaping /
+layout；`retained_text_node.rs` 用真实动画帧验证：这类帧连一趟 Runtime 工作（文本 pass 在内）都
+不产生，revision 原样不动。样式层面 opacity 归 `OPACITY`、颜色归 `PAINT` 由颜色 / opacity /
+transform 的样式变更测试守住。
+
+现在消费这张图的是文本 pass：它只读 content / shape / constraint 三个 revision 决定是否重做
+shape / layout。scene 提取仍按 RENDER 脏整节点重新提取，`SCENE_PAINT` / `SCENE_GEOMETRY` /
+`EDITOR_OVERLAY` / `COMPOSITOR` 与 `paint` / `edit` revision 是给绘制 retained layout 的 #97 和
+可编辑路径 #96 的合同，还没有更细的提取消费者。
+
+### 零工作快路径
+
+两趟文本 pass（`shape_text` 与 layout-scoped 的 `shape_text_for_layout*`）对每个候选先做
+`plain_text_is_current`：读侧表里的一条 `TextNodeState`，比较三个 revision 与后端代际。
+**在构建 editor presentation、计算约束、clone 文本、构建 key、查任何 cache 之前**就决定跳过，
+单节点成本与文本长度无关。
+
+- 状态放在 `NodeStore` 的侧表而不是 `NodeRecord` 里：大 scope 的扫描付的是被访问记录的大小，
+  几十字节的条目比整条记录更留得住 cache。
+- 可见、没有自身文本的盒子（容器）解析为「无」并同样打戳，下一趟一次读表即跳过。空的 `Text` 节点
+  不算这种盒子：它的行盒由调度趟测量，layout 趟不替它打戳。
+- EmptyState / ModalFrame 的内建文本与 TextInput 的 presentation 每趟重测，不打戳。
+- debug 构建里跳过路径会重算约束并与戳里记的约束比较，漏掉的 `CONSTRAINT` 失效会当场断言，
+  而不是在屏幕上变成错的换行。
+
+### 两种后端
+
+`TextShaper` 多了两个默认方法：
+
+- `font_generation()`：宿主测量所用字体集合的代际。`NanaTextShaper` 返回 cosmic 字体库的代际，
+  `@font-face` 注册之后已解析文本会重新测量，Runtime 的 `TextLayoutCache` key 也带上它，
+  旧字体下的度量不会被新字体命中。
+- `take_text_work()`：宿主在 `shape()` 里做的文本工作。`NanaTextEngineShaper` 交出引擎的 shape /
+  layout cache 与建出 layout 的计数（节点数由 pass 自己数），所以组件文本的引擎工作也在帧计数里；
+  它的 `font_generation()` 折叠整个引擎代际（字体系统身份、字体代际、语言代际）。
+- `text_engine()`：返回 `Some(SharedTextEngine)` 时，纯文本节点经 `nana-text` 解析，保留
+  它读出度量的那份 `TextLayout`。**只有能绘制 retained layout 的宿主才该返回引擎**，否则同一节点
+  会出现两个测量权威。`NanaTextEngineShaper` 是这样的宿主：纯文本走 `text_engine()`，其余文本
+  （EmptyState / Modal / editor）的 `shape()` 也走同一个引擎。产品的 `SceneWgpuPainter` 还不绘制
+  layout（#97），所以 `NanaTextShaper` 不返回引擎。
+
+度量合同：宽 = 最宽行的 `width_px`，高 = 各行 `height_px` 之和，ascent = 首行 baseline − top；
+未声明行高按宿主一直用的 1.2em 传给引擎；只写了带 `mono` 的具名字体族时补上 `monospace`
+兜底，与宿主一致。
+
+### 句柄与生命周期
+
+- `TextLayoutStore`（`nana-text`）：`{index, generation}` 槽位；generation 取自进程级单调序列，
+  所以一个句柄只被签发它的 store 接受——交给另一个 UiWorld 与交一个已释放的句柄一样被拒。序列是
+  `u32`，进程内签发约 43 亿次后回绕；此后跨 store 的句柄须同时撞上同一 index 与 generation 才会被
+  误接受。
+  `resolve(id, font_generation)` 另外拒绝旧字体代际下排出的 layout（`StaleLayout::FontGeneration`）。
+- 解析结果（戳、保留或释放 layout）在整趟成功后才落地（不再是纯文本的节点——editor / EmptyState /
+  ModalFrame——的释放在循环里立即做，它们本就不打戳）；某个节点度量非法让这一趟失败时，前面
+  节点既不打戳也不换句柄，重试会重新解析它们，而不是凭一个没写回度量的戳跳过。
+- 节点重新解析时，若引擎交回的是同一个 `Arc<TextLayout>`，句柄不变（`text_layouts_reused`）；
+  否则释放旧槽、签发新句柄。节点删除（含整棵子树 / 文档内容拆除）时随节点释放；reparent 不释放。
+  文本变空、节点变成 editor / EmptyState / ModalFrame、宿主不再提供引擎时也释放，为引擎建的文本副本
+  （`TextSource`）随之释放。
+- `ShapedRun.instance` 记下 glyph 实际塑形所用的 face 坐标与合成（粗体 / 斜体），绘制方不必
+  再从样式重新解析一次实例。
+- `ScenePrimitiveKind::Text.layout` 与 `ExtractedNode.text_layout` 是 renderer-neutral IR
+  （`RetainedTextLayout { id, layout }`），相等性按「同句柄且同一份 layout」判，重排即场景变化。
+  UiScene 不持有任何 cosmic `Buffer`。
+
+### 计数器
+
+`UiWorld::last_text_work_counters()`（帧内跨 pass 累加）返回 `nana_text::TextWorkCounters`，
+#95 在原有字段上加了解释性口径：
+
+```text
+text_nodes_considered        看过文本节点的次数（含跳过的；一帧里调度趟与 layout 趟各算一次）
+text_nodes_revision_skipped  只凭 revision 判定无工作的
+text_nodes_shaped            真正进了 shaper 的
+text_source_clones           为建 source / presentation 复制文本的次数
+text_bytes_hashed            喂给内容 hash 的字节（每个 source revision 一次）
+shape_cache_lookups          shape cache 查询（hit + miss）
+layout_cache_lookups         layout 级缓存查询（hit + miss；引擎 layout cache 与宿主路径的
+                             TextLayoutCache 合计，分开看用 WorkCounters 的 text_layout_cache_*）
+layouts_created              真正建出的 layout
+constraint_only_relayouts    其中复用已塑形 run 的（约束变化，不是新文本）
+text_layouts_reused          解析后句柄不变的节点
+```
+
+宿主 shaper 路径同样计数：`TextLayoutCache` 的 hit / miss 进 `layout_cache_hits/misses` 与
+`layout_cache_lookups`，它的 key 复制并 hash 整串文本，所以每个 key 同时计 `text_source_clones`
+与 `text_bytes_hashed`；只有真的 miss 才算 `text_nodes_shaped`。没有自身文本、却被调度趟测量的
+盒子不计入文本节点。引擎的工作只记在这里：`WorkCounters` 的 `text_shaped_runs` /
+`text_layout_cache_*` 保持宿主 `TextShaper::shape` 与 `TextLayoutCache` 的原义。没跑文本 pass
+的空闲帧不覆盖这份计数，与 `last_work_counters` 一致；失败的一趟不留下任何计数给下一趟。
+
+`nana-dirty-frame-benchmark` 把它们按帧平均（小数，不把只在部分帧发生的工作抹成 0）写进每格的
+`text_work`，并支持
+`--engine measure|nana-text`（后者用内置 UI 字体的真实引擎解析每个标签）。
+
+### 测试
+
+`crates/nana-ui-scene/tests/retained_text_node.rs` 全部走 `RuntimeDocument::flush`：
+标签保留的 layout 与度量同源且进入场景、只改对齐 / 只改 line-clamp 也重排保留的 layout、非 Text
+元素清空文本释放 layout、宿主不再提供引擎时全部释放、语言变化让组件文本在引擎宿主下重测、移动全部标签但不改尺寸的帧里每个标签都是候选且零文本
+工作、句柄不变、同约束重新解析拿回同一份 layout 时句柄复用、颜色 / 语义前景 / opacity /
+transform 不碰 shaping 与 layout、宽度变化只重排（`constraint_only_relayouts == layouts_created`）、
+内容变化只 shape 改动的那个节点、feature 变化重塑形但不复制文本、相同标签共享一份 layout 且
+建出的 layout 数不随数量增长、#33 head-dirty 工作负载（两种后端）每个候选都凭 revision 跳过且
+候选数线性、字体集合变化让静止文档也换掉旧代际 layout（EmptyState 这类不打戳的文本同样重测）、空 Text 节点在
+新字体下重测行高、标签变成 EmptyState 时释放 layout、字体代际相同的另一个宿主 shaper 也会重新测量、失败的一趟不留戳且重试会重新解析、同一趟里
+组件文本经同一引擎测量（不死锁，且引擎这一帧建出的 layout 全部计入帧计数）、删除 / reparent / 拆除的
+句柄生命周期、
+transform + opacity 稳态动画不动 revision、padding 动画重排、高度只变「确定」也算约束变化。
+「帧内零文本工作」的断言都与帧前的计数比较：计数保留上一个跑过文本 pass 的帧，只有被这一帧改写
+过的值才是这一帧的工作。
+`nana-text` 侧：`TextLayoutStore` 的释放后复用、跨 store、旧字体代际；`ShapedRun.instance`
+带变体坐标；语言提示变化推进引擎代际。Runtime 单测覆盖 dirty graph 本身与样式分类。
+
+### 本阶段没做的
+
+| 项 | 状态 |
+| --- | --- |
+| 产品绘制 retained layout | #97：cryoglyph 的 `TextArea` 只接受 cosmic `Buffer` 的 `LayoutRunIter`，不能喂外部 glyph run；`SceneWgpuPainter` 仍自行 cosmic 塑形，产品宿主因此不返回引擎 |
+| Editable 文本 | #96：TextInput 仍走宿主 shaper 的 presentation 路径，不打戳 |
+| font-size / 字体轴动画 | Runtime 尚无 CPU 写回路径；一旦写回计算样式，会按 `SHAPE_STYLE` 分类 |
 
 ## #33 迁移基准
 
@@ -799,6 +982,24 @@ Phase 3 落地后复测（Linux 容器，4 vCPU Xeon @ 2.80 GHz，2026-09-16，p
 数 0），基准二进制因此不可能因本阶段改动而改变；这三行是这台机器上的新基线，下一阶段在同一台机器上
 复测才有可比性。
 
+Phase 4 落地前后同机对比（Apple M4，10 核，macOS，2026-09-17，p50，150 samples / 30 warmup）。
+这一轮换了机器，只在本轮内部比：
+
+| 节点 | 前 TextShape | 前 Layout | 前 倍率 | 后 TextShape | 后 Layout | 后 倍率 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,002 | 0.038 ms | 1.118 ms | 3.4% | 0.017 ms | 1.083 ms | 1.5% |
+| 4,002 | 0.119 ms | 3.055 ms | 3.9% | 0.060 ms | 2.590 ms | 2.3% |
+| 8,002 | 0.300 ms | 6.610 ms | 4.5% | 0.126 ms | 6.136 ms | 2.1% |
+
+「后」三格的 `text_work` 每帧都是 `text_nodes_considered == text_nodes_revision_skipped`
+（1000 / 2000 / 4000），`text_nodes_shaped`、`text_source_clones`、`text_bytes_hashed`、
+`shape_cache_lookup`、`layout_cache_lookup`、`layouts_created` 全为 0；`--engine nana-text`
+（每个标签保留真实 `TextLayout`）三格为 0.016 / 0.062 / 0.131 ms，计数器相同。
+
+剩下的增长是候选扫描本身：每个候选一次侧表查找，节点翻倍时它跟 Layout 一样随工作集出 cache
+略超线性，但相对 Layout 的倍率已经基本持平（2.3% / 2.1%）。改动前的额外部分来自每个候选都要读整条
+`NodeRecord`、查 visual、解引用计算样式、算约束，才能决定跳过。
+
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
@@ -829,10 +1030,12 @@ python3 scripts/build-text-corpus-fonts.py --check   # 需要 fonttools
 cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
 ```
 
-证明产品路径没动：
+证明参照引擎没有进入产品依赖：
 
 ```bash
 # 注意 --edges normal：默认的 cargo tree 会把 dev 边也列出来，而参照引擎正是一条 dev 边。
 cargo tree -p nana-text --locked --edges normal | grep -ci cosmic   # 0
-cargo tree -p nana-ui --locked | grep -ci nana-text                 # 0
 ```
+
+Phase 4 起 `nana-ui-runtime` 依赖 `nana-text`（保留文本节点与句柄），所以 `nana-ui` 的依赖树里
+有它；绘制仍不经过它。

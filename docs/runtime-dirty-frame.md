@@ -1001,6 +1001,13 @@ FIFO cap=2048: 2000 条唯一文本全进 cache,inner=0;4000 条时 FIFO 不随 
 跟真实路径一致:跳过不记成 cache hit。绝对毫秒数与上表首次归因(另一台机器 0.180 / 2.767)
 不可比。
 
+Issue #95 之后,第二条换成了保留文本节点的 revision 戳:跳过判定在构建 editor presentation、
+计算约束之前,只读 `NodeStore` 文本侧表里的一条小条目;内容 / 塑形样式 / 约束各有 revision,
+颜色、opacity、transform 不 bump 它们。无自身文本的容器也打戳,下一趟一次读表即跳过。同机
+(Apple M4)复测 TextShape 0.038 / 0.119 / 0.300 ms → 0.017 / 0.060 / 0.126 ms,相对 Layout
+3.4% / 3.9% / 4.5% → 1.5% / 2.3% / 2.1%,每帧 `text_work` 的 `text_nodes_revision_skipped` 等于
+候选数,其余口径为 0。见 [文本引擎](text-engine.md) 的「UiWorld 保留文本节点」与「#33 迁移基准」。
+
 **全量通道之后的第一帧增量是 O(文档) 的**,见上面第二条。这是刻意换来的:全量通道本身就
 是 O(文档),而在它上面记录计划会让每一帧全量都贵 42%。
 
@@ -1067,7 +1074,7 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 ```
 
 `--shape paint|layout|nested|nested-auto|layout-auto`、`--position head|tail|spread`、
-`--rows`、`--dirty`、`--samples`、`--warmup`。stderr 打人读表格（含分段与
+`--rows`、`--dirty`、`--samples`、`--warmup`、`--engine measure|nana-text`。stderr 打人读表格（含分段与
 `layout_document_observed` 的四个子阶段），`--output` 写 JSON。第五轮的两份报告是
 `performance-data/runtime-dirty-frame-2026-09-08/dirty-frame-measure-plan-{before,after}.json`。
 

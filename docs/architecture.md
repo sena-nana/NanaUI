@@ -27,12 +27,14 @@ Vue + JS L1/L2（可选宿主）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 
-文本引擎骨架（Phase 0–3，不在产品绘制路径）
+文本引擎（Phase 0–4，不在产品绘制路径）
     nana-text            文本 IR、稳定代际 ID、结构化 diff 与迁移语料；
                          字体层（注册 / 代际 / 匹配 / 变体坐标 / fallback）；
                          shaping（分段 / BiDi / HarfRust / ShapeRun cache）；
                          layout（Label fast path / UAX #14 断行 / 行内视觉序 /
-                         行盒度量 / 对齐 / 省略号 / layout cache）。
+                         行盒度量 / 对齐 / 省略号 / layout cache）；
+                         retained layout 句柄（TextLayoutStore）。
+                         Runtime 的保留文本节点经它解析（NanaTextEngineShaper），
                          产品文本仍走 nana-ui/nana_text.rs（cosmic-text）与
                          scene_paint/text.rs（cryoglyph）。见 [文本引擎](text-engine.md)
 
@@ -44,7 +46,7 @@ Vue + JS L1/L2（可选宿主）
 
 依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
 
-`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。产品 crate 目前**不**依赖 `nana-text`；它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达。
+`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达。
 
 产品路径：
 
