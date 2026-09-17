@@ -68,13 +68,25 @@ impl MotionValue {
         }
     }
 
+    /// Interpolates at `t`, which is the **eased** progress and may therefore
+    /// leave `0..=1`.
+    ///
+    /// Clamping it here would silently delete the overshoot that is the whole
+    /// point of a `cubic-bezier` whose control points reach past 1 (every
+    /// "back" / anticipation curve), and would leave
+    /// [`MotionSample::progress`] disagreeing with [`MotionSample::value`].
+    /// Springs already overshoot, because the physics path does not come
+    /// through here at all.
+    ///
+    /// Colour is the one exception: a channel is clamped to its own range
+    /// after interpolating, the way a browser clamps an interpolated colour to
+    /// the gamut rather than refusing to overshoot.
     pub fn lerp(self, to: Self, t: f32) -> Self {
-        let t = t.clamp(0.0, 1.0);
         match (self, to) {
             (Self::Scalar(a), Self::Scalar(b)) => Self::Scalar(a + (b - a) * t),
-            (Self::Color(a), Self::Color(b)) => {
-                Self::Color(std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t))
-            }
+            (Self::Color(a), Self::Color(b)) => Self::Color(std::array::from_fn(|i| {
+                (a[i] + (b[i] - a[i]) * t).clamp(0.0, 1.0)
+            })),
             (Self::Transform(a), Self::Transform(b)) => Self::Transform(PaintTransform {
                 a: a.a + (b.a - a.a) * t,
                 b: a.b + (b.b - a.b) * t,
@@ -237,11 +249,12 @@ fn sample_steps(progress: f32, count: u32, jump: StepJump) -> f32 {
             }
         }
         StepJump::Start => {
-            if p <= 0.0 {
-                0.0
-            } else {
-                ((p * n).ceil() / n).min(1.0)
-            }
+            // The CSS easing algorithm increments the current step for
+            // `jump-start`, so input 0 is already 1/n — a `steps(4,
+            // jump-start)` that rendered 0 on its first frame would have five
+            // notches, not four. `ceil` also lands a step low exactly on a
+            // boundary.
+            (((p * n).floor() + 1.0) / n).min(1.0)
         }
         StepJump::None => {
             if count <= 1 {
@@ -762,5 +775,22 @@ mod tests {
         assert_eq!(compiled[0].timing.start, Duration::ZERO);
         assert_eq!(compiled[1].timing.start, Duration::from_millis(100));
         assert!(matches!(compiled[0].to, MotionTo::Value(_)));
+    }
+
+    /// `steps(n, jump-start)` jumps on the way in: input 0 is already 1/n.
+    /// Returning 0 there gives the curve n + 1 notches.
+    #[test]
+    fn steps_jump_start_takes_its_first_step_immediately() {
+        assert_eq!(sample_steps(0.0, 4, StepJump::Start), 0.25);
+        assert_eq!(sample_steps(0.1, 4, StepJump::Start), 0.25);
+        assert_eq!(sample_steps(0.25, 4, StepJump::Start), 0.5);
+        assert_eq!(sample_steps(0.99, 4, StepJump::Start), 1.0);
+        assert_eq!(sample_steps(1.0, 4, StepJump::Start), 1.0);
+
+        // The other three jumps are unchanged, including `both`, which already
+        // stepped at 0.
+        assert_eq!(sample_steps(0.0, 4, StepJump::End), 0.0);
+        assert_eq!(sample_steps(0.0, 4, StepJump::Both), 0.2);
+        assert_eq!(sample_steps(0.0, 4, StepJump::None), 0.0);
     }
 }

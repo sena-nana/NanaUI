@@ -193,10 +193,9 @@ fn motion_sample_steps(progress: f32, count: u32, jump: u32) -> f32 {
         return floor(p * n) / n;
     }
     if (jump == 0u) {
-        if (p <= 0.0) {
-            return 0.0;
-        }
-        return min(ceil(p * n) / n, 1.0);
+        // Mirrors `sample_steps`: the CSS algorithm increments the current
+        // step for `jump-start`, so input 0 is already 1/n.
+        return min((floor(p * n) + 1.0) / n, 1.0);
     }
     if (jump == 2u) {
         if (count <= 1u) {
@@ -225,8 +224,12 @@ fn motion_sample_progress(desc: MotionGpuDescriptor, linear: f32) -> f32 {
     return motion_sample_easing(desc.easing_kind, desc.bezier, p);
 }
 
+// Mirrors `MotionValue::lerp`: `t` is the *eased* progress and may leave
+// 0..1, because that is what a `cubic-bezier` with a control point past 1 is
+// for. Clamping it would delete the overshoot. A colour clamps per channel
+// afterwards instead, the way a browser clamps to the gamut.
 fn motion_lerp_value(from_v: MotionGpuValue, to_v: MotionGpuValue, t: f32) -> MotionGpuValue {
-    let u = clamp(t, 0.0, 1.0);
+    let u = t;
     var out = from_v;
     if (from_v.kind != to_v.kind) {
         if (u >= 1.0) {
@@ -238,6 +241,10 @@ fn motion_lerp_value(from_v: MotionGpuValue, to_v: MotionGpuValue, t: f32) -> Mo
     out.discrete = select(from_v.discrete, to_v.discrete, u >= 1.0);
     out.channels = from_v.channels + (to_v.channels - from_v.channels) * u;
     out.extra = from_v.extra + (to_v.extra - from_v.extra) * u;
+    if (from_v.kind == MOTION_KIND_COLOR) {
+        out.channels = clamp(out.channels, vec4<f32>(0.0), vec4<f32>(1.0));
+        out.extra = clamp(out.extra, vec4<f32>(0.0), vec4<f32>(1.0));
+    }
     return out;
 }
 
@@ -288,10 +295,12 @@ fn motion_interpolate_keyframes(desc: MotionGpuDescriptor, linear: f32) -> Motio
             return first.value;
         }
         let local = clamp(p / first.offset, 0.0, 1.0);
+        // The implicit keyframe at offset 0 is `from_value`, and it declares no
+        // easing, so this interval runs on the track's own curve.
         return motion_lerp_value(
             desc.from_value,
             first.value,
-            motion_local_ease(desc, first.easing_kind, first.bezier, local),
+            motion_local_ease(desc, 0xffffffffu, vec4<f32>(0.0), local),
         );
     }
     if (idx >= count) {
@@ -301,10 +310,12 @@ fn motion_interpolate_keyframes(desc: MotionGpuDescriptor, linear: f32) -> Motio
     let next = motion_keyframe(desc.keyframe_start + idx);
     let span = max(next.offset - prev.offset, 1e-7);
     let local = clamp((p - prev.offset) / span, 0.0, 1.0);
+    // Mirrors `interpolate_keyframes`: the stop that *opens* the interval
+    // supplies its timing function, as CSS Animations and the WAAPI define it.
     return motion_lerp_value(
         prev.value,
         next.value,
-        motion_local_ease(desc, next.easing_kind, next.bezier, local),
+        motion_local_ease(desc, prev.easing_kind, prev.bezier, local),
     );
 }
 
@@ -584,7 +595,14 @@ fn motion_evaluate_physics(desc: MotionGpuDescriptor, now: f32, decay: bool) -> 
         return sample;
     }
     let t = max(now - start, 0.0);
-    let rest = desc.to_value;
+    // A decay has no target: it settles at its own asymptote, x0 + v0 * tau,
+    // which is what `evaluate_decay` measures against. Measuring against
+    // `to_value` (which a decay track never sets) leaves `finished` and
+    // `progress` disagreeing with the CPU reference for the whole fling.
+    var rest = desc.to_value;
+    if (decay) {
+        rest = motion_physics_state(desc.from_value, desc.to_value, desc.velocity, desc, 1000.0, true).pos;
+    }
     let state = motion_physics_state(desc.from_value, rest, desc.velocity, desc, t, decay);
     let finished = motion_is_settled(state.pos, rest, state.vel);
     sample.value = state.pos;

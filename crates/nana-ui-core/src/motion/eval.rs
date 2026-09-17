@@ -132,7 +132,9 @@ fn interpolate_keyframes(
             return first.value;
         }
         let local = (p / first.offset).clamp(0.0, 1.0);
-        return from.lerp(first.value, ease_local(curve, first.easing, local));
+        // The implicit keyframe at offset 0 is `from`, and it declares no
+        // easing of its own, so this interval runs on the track's curve.
+        return from.lerp(first.value, ease_local(curve, None, local));
     }
     if idx >= stops.len() {
         return stops[stops.len() - 1].value;
@@ -141,8 +143,12 @@ fn interpolate_keyframes(
     let next = stops[idx];
     let span = (next.offset - prev.offset).max(f32::EPSILON);
     let local = ((p - prev.offset) / span).clamp(0.0, 1.0);
+    // CSS Animations and the Web Animations API give a keyframe's timing
+    // function to the interval that *starts* at it, not the one that ends
+    // there. Reading `next.easing` shifts every per-stop easing one interval
+    // late and applies the last stop's, which governs nothing.
     prev.value
-        .lerp(next.value, ease_local(curve, next.easing, local))
+        .lerp(next.value, ease_local(curve, prev.easing, local))
 }
 
 fn ease_local(curve: MotionCurve, stop: Option<Easing>, local: f32) -> f32 {
@@ -181,6 +187,12 @@ fn timed_velocity(track: &MotionTrack, now: Duration) -> MotionValue {
 
 const SETTLE_POSITION: f32 = 0.001;
 const SETTLE_VELOCITY: f32 = 0.01;
+/// Longest settle time either physics curve will report.
+///
+/// The spring search stops doubling at 120 s; decay is analytic and would
+/// otherwise hand `Duration::from_secs_f32` whatever a huge time constant
+/// produces.
+const MAX_SETTLE_SECONDS: f32 = 128.0;
 
 fn evaluate_spring(track: &MotionTrack, now: Duration, params: SpringParams) -> MotionSample {
     let Some(start) = track.timing.effective_start() else {
@@ -570,6 +582,13 @@ pub(super) fn decay_settle_duration(
         return Some(Duration::ZERO);
     }
     let t = params.time_constant * (v0 / SETTLE_VELOCITY).ln();
+    // `from_secs_f32` panics on a non-finite or out-of-range value, and an
+    // infinite velocity is one division by a zero timestep away — a fling
+    // whose delta was measured over no time at all. No deadline is the honest
+    // answer; a panic in the frame loop is not.
+    if !t.is_finite() || t > MAX_SETTLE_SECONDS {
+        return None;
+    }
     Some(Duration::from_secs_f32(t.max(0.0)))
 }
 
@@ -612,6 +631,115 @@ mod tests {
             curve,
             AnimationPlayback::default(),
         )
+    }
+
+    /// An overshooting curve is the whole reason `cubic-bezier` accepts y
+    /// control points outside 0..1; a clamped interpolation deletes it and
+    /// leaves `progress` and `value` describing different animations.
+    #[test]
+    fn an_overshooting_curve_carries_the_overshoot_into_the_value() {
+        let mut track = track(MotionCurve::Easing(Easing::CubicBezier([
+            0.34, 1.56, 0.64, 1.0,
+        ])));
+        track.from = MotionValue::Scalar(0.0);
+        track.to = MotionTo::Value(MotionValue::Scalar(100.0));
+        let sample = evaluate_track(&track, Duration::from_millis(60));
+        assert!(
+            sample.progress > 1.0,
+            "ease-out-back overshoots by t = 0.6: {}",
+            sample.progress
+        );
+        let MotionValue::Scalar(value) = sample.value else {
+            panic!("a scalar track samples a scalar");
+        };
+        assert!(
+            (value - sample.progress * 100.0).abs() < 1e-3,
+            "value {value} does not follow progress {}",
+            sample.progress
+        );
+        assert!(value > 100.0, "the overshoot never reached the value");
+
+        // The end of the same animation still lands exactly on `to`.
+        let end = evaluate_track(&track, Duration::from_millis(100));
+        assert_eq!(end.value, MotionValue::Scalar(100.0));
+    }
+
+    /// A colour is the one value that does not extrapolate: a channel past its
+    /// own range is not a colour, so it clamps the way a browser clamps an
+    /// interpolated colour to the gamut.
+    #[test]
+    fn an_overshooting_curve_still_leaves_a_colour_in_range() {
+        let mut track = track(MotionCurve::Easing(Easing::CubicBezier([
+            0.34, 1.56, 0.64, 1.0,
+        ])));
+        track.from = MotionValue::Color([0.0, 0.0, 0.0, 0.0]);
+        track.to = MotionTo::Value(MotionValue::Color([1.0, 0.5, 0.25, 1.0]));
+        let sample = evaluate_track(&track, Duration::from_millis(60));
+        let MotionValue::Color(channels) = sample.value else {
+            panic!("a colour track samples a colour");
+        };
+        for channel in channels {
+            assert!(
+                (0.0..=1.0).contains(&channel),
+                "channel {channel} left the gamut: {channels:?}"
+            );
+        }
+    }
+
+    /// CSS gives a keyframe's timing function to the interval that *starts* at
+    /// it. Reading the ending stop's shifts every per-stop easing one interval
+    /// late and applies the last stop's, which governs nothing at all.
+    #[test]
+    fn a_keyframe_easing_governs_the_interval_that_starts_at_it() {
+        let mut track = track(MotionCurve::Easing(Easing::Linear));
+        track.from = MotionValue::Scalar(0.0);
+        track.to = MotionTo::Keyframes(vec![
+            Keyframe {
+                offset: 0.5,
+                value: MotionValue::Scalar(10.0),
+                easing: Some(Easing::EaseOutCubic),
+            },
+            Keyframe {
+                offset: 1.0,
+                value: MotionValue::Scalar(20.0),
+                easing: None,
+            },
+        ]);
+
+        // Half-way through the second interval, eased by the stop that opens
+        // it: ease-out-cubic(0.5) = 0.875 -> 10 + 10 * 0.875.
+        let sample = evaluate_track(&track, Duration::from_millis(75));
+        let MotionValue::Scalar(value) = sample.value else {
+            panic!("a scalar track samples a scalar");
+        };
+        let expected = 10.0 + 10.0 * Easing::EaseOutCubic.sample(0.5);
+        assert!(
+            (value - expected).abs() < 1e-4,
+            "{value} is not {expected}: the easing landed on the wrong interval"
+        );
+
+        // The first interval runs on the track's curve, because the implicit
+        // keyframe at offset 0 declares none.
+        let first = evaluate_track(&track, Duration::from_millis(25));
+        assert_eq!(first.value, MotionValue::Scalar(5.0));
+    }
+
+    /// A fling whose velocity was measured over no time at all arrives as
+    /// `inf`, and `Duration::from_secs_f32` panics on it.
+    #[test]
+    fn a_non_finite_decay_velocity_has_no_deadline_instead_of_a_panic() {
+        for velocity in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let settle = decay_settle_duration(
+                MotionValue::Scalar(velocity),
+                DecayParams { time_constant: 0.3 },
+            );
+            assert_eq!(settle, None, "velocity {velocity} produced a deadline");
+        }
+        let sane = decay_settle_duration(
+            MotionValue::Scalar(400.0),
+            DecayParams { time_constant: 0.3 },
+        );
+        assert!(sane.is_some_and(|settle| settle > Duration::ZERO));
     }
 
     #[test]

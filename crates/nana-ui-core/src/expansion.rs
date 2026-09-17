@@ -76,6 +76,18 @@ impl ExpansionState {
             MotionCurve::Easing(Easing::EaseInOutCubic),
             now,
         );
+        // Outside the transition's window the sample does not apply: the
+        // default playback has no fill mode, so `progress` reads 0 — the
+        // *start* value, not the end. Sampling it blind would snap the panel
+        // shut one frame after it finished opening, and `set_expanded` would
+        // then seed the next transition from that wrong value.
+        if !sample.applies {
+            return if now < transition.started_at {
+                transition.from
+            } else {
+                transition.to
+            };
+        }
         transition.from + (transition.to - transition.from) * sample.progress
     }
 }
@@ -99,5 +111,30 @@ mod tests {
         assert!(state.is_animating_at(Duration::from_millis(339)));
         assert!(!state.is_animating_at(Duration::from_millis(340)));
         assert_eq!(state.value_at(Duration::from_millis(340)), 1.0);
+    }
+
+    /// A finished transition holds its end value for good. The sample stops
+    /// applying the moment the duration is up, and its `progress` reads 0 —
+    /// the value the transition *started* from.
+    #[test]
+    fn a_finished_expansion_stays_where_it_finished() {
+        let mut state = ExpansionState::new(false, Duration::from_millis(200));
+        assert!(state.set_expanded(true, Duration::ZERO));
+        for now in [200, 201, 1_000, 60_000] {
+            assert_eq!(
+                state.value_at(Duration::from_millis(now)),
+                1.0,
+                "collapsed again at t = {now} ms"
+            );
+        }
+        assert!(!state.is_animating_at(Duration::from_millis(201)));
+
+        // And the reverse direction holds 0 rather than snapping back open.
+        assert!(state.set_expanded(false, Duration::from_millis(1_000)));
+        assert_eq!(state.value_at(Duration::from_millis(1_400)), 0.0);
+
+        // Seeding the next transition reads the same held value.
+        assert!(state.set_expanded(true, Duration::from_millis(2_000)));
+        assert_eq!(state.value_at(Duration::from_millis(2_000)), 0.0);
     }
 }
