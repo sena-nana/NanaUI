@@ -160,8 +160,12 @@ impl AppContext {
         {
             return Ok(false);
         }
+        let composing = self
+            .world
+            .ime(target)
+            .is_some_and(|composition| !composition.text.is_empty());
         let mut next = state.clone();
-        if !next.delete_surrounding(before_bytes, after_bytes) {
+        if !next.delete_ime_surrounding(before_bytes, after_bytes, composing) {
             return Ok(false);
         }
         let mut mutations = MutationQueue::new();
@@ -179,11 +183,15 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
+        let composing = self
+            .world
+            .ime(entity.stable_id())
+            .is_some_and(|composition| !composition.text.is_empty());
         let snippet = self.world.text_snippet_session(entity.stable_id());
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
         let changed = self.commit_editor_edit(entity, TextEditOrigin::Ime, |editable, _| {
-            if !editable.delete_surrounding(before_bytes, after_bytes) {
+            if !editable.delete_surrounding(before_bytes, after_bytes, composing) {
                 return false;
             }
             if let Some(session) = &snippet
@@ -669,6 +677,32 @@ mod composition_tests {
             assert_eq!(context.world().text_input(node).unwrap().value, "ab");
         }
     }
+    #[test]
+    fn ime_surrounding_delete_keeps_the_text_a_preedit_stands_in_for() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, TextInput::new("hello foo bar"))
+            .unwrap();
+        let node = field.stable_id();
+        context.focus_node(document, node).unwrap();
+        assert!(context.select_focused_text_range(document, 6, 9).unwrap());
+        context.set_ime_preedit(document, "x".into(), None).unwrap();
+        assert!(context.delete_ime_surrounding(document, 1, 1).unwrap());
+        let state = context.world().text_input(node).unwrap();
+        assert_eq!(state.value, "hellofoobar");
+        assert_eq!(
+            state.selection.ordered(),
+            5..8,
+            "the replaced text survives"
+        );
+        assert!(context.clear_ime(document).unwrap());
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "hellofoobar"
+        );
+    }
+
     #[test]
     fn ime_surrounding_delete_and_empty_preedit_keep_their_explicit_edit_contracts() {
         let mut context = AppContext::new();

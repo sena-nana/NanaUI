@@ -165,8 +165,18 @@ impl CommandPalette {
         true
     }
 
-    pub fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
-        if !self.state.delete_surrounding(before_bytes, after_bytes) {
+    /// Delete IME surrounding text; `composing` keeps the selection a preedit
+    /// stands in for (see [`crate::TextInputState::delete_ime_surrounding`]).
+    pub fn delete_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
+        if !self
+            .state
+            .delete_ime_surrounding(before_bytes, after_bytes, composing)
+        {
             return false;
         }
         self.query = self.state.value.clone();

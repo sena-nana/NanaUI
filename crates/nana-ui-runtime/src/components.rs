@@ -2886,31 +2886,55 @@ impl TextInputState {
         true
     }
 
-    /// Delete UTF-8 bytes before and after the current selection.
+    /// Delete UTF-8 bytes before and after the current selection, and the
+    /// selection with them.
     ///
     /// IME preedit is stored separately and is not touched. Returns false when
     /// the selection is invalid, the span is empty, the range would overflow,
     /// or either end is not a character boundary.
     pub fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+        self.delete_ime_surrounding(before_bytes, after_bytes, false)
+    }
+
+    /// [`Self::delete_surrounding`] as an IME asks for it. While `composing`,
+    /// the selection is the text the preedit stands in for: it is kept, and
+    /// only the bytes around it go, so cancelling the composition still finds
+    /// it. The rule is `nana-text`'s ([`nana_text::editable::ime`]).
+    pub fn delete_ime_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
         if !self.selection.is_valid_for(&self.value) {
             return false;
         }
-        let range = self.selection.ordered();
-        let Some(start) = range.start.checked_sub(before_bytes) else {
+        let anchor = self.selection.ordered();
+        let Some(deletion) = nana_text::editable::ime::surrounding_deletion(
+            &self.value,
+            anchor.clone(),
+            before_bytes,
+            after_bytes,
+            composing,
+        ) else {
             return false;
         };
-        let Some(end) = range.end.checked_add(after_bytes) else {
-            return false;
+        // The later range first, so the earlier one's offsets still hold.
+        for range in [deletion.after.clone(), deletion.before.clone()] {
+            if range.is_empty() {
+                continue;
+            }
+            self.value.replace_range(range.clone(), "");
+            self.remap_selections_after_edit(range.start, range.len(), 0);
+        }
+        self.selection = if composing {
+            TextSelection {
+                anchor: deletion.map_offset(anchor.start),
+                focus: deletion.map_offset(anchor.end),
+            }
+        } else {
+            TextSelection::caret(deletion.before.start)
         };
-        if end > self.value.len() || start == end {
-            return false;
-        }
-        if !self.value.is_char_boundary(start) || !self.value.is_char_boundary(end) {
-            return false;
-        }
-        self.value.replace_range(start..end, "");
-        self.selection = TextSelection::caret(start);
-        self.remap_selections_after_edit(start, end - start, 0);
         self.normalize_selections();
         true
     }

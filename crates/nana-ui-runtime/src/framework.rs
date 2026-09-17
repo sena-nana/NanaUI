@@ -106,9 +106,15 @@ trait EditableText: ComponentView {
     fn commit_ime_text(&mut self, text: &str) -> bool {
         self.state_mut().replace_primary_selection(text)
     }
-    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
+    /// `composing`: a preedit stands in for the selection, which is kept.
+    fn delete_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
         self.state_mut()
-            .delete_surrounding(before_bytes, after_bytes)
+            .delete_ime_surrounding(before_bytes, after_bytes, composing)
     }
     fn state(&self) -> &TextInputState;
     fn state_mut(&mut self) -> &mut TextInputState;
@@ -256,8 +262,13 @@ impl EditableText for SearchDropdown {
         self.replace_selection(text)
     }
 
-    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
-        self.delete_surrounding(before_bytes, after_bytes)
+    fn delete_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
+        self.delete_surrounding(before_bytes, after_bytes, composing)
     }
 
     fn state(&self) -> &TextInputState {
@@ -302,8 +313,16 @@ impl EditableText for ContextMenu {
         self.replace_selection(text)
     }
 
-    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
-        if !self.state.delete_surrounding(before_bytes, after_bytes) {
+    fn delete_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
+        if !self
+            .state
+            .delete_ime_surrounding(before_bytes, after_bytes, composing)
+        {
             return false;
         }
         self.sync_query_from_state();
@@ -348,8 +367,13 @@ impl EditableText for CommandPalette {
         self.replace_selection(text)
     }
 
-    fn delete_surrounding(&mut self, before_bytes: usize, after_bytes: usize) -> bool {
-        self.delete_surrounding(before_bytes, after_bytes)
+    fn delete_surrounding(
+        &mut self,
+        before_bytes: usize,
+        after_bytes: usize,
+        composing: bool,
+    ) -> bool {
+        self.delete_surrounding(before_bytes, after_bytes, composing)
     }
 
     fn state(&self) -> &TextInputState {
