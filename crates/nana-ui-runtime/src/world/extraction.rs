@@ -272,6 +272,13 @@ impl UiWorld {
             style,
             text,
             text_metrics,
+            text_layout: has_text
+                .then(|| self.text_layout(id))
+                .flatten()
+                .map(|(id, layout)| crate::RetainedTextLayout {
+                    id,
+                    layout: Arc::clone(layout),
+                }),
             focused: self.input.focused.get(&document) == Some(&id),
             ime: self.nodes.ime(id).cloned(),
             text_input: self.nodes.text_input(id).cloned(),

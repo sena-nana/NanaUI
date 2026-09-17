@@ -772,6 +772,11 @@ impl SceneWgpuPainter {
                             italic,
                             wrap_break,
                             opentype,
+                            // This painter still lays text out itself through
+                            // cosmic-text, and its hosts' shapers measure with
+                            // the same engine, so no scene it paints carries a
+                            // layout. Drawing retained layouts is #97's.
+                            layout: _,
                         } => {
                             let mut push_text =
                                 |commands: &mut Vec<DrawCommand>,

@@ -890,6 +890,7 @@ mod tests {
             }),
             text: None,
             text_metrics: None,
+            text_layout: None,
             z_index: 0,
             focused: false,
             ime: None,

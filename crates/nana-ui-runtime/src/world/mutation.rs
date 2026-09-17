@@ -1299,6 +1299,23 @@ impl UiWorld {
                     || previous.layout.isolation != style.layout.isolation;
                 let layout_changed =
                     layout_semantics_changed(previous.layout.as_ref(), style.layout.as_ref());
+                if !super::text::same_text_constraint_inputs(&previous, style) {
+                    self.nodes
+                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
+                }
+                if previous.text_horizontal_alignment != style.text_horizontal_alignment
+                    && self
+                        .nodes
+                        .text_node(*id)
+                        .is_some_and(|text| !text.layout.is_null())
+                {
+                    // Only a retained layout places lines by alignment; host
+                    // metrics do not read it. It moves no box, so no layout
+                    // scope reaches the text: schedule it explicitly.
+                    self.nodes
+                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
+                    self.mark(*id, DirtyMask::TEXT);
+                }
                 self.record_mut(*id).style = style.clone();
                 self.sync_node_presence(*id);
 
@@ -1399,8 +1416,12 @@ impl UiWorld {
                 ));
             }
             UiMutation::SetText { id, text } => {
-                self.record_mut(*id).text = text.clone();
-                self.bump_text_gen(*id);
+                // Re-setting the same text is not a content change: nothing
+                // about the node's shaping or layout moved.
+                if self.record(*id).text != *text {
+                    self.record_mut(*id).text = text.clone();
+                    self.invalidate_text_content(*id);
+                }
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
@@ -1415,7 +1436,16 @@ impl UiWorld {
                 }
             }
             UiMutation::WriteLayout { id, layout } => {
-                self.record_mut(*id).layout = *layout;
+                let record = self.record_mut(*id);
+                // A box that only moved leaves its text's constraints alone;
+                // one that changed size is a new container for it.
+                let resized = record.layout.width.to_bits() != layout.width.to_bits()
+                    || record.layout.height.to_bits() != layout.height.to_bits();
+                record.layout = *layout;
+                if resized {
+                    self.nodes
+                        .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
+                }
                 // Scoped layout already emits every recomputed box, including
                 // shifted descendants. Mark only this node so a bit-identical
                 // child is not extracted solely because an ancestor was written.
@@ -1575,7 +1605,14 @@ impl UiWorld {
                         text_folds_changed,
                     )
                 };
+                let text_path_changed = super::text_visual_key(self.nodes.visual(*id))
+                    != super::text_visual_key(visual.as_ref());
                 self.nodes.set_visual(*id, visual.clone());
+                if text_path_changed {
+                    // The text path or a leading indicator's inset changed; the
+                    // box may not move, so schedule the text explicitly.
+                    self.mark(*id, DirtyMask::TEXT);
+                }
                 self.sync_node_presence(*id);
                 if !matches!(visual, Some(StandardVisual::TextInput { .. })) {
                     self.nodes.set_text_input_presentation(*id, None);
@@ -1785,6 +1822,8 @@ impl UiWorld {
             }
             UiMutation::SetIme { id, composition } => {
                 self.nodes.set_ime(*id, composition.clone());
+                self.nodes
+                    .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 self.mark(
                     *id,
                     DirtyMask::TEXT | DirtyMask::FOCUS_IME | DirtyMask::RENDER,
@@ -1807,11 +1846,11 @@ impl UiWorld {
                     self.record_mut(*id).text = TextContent {
                         value: state.value.clone(),
                     };
-                    self.bump_text_gen(*id);
+                    self.invalidate_text_content(*id);
                 } else {
                     self.nodes.set_text_input(*id, None);
                     self.record_mut(*id).text = TextContent::default();
-                    self.bump_text_gen(*id);
+                    self.invalidate_text_content(*id);
                     self.remove_ime(*id);
                 }
                 // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
@@ -1842,6 +1881,8 @@ impl UiWorld {
                     .text_input_mut(*id)
                     .expect("entity must have runtime component")
                     .selection = *selection;
+                self.nodes
+                    .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 self.mark(
                     *id,
                     DirtyMask::TEXT
@@ -1861,7 +1902,7 @@ impl UiWorld {
                 };
                 debug_assert!(replaced, "validated selection must remain valid");
                 self.record_mut(*id).text = TextContent { value };
-                self.bump_text_gen(*id);
+                self.invalidate_text_content(*id);
                 self.mark(
                     *id,
                     DirtyMask::TEXT

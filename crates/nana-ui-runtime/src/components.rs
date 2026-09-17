@@ -1785,10 +1785,26 @@ pub trait TextShaper {
     ) -> TextMetrics;
 
     /// Generation of the font set [`Self::shape`] measures against. A change
-    /// makes every metric measured under the old one stale. A host whose fonts
-    /// never change keeps 0.
+    /// makes every metric measured under the old one stale, so text resolved
+    /// before it is resolved again. A host whose fonts never change keeps 0.
     fn font_generation(&self) -> u64 {
         0
+    }
+
+    /// The `nana-text` engine plain text nodes resolve through, for a host
+    /// that draws the retained [`nana_text::TextLayout`]s they then hold.
+    /// `None` keeps plain text on [`Self::shape`]. Measuring with one engine
+    /// and drawing with another would put two measurement authorities on one
+    /// node, so a host returns an engine only if its renderer draws layouts.
+    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
+        None
+    }
+
+    /// Text work the host did inside [`Self::shape`] since the last call, for
+    /// hosts whose shaper reports it (a `nana-text` engine's cache and layout
+    /// counts). The pass counts the nodes themselves.
+    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
+        nana_text::TextWorkCounters::default()
     }
 
     /// Shape using the Runtime-owned [`crate::GlyphCache`].
@@ -3062,6 +3078,10 @@ pub struct ExtractedNode {
     pub style: Arc<ComputedStyle>,
     pub text: Option<TextContent>,
     pub text_metrics: Option<TextMetrics>,
+    /// The `nana-text` layout `text_metrics` were read from, when a plain text
+    /// node resolved through an engine (Issue #95). `None` for text measured by
+    /// the host shaper, which a renderer still lays out itself.
+    pub text_layout: Option<crate::RetainedTextLayout>,
     pub z_index: i32,
     pub focused: bool,
     pub ime: Option<ImeComposition>,

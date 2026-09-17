@@ -2497,6 +2497,7 @@ dependencies = [
  "futures-core",
  "hashbrown 0.16.1",
  "mermaid-svg",
+ "nana-text",
  "nana-ui-core",
  "pulldown-cmark",
  "qrcode",
@@ -2515,6 +2516,7 @@ dependencies = [
 name = "nana-ui-scene"
 version = "0.1.0"
 dependencies = [
+ "nana-text",
  "nana-ui-core",
  "nana-ui-runtime",
  "serde",

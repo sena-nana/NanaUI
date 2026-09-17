@@ -13,6 +13,7 @@ mod scroll_bounds;
 mod style;
 mod text;
 use hit_test::*;
+pub(crate) use text::text_visual_key;
 use text::*;
 
 use std::{
@@ -461,6 +462,16 @@ pub struct UiWorld {
     pending_hot_allocated_bytes: Cell<usize>,
     text_layout_cache: crate::text_layout_cache::TextLayoutCache,
     glyph_cache: crate::GlyphCache,
+    /// The backend plain text last resolved against. A different one on a
+    /// later pass means every resolved text node is stale.
+    text_backend: Option<crate::text_node::TextBackendEpoch>,
+    /// Text work of the last pass, or of the last frame that ran one.
+    text_work: nana_text::TextWorkCounters,
+    /// Text work of the frame being accumulated.
+    text_frame_work: nana_text::TextWorkCounters,
+    /// Nodes style resolution turned visible since the last scheduled text
+    /// pass, which re-resolves them alongside its own work.
+    text_shown: Vec<StableNodeId>,
     /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
     /// confirm walks when this is zero.
     confirm_modals: usize,
@@ -585,6 +596,10 @@ impl UiWorld {
             pending_hot_allocated_bytes: Cell::new(0),
             text_layout_cache: crate::text_layout_cache::TextLayoutCache::default(),
             glyph_cache: crate::GlyphCache::default(),
+            text_backend: None,
+            text_work: nana_text::TextWorkCounters::default(),
+            text_frame_work: nana_text::TextWorkCounters::default(),
+            text_shown: Vec::new(),
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,
@@ -675,6 +690,7 @@ impl UiWorld {
     pub fn begin_frame_counters(&mut self) {
         self.commit_pending_hot_allocs();
         self.frame_counters = WorkCounters::default();
+        self.text_frame_work = nana_text::TextWorkCounters::default();
         self.frame_extracted_nodes = 0;
         self.frame_extracted_spans = 0;
         self.accumulating_frame = true;
@@ -717,6 +733,26 @@ impl UiWorld {
         self.last_counters.record_hot_path_allocation(count, bytes);
         if self.accumulating_frame {
             self.frame_counters.record_hot_path_allocation(count, bytes);
+        }
+    }
+
+    /// Text work (Issue #95) of the last shaping pass, or of every pass of
+    /// the last frame [`Self::begin_frame_counters`] accumulated that ran one: nodes
+    /// considered, skipped on revision alone, shaped, and what the passes
+    /// cloned, hashed and looked up to get there.
+    pub fn last_text_work_counters(&self) -> nana_text::TextWorkCounters {
+        self.text_work
+    }
+
+    fn record_text_work(&mut self, work: nana_text::TextWorkCounters) {
+        if self.accumulating_frame {
+            // Published as the frame goes, so an idle frame (no text pass)
+            // leaves the last frame that had one in place, as
+            // `last_work_counters` does.
+            self.text_frame_work.accumulate(work);
+            self.text_work = self.text_frame_work;
+        } else {
+            self.text_work = work;
         }
     }
 
@@ -1362,6 +1398,10 @@ impl UiWorld {
         let record = self.record_mut(id);
         let changed = record.layout_padding != Some(padding);
         record.layout_padding = Some(padding);
+        if changed {
+            self.nodes
+                .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+        }
         changed
     }
 
@@ -1456,9 +1496,15 @@ impl UiWorld {
             .expect("entity must have runtime component")
     }
 
-    fn bump_text_gen(&mut self, id: StableNodeId) {
-        let record = self.record_mut(id);
-        record.text_gen = record.text_gen.saturating_add(1);
+    /// Records a change to a node's authored text.
+    fn invalidate_text_content(&mut self, id: StableNodeId) {
+        self.nodes
+            .invalidate_text(id, crate::text_node::TextDirty::CONTENT);
+        if self.record(id).text.value.is_empty() {
+            // Emptied text has nothing to draw, and a non-Text element without
+            // text never reaches a text pass that could release it later.
+            self.nodes.release_text_layout(id);
+        }
     }
 
     pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {

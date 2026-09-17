@@ -3,6 +3,9 @@
 use super::*;
 use std::collections::HashMap;
 
+use crate::text_node::TextBackendEpoch;
+use nana_text::TextEngine as _;
+
 use crate::components::{
     TextDiagnosticHit, TextDiagnosticLabel, TextDiagnosticMark, TextDiagnosticSeverity,
     TextDiagnosticSpan,
@@ -14,6 +17,11 @@ pub(super) struct CountingShaper<'a, S: TextShaper> {
     pub(super) glyphs: &'a mut crate::GlyphCache,
     pub(super) runs: usize,
     pub(super) wrap_layouts: usize,
+    /// Cache keys built, and the text bytes each one copied and hashed.
+    pub(super) keys: usize,
+    pub(super) key_bytes: usize,
+    /// The host's font generation, read once for the pass's keys.
+    font_generation: u64,
 }
 
 impl<'a, S: TextShaper> CountingShaper<'a, S> {
@@ -22,12 +30,16 @@ impl<'a, S: TextShaper> CountingShaper<'a, S> {
         cache: &'a mut crate::text_layout_cache::TextLayoutCache,
         glyphs: &'a mut crate::GlyphCache,
     ) -> Self {
+        let font_generation = inner.font_generation();
         Self {
             inner,
             cache,
             glyphs,
             runs: 0,
             wrap_layouts: 0,
+            keys: 0,
+            key_bytes: 0,
+            font_generation,
         }
     }
 }
@@ -35,6 +47,14 @@ impl<'a, S: TextShaper> CountingShaper<'a, S> {
 impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
     fn font_generation(&self) -> u64 {
         self.inner.font_generation()
+    }
+
+    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
+        self.inner.text_engine()
+    }
+
+    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
+        self.inner.take_text_work()
     }
 
     fn with_text_probes<R>(
@@ -50,6 +70,9 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
             glyphs,
             runs,
             wrap_layouts,
+            keys,
+            key_bytes,
+            font_generation,
         } = self;
         inner.with_text_probes(text, style, constraints, |prepared| {
             let mut adapter = PreparedCountingShaper {
@@ -58,6 +81,9 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
                 glyphs,
                 runs,
                 wrap_layouts,
+                keys,
+                key_bytes,
+                font_generation: *font_generation,
             };
             consume(&mut adapter)
         })
@@ -104,7 +130,9 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = layout_cache_key(text, style, constraints, self.inner.font_generation());
+        let key = layout_cache_key(text, style, constraints, self.font_generation);
+        self.keys += 1;
+        self.key_bytes += text.value.len();
         if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
@@ -141,10 +169,21 @@ struct PreparedCountingShaper<'a> {
     glyphs: &'a mut crate::GlyphCache,
     runs: &'a mut usize,
     wrap_layouts: &'a mut usize,
+    keys: &'a mut usize,
+    key_bytes: &'a mut usize,
+    font_generation: u64,
 }
 impl TextShaper for PreparedCountingShaper<'_> {
     fn font_generation(&self) -> u64 {
         self.inner.font_generation()
+    }
+
+    fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
+        self.inner.text_engine()
+    }
+
+    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
+        self.inner.take_text_work()
     }
 
     fn shape(
@@ -154,7 +193,9 @@ impl TextShaper for PreparedCountingShaper<'_> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = layout_cache_key(text, style, constraints, self.inner.font_generation());
+        let key = layout_cache_key(text, style, constraints, self.font_generation);
+        *self.keys += 1;
+        *self.key_bytes += text.value.len();
         if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
@@ -2950,10 +2991,19 @@ impl UiWorld {
     /// Shape against the last published content box when it exists so wrap
     /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
     pub(crate) fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
+        self.text_shape_constraints_for(id, self.text_input_presentation_source(id).as_ref())
+    }
+
+    /// [`Self::text_shape_constraints`] for a caller that already built the
+    /// node's editor presentation source (or knows it has none).
+    pub(super) fn text_shape_constraints_for(
+        &self,
+        id: StableNodeId,
+        presentation: Option<&TextInputPresentationSource>,
+    ) -> crate::TextShapeConstraints {
         let source = &self.record(id).style;
         let layout = self.record(id).layout;
-        let presentation = self.text_input_presentation_source(id);
-        let text_input_multiline = presentation.as_ref().is_some_and(|source| source.multiline);
+        let text_input_multiline = presentation.is_some_and(|source| source.multiline);
         let is_text_input = presentation.is_some();
         let wrap = if is_text_input {
             text_input_multiline && source.layout.text_wraps()
@@ -2980,13 +3030,7 @@ impl UiWorld {
         }
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_edges();
-        let leading_visual = match self.nodes.visual(id) {
-            Some(StandardVisual::Checkbox { size, .. }) => {
-                size.indicator_size() + size.indicator_gap()
-            }
-            Some(StandardVisual::Switch { .. }) => 38.0,
-            _ => 0.0,
-        };
+        let leading_visual = text_leading_inset(self.nodes.visual(id));
         crate::TextShapeConstraints {
             max_width: if is_text_input && !text_input_multiline {
                 None
@@ -3021,6 +3065,59 @@ impl UiWorld {
             wrap_break,
         }
     }
+}
+
+/// True when two authored styles give a plain text node the same
+/// constraints for the same box: everything [`UiWorld::text_shape_constraints`]
+/// reads from [`NodeStyle`]. Alignment only matters to a retained layout and is
+/// handled where the style is set. Paint, transform and
+/// opacity live on the same `LayoutStyle` and are deliberately not compared;
+/// fonts are classified when the computed style resolves.
+pub(super) fn same_text_constraint_inputs(previous: &NodeStyle, next: &NodeStyle) -> bool {
+    if Arc::ptr_eq(&previous.layout, &next.layout) {
+        return true;
+    }
+    let (a, b) = (previous.layout.as_ref(), next.layout.as_ref());
+    let definite = |length: Option<nana_ui_core::LengthSpec>| {
+        length.is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+    };
+    a.text_wraps() == b.text_wraps()
+        && a.white_space.preserve_newlines() == b.white_space.preserve_newlines()
+        && a.text_wrap_break() == b.text_wrap_break()
+        && a.uses_text_ellipsis() == b.uses_text_ellipsis()
+        && a.resolved_line_clamp() == b.resolved_line_clamp()
+        && definite(a.height) == definite(b.height)
+        && definite(a.max_height) == definite(b.max_height)
+        && a.resolved_border_edges() == b.resolved_border_edges()
+        && a.padding == b.padding
+        && a.padding_top == b.padding_top
+        && a.padding_right == b.padding_right
+        && a.padding_bottom == b.padding_bottom
+        && a.padding_left == b.padding_left
+        && a.font_size.map(f32::to_bits) == b.font_size.map(f32::to_bits)
+}
+
+/// Width a leading indicator takes from the text box of a checkbox or switch.
+fn text_leading_inset(visual: Option<&StandardVisual>) -> f32 {
+    match visual {
+        Some(StandardVisual::Checkbox { size, .. }) => size.indicator_size() + size.indicator_gap(),
+        Some(StandardVisual::Switch { .. }) => 38.0,
+        _ => 0.0,
+    }
+}
+
+/// What plain text resolution reads from a node's visual: which text path the
+/// node takes, and the inset a leading indicator takes from its box. Two
+/// visuals with the same key cannot change a plain text node's constraints.
+pub(crate) fn text_visual_key(visual: Option<&StandardVisual>) -> (u8, u32) {
+    let path = match visual {
+        Some(StandardVisual::TextInput { .. }) => 1,
+        Some(StandardVisual::EmptyState { .. }) => 2,
+        Some(StandardVisual::ModalFrame { .. }) => 3,
+        // Every other visual leaves plain text on the plain path.
+        None | Some(_) => 0,
+    };
+    (path, text_leading_inset(visual).to_bits())
 }
 
 impl UiWorld {
@@ -3229,7 +3326,9 @@ impl UiWorld {
         ids: Vec<StableNodeId>,
         host: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
-        let font_generation = host.font_generation();
+        let backend = PlainTextBackend::of(host);
+        self.observe_text_backend(backend.epoch);
+        let mut work = nana_text::TextWorkCounters::default();
         // Same production adapter as [`Self::shape_text`].
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
@@ -3237,22 +3336,37 @@ impl UiWorld {
         let mut shaped = Vec::new();
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
+        let mut resolved = Vec::new();
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
         // Run the loop as one fallible unit so an invalid metric still hands
         // the caches back to the world instead of dropping them.
         let outcome = (|| -> Result<(), UiWorldError> {
             for id in ids {
+                // The whole per-node decision for text that is already resolved:
+                // a few integers on the record, before any text is read.
+                if self.plain_text_is_current(id, backend.epoch, &mut work) {
+                    continue;
+                }
+                if matches!(
+                    self.nodes.visual(id),
+                    Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+                ) {
+                    // Its text is the visual's own now; a layout it held as
+                    // plain text is not drawn any more.
+                    self.nodes.release_text_layout(id);
+                }
                 let computed = self.record(id).resolved.0.as_ref();
-                if let Some(visual @ StandardVisual::EmptyState { compact, .. }) =
-                    self.nodes.visual(id)
-                {
+                let visual = self.nodes.visual(id);
+                if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = visual {
                     if computed.visible {
                         let layout = self.record(id).layout;
                         let horizontal = if *compact { 6.0 } else { 16.0 };
                         let width = (layout.width - horizontal * 2.0).max(0.0);
+                        let runs = shaper.runs;
                         let intrinsic =
                             shape_empty_state_text(id, visual, computed, Some(width), &mut shaper);
+                        work.record_text_pass(1, usize::from(shaper.runs > runs));
                         validate_text_metrics(id, intrinsic.title)?;
                         if let Some(message) = intrinsic.message {
                             validate_text_metrics(id, message)?;
@@ -3265,9 +3379,7 @@ impl UiWorld {
                     }
                     continue;
                 }
-                if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
-                    self.nodes.visual(id)
-                {
+                if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) = visual {
                     if computed.visible {
                         let root = self.record(id).layout;
                         let surface =
@@ -3281,8 +3393,10 @@ impl UiWorld {
                         );
                         let wrap_width =
                             chrome.text_width(surface.width, *kind, slots.close_action.is_some());
+                        let runs = shaper.runs;
                         let intrinsic =
                             shape_modal_text(id, visual, computed, Some(wrap_width), &mut shaper);
+                        work.record_text_pass(1, usize::from(shaper.runs > runs));
                         validate_text_metrics(id, intrinsic.title)?;
                         if let Some(description) = intrinsic.description {
                             validate_text_metrics(id, description)?;
@@ -3299,74 +3413,96 @@ impl UiWorld {
                 if !computed.visible {
                     continue;
                 }
-                let presentation = self.text_input_presentation_source(id);
+                let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
+                    .then(|| self.text_input_presentation_source(id))
+                    .flatten();
                 let empty = presentation.as_ref().map_or_else(
                     || self.record(id).text.value.is_empty(),
                     |source| source.text.value.is_empty(),
                 );
+                if presentation.is_some() {
+                    // An editor's text is not plain text: nothing may keep
+                    // drawing a layout of what it used to say.
+                    self.nodes.release_text_layout(id);
+                }
                 if empty {
+                    // A box with no text of its own resolves to nothing, and
+                    // stays resolved until text or a text-bearing visual
+                    // arrives: a scope of containers costs one read of the text
+                    // table each, not a visual lookup and a style read every
+                    // pass. An empty Text node is not such a box: its line box
+                    // is measured by the scheduled pass, which this pass must
+                    // not pre-empt with a stamp that carries no metrics.
+                    if presentation.is_none()
+                        && !matches!(self.record(id).kind.as_ref(), NodeKind::Text)
+                    {
+                        resolved.push(PlainResolution::nothing(id));
+                    }
                     continue;
                 }
                 #[cfg(any(test, feature = "benchmark"))]
                 crate::text_shape_stats::note_nonempty();
-                let constraints = self.text_shape_constraints(id);
-                if presentation.is_none()
-                    && self.layout_shape_unchanged(
+                let constraints = self.text_shape_constraints_for(id, presentation.as_ref());
+                let Some(presentation) = presentation else {
+                    let (metrics, layout) = self.resolve_plain_text(
                         id,
-                        &self.record(id).resolved.0,
                         constraints,
-                        font_generation,
-                    )
-                {
-                    #[cfg(any(test, feature = "benchmark"))]
-                    crate::text_shape_stats::note_skipped_unchanged();
+                        backend.engine.as_ref(),
+                        &mut shaper,
+                        &mut work,
+                    );
+                    validate_text_metrics(id, metrics)?;
+                    resolved.push(PlainResolution::text(id, constraints, layout));
+                    if self.record(id).text_metrics != metrics {
+                        shaped.push((id, metrics, None));
+                    }
                     continue;
-                }
+                };
                 let style = Arc::clone(&self.record(id).resolved.0);
                 let computed = style.as_ref();
-                let text;
-                let text_ref = if let Some(source) = presentation.as_ref() {
-                    text = clone_shaped_text(self, id, Some(source));
-                    &text
-                } else {
-                    &self.record(id).text
-                };
-                let metrics = shaper.shape(id, text_ref, computed, constraints);
+                let text = clone_shaped_text(self, id, Some(&presentation));
+                work.text_source_clones += 1;
+                let runs = shaper.runs;
+                let metrics = shaper.shape(id, &text, computed, constraints);
+                work.record_text_pass(1, usize::from(shaper.runs > runs));
                 validate_text_metrics(id, metrics)?;
                 let previous_overlays = self
                     .nodes
                     .text_input_presentation(id)
                     .map(|stored| stored.overlay_metrics.clone())
                     .unwrap_or_default();
-                let presentation = presentation.map(|source| {
-                    shape_text_input_presentation(
-                        id,
-                        source,
-                        computed,
-                        constraints,
-                        &previous_overlays,
-                        &mut shaper,
-                    )
-                });
-                if presentation.is_none() {
-                    self.remember_layout_shape(id, style, constraints, font_generation);
-                }
+                let presentation = shape_text_input_presentation(
+                    id,
+                    presentation,
+                    computed,
+                    constraints,
+                    &previous_overlays,
+                    &mut shaper,
+                );
                 if self.record(id).text_metrics != metrics
-                    || presentation
-                        .as_ref()
-                        .is_some_and(|value| self.nodes.text_input_presentation(id) != Some(value))
+                    || self.nodes.text_input_presentation(id) != Some(&presentation)
                 {
-                    shaped.push((id, metrics, presentation));
+                    shaped.push((id, metrics, Some(presentation)));
                 }
             }
             Ok(())
         })();
+        let runs = shaper.runs;
+        let wrap_layouts = shaper.wrap_layouts;
+        let host_keys = shaper.keys;
+        work.text_source_clones += shaper.keys;
+        work.text_bytes_hashed += shaper.key_bytes;
         if outcome.is_err() {
-            let _shaper = shaper;
+            // Nothing of a failed pass is reported, or left to be reported by
+            // the next one.
+            let _ = cache.take_counters();
+            let _ = glyphs.take_counters();
+            let _ = host.take_text_work();
             self.text_layout_cache = cache;
             self.glyph_cache = glyphs;
             return outcome.map(|()| false);
         }
+        self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, presentation) in shaped {
             self.record_mut(id).text_metrics = metrics;
@@ -3382,13 +3518,177 @@ impl UiWorld {
             self.nodes.set_modal_text(id, Some(presentation));
             self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
         let (hits, misses, evictions) = cache.take_counters();
+        if host_keys > 0 {
+            // The host path's layout cache is the Runtime `TextLayoutCache`.
+            work.record_layout_cache(hits, misses);
+            work.layout_cache_lookups += hits + misses;
+        }
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
         self.refresh_document_text_highlights(host);
+        // Taken last: document highlights measure through the host too.
+        work.accumulate(host.take_text_work());
+        self.finish_text_pass(
+            work,
+            runs,
+            hits,
+            misses,
+            evictions,
+            wrap_layouts,
+            glyph_stats,
+        );
+        Ok(changed)
+    }
+
+    /// True, and counted as a revision skip, when `id` is plain text already
+    /// resolved by `backend` at its current revisions. Reads one small entry of
+    /// the text side table and no text.
+    fn plain_text_is_current(
+        &self,
+        id: StableNodeId,
+        backend: TextBackendEpoch,
+        work: &mut nana_text::TextWorkCounters,
+    ) -> bool {
+        let Some(text) = self.nodes.text_node(id) else {
+            return false;
+        };
+        if !text.is_current(backend) {
+            return false;
+        }
+        let stamp = text.stamp().expect("a current node is stamped");
+        // A resolved box without text is not a text node; only text nodes count.
+        if stamp.text_node {
+            work.text_nodes_considered += 1;
+            work.text_nodes_revision_skipped += 1;
+            #[cfg(any(test, feature = "benchmark"))]
+            {
+                crate::text_shape_stats::note_nonempty();
+                crate::text_shape_stats::note_skipped_unchanged();
+            }
+        }
+        #[cfg(debug_assertions)]
+        if let Some(constraints) = stamp.constraints {
+            // A revision that should have moved and did not would leave this
+            // node on stale constraints. Catch the missing invalidation where
+            // it is cheap to explain rather than as a wrong wrap on screen.
+            let (recorded, alignment) = constraints;
+            if !text.layout.is_null() {
+                debug_assert_eq!(
+                    alignment,
+                    self.record(id).style.text_horizontal_alignment,
+                    "text node {id:?} retains a layout at a stale alignment"
+                );
+            }
+            debug_assert_eq!(
+                recorded,
+                self.text_shape_constraints(id),
+                "text node {id:?} is current by revision but its constraints changed: \
+                 a CONSTRAINT invalidation is missing"
+            );
+        }
+        true
+    }
+
+    /// Resolves one plain (non-editor) text node at its current revisions; the
+    /// caller stamps it once the metrics validate. With an engine a node with
+    /// text retains the `nana-text` layout its metrics were read from; without
+    /// one the host shaper measures it.
+    fn resolve_plain_text<S: TextShaper>(
+        &mut self,
+        id: StableNodeId,
+        constraints: crate::TextShapeConstraints,
+        engine: Option<&nana_text::SharedTextEngine>,
+        shaper: &mut CountingShaper<'_, S>,
+        work: &mut nana_text::TextWorkCounters,
+    ) -> (TextMetrics, Option<Arc<nana_text::TextLayout>>) {
+        let style = Arc::clone(&self.record(id).resolved.0);
+        let text_bytes = self.record(id).text.value.len();
+        // A box without text that a scheduled pass still measures is not a
+        // text node: its measurement is counted, but not as a node.
+        let is_text_node =
+            text_bytes > 0 || matches!(self.record(id).kind.as_ref(), NodeKind::Text);
+        let mut node_work = nana_text::TextWorkCounters::default();
+        let resolved = match engine {
+            Some(engine) => {
+                let alignment = self.record(id).style.text_horizontal_alignment;
+                let (source, copied) = self.nodes.text_source(id).expect("a resolved node exists");
+                // Locked per resolution, never across the pass: the same pass
+                // measures component text through the host's `shape`, which
+                // may lay out through this very engine.
+                let layout = nana_text::lock_text_engine(engine).layout(
+                    crate::text_node::text_kind(&constraints),
+                    source,
+                    &crate::text_node::nana_text_style(&style),
+                    &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
+                    &mut node_work,
+                );
+                if copied {
+                    node_work.text_source_clones += 1;
+                    self.record_string_clone(text_bytes);
+                }
+                let metrics = crate::text_node::text_metrics_of_layout(&layout);
+                // An empty Text node still has a line box to measure, but
+                // nothing to draw: it retains no layout.
+                (metrics, (text_bytes > 0).then_some(layout))
+            }
+            None => {
+                let runs = shaper.runs;
+                let metrics = shaper.shape(id, &self.record(id).text, &style, constraints);
+                node_work.record_text_pass(1, usize::from(shaper.runs > runs));
+                // No layout: one from an engine this host no longer offers is
+                // not what the host measures now.
+                (metrics, None)
+            }
+        };
+        if !is_text_node {
+            node_work.text_nodes_considered = 0;
+            node_work.text_nodes_shaped = 0;
+        }
+        work.accumulate(node_work);
+        resolved
+    }
+
+    /// Applies a successful pass's plain text resolutions: retains or releases
+    /// each node's layout, then stamps it at the revisions it was resolved at.
+    /// Nothing is applied for a pass that failed, so a retry resolves the same
+    /// nodes again rather than skipping them with metrics never written.
+    fn apply_plain_resolutions(
+        &mut self,
+        resolutions: Vec<PlainResolution>,
+        backend: TextBackendEpoch,
+        work: &mut nana_text::TextWorkCounters,
+    ) {
+        for resolution in resolutions {
+            match resolution.layout {
+                Some(layout) => {
+                    if self.nodes.retain_text_layout(resolution.id, layout) {
+                        work.text_layouts_reused += 1;
+                    }
+                }
+                None => self.nodes.release_text_layout(resolution.id),
+            }
+            self.nodes
+                .mark_text_resolved(resolution.id, backend, resolution.constraints);
+        }
+    }
+
+    /// Folds one pass's counters into the frame.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_text_pass(
+        &mut self,
+        work: nana_text::TextWorkCounters,
+        runs: usize,
+        hits: usize,
+        misses: usize,
+        evictions: usize,
+        wrap_layouts: usize,
+        glyph_stats: Option<(usize, usize)>,
+    ) {
+        // `WorkCounters` keeps its host-shaper meaning: `TextShaper::shape`
+        // runs and `TextLayoutCache` hits and misses. Engine work is reported
+        // on the text work counters, where its caches are named.
         self.bump_last_counters(|counters| {
             counters.record_text_shape(runs, hits, misses, wrap_layouts);
             counters.record_cache_eviction(evictions);
@@ -3396,41 +3696,160 @@ impl UiWorld {
                 counters.record_glyph_cache(glyph_hits, glyph_misses);
             }
         });
-        Ok(changed)
+        self.record_text_work(work);
     }
 
-    fn layout_shape_unchanged(
+    /// Notes the backend plain text resolves against. A different font set
+    /// than the last pass saw makes every resolved text node stale; nodes this
+    /// pass does not visit are scheduled so none keeps metrics from the old
+    /// fonts.
+    fn observe_text_backend(&mut self, epoch: TextBackendEpoch) {
+        let previous = self.text_backend.replace(epoch);
+        if previous.is_none_or(|previous| previous == epoch) {
+            return;
+        }
+        // Glyph advances and cached metrics are keyed by character, text and
+        // style, not by who measured them: another shaper at the same font
+        // generation must not be answered with the last one's numbers.
+        self.glyph_cache.clear();
+        self.text_layout_cache.clear();
+        let stale = self.nodes.text_bearing_nodes().collect::<Vec<_>>();
+        for id in stale {
+            self.nodes
+                .invalidate_text(id, crate::text_node::TextDirty::FONT);
+            self.mark(id, DirtyMask::TEXT | DirtyMask::LAYOUT | DirtyMask::RENDER);
+        }
+    }
+}
+
+impl UiWorld {
+    /// Text-bearing nodes style resolution turned visible since the last
+    /// scheduled pass and not already in `ids`, for this pass to re-resolve.
+    fn take_shown_text(&mut self, ids: &[StableNodeId]) -> Vec<StableNodeId> {
+        if self.text_shown.is_empty() {
+            return Vec::new();
+        }
+        let scheduled: HashSet<StableNodeId> = ids.iter().copied().collect();
+        let mut shown = std::mem::take(&mut self.text_shown);
+        shown.sort_unstable();
+        shown.dedup();
+        shown.retain(|id| {
+            // Editor, EmptyState and ModalFrame text is re-measured whenever a
+            // layout scope reaches it and is never stamped; showing it again
+            // is not a reason to measure it here as well.
+            !scheduled.contains(id)
+                && !matches!(
+                    self.nodes.visual(*id),
+                    Some(
+                        StandardVisual::TextInput { .. }
+                            | StandardVisual::EmptyState { .. }
+                            | StandardVisual::ModalFrame { .. }
+                    )
+                )
+                && self.nodes.get(*id).is_some_and(|record| {
+                    matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty()
+                })
+        });
+        shown
+    }
+
+    /// Schedules every text the host's current font set may measure
+    /// differently than the one this world last resolved against. A frame
+    /// driver calls this before draining work, so registering a font makes
+    /// a static document settle on the new fonts instead of waiting for
+    /// unrelated work to reach a text pass.
+    pub fn observe_text_shaper(&mut self, host: &(impl TextShaper + ?Sized)) {
+        self.observe_text_backend(PlainTextBackend::of(host).epoch);
+    }
+
+    /// Text revisions of `id` (Issue #95): which classes of change its text
+    /// has seen. Paint and compositor changes never move `content`, `shape`
+    /// or `constraint`.
+    pub fn text_revisions(&self, id: StableNodeId) -> Option<crate::TextRevisions> {
+        self.nodes.text_node(id).map(|text| text.revisions)
+    }
+
+    /// The `nana-text` layout plain text node `id` retains, with its handle.
+    /// `None` when the node's text resolved through the host shaper, is empty,
+    /// or is an editor's.
+    pub fn text_layout(
         &self,
         id: StableNodeId,
-        style: &Arc<ComputedStyle>,
-        constraints: crate::TextShapeConstraints,
-        font_generation: u64,
-    ) -> bool {
-        self.nodes.last_layout_shape(id).is_some_and(|last| {
-            last.font_generation == font_generation
-                && last.text_gen == self.record(id).text_gen
-                && Arc::ptr_eq(&last.style, style)
-                && last.constraints == constraints
-        })
+    ) -> Option<(nana_text::TextLayoutId, &Arc<nana_text::TextLayout>)> {
+        let handle = self.nodes.text_node(id)?.layout;
+        self.nodes
+            .text_layouts()
+            .get(handle)
+            .map(|layout| (handle, layout))
     }
 
-    fn remember_layout_shape(
-        &mut self,
+    /// Layouts retained across every plain text node of this world.
+    pub fn retained_text_layouts(&self) -> usize {
+        self.nodes.text_layouts().len()
+    }
+}
+
+/// One plain text node resolved by a pass, held until the pass succeeds.
+pub(super) struct PlainResolution {
+    id: StableNodeId,
+    /// The constraints a node with text was resolved at. `None` for a box with
+    /// no text, whose constraints nothing reads.
+    constraints: Option<crate::TextShapeConstraints>,
+    /// The layout to retain; `None` releases whatever the node held.
+    layout: Option<Arc<nana_text::TextLayout>>,
+}
+
+impl PlainResolution {
+    fn text(
         id: StableNodeId,
-        style: Arc<ComputedStyle>,
         constraints: crate::TextShapeConstraints,
-        font_generation: u64,
-    ) {
-        let text_gen = self.record(id).text_gen;
-        self.nodes.set_last_layout_shape(
+        layout: Option<Arc<nana_text::TextLayout>>,
+    ) -> Self {
+        Self {
             id,
-            Some(crate::store::LastLayoutShape {
-                constraints,
-                style,
-                text_gen,
-                font_generation,
-            }),
-        );
+            constraints: Some(constraints),
+            layout,
+        }
+    }
+
+    fn nothing(id: StableNodeId) -> Self {
+        Self {
+            id,
+            constraints: None,
+            layout: None,
+        }
+    }
+}
+
+/// How plain text resolves for one pass, read once from the host.
+pub(super) struct PlainTextBackend {
+    pub epoch: TextBackendEpoch,
+    pub engine: Option<nana_text::SharedTextEngine>,
+}
+
+impl PlainTextBackend {
+    pub(super) fn of<H: TextShaper + ?Sized>(host: &H) -> Self {
+        match host.text_engine() {
+            Some(engine) => {
+                let epoch = nana_text::lock_text_engine(&engine).epoch();
+                Self {
+                    epoch: TextBackendEpoch::Engine(epoch),
+                    engine: Some(engine),
+                }
+            }
+            None => Self {
+                epoch: TextBackendEpoch::Host {
+                    shaper: {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::hash::DefaultHasher::new();
+                        std::any::type_name::<H>().hash(&mut hasher);
+                        hasher.finish()
+                    },
+                    font_generation: host.font_generation(),
+                },
+                engine: None,
+            },
+        }
     }
 }
 
@@ -3494,6 +3913,10 @@ impl UiWorld {
         host: &mut impl TextShaper,
     ) -> Result<(), UiWorldError> {
         self.resolve_presentations(ids)?;
+        let shown = self.take_shown_text(ids);
+        let backend = PlainTextBackend::of(host);
+        self.observe_text_backend(backend.epoch);
+        let mut work = nana_text::TextWorkCounters::default();
         // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,
         // tests) is wrapped once so lookup/insert hit the same UiWorld caches.
         let mut cache = std::mem::take(&mut self.text_layout_cache);
@@ -3512,30 +3935,56 @@ impl UiWorld {
         let mut shaped = Vec::with_capacity(ids.len());
         let mut empty_shaped = Vec::new();
         let mut modal_shaped = Vec::new();
+        let mut resolved = Vec::new();
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
         let outcome = (|| -> Result<(), UiWorldError> {
-            for &id in ids {
+            for &id in ids.iter().chain(&shown) {
                 if !self.contains(id) {
                     return Err(UiWorldError::MissingNode(id));
                 }
-                let presentation = self.text_input_presentation_source(id);
-                let text = clone_shaped_text(self, id, presentation.as_ref());
-                let style = self.record(id).resolved.0.as_ref().clone();
+                if self.plain_text_is_current(id, backend.epoch, &mut work) {
+                    continue;
+                }
+                if matches!(
+                    self.nodes.visual(id),
+                    Some(StandardVisual::EmptyState { .. } | StandardVisual::ModalFrame { .. })
+                ) {
+                    // Its text is the visual's own now; a layout it held as
+                    // plain text is not drawn any more.
+                    self.nodes.release_text_layout(id);
+                }
+                let visual = self.nodes.visual(id);
+                let presentation = matches!(visual, Some(StandardVisual::TextInput { .. }))
+                    .then(|| self.text_input_presentation_source(id))
+                    .flatten();
+                let style = Arc::clone(&self.record(id).resolved.0);
                 #[cfg(any(test, feature = "benchmark"))]
-                if !text.value.is_empty() {
+                if presentation.as_ref().map_or_else(
+                    || !self.record(id).text.value.is_empty(),
+                    |source| !source.text.value.is_empty(),
+                ) {
                     crate::text_shape_stats::note_nonempty();
                 }
-                if let Some(visual @ StandardVisual::EmptyState { .. }) = self.nodes.visual(id) {
+                // EmptyState and ModalFrame own intrinsic text of their own and
+                // re-measure it every pass, so they are never stamped.
+                let mut stampable = true;
+                if let Some(visual @ StandardVisual::EmptyState { .. }) = visual {
+                    stampable = false;
+                    let runs = shaper.runs;
                     let intrinsic = shape_empty_state_text(id, visual, &style, None, &mut shaper);
+                    work.record_text_pass(1, usize::from(shaper.runs > runs));
                     validate_text_metrics(id, intrinsic.title)?;
                     if let Some(message) = intrinsic.message {
                         validate_text_metrics(id, message)?;
                     }
                     empty_shaped.push((id, intrinsic));
                 }
-                if let Some(visual @ StandardVisual::ModalFrame { .. }) = self.nodes.visual(id) {
+                if let Some(visual @ StandardVisual::ModalFrame { .. }) = visual {
+                    stampable = false;
+                    let runs = shaper.runs;
                     let intrinsic = shape_modal_text(id, visual, &style, None, &mut shaper);
+                    work.record_text_pass(1, usize::from(shaper.runs > runs));
                     validate_text_metrics(id, intrinsic.title)?;
                     if let Some(description) = intrinsic.description {
                         validate_text_metrics(id, description)?;
@@ -3545,34 +3994,62 @@ impl UiWorld {
                     }
                     modal_shaped.push((id, intrinsic));
                 }
-                let constraints = self.text_shape_constraints(id);
+                let constraints = self.text_shape_constraints_for(id, presentation.as_ref());
+                let Some(presentation) = presentation else {
+                    let (metrics, layout) = self.resolve_plain_text(
+                        id,
+                        constraints,
+                        backend.engine.as_ref(),
+                        &mut shaper,
+                        &mut work,
+                    );
+                    validate_text_metrics(id, metrics)?;
+                    if stampable {
+                        resolved.push(PlainResolution::text(id, constraints, layout));
+                    }
+                    shaped.push((id, metrics, None));
+                    continue;
+                };
+                self.nodes.release_text_layout(id);
+                let text = clone_shaped_text(self, id, Some(&presentation));
+                work.text_source_clones += 1;
+                let runs = shaper.runs;
                 let metrics = shaper.shape(id, &text, &style, constraints);
+                work.record_text_pass(1, usize::from(shaper.runs > runs));
                 validate_text_metrics(id, metrics)?;
                 let previous_overlays = self
                     .nodes
                     .text_input_presentation(id)
                     .map(|stored| stored.overlay_metrics.clone())
                     .unwrap_or_default();
-                let presentation = presentation.map(|source| {
-                    shape_text_input_presentation(
-                        id,
-                        source,
-                        &style,
-                        constraints,
-                        &previous_overlays,
-                        &mut shaper,
-                    )
-                });
-                shaped.push((id, metrics, presentation));
+                let presentation = shape_text_input_presentation(
+                    id,
+                    presentation,
+                    &style,
+                    constraints,
+                    &previous_overlays,
+                    &mut shaper,
+                );
+                shaped.push((id, metrics, Some(presentation)));
             }
             Ok(())
         })();
+        let runs = shaper.runs;
+        let wrap_layouts = shaper.wrap_layouts;
+        let host_keys = shaper.keys;
+        work.text_source_clones += shaper.keys;
+        work.text_bytes_hashed += shaper.key_bytes;
         if outcome.is_err() {
-            let _shaper = shaper;
+            let _ = cache.take_counters();
+            let _ = glyphs.take_counters();
+            let _ = host.take_text_work();
+            // Shown text this pass did not get to resolve stays owed.
+            self.text_shown.extend(shown);
             self.text_layout_cache = cache;
             self.glyph_cache = glyphs;
             return outcome;
         }
+        self.apply_plain_resolutions(resolved, backend.epoch, &mut work);
         for (id, metrics, presentation) in shaped {
             let previous = self.record(id).text_metrics;
             self.record_mut(id).text_metrics = metrics;
@@ -3604,20 +4081,27 @@ impl UiWorld {
         for (id, presentation) in modal_shaped {
             self.nodes.set_modal_text(id, Some(presentation));
         }
-        let runs = shaper.runs;
-        let wrap_layouts = shaper.wrap_layouts;
         let (hits, misses, evictions) = cache.take_counters();
+        if host_keys > 0 {
+            // The host path's layout cache is the Runtime `TextLayoutCache`.
+            work.record_layout_cache(hits, misses);
+            work.layout_cache_lookups += hits + misses;
+        }
         let glyph_stats = glyphs.take_counters();
         self.text_layout_cache = cache;
         self.glyph_cache = glyphs;
         self.refresh_document_text_highlights(host);
-        self.bump_last_counters(|counters| {
-            counters.record_text_shape(runs, hits, misses, wrap_layouts);
-            counters.record_cache_eviction(evictions);
-            if let Some((glyph_hits, glyph_misses)) = glyph_stats {
-                counters.record_glyph_cache(glyph_hits, glyph_misses);
-            }
-        });
+        // Taken last: document highlights measure through the host too.
+        work.accumulate(host.take_text_work());
+        self.finish_text_pass(
+            work,
+            runs,
+            hits,
+            misses,
+            evictions,
+            wrap_layouts,
+            glyph_stats,
+        );
         Ok(())
     }
 }

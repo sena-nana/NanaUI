@@ -81,9 +81,6 @@ pub(crate) struct NodeRecord {
     pub style: NodeStyle,
     pub resolved: ResolvedStyle,
     pub text: TextContent,
-    /// Bumped when this node's authored text value changes. Layout-scoped
-    /// shaping uses it to skip cache/key work when only the box Y moved.
-    pub text_gen: u64,
     pub text_metrics: TextMetrics,
     pub layout: LayoutBox,
     pub layout_padding: Option<nana_ui_core::PaddingSpec>,
@@ -103,7 +100,6 @@ impl NodeRecord {
             style: NodeStyle::default(),
             resolved: ResolvedStyle::interned_default(),
             text: TextContent::default(),
-            text_gen: 0,
             text_metrics: TextMetrics::default(),
             layout: LayoutBox::default(),
             layout_padding: None,
@@ -201,19 +197,15 @@ pub(crate) struct NodeStore {
     /// 拖拽移动选中文本的落点指示线（仅拖拽态编辑器持有条目；文本空间
     /// 矩形）。框架侧拖拽状态机写入，提取层翻译为节点空间图元。
     text_drop_indicators: HashMap<StableNodeId, LayoutBox>,
-    /// Last wrap-aware shape identity for plain text nodes. Lets a later
-    /// layout-scoped pass skip key construction when only the box Y moved.
-    last_layout_shapes: HashMap<StableNodeId, LastLayoutShape>,
-}
-
-/// Identity of the last `shape_text_for_layout*` result for a plain text node.
-#[derive(Clone, Debug)]
-pub(crate) struct LastLayoutShape {
-    pub constraints: crate::TextShapeConstraints,
-    pub style: Arc<ComputedStyle>,
-    pub text_gen: u64,
-    /// The host font generation it was measured against.
-    pub font_generation: u64,
+    /// Revisions, resolution stamp and retained layout handle of every node's
+    /// text (Issue #95), one entry per node. Kept apart from the dense records
+    /// on purpose: a large relayout scope decides "no text work" for every
+    /// candidate, and a table of small entries keeps that scan in cache where
+    /// the full records would not.
+    text_nodes: HashMap<StableNodeId, crate::text_node::TextNodeState>,
+    /// Layouts retained by plain text nodes, addressed by
+    /// [`crate::text_node::TextNodeState::layout`]. Released with the node.
+    text_layouts: nana_text::TextLayoutStore,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。
@@ -256,6 +248,8 @@ impl NodeStore {
     }
 
     pub fn insert(&mut self, id: StableNodeId, record: NodeRecord) {
+        self.text_nodes
+            .insert(id, crate::text_node::TextNodeState::default());
         self.nodes.insert(id, record);
     }
 
@@ -283,11 +277,32 @@ impl NodeStore {
         self.text_signatures.remove(&id);
         self.text_viewport_pins.remove(&id);
         self.text_drop_indicators.remove(&id);
-        self.last_layout_shapes.remove(&id);
+        if let Some(text) = self.text_nodes.remove(&id) {
+            self.text_layouts.remove(text.layout);
+        }
         Some(record)
     }
 
-    sparse!(visuals, StandardVisual, visual, set_visual);
+    pub fn visual(&self, id: StableNodeId) -> Option<&StandardVisual> {
+        self.visuals.get(&id)
+    }
+
+    /// Sets a node's visual. A visual change that moves what plain text
+    /// resolution reads — which path the text takes, or the inset a leading
+    /// indicator takes from its box — is a constraint change for its text;
+    /// any other visual change (a sampled progress value) is not.
+    pub fn set_visual(&mut self, id: StableNodeId, value: Option<StandardVisual>) {
+        let before = crate::world::text_visual_key(self.visuals.get(&id));
+        let after = crate::world::text_visual_key(value.as_ref());
+        if let Some(value) = value {
+            self.visuals.insert(id, value);
+        } else {
+            self.visuals.remove(&id);
+        }
+        if before != after {
+            self.invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
+        }
+    }
     sparse!(
         custom_render,
         CustomRenderNode,
@@ -393,12 +408,109 @@ impl NodeStore {
         text_drop_indicator,
         set_text_drop_indicator
     );
-    sparse!(
-        last_layout_shapes,
-        LastLayoutShape,
-        last_layout_shape,
-        set_last_layout_shape
-    );
+
+    pub(crate) fn text_layouts(&self) -> &nana_text::TextLayoutStore {
+        &self.text_layouts
+    }
+
+    pub(crate) fn text_node(&self, id: StableNodeId) -> Option<&crate::text_node::TextNodeState> {
+        self.text_nodes.get(&id)
+    }
+
+    /// Records a change to `id`'s text. See [`crate::text_node::TextDirty`].
+    pub(crate) fn invalidate_text(&mut self, id: StableNodeId, dirty: crate::text_node::TextDirty) {
+        if let Some(text) = self.text_nodes.get_mut(&id) {
+            text.invalidate(dirty);
+        }
+    }
+
+    /// Stamps `id`'s text as resolved at its current revisions.
+    pub(crate) fn mark_text_resolved(
+        &mut self,
+        id: StableNodeId,
+        backend: crate::text_node::TextBackendEpoch,
+        constraints: Option<crate::TextShapeConstraints>,
+    ) {
+        let Some(record) = self.nodes.get(&id) else {
+            return;
+        };
+        let text_node = !record.text.value.is_empty()
+            || matches!(record.kind.as_ref(), crate::world::NodeKind::Text);
+        let constraints =
+            constraints.map(|constraints| (constraints, record.style.text_horizontal_alignment));
+        if let Some(text) = self.text_nodes.get_mut(&id) {
+            text.mark_resolved(backend, constraints, text_node);
+        }
+    }
+
+    /// The `nana-text` source for `id`'s current text, built once per content
+    /// revision, and whether this call built it.
+    pub(crate) fn text_source(
+        &mut self,
+        id: StableNodeId,
+    ) -> Option<(&nana_text::TextSource, bool)> {
+        let text = &self.nodes.get(&id)?.text;
+        Some(self.text_nodes.get_mut(&id)?.source_for(&text.value))
+    }
+
+    /// Retains `layout` for `id`, replacing what the node held. A node handed
+    /// the very layout it already holds keeps its handle. Returns whether the
+    /// handle was kept.
+    pub(crate) fn retain_text_layout(
+        &mut self,
+        id: StableNodeId,
+        layout: Arc<nana_text::TextLayout>,
+    ) -> bool {
+        let Some(text) = self.text_nodes.get_mut(&id) else {
+            return false;
+        };
+        if self
+            .text_layouts
+            .get(text.layout)
+            .is_some_and(|current| Arc::ptr_eq(current, &layout))
+        {
+            return true;
+        }
+        self.text_layouts.remove(text.layout);
+        text.layout = self.text_layouts.insert(layout);
+        false
+    }
+
+    /// Drops the layout `id` retains, if any. O(1) when it holds none.
+    pub(crate) fn release_text_layout(&mut self, id: StableNodeId) {
+        if let Some(text) = self.text_nodes.get_mut(&id)
+            && !text.layout.is_null()
+        {
+            let held = std::mem::take(&mut text.layout);
+            self.text_layouts.remove(held);
+            // The source copy served only the released layout.
+            text.release_source();
+        }
+    }
+
+    /// Every node whose text a new font set can change: text that was measured
+    /// (an empty Text node's line box included), plus the visuals that measure text of their own every pass
+    /// and so are never stamped.
+    pub(crate) fn text_bearing_nodes(&self) -> impl Iterator<Item = StableNodeId> + '_ {
+        let resolved = self
+            .text_nodes
+            .iter()
+            .filter(|(_, text)| text.stamp().is_some_and(|stamp| stamp.measured))
+            .map(|(id, _)| *id);
+        let measuring = self
+            .visuals
+            .iter()
+            .filter(|(_, visual)| {
+                matches!(
+                    visual,
+                    StandardVisual::EmptyState { .. }
+                        | StandardVisual::ModalFrame { .. }
+                        | StandardVisual::TextInput { .. }
+                )
+            })
+            .map(|(id, _)| *id);
+        resolved.chain(measuring)
+    }
 
     pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {
         self.text_inputs.get_mut(&id)

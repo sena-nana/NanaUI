@@ -109,6 +109,12 @@ impl TextLayoutCache {
         }
     }
 
+    /// Drops every entry, keeping the counters.
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
     /// Record a hit when the key is present. A miss is recorded on [`Self::insert`].
     pub(crate) fn lookup(&mut self, key: &TextLayoutKey) -> Option<TextMetrics> {
         let metrics = self.entries.get(key).copied()?;

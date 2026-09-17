@@ -100,6 +100,16 @@ impl UiWorld {
         } else {
             Arc::new(next)
         };
+        let dirty =
+            crate::text_node::classify_computed_style_change(&self.record(id).resolved.0, &next);
+        self.nodes.invalidate_text(id, dirty);
+        if !self.record(id).resolved.0.visible && next.visible {
+            // Text passes skip hidden nodes without resolving them, so a node
+            // whose box changed while hidden comes back stale. The scheduled
+            // text pass of this same frame picks it up; marking it dirty here,
+            // after the drain, would cost the frame another pass.
+            self.text_shown.push(id);
+        }
         self.record_mut(id).resolved = ResolvedStyle(next, self.palette_epoch);
         Ok(())
     }

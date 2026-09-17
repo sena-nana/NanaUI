@@ -391,6 +391,7 @@ impl UiScene {
                         italic: node.style.italic,
                         wrap_break: style.text_wrap_break(),
                         opentype: SceneTextOpenType::from_computed(&node.style),
+                        layout: node.text_layout.clone(),
                     },
                 });
                 if let Some(deco) = style.text_decoration.filter(|d| d.is_active()) {
@@ -1327,6 +1328,7 @@ impl UiScene {
                                 italic: false,
                                 wrap_break: nana_ui_core::TextWrapBreak::Word,
                                 opentype: SceneTextOpenType::default(),
+                                layout: None,
                             },
                         });
                     }

@@ -7010,14 +7010,30 @@ fn text_layout_cache_miss_then_hit_and_shaper_without_glyph_backend_omits_glyph_
     assert_eq!(missed.glyph_cache_misses, None);
     assert_eq!(missed.cache_eviction, Some(0));
 
+    // The same node again is not a cache question at all: nothing about it
+    // changed, so the pass skips it on revision before building a key.
     world.shape_text(&work.text, &mut shaper).unwrap();
+    let repeat = world.last_text_work_counters();
+    assert_eq!(repeat.text_nodes_revision_skipped, 1);
+    assert_eq!(repeat.text_source_clones, 0);
+
+    // Another node with the same text and style is the cache hit.
+    let mut twin = MutationQueue::new();
+    twin.create(node(2), document(1), NodeKind::Text);
+    twin.set_text(
+        node(2),
+        TextContent {
+            value: "cache-me".into(),
+        },
+    );
+    world.commit(twin).unwrap();
+    let twin_work = world.take_system_work();
+    world.resolve_styles(&twin_work.style).unwrap();
+    world.shape_text(&twin_work.text, &mut shaper).unwrap();
     let hit = world.last_work_counters();
     assert!(hit.text_layout_cache_hits >= 1);
-    assert_eq!(
-        hit.text_layout_cache_misses,
-        missed.text_layout_cache_misses
-    );
-    assert_eq!(hit.text_shaped_runs, missed.text_shaped_runs);
+    assert_eq!(hit.text_layout_cache_misses, 0);
+    assert_eq!(hit.text_shaped_runs, 0);
     assert_eq!(hit.glyph_cache_hits, None);
     assert_eq!(hit.cache_eviction, Some(0));
 
@@ -7207,15 +7223,21 @@ fn layout_scoped_shape_reshapes_when_wrap_width_or_text_changes() {
     world.commit(rewrite).unwrap();
     let mutated = world.take_system_work();
     world.resolve_styles(&mutated.style).unwrap();
-    world.shape_text(&mutated.text, &mut shaper).unwrap();
     crate::text_shape_stats::reset();
-    world
-        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
-        .unwrap();
+    world.shape_text(&mutated.text, &mut shaper).unwrap();
     let after_text = crate::text_shape_stats::snapshot();
     assert_eq!(after_text.skipped_unchanged, 0);
     assert!(after_text.key_builds >= 1);
     assert!(after_text.cache_lookups >= 1);
+    // The scheduled pass already resolved the new text against the unchanged
+    // box, so the layout-scoped pass has nothing left to do.
+    crate::text_shape_stats::reset();
+    world
+        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
+        .unwrap();
+    let rescoped = crate::text_shape_stats::snapshot();
+    assert_eq!(rescoped.skipped_unchanged, 1);
+    assert_eq!(rescoped.key_builds, 0);
 }
 
 #[test]
@@ -7300,11 +7322,12 @@ fn glyph_cache_miss_then_hit_on_measure_text_shaper() {
     assert_eq!(missed.glyph_cache_hits, Some(0));
     assert!(missed.text_layout_cache_misses >= 1);
 
+    // Unchanged: skipped on revision, so neither cache is consulted again.
     world.shape_text(&work.text, &mut shaper).unwrap();
-    let layout_hit = world.last_work_counters();
-    assert!(layout_hit.text_layout_cache_hits >= 1);
-    assert_eq!(layout_hit.glyph_cache_misses, Some(2));
-    assert_eq!(layout_hit.glyph_cache_hits, Some(0));
+    assert_eq!(
+        world.last_text_work_counters().text_nodes_revision_skipped,
+        1
+    );
 
     let mut patch = MutationQueue::new();
     patch.set_text(node(1), TextContent { value: "ba".into() });

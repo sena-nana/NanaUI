@@ -297,6 +297,13 @@ impl UiWorld {
         if !changed {
             return false;
         }
+        if sample.property != crate::AnimatableProperty::Margin {
+            // Written straight onto the authored style, not through
+            // `SetStyle`: the content box, and whether its height is definite,
+            // are the text's constraints. A margin only moves the box.
+            self.nodes
+                .invalidate_text(sample.target, crate::text_node::TextDirty::CONSTRAINT);
+        }
         self.mark_subtree(
             sample.target,
             DirtyMask::LAYOUT | DirtyMask::INPUT | DirtyMask::ACCESSIBILITY | DirtyMask::RENDER,

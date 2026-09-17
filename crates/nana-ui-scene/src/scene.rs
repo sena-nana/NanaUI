@@ -243,6 +243,12 @@ pub enum ScenePrimitiveKind {
         wrap_break: nana_ui_core::TextWrapBreak,
         /// OpenType / wrap subset from computed style. Defaults are CSS initial.
         opentype: SceneTextOpenType,
+        /// The `nana-text` layout Runtime measured this text with, when the
+        /// host resolved plain text through an engine (Issue #95). Present, it
+        /// is the placement authority for these glyphs; the fields above stay
+        /// for renderers that still lay text out themselves. Never a shaping
+        /// backend's buffer.
+        layout: Option<nana_ui_runtime::RetainedTextLayout>,
     },
     Icon {
         icon: Icon,
@@ -1677,6 +1683,7 @@ fn component_text_primitive(
             italic: node.style.italic,
             wrap_break: node.source_style.layout.text_wrap_break(),
             opentype: SceneTextOpenType::from_computed(&node.style),
+            layout: None,
         },
     }
 }
@@ -2071,6 +2078,7 @@ fn overlay_text_primitive(
             italic: false,
             wrap_break: nana_ui_core::TextWrapBreak::default(),
             opentype: SceneTextOpenType::default(),
+            layout: None,
         },
     }
 }

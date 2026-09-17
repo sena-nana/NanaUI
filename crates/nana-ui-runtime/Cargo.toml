@@ -23,6 +23,9 @@ fancy-regex = "0.16.2"
 hashbrown = "0.16.1"
 futures-core.workspace = true
 nana-ui-core.workspace = true
+# Issue #95: the retained text node resolves through `nana-text`'s engine and
+# keeps its layouts behind `nana-text` handles.
+nana-text.workspace = true
 mermaid-svg = { version = "=0.7.0", optional = true }
 ratex-parser = { version = "=0.1.14", optional = true }
 ratex-layout = { version = "=0.1.14", optional = true }

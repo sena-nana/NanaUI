@@ -95,6 +95,7 @@ impl RuntimeDocument {
         let document = self.document;
         let viewport_changed = self.viewport != Some(viewport);
         let mut force_layout = viewport_changed;
+        self.context.world_mut().observe_text_shaper(shaper);
         let update = self.flush_loop(viewport_changed, |context, work| {
             context.world_mut().reconcile_focus(&work.focus_ime);
             context.shape_text(&work.text, shaper)?;

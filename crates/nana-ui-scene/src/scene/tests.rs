@@ -40,6 +40,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         style: Arc::new(ComputedStyle::default()),
         text: None,
         text_metrics: None,
+        text_layout: None,
         z_index: 0,
         focused: false,
         ime: None,

@@ -72,6 +72,13 @@ impl GlyphCache {
         }
     }
 
+    /// Drops every advance, keeping the counters: the font set they were
+    /// measured against is gone.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
     /// Read without counting. Used to decide a single-glyph fast path.
     pub fn peek(&self, ch: char, style: &ComputedStyle) -> Option<f32> {
         self.entries.get(&GlyphKey::new(ch, style)).copied()
