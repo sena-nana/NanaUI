@@ -287,6 +287,56 @@ fn a_click_resolves_through_the_retained_geometry() {
 }
 
 #[test]
+fn focus_moving_away_mid_composition_stops_drawing_the_preedit() {
+    let document = DocumentId::new(DOCUMENT).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let (first, second) = runtime
+        .context_mut()
+        .build(document, |ui| {
+            (
+                ui.child("first", TextArea::new("first")),
+                ui.child("second", TextArea::new("second")),
+            )
+        })
+        .unwrap();
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    let context = runtime.context_mut();
+    assert!(context.focus_node(document, first.stable_id()).unwrap());
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    assert!(
+        runtime
+            .context_mut()
+            .set_ime_preedit(document, "zhong".into(), None)
+            .unwrap()
+    );
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    let presentation = |runtime: &RuntimeDocument| {
+        runtime
+            .context()
+            .world()
+            .text_input_presentation(first.stable_id())
+            .unwrap()
+            .clone()
+    };
+    assert!(presentation(&runtime).preedit.is_some());
+    assert_eq!(presentation(&runtime).display_value, "firstzhong");
+
+    assert!(
+        runtime
+            .context_mut()
+            .focus_node(document, second.stable_id())
+            .unwrap()
+    );
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    assert!(runtime.context().world().ime(first.stable_id()).is_none());
+    assert!(
+        presentation(&runtime).preedit.is_none(),
+        "the cancelled preedit is not drawn any more"
+    );
+    assert_eq!(presentation(&runtime).display_value, "first");
+}
+
+#[test]
 fn up_and_clicks_at_the_end_of_a_wrap_without_whitespace_stay_on_that_line() {
     // CJK wraps between any two characters: a line's end is the next line's
     // start, with no hung whitespace in between.

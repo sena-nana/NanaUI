@@ -1852,8 +1852,18 @@ impl UiWorld {
         }
     }
 
+    /// Cancels a node's composition. The editor presentation was built with
+    /// the preedit spliced in, so it is re-derived rather than left drawing
+    /// text that is no longer there.
     fn remove_ime(&mut self, id: StableNodeId) {
+        if self.nodes.ime(id).is_none() {
+            return;
+        }
         self.nodes.set_ime(id, None);
+        self.pending_edit_work.composition_updates += 1;
+        self.nodes
+            .invalidate_text(id, crate::text_node::TextDirty::EDIT_STATE);
+        self.mark(id, DirtyMask::TEXT | DirtyMask::RENDER);
     }
 
     fn clear_overlay_references(&mut self, removed: StableNodeId) {
