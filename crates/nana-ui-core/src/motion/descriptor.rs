@@ -228,12 +228,31 @@ impl Slot {
 /// mutate it; timestamp evaluation does not.
 #[derive(Debug)]
 pub struct MotionDescriptorStore {
-    id: u64,
     slots: Vec<Slot>,
     free: Vec<u32>,
     by_track: HashMap<MotionTrackId, MotionHandle>,
     registry: MotionCodecRegistry,
     structure_epoch: u64,
+    source: u64,
+}
+
+fn next_store_source() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A clone evolves independently, so it is a different descriptor source.
+impl Clone for MotionDescriptorStore {
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            free: self.free.clone(),
+            by_track: self.by_track.clone(),
+            registry: self.registry.clone(),
+            structure_epoch: self.structure_epoch,
+            source: next_store_source(),
+        }
+    }
 }
 
 impl Default for MotionDescriptorStore {
@@ -242,45 +261,16 @@ impl Default for MotionDescriptorStore {
     }
 }
 
-/// A clone is a store of its own from here on: both sides keep counting their
-/// epochs independently, so sharing an identity would let a consumer that
-/// caches by `(id, structure_epoch)` mistake one for the other.
-impl Clone for MotionDescriptorStore {
-    fn clone(&self) -> Self {
-        Self {
-            id: next_store_id(),
-            slots: self.slots.clone(),
-            free: self.free.clone(),
-            by_track: self.by_track.clone(),
-            registry: self.registry.clone(),
-            structure_epoch: self.structure_epoch,
-        }
-    }
-}
-
-fn next_store_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
 impl MotionDescriptorStore {
     pub fn new() -> Self {
         Self {
-            id: next_store_id(),
             slots: Vec::new(),
             free: Vec::new(),
             by_track: HashMap::new(),
             registry: MotionCodecRegistry::builtin(),
             structure_epoch: 0,
+            source: next_store_source(),
         }
-    }
-
-    /// Identity of this slab, distinct from every other one in the process.
-    ///
-    /// [`Self::structure_epoch`] counts within a store and starts at 0 in all
-    /// of them, so it only tells two tables apart together with this.
-    pub fn id(&self) -> u64 {
-        self.id
     }
 
     pub fn registry(&self) -> &MotionCodecRegistry {
@@ -295,6 +285,13 @@ impl MotionDescriptorStore {
     /// leave this unchanged.
     pub fn structure_epoch(&self) -> u64 {
         self.structure_epoch
+    }
+
+    /// Process-unique identity of this store. Epochs of different stores (one
+    /// per window document) count independently, so consumers that cache a
+    /// packed table across documents key it by `(source, structure_epoch)`.
+    pub fn source(&self) -> u64 {
+        self.source
     }
 
     pub fn slot_capacity(&self) -> usize {
@@ -814,21 +811,21 @@ mod tests {
         );
     }
 
-    /// Consumers cache the packed tables on `(id, structure_epoch)`. Every
+    /// Consumers cache the packed tables on `(source, structure_epoch)`. Every
     /// store starts its epoch at 0, and a clone goes on counting its own from
-    /// wherever it was copied, so an id shared with the original would let one
-    /// slab be served for the other.
+    /// wherever it was copied, so a source shared with the original would let
+    /// one slab be served for the other.
     #[test]
     fn a_clone_is_a_store_of_its_own() {
         let mut store = MotionDescriptorStore::new();
-        assert_ne!(store.id(), MotionDescriptorStore::new().id());
+        assert_ne!(store.source(), MotionDescriptorStore::new().source());
 
         let mut clone = store.clone();
-        assert_ne!(clone.id(), store.id());
+        assert_ne!(clone.source(), store.source());
         assert_eq!(clone.structure_epoch(), store.structure_epoch());
 
         // Diverging leaves the epochs equal while the tables differ, which is
-        // exactly the case the ids have to separate.
+        // exactly the case the sources have to separate.
         let curve = MotionCurve::Easing(Easing::Linear);
         store
             .bind(&opacity_track(1, 0.0, 1.0, curve))

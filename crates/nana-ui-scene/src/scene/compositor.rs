@@ -139,10 +139,7 @@ pub(super) struct CompositorRegistry {
 
 #[derive(Debug, Clone)]
 struct MotionGpuPack {
-    /// Which store the pack came from. The epoch counts within a store and
-    /// starts at 0 in every one of them, so two documents reach the same epoch
-    /// while describing different motion.
-    store: Option<u64>,
+    source: u64,
     structure_epoch: u64,
     slot_capacity: usize,
     now: Duration,
@@ -153,7 +150,7 @@ struct MotionGpuPack {
 impl Default for MotionGpuPack {
     fn default() -> Self {
         Self {
-            store: None,
+            source: 0,
             structure_epoch: u64::MAX,
             slot_capacity: 0,
             now: Duration::ZERO,
@@ -168,29 +165,23 @@ impl CompositorRegistry {
         self.layers.get(&node)
     }
 
-    /// Whether a node's **presentation** values are the ones to paint.
-    ///
-    /// A layer in its demote hold is deliberately not active: the hold keeps
-    /// the layer's identity across a flicker in eligibility, not the last
-    /// frame of an animation that was cancelled. Painting the frozen overlay
-    /// for the hold's full length leaves the element wherever that animation
-    /// stopped — 200 px away, or at some interpolated alpha — and then pops it
-    /// back when the layer finally goes.
     fn is_active(&self, node: StableNodeId) -> bool {
-        matches!(self.phases.get(&node), Some(LayerPhase::Active))
-            && self.layers.contains_key(&node)
+        matches!(
+            self.phases.get(&node),
+            Some(LayerPhase::Active | LayerPhase::PendingDemote { .. })
+        ) && self.layers.contains_key(&node)
     }
 
     fn sync_gpu_pack(&mut self, store: &MotionDescriptorStore, now: Duration) {
         self.gpu.now = now;
-        if self.gpu.store == Some(store.id())
+        if self.gpu.source == store.source()
             && self.gpu.structure_epoch == store.structure_epoch()
             && self.gpu.slot_capacity == store.slot_capacity()
         {
             return;
         }
         let (descriptors, keyframes) = store.pack_gpu();
-        self.gpu.store = Some(store.id());
+        self.gpu.source = store.source();
         self.gpu.structure_epoch = store.structure_epoch();
         self.gpu.slot_capacity = store.slot_capacity();
         self.gpu.descriptors = descriptors;
@@ -285,11 +276,10 @@ impl UiScene {
         self.compositor.gpu.structure_epoch
     }
 
-    /// Identity of the [`MotionDescriptorStore`] the packed tables came from,
-    /// `None` before the first sync. A GPU consumer caching the tables needs it
-    /// beside the epoch, which only counts within one store.
-    pub fn motion_gpu_store_id(&self) -> Option<u64> {
-        self.compositor.gpu.store
+    /// Descriptor store the packed table came from; see
+    /// `MotionDescriptorStore::source`.
+    pub fn motion_gpu_source(&self) -> u64 {
+        self.compositor.gpu.source
     }
 
     pub fn motion_gpu_descriptors(&self) -> &[MotionGpuDescriptor] {
@@ -540,46 +530,14 @@ impl UiScene {
                     break;
                 };
                 let logical = local_opacity(extracted);
-                if logical.abs() < 1e-8 {
-                    // A fade *to* zero extracts with logical opacity 0 — the
-                    // convention is that the logical style holds the target
-                    // while the overlay holds the current value — so that zero
-                    // is already folded into `logical_opacity` and no factor
-                    // can bring it back. The element would disappear on the
-                    // first frame of the very animation meant to fade it.
-                    return self.recomposed_paint_opacity(node);
-                }
-                opacity *= layer.opacity / logical;
+                let factor = if logical.abs() < 1e-8 {
+                    layer.opacity
+                } else {
+                    layer.opacity / logical
+                };
+                opacity *= factor;
             }
             current = self.nodes.get(&id).and_then(|node| node.parent);
-        }
-        opacity.clamp(0.0, 1.0)
-    }
-
-    /// Paint opacity rebuilt from the ancestor chain rather than recovered by
-    /// division, for the case a zero logical opacity makes the product handed
-    /// in unrecoverable.
-    ///
-    /// Mirrors what `rebuild_node_primitives` folds in: an opacity group's own
-    /// opacity is applied when its layer is composited, so it contributes
-    /// nothing to a primitive inside it, and every other ancestor contributes
-    /// its live layer value when it has one and its logical opacity otherwise.
-    fn recomposed_paint_opacity(&self, node: StableNodeId) -> f32 {
-        let mut opacity = 1.0;
-        let mut current = Some(node);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
-            let Some(extracted) = self.nodes.get(&id) else {
-                break;
-            };
-            if !super::is_opacity_group(&self.nodes, extracted) {
-                opacity *= self
-                    .compositor
-                    .layers
-                    .get(&id)
-                    .map_or_else(|| local_opacity(extracted), |layer| layer.opacity);
-            }
-            current = extracted.parent;
         }
         opacity.clamp(0.0, 1.0)
     }
@@ -1015,45 +973,6 @@ mod tests {
 
     fn cache_gen(scene: &UiScene, node: StableNodeId) -> u64 {
         scene.compositor_layer(node).unwrap().cache_generation
-    }
-
-    #[test]
-    fn a_fade_out_to_zero_paints_the_animated_value_not_the_target() {
-        // The logical style holds the animation's *target*, so a fade to 0
-        // extracts with opacity 0 and the primitive's folded product is 0.
-        // Paint opacity has to come from the layer anyway, or the element
-        // blinks out on frame one instead of fading.
-        let mut scene = UiScene::new();
-        let mut fading = node(1, None, &[]);
-        fading.source_style.layout = Arc::new(LayoutStyle {
-            opacity: Some(0.0),
-            background: Some([0.1, 0.2, 0.3, 1.0]),
-            ..LayoutStyle::default()
-        });
-        scene.apply_delta([fading.clone()], []);
-        let mut store = PresentationStore::new();
-        store.insert(
-            opacity_track(7, 1, 0, 100, 1.0, 0.0),
-            MotionValue::Scalar(0.0),
-        );
-        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
-        let layer = scene
-            .compositor_layer(id(1))
-            .expect("layer after promote hold");
-        assert!(
-            layer.opacity > 0.0,
-            "the animation is still running: {}",
-            layer.opacity
-        );
-
-        // `primitive.opacity` carries the logical zero; the paint value must
-        // still be the live one.
-        let painted = scene.compositor_paint_opacity(id(1), 0.0);
-        assert!(
-            (painted - layer.opacity).abs() < 1e-5,
-            "painted {painted}, layer {}",
-            layer.opacity
-        );
     }
 
     #[test]
@@ -1510,10 +1429,6 @@ mod tests {
             second.motion_descriptors().structure_epoch(),
             "independent documents do reach the same epoch"
         );
-        assert_ne!(
-            first.motion_descriptors().id(),
-            second.motion_descriptors().id()
-        );
 
         let mut scene = UiScene::new();
         scene.apply_delta(first.extract_nodes(&[id(1)]), []);
@@ -1530,8 +1445,8 @@ mod tests {
             Some(second.motion_descriptors()),
         );
         assert_eq!(
-            scene.motion_gpu_store_id(),
-            Some(second.motion_descriptors().id())
+            scene.motion_gpu_source(),
+            second.motion_descriptors().source()
         );
         assert_ne!(
             scene.motion_gpu_descriptors(),

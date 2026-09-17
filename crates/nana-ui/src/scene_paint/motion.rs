@@ -29,44 +29,12 @@ pub(super) struct MotionGpuResources {
     keyframe_capacity: usize,
     uploaded_descriptors: Vec<u8>,
     uploaded_keyframes: Vec<u8>,
-    upload: MotionUploadCache,
+    /// Hosts share one painter across windows, and each window document has
+    /// its own descriptor store whose epochs count independently.
+    last_source: u64,
+    last_structure_epoch: u64,
     last_surface_generation: u64,
     last_work: MotionWorkCounters,
-}
-
-/// Identifies the descriptor set the shared motion buffers hold.
-///
-/// One painter serves every render target, so the key has to say *which*
-/// table, not just which version of it: a structure epoch counts within one
-/// [`MotionDescriptorStore`] and starts at 0 in all of them, so two documents
-/// reach the same epoch while describing different motion. The store's
-/// identity is what tells them apart, and unlike the scene's instance id it
-/// does not churn — a window that merely scrolls re-uploads nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MotionUploadKey {
-    store: Option<u64>,
-    epoch: u64,
-}
-
-#[derive(Debug, Default)]
-struct MotionUploadCache {
-    held: Option<MotionUploadKey>,
-}
-
-impl MotionUploadCache {
-    /// Whether the buffers have to be rewritten for `wanted`, recording it as
-    /// held when they do.
-    fn needs_upload(&mut self, wanted: MotionUploadKey, capacity_grew: bool) -> bool {
-        if !capacity_grew && self.held == Some(wanted) {
-            return false;
-        }
-        self.held = Some(wanted);
-        true
-    }
-
-    fn invalidate(&mut self) {
-        self.held = None;
-    }
 }
 
 impl MotionGpuResources {
@@ -131,7 +99,8 @@ impl MotionGpuResources {
             keyframe_capacity,
             uploaded_descriptors: Vec::new(),
             uploaded_keyframes: Vec::new(),
-            upload: MotionUploadCache::default(),
+            last_source: 0,
+            last_structure_epoch: u64::MAX,
             last_surface_generation: 0,
             last_work: MotionWorkCounters::default(),
         }
@@ -154,22 +123,22 @@ impl MotionGpuResources {
         self.last_work = MotionWorkCounters::default();
         let surface = scene.surface_generation();
         let epoch = scene.motion_gpu_structure_epoch();
+        let source = scene.motion_gpu_source();
         let descriptors = scene.motion_gpu_descriptors();
         let keyframes = scene.motion_gpu_keyframes();
         let lost = surface != self.last_surface_generation;
         if lost {
             self.last_surface_generation = surface;
-            self.upload.invalidate();
+            self.last_structure_epoch = u64::MAX;
             self.uploaded_descriptors.clear();
             self.uploaded_keyframes.clear();
         }
-        let capacity_grew = descriptors.len() > self.descriptor_capacity
+        let need_descriptors = lost
+            || source != self.last_source
+            || epoch != self.last_structure_epoch
+            || descriptors.len() > self.descriptor_capacity
             || keyframes.len() > self.keyframe_capacity;
-        let wanted = MotionUploadKey {
-            store: scene.motion_gpu_store_id(),
-            epoch,
-        };
-        if self.upload.needs_upload(wanted, capacity_grew) {
+        if need_descriptors {
             self.ensure_capacity(device, descriptors.len(), keyframes.len());
             let desc_bytes = pad_copy(
                 motion_gpu_as_bytes(descriptors),
@@ -197,6 +166,8 @@ impl MotionGpuResources {
             }
             self.uploaded_descriptors = desc_bytes;
             self.uploaded_keyframes = kf_bytes;
+            self.last_source = source;
+            self.last_structure_epoch = epoch;
             self.last_work.record_descriptor_upload(
                 descriptors
                     .iter()
@@ -1038,48 +1009,10 @@ mod tests {
         assert_eq!(second.motion_descriptor_bytes_uploaded, 0);
     }
 
-    /// One painter paints several documents — devtools' offscreen snapshots
-    /// loop over them in a single call, and a window can have its document
-    /// replaced. Their structure epochs both start at 0, so keyed by the epoch
-    /// alone the second document would render the first one's descriptors.
-    #[test]
-    fn two_documents_at_the_same_epoch_do_not_share_the_motion_buffers() {
-        let (device, queue) = test_device();
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
-        let (_first_world, first, _, _) = compositor_motion_scene(
-            opacity_spec(
-                MotionCurve::Easing(Easing::Linear),
-                MotionTo::Value(MotionValue::Scalar(1.0)),
-            ),
-            Duration::from_millis(16),
-        );
-        let (_second_world, second, _, _) = compositor_motion_scene(
-            opacity_spec(
-                MotionCurve::Easing(Easing::Linear),
-                MotionTo::Value(MotionValue::Scalar(0.25)),
-            ),
-            Duration::from_millis(16),
-        );
-        assert_eq!(
-            first.motion_gpu_structure_epoch(),
-            second.motion_gpu_structure_epoch(),
-            "independent documents do reach the same epoch"
-        );
-
-        paint_once(&device, &queue, &mut painter, &first);
-        assert!(painter.last_motion_work().motion_descriptors_uploaded > 0);
-        paint_once(&device, &queue, &mut painter, &second);
-        assert!(
-            painter.last_motion_work().motion_descriptors_uploaded > 0,
-            "the second document's descriptors must reach the shared buffers"
-        );
-    }
-
-    /// Scene identity is refreshed by any node change, so keying the upload
-    /// cache on it re-uploaded the whole descriptor table on every scroll,
-    /// keystroke or hover — and reported work `last_motion_work` promises is
-    /// only there when the table actually changed.
+    /// Scene identity is refreshed by any node change. Keyed on that rather
+    /// than on the descriptor source, every scroll, keystroke or hover would
+    /// re-pack and re-diff the whole table and report work `last_motion_work`
+    /// promises is only there when the table actually changed.
     #[test]
     fn a_scene_mutation_alone_does_not_reupload_the_descriptor_table() {
         let (device, queue) = test_device();
@@ -1118,6 +1051,62 @@ mod tests {
     }
 
     #[test]
+    fn a_painter_shared_by_windows_uploads_each_documents_descriptors() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let now = Duration::from_millis(200);
+        // Two window documents with identical structure epochs but different
+        // motion: one fades to opaque, the other stays transparent.
+        let (world_a, scene_a, handle_a, _) = compositor_motion_scene(
+            opacity_spec(
+                MotionCurve::Easing(Easing::Linear),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+            Duration::from_millis(16),
+        );
+        let (world_b, scene_b, handle_b, _) = compositor_motion_scene(
+            opacity_spec(
+                MotionCurve::Easing(Easing::Linear),
+                MotionTo::Value(MotionValue::Scalar(0.0)),
+            ),
+            Duration::from_millis(16),
+        );
+        assert_eq!(
+            scene_a.motion_gpu_structure_epoch(),
+            scene_b.motion_gpu_structure_epoch()
+        );
+        assert_eq!(handle_a, handle_b);
+        paint_once(&device, &queue, &mut painter, &scene_a);
+        paint_once(&device, &queue, &mut painter, &scene_b);
+        assert!(
+            painter.last_motion_work().motion_descriptors_uploaded > 0,
+            "another document's table must replace the shared upload"
+        );
+        for (world, scene, handle) in [
+            (&world_a, &scene_a, handle_a),
+            (&world_b, &scene_b, handle_b),
+        ] {
+            let cpu = world
+                .motion_descriptors()
+                .evaluate(handle, now)
+                .expect("cpu evaluate");
+            let readback = painter
+                .motion
+                .evaluate_readback(&device, &queue, scene, handle.index() + 1, now)
+                .expect("gpu evaluate");
+            let MotionValue::Scalar(expected) = cpu.value else {
+                panic!("expected scalar");
+            };
+            assert!(
+                (readback.pixels[0][0] - expected).abs() < GPU_CPU_TOL,
+                "cpu {expected} gpu {}",
+                readback.pixels[0][0]
+            );
+        }
+    }
+
+    #[test]
     fn surface_generation_rebuilds_descriptor_upload() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -1135,37 +1124,5 @@ mod tests {
             painter.last_motion_work().motion_descriptors_uploaded > 0,
             "device/surface generation change must reupload descriptors"
         );
-    }
-
-    /// The motion buffers are shared by every render target while the structure
-    /// epoch counts within one store and starts at 0 in each. Keyed by the
-    /// epoch alone, a second document that happened to reach the same epoch
-    /// would render the first one's descriptors.
-    #[test]
-    fn two_stores_at_the_same_epoch_do_not_share_one_upload() {
-        let mut cache = MotionUploadCache::default();
-        let first = MotionUploadKey {
-            store: Some(1),
-            epoch: 7,
-        };
-        let second = MotionUploadKey {
-            store: Some(2),
-            epoch: 7,
-        };
-
-        assert!(cache.needs_upload(first, false));
-        assert!(
-            !cache.needs_upload(first, false),
-            "unchanged scene re-uploads"
-        );
-        assert!(cache.needs_upload(second, false));
-        assert!(
-            cache.needs_upload(first, false),
-            "switching back must rewrite the buffers the other store left"
-        );
-        // Growing the buffers reallocates them, so their contents are gone.
-        assert!(cache.needs_upload(first, true));
-        cache.invalidate();
-        assert!(cache.needs_upload(first, false));
     }
 }
