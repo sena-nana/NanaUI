@@ -359,15 +359,11 @@ mod tests {
             "the same folded source comes back, not a fresh copy"
         );
         source.set_text("three\nfour");
-        assert_ne!(
-            source
-                .with_folded_newlines()
-                .expect("still has a newline")
-                .text()
-                .as_ptr(),
-            first,
-            "an edit drops the memo"
-        );
+        // The old fold is freed by the edit, so its address may be reused;
+        // the memo is proven dropped by what the new fold reads.
+        let refolded = source.with_folded_newlines().expect("still has a newline");
+        assert_eq!(refolded.text(), "three four", "an edit drops the memo");
+        assert_eq!(refolded.revision(), source.revision());
     }
 
     #[test]
