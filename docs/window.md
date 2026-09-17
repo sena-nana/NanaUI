@@ -15,6 +15,8 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 - macOS：透明标题栏 + full-size content，NanaUI 画 36px 标题栏，左侧给系统红黄绿留 78px。系统默认只把红黄绿放在标准标题栏高度内居中，`prepare_client_chrome` 会按标题栏高度平移按钮容器，使其在 36px 内居中。
 - Windows / Linux：关掉系统 decorations，由 `AppTitleBar` 画最小化、最大化、关闭，控件组贴标题栏右缘。
 
+按指针显现 chrome 的应用用 `WindowCommand::SetNativeWindowControlsVisible { id, visible, duration }` 让原生窗口按钮随 chrome 淡入淡出：macOS 以 `duration` 渐变红黄绿透明度，隐藏在渐变结束后移出绘制与命中，中途收到显示则从当前值接管；宿主记住隐藏状态，全屏切换等改写原生样式后重新隐藏。Windows / Linux 的按钮是 `AppTitleBar` 控件，命令为空操作，由应用随标题栏一起显隐。`leading_inset` 不随显隐变化，布局保持不动。
+
 自绘 chrome 可拖窗口客户区最外 8px 缩放（四边与四角）。系统 caption、最大化、全屏、`resizable: false` 交给平台边框或禁用，不叠第二套命中。
 
 没有自绘标题栏的窗口设 `WindowDescriptor::system_caption(true)`，避免 Windows 无框窗口失去关闭按钮。

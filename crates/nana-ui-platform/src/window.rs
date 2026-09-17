@@ -621,6 +621,16 @@ pub enum WindowCommand {
         id: WindowId,
         always_on_top: bool,
     },
+    /// Fade the platform's native window buttons (macOS traffic lights) over
+    /// `duration`; hidden buttons take no pointer input. The host keeps the
+    /// state across native style changes such as leaving fullscreen.
+    /// Platforms whose buttons are `AppTitleBar` controls ignore it: the
+    /// application presents those with the title bar.
+    SetNativeWindowControlsVisible {
+        id: WindowId,
+        visible: bool,
+        duration: std::time::Duration,
+    },
     /// Show or hide the taskbar entry. Always emits SkipTaskbarChanged.
     SetSkipTaskbar {
         id: WindowId,

@@ -22,6 +22,7 @@ pub use chrome::native_live_resize_active;
 pub use chrome::prepare_client_chrome;
 pub use chrome::prepare_custom_title_bar;
 pub use chrome::resize_custom_frame;
+pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_present_transaction;
 pub use chrome::suppress_system_caption;
 pub use file_dialog::{

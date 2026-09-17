@@ -161,6 +161,8 @@ struct WindowContext {
     mode: Option<WindowModeState>,
     /// Fullscreen applied once the window is visible and not fullscreen.
     pending_fullscreen: Option<FullscreenRequest>,
+    /// Native window buttons shown; re-applied after native style changes.
+    native_controls_visible: bool,
     /// Taskbar entry state last applied successfully.
     skip_taskbar: bool,
     /// Descriptor outcome, applied before the first show and delivered after `Ready`.
@@ -643,6 +645,7 @@ fn initialize<Program: RuntimeProgram>(
         },
         mode: None,
         pending_fullscreen: settings.fullscreen,
+        native_controls_visible: true,
         skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
         skip_taskbar_report,
         pointer_presence: presence::PointerPresence::default(),
@@ -1661,6 +1664,7 @@ enum RoutedWindowCommand {
     SetMinimized(WindowId),
     SetMaximized(WindowId),
     SetAlwaysOnTop(WindowId),
+    SetNativeWindowControlsVisible(WindowId),
     SetIcon(WindowId),
     SetMenuBar(WindowId),
     OpenFileDialog(WindowId),
@@ -1703,6 +1707,9 @@ fn route_window_command(command: &WindowCommand, known: &[WindowId]) -> RoutedWi
         }
         WindowCommand::SetAlwaysOnTop { id, .. } if known(*id) => {
             RoutedWindowCommand::SetAlwaysOnTop(*id)
+        }
+        WindowCommand::SetNativeWindowControlsVisible { id, .. } if known(*id) => {
+            RoutedWindowCommand::SetNativeWindowControlsVisible(*id)
         }
         WindowCommand::SetIcon { id, .. } if known(*id) => RoutedWindowCommand::SetIcon(*id),
         WindowCommand::SetMenuBar { id, .. } if known(*id) => RoutedWindowCommand::SetMenuBar(*id),
@@ -3842,6 +3849,17 @@ mod tests {
                 &known
             ),
             RoutedWindowCommand::SetAlwaysOnTop(tool)
+        );
+        assert_eq!(
+            route_window_command(
+                &WindowCommand::SetNativeWindowControlsVisible {
+                    id: tool,
+                    visible: false,
+                    duration: std::time::Duration::from_millis(140),
+                },
+                &known
+            ),
+            RoutedWindowCommand::SetNativeWindowControlsVisible(tool)
         );
         assert_eq!(
             route_window_command(

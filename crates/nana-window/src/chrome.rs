@@ -339,6 +339,88 @@ fn center_traffic_lights<W: HasWindowHandle + ?Sized>(_window: &W, _titlebar_hei
     true
 }
 
+/// Fades the native window buttons (macOS traffic lights) over `duration`.
+/// Hidden buttons leave paint, hover and clicks once the fade ends; a reveal
+/// that arrives mid-fade takes over from the presented alpha. Platforms whose
+/// window buttons are `AppTitleBar` controls have no native buttons and
+/// always succeed.
+pub fn set_native_window_controls_visible<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    visible: bool,
+    duration: std::time::Duration,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        fade_traffic_lights(window, visible, duration)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, visible, duration);
+        true
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fade_traffic_lights<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    visible: bool,
+    duration: std::time::Duration,
+) -> bool {
+    use block2::RcBlock;
+    use objc2_app_kit::{NSAnimatablePropertyContainer, NSAnimationContext, NSWindowButton};
+
+    let Some(window) = appkit_window(window) else {
+        return false;
+    };
+    let buttons: Vec<_> = [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ]
+    .into_iter()
+    .filter_map(|kind| window.standardWindowButton(kind))
+    .collect();
+    if buttons.is_empty() {
+        return false;
+    }
+    let alpha = if visible { 1.0 } else { 0.0 };
+    if duration.is_zero() {
+        for button in &buttons {
+            button.setAlphaValue(alpha);
+            button.setHidden(!visible);
+        }
+        return true;
+    }
+    if visible {
+        for button in &buttons {
+            button.setHidden(false);
+        }
+    }
+    let seconds = duration.as_secs_f64();
+    let changes = RcBlock::new(|context: std::ptr::NonNull<NSAnimationContext>| {
+        // SAFETY: AppKit passes the live context of this animation group.
+        unsafe { context.as_ref() }.setDuration(seconds);
+        for button in &buttons {
+            button.animator().setAlphaValue(alpha);
+        }
+    });
+    // The model alpha is the latest target, so a reveal issued during this
+    // fade keeps the buttons.
+    let concealed = buttons.clone();
+    let completion = RcBlock::new(move || {
+        for button in &concealed {
+            if button.alphaValue() <= 0.0 {
+                button.setHidden(true);
+            }
+        }
+    });
+    NSAnimationContext::runAnimationGroup_completionHandler(
+        &changes,
+        (!visible).then_some(&*completion),
+    );
+    true
+}
+
 #[cfg(target_os = "macos")]
 fn set_drag_enabled<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
     let Some(window) = appkit_window(window) else {

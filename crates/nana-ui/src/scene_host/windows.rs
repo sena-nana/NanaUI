@@ -103,6 +103,23 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 };
                 self.set_window_level(event_loop, id, level);
             }
+            RoutedWindowCommand::SetNativeWindowControlsVisible(id) => {
+                let WindowCommand::SetNativeWindowControlsVisible {
+                    visible, duration, ..
+                } = command
+                else {
+                    return;
+                };
+                let Some(host) = self.window_contexts.get_mut(&id) else {
+                    return;
+                };
+                host.native_controls_visible = visible;
+                let _ = nana_window::set_native_window_controls_visible(
+                    host.surface.window().as_ref(),
+                    visible,
+                    duration,
+                );
+            }
             RoutedWindowCommand::SetIcon(id) => {
                 let WindowCommand::SetIcon { icon, .. } = command else {
                     return;
@@ -567,6 +584,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 level,
                 mode: None,
                 pending_fullscreen,
+                native_controls_visible: true,
                 skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
                 skip_taskbar_report,
                 pointer_presence: presence::PointerPresence::default(),
@@ -1101,7 +1119,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
-        apply_client_chrome_after_create(host.surface.window().as_ref(), &host.settings);
+        let window = host.surface.window();
+        apply_client_chrome_after_create(window.as_ref(), &host.settings);
+        // Style changes can bring hidden native buttons back.
+        if !host.native_controls_visible {
+            let _ = nana_window::set_native_window_controls_visible(
+                window.as_ref(),
+                false,
+                std::time::Duration::ZERO,
+            );
+        }
     }
     pub(super) fn scale_factor(&self, id: WindowId) -> f32 {
         self.window(id)

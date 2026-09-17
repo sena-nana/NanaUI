@@ -13,7 +13,8 @@
   `run_runtime`、crate-root 再导出、`SceneWgpuPainter`。
 - `crates/nana-window` 负责系统材质以及标题栏拖拽 / 客户区 chrome / 缩放桥；
   普通控件不得访问窗口句柄。叠加标题栏仍走 `AppTitleBar` 透明模式与布局槽；
-  全屏由消费方关闭标题栏拖动和窗口按钮，保留业务槽内容。
+  全屏由消费方关闭标题栏拖动和窗口按钮，保留业务槽内容。原生窗口按钮（macOS
+  红黄绿）随 chrome 显隐走 `WindowCommand::SetNativeWindowControlsVisible`。
   Windows 窗口按钮使用框架统一圆角图标按钮样式与实际按钮命中区域。
 - 消费应用拥有业务状态、配置存储和 Region 内容；NanaUI 只提供通用状态与合同。
 - 非模态任务浮层使用 `OverlayHost` + `Panel`，共享 Runtime 关闭生命周期与焦点恢复；业务导航、固定策略与视口预留由消费应用持有，不借用模态 Dialog/Menu 的语义。

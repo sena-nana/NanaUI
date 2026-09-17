@@ -253,6 +253,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         if let Some(host) = self.window_contexts.get_mut(&id) {
             host.mode = Some(mode);
+            // Native fullscreen transitions restore the window buttons.
+            if !host.native_controls_visible {
+                let _ = nana_window::set_native_window_controls_visible(
+                    window.as_ref(),
+                    false,
+                    std::time::Duration::ZERO,
+                );
+            }
         }
         let update = self
             .program
