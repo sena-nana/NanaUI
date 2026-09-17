@@ -272,7 +272,7 @@ pub enum FullscreenMode {
 
 ### 独立透明工具窗
 
-`WindowDescriptor::focus_on_show = false` 让首次显示不抢占前台焦点；默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`；属于某个主窗的工具窗设置 `parent`，在 Windows 上由父窗 own，点击父窗不会把工具窗压到后面。不需要 `DesktopShell` 才能使用边缘缩放。
+`WindowDescriptor::focus_on_show = false` 让显示不抢占前台焦点：首次显示和之后 `set_visible(true)` 再次显示都适用；macOS 以 `orderFront` 显示而不成为 key window（winit 的显示会调用 `makeKeyAndOrderFront`），Windows 与其他平台仍走 winit 显示路径。默认 `true` 保持原行为。工具层可组合 `transparent = true`、`always_on_top = true` 与非模态 `WindowRole::Tool`；属于某个主窗的工具窗设置 `parent`，在 Windows 上由父窗 own，点击父窗不会把工具窗压到后面。不需要 `DesktopShell` 才能使用边缘缩放。
 
 `WindowService::create_window` 在完整就绪并发送 `WindowEvent::Ready` 后完成凭据；创建失败通过凭据返回错误；窗口若在处理 `Ready` 时被应用关闭，凭据返回 `WindowClosed`。服务从 `1 << 63` 起分配窗口 ID，并跳过仍存活的程序自选 ID（例如 Dock 浮动窗口的哈希 ID）。Vue 等宿主批次适配器另通过 `OpenFailed { id, error }` 通知失败，撤销创建中状态。`SetMousePassthrough { id, enabled }` 关闭整窗原生命中测试（Windows `WS_EX_TRANSPARENT`），overlay 收不到指针，也无法按命中自己收回。`SetMousePassthroughForward { id, enabled }` 是宿主持有的 Forward 模式：OS 穿透保持开启，宿主在窗口线程采样全局指针（Windows `GetCursorPos`、macOS `mouseLocationOutsideOfEventStream`、Linux X11 `XQueryPointer`；Wayland 当前采不到则无法自动收回），换算为 overlay 逻辑坐标后走现有 `pointer_target`。命中 `pointer-events` 非 `none` 的不透明/可交互内容时 `set_cursor_hittest(true)` 收回；离开该区域或窗口后再穿透。采样到的 Move 仍可喂 overlay hover/光标，按下必须在收回之后才由本窗接收，底层窗口在穿透期间可点。控件拿不到 HWND。`WindowHandle::set_mouse_passthrough_mode` 对应 `MousePassthroughMode::{Off, Passthrough, Forward}`。每次命中测试变化都回报 `MousePassthroughChanged { id, enabled, result }`（`enabled` 为当前 OS 穿透是否开启，未知窗口也回报失败）。应用收到成功确认后才显示锁定状态，并保留另一窗口的解除穿透入口。异形窗 / per-pixel alpha OS 形状不是这条合同。
 

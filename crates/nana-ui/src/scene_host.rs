@@ -718,7 +718,11 @@ fn initialize<Program: RuntimeProgram>(
         ready.process_message(event_loop, message);
     }
     if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
-        window.set_visible(ready.settings.visible);
+        windows::set_native_visible(
+            window.as_ref(),
+            ready.settings.visible,
+            ready.settings.focus_on_show,
+        );
         apply_client_chrome_after_create(window.as_ref(), &ready.settings);
         window.request_redraw();
         ready.finish_ready(event_loop, WindowId::PRIMARY);

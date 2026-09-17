@@ -85,6 +85,16 @@ pub fn set_skip_taskbar<W: raw_window_handle::HasWindowHandle + ?Sized>(
     }
 }
 
+/// Show a window without making it key or activating the application.
+///
+/// winit's `set_visible(true)` makes a macOS window key, so a window shown
+/// after creation would ignore `WindowDescriptor::focus_on_show = false`.
+/// Returns whether the window was shown here; other platforms return false
+/// and the caller shows it through winit.
+pub fn show_without_activation<W: raw_window_handle::HasWindowHandle + ?Sized>(window: &W) -> bool {
+    platform::show_without_activation(window)
+}
+
 /// macOS Dock / application icon from PNG bytes. No-op on other platforms.
 ///
 /// winit's window icon is ignored on macOS; this talks to `NSApplication`.

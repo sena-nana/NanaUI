@@ -576,8 +576,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(parent) = modal_parent.and_then(|parent| self.window(parent)) {
             parent.set_enable(false);
         }
+        let settings = self.settings_of(id);
+        let (visible, focus_on_show) = (settings.visible, settings.focus_on_show);
         self.mutate_native_style(id, |window| {
-            window.set_visible(self.settings_of(id).visible)
+            set_native_visible(window, visible, focus_on_show)
         });
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
@@ -1328,7 +1330,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let window = self.window(id).cloned().ok_or(WindowError::WindowClosed)?;
         match control {
             Control::Visible(visible) => {
-                self.mutate_native_style(id, |window| window.set_visible(visible));
+                let focus_on_show = self.settings_of(id).focus_on_show;
+                self.mutate_native_style(id, |window| {
+                    set_native_visible(window, visible, focus_on_show)
+                });
                 // Frames were deferred while hidden; a shown window repaints
                 // without relying on the program to request it.
                 if visible {
@@ -1557,6 +1562,20 @@ mod appearance_tests {
         assert!(apply(&mut cached, original).is_err());
         assert_eq!(calls.get(), 2);
     }
+}
+
+/// Show or hide a native window. One whose descriptor declines focus on show
+/// is ordered front without activation where the platform supports it, both
+/// on its first show and when shown again.
+pub(super) fn set_native_visible(
+    window: &dyn winit::window::Window,
+    visible: bool,
+    focus_on_show: bool,
+) {
+    if visible && !focus_on_show && nana_window::show_without_activation(window) {
+        return;
+    }
+    window.set_visible(visible);
 }
 
 fn native_skip_taskbar(

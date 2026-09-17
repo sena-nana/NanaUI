@@ -375,6 +375,19 @@ pub(crate) fn open_file_dialog<W: HasWindowHandle + ?Sized>(
     }))
 }
 
+/// Order the window front without making it key. winit reads visibility back
+/// from `isVisible`, so it stays consistent.
+pub(crate) fn show_without_activation<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        return false;
+    };
+    let Some(window) = ns_window(window, mtm) else {
+        return false;
+    };
+    window.orderFront(None);
+    true
+}
+
 /// The `NSWindow` behind a raw handle.
 fn ns_window<W: HasWindowHandle + ?Sized>(
     window: &W,

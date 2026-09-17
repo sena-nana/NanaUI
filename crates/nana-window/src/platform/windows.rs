@@ -62,6 +62,12 @@ const fn should_clear_no_redirection_bitmap(requested: MaterialEffect) -> bool {
 
 pub(crate) fn set_application_icon_png(_png: &[u8]) {}
 
+/// winit tracks Win32 visibility itself; showing behind it would desync that
+/// state, so Windows keeps winit's path.
+pub(crate) fn show_without_activation<W: HasWindowHandle + ?Sized>(_window: &W) -> bool {
+    false
+}
+
 fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
