@@ -702,7 +702,9 @@ struct MotionAffine {
     ef: vec4<f32>,
 }
 
-fn motion_compose_affine(base_abcd: vec4<f32>, base_ef: vec4<f32>, sample: MotionGpuSample) -> MotionAffine {
+// `base · T(origin) · M · T(-origin)`: the overlay pivots on the node's
+// transform-origin, matching `LayoutStyle::world_scene_transform`.
+fn motion_compose_affine(base_abcd: vec4<f32>, base_ef: vec4<f32>, origin: vec2<f32>, sample: MotionGpuSample) -> MotionAffine {
     if (sample.applies == 0u || sample.value.kind != MOTION_KIND_TRANSFORM) {
         return MotionAffine(base_abcd, base_ef);
     }
@@ -710,8 +712,8 @@ fn motion_compose_affine(base_abcd: vec4<f32>, base_ef: vec4<f32>, sample: Motio
     let b = sample.value.channels.y;
     let c = sample.value.channels.z;
     let d = sample.value.channels.w;
-    let e = sample.value.extra.x;
-    let f = sample.value.extra.y;
+    let e = sample.value.extra.x + origin.x - a * origin.x - c * origin.y;
+    let f = sample.value.extra.y + origin.y - b * origin.x - d * origin.y;
     let na = base_abcd.x * a + base_abcd.z * b;
     let nb = base_abcd.y * a + base_abcd.w * b;
     let nc = base_abcd.x * c + base_abcd.z * d;

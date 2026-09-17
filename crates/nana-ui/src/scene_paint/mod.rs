@@ -558,7 +558,7 @@ impl SceneWgpuPainter {
                     let opacity = encode.opacity;
                     let encode_transform = encode.transform;
                     self.quads
-                        .set_motion_ids(encode.motion_ids.0, encode.motion_ids.1);
+                        .set_motion(encode.motion_ids, encode.transform_origin);
                     if sync_opacity_groups(
                         &mut commands,
                         &mut group_stack,

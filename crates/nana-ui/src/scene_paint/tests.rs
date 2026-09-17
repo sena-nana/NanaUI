@@ -1520,7 +1520,7 @@ fn l_stroke_edges(count: usize) -> Vec<(Vec<[f32; 2]>, [f32; 4])> {
         .collect()
 }
 
-fn paint_scene_rgba(
+pub(super) fn paint_scene_rgba(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     painter: &mut SceneWgpuPainter,

@@ -10,8 +10,10 @@ struct SolidVertexInput {
     @location(5) border_widths: vec4<f32>,
     @location(6) shadow_color: vec4<f32>,
     @location(7) shadow_offset: vec2<f32>,
-    @location(8) shadow_blur_radius: f32,
-    @location(9) shadow_spread_radius: f32,
+    // Blur and spread radii share one attribute to leave room for the pivot
+    // within the 16 vertex attribute limit.
+    @location(8) shadow_radii: vec2<f32>,
+    @location(9) motion_origin: vec2<f32>,
     @location(10) snap: u32,
     @location(11) affine_abcd: vec4<f32>,
     @location(12) affine_ef: vec4<f32>,
@@ -74,7 +76,9 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
 
     // Outline/inset expansion is packed into instance shadow radii on the CPU so
     // this stage never reads storage (VERTEX_STORAGE is not guaranteed).
-    let shadow_outset = input.shadow_blur_radius + max(input.shadow_spread_radius, 0.0);
+    let shadow_blur_radius = input.shadow_radii.x;
+    let shadow_spread_radius = input.shadow_radii.y;
+    let shadow_outset = shadow_blur_radius + max(shadow_spread_radius, 0.0);
     var pos: vec2<f32> = (input.pos + min(input.shadow_offset, vec2<f32>(0.0, 0.0)) - shadow_outset) * globals.scale;
     var scale: vec2<f32> = (input.scale + vec2<f32>(abs(input.shadow_offset.x), abs(input.shadow_offset.y)) + shadow_outset * 2.0) * globals.scale;
 
@@ -91,7 +95,7 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     let local = pos + pos_snap - vec2<f32>(0.5, 0.5) + unit * (scale + scale_snap + 1.0);
     let logical = local / globals.scale;
     let transform_id = (input.snap >> 1u) & 0x7fffu;
-    let composed = motion_compose_affine(input.affine_abcd, input.affine_ef, motion_evaluate(transform_id));
+    let composed = motion_compose_affine(input.affine_abcd, input.affine_ef, input.motion_origin, motion_evaluate(transform_id));
     let world = apply_affine(composed.abcd, composed.ef, logical);
 
     out.position = globals.transform * vec4<f32>(world * globals.scale, 0.0, 1.0);
@@ -103,8 +107,8 @@ fn solid_vs_main(input: SolidVertexInput) -> SolidVertexOutput {
     out.border_widths = input.border_widths * globals.scale;
     out.shadow_color = premultiply(input.shadow_color);
     out.shadow_offset = input.shadow_offset * globals.scale;
-    out.shadow_blur_radius = input.shadow_blur_radius * globals.scale;
-    out.shadow_spread_radius = input.shadow_spread_radius * globals.scale;
+    out.shadow_blur_radius = shadow_blur_radius * globals.scale;
+    out.shadow_spread_radius = shadow_spread_radius * globals.scale;
     out.local_pos = local;
     out.world_pos = world;
     out.clip_rect = input.clip_rect;

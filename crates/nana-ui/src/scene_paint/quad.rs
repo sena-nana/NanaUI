@@ -39,6 +39,8 @@ struct SolidInstance {
     shadow_offset: [f32; 2],
     shadow_blur_radius: f32,
     shadow_spread_radius: f32,
+    /// Scene-space pivot of the GPU transform overlay.
+    motion_origin: [f32; 2],
     snap: u32,
     affine_abcd: [f32; 4],
     affine_ef: [f32; 4],
@@ -141,6 +143,7 @@ pub(super) struct QuadPipeline {
     )]
     motion_dummy: wgpu::BindGroup,
     motion_ids: (u32, u32),
+    motion_origin: [f32; 2],
 }
 
 impl QuadPipeline {
@@ -337,6 +340,7 @@ impl QuadPipeline {
             motion_layout,
             motion_dummy,
             motion_ids: (0, 0),
+            motion_origin: [0.0, 0.0],
         }
     }
 
@@ -345,6 +349,7 @@ impl QuadPipeline {
         self.pending_paint.clear();
         self.pending_urls.clear();
         self.motion_ids = (0, 0);
+        self.motion_origin = [0.0, 0.0];
         self.url_cache.begin_frame();
     }
 
@@ -352,8 +357,11 @@ impl QuadPipeline {
         &self.motion_layout
     }
 
-    pub(super) fn set_motion_ids(&mut self, transform: u32, opacity: u32) {
-        self.motion_ids = (transform, opacity);
+    /// GPU motion ids `(transform, opacity)` and the transform overlay pivot
+    /// for the primitives pushed next.
+    pub(super) fn set_motion(&mut self, ids: (u32, u32), origin: [f32; 2]) {
+        self.motion_ids = ids;
+        self.motion_origin = origin;
     }
 
     pub(super) fn set_image_waker(&mut self, wake: super::url_texture_cache::ImageWake) {
@@ -504,6 +512,7 @@ impl QuadPipeline {
                     Some(*layer),
                     opacity,
                     snap,
+                    self.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -536,6 +545,7 @@ impl QuadPipeline {
                 fill_shadow,
                 opacity,
                 snap,
+                self.motion_origin,
                 instance_affine,
                 instance_persp,
                 fragment_clip,
@@ -567,6 +577,7 @@ impl QuadPipeline {
                     if first { fill_shadow } else { None },
                     opacity,
                     snap,
+                    self.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -595,6 +606,7 @@ impl QuadPipeline {
                     None,
                     opacity,
                     snap,
+                    self.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -626,6 +638,7 @@ impl QuadPipeline {
                 None,
                 opacity,
                 snap,
+                self.motion_origin,
                 instance_affine,
                 instance_persp,
                 fragment_clip,
@@ -648,6 +661,7 @@ impl QuadPipeline {
                     Some(*layer),
                     opacity,
                     snap,
+                    self.motion_origin,
                     instance_affine,
                     instance_persp,
                     fragment_clip,
@@ -859,6 +873,7 @@ fn push_solid_instance(
     shadow: Option<ComponentElevation>,
     opacity: f32,
     snap: u32,
+    motion_origin: [f32; 2],
     instance_affine: [f32; 6],
     instance_persp: [f32; 2],
     fragment_clip: super::clip::FragmentClip,
@@ -893,6 +908,7 @@ fn push_solid_instance(
         shadow_blur_radius: shadow.map(|shadow| shadow.blur_radius).unwrap_or(0.0),
         shadow_spread_radius: shadow.map(|shadow| shadow.spread_radius).unwrap_or(0.0)
             + paint.outline_width.max(0.0),
+        motion_origin,
         snap,
         affine_abcd: [
             instance_affine[0],
@@ -1451,8 +1467,8 @@ fn solid_pipeline(
                     5 => Float32x4,
                     6 => Float32x4,
                     7 => Float32x2,
-                    8 => Float32,
-                    9 => Float32,
+                    8 => Float32x2,
+                    9 => Float32x2,
                     10 => Uint32,
                     11 => Float32x4,
                     12 => Float32x4,

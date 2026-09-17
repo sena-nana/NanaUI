@@ -491,7 +491,10 @@ mod tests {
     };
     use nana_ui_scene::UiScene;
 
-    use super::super::{ScenePaintViewport, SceneWgpuPainter, tests::test_device};
+    use super::super::{
+        ScenePaintViewport, SceneWgpuPainter,
+        tests::{paint_scene_rgba, test_device},
+    };
     use super::*;
 
     /// Same absolute tolerance as the Linear harness. Bezier bisection and
@@ -979,6 +982,89 @@ mod tests {
             &track,
             &[Duration::from_millis(100), now],
             "transform cubic-bezier",
+        );
+    }
+
+    #[test]
+    fn gpu_transform_overlay_scales_around_transform_origin() {
+        let node = id(1);
+        let spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Transform)
+        .with_range(
+            MotionValue::Transform(PaintTransform {
+                a: 0.0,
+                ..PaintTransform::default()
+            }),
+            MotionTo::Value(MotionValue::Transform(PaintTransform::default())),
+        );
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node, DocumentId::new(1).unwrap(), NodeKind::Document);
+        queue.start_animation(spec);
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::ZERO);
+        let mut extracted: Vec<ExtractedNode> = world.extract_nodes(&[node]);
+        // The right half of the target, pivoting on its right edge.
+        extracted[0].layout = LayoutBox {
+            x: 32.0,
+            y: 0.0,
+            width: 32.0,
+            height: 64.0,
+        };
+        extracted[0].source_style = NodeStyle {
+            layout: std::sync::Arc::new(LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                transform_origin: Some(nana_ui_core::TransformOrigin {
+                    x: nana_ui_core::LengthSpec::Percent(100.0),
+                    y: nana_ui_core::LengthSpec::Percent(50.0),
+                }),
+                ..LayoutStyle::default()
+            }),
+            ..extracted[0].source_style.clone()
+        };
+        extracted[0].style = std::sync::Arc::new(ComputedStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..ComputedStyle::default()
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta(extracted, []);
+        scene.apply_presentation(
+            world.presentation_store(),
+            Duration::from_millis(200),
+            Some(world.motion_descriptors()),
+        );
+        assert_ne!(
+            scene.compositor_gpu_motion_ids(node).0,
+            0,
+            "the quad must take the GPU transform path"
+        );
+
+        let (device, queue) = test_device();
+        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            [64.0, 64.0],
+            [64, 64],
+            1.0,
+        );
+        let red_at = |x: usize| pixels[(32 * 64 + x) * 4] > 128;
+        // Half scale around the right edge covers x in [48, 64); around the
+        // scene origin it would cover [16, 32).
+        assert!(red_at(56), "the collapsed side must grow from the pivot");
+        assert!(!red_at(40), "no paint left of the half-scaled box");
+        assert!(
+            !red_at(24),
+            "the overlay must not pivot on the scene origin"
         );
     }
 

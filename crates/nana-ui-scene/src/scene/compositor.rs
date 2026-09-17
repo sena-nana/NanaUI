@@ -82,6 +82,9 @@ impl CompositorMotionBinding {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CompositorPaintEncode {
     pub transform: AffineTransform,
+    /// Scene-space pivot of the GPU transform overlay: the node's resolved
+    /// `transform-origin`. Meaningless without a transform id.
+    pub transform_origin: [f32; 2],
     pub opacity: f32,
     pub motion_ids: (u32, u32),
 }
@@ -594,31 +597,27 @@ impl UiScene {
         (transform, opacity)
     }
 
-    /// World transform encoded for GPU evaluate: this node's compositor
-    /// overlay is replaced by layout so the shader does not double-apply.
+    /// World transform and pivot encoded for GPU evaluate. The transform is
+    /// the node's parent: the shader applies the overlay around
+    /// `transform-origin` in its place, as the CPU layer snapshot does. The
+    /// parent is resolved directly, not by inverting the layer, so a collapsed
+    /// (zero-scale) overlay still encodes.
     pub fn compositor_gpu_encode_transform(
         &self,
         node: StableNodeId,
         composed: AffineTransform,
-    ) -> AffineTransform {
+    ) -> (AffineTransform, [f32; 2]) {
         let (transform_id, _) = self.compositor_gpu_motion_ids(node);
-        if transform_id == 0 {
-            return composed;
-        }
-        let Some(layer) = self.compositor.layer(node) else {
-            return composed;
+        let Some(extracted) = self.nodes.get(&node).filter(|_| transform_id != 0) else {
+            return (composed, [0.0, 0.0]);
         };
-        let Some(extracted) = self.nodes.get(&node) else {
-            return composed;
-        };
-        let layout = node_scene_transform(
-            extracted.source_style.layout.as_ref(),
-            extracted.layout,
-            false,
-        );
-        invert_affine(layer.transform)
-            .map(|inverse| composed.then(inverse).then(layout))
-            .unwrap_or(composed)
+        let (parent, _, _, _) = self.draw_ancestor_state(extracted);
+        let layout = extracted.layout;
+        let [ox, oy] = extracted
+            .source_style
+            .layout
+            .resolved_transform_origin(layout.width, layout.height);
+        (parent, [layout.x + ox, layout.y + oy])
     }
 
     /// Paint opacity with the GPU-evaluated overlay factored out.
@@ -659,14 +658,18 @@ impl UiScene {
         paint_opacity: f32,
     ) -> CompositorPaintEncode {
         if kind.evaluates_compositor_motion_on_gpu() {
+            let (transform, transform_origin) =
+                self.compositor_gpu_encode_transform(node, composed);
             CompositorPaintEncode {
-                transform: self.compositor_gpu_encode_transform(node, composed),
+                transform,
+                transform_origin,
                 opacity: self.compositor_gpu_encode_opacity(node, paint_opacity),
                 motion_ids: self.compositor_gpu_motion_ids(node),
             }
         } else {
             CompositorPaintEncode {
                 transform: composed,
+                transform_origin: [0.0, 0.0],
                 opacity: paint_opacity,
                 motion_ids: (0, 0),
             }
@@ -694,25 +697,6 @@ impl UiScene {
         }
         0
     }
-}
-
-fn invert_affine(transform: AffineTransform) -> Option<AffineTransform> {
-    if transform.is_projective() {
-        return None;
-    }
-    let [a, b, c, d, e, f] = transform.0;
-    let det = a * d - b * c;
-    if !det.is_finite() || det.abs() < 1e-8 {
-        return None;
-    }
-    Some(AffineTransform::from_matrix([
-        d / det,
-        -b / det,
-        -c / det,
-        a / det,
-        (c * f - d * e) / det,
-        (b * e - a * f) / det,
-    ]))
 }
 
 fn make_layer(
