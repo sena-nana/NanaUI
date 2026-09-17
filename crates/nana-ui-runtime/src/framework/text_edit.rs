@@ -4194,6 +4194,9 @@ mod minimap_tests {
             layout.width = Some(LengthSpec::Px(200.0));
             layout.height = Some(LengthSpec::Px(100.0));
             layout.line_height = Some(LineHeightSpec::Absolute(10.0));
+            // Narrow enough glyphs that no line wraps beside the minimap: the
+            // editor keeps its 30 line breaks, and 30 lines are 300 px.
+            layout.font_size = Some(8.0);
             layout.padding_left = Some(LengthSpec::Px(0.0));
             layout.padding_right = Some(LengthSpec::Px(0.0));
             layout.padding_top = Some(LengthSpec::Px(0.0));

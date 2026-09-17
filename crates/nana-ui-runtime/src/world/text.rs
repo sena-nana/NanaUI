@@ -3010,7 +3010,10 @@ impl UiWorld {
         } else {
             source.layout.text_wraps()
         };
-        let preserve_lines = source.layout.white_space.preserve_newlines();
+        // A multiline editor's value keeps its line breaks whatever
+        // `white-space` says: they are the text being edited, not authored
+        // markup whitespace.
+        let preserve_lines = source.layout.white_space.preserve_newlines() || text_input_multiline;
         let wrap_break = source.layout.text_wrap_break();
         let ellipsis = !is_text_input && source.layout.uses_text_ellipsis();
         let max_lines = (!is_text_input)
