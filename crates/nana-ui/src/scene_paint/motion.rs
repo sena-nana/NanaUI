@@ -39,10 +39,12 @@ pub(super) struct MotionGpuResources {
 /// The buffers are shared by every render target, but a structure epoch counts
 /// within one scene: two windows' scenes reach the same epoch while describing
 /// different motion, so the epoch alone cannot say whether the buffers are
-/// current.
+/// current. The target is what distinguishes them — and unlike the scene's
+/// instance id it is stable across ordinary mutations, so a window that merely
+/// scrolls does not re-upload motion that did not change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MotionUploadKey {
-    scene: u64,
+    target: Option<super::RenderTargetId>,
     epoch: u64,
 }
 
@@ -148,7 +150,13 @@ impl MotionGpuResources {
         self.last_work
     }
 
-    pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &UiScene) {
+    pub fn sync(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &UiScene,
+        target: Option<super::RenderTargetId>,
+    ) {
         self.last_work = MotionWorkCounters::default();
         let surface = scene.surface_generation();
         let epoch = scene.motion_gpu_structure_epoch();
@@ -163,10 +171,7 @@ impl MotionGpuResources {
         }
         let capacity_grew = descriptors.len() > self.descriptor_capacity
             || keyframes.len() > self.keyframe_capacity;
-        let wanted = MotionUploadKey {
-            scene: scene.instance_id(),
-            epoch,
-        };
+        let wanted = MotionUploadKey { target, epoch };
         if self.upload.needs_upload(wanted, capacity_grew) {
             self.ensure_capacity(device, descriptors.len(), keyframes.len());
             let desc_bytes = pad_copy(
@@ -221,7 +226,10 @@ impl MotionGpuResources {
         motion_id: u32,
         now: Duration,
     ) -> Option<MotionGpuReadback> {
-        self.sync(device, queue, scene);
+        // A readback names its own scene, which need not be the one the shared
+        // buffers hold; upload it unconditionally rather than trust the cache.
+        self.upload.invalidate();
+        self.sync(device, queue, scene, None);
         let pipeline = self.eval_pipeline.as_ref()?;
         let time = MotionGpuTime::with_eval(now, motion_id);
         queue.write_buffer(
@@ -503,6 +511,8 @@ fn readback_rgba32(
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    use crate::scene_paint::RenderTargetId;
 
     use nana_ui_core::{
         LayoutStyle, PaintTransform,
@@ -1036,6 +1046,47 @@ mod tests {
         assert_eq!(second.motion_descriptor_bytes_uploaded, 0);
     }
 
+    /// Scene identity is refreshed by any node change, so keying the upload
+    /// cache on it re-uploaded the whole descriptor table on every scroll,
+    /// keystroke or hover — and reported work `last_motion_work` promises is
+    /// only there when the table actually changed.
+    #[test]
+    fn a_scene_mutation_alone_does_not_reupload_the_descriptor_table() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let spec = opacity_spec(
+            MotionCurve::Easing(Easing::Linear),
+            MotionTo::Value(MotionValue::Scalar(1.0)),
+        );
+        let node = spec.target;
+        let (world, mut scene, _, _) = compositor_motion_scene(spec, Duration::from_millis(16));
+        paint_once(&device, &queue, &mut painter, &scene);
+        assert!(painter.last_motion_work().motion_descriptors_uploaded > 0);
+
+        let instance = scene.instance_id();
+        let epoch = scene.motion_gpu_structure_epoch();
+        let mut extracted = world.extract_nodes(&[node]);
+        extracted[0].layout = LayoutBox {
+            x: 0.0,
+            y: 8.0,
+            width: 64.0,
+            height: 64.0,
+        };
+        scene.apply_delta(extracted, []);
+        assert_ne!(scene.instance_id(), instance, "the node change must land");
+        assert_eq!(
+            scene.motion_gpu_structure_epoch(),
+            epoch,
+            "moving a box does not restructure motion"
+        );
+
+        paint_once(&device, &queue, &mut painter, &scene);
+        let work = painter.last_motion_work();
+        assert_eq!(work.motion_descriptors_uploaded, 0);
+        assert_eq!(work.motion_descriptor_bytes_uploaded, 0);
+    }
+
     #[test]
     fn surface_generation_rebuilds_descriptor_upload() {
         let (device, queue) = test_device();
@@ -1061,10 +1112,16 @@ mod tests {
     /// whose scene happened to reach the same epoch would render the first
     /// window's descriptors.
     #[test]
-    fn two_scenes_at_the_same_epoch_do_not_share_one_upload() {
+    fn two_targets_at_the_same_epoch_do_not_share_one_upload() {
         let mut cache = MotionUploadCache::default();
-        let first = MotionUploadKey { scene: 1, epoch: 7 };
-        let second = MotionUploadKey { scene: 2, epoch: 7 };
+        let first = MotionUploadKey {
+            target: Some(RenderTargetId(1)),
+            epoch: 7,
+        };
+        let second = MotionUploadKey {
+            target: Some(RenderTargetId(2)),
+            epoch: 7,
+        };
 
         assert!(cache.needs_upload(first, false));
         assert!(
@@ -1074,7 +1131,7 @@ mod tests {
         assert!(cache.needs_upload(second, false));
         assert!(
             cache.needs_upload(first, false),
-            "switching back must rewrite the buffers the other scene left"
+            "switching back must rewrite the buffers the other target left"
         );
         // Growing the buffers reallocates them, so their contents are gone.
         assert!(cache.needs_upload(first, true));

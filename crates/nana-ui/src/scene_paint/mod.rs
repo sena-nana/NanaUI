@@ -74,6 +74,9 @@ pub struct ScenePaintViewport {
 
 pub struct SceneWgpuPainter {
     targets: std::collections::HashMap<RenderTargetId, TargetState>,
+    /// The target `paint` is running for, or `None` for the painter's implicit
+    /// single target. Motion buffers are shared, so their upload cache needs it.
+    active_target: Option<RenderTargetId>,
     prepared_batch: Option<PreparedBatch>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -193,6 +196,7 @@ impl SceneWgpuPainter {
         let motion = MotionGpuResources::new(device, quads.motion_layout());
         Self {
             targets: std::collections::HashMap::new(),
+            active_target: None,
             prepared_batch: None,
             device: device.clone(),
             queue: queue.clone(),
@@ -352,6 +356,7 @@ impl SceneWgpuPainter {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
+        let previous_target = self.active_target.replace(id);
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
@@ -370,6 +375,7 @@ impl SceneWgpuPainter {
         self.swap_target_state(&mut state);
         state.image_revision = self.image_revision;
         self.targets.insert(id, state);
+        self.active_target = previous_target;
         result
     }
     fn swap_target_state(&mut self, state: &mut TargetState) {
@@ -1252,7 +1258,8 @@ impl SceneWgpuPainter {
             msaa_allocated: dest.msaa_allocated,
             ..DestPassCounts::default()
         };
-        self.motion.sync(&self.device, &self.queue, scene);
+        self.motion
+            .sync(&self.device, &self.queue, scene, self.active_target);
         let motion_bytes = self.motion.last_work().motion_descriptor_bytes_uploaded;
         if motion_bytes > 0 {
             gpu_work.record_upload(motion_bytes);
