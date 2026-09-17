@@ -72,6 +72,15 @@ pub struct HitTestResult {
 /// gap is whole glyphs wide, far above this.
 const CELL_JOIN_TOLERANCE_PX: f32 = 0.01;
 
+/// Which side of a line a byte of hung whitespace belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GapSide {
+    /// After the line's last drawn byte.
+    After,
+    /// Before its first.
+    Before,
+}
+
 /// One glyph's advance cell, flattened across the runs of a line.
 struct Cell {
     left: f32,
@@ -167,6 +176,29 @@ impl TextLayout {
         self.lines.iter().find(|line| line.index == index)
     }
 
+    /// Whether `byte` falls in the gap of hung whitespace after `line`, or in
+    /// the one before it.
+    ///
+    /// A soft wrap hangs the whitespace it broke at: those bytes are drawn by
+    /// nobody and belong to no line's `source`, but they are still caret
+    /// positions the user can arrow into. They resolve to the edge of whichever
+    /// line they hang from.
+    fn gap_side(&self, line: &LineBox, byte: usize) -> Option<GapSide> {
+        let index = self
+            .lines
+            .iter()
+            .position(|candidate| candidate.index == line.index)?;
+        if byte > line.source.end {
+            let next = self.lines.get(index + 1)?;
+            return (byte <= next.source.start).then_some(GapSide::After);
+        }
+        if byte < line.source.start {
+            let previous = self.lines.get(index.checked_sub(1)?)?;
+            return (byte >= previous.source.end).then_some(GapSide::Before);
+        }
+        None
+    }
+
     /// Byte at the visually-left / visually-right edge of a whole line.
     fn line_edge_bytes(&self, line: &LineBox) -> (usize, usize) {
         match line.base_direction {
@@ -248,13 +280,22 @@ impl TextLayout {
                 let empty = line.bounds.x;
                 let left_edge = cells.first().map_or(empty, |cell| cell.left);
                 let right_edge = cells.last().map_or(empty, |cell| cell.right);
-                if caret.byte == left_byte {
-                    Some((left_edge, line.base_direction))
-                } else if caret.byte == right_byte {
-                    Some((right_edge, line.base_direction))
+                let logical_end = match self.gap_side(line, caret.byte) {
+                    // Hung whitespace: the bytes between two lines are drawn by
+                    // neither, and a caret in them sits at the end of the line
+                    // it hangs from.
+                    Some(GapSide::After) => true,
+                    Some(GapSide::Before) => false,
+                    None if caret.byte == left_byte => line.base_direction.is_rtl(),
+                    None if caret.byte == right_byte => !line.base_direction.is_rtl(),
+                    None => return None,
+                };
+                let edge = if logical_end == line.base_direction.is_rtl() {
+                    left_edge
                 } else {
-                    None
-                }
+                    right_edge
+                };
+                Some((edge, line.base_direction))
             })?;
 
         Some(CaretGeometry {

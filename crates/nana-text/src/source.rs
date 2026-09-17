@@ -52,6 +52,14 @@ pub struct TextSource {
     /// Hash of `text`, filled on first use and reset by every mutation.
     #[serde(skip)]
     content_hash: OnceLock<u64>,
+    /// This source read under `preserve_lines: false`, folded at most once per
+    /// revision. `None` inside the cell means there was nothing to fold.
+    ///
+    /// Memoized here rather than in the engine because that is where the
+    /// lifetime already is: a folded copy is a new string whose content hash
+    /// would otherwise be recomputed for every frame that lays this source out.
+    #[serde(skip)]
+    folded: OnceLock<Option<Box<TextSource>>>,
 }
 
 /// Equality is over the text, spans and revision; whether the hash happens to
@@ -75,6 +83,7 @@ impl TextSource {
             spans: Vec::new(),
             revision: TextRevision::INITIAL,
             content_hash: OnceLock::new(),
+            folded: OnceLock::new(),
         }
     }
 
@@ -178,16 +187,28 @@ impl TextSource {
     /// each, so folding them to a space would move every offset after them.
     /// They stay line breaks whatever `preserve_lines` says, and layout treats
     /// them as such.
-    pub fn with_folded_newlines(&self) -> Option<Self> {
-        if !self.text.contains(FOLDED_SEPARATORS) {
-            return None;
-        }
-        Some(Self {
-            text: self.text.replace(FOLDED_SEPARATORS, " ").into(),
-            spans: self.spans.clone(),
-            revision: self.revision,
-            content_hash: OnceLock::new(),
-        })
+    ///
+    /// A `\r\n` becomes **two** spaces, for the same reason. This engine does
+    /// no whitespace collapsing at all — two authored spaces are two spaces —
+    /// so a caller that wants CSS's collapsing normalizes its own text, where
+    /// moving the offsets is its own business.
+    ///
+    /// The fold is computed at most once per revision and kept with the source,
+    /// so laying the same text out every frame neither copies nor re-hashes it.
+    pub fn with_folded_newlines(&self) -> Option<&Self> {
+        self.folded
+            .get_or_init(|| {
+                self.text.contains(FOLDED_SEPARATORS).then(|| {
+                    Box::new(Self {
+                        text: self.text.replace(FOLDED_SEPARATORS, " ").into(),
+                        spans: self.spans.clone(),
+                        revision: self.revision,
+                        content_hash: OnceLock::new(),
+                        folded: OnceLock::new(),
+                    })
+                })
+            })
+            .as_deref()
     }
 
     /// True when any span is currently under IME composition.
@@ -198,6 +219,7 @@ impl TextSource {
     fn bump(&mut self) {
         self.revision = self.revision.next();
         self.content_hash = OnceLock::new();
+        self.folded = OnceLock::new();
     }
 }
 
@@ -221,6 +243,35 @@ mod tests {
         source.set_text("bye");
         assert!(source.revision() > after_composition, "set_text must bump");
         assert_eq!(source.text(), "bye");
+    }
+
+    #[test]
+    fn the_folded_reading_is_built_once_per_revision() {
+        let mut source = TextSource::new("one\ntwo");
+        let first = source
+            .with_folded_newlines()
+            .expect("the text has a newline")
+            .text()
+            .as_ptr();
+        assert_eq!(
+            source
+                .with_folded_newlines()
+                .expect("memoized")
+                .text()
+                .as_ptr(),
+            first,
+            "the same folded source comes back, not a fresh copy"
+        );
+        source.set_text("three\nfour");
+        assert_ne!(
+            source
+                .with_folded_newlines()
+                .expect("still has a newline")
+                .text()
+                .as_ptr(),
+            first,
+            "an edit drops the memo"
+        );
     }
 
     #[test]

@@ -511,13 +511,18 @@ U+2028 LINE SEPARATOR 段落结构不管，由 layout 在段内切开（`breaks:
 | `wrap: WordOrGlyph` 或 `word-break: break-word` | 先按词，放不下的词再按字素簇切 |
 | `wrap: Glyph`、`word-break: break-all`、`line-break: anywhere` | 每个字素簇边界都是机会 |
 
-- **行尾空白在软换行处悬挂**：不绘制、不计入行宽、不推下一行，`LineBox::source` 也不含它
-  （与参照引擎一致）。硬换行与段落末尾的空白是作者写下的内容，保留在行上，但**溢出判定
-  （`CLIPPED_WIDTH` 与省略号裁切）一律按去掉行尾空白后的宽度**——断行判定本来就不数行尾空格，
-  否则 `"Save "` 会在一个装得下 `"Save"` 的盒子里被裁成 `"Sa…"`。
+- **行尾空白悬挂**：软换行处的空白不绘制，`LineBox::source` 也不含它（与参照引擎一致）；
+  硬换行与段落末尾的空白是作者写下的内容，glyph 保留在行上。两种情况下它都**不进行宽**：
+  `metrics.width_px` / `bounds` 是去掉行尾空白后的宽度，溢出判定（`CLIPPED_WIDTH`、省略号裁切）
+  与对齐都用它。断行判定本来就不数行尾空格，其余环节必须一致——否则 `"Save "` 会在一个装得下
+  `"Save"` 的盒子里被裁成 `"Sa…"`，居中时也会比 `"Save"` 偏左半个空格。
+- 悬挂在软换行处的空白字节不属于任何行的 `source`，但仍是合法的 caret 位置：
+  `caret_geometry` 把它们解析到所挂那一行的行尾（或下一行的行首，取决于 caret 报的是哪一行）。
 - 容器窄到一个字素都放不下时，仍然放一个字素——否则会产生空行与死循环。
-- 空文本没有 BiDi 段落，但仍然出**一行**（与 Label fast path 对同一份 source 给出的行一致）：
-  空输入框也要有行盒和可落脚的 caret。
+- **段（segment）是断行的单位**：每个 BiDi 段落按 forced break 再切一刀，段与段之间的分隔符
+  不属于任何段，因此不绘制。两种段只为 caret 存在：空文本没有 BiDi 段落、以段落分隔符结尾的
+  文本后面没有段落——两者都补一个空段，所以空输入框有行盒，行尾按 Enter 后 caret 也不会消失。
+  `intrinsic_widths` 量的是**同一批段**，`max-content` 因此是「最宽的那一行」，不是两行首尾相接的宽度。
 - 断点永远在 shaper 的 cluster 之间，因此不可能切开 UTF-8 序列、字素簇或连字。
 
 ### BiDi 视觉序
@@ -584,19 +589,35 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 
 | 进 key | 不进 key |
 | --- | --- |
-| shaped runs 的**身份**（持有 `Arc<ShapedText>`，按指针比较） | widget 身份、`TextRevision` |
+| shaped runs 的**身份**（持有 `Arc<ShapedText>`，按指针比较） | widget 身份 |
+| 请求方 source 的 `TextRevision`（见下） | |
 | 已塑形省略号的身份 | 颜色、透明度、transform、z-index、背景（`TextStyle` 本来就不带） |
 | `TextKind` | |
 | 全部 `TextConstraints` 字段（宽高、wrap、word-break、line-break、max-lines、ellipsis、preserve-lines、direction、align、writing-mode、tab-width、scale） | |
 | 每个 run 解析后的行高、空行行高、strut | |
 
 - key **持有** `Arc<ShapedText>` 而不是裸指针：持有才让指针可比——否则同一地址可能被另一段文本复用。
+- **`TextRevision` 进 key，与 ShapeKey 相反**：`TextLayout` 自带产出时的 revision，
+  `is_stale` 拿它作比较，所以一份交给第二个 source 的 layout 不能还写着第一个 source 的 revision——
+  那个 source 会每帧都把自己当前的 layout 读成陈旧，且永远如此。同文本不同 revision 的两个节点
+  因此各拿一份 layout；底下的 shaping 仍然共享，重活在那边。
+- `tab_width` 也在 key 里，尽管本阶段**没有**实现制表位（`\t` 按普通字符塑形）：它是一条已声明的
+  约束，key 漏掉一条，等于将来实现它的那天缓存会发回错的 layout。
 - `ConstraintsKey` 是逐字段解构写出来的，给 `TextConstraints` 加字段会在这里编译失败，而不是
   悄悄产生一个忽略该字段的缓存。
 - LRU，条目数（默认 4096）与字节（默认 8 MiB）双上限；超过整个字节预算的结果照常返回、不入缓存。
   shaped 文本由 shape cache 计费，layout cache 不重复计。
 - cache 还回答一个别处没有的问题：这次 miss 是**新文本**还是**同一份 shaped 换了约束**
   （`constraint_only_relayouts`）——resize 风暴要看的就是这个数。
+
+### 本阶段没做的
+
+| 项 | 状态 |
+| --- | --- |
+| 制表位 | `tab_width` 已进 `LayoutKey`，但没有任何一行应用制表位；`\t` 按普通字符塑形 |
+| `justify` | `TextAlignSpec` 没有这个关键字，产品无从表达，明确延期 |
+| 竖排（#59） | fail-closed，见上 |
+| CSS 空白折叠 | 完全不做：连续空格原样保留，因此 `preserve_lines: false` 下 CRLF 折成**两个**空格，与手写两个空格是同一回事；要折叠的调用方自己规范化文本（那时挪动偏移是它自己的事） |
 
 **产品路径仍未接入**：UiWorld 里「只改颜色 / transform 的帧不产生 layout request」这件事，要等
 接缝接上才能在产品上验证；本阶段保证的是它们根本进不了 `LayoutKey`——`TextStyle` 不带 paint，
@@ -641,6 +662,7 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 - `preserve_lines: false` 时先把单字节的行分隔符（`\n` / `\r` / VT / FF）折成空格**再**塑形
   （`TextSource::with_folded_newlines`）——塑形与断行必须看到同一串字节；它们都是单字节，
   所有 span 范围、cluster 与 caret 偏移保持不变，revision 也保持不变（同一次编辑的另一种读法）。
+  折叠结果按 revision 记在 source 上，每帧重排既不复制也不重新 hash。
   `U+2028` / `U+2029` 各三字节，折叠会挪动其后所有偏移，因此无论 `preserve_lines` 怎么写都仍是换行。
 - 需要时塑形 `…`，取基础样式那张 face 的度量作 strut，填 `TextWorkCounters` 的五个口径。
 - `TextEngine::layout` 返回 `Arc<TextLayout>`：layout 不可变，同一帧里同文本同约束应当拿到**同一份**，
@@ -672,9 +694,11 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 ### 测试
 
-`tests/layout_engine.rs`：五条来自 code review 的回归（换行时超宽的行不因省略号丢字节、
-行尾空白悬挂不算溢出、空文本两条路径都出一行、同一行被裁两次只记一个省略号 run、
-U+2028 结束一行且不绘制），加上：Label fast path（10k 标签 `paragraph_paths == 0`、
+`tests/layout_engine.rs`：十二条来自 code review 的回归（换行时超宽的行不因省略号丢字节、
+行尾空白悬挂不算溢出也不影响对齐、空文本两条路径都出一行、行尾换行留下 caret 可落的空行、
+被截断的空行保留自己的字节、同一行被裁两次只记一个省略号 run、U+2028 结束一行且不绘制、
+layout 自带请求方的 revision、`max-content` 是最宽的一行、悬挂空白里的 caret 有位置、
+折叠每个 revision 只做一次），加上：Label fast path（10k 标签 `paragraph_paths == 0`、
 `line_break_candidates == 0`；10k 同文本标签只建一个 layout）、显式换行 / wrap / max-lines 触发降级、
 换宽度只重排不重塑形、resize 只动受影响的那一段、word wrap 不切词、长词按 `word-break` 溢出或切开、
 汉字无空格断行、显式换行与空段落、mixed BiDi 单行与换行后每行各自重排、strut 稳住 baseline（以及不给

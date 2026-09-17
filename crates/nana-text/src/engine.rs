@@ -114,8 +114,7 @@ impl NativeTextEngine {
         base: &TextStyle,
         constraints: &TextConstraints,
     ) -> IntrinsicWidths {
-        let folded = self.fold_lines(source, constraints);
-        let source = folded.as_ref().unwrap_or(source);
+        let source = self.fold_lines(source, constraints);
         let shaped = self.shape(source, base, constraints);
         self.layouter.intrinsic_widths(&LayoutRequest::new(
             TextKind::Paragraph,
@@ -140,11 +139,15 @@ impl NativeTextEngine {
     /// `white-space: normal` says an authored newline is a space, not a line
     /// break. Shaping and line breaking have to see the same bytes, so the fold
     /// happens here, before shaping, rather than on the laid-out lines.
-    fn fold_lines(&self, source: &TextSource, constraints: &TextConstraints) -> Option<TextSource> {
+    fn fold_lines<'a>(
+        &self,
+        source: &'a TextSource,
+        constraints: &TextConstraints,
+    ) -> &'a TextSource {
         if constraints.preserve_lines {
-            return None;
+            return source;
         }
-        source.with_folded_newlines()
+        source.with_folded_newlines().unwrap_or(source)
     }
 
     fn shape_ellipsis(
@@ -198,8 +201,7 @@ impl TextEngine for NativeTextEngine {
         counters: &mut TextWorkCounters,
     ) -> Arc<TextLayout> {
         let before = self.shaper.counters();
-        let folded = self.fold_lines(source, constraints);
-        let source = folded.as_ref().unwrap_or(source);
+        let source = self.fold_lines(source, constraints);
         let shaped = self.shape(source, base, constraints);
         let ellipsis = constraints
             .ellipsis

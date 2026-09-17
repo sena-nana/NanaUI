@@ -167,12 +167,14 @@ pub(super) struct LaidOut {
 struct Prepared {
     cells: Range<usize>,
     pieces: Vec<Piece>,
+    /// Width **without** the trailing whitespace, which hangs.
+    ///
+    /// `choose_break` already ignores trailing spaces when it asks whether a
+    /// line fits, so everything downstream has to ignore them too, or `"Save "`
+    /// would overflow — and be cut to `"Sa…"` — in a box that fits `"Save"`. It
+    /// would also sit off-centre next to `"Save"`, because alignment divides the
+    /// slack the width leaves.
     width_px: f32,
-    /// Width without the trailing whitespace, which hangs. Every overflow
-    /// decision uses this one: `choose_break` already ignores trailing spaces
-    /// when it asks whether a line fits, so clipping and ellipsizing have to
-    /// ignore them too, or `"Save "` would be cut in a box that fits `"Save"`.
-    overflow_width_px: f32,
     ascent_px: f32,
     descent_px: f32,
     height_px: f32,
@@ -182,7 +184,8 @@ struct Prepared {
 struct PlacedLine {
     cells: Range<usize>,
     ellipsis_runs: usize,
-    overflow_width_px: f32,
+    /// Byte the line starts at, for a line with no cells to read it from.
+    anchor: usize,
 }
 
 pub(super) struct Builder<'a> {
@@ -253,12 +256,12 @@ impl<'a> Builder<'a> {
     ///
     /// Both are measured with wrapping assumed allowed at every UAX #14
     /// opportunity, whatever these constraints say: a container asks for these
-    /// numbers precisely to decide what width to then impose.
+    /// numbers precisely to decide what width to then impose. Both also stop at
+    /// the same segment boundaries layout breaks at, so `max-content` is the
+    /// widest line the text can produce, not the width of everything joined.
     pub fn intrinsic_widths(mut self) -> (IntrinsicWidths, usize) {
         let mut widths = IntrinsicWidths::default();
-        for index in 0..self.input.paragraphs.len() {
-            let paragraph = self.input.paragraphs[index].clone();
-            let content = content_range(self.input.text, &paragraph.range);
+        for content in self.segments() {
             let (lo, hi) = self.cell_span(&content);
             if lo == hi {
                 continue;
@@ -278,59 +281,67 @@ impl<'a> Builder<'a> {
 
     /// The full paragraph path: break opportunities, wrapping, hard breaks.
     pub fn paragraphs(mut self) -> LaidOut {
-        // Empty text has no BiDi paragraph at all, and an empty field is still
-        // a line box with a caret position in it — the same line the Label fast
-        // path produces for the same source.
-        if self.input.paragraphs.is_empty() {
-            let prepared = self.prepare(0..0);
-            self.place_within_budget(prepared, LineBreakCause::EndOfText, 0);
-            return self.finish();
-        }
-        for index in 0..self.input.paragraphs.len() {
+        let segments = self.segments();
+        let last = segments.len() - 1;
+        for (index, content) in segments.into_iter().enumerate() {
             if self.truncated {
                 break;
             }
-            let paragraph = self.input.paragraphs[index].clone();
-            let last = index + 1 == self.input.paragraphs.len();
-            self.paragraph(&paragraph, last);
+            let cause = if index == last {
+                LineBreakCause::EndOfText
+            } else {
+                LineBreakCause::Explicit
+            };
+            self.segment(content, cause);
         }
         self.finish()
     }
 
-    /// One BiDi paragraph, split further at the forced breaks the paragraph
-    /// structure does not carry (VT, FF, U+2028).
+    /// Every run of text a line may not break out of, in order.
     ///
-    /// The separator itself falls between two segments, so no line covers it
-    /// and nothing draws it — the same treatment `\n` gets from the shaper.
-    fn paragraph(&mut self, paragraph: &ShapedParagraph, last: bool) {
-        let content = content_range(self.input.text, &paragraph.range);
-        let end_cause = if last {
-            LineBreakCause::EndOfText
-        } else {
-            LineBreakCause::Explicit
-        };
-        if !breaks::has_forced_break(&self.input.text[content.clone()]) {
-            self.segment(content, end_cause);
-            return;
-        }
-        let mut start = content.start;
-        let mut cursor = content.start;
-        while cursor < content.end {
-            let character = self.input.text[cursor..]
-                .chars()
-                .next()
-                .expect("cursor is on a character boundary");
-            let width = character.len_utf8();
-            if breaks::FORCED_BREAKS.contains(&character) {
-                self.segment(start..cursor, LineBreakCause::Explicit);
-                if self.truncated {
-                    return;
-                }
-                start = cursor + width;
+    /// One per BiDi paragraph, each split again at the forced breaks the
+    /// paragraph structure does not carry (VT, FF, U+2028). A separator falls
+    /// *between* two segments, so no segment covers one and nothing draws it —
+    /// the treatment `\n` already gets from the shaper.
+    ///
+    /// Two segments exist for a caret rather than for glyphs: empty text has no
+    /// BiDi paragraph at all, and text ending in a separator has no paragraph
+    /// after it. Both still need the line the caret sits on — pressing Enter at
+    /// the end of a field must not make the caret vanish.
+    ///
+    /// This is also what `intrinsic_widths` measures over, so `max-content`
+    /// cannot come back as the width of two lines joined end to end.
+    fn segments(&self) -> Vec<Range<usize>> {
+        let text = self.input.text;
+        let mut segments: Vec<Range<usize>> = Vec::with_capacity(self.input.paragraphs.len());
+        for paragraph in self.input.paragraphs {
+            let content = content_range(text, &paragraph.range);
+            if !breaks::has_forced_break(&text[content.clone()]) {
+                segments.push(content);
+                continue;
             }
-            cursor += width;
+            let mut start = content.start;
+            let mut cursor = content.start;
+            while cursor < content.end {
+                let character = text[cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is on a character boundary");
+                let width = character.len_utf8();
+                if breaks::FORCED_BREAKS.contains(&character) {
+                    segments.push(start..cursor);
+                    start = cursor + width;
+                }
+                cursor += width;
+            }
+            segments.push(start..content.end);
         }
-        self.segment(start..content.end, end_cause);
+        match segments.last() {
+            None => segments.push(0..0),
+            Some(last) if last.end < text.len() => segments.push(text.len()..text.len()),
+            Some(_) => {}
+        }
+        segments
     }
 
     /// One run of text with no forced break inside it: as many lines as the
@@ -541,8 +552,10 @@ impl<'a> Builder<'a> {
         let cells = placed.cells;
         let cut = self.fit_with_ellipsis(cells.clone(), ellipsis.advance_px);
         let prepared = self.prepare(cells.start..cut);
-        let empty_at = self.cells.get(cells.start).map_or(0, |cell| cell.start);
-        self.place_ellipsized(prepared, line.break_cause, empty_at);
+        // The line's own anchor, not one re-derived from the cells: a line with
+        // no cells has none to re-derive from, and falling back to byte 0 would
+        // move an empty last line to the start of the text.
+        self.place_ellipsized(prepared, line.break_cause, placed.anchor);
     }
 
     /// The largest prefix of `cells` that leaves room for the ellipsis.
@@ -565,15 +578,13 @@ impl<'a> Builder<'a> {
     /// Measures a line without placing it.
     fn prepare(&self, cells: Range<usize>) -> Prepared {
         let pieces = self.pieces(cells.clone());
-        let width_px = self.width(cells.start, cells.end);
         let trimmed = self.trim(cells.start, cells.end);
-        let overflow_width_px = self.width(cells.start, trimmed);
+        let width_px = self.width(cells.start, trimmed);
         let (ascent_px, descent_px, height_px) = self.line_box(&pieces);
         Prepared {
             cells,
             pieces,
             width_px,
-            overflow_width_px,
             ascent_px,
             descent_px,
             height_px,
@@ -591,7 +602,7 @@ impl<'a> Builder<'a> {
         let overflows = !self.wraps()
             && self
                 .max_width_px
-                .is_some_and(|max| prepared.overflow_width_px > max + WIDTH_EPSILON_PX);
+                .is_some_and(|max| prepared.width_px > max + WIDTH_EPSILON_PX);
         match (overflows, self.input.ellipsis) {
             (true, Some(ellipsis)) => {
                 let cut = self.fit_with_ellipsis(prepared.cells.clone(), ellipsis.advance_px);
@@ -619,7 +630,6 @@ impl<'a> Builder<'a> {
             cells,
             pieces,
             mut width_px,
-            overflow_width_px: trimmed_width_px,
             ascent_px,
             descent_px,
             height_px,
@@ -633,10 +643,8 @@ impl<'a> Builder<'a> {
 
         let ellipsis = self.input.ellipsis.filter(|_| with_ellipsis);
         let mut ordered = self.visual_order(&pieces);
-        let mut overflow_width_px = trimmed_width_px;
         if let Some(ellipsis) = ellipsis {
             width_px += ellipsis.advance_px;
-            overflow_width_px += ellipsis.advance_px;
         }
         let origin_x_px = self.align_offset(width_px);
         let top_y_px = self.next_top_px;
@@ -693,7 +701,7 @@ impl<'a> Builder<'a> {
         self.placed_lines.push(PlacedLine {
             cells,
             ellipsis_runs: ellipsis_run_count,
-            overflow_width_px,
+            anchor: empty_at,
         });
         self.work.lines_created += 1;
         self.next_top_px += height_px;
@@ -836,9 +844,9 @@ impl<'a> Builder<'a> {
         let mut overflow = OverflowFlags::NONE;
         if let Some(max_width) = self.max_width_px
             && self
-                .placed_lines
+                .lines
                 .iter()
-                .any(|line| line.overflow_width_px > max_width + WIDTH_EPSILON_PX)
+                .any(|line| line.metrics.width_px > max_width + WIDTH_EPSILON_PX)
         {
             overflow = overflow.with(OverflowFlags::CLIPPED_WIDTH);
         }

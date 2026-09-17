@@ -176,6 +176,7 @@ impl Layouter {
         });
         let key = LayoutKey::new(
             request.shaped,
+            request.source.revision(),
             request.ellipsis,
             request.kind,
             request.constraints,

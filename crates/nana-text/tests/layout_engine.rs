@@ -15,8 +15,8 @@ use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem};
 use nana_text::layout::{LayoutCacheBudget, LayoutRequest, Layouter};
 use nana_text::shaping::{ShapeRequest, Shaper};
 use nana_text::{
-    LineBreakCause, NativeTextEngine, OverflowFlags, TextConstraints, TextEngine, TextKind,
-    TextLayout, TextSource, TextStyle, TextWorkCounters,
+    Affinity, CaretPosition, LineBreakCause, NativeTextEngine, OverflowFlags, TextConstraints,
+    TextEngine, TextKind, TextLayout, TextSource, TextStyle, TextWorkCounters,
 };
 use nana_ui_core::{DirSpec, LineHeightSpec, TextAlignSpec, TextWrapBreak, WritingModeSpec};
 use std::sync::Arc;
@@ -597,6 +597,237 @@ fn a_unicode_line_separator_ends_a_line_and_draws_nothing() {
     );
     assert_eq!(label.lines.len(), 2);
     assert_eq!(engine.layout_counters().label_fast_paths, 0);
+}
+
+#[test]
+fn a_truncated_empty_line_keeps_its_own_byte() {
+    // The last line has no cells to read a byte from, so re-placing it with an
+    // ellipsis has to use the byte it was placed at. Re-deriving one from the
+    // cells lands on byte 0, which puts the line before the one above it.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "a\n\n\n",
+        &style,
+        &TextConstraints {
+            max_lines: Some(2),
+            ellipsis: true,
+            preserve_lines: true,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(layout.lines.len(), 2);
+    assert_eq!(
+        layout.lines[1].source,
+        2..2,
+        "the empty line starts where it is"
+    );
+    assert!(
+        layout.lines[0].source.end <= layout.lines[1].source.start,
+        "line sources only move forwards: {:?}",
+        layout
+            .lines
+            .iter()
+            .map(|line| line.source.clone())
+            .collect::<Vec<_>>()
+    );
+    let hit = layout.hit_test(
+        0.0,
+        layout.lines[1].metrics.top_y_px + layout.lines[1].metrics.height_px * 0.5,
+    );
+    assert_eq!(hit.caret.byte, 2, "and hit-testing it lands there too");
+}
+
+#[test]
+fn a_layout_carries_the_revision_of_the_source_that_asked_for_it() {
+    // Layouts are shared by content, but `is_stale` compares the revision the
+    // holder is at. A layout handed to a second source still claiming the
+    // first one's revision would read as stale on every frame, forever.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let mut counters = TextWorkCounters::default();
+    let fresh = TextSource::new("Save");
+    let mut edited = TextSource::new("draft");
+    edited.set_text("Save");
+    edited.set_text("Save");
+    assert_ne!(fresh.revision(), edited.revision());
+
+    let constraints = TextConstraints::default();
+    let first = engine.layout(TextKind::Label, &fresh, &style, &constraints, &mut counters);
+    let second = engine.layout(
+        TextKind::Label,
+        &edited,
+        &style,
+        &constraints,
+        &mut counters,
+    );
+
+    assert_eq!(first.revision, fresh.revision());
+    assert_eq!(second.revision, edited.revision());
+    for (layout, source) in [(&first, &fresh), (&second, &edited)] {
+        assert!(
+            !layout.is_stale(source.revision(), engine.font_generation()),
+            "a layout just built for a source is not stale for it"
+        );
+    }
+    assert_eq!(
+        engine.shape_counters().shape_cache_misses,
+        1,
+        "the shaping underneath is still shared, which is where the work is"
+    );
+}
+
+#[test]
+fn max_content_is_the_widest_line_the_text_can_produce() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    for (text, constraints) in [
+        (
+            "aaaa\u{2028}bbbbbbbb",
+            TextConstraints {
+                preserve_lines: true,
+                ..TextConstraints::default()
+            },
+        ),
+        (
+            "aaaa\nbbbbbbbb",
+            TextConstraints {
+                preserve_lines: true,
+                ..TextConstraints::default()
+            },
+        ),
+    ] {
+        let source = TextSource::new(text);
+        let widths = engine.intrinsic_widths(&source, &style, &constraints);
+        let layout = lay_out(&mut engine, TextKind::Paragraph, text, &style, &constraints);
+        let widest = layout
+            .lines
+            .iter()
+            .map(|line| line.metrics.width_px)
+            .fold(0.0_f32, f32::max);
+        assert!(layout.lines.len() > 1, "{text:?} is more than one line");
+        assert!(
+            (widths.max_px - widest).abs() < 0.01,
+            "max-content {} is not the widest line {widest} of {text:?}",
+            widths.max_px
+        );
+    }
+}
+
+#[test]
+fn trailing_whitespace_hangs_out_of_the_alignment_too() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let mut origin_of = |text: &str, align| {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Label,
+            text,
+            &style,
+            &TextConstraints {
+                max_width_px: Some(400.0),
+                align,
+                ..TextConstraints::default()
+            },
+        );
+        layout.line_runs(&layout.lines[0])[0].origin_x_px
+    };
+    for align in [TextAlignSpec::Center, TextAlignSpec::End] {
+        let plain = origin_of("Save", align);
+        let padded = origin_of("Save   ", align);
+        assert!(
+            (plain - padded).abs() < 0.01,
+            "{align:?}: a hung trailing space moved the text by {} px",
+            padded - plain
+        );
+    }
+}
+
+#[test]
+fn a_trailing_newline_leaves_a_line_for_the_caret() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "abc\n";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &TextConstraints {
+            preserve_lines: true,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(layout.lines.len(), 2, "pressing Enter leaves a line behind");
+    assert_eq!(layout.lines[1].source, 4..4);
+    let caret = CaretPosition::new(text.len(), Affinity::Downstream, 1);
+    let geometry = layout
+        .caret_geometry(caret)
+        .expect("the caret after the newline has somewhere to go");
+    assert!((geometry.top_y_px - layout.lines[1].metrics.top_y_px).abs() < 0.001);
+}
+
+#[test]
+fn a_caret_inside_hung_whitespace_sits_at_the_edge_it_hangs_from() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "hello   world";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &wrapped(50.0),
+    );
+    assert_eq!(layout.lines.len(), 2);
+    let gap = layout.lines[0].source.end..layout.lines[1].source.start;
+    assert!(!gap.is_empty(), "the wrap hung some whitespace");
+
+    let first = layout.lines[0].source.end;
+    let end_of_line = layout
+        .caret_geometry(CaretPosition::new(first, Affinity::Upstream, 0))
+        .expect("the line's own end resolves");
+    for byte in gap {
+        let geometry = layout
+            .caret_geometry(CaretPosition::new(byte, Affinity::Upstream, 0))
+            .unwrap_or_else(|| panic!("byte {byte} hangs from line 0 and has no caret"));
+        assert!(
+            (geometry.x_px - end_of_line.x_px).abs() < 0.001,
+            "a caret in hung whitespace sits at the end of the line it hangs from"
+        );
+        assert!(
+            layout
+                .caret_geometry(CaretPosition::new(byte, Affinity::Downstream, 1))
+                .is_some(),
+            "and at the start of the next line when the caret names that one"
+        );
+    }
+}
+
+#[test]
+fn folding_newlines_costs_one_copy_and_one_hash_per_revision() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let mut counters = TextWorkCounters::default();
+    let source = TextSource::new("one\ntwo three four five");
+    let constraints = wrapped(200.0);
+    for _ in 0..10 {
+        engine.layout(
+            TextKind::Paragraph,
+            &source,
+            &style,
+            &constraints,
+            &mut counters,
+        );
+    }
+    assert_eq!(
+        engine.shape_counters().text_bytes_hashed,
+        source.text().len(),
+        "the folded reading is hashed once, not once per frame"
+    );
+    assert_eq!(engine.layout_counters().layout_created, 1);
 }
 
 #[test]

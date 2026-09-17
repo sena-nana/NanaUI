@@ -83,5 +83,8 @@ pub fn case_source(case: &CorpusCase) -> TextSource {
     if case.constraints.preserve_lines {
         return source;
     }
-    source.with_folded_newlines().unwrap_or(source)
+    match source.with_folded_newlines() {
+        Some(folded) => folded.clone(),
+        None => source,
+    }
 }

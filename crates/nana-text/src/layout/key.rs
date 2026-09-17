@@ -6,9 +6,17 @@
 //! Out, deliberately: colour, opacity, transform, z-index and background — a
 //! paint change must not relayout, and this is the mechanical reason it cannot
 //! (none of them appear below, and [`TextStyle`](crate::TextStyle) does not
-//! carry them in the first place). Also out: widget identity and
-//! [`TextRevision`](crate::TextRevision) — 10k labels reading the same string
-//! share one shaped result and therefore one layout.
+//! carry them in the first place). Also out: widget identity — 10k labels
+//! reading the same string at the same revision share one layout.
+//!
+//! [`TextRevision`](crate::TextRevision) **is** in, unlike in the shape key.
+//! A layout carries the revision it was produced under and
+//! [`is_stale`](crate::TextLayout::is_stale) compares it, so a layout handed to
+//! a second source must not still claim the first one's revision — that source
+//! would read its own current layout as stale on every frame, forever. Two
+//! sources holding the same text at different revisions therefore get one
+//! layout each; the shaping underneath is still shared, which is where the work
+//! is.
 //!
 //! The shaped text is held by `Arc` and compared by pointer. Holding it is what
 //! makes the pointer safe to compare: a freed allocation could otherwise be
@@ -17,6 +25,7 @@
 use super::lines::LineStrut;
 use crate::constraints::TextConstraints;
 use crate::font::canonical_f32_bits;
+use crate::id::TextRevision;
 use crate::shaping::ShapedText;
 use crate::style::TextKind;
 use nana_ui_core::{
@@ -43,6 +52,9 @@ struct ConstraintsKey {
     base_direction: u8,
     align: u8,
     writing_mode: u8,
+    /// Keyed although no line applies tab stops yet: the field is a declared
+    /// constraint, and a key that ignores one is a cache that hands back the
+    /// wrong layout the day it starts mattering.
     tab_width: u8,
     scale: u32,
 }
@@ -111,6 +123,8 @@ impl ConstraintsKey {
 #[derive(Debug, Clone)]
 pub(crate) struct LayoutKey {
     shaped: Arc<ShapedText>,
+    /// The revision the requesting source is at. See the module comment.
+    revision: TextRevision,
     /// The shaped ellipsis this layout may truncate with. A different ellipsis
     /// is a different layout, and no ellipsis at all is a third.
     ellipsis: Option<Arc<ShapedText>>,
@@ -125,8 +139,13 @@ pub(crate) struct LayoutKey {
 }
 
 impl LayoutKey {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "every layout input is a key field"
+    )]
     pub fn new(
         shaped: &Arc<ShapedText>,
+        revision: TextRevision,
         ellipsis: Option<&Arc<ShapedText>>,
         kind: TextKind,
         constraints: &TextConstraints,
@@ -136,6 +155,7 @@ impl LayoutKey {
     ) -> Self {
         Self {
             shaped: Arc::clone(shaped),
+            revision,
             ellipsis: ellipsis.map(Arc::clone),
             kind,
             constraints: ConstraintsKey::new(constraints),
@@ -171,6 +191,7 @@ impl LayoutKey {
 impl PartialEq for LayoutKey {
     fn eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.shaped, &other.shaped)
+            && self.revision == other.revision
             && match (&self.ellipsis, &other.ellipsis) {
                 (None, None) => true,
                 (Some(left), Some(right)) => Arc::ptr_eq(left, right),
@@ -189,6 +210,7 @@ impl Eq for LayoutKey {}
 impl Hash for LayoutKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.shaped_identity().hash(state);
+        self.revision.hash(state);
         self.ellipsis
             .as_ref()
             .map(|shaped| Arc::as_ptr(shaped) as *const u8 as usize)
