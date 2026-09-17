@@ -212,6 +212,8 @@ pub(crate) struct LastLayoutShape {
     pub constraints: crate::TextShapeConstraints,
     pub style: Arc<ComputedStyle>,
     pub text_gen: u64,
+    /// The host font generation it was measured against.
+    pub font_generation: u64,
 }
 
 /// minimap 视口钉住：显式视口导航（minimap 点击/拖动）写入的滚动偏移。

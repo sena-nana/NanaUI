@@ -33,6 +33,10 @@ impl<'a, S: TextShaper> CountingShaper<'a, S> {
 }
 
 impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
+    fn font_generation(&self) -> u64 {
+        self.inner.font_generation()
+    }
+
     fn with_text_probes<R>(
         &mut self,
         text: &TextContent,
@@ -100,7 +104,7 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = layout_cache_key(text, style, constraints);
+        let key = layout_cache_key(text, style, constraints, self.inner.font_generation());
         if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
@@ -139,6 +143,10 @@ struct PreparedCountingShaper<'a> {
     wrap_layouts: &'a mut usize,
 }
 impl TextShaper for PreparedCountingShaper<'_> {
+    fn font_generation(&self) -> u64 {
+        self.inner.font_generation()
+    }
+
     fn shape(
         &mut self,
         id: StableNodeId,
@@ -146,7 +154,7 @@ impl TextShaper for PreparedCountingShaper<'_> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
-        let key = layout_cache_key(text, style, constraints);
+        let key = layout_cache_key(text, style, constraints, self.inner.font_generation());
         if let Some(metrics) = layout_cache_lookup(self.cache, &key) {
             return metrics;
         }
@@ -209,17 +217,18 @@ fn layout_cache_key(
     text: &TextContent,
     style: &ComputedStyle,
     constraints: crate::TextShapeConstraints,
+    font_generation: u64,
 ) -> crate::text_layout_cache::TextLayoutKey {
     #[cfg(any(test, feature = "benchmark"))]
     {
         crate::text_shape_stats::note_key_build();
         crate::text_shape_stats::timed_key(|| {
-            crate::text_layout_cache::TextLayoutKey::new(text, style, constraints)
+            crate::text_layout_cache::TextLayoutKey::new(text, style, constraints, font_generation)
         })
     }
     #[cfg(not(any(test, feature = "benchmark")))]
     {
-        crate::text_layout_cache::TextLayoutKey::new(text, style, constraints)
+        crate::text_layout_cache::TextLayoutKey::new(text, style, constraints, font_generation)
     }
 }
 
@@ -3220,6 +3229,7 @@ impl UiWorld {
         ids: Vec<StableNodeId>,
         host: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
+        let font_generation = host.font_generation();
         // Same production adapter as [`Self::shape_text`].
         let mut cache = std::mem::take(&mut self.text_layout_cache);
         let mut glyphs = std::mem::take(&mut self.glyph_cache);
@@ -3301,7 +3311,12 @@ impl UiWorld {
                 crate::text_shape_stats::note_nonempty();
                 let constraints = self.text_shape_constraints(id);
                 if presentation.is_none()
-                    && self.layout_shape_unchanged(id, &self.record(id).resolved.0, constraints)
+                    && self.layout_shape_unchanged(
+                        id,
+                        &self.record(id).resolved.0,
+                        constraints,
+                        font_generation,
+                    )
                 {
                     #[cfg(any(test, feature = "benchmark"))]
                     crate::text_shape_stats::note_skipped_unchanged();
@@ -3334,7 +3349,7 @@ impl UiWorld {
                     )
                 });
                 if presentation.is_none() {
-                    self.remember_layout_shape(id, style, constraints);
+                    self.remember_layout_shape(id, style, constraints, font_generation);
                 }
                 if self.record(id).text_metrics != metrics
                     || presentation
@@ -3389,9 +3404,11 @@ impl UiWorld {
         id: StableNodeId,
         style: &Arc<ComputedStyle>,
         constraints: crate::TextShapeConstraints,
+        font_generation: u64,
     ) -> bool {
         self.nodes.last_layout_shape(id).is_some_and(|last| {
-            last.text_gen == self.record(id).text_gen
+            last.font_generation == font_generation
+                && last.text_gen == self.record(id).text_gen
                 && Arc::ptr_eq(&last.style, style)
                 && last.constraints == constraints
         })
@@ -3402,6 +3419,7 @@ impl UiWorld {
         id: StableNodeId,
         style: Arc<ComputedStyle>,
         constraints: crate::TextShapeConstraints,
+        font_generation: u64,
     ) {
         let text_gen = self.record(id).text_gen;
         self.nodes.set_last_layout_shape(
@@ -3410,6 +3428,7 @@ impl UiWorld {
                 constraints,
                 style,
                 text_gen,
+                font_generation,
             }),
         );
     }

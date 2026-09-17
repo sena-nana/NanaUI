@@ -10223,3 +10223,68 @@ fn an_invalid_measurement_neither_drops_nor_poisons_the_layout_cache() {
     assert!(retried.text_layout_cache_hits >= 1, "{retried:?}");
     assert!(world.text_metrics(node(2)).unwrap().width.is_finite());
 }
+
+#[test]
+fn text_measured_before_a_font_set_change_is_measured_again_after_it() {
+    struct Fonts {
+        generation: u64,
+    }
+    impl TextShaper for Fonts {
+        fn shape(
+            &mut self,
+            id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            let mut metrics = MeasureTextShaper.shape(id, text, style, constraints);
+            metrics.height = 10.0 + 7.0 * self.generation as f32;
+            metrics
+        }
+
+        fn font_generation(&self) -> u64 {
+            self.generation
+        }
+    }
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "label".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let mut shaper = Fonts { generation: 0 };
+    world.shape_text(&work.text, &mut shaper).unwrap();
+    let mut place = MutationQueue::new();
+    place.write_layout(
+        node(1),
+        LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 16.0,
+        },
+    );
+    world.commit(place).unwrap();
+    world.take_system_work();
+    world
+        .shape_text_for_layout(document(1), &mut shaper)
+        .unwrap();
+    assert_eq!(world.text_metrics(node(1)).unwrap().height, 10.0);
+
+    // A registered face: the same text at the same box is a new measurement,
+    // on the scoped pass as well as the scheduled one.
+    shaper.generation = 1;
+    world
+        .shape_text_for_layout_scoped(&[node(1)], &mut shaper)
+        .unwrap();
+    assert_eq!(world.text_metrics(node(1)).unwrap().height, 17.0);
+    shaper.generation = 2;
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+    assert_eq!(world.text_metrics(node(1)).unwrap().height, 24.0);
+}

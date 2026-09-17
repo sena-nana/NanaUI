@@ -36,6 +36,9 @@ pub(crate) struct TextLayoutKey {
     shaping: u8,
     max_width_bits: Option<u32>,
     max_height_bits: Option<u32>,
+    /// The host's font generation: metrics measured against a font set that
+    /// has since changed must miss rather than answer for the new one.
+    font_generation: u64,
 }
 
 impl TextLayoutKey {
@@ -43,8 +46,10 @@ impl TextLayoutKey {
         text: &TextContent,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
+        font_generation: u64,
     ) -> Self {
         Self {
+            font_generation,
             text: Arc::from(text.value.as_str()),
             font_size_bits: style.font_size.to_bits(),
             font_weight: style.font_weight.unwrap_or(0),
@@ -153,6 +158,7 @@ mod tests {
                 wrap: width.is_some(),
                 ..TextShapeConstraints::default()
             },
+            0,
         )
     }
 

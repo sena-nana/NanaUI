@@ -1784,6 +1784,13 @@ pub trait TextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics;
 
+    /// Generation of the font set [`Self::shape`] measures against. A change
+    /// makes every metric measured under the old one stale. A host whose fonts
+    /// never change keeps 0.
+    fn font_generation(&self) -> u64 {
+        0
+    }
+
     /// Shape using the Runtime-owned [`crate::GlyphCache`].
     ///
     /// The default ignores the cache so hosts without a glyph backend leave

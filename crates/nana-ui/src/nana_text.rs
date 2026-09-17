@@ -650,6 +650,10 @@ fn build_font_system() -> FontSystem {
 }
 
 impl TextShaper for NanaTextShaper {
+    fn font_generation(&self) -> u64 {
+        font_db_generation()
+    }
+
     fn shape(
         &mut self,
         _id: StableNodeId,
@@ -777,6 +781,10 @@ impl PreparedTextShaper<'_> {
     }
 }
 impl TextShaper for PreparedTextShaper<'_> {
+    fn font_generation(&self) -> u64 {
+        font_db_generation()
+    }
+
     fn shape_cached(
         &mut self,
         id: StableNodeId,
