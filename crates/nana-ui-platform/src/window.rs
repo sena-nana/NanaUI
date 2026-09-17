@@ -158,6 +158,12 @@ pub enum WindowEvent {
     /// area. Delivered only on change. Touch contacts never report presence,
     /// and the leave a host-started native window drag produces is withheld
     /// until the pointer is reported again. Hiding the window reports a leave.
+    /// The system "reduce motion" preference changed. Sent to every window;
+    /// read the current value from `RuntimeProgramContext::reduced_motion`.
+    ReducedMotionChanged {
+        id: WindowId,
+        reduced: bool,
+    },
     PointerPresenceChanged {
         id: WindowId,
         inside: bool,

@@ -66,6 +66,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
+    reduced_motion: bool,
     store: SharedStore,
 }
 
@@ -84,6 +85,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
+            reduced_motion: self.reduced_motion,
             store: Arc::clone(&self.store),
         }
     }
@@ -115,8 +117,14 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             dispatch,
             tasks,
             system_appearance,
+            reduced_motion: false,
             store: memory_store(),
         }
+    }
+
+    pub(crate) fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self
     }
 
     pub(crate) fn with_store(mut self, store: SharedStore) -> Self {
@@ -157,6 +165,12 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// `None` once the window has closed.
     pub fn window_tag(&self) -> Option<&str> {
         self.window_tag.as_deref()
+    }
+
+    /// The system asks to reduce motion. `false` when the platform does not
+    /// report it; changes arrive as `WindowEvent::ReducedMotionChanged`.
+    pub const fn reduced_motion(&self) -> bool {
+        self.reduced_motion
     }
 
     pub const fn geometry(&self) -> WindowGeometry {

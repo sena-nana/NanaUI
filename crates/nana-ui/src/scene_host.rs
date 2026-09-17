@@ -213,6 +213,8 @@ struct WindowManager<Program: RuntimeProgram> {
     next_gpu_retry: Option<Instant>,
     render_suspended: bool,
     last_theme: crate::ThemeMode,
+    /// System reduce-motion preference, as last delivered to the program.
+    reduced_motion: bool,
     settings: WindowDescriptor,
     ime: HashMap<WindowId, AppliedIme>,
     chrome: HashMap<WindowId, WindowChromeSession>,
@@ -570,6 +572,7 @@ fn initialize<Program: RuntimeProgram>(
     windows.register(WindowId::PRIMARY);
     let tasks = spawn_task_workers(message_tx.clone(), Arc::clone(&host_work));
     let geometry = window_geometry(window.as_ref());
+    let reduced_motion = nana_window::system_reduced_motion().unwrap_or(false);
     let context = program_context(
         message_tx.clone(),
         Arc::clone(&host_work),
@@ -583,6 +586,7 @@ fn initialize<Program: RuntimeProgram>(
     )
     .with_windows(&windows)
     .with_window_tag(settings.tag.clone())
+    .with_reduced_motion(reduced_motion)
     .with_store(Arc::clone(&store));
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
@@ -679,6 +683,7 @@ fn initialize<Program: RuntimeProgram>(
         next_gpu_retry: None,
         render_suspended: false,
         last_theme,
+        reduced_motion,
         settings,
         ime: HashMap::new(),
         chrome: HashMap::new(),
@@ -764,6 +769,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .get(&id)
                 .and_then(|host| host.settings.tag.clone()),
         )
+        .with_reduced_motion(self.reduced_motion)
         .with_store(Arc::clone(&self.store))
     }
 

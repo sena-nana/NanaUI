@@ -94,6 +94,27 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
     }
+    /// Deliver a system reduce-motion change recorded by the window subclass.
+    fn sync_reduced_motion(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !nana_window::take_reduced_motion_change() {
+            return;
+        }
+        let Some(reduced) = nana_window::system_reduced_motion() else {
+            return;
+        };
+        if reduced == self.reduced_motion {
+            return;
+        }
+        self.reduced_motion = reduced;
+        for id in self.known_window_ids() {
+            let update = self.program.window_event(
+                WindowEvent::ReducedMotionChanged { id, reduced },
+                &self.context_for(id),
+            );
+            self.apply_update(event_loop, update, None);
+        }
+    }
+
     pub(super) fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let now = Instant::now();
         if self
@@ -126,6 +147,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.retry_surfaces(now);
         }
         self.sample_passthrough_forward(event_loop);
+        self.sync_reduced_motion(event_loop);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
             self.wake(event_loop, now);
         }

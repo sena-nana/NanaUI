@@ -55,7 +55,9 @@ mod windows_hook {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::InvalidateRect;
     use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
-    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_SETTINGCHANGE,
+    };
 
     const SUBCLASS_ID: usize = 0x4E_41_53_4D;
 
@@ -119,6 +121,11 @@ mod windows_hook {
         _subclass_id: usize,
         ref_data: usize,
     ) -> LRESULT {
+        // Every host window carries this subclass, so it also observes the
+        // system setting broadcasts NanaUI reports to programs.
+        if message == WM_SETTINGCHANGE {
+            crate::motion_preference::observe_setting_change(wparam);
+        }
         if matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE) {
             // SAFETY: ref_data is the live HookState installed with this subclass.
             let state = unsafe { &*(ref_data as *const HookState) };

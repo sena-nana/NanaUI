@@ -662,7 +662,8 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             // window presence is for Rust programs with hover-revealed chrome.
             WindowEvent::MousePassthroughChanged { .. }
             | WindowEvent::SkipTaskbarChanged { .. }
-            | WindowEvent::PointerPresenceChanged { .. } => {}
+            | WindowEvent::PointerPresenceChanged { .. }
+            | WindowEvent::ReducedMotionChanged { .. } => {}
             WindowEvent::ModeChanged { id, mode } => {
                 self.vue.record_platform_mode(VueWindowId(id.0), &mode)?;
             }

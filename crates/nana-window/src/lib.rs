@@ -10,6 +10,7 @@ pub use browser::{
 mod file_dialog;
 mod material;
 mod menu;
+mod motion_preference;
 mod platform;
 mod size_move;
 
@@ -37,6 +38,7 @@ pub use menu::{
     Menu, MenuBar, MenuBarSupport, MenuEntry, MenuShortcut, install_application_menu_bar,
     install_menu_bar, installed_menu_bar, menu_bar_support, take_menu_activations,
 };
+pub use motion_preference::{system_reduced_motion, take_reduced_motion_change};
 pub use pointer::pointer_in_client_area;
 pub use size_move::LiveSizeMove;
 

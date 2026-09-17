@@ -194,6 +194,13 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 - Forward 穿透由宿主采样全局指针，在场随采样结果更新；采样不可用的平台（Wayland）报告为不在场。
 - 有模态子窗口时父窗口仍报告在场，指针事件本身继续交给模态链处理。
 
+### 减少动态效果
+
+`RuntimeProgramContext::reduced_motion()` 返回系统是否要求减少动态效果，窗口创建时读取；用户在运行中切换时，宿主向每扇窗口发送 `WindowEvent::ReducedMotionChanged { id, reduced }`，之后的回调上下文读到新值。应用据此选择过渡时长或关闭位移，NanaUI 不替应用改写已声明的动画。
+
+- Windows：读取「在 Windows 中显示动画」（`SPI_GETCLIENTAREAANIMATION`，关闭即减少动态效果）；宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETCLIENTAREAANIMATION`）后在下一次 `about_to_wait` 重新读取，只在值变化时发送事件，不轮询。
+- macOS / Linux：暂不上报，恒为 `false`，不发送事件。
+
 ### 显示器与全屏
 
 `WindowService::displays()`（嵌入式宿主用 `EmbeddedRuntime::displays(event_loop)`）在窗口线程枚举当前连接的显示器，返回 `DisplayInfo`：id、名称、物理位置/尺寸、缩放、刷新率、是否主屏。Wayland 不上报主屏。`DisplayInfo::logical_bounds()` 把物理矩形换算成 `WindowDescriptor::initial_position` 使用的全局逻辑坐标；没有位置或尺寸时返回 `None`。
