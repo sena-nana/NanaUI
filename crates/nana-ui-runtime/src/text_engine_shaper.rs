@@ -6,17 +6,38 @@
 //! text, EmptyState and modal intrinsic text, component probes — goes through
 //! [`TextShaper::shape`], which lays out through the same engine, so no node's
 //! metrics come from a second engine.
+//!
+//! Editors (Issue #96) are answered from a retained
+//! [`EditorGeometry`](nana_text::EditorGeometry) per node: caret positions,
+//! selection highlights and pointer hits read its per-paragraph layouts
+//! without shaping or laying anything out, and an edit lays out only the
+//! paragraphs whose bytes changed.
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
 
-use nana_text::{SharedTextEngine, TextEngine as _, TextSource, TextWorkCounters};
+use nana_text::{
+    Affinity, EditorGeometry, SharedTextEngine, TextConstraints as NanaTextConstraints,
+    TextEngine as _, TextSource, TextStyle as NanaTextStyle, TextWorkCounters,
+};
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
 use crate::{
-    ComputedStyle, StableNodeId, TextContent, TextHorizontalAlignment, TextMetrics,
+    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextHorizontalAlignment, TextMetrics,
     TextShapeConstraints, TextShaper,
 };
+
+/// Editors whose geometry is kept. Each entry holds layouts of one editor's
+/// text, so this bounds memory by editors recently probed, not by text.
+const EDITOR_GEOMETRY_CAPACITY: usize = 32;
+
+#[derive(Clone)]
+struct EditorEntry {
+    id: StableNodeId,
+    style: NanaTextStyle,
+    constraints: NanaTextConstraints,
+    geometry: EditorGeometry,
+}
 
 #[derive(Clone)]
 pub struct NanaTextEngineShaper {
@@ -24,6 +45,8 @@ pub struct NanaTextEngineShaper {
     /// Engine work done through [`TextShaper::shape`], handed to the pass
     /// through [`TextShaper::take_text_work`].
     work: TextWorkCounters,
+    /// Retained editor geometry, least recently used first.
+    editors: Vec<EditorEntry>,
 }
 
 impl NanaTextEngineShaper {
@@ -31,29 +54,173 @@ impl NanaTextEngineShaper {
         Self {
             engine,
             work: TextWorkCounters::default(),
+            editors: Vec::new(),
         }
     }
 
     pub fn engine(&self) -> &SharedTextEngine {
         &self.engine
     }
-}
 
-impl std::fmt::Debug for NanaTextEngineShaper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NanaTextEngineShaper")
-            .finish_non_exhaustive()
-    }
-}
-
-impl TextShaper for NanaTextEngineShaper {
-    fn shape(
+    /// The node's editor geometry for these inputs, synced to `text` unless
+    /// `synced` says this batch already did. Creates it when `create`.
+    ///
+    /// One entry per node: a node probed under new style or constraints — a
+    /// resize — lays its paragraphs out again in the entry it has, rather
+    /// than growing a second entry that would push other editors out.
+    fn editor_geometry(
         &mut self,
-        _id: StableNodeId,
+        id: StableNodeId,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        synced: bool,
+        create: bool,
+    ) -> Option<&EditorGeometry> {
+        let nana_style = nana_text_style(style);
+        let nana_constraints =
+            nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start);
+        let mut entry = match self.editors.iter().rposition(|entry| entry.id == id) {
+            Some(index) => {
+                let entry = self.editors.remove(index);
+                let same = entry.constraints == nana_constraints && entry.style == nana_style;
+                if !same && !create {
+                    // Measuring under constraints the editor is not probed
+                    // with: leave its geometry alone.
+                    self.editors.push(entry);
+                    return None;
+                }
+                entry
+            }
+            None if create => {
+                if self.editors.len() >= EDITOR_GEOMETRY_CAPACITY {
+                    self.editors.remove(0);
+                }
+                EditorEntry {
+                    id,
+                    style: nana_style.clone(),
+                    constraints: nana_constraints,
+                    geometry: EditorGeometry::new(),
+                }
+            }
+            None => return None,
+        };
+        let changed = entry.constraints != nana_constraints || entry.style != nana_style;
+        if !synced || changed || entry.geometry.text_len() != text.len() {
+            entry.style = nana_style;
+            entry.constraints = nana_constraints;
+            let mut engine = nana_text::lock_text_engine(&self.engine);
+            let sync = entry.geometry.sync(
+                &mut engine,
+                text,
+                None,
+                &entry.style,
+                &entry.constraints,
+                &mut self.work,
+            );
+            self.work.text_source_clones += sync.paragraphs_laid_out;
+        }
+        self.editors.push(entry);
+        self.editors.last().map(|entry| &entry.geometry)
+    }
+
+    fn position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        synced: bool,
+    ) -> (f32, f32, f32) {
+        if !is_caret_boundary(&text.value, offset) {
+            return (0.0, 0.0, 0.0);
+        }
+        self.editor_geometry(id, &text.value, style, constraints, synced, true)
+            .and_then(|geometry| geometry.caret_rect(offset, Affinity::Downstream))
+            .map_or((0.0, 0.0, 0.0), |caret| {
+                (caret.x_px, caret.y_px, caret.height_px)
+            })
+    }
+
+    fn highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        (start, end): (usize, usize),
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        synced: bool,
+    ) -> Vec<LayoutBox> {
+        if start >= end
+            || !is_caret_boundary(&text.value, start)
+            || !is_caret_boundary(&text.value, end)
+        {
+            return Vec::new();
+        }
+        self.editor_geometry(id, &text.value, style, constraints, synced, true)
+            .map(|geometry| {
+                geometry
+                    .selection_rects(start..end)
+                    .into_iter()
+                    .map(|rect| LayoutBox {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn offset_at_point(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        x: f32,
+        y: f32,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        synced: bool,
+    ) -> Option<usize> {
+        if text.value.is_empty() {
+            return Some(0);
+        }
+        let geometry = self.editor_geometry(id, &text.value, style, constraints, synced, true)?;
+        let hit = geometry.hit_test(x, y);
+        // Probes carry no affinity and draw downstream. The end of a line that
+        // wrapped without hanging whitespace is also the next line's start, so
+        // downstream it would draw a line below where it was hit — and a
+        // vertical move to it would never leave that line. The grapheme
+        // before it stays on the hit line.
+        if hit.affinity == Affinity::Upstream {
+            let upstream = geometry.caret_rect(hit.offset, Affinity::Upstream);
+            let downstream = geometry.caret_rect(hit.offset, Affinity::Downstream);
+            if let (Some(upstream), Some(downstream)) = (upstream, downstream)
+                && (upstream.y_px - downstream.y_px).abs() > f32::EPSILON
+            {
+                return nana_text::editable::navigation::prev_grapheme(&text.value, hit.offset)
+                    .or(Some(hit.offset));
+            }
+        }
+        Some(hit.offset)
+    }
+
+    fn measure(
+        &mut self,
+        id: StableNodeId,
         text: &TextContent,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
+        // An editor measures from the geometry its probes read, so an edit
+        // lays out its own paragraph rather than the whole text.
+        if let Some(geometry) =
+            self.editor_geometry(id, &text.value, style, constraints, false, false)
+        {
+            return metrics_of_geometry(geometry);
+        }
         let source = TextSource::new(text.value.as_str());
         let layout = nana_text::lock_text_engine(&self.engine).layout(
             text_kind(&constraints),
@@ -64,6 +231,129 @@ impl TextShaper for NanaTextEngineShaper {
         );
         self.work.text_source_clones += 1;
         text_metrics_of_layout(&layout)
+    }
+}
+
+/// A byte offset a caret can stand at.
+fn is_caret_boundary(text: &str, offset: usize) -> bool {
+    nana_text::editable::navigation::is_grapheme_boundary(text, offset)
+}
+
+fn metrics_of_geometry(geometry: &EditorGeometry) -> TextMetrics {
+    let mut metrics = TextMetrics::default();
+    for (index, (_, _, layout)) in geometry.paragraph_layouts().enumerate() {
+        let paragraph = text_metrics_of_layout(layout);
+        metrics.width = metrics.width.max(paragraph.width);
+        metrics.height += paragraph.height;
+        if index == 0 {
+            metrics.ascent = paragraph.ascent;
+        }
+    }
+    metrics
+}
+
+impl std::fmt::Debug for NanaTextEngineShaper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NanaTextEngineShaper")
+            .field("editors", &self.editors.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TextShaper for NanaTextEngineShaper {
+    fn shape(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> TextMetrics {
+        self.measure(id, text, style, constraints)
+    }
+
+    /// Probes of one text snapshot sync each editor's geometry once, not once
+    /// per probe.
+    fn with_text_probes<R>(
+        &mut self,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        consume: impl FnOnce(&mut dyn TextShaper) -> R,
+    ) -> R {
+        let mut prepared = PreparedEngineShaper {
+            host: self,
+            text,
+            style,
+            constraints,
+            synced: Vec::new(),
+        };
+        consume(&mut prepared)
+    }
+
+    /// One unwrapped line, measured on its own: callers ask this of strings
+    /// that are not the node's text (completion labels), so it must not touch
+    /// the node's editor geometry.
+    fn horizontal_offset(
+        &mut self,
+        _id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        if !is_caret_boundary(&text.value, byte_offset) {
+            return 0.0;
+        }
+        let constraints = TextShapeConstraints::default();
+        let source = TextSource::new(text.value.as_str());
+        let layout = nana_text::lock_text_engine(&self.engine).layout(
+            text_kind(&constraints),
+            &source,
+            &nana_text_style(style),
+            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start),
+            &mut self.work,
+        );
+        self.work.text_source_clones += 1;
+        layout
+            .caret_geometry(nana_text::CaretPosition::new(
+                byte_offset,
+                Affinity::Downstream,
+                0,
+            ))
+            .map_or(0.0, |caret| caret.x_px)
+    }
+
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.position(id, text, byte_offset, style, constraints, false)
+    }
+
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        self.highlights(id, text, selection, style, constraints, false)
+    }
+
+    fn text_offset_at_point(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        x: f32,
+        y: f32,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Option<usize> {
+        self.offset_at_point(id, text, x, y, style, constraints, false)
     }
 
     /// The whole engine epoch, folded: a language change or another engine is
@@ -77,6 +367,9 @@ impl TextShaper for NanaTextEngineShaper {
 
     fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
         let mut work = std::mem::take(&mut self.work);
+        for entry in &self.editors {
+            entry.geometry.record_queries(&mut work);
+        }
         // The pass counts the nodes it measures; these are the engine's own
         // cache and layout numbers behind them.
         work.text_nodes_considered = 0;
@@ -86,5 +379,115 @@ impl TextShaper for NanaTextEngineShaper {
 
     fn text_engine(&self) -> Option<SharedTextEngine> {
         Some(Arc::clone(&self.engine))
+    }
+}
+
+/// One snapshot's probes: the first probe of each editor syncs its geometry,
+/// the rest read it.
+struct PreparedEngineShaper<'a> {
+    host: &'a mut NanaTextEngineShaper,
+    text: &'a TextContent,
+    style: &'a ComputedStyle,
+    constraints: TextShapeConstraints,
+    /// Editors whose geometry this batch synced to `text`.
+    synced: Vec<StableNodeId>,
+}
+
+impl PreparedEngineShaper<'_> {
+    /// Whether the geometry for this probe is already synced to its text: a
+    /// probe of the batch's snapshot syncs the editor's geometry the first
+    /// time and reads it after.
+    fn synced(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> bool {
+        let batched =
+            std::ptr::eq(text, self.text) && constraints == self.constraints && style == self.style;
+        if !batched {
+            return false;
+        }
+        if !self.synced.contains(&id) {
+            self.host
+                .editor_geometry(id, &text.value, style, constraints, false, true);
+            self.synced.push(id);
+        }
+        true
+    }
+}
+
+impl TextShaper for PreparedEngineShaper<'_> {
+    fn shape(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> TextMetrics {
+        self.host.measure(id, text, style, constraints)
+    }
+
+    fn font_generation(&self) -> u64 {
+        self.host.font_generation()
+    }
+
+    fn text_engine(&self) -> Option<SharedTextEngine> {
+        self.host.text_engine()
+    }
+
+    fn take_text_work(&mut self) -> nana_text::TextWorkCounters {
+        self.host.take_text_work()
+    }
+
+    fn horizontal_offset(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+    ) -> f32 {
+        self.host.horizontal_offset(id, text, byte_offset, style)
+    }
+
+    fn text_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        let synced = self.synced(id, text, style, constraints);
+        self.host
+            .position(id, text, byte_offset, style, constraints, synced)
+    }
+
+    fn text_highlights(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        selection: (usize, usize),
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Vec<LayoutBox> {
+        let synced = self.synced(id, text, style, constraints);
+        self.host
+            .highlights(id, text, selection, style, constraints, synced)
+    }
+
+    fn text_offset_at_point(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        x: f32,
+        y: f32,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Option<usize> {
+        let synced = self.synced(id, text, style, constraints);
+        self.host
+            .offset_at_point(id, text, x, y, style, constraints, synced)
     }
 }

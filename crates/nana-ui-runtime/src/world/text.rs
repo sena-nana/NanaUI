@@ -111,6 +111,19 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
             .text_position(id, text, offset, style, constraints)
     }
 
+    fn text_offset_at_point(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        x: f32,
+        y: f32,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Option<usize> {
+        self.inner
+            .text_offset_at_point(id, text, x, y, style, constraints)
+    }
+
     fn text_highlights(
         &mut self,
         id: StableNodeId,
@@ -241,6 +254,19 @@ impl TextShaper for PreparedCountingShaper<'_> {
         self.inner
             .text_position(id, text, offset, style, constraints)
     }
+    fn text_offset_at_point(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        x: f32,
+        y: f32,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Option<usize> {
+        self.inner
+            .text_offset_at_point(id, text, x, y, style, constraints)
+    }
+
     fn text_highlights(
         &mut self,
         id: StableNodeId,
@@ -2278,10 +2304,18 @@ fn shape_text_input_probes(
         content_size,
         display_value: source.text.value.clone(),
         placeholder: source.placeholder,
+        // Single-line fields draw these x ranges; multiline editors draw the
+        // line rects above and only ask whether a range exists. Probing with
+        // the presentation constraints reads the layout this batch already
+        // holds instead of laying the text out again unwrapped.
         selection: source.selection.map(|(start, end)| {
             (
-                shaper.horizontal_offset(id, &source.text, start, style),
-                shaper.horizontal_offset(id, &source.text, end, style),
+                shaper
+                    .text_position(id, &source.text, start, style, presentation_constraints)
+                    .0,
+                shaper
+                    .text_position(id, &source.text, end, style, presentation_constraints)
+                    .0,
             )
         }),
         selection_lines: if source.multiline {
@@ -2294,8 +2328,12 @@ fn shape_text_input_probes(
         line_height,
         preedit: source.preedit.map(|(start, end)| {
             (
-                shaper.horizontal_offset(id, &source.text, start, style),
-                shaper.horizontal_offset(id, &source.text, end, style),
+                shaper
+                    .text_position(id, &source.text, start, style, presentation_constraints)
+                    .0,
+                shaper
+                    .text_position(id, &source.text, end, style, presentation_constraints)
+                    .0,
             )
         }),
         preedit_lines: if source.multiline {

@@ -134,6 +134,89 @@ impl EditorGeometry<'_> {
         }
     }
 
+    /// A vertical or page move answered by the backend's own point hit test:
+    /// the caret's position, the last line's, and one hit — rather than a
+    /// search over position probes. `None` when the backend cannot hit test,
+    /// or the intent is not vertical.
+    fn vertical_by_point(
+        &mut self,
+        value: &str,
+        selection: TextSelection,
+        intent: TextCaretIntent,
+        extend: bool,
+        goal_x: Option<f32>,
+        page_height: f32,
+    ) -> Option<(TextSelection, f32)> {
+        let page = match intent {
+            TextCaretIntent::Up | TextCaretIntent::Down => None,
+            TextCaretIntent::PageUp | TextCaretIntent::PageDown => Some(page_height),
+            _ => return None,
+        };
+        // Asked first: a backend that cannot hit test gets its probes spent on
+        // the search fallback, not twice.
+        if !self.supports_point_hits() {
+            return None;
+        }
+        let focus = clamp_focus(value, selection.focus);
+        let (x, y, height) =
+            self.shaper
+                .text_position(self.node, &self.text, focus, &self.style, self.constraints);
+        let height = height.max(1.0);
+        let goal = goal_x.unwrap_or(x);
+        let upwards = matches!(intent, TextCaretIntent::Up | TextCaretIntent::PageUp);
+        let target_y = if upwards {
+            if y <= f32::EPSILON {
+                return Some((moved_selection(selection, 0, extend), goal));
+            }
+            // Just inside the line above's bottom, whatever its height.
+            match page {
+                Some(page) => (y - page.max(height)).max(0.0) + 0.5,
+                None => y - 0.5,
+            }
+        } else {
+            let last_y = self
+                .shaper
+                .text_position(
+                    self.node,
+                    &self.text,
+                    value.len(),
+                    &self.style,
+                    self.constraints,
+                )
+                .1;
+            if y + f32::EPSILON >= last_y {
+                return Some((moved_selection(selection, value.len(), extend), goal));
+            }
+            // Just inside the line below's top.
+            match page {
+                Some(page) => (y + page.max(height)).min(last_y) + 0.5,
+                None => y + height + 0.5,
+            }
+        };
+        let offset = self.shaper.text_offset_at_point(
+            self.node,
+            &self.text,
+            goal,
+            target_y,
+            &self.style,
+            self.constraints,
+        )?;
+        Some((moved_selection(selection, offset, extend), goal))
+    }
+
+    fn supports_point_hits(&mut self) -> bool {
+        self.shaper
+            .text_offset_at_point(
+                self.node,
+                &self.text,
+                0.0,
+                0.0,
+                &self.style,
+                self.constraints,
+            )
+            .is_some()
+    }
+
     /// Document-local pointer coordinates as a content-local point.
     fn localize(
         content: crate::LayoutBox,
@@ -338,6 +421,11 @@ impl AppContext {
         );
         if vertical && multiline {
             if let Some(geometry) = geometry {
+                if let Some((selection, goal)) =
+                    geometry.vertical_by_point(value, selection, intent, extend, None, page_height)
+                {
+                    return Some((selection, Some(goal)));
+                }
                 let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
                     vertical_caret_focus(value, selection, intent, extend, None, geometry.probe())
                 } else {
@@ -550,7 +638,21 @@ impl AppContext {
                     style,
                     constraints,
                 };
-                let moved = if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
+                let page_height = self
+                    .world
+                    .text_input_pointer_context(focused.node)
+                    .map_or(0.0, |(content, _)| content.height);
+                let by_point = geometry.vertical_by_point(
+                    probe_value,
+                    selection,
+                    intent,
+                    extend,
+                    goal,
+                    page_height,
+                );
+                let moved = if by_point.is_some() {
+                    by_point
+                } else if matches!(intent, TextCaretIntent::Up | TextCaretIntent::Down) {
                     vertical_caret_focus(
                         probe_value,
                         selection,
@@ -2037,7 +2139,17 @@ impl AppContext {
             constraints,
         };
         let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let hit = caret_offset_at_point(probe_value, local_x, local_y, geometry.probe());
+        let hit = match geometry.shaper.text_offset_at_point(
+            node,
+            &geometry.text,
+            local_x,
+            local_y,
+            &geometry.style,
+            geometry.constraints,
+        ) {
+            Some(hit) => hit,
+            None => caret_offset_at_point(probe_value, local_x, local_y, geometry.probe()),
+        };
         let hit = match &fold_view {
             Some(view) => view.value_of(hit),
             None => hit,

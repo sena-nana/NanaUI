@@ -1821,6 +1821,9 @@ impl UiWorld {
                 }
             }
             UiMutation::SetIme { id, composition } => {
+                if self.nodes.ime(*id) != composition.as_ref() {
+                    self.pending_edit_work.composition_updates += 1;
+                }
                 self.nodes.set_ime(*id, composition.clone());
                 self.nodes
                     .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
@@ -1842,6 +1845,11 @@ impl UiWorld {
                     _ => None,
                 };
                 if let Some(state) = state {
+                    record_editable_change(
+                        &mut self.pending_edit_work,
+                        self.nodes.text_input(*id),
+                        state,
+                    );
                     self.nodes.set_text_input(*id, Some(state.clone()));
                     self.record_mut(*id).text = TextContent {
                         value: state.value.clone(),
@@ -1877,10 +1885,14 @@ impl UiWorld {
                 );
             }
             UiMutation::SetTextSelection { id, selection } => {
-                self.nodes
+                let state = self
+                    .nodes
                     .text_input_mut(*id)
-                    .expect("entity must have runtime component")
-                    .selection = *selection;
+                    .expect("entity must have runtime component");
+                if state.selection != *selection {
+                    record_selection_change(&mut self.pending_edit_work, *selection);
+                }
+                state.selection = *selection;
                 self.nodes
                     .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 self.mark(
@@ -1897,7 +1909,18 @@ impl UiWorld {
                         .nodes
                         .text_input_mut(*id)
                         .expect("entity must have runtime component");
+                    let deleted = state
+                        .selections()
+                        .iter()
+                        .map(|selection| selection.ordered().len())
+                        .sum::<usize>();
+                    let cursors = 1 + state.additional_selections.len();
                     let replaced = state.replace_selection(text);
+                    if replaced && (deleted > 0 || !text.is_empty()) {
+                        self.pending_edit_work.editable_mutations += 1;
+                        self.pending_edit_work.editable_bytes_deleted += deleted;
+                        self.pending_edit_work.editable_bytes_inserted += text.len() * cursors;
+                    }
                     (replaced, state.value.clone())
                 };
                 debug_assert!(replaced, "validated selection must remain valid");
@@ -2341,5 +2364,58 @@ impl UiWorld {
             }
         }
         Ok((report, parked, inserted))
+    }
+}
+
+/// Editable work (#96) of replacing an editor's state: an edit when the value
+/// changed, otherwise a caret- or selection-only update when the selection
+/// set did.
+fn record_editable_change(
+    work: &mut nana_text::TextWorkCounters,
+    previous: Option<&crate::TextInputState>,
+    next: &crate::TextInputState,
+) {
+    // Mounting an editor puts its value in place; nobody edited it.
+    let Some(previous) = previous else {
+        return;
+    };
+    let previous_value = previous.value.as_str();
+    if previous_value != next.value {
+        let (old, new) = (previous_value.as_bytes(), next.value.as_bytes());
+        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let suffix = old[prefix..]
+            .iter()
+            .rev()
+            .zip(new[prefix..].iter().rev())
+            .take_while(|(a, b)| a == b)
+            .count();
+        work.editable_mutations += 1;
+        work.editable_bytes_deleted += old.len() - prefix - suffix;
+        work.editable_bytes_inserted += new.len() - prefix - suffix;
+        return;
+    }
+    if previous.selection != next.selection
+        || previous.additional_selections != next.additional_selections
+    {
+        let collapsed = next
+            .additional_selections
+            .iter()
+            .all(|selection| selection.anchor == selection.focus);
+        if collapsed && next.selection.anchor == next.selection.focus {
+            work.caret_only_updates += 1;
+        } else {
+            work.selection_only_updates += 1;
+        }
+    }
+}
+
+fn record_selection_change(
+    work: &mut nana_text::TextWorkCounters,
+    selection: crate::TextSelection,
+) {
+    if selection.anchor == selection.focus {
+        work.caret_only_updates += 1;
+    } else {
+        work.selection_only_updates += 1;
     }
 }

@@ -5,30 +5,22 @@
 //! values and never mutate directly: callers apply the returned offsets or
 //! replacement values through [`crate::TextInputState`] so IME preedit,
 //! change events, and validation stay in one place.
+//!
+//! Grapheme, word and logical-line navigation is `nana-text`'s
+//! ([`nana_text::editable::navigation`]): one definition of where a caret may
+//! stand serves the Runtime editors and the editable text path alike.
 
+use nana_text::editable::navigation;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Move `offset` to the next grapheme boundary. `None` at the end of value.
 pub fn next_grapheme(value: &str, offset: usize) -> Option<usize> {
-    if offset >= value.len() || !value.is_char_boundary(offset) {
-        return None;
-    }
-    value[offset..]
-        .grapheme_indices(true)
-        .nth(1)
-        .map(|(index, _)| offset + index)
-        .or(Some(value.len()))
+    navigation::next_grapheme(value, offset)
 }
 
 /// Move `offset` to the previous grapheme boundary. `None` at the start.
 pub fn prev_grapheme(value: &str, offset: usize) -> Option<usize> {
-    if offset == 0 || !value.is_char_boundary(offset) {
-        return None;
-    }
-    value[..offset]
-        .grapheme_indices(true)
-        .next_back()
-        .map(|(index, _)| index)
+    navigation::prev_grapheme(value, offset)
 }
 
 /// Byte range of the word containing `offset`.
@@ -38,30 +30,7 @@ pub fn prev_grapheme(value: &str, offset: usize) -> Option<usize> {
 /// word; a caret between segments (after a word, before whitespace) selects
 /// the whitespace segment ahead of it.
 pub fn word_range_at(value: &str, offset: usize) -> (usize, usize) {
-    let offset = clamp_boundary(value, offset);
-    let mut ends_here: Option<(usize, usize)> = None;
-    for (index, word) in value.split_word_bound_indices() {
-        let end = index + word.len();
-        if index < offset && offset < end {
-            if !word.chars().next().is_some_and(char::is_whitespace) {
-                return (index, end);
-            }
-            // The interior of a whitespace run selects nothing.
-            continue;
-        }
-        if index == offset && end > offset {
-            if !word.chars().next().is_some_and(char::is_whitespace) {
-                return (index, end);
-            }
-            // A whitespace segment starting here defers to a word that ends
-            // here, so a double click at a word's end selects that word.
-            continue;
-        }
-        if end == offset && !word.chars().all(char::is_whitespace) {
-            ends_here = Some((index, end));
-        }
-    }
-    ends_here.unwrap_or((offset, offset))
+    navigation::word_range_at(value, offset)
 }
 
 /// Word start at or before `offset`, skipping whitespace segments.
@@ -69,22 +38,7 @@ pub fn word_range_at(value: &str, offset: usize) -> (usize, usize) {
 /// A caret inside or at the end of a word moves to that word's start; a caret
 /// in whitespace moves to the start of the word before it.
 pub fn word_start_before(value: &str, offset: usize) -> usize {
-    let offset = clamp_boundary(value, offset);
-    let mut candidate = 0;
-    for (index, word) in value.split_word_bound_indices() {
-        let end = index + word.len();
-        if index >= offset {
-            break;
-        }
-        if word.chars().all(char::is_whitespace) {
-            continue;
-        }
-        if offset <= end {
-            return index;
-        }
-        candidate = index;
-    }
-    candidate
+    navigation::word_start_before(value, offset)
 }
 
 /// Word end at or after `offset`, skipping whitespace segments.
@@ -92,30 +46,12 @@ pub fn word_start_before(value: &str, offset: usize) -> usize {
 /// A caret inside a word moves to that word's end; a caret at a word's end or
 /// in whitespace moves to the end of the next word.
 pub fn word_end_after(value: &str, offset: usize) -> usize {
-    let offset = clamp_boundary(value, offset);
-    let mut fallback = offset;
-    for (index, word) in value.split_word_bound_indices() {
-        let end = index + word.len();
-        if end <= offset {
-            continue;
-        }
-        if word.chars().all(char::is_whitespace) {
-            fallback = end;
-            continue;
-        }
-        return end;
-    }
-    fallback
+    navigation::word_end_after(value, offset)
 }
 
 /// Byte range of the logical line containing `offset`; `end` excludes `\n`.
 pub fn logical_line_range(value: &str, offset: usize) -> (usize, usize) {
-    let offset = clamp_boundary(value, offset);
-    let start = value[..offset].rfind('\n').map_or(0, |index| index + 1);
-    let end = value[start..]
-        .find('\n')
-        .map_or(value.len(), |index| start + index);
-    (start, end)
+    navigation::logical_line_range(value, offset)
 }
 
 /// Byte offset of the first non-whitespace character on the logical line
@@ -130,11 +66,7 @@ pub fn line_content_start(value: &str, offset: usize) -> usize {
 
 /// Clamp onto the nearest char boundary at or below `offset`.
 pub fn clamp_boundary(value: &str, offset: usize) -> usize {
-    let mut offset = offset.min(value.len());
-    while offset > 0 && !value.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
+    navigation::clamp_to_char_boundary(value, offset)
 }
 
 /// Normalize platform line endings to `\n` so multiline edits never inject

@@ -1882,6 +1882,21 @@ pub trait TextShaper {
         )
     }
 
+    /// The UTF-8 boundary whose caret is nearest a paragraph-local point, for
+    /// backends that can answer it from their layout directly. `None` makes
+    /// callers search with [`Self::text_position`] probes instead.
+    fn text_offset_at_point(
+        &mut self,
+        _id: StableNodeId,
+        _text: &TextContent,
+        _x: f32,
+        _y: f32,
+        _style: &ComputedStyle,
+        _constraints: TextShapeConstraints,
+    ) -> Option<usize> {
+        None
+    }
+
     /// Return highlight rectangles in paragraph-local coordinates.
     ///
     /// The default preserves the backend-neutral explicit-newline behavior.
@@ -2592,13 +2607,10 @@ impl TextSelection {
     }
 }
 
+/// Scans the logical line around `offset`, not the whole value: validating a
+/// selection runs on every edit and caret move.
 fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
-    use unicode_segmentation::UnicodeSegmentation;
-
-    offset == value.len()
-        || value
-            .grapheme_indices(true)
-            .any(|(boundary, _)| boundary == offset)
+    nana_text::editable::navigation::is_grapheme_boundary(value, offset)
 }
 
 /// Sort key for a selection: span start, then span end.

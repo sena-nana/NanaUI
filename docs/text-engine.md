@@ -10,7 +10,8 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 见「字体层」一节。#91 是 Phase 2：分段、BiDi、HarfRust shaping 与 ShapeRun cache，见「Shaping」一节。
 #92 是 Phase 3：单行 Label fast path、断行、行内视觉序、行盒度量、对齐、省略号与 layout cache，
 见「Layout」一节。#95 是 Phase 4：UiWorld 保留文本节点、分级 dirty graph 与 retained
-`TextLayout`，见「UiWorld 保留文本节点」一节。
+`TextLayout`，见「UiWorld 保留文本节点」一节。#96 是 Phase 5：Editable 路径——可编辑存储、
+caret / selection、hit-test、IME composition 与按段落失效的编辑器几何，见「Editable 路径」一节。
 
 ## 这是什么
 
@@ -916,8 +917,158 @@ transform + opacity 稳态动画不动 revision、padding 动画重排、高度�
 | 项 | 状态 |
 | --- | --- |
 | 产品绘制 retained layout | #97：cryoglyph 的 `TextArea` 只接受 cosmic `Buffer` 的 `LayoutRunIter`，不能喂外部 glyph run；`SceneWgpuPainter` 仍自行 cosmic 塑形，产品宿主因此不返回引擎 |
-| Editable 文本 | #96：TextInput 仍走宿主 shaper 的 presentation 路径，不打戳 |
+| Editable 文本 | 见 Phase 5（#96）：presentation 仍每趟重测、不打戳，引擎宿主的探针改由段落几何回答 |
 | font-size / 字体轴动画 | Runtime 尚无 CPU 写回路径；一旦写回计算样式，会按 `SHAPE_STYLE` 分类 |
+
+## Editable 路径（Phase 5，#96）
+
+Editable 是 Paragraph layout 之上的附加层，不是每段文本都背着的状态：标签从不持有 session 或几何，
+没有被编辑的文本不跑这里的任何代码。
+
+```text
+EditableText（私有存储 + TextRevision）── EditState（selection / composition / goal x）
+        │                                        │
+        └──────── EditSession：输入、删除、移动、IME ─┘
+                            │ display text（committed + preedit）
+                            ▼
+        EditorGeometry：每段一个 TextLayout，按段落失效
+        hit_test / caret_rect / selection_rects / line_bounds / vertical / visual_move
+```
+
+### 存储与 revision
+
+- `EditableText` 的存储类型私有，只经 `replace / insert / delete / set_text` 改动；字节没变的
+  替换返回 `Ok(None)`，不推进 revision。调用方读 `&str`，从不命名存储类型——以后换 rope /
+  piece table（由大文档 benchmark 决定）不改 API。`TextEdit { range, inserted_len, revision }`
+  足以把旧偏移映射进新文本（`map_offset`）。
+- 偏移是 committed 文本的 UTF-8 字节，出命令时总在 grapheme cluster 边界上；`utf16_offset` /
+  `offset_of_utf16` 给按 UTF-16 计数的平台 IME / a11y API，`grapheme_index` / `offset_of_grapheme`
+  做 grapheme 序号转换。
+- `EditRevisions { text, selection, composition }` 三个 revision 独立：caret 移动只推进 selection，
+  composition 变化只推进 composition，caret blink 什么都不推进。
+
+### 导航
+
+`editable::navigation` 是 grapheme / word / 逻辑行的唯一定义，Runtime 的 `text_editing` 直接委托给它。
+扫描限定在偏移所在的逻辑行（UAX #29 在换行后必断，WB3a / GB5），所以大文档里按词移动的成本是一行
+而不是全文；`CR LF` 是一个 cluster，窗口因此包含行尾换行。单元测试逐偏移对照整串分段的结果。
+
+`Motion`：`GraphemeBackward/Forward`（逻辑序）、`Left/Right`（视觉序，需要几何；没有几何时退化为
+逻辑序）、`WordBackward/Forward`、`LineStart/End`（视觉行；无几何为逻辑行）、`LineUp/Down`（保持
+goal x；无几何按 grapheme 列）、`ParagraphStart/End`、`DocumentStart/End`。非扩展的水平移动遇到
+非空选区时收拢到对应边（`Left/Right` 有几何时收拢到屏幕上的左/右边，RTL 文本里左边是逻辑末尾）。
+`delete(motion, geometry)` 同样可以按视觉行删除到行首 / 行尾。输入文字后 caret 取 `Upstream`，贴着刚输入
+的字（LTR 行尾输入 RTL 字时不会跳到 RTL 段另一侧；软换行处也留在本行）。几何只有在由本 session 当前
+text + composition revision 同步过时才被使用；`EditRevisions` 带 session 身份（进程内唯一，克隆即新
+session），另一个 revision 数值恰好相同的 session 不会误用它。陈旧几何退回逻辑移动。
+
+### Caret affinity 与 hit-test
+
+- `TextLayout::caret_geometry`：`Upstream` 画在前一个 cluster 的逻辑末端，`Downstream` 画在后一个
+  cluster 的逻辑起点。同方向文本里两者 x 相同；在 BiDi 边界上它们是同一字节的两个不同视觉位置。
+- `TextLayout::hit_test` 保持 IR-only 语义（语料 golden 记录它）。`hit_test_text(text, x, y)` 额外
+  拿源文本：一个 glyph 画多个 grapheme 时（`ffi` 连字）落到最近的 grapheme 边界，affinity 指向被点中的
+  cluster——点在 BiDi 边界哪一侧，caret 就画在哪一侧。
+- `caret_stops(line, text)`：一行里所有 caret 位置按 x 排序（边界两侧各一个，软换行行尾只有 upstream）。
+  画在同一 x 的不同位置按行的阅读顺序相邻排列。`EditorGeometry::visual_move` 按 stop 序号逐个移动，保证
+  从任何 caret 出发、任一方向都能到达每个 grapheme 边界；代价是在 BiDi 边界上有一次按键只改变逻辑位置、
+  屏幕上不动（两个逻辑位置画在同一处，都要能到达：LTR 行末尾是 RTL 文本时，行的逻辑末端只画在那里）。
+  软换行悬挂的空白里的每个位置作为该行行尾的 upstream stop 加入。行边缘按段落书写方向跨到相邻行。
+- `hit_test_text` 点在行外时取该侧视觉最边上的 stop（同 x 取阅读顺序最靠外的，LTR 行右侧即文本末尾，
+  点击后输入是追加），而不是行的逻辑边界——软换行行末尾是反向文本时，逻辑边界画在另一侧。
+- 单次查询（caret、hit）逐 cell 扫描；需要一行内所有位置的 `caret_stops` 才建按 cluster 排序的索引并二分，
+  且对行文本只做一趟 grapheme 分段，行长线性。同一 cluster 的多个 cell（组合记号）合并成一个视觉范围。
+
+### Selection
+
+`selection_rects` 由逻辑范围 + layout 派生，不改 shaped glyph；一行混排 BiDi 产生多个不相接的 rect，
+多行每个视觉行至少一个。只看与范围相交的行。选区颜色是 paint，不 reshape。
+
+### IME composition
+
+composition 是 transient overlay，不是先 commit 再撤销：`Composition { replaced, text, selection }`
+代表 preedit 替换掉的 committed 范围（开始组字时的选区）。committed 文本组字期间不动；显示与排版用
+display text（`display_text` / `display_offset` / `committed_offset`）。
+
+| 操作 | 语义 |
+| --- | --- |
+| `set_preedit(text, selection)` | 开始或更新；空 text 等于 cancel；IME 自己的光标 / 目标段在 text 内 |
+| `commit(text)` | 替换 `replaced`（没在组字时替换选区），结束组字，caret 在插入文本后 |
+| `cancel_composition` / `blur` | 丢弃 preedit，committed 文本与选区与开始前完全一致；焦点转移即 cancel |
+| `delete_surrounding(before, after)` | 没在组字：删除选区前后字节与选区本身（沿用 Runtime 合同）。组字中：锚点是 preedit 替换的范围，**保留它**，只删前后字节——否则取消组字会丢字；preedit 随文本移动 |
+| `surrounding_text(before, after)` | committed 文本片段，窗口按字符边界向内收缩，带片段内选区 |
+| `ime_cursor` / `candidate_rect` | 组字时是 preedit 光标，否则是选区 focus；矩形来自几何 |
+
+这两条规则是 `editable::ime` 里的纯函数（`surrounding_deletion` / `surrounding_window`），不持有
+`EditSession` 的宿主照同一规则执行。`set_text` 在字节不变但取消了组字时返回 `EditChange::Composition`。
+
+组字期间普通输入、删除与 caret 移动一律拒绝（IME 拥有 caret 附近文本）。几何把 preedit 标成
+`CompositionSegment::Preedit` / `PreeditTarget` span，它们各自成 run，绘制方可以装饰。
+
+### EditorGeometry 与增量失效
+
+文本在 `\n` 处分段，每段单独经引擎排版（`TextKind::Editable`）后纵向堆叠。shaping 不跨换行、UBA 在换行
+处开新段，所以单段排版与整段排版行一致（`paragraph_geometry_matches_laying_the_whole_text_out` 对照
+caret x / 行顶 / 宽高）。`max_lines`、`max_height_px`、省略号作用于整段文本，`preserve_lines == false`
+会把换行折成空格，这些约束下整体作为一段，而且不做前后缀复用——文本变了就整段重排。
+
+`sync` 比较段落字节（前缀段 + 按长度差对齐的后缀段）与每段的 composition 标记，只重排中间变化的段落：
+
+- 编辑一个字符：重排 1 段，其余段落保留原 `Arc<TextLayout>`；拆段 2 段，合段 1 段（shape cache 命中）。
+- composition 更新：只重排 preedit 所在段。
+- selection / caret 变化：`sync_session` 凭 revision 直接返回，零比较零排版。
+- style / 约束 / 引擎 epoch 变化：全部重排（shaping 仍可命中缓存），不计入编辑工作。
+
+查询（`caret_rect`、`hit_test`、`selection_rects`、`line_bounds`、`vertical`、`visual_move`）只读保留的
+layout，从不 shape 或 layout。
+
+### 计数器
+
+`TextWorkCounters` 新增：
+
+```text
+editable_mutations              改变 committed 文本的编辑
+editable_bytes_inserted/deleted
+caret_only_updates              只移动 caret（结果为收拢选区），不含编辑顺带的 caret 移动
+selection_only_updates          只改选区（结果非空）
+composition_updates             preedit 开始 / 更新 / 结束
+paragraphs_reshaped_from_edit   增量 sync 重排且 shaping 未命中缓存的段
+paragraphs_relayout_from_edit   增量 sync 重排的段
+hit_test_queries                对保留几何的命中查询
+caret_geometry_queries          对保留几何的 caret 查询
+```
+
+结构门禁（`crates/nana-text/tests/editable_text.rs`）：caret blink 反复查询 caret 时引擎
+`shape_cache_misses` / `shape_cache_hits` / `layout_created` 全不变；selection-only 的一串移动同样不变。
+
+### Runtime 接入与分阶段门
+
+| 阶段 | 状态 |
+| --- | --- |
+| 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_highlights` / 新增的 `TextShaper::text_offset_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、点击、每趟度量）各做一次与文本长度成正比的字节比较以确认几何仍是这份文本（不 shape、不 layout）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
+| 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
+
+引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
+caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；在 30 段 TextArea 中间打一个字只新建
+1 个 layout（`paragraphs_relayout_from_edit == 1`）；每次 preedit 更新只新建 1 个 layout，preedit 不计
+`editable_mutations`；点击经 `text_offset_at_point` 命中且不排版。
+
+顺带修正：多行编辑器的值保留换行，不再跟随 `white-space` 折叠（此前引擎宿主会把 TextArea 排成一段）；
+组字中焦点移走时取消的 preedit 不再继续画在原编辑器里（`remove_ime` 重新派生 presentation）；
+初次挂载编辑器不再计作一次编辑；
+单行字段的选区 / preedit x 改用本批次已持有的 presentation 布局探测，不再额外排一份不换行的全文。
+
+### 本阶段没做的
+
+| 项 | 状态 |
+| --- | --- |
+| caret blink | Runtime 目前没有 blink；它属于 scene overlay 的可见性 / 不透明度（paint），不得推进任何文本 revision。`nana-text` 侧门禁已钉住「只查询几何」零文本工作 |
+| Runtime caret affinity | `TextSelection` / `TextShaper` 探针合同没有 affinity（140 处构造，且是 Vue / JS 合同），Runtime 按 downstream 画 caret。引擎宿主的点命中在「没有悬挂空白的软换行行尾」（CJK 这类行尾即下一行行首）退回前一个 grapheme，caret 留在被点中的行、上方向键不会卡住；代价是这个行尾位置本身点不到，BiDi 边界点击也可能画到另一侧。`nana-text` 的 `EditSelection` 已带 affinity，接入需要单独改合同 |
+| Runtime 视觉序左右移动 | `nana-text` 提供 `Motion::Left/Right`；Runtime 的 `TextCaretIntent::Left/Right` 仍是逻辑 grapheme 移动，接视觉序需要平台语义决定 |
+| a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
+| 局部 cluster splice | 不做；最小失效单位是段落 |
+| 大文档存储 | 仍是 `String`，rope / piece table 由 benchmark 决定 |
 
 ## #33 迁移基准
 
@@ -999,6 +1150,19 @@ Phase 4 落地前后同机对比（Apple M4，10 核，macOS，2026-09-17，p50�
 剩下的增长是候选扫描本身：每个候选一次侧表查找，节点翻倍时它跟 Layout 一样随工作集出 cache
 略超线性，但相对 Layout 的倍率已经基本持平（2.3% / 2.1%）。改动前的额外部分来自每个候选都要读整条
 `NodeRecord`、查 visual、解引用计算样式、算约束，才能决定跳过。
+
+Phase 5 落地前后同机对比（同一台 Apple M4，macOS，2026-09-17，p50，150 samples / 30 warmup）。
+这一格工作负载里没有编辑器，Phase 5 预期不改变它；「前」是改动前同一棵树的构建：
+
+| 节点 | 前 TextShape | 前 Layout | 前 倍率 | 后 TextShape | 后 Layout | 后 倍率 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,002 | 0.050 ms | 2.891 ms | 1.7% | 0.040 ms | 1.529 ms | 2.6% |
+| 4,002 | 0.078 ms | 4.951 ms | 1.6% | 0.074 ms | 4.609 ms | 1.6% |
+| 8,002 | 0.162 ms | 7.942 ms | 2.0% | 0.140 ms | 7.180 ms | 2.0% |
+
+TextShape 绝对值前后持平，2k 一格倍率的变化来自 Layout 本身在这台机器上的抖动（同一构建连跑两次
+Layout 在 1.25–1.53 ms 之间），不是文本工作；三格 `text_work` 仍是全部候选凭 revision 跳过、
+`layouts_created == 0`。
 
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——

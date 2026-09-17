@@ -227,6 +227,11 @@ impl AppContext {
             .unwrap_or((x, y));
         let local_x = layout_x - content.x + scroll.x;
         let local_y = layout_y - content.y + scroll.y;
+        if let Some(offset) =
+            shaper.text_offset_at_point(node, &shaped, local_x, local_y, &style, constraints)
+        {
+            return Some(offset);
+        }
         Some(caret_offset_at_point(
             &shaped.value,
             local_x,

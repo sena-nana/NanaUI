@@ -1,0 +1,359 @@
+//! Issue #96: Runtime editors on the `nana-text` editable path, driven through
+//! the product frame loop with an engine host.
+//!
+//! Caret, selection and pointer questions are answered from the editor's
+//! retained per-paragraph geometry; an edit lays out its own paragraph; caret
+//! and selection moves do no text layout at all.
+
+use std::sync::{Arc, Mutex};
+
+use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
+use nana_text::{NativeTextEngine, SharedTextEngine, TextWorkCounters};
+use nana_ui_runtime::{
+    DocumentId, Entity, LayoutViewport, NanaTextEngineShaper, TextArea, TextCaretIntent,
+};
+use nana_ui_scene::RuntimeDocument;
+
+const DOCUMENT: u64 = 1;
+
+fn engine() -> SharedTextEngine {
+    let mut policy = FallbackPolicy::empty();
+    policy.set_generic(GenericFamily::SansSerif, ["Noto Sans SC"]);
+    let mut fonts = FontSystem::with_policy(policy);
+    fonts
+        .register_bytes(
+            font_blob(nana_ui_core::fonts::UI_FONT_REGULAR),
+            &FaceDescriptor::default(),
+        )
+        .expect("the bundled UI face registers");
+    Arc::new(Mutex::new(NativeTextEngine::new(fonts)))
+}
+
+fn viewport() -> LayoutViewport {
+    LayoutViewport::new(400.0, 800.0)
+}
+
+struct Fixture {
+    runtime: RuntimeDocument,
+    shaper: NanaTextEngineShaper,
+    engine: SharedTextEngine,
+    area: Entity<TextArea>,
+    document: DocumentId,
+}
+
+impl Fixture {
+    fn new(text: &str) -> Self {
+        let document = DocumentId::new(DOCUMENT).unwrap();
+        let mut runtime = RuntimeDocument::new(document);
+        let area = runtime
+            .context_mut()
+            .build(document, |ui| ui.child("editor", TextArea::new(text)))
+            .unwrap();
+        let engine = engine();
+        let shaper = NanaTextEngineShaper::new(Arc::clone(&engine));
+        let mut fixture = Self {
+            runtime,
+            shaper,
+            engine,
+            area,
+            document,
+        };
+        assert!(
+            fixture
+                .runtime
+                .context_mut()
+                .focus_node(document, area.stable_id())
+                .unwrap()
+        );
+        fixture.settle();
+        fixture
+    }
+
+    fn flush(&mut self) -> TextWorkCounters {
+        self.runtime.flush(viewport(), &mut self.shaper).unwrap();
+        self.runtime.context().world().last_text_work_counters()
+    }
+
+    fn settle(&mut self) {
+        for _ in 0..4 {
+            self.flush();
+        }
+    }
+
+    fn layouts_created(&self) -> usize {
+        nana_text::lock_text_engine(&self.engine)
+            .layout_counters()
+            .layout_created
+    }
+
+    fn shapes(&self) -> usize {
+        nana_text::lock_text_engine(&self.engine)
+            .shape_counters()
+            .shape_cache_misses
+    }
+
+    fn value(&self) -> String {
+        self.runtime
+            .context()
+            .world()
+            .text_input(self.area.stable_id())
+            .unwrap()
+            .value
+            .clone()
+    }
+
+    fn caret(&self) -> (f32, f32) {
+        let presentation = self
+            .runtime
+            .context()
+            .world()
+            .text_input_presentation(self.area.stable_id())
+            .unwrap();
+        (presentation.caret_x, presentation.caret_y)
+    }
+}
+
+fn paragraphs(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("paragraph {index} of the document"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn caret_and_selection_moves_do_no_text_layout() {
+    let mut fixture = Fixture::new(&paragraphs(20));
+    let (layouts, shapes) = (fixture.layouts_created(), fixture.shapes());
+    let start = fixture.caret();
+    let document = fixture.document;
+    for (intent, extend) in [
+        (TextCaretIntent::DocStart, false),
+        (TextCaretIntent::Down, false),
+        (TextCaretIntent::Right, true),
+        (TextCaretIntent::WordRight, true),
+        (TextCaretIntent::LineEnd, false),
+    ] {
+        let Fixture {
+            runtime, shaper, ..
+        } = &mut fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, extend, Some(shaper))
+                .unwrap(),
+            "{intent:?}"
+        );
+        let work = fixture.flush();
+        assert_eq!(work.layouts_created, 0, "{intent:?}: no layout");
+        assert_eq!(work.editable_mutations, 0);
+        assert_eq!(
+            work.caret_only_updates + work.selection_only_updates,
+            1,
+            "{intent:?} is one caret or selection update"
+        );
+    }
+    assert_ne!(fixture.caret(), start, "the caret moved on screen");
+    assert_eq!(fixture.layouts_created(), layouts, "layout_created == 0");
+    assert_eq!(fixture.shapes(), shapes, "shape_runs_created == 0");
+}
+
+#[test]
+fn typing_lays_out_only_the_paragraph_it_edits() {
+    let mut fixture = Fixture::new(&paragraphs(30));
+    let value = fixture.value();
+    let middle = value.find("paragraph 15").unwrap() + "paragraph".len();
+    let document = fixture.document;
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .select_focused_text_range(document, middle, middle)
+            .unwrap()
+    );
+    fixture.flush();
+    let layouts = fixture.layouts_created();
+
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .replace_focused_text(document, "!")
+            .unwrap()
+    );
+    let work = fixture.flush();
+    assert_eq!(work.editable_mutations, 1);
+    assert_eq!(work.editable_bytes_inserted, 1);
+    assert_eq!(work.paragraphs_relayout_from_edit, 1, "{work:?}");
+    assert_eq!(
+        fixture.layouts_created() - layouts,
+        1,
+        "one character does not lay out the other 29 paragraphs"
+    );
+    assert!(fixture.value().contains("paragraph! 15"));
+}
+
+#[test]
+fn composition_updates_lay_out_only_the_composing_paragraph() {
+    let mut fixture = Fixture::new(&paragraphs(10));
+    let document = fixture.document;
+    fixture
+        .runtime
+        .context_mut()
+        .select_focused_text_range(document, 5, 5)
+        .unwrap();
+    fixture.flush();
+    for preedit in ["n", "ni", "nih"] {
+        let layouts = fixture.layouts_created();
+        assert!(
+            fixture
+                .runtime
+                .context_mut()
+                .set_ime_preedit(document, preedit.into(), None)
+                .unwrap()
+        );
+        let work = fixture.flush();
+        assert_eq!(work.composition_updates, 1);
+        assert_eq!(work.editable_mutations, 0, "a preedit is not an edit");
+        assert_eq!(fixture.layouts_created() - layouts, 1, "{preedit}");
+    }
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .commit_ime(document, "你")
+            .unwrap()
+    );
+    let work = fixture.flush();
+    assert_eq!(work.editable_mutations, 1);
+    assert_eq!(work.composition_updates, 1);
+    assert!(fixture.value().starts_with("parag你raph 0"));
+}
+
+#[test]
+fn a_click_resolves_through_the_retained_geometry() {
+    let mut fixture = Fixture::new(&paragraphs(5));
+    let world = fixture.runtime.context().world();
+    let (content, _) = world
+        .text_input_pointer_context(fixture.area.stable_id())
+        .unwrap();
+    let presentation = world
+        .text_input_presentation(fixture.area.stable_id())
+        .unwrap();
+    let line_height = presentation.line_height;
+    let layouts = fixture.layouts_created();
+    let document = fixture.document;
+    let node = fixture.area.stable_id();
+    // Third line, a little way in.
+    let (x, y) = (content.x + 40.0, content.y + line_height * 2.5);
+    let Fixture {
+        runtime, shaper, ..
+    } = &mut fixture;
+    runtime
+        .context_mut()
+        .text_editor_pointer_press(
+            document,
+            node,
+            1,
+            x,
+            y,
+            false,
+            false,
+            std::time::Duration::from_secs(10),
+            shaper,
+        )
+        .unwrap();
+    runtime.context_mut().text_editor_pointer_release(1);
+    let work = fixture.flush();
+    assert!(work.hit_test_queries >= 1, "{work:?}");
+    let selection = fixture
+        .runtime
+        .context()
+        .world()
+        .text_input(node)
+        .unwrap()
+        .selection;
+    let value = fixture.value();
+    let third = value.find("paragraph 2").unwrap();
+    assert!(
+        selection.focus > third && selection.focus < third + "paragraph 2".len(),
+        "clicked into the third paragraph, got {}",
+        selection.focus
+    );
+    assert_eq!(
+        fixture.layouts_created(),
+        layouts,
+        "a click lays nothing out"
+    );
+}
+
+#[test]
+fn up_and_clicks_at_the_end_of_a_wrap_without_whitespace_stay_on_that_line() {
+    // CJK wraps between any two characters: a line's end is the next line's
+    // start, with no hung whitespace in between.
+    let mut fixture = Fixture::new(&"中".repeat(120));
+    let node = fixture.area.stable_id();
+    let document = fixture.document;
+    let tops = |fixture: &Fixture| fixture.caret().1;
+    let (content, _) = fixture
+        .runtime
+        .context()
+        .world()
+        .text_input_pointer_context(node)
+        .unwrap();
+    let line_height = fixture
+        .runtime
+        .context()
+        .world()
+        .text_input_presentation(node)
+        .unwrap()
+        .line_height;
+
+    // A click past the right end of the first line.
+    let Fixture {
+        runtime, shaper, ..
+    } = &mut fixture;
+    runtime
+        .context_mut()
+        .text_editor_pointer_press(
+            document,
+            node,
+            1,
+            content.x + content.width - 1.0,
+            content.y + line_height * 0.5,
+            false,
+            false,
+            std::time::Duration::from_secs(10),
+            shaper,
+        )
+        .unwrap();
+    runtime.context_mut().text_editor_pointer_release(1);
+    fixture.flush();
+    assert_eq!(tops(&fixture), 0.0, "the caret stays on the clicked line");
+
+    // Down twice, then up: every move changes line.
+    let mut previous = tops(&fixture);
+    for intent in [
+        TextCaretIntent::Down,
+        TextCaretIntent::Down,
+        TextCaretIntent::Up,
+        TextCaretIntent::Up,
+    ] {
+        let Fixture {
+            runtime, shaper, ..
+        } = &mut fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, false, Some(shaper))
+                .unwrap()
+        );
+        fixture.flush();
+        let top = tops(&fixture);
+        match intent {
+            TextCaretIntent::Down => assert!(top > previous, "{intent:?}: {previous} -> {top}"),
+            _ => assert!(top < previous, "{intent:?}: {previous} -> {top}"),
+        }
+        previous = top;
+    }
+    assert_eq!(previous, 0.0);
+}

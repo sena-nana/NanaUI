@@ -469,6 +469,10 @@ pub struct UiWorld {
     text_work: nana_text::TextWorkCounters,
     /// Text work of the frame being accumulated.
     text_frame_work: nana_text::TextWorkCounters,
+    /// Editable work (#96) committed since the last text pass: edits,
+    /// caret- and selection-only changes, composition updates. Reported with
+    /// the pass that lays those changes out.
+    pending_edit_work: nana_text::TextWorkCounters,
     /// Nodes style resolution turned visible since the last scheduled text
     /// pass, which re-resolves them alongside its own work.
     text_shown: Vec<StableNodeId>,
@@ -599,6 +603,7 @@ impl UiWorld {
             text_backend: None,
             text_work: nana_text::TextWorkCounters::default(),
             text_frame_work: nana_text::TextWorkCounters::default(),
+            pending_edit_work: nana_text::TextWorkCounters::default(),
             text_shown: Vec::new(),
             confirm_modals: 0,
             clip_visuals: 0,
@@ -744,7 +749,8 @@ impl UiWorld {
         self.text_work
     }
 
-    fn record_text_work(&mut self, work: nana_text::TextWorkCounters) {
+    fn record_text_work(&mut self, mut work: nana_text::TextWorkCounters) {
+        work.accumulate(std::mem::take(&mut self.pending_edit_work));
         if self.accumulating_frame {
             // Published as the frame goes, so an idle frame (no text pass)
             // leaves the last frame that had one in place, as
