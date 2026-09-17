@@ -239,6 +239,27 @@ pub fn slot_key_to_dispatch(
     SlotKeyDispatch::Keyboard(key_to_input_event(down, key, mods.to_input(), repeat))
 }
 
+/// Should the host swallow this key for the InputConnection rather than push it
+/// into the slot?
+///
+/// Printable text arrives a second time through GameTextInput, so swallowing
+/// avoids a duplicate Commit — but swallowing bypasses [`SlotInputGate`], and
+/// Runtime focus outlives the slot's claim on the keyboard: a tap outside the
+/// slot leaves the field focused while the keyboard goes back to the rest of
+/// the Activity. Both have to hold.
+pub fn host_swallows_for_input_connection(
+    down: bool,
+    accepts_key: bool,
+    text_input_focused: bool,
+    key: Option<SlotLogicalKey>,
+    mods: SlotKeyMods,
+) -> bool {
+    down && accepts_key
+        && text_input_focused
+        && !mods.is_shortcut()
+        && key.is_some_and(|key| key.committed_text().is_some())
+}
+
 /// Map one key sample to a platform keyboard event.
 pub fn key_to_input_event(
     down: bool,
@@ -410,6 +431,41 @@ mod tests {
             width: 200,
             height: 48,
         }
+    }
+
+    #[test]
+    fn the_input_connection_swallow_needs_the_keyboard_gate_too() {
+        let printable = Some(SlotLogicalKey::Character('a'));
+        let mods = SlotKeyMods::default();
+        assert!(host_swallows_for_input_connection(
+            true, true, true, printable, mods
+        ));
+        // Runtime focus survives a tap outside the slot; the gate does not, and
+        // a swallowed key would then be lost to the whole Activity.
+        assert!(!host_swallows_for_input_connection(
+            true, false, true, printable, mods
+        ));
+        // Non-printable keys and shortcuts never belong to the InputConnection.
+        assert!(!host_swallows_for_input_connection(
+            true,
+            true,
+            true,
+            Some(SlotLogicalKey::Tab),
+            mods
+        ));
+        assert!(!host_swallows_for_input_connection(
+            true,
+            true,
+            true,
+            printable,
+            SlotKeyMods {
+                ctrl: true,
+                ..SlotKeyMods::default()
+            }
+        ));
+        assert!(!host_swallows_for_input_connection(
+            false, true, true, printable, mods
+        ));
     }
 
     #[test]

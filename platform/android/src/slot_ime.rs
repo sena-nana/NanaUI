@@ -75,10 +75,10 @@ pub fn ime_events_from_buffer_delta(
         if previous.compose.is_some() {
             let prev_committed = without_compose(&previous);
             if prev_committed.text != next_committed.text {
-                events.push(ImeEvent::Commit(composition_commit(
-                    &previous,
-                    &next_committed,
-                )));
+                match composition_replacement(&previous, &next_committed) {
+                    Some(committed) => events.push(ImeEvent::Commit(committed)),
+                    None => events.extend(committed_edit_events(&prev_committed, &next_committed)),
+                }
             }
         } else if previous.text != next_committed.text {
             events.extend(committed_edit_events(&previous, &next_committed));
@@ -103,8 +103,14 @@ pub fn ime_events_from_buffer_delta(
     }
 
     if previous.compose.is_some() {
-        let committed = composition_commit(&previous, &next);
-        return vec![ImeEvent::Commit(committed)];
+        return match composition_replacement(&previous, &next) {
+            Some(committed) => vec![ImeEvent::Commit(committed)],
+            // Nothing in `next` lines up with the text that surrounded the
+            // composition, so nothing identifies what replaced it. Committing
+            // the old preedit here would put back text the IME just abandoned;
+            // diff from the composition already removed instead.
+            None => committed_edit_events(&without_compose(&previous), &next),
+        };
     }
 
     committed_edit_events(&previous, &next)
@@ -137,17 +143,18 @@ impl SlotImeBuffer {
     }
 }
 
-fn composition_commit(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> String {
-    let (start, end) = previous.compose.unwrap_or((0, 0));
+/// What replaced `previous`'s composing span, read off the text that surrounded
+/// it. `None` when that surrounding text moved as well and the span can no
+/// longer be located.
+fn composition_replacement(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> Option<String> {
+    let (start, end) = previous.compose?;
     let before = &previous.text[..start];
     let after = &previous.text[end..];
-    if next.text.starts_with(before) && next.text.ends_with(after) {
-        let mid_end = next.text.len().saturating_sub(after.len());
-        if mid_end >= before.len() {
-            return next.text[before.len()..mid_end].to_string();
-        }
+    if !next.text.starts_with(before) || !next.text.ends_with(after) {
+        return None;
     }
-    previous.compose_text().unwrap_or_default()
+    let mid_end = next.text.len().saturating_sub(after.len());
+    (mid_end >= before.len()).then(|| next.text[before.len()..mid_end].to_string())
 }
 
 fn without_compose(buffer: &SlotImeBuffer) -> SlotImeBuffer {
@@ -284,6 +291,28 @@ mod tests {
             TYPE_CLASS_TEXT | TYPE_TEXT_FLAG_MULTI_LINE | TYPE_TEXT_FLAG_IME_MULTI_LINE
         );
         assert_eq!(multiline.action, IME_ACTION_NONE);
+    }
+
+    /// An IME that abandons a composition while also editing the text around
+    /// it leaves nothing that locates the old span. Committing the preedit
+    /// anyway would put back the very characters the user just discarded.
+    #[test]
+    fn an_abandoned_composition_is_not_committed_back() {
+        let prev = buffer("ab\u{4e16}", 5, Some((2, 5)));
+        let next = buffer("b", 1, None);
+        let events = ime_events_from_buffer_delta(&prev, &next);
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                ImeEvent::Commit(text) if text.contains('\u{4e16}')
+            )),
+            "the discarded preedit must not come back: {events:?}"
+        );
+        assert_eq!(
+            events,
+            committed_edit_events(&buffer("ab", 2, None), &next),
+            "the edit must be read off the committed text instead"
+        );
     }
 
     #[test]

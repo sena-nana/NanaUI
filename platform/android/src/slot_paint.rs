@@ -109,6 +109,10 @@ impl SlotPainter {
     /// Whether the Runtime keyboard focus sits on the slot's text input.
     ///
     /// The Android activity loop mirrors this into the soft keyboard.
+    pub fn accepts_key(&self) -> bool {
+        self.runtime.accepts_key()
+    }
+
     pub fn text_input_focused(&self) -> bool {
         self.runtime.text_input_focused()
     }

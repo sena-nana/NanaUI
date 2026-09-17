@@ -155,6 +155,12 @@ impl SlotRuntime {
     /// The Android host mirrors this into `show_soft_input` / `hide_soft_input`
     /// so tapping the field raises the soft keyboard and moving focus away
     /// lowers it.
+    /// Whether keyboard samples reach Runtime at all — the slot only owns the
+    /// keyboard while the last Down landed inside it.
+    pub fn accepts_key(&self) -> bool {
+        self.gate.accept_key()
+    }
+
     pub fn text_input_focused(&self) -> bool {
         self.document
             .context()
@@ -248,6 +254,13 @@ impl SlotRuntime {
             return Ok(true);
         };
         let focused = self.text_input_focused();
+        if down && focused && key == SlotLogicalKey::Tab {
+            // Tab hands focus to the next control, and the world drops a
+            // blurred node's IME state: an in-flight composition has to be
+            // committed while the field still holds focus or it is simply
+            // lost. Pointer Downs flush the same way in `push_touch`.
+            self.commit_ime_on_blur()?;
+        }
         match slot_key_to_dispatch(down, key, mods, repeat, focused) {
             SlotKeyDispatch::Keyboard(event) => self.dispatch(&event)?,
             SlotKeyDispatch::Ime(event) => self.dispatch_ime_event(&event)?,
@@ -681,6 +694,60 @@ mod tests {
                 .expect("commit")
         );
         assert_eq!(slot.input_value(), "你好");
+    }
+
+    /// Tab moves focus on, and a blurred node loses its IME state, so the
+    /// composition has to be committed on the way out. Tapping another control
+    /// already does this; the keyboard must not be the path that loses text.
+    #[test]
+    fn tabbing_out_of_a_composing_field_commits_it() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(
+            slot.push_ime(&ImeEvent::Preedit {
+                text: "\u{4e16}".into(),
+                selection: Some((0, "\u{4e16}".len())),
+            })
+            .expect("preedit")
+        );
+        slot.push_key(
+            true,
+            Some(SlotLogicalKey::Tab),
+            SlotKeyMods::default(),
+            false,
+        )
+        .expect("tab");
+        assert!(!slot.text_input_focused(), "Tab must hand focus on");
+        assert_eq!(slot.input_value(), "\u{4e16}");
+    }
+
+    /// The host swallows printable keys for the InputConnection while the field
+    /// is focused. That check has to ask the gate too: Runtime focus survives a
+    /// tap outside the slot, the slot's claim on the keyboard does not.
+    #[test]
+    fn a_tap_outside_the_slot_hands_the_keyboard_back() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        assert!(slot.accepts_key());
+
+        let bounds = control_slot_paint_bounds(slot.physical_size(), slot.scale());
+        let outside = bounds.map(|rect| (rect.x as f32 - 4.0, rect.y as f32 - 4.0));
+        let (x, y) = outside.expect("slot bounds");
+        assert!(
+            !slot
+                .push_touch(bounds, SlotTouchKind::Down, x, y, 1)
+                .expect("down outside")
+        );
+        assert!(
+            slot.text_input_focused(),
+            "Runtime focus is unchanged by a tap the slot never saw"
+        );
+        assert!(
+            !slot.accepts_key(),
+            "but the slot no longer owns the keyboard, so keys must not be swallowed"
+        );
     }
 
     #[test]

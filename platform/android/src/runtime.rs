@@ -16,7 +16,8 @@ use crate::shell::{AndroidShellStub, scale_factor_from_density_dpi};
 use crate::slot_ax::SlotAccessibility;
 use crate::slot_ime::{SlotEditorInfo, SlotImeBuffer, ime_events_from_buffer_delta};
 use crate::slot_input::{
-    SlotKeyMods, SlotTouchKind, android_keycode_is_modifier, logical_key_from_android_keycode,
+    SlotKeyMods, SlotTouchKind, android_keycode_is_modifier, host_swallows_for_input_connection,
+    logical_key_from_android_keycode,
 };
 use crate::slot_paint::SlotPainter;
 
@@ -325,15 +326,13 @@ impl HostState {
         let Some(painter) = self.slot.as_mut() else {
             return false;
         };
-        if down
-            && !mods.is_shortcut()
-            && painter.text_input_focused()
-            && logical
-                .as_ref()
-                .is_some_and(|key| key.committed_text().is_some())
-        {
-            // InputConnection owns printable text; swallowing avoids a second
-            // Commit beside the TextEvent path.
+        if host_swallows_for_input_connection(
+            down,
+            painter.accepts_key(),
+            painter.text_input_focused(),
+            logical,
+            mods,
+        ) {
             return true;
         }
         let repeat = down && repeat_count > 0;
