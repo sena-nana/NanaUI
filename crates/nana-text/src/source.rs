@@ -14,10 +14,14 @@ use std::sync::{Arc, OnceLock};
 /// Line separators a space can stand in for byte-for-byte: each is one byte,
 /// and so is the space that replaces it.
 ///
-/// The others are longer: `U+0085 NEL` is two bytes, `U+2028 LINE SEPARATOR`
-/// and `U+2029 PARAGRAPH SEPARATOR` three. Folding one would move every offset
-/// after it, so they stay line breaks whatever `preserve_lines` says.
-const FOLDED_SEPARATORS: [char; 4] = ['\n', '\r', '\u{b}', '\u{c}'];
+/// Every one-byte member of the two lists that end a line — UBA's
+/// `PARAGRAPH_SEPARATORS` and UAX #14's `FORCED_BREAKS` — appears here, and
+/// nothing else does; `every_one_byte_separator_can_fold` holds the three lists
+/// to that. The rest are longer: `U+0085 NEL` is two bytes, `U+2028 LINE
+/// SEPARATOR` and `U+2029 PARAGRAPH SEPARATOR` three. Folding one would move
+/// every offset after it, so they stay line breaks whatever `preserve_lines`
+/// says.
+const FOLDED_SEPARATORS: [char; 7] = ['\n', '\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{b}', '\u{c}'];
 
 /// An IME composition marker.
 ///
@@ -309,6 +313,32 @@ mod tests {
         source.set_text("bye");
         assert!(source.revision() > after_composition, "set_text must bump");
         assert_eq!(source.text(), "bye");
+    }
+
+    /// The three lists cannot drift: everything that ends a line and fits in
+    /// one byte folds, and nothing else does.
+    #[test]
+    fn every_one_byte_separator_can_fold() {
+        use crate::layout::FORCED_BREAKS;
+        use crate::shaping::PARAGRAPH_SEPARATORS;
+        for separator in PARAGRAPH_SEPARATORS.iter().chain(FORCED_BREAKS.iter()) {
+            assert_eq!(
+                separator.len_utf8() == 1,
+                FOLDED_SEPARATORS.contains(separator),
+                "U+{:04X} is one byte: {}, folds: {}",
+                *separator as u32,
+                separator.len_utf8() == 1,
+                FOLDED_SEPARATORS.contains(separator)
+            );
+        }
+        for folded in FOLDED_SEPARATORS {
+            assert_eq!(folded.len_utf8(), 1, "a fold must not move any offset");
+            assert!(
+                PARAGRAPH_SEPARATORS.contains(&folded) || FORCED_BREAKS.contains(&folded),
+                "U+{:04X} folds although nothing ends a line at it",
+                folded as u32
+            );
+        }
     }
 
     #[test]

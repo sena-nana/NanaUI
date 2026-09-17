@@ -8,6 +8,21 @@
 use super::ShapedParagraph;
 use unicode_bidi::{BidiInfo, Level};
 
+/// The characters UBA ends a paragraph at (bidi class B).
+///
+/// This is the authority for the whole crate: shaping drops them (they produce
+/// no glyph), layout ends a line at each one, and `preserve_lines: false` folds
+/// the one-byte ones to a space. A list that disagrees with what
+/// `unicode-bidi` actually splits on would leave a separator inside a line,
+/// drawn as `.notdef` — `the_separator_list_is_what_unicode_bidi_splits_on`
+/// pins it against the real data.
+///
+/// `\r\n` is this list's only multi-character case, and it is a pair of
+/// members rather than a seventh entry.
+pub const PARAGRAPH_SEPARATORS: [char; 7] = [
+    '\n', '\r', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}', '\u{2029}',
+];
+
 /// Resolved levels for a whole text.
 pub struct Levels {
     /// One level per byte of the text.
@@ -74,6 +89,23 @@ mod tests {
         assert_eq!(levels.paragraphs.len(), 2);
         assert_eq!(levels.paragraphs[0].range, 0..4);
         assert_eq!(levels.paragraphs[1].range, 4..7);
+    }
+
+    /// Every character `unicode-bidi` starts a new paragraph at is in
+    /// [`PARAGRAPH_SEPARATORS`], and every member really does start one.
+    #[test]
+    fn the_separator_list_is_what_unicode_bidi_splits_on() {
+        for candidate in ('\u{0}'..='\u{2100}').chain(['\u{2028}', '\u{2029}']) {
+            let text = format!("a{candidate}b");
+            let splits = resolve(&text, false).paragraphs.len() > 1;
+            assert_eq!(
+                splits,
+                PARAGRAPH_SEPARATORS.contains(&candidate),
+                "U+{:04X} splits paragraphs: {splits}, listed: {}",
+                candidate as u32,
+                PARAGRAPH_SEPARATORS.contains(&candidate)
+            );
+        }
     }
 
     #[test]

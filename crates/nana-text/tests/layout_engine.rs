@@ -971,6 +971,178 @@ fn a_separator_too_long_to_fold_stays_a_line_break() {
     assert_eq!(folded.lines.len(), 1, "a one-byte separator does fold");
 }
 
+/// The rightmost edge any glyph of the line actually reaches.
+fn drawn_right_edge(layout: &TextLayout, line: &nana_text::LineBox) -> f32 {
+    layout
+        .line_runs(line)
+        .iter()
+        .map(|run| run.origin_x_px + run.advance_px)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+#[test]
+fn leading_whitespace_does_not_open_a_paragraph_with_a_blank_line() {
+    // There is a break opportunity after the leading run of spaces. Taking it
+    // would put nothing on the first line and leave the whitespace with nowhere
+    // to go.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "  ab cd";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &wrapped(20.0),
+    );
+    for line in &layout.lines {
+        assert!(
+            !layout.line_runs(line).is_empty(),
+            "line {} draws nothing: {:?}",
+            line.index,
+            line_texts(&layout, text)
+        );
+    }
+    assert_every_character_is_on_a_line(&layout, text);
+
+    // The same text truncated to one line must keep what fits rather than
+    // ellipsizing a line that was never there. The container is measured, not
+    // guessed: room for `"  ab"` and the ellipsis, and less than the whole
+    // string needs.
+    let mut width_of = |text: &str| {
+        lay_out(
+            &mut engine,
+            TextKind::Label,
+            text,
+            &style,
+            &TextConstraints::default(),
+        )
+        .lines[0]
+            .metrics
+            .width_px
+    };
+    let whole = width_of(text);
+    let container = width_of("  ab") + width_of("…") + 1.0;
+    assert!(container < whole, "the text still has to wrap");
+
+    let truncated = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &TextConstraints {
+            max_lines: Some(1),
+            ellipsis: true,
+            ..wrapped(container)
+        },
+    );
+    assert_eq!(
+        truncated.lines[0].source,
+        0..4,
+        "the first line kept `  ab` and the ellipsis followed it"
+    );
+    assert!(
+        truncated.glyph_count() > 1,
+        "the whole string vanished behind the ellipsis"
+    );
+}
+
+#[test]
+fn an_ellipsis_stays_inside_the_box_when_the_line_ends_in_whitespace() {
+    // The cut line ends in whitespace that hangs, so the ellipsis has to start
+    // where the last drawn cluster ended. Placing it after the hung glyphs
+    // draws it past the width the line reports — outside the container, with
+    // nothing saying so.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let container = 200.0;
+    for align in [
+        TextAlignSpec::Start,
+        TextAlignSpec::Center,
+        TextAlignSpec::End,
+    ] {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Paragraph,
+            "ab   \ncd",
+            &style,
+            &TextConstraints {
+                max_width_px: Some(container),
+                max_lines: Some(1),
+                ellipsis: true,
+                preserve_lines: true,
+                align,
+                ..TextConstraints::default()
+            },
+        );
+        let line = &layout.lines[0];
+        let drawn = drawn_right_edge(&layout, line);
+        assert!(
+            drawn <= line.bounds.right() + 0.01,
+            "{align:?}: glyphs reach {drawn} but the line box ends at {}",
+            line.bounds.right()
+        );
+        assert!(
+            drawn <= container + 0.01,
+            "{align:?}: glyphs reach {drawn}, outside the {container} px container"
+        );
+    }
+}
+
+#[test]
+fn a_record_separator_ends_a_line_and_is_never_drawn() {
+    // UBA ends a paragraph at U+001C–U+001E although UAX #14 does not break
+    // there. Layout follows the paragraph structure, so shaping has to drop
+    // them too — otherwise the separator draws a .notdef box on the line it
+    // just ended.
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let plain = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "abcd",
+        &style,
+        &TextConstraints::default(),
+    );
+    for separator in ['\u{1c}', '\u{1d}', '\u{1e}'] {
+        let text = format!("ab{separator}cd");
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Paragraph,
+            &text,
+            &style,
+            &TextConstraints {
+                preserve_lines: true,
+                ..TextConstraints::default()
+            },
+        );
+        assert_eq!(
+            layout.lines.len(),
+            2,
+            "U+{:04X} ends a line",
+            separator as u32
+        );
+        assert_eq!(layout.lines[0].source, 0..2, "and is not part of it");
+        assert_eq!(
+            layout.glyph_count(),
+            plain.glyph_count(),
+            "U+{:04X} drew a glyph of its own",
+            separator as u32
+        );
+
+        // Folded, it is one byte and becomes a space like `\n` does.
+        let folded = lay_out(
+            &mut engine,
+            TextKind::Paragraph,
+            &text,
+            &style,
+            &TextConstraints::default(),
+        );
+        assert_eq!(folded.lines.len(), 1);
+        assert_eq!(folded.glyph_count(), plain.glyph_count() + 1);
+    }
+}
+
 #[test]
 fn han_wraps_between_ideographs_with_no_space_to_break_at() {
     let mut engine = text_engine(UI);

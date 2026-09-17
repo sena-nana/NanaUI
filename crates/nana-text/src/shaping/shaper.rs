@@ -4,7 +4,7 @@ use super::bidi;
 use super::cache::{ShapeCache, ShapeCacheBudget};
 use super::key::{FontEpoch, ShapeKey};
 use super::opentype::{FaceShapers, RawGlyph, ShapeInput};
-use super::{ShapeCounters, ShapeRequest, ShapedText};
+use super::{PARAGRAPH_SEPARATORS, ShapeCounters, ShapeRequest, ShapedText};
 use crate::font::unicode;
 use crate::font::{
     FontFeatures, FontInstance, FontQuery, FontSelection, FontSystem, FontVariations, LanguageTag,
@@ -65,8 +65,18 @@ struct Piece {
     shaped: Option<(Vec<RawGlyph>, Option<FontInstance>)>,
 }
 
+/// Separators produce no glyph, so runs may have gaps where one sat.
+///
+/// The list is [`PARAGRAPH_SEPARATORS`], because what shaping drops has to be
+/// exactly what the BiDi pass ended a paragraph at: anything it kept would be
+/// drawn as `.notdef` inside a line that already broke there.
 fn is_paragraph_separator(cluster: &str) -> bool {
-    matches!(cluster, "\n" | "\r\n" | "\r" | "\u{2029}" | "\u{85}")
+    cluster == "\r\n"
+        || (cluster.chars().count() == 1
+            && cluster
+                .chars()
+                .next()
+                .is_some_and(|character| PARAGRAPH_SEPARATORS.contains(&character)))
 }
 
 impl Shaper {

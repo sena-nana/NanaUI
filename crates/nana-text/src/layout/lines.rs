@@ -10,7 +10,7 @@ use super::ir::{LineBox, LineBreakCause, OverflowFlags, TextRect};
 use crate::constraints::TextConstraints;
 use crate::metrics::{LineMetrics, RunMetrics};
 use crate::shape::{RunDirection, ShapedRun};
-use crate::shaping::{ShapedParagraph, ShapedText, bidi_visual_order};
+use crate::shaping::{PARAGRAPH_SEPARATORS, ShapedParagraph, ShapedText, bidi_visual_order};
 use nana_ui_core::{DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec};
 use std::ops::Range;
 
@@ -388,7 +388,16 @@ impl<'a> Builder<'a> {
         let mut probe = next_stop;
         loop {
             let stop = stops.get(probe).copied().unwrap_or(hi);
-            let width = self.width(start, self.trim(start, stop));
+            let drawn = self.trim(start, stop);
+            // A break that leaves nothing drawn is not a break. Whitespace at
+            // the start of a segment has a break opportunity after it, and
+            // taking it would open the paragraph with a blank line and hand the
+            // whitespace nowhere to go.
+            if drawn == start && stop != hi {
+                probe += 1;
+                continue;
+            }
+            let width = self.width(start, drawn);
             if width <= max_width + WIDTH_EPSILON_PX {
                 if stop == hi {
                     return (hi, false);
@@ -417,6 +426,11 @@ impl<'a> Builder<'a> {
     fn emergency(&self, start: usize, limit: usize, max_width: f32) -> usize {
         let mut end = start + 1;
         while end < limit && self.width(start, end + 1) <= max_width + WIDTH_EPSILON_PX {
+            end += 1;
+        }
+        // Whitespace alone is not a line either, however narrow the box: cut
+        // past it so this line draws something.
+        while end < limit && self.trim(start, end) == start {
             end += 1;
         }
         end
@@ -520,14 +534,19 @@ impl<'a> Builder<'a> {
     /// The cut is between cells, so it can never fall inside a grapheme
     /// cluster, a ligature or a UTF-8 sequence.
     fn fit_with_ellipsis(&self, cells: Range<usize>, ellipsis_px: f32) -> usize {
+        // Always a trimmed end: the ellipsis takes the place of the text it
+        // replaced, so it starts where that text's last drawn cluster ended.
+        // Placing it after the hung whitespace instead would draw it beyond the
+        // width the line reports, outside the box, with nothing saying so.
+        let mut end = self.trim(cells.start, cells.end);
         let Some(max_width) = self.max_width_px else {
-            return cells.end;
+            return end;
         };
-        let mut end = cells.end;
-        while end > cells.start
-            && self.width(cells.start, end) + ellipsis_px > max_width + WIDTH_EPSILON_PX
-        {
-            end -= 1;
+        while end > cells.start {
+            if self.width(cells.start, end) + ellipsis_px <= max_width + WIDTH_EPSILON_PX {
+                return end;
+            }
+            end = self.trim(cells.start, end - 1);
         }
         end
     }
@@ -933,14 +952,16 @@ fn cells(text: &str, runs: &[ShapedRun]) -> Vec<Cell> {
 /// it produces no glyph, and asking UAX #14 about it would only rediscover the
 /// break the paragraph structure already carries.
 fn content_range(text: &str, range: &Range<usize>) -> Range<usize> {
-    let mut end = range.end;
-    for separator in ["\r\n", "\n", "\r", "\u{2029}", "\u{85}"] {
-        if text[range.start..end].ends_with(separator) {
-            end -= separator.len();
-            break;
-        }
+    let body = &text[range.clone()];
+    if body.ends_with("\r\n") {
+        return range.start..range.end - "\r\n".len();
     }
-    range.start..end
+    match body.chars().next_back() {
+        Some(last) if PARAGRAPH_SEPARATORS.contains(&last) => {
+            range.start..range.end - last.len_utf8()
+        }
+        _ => range.clone(),
+    }
 }
 
 #[cfg(test)]

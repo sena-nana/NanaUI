@@ -498,10 +498,18 @@ fast path 只做一件事：把自己的 run 累出 advance、算一次行盒、
 断行机会来自 UAX #14（`unicode-linebreak`），**是否**在某个机会处断由 shaped advance 决定，
 从不按码位数估算。
 
-硬换行有两个来源，合起来正好是 UAX #14 的全部 mandatory break：段落分隔符（`\n` / `\r` /
-`\r\n` / U+0085 / U+2029）由 shaping 的段落结构给出，不重新问 UAX #14；VT、FF 与
-U+2028 LINE SEPARATOR 段落结构不管，由 layout 在段内切开（`breaks::FORCED_BREAKS`，
-`has_forced_break` 是一次普通字符扫描，不是 UAX #14 pass，且只在**建** layout 时问一次）。
+硬换行有两个来源：**段落分隔符**（UBA class B，即 `shaping::PARAGRAPH_SEPARATORS`：`\n`、`\r`、
+`\r\n`、U+001C–U+001E、U+0085、U+2029）由 shaping 的段落结构给出，不重新问 UAX #14；
+**forced break**（`breaks::FORCED_BREAKS`：VT、FF、U+2028 LINE SEPARATOR）段落结构不管，
+由 layout 在段内切开（`has_forced_break` 是一次普通字符扫描，不是 UAX #14 pass，且只在**建**
+layout 时问一次）。
+
+两张表各有一条对账测试，因为**三处**必须同时同意一个字符是分隔符：shaping 丢掉它（不出 glyph）、
+layout 在那里断行、`preserve_lines: false` 把单字节的那些折成空格。任一处漏掉，分隔符就会以
+`.notdef` 方块的形式画在它刚刚结束的那一行上。`PARAGRAPH_SEPARATORS` 对着 `unicode-bidi`
+实际的分段逐码位校对，`FORCED_BREAKS` 对着 `unicode-linebreak` 的 mandatory break 校对，
+`FOLDED_SEPARATORS` 则断言自己恰好是这两张表里所有单字节成员。两个标准对 U+001C–U+001E 的看法
+不同（UBA 分段、UAX #14 不断），按更严格的 UBA 读法处理。
 分隔符本身落在两段之间，没有行覆盖它，因此不绘制——与 `\n` 待遇相同。这份列表由
 `forced_breaks_agree_with_uax14` 对着 `unicode-linebreak` 自己的数据逐码位校对，Unicode
 改版新增一个也漏不掉。带 forced break 的 Label 与带 `\n` 的一样降级到 paragraph path。
@@ -521,6 +529,8 @@ U+2028 LINE SEPARATOR 段落结构不管，由 layout 在段内切开（`breaks:
 - 悬挂在软换行处的空白字节不属于任何行的 `source`，但仍是合法的 caret 位置：
   `caret_geometry` 把它们解析到所挂那一行的行尾（或下一行的行首，取决于 caret 报的是哪一行）。
 - 容器窄到一个字素都放不下时，仍然放一个字素——否则会产生空行与死循环。
+- **软换行不会产生空行**：段首空白后面有一个断行机会，在那里断会让首行什么都不画、空白也无处可去，
+  因此这种机会直接跳过（emergency 切分同理）。空行只来自空段。
 - **段（segment）是断行的单位**：每个 BiDi 段落按 forced break 再切一刀，段与段之间的分隔符
   不属于任何段，因此不绘制。两种段只为 caret 存在：空文本没有 BiDi 段落、以段落分隔符结尾的
   文本后面没有段落——两者都补一个空段，所以空输入框有行盒，行尾按 Enter 后 caret 也不会消失。
@@ -586,6 +596,8 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 - 省略号走**正常** shaping / fallback / cache：接缝把 `…` 当作普通 `TextSource` 交给 shaper，
   同一样式下 10k 个截断标签只塑形一次（测试断言 `shape_cache_misses == 2`：正文一次，省略号一次）。
 - 裁切单位是 shaper 的 cluster，所以不会切开 UTF-8、字素簇或连字；ZWJ 序列要么整段留下要么整段裁掉。
+- 裁切点总是**去掉行尾空白之后**的位置：省略号顶替它替换掉的文字，就从那段文字最后一个可见簇之后开始。
+  放在悬挂空白之后画，会画到行宽之外、容器之外，而且没有任何东西说得出来。
 - 省略号 run 的 `source` 是裁切点上的**空区间**，glyph 的 cluster 也是——它不占源文本的任何字节，
   caret、命中测试与选区因此永远不会落到它身上。
 - **换行开着时，超宽的行不裁**。换行的段落只会因为一个断不开的长词而超宽，而那个词整个都在这一行上：
@@ -704,7 +716,8 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 ### 测试
 
-`tests/layout_engine.rs`：十六条来自 code review 的回归（span 边界落在字素簇中间时行盒按 span 的
+`tests/layout_engine.rs`：十九条来自 code review 的回归（段首空白不产生空行、
+省略号不画到容器外、U+001C–U+001E 结束一行且不绘制、span 边界落在字素簇中间时行盒按 span 的
 行高算、结尾换行的 Label 也降级、超宽的行按对齐往起始边外溢、换行时超宽的行不因省略号丢字节、
 行尾空白悬挂不算溢出也不影响对齐、空文本两条路径都出一行、行尾换行留下 caret 可落的空行、
 被截断的空行保留自己的字节、同一行被裁两次只记一个省略号 run、U+2028 结束一行且不绘制、

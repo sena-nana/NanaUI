@@ -22,6 +22,7 @@ mod key;
 mod opentype;
 mod shaper;
 
+pub(crate) use bidi::PARAGRAPH_SEPARATORS;
 /// Rule L2 over a sequence of embedding levels. Layout reorders a line's runs
 /// with it after applying rule L1 to the line's trailing whitespace.
 pub(crate) use bidi::visual_order as bidi_visual_order;
