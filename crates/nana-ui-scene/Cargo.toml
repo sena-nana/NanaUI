@@ -15,11 +15,13 @@ image-viewer = ["nana-ui-runtime/image-viewer"]
 rich-text = ["nana-ui-runtime/rich-text"]
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
-benchmark = ["dep:serde", "dep:serde_json", "nana-ui-runtime/benchmark"]
+benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundled-font-regular", "nana-ui-runtime/benchmark"]
 
 [dependencies]
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
+# Benchmark only: `nana-dirty-frame-benchmark --engine nana-text`.
+nana-text = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

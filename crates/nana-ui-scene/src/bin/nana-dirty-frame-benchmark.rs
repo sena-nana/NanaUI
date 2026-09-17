@@ -24,6 +24,11 @@
 //!   proves nothing. Resizing the LAST rows shifts nothing, so any cost that
 //!   still grows with the document is over-invalidation.
 //!
+//! - `--engine measure|nana-text`. `measure` (the default) is the em-width
+//!   test shaper the #33 numbers were recorded with. `nana-text` resolves the
+//!   labels through a real `nana-text` engine holding the bundled UI face, so
+//!   every label retains a laid-out `TextLayout` (Issue #95).
+//!
 //! `last_frame_profile` / `last_work_counters` retain the last NON-IDLE frame,
 //! so reading them after an idle flush silently returns the mount frame. Every
 //! sample here asserts the frame did work.
@@ -32,10 +37,12 @@ use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use nana_text::TextWorkCounters;
 use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole};
 use nana_ui_runtime::{
-    AppContext, DocumentId, FrameStage, LayoutViewport, MeasureTextShaper, MutationQueue, NodeKind,
-    NodeStyle, StableNodeId, StageStatus, TextContent, WorkCounters, text_shape_stats,
+    AppContext, DocumentId, FrameStage, LayoutViewport, MeasureTextShaper, MutationQueue,
+    NanaTextEngineShaper, NodeKind, NodeStyle, StableNodeId, StageStatus, TextContent, TextShaper,
+    WorkCounters, text_shape_stats,
 };
 use nana_ui_scene::RuntimeDocument;
 use serde::Serialize;
@@ -54,6 +61,7 @@ struct Report {
 
 #[derive(Serialize)]
 struct Cell {
+    engine: &'static str,
     shape: &'static str,
     position: &'static str,
     rows: usize,
@@ -71,6 +79,26 @@ struct Cell {
     projected: Projected,
     layout_substages_ms: LayoutSubstages,
     text_shape: TextShapePass,
+    text_work: TextWork,
+}
+
+/// Issue #95 text work per frame (mean over samples, fractional so work done
+/// on some samples only is not rounded away): how many candidates the
+/// text passes looked at, how many were decided on revision alone, and what
+/// the rest cost. With `text_nodes_shaped == 0` these explain what TextShape
+/// still spends.
+#[derive(Serialize)]
+struct TextWork {
+    text_nodes_considered: f64,
+    text_nodes_revision_skipped: f64,
+    text_nodes_shaped: f64,
+    text_source_clones: f64,
+    text_bytes_hashed: f64,
+    shape_cache_lookup: f64,
+    layout_cache_lookup: f64,
+    layouts_created: f64,
+    constraint_only_relayouts: f64,
+    text_layouts_reused: f64,
 }
 
 #[derive(Serialize)]
@@ -143,6 +171,8 @@ impl From<WorkCounters> for Counters {
 }
 
 /// Attribution inside the single `FrameStage::TextShape` number. Not `WorkCounters`.
+/// Instruments the host-shaper path only; under `--engine nana-text` engine
+/// copies, hashing and lookups are reported in `text_work` instead.
 #[derive(Serialize)]
 struct TextShapePass {
     scope_nodes: usize,
@@ -400,7 +430,84 @@ fn status_name(status: StageStatus) -> &'static str {
     }
 }
 
+/// Which text backend the frames resolve labels through.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Engine {
+    Measure,
+    NanaText,
+}
+
+impl Engine {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "measure" => Some(Self::Measure),
+            "nana-text" => Some(Self::NanaText),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Measure => "measure",
+            Self::NanaText => "nana-text",
+        }
+    }
+}
+
+/// An engine holding only the bundled UI face, as the generic `sans-serif`.
+fn nana_text_shaper() -> NanaTextEngineShaper {
+    use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
+    let mut policy = FallbackPolicy::empty();
+    policy.set_generic(GenericFamily::SansSerif, ["Noto Sans SC"]);
+    let mut fonts = FontSystem::with_policy(policy);
+    fonts
+        .register_bytes(
+            font_blob(nana_ui_core::fonts::UI_FONT_REGULAR),
+            &FaceDescriptor::default(),
+        )
+        .expect("the bundled UI face registers");
+    NanaTextEngineShaper::new(Arc::new(std::sync::Mutex::new(
+        nana_text::NativeTextEngine::new(fonts),
+    )))
+}
+
 fn measure(
+    engine: Engine,
+    shape: Shape,
+    position: Position,
+    rows: usize,
+    dirty_rows: usize,
+    samples: usize,
+    warmup: usize,
+) -> Cell {
+    match engine {
+        Engine::Measure => measure_with(
+            engine,
+            &mut MeasureTextShaper,
+            shape,
+            position,
+            rows,
+            dirty_rows,
+            samples,
+            warmup,
+        ),
+        Engine::NanaText => measure_with(
+            engine,
+            &mut nana_text_shaper(),
+            shape,
+            position,
+            rows,
+            dirty_rows,
+            samples,
+            warmup,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure_with(
+    engine: Engine,
+    shaper: &mut impl TextShaper,
     shape: Shape,
     position: Position,
     rows: usize,
@@ -410,13 +517,12 @@ fn measure(
 ) -> Cell {
     let mut runtime = build(shape, rows);
     let viewport = LayoutViewport::new(300.0, 800.0);
-    let mut shaper = MeasureTextShaper;
     // Mount. This is the one full frame; everything after it is incremental.
-    let mount = runtime.flush(viewport, &mut shaper).unwrap();
+    let mount = runtime.flush(viewport, shaper).unwrap();
     assert!(!mount.is_idle(), "mount frame must do work");
     // Settle any follow-up passes so the measured frames start from idle.
     for _ in 0..4 {
-        runtime.flush(viewport, &mut shaper).unwrap();
+        runtime.flush(viewport, shaper).unwrap();
     }
 
     // WHERE the dirty rows sit decides how much reflow is genuinely owed.
@@ -440,6 +546,7 @@ fn measure(
     let mut counters = WorkCounters::default();
     let mut substage_totals = [Duration::ZERO; 4];
     let mut text_shape_totals = text_shape_stats::TextShapePassStats::default();
+    let mut text_work_totals = TextWorkCounters::default();
     let mut projected = Projected {
         accessibility_updated: 0,
         accessibility_removed: 0,
@@ -454,7 +561,7 @@ fn measure(
         let _ = runtime.context_mut().take_layout_substage_totals();
         text_shape_stats::reset();
         let started = Instant::now();
-        let update = runtime.flush(viewport, &mut shaper).unwrap();
+        let update = runtime.flush(viewport, shaper).unwrap();
         let elapsed = started.elapsed();
         // The profile/counter accessors retain the last NON-IDLE frame, so a
         // sample that did no work would silently report the mount frame.
@@ -469,6 +576,7 @@ fn measure(
         for (total, elapsed) in substage_totals.iter_mut().zip(substages) {
             *total += elapsed;
         }
+        text_work_totals.accumulate(runtime.context().world().last_text_work_counters());
         let text_shape = text_shape_stats::snapshot();
         text_shape_totals.scope_nodes = text_shape_totals
             .scope_nodes
@@ -536,6 +644,7 @@ fn measure(
         .collect();
 
     Cell {
+        engine: engine.name(),
         shape: shape.name(),
         position: position.name(),
         rows,
@@ -564,6 +673,29 @@ fn measure(
             lookup_ms: ns_mean_ms(text_shape_totals.lookup_ns, samples),
             inner_shape_ms: ns_mean_ms(text_shape_totals.inner_shape_ns, samples),
         },
+        text_work: TextWork {
+            text_nodes_considered: mean(text_work_totals.text_nodes_considered, samples),
+            text_nodes_revision_skipped: mean(
+                text_work_totals.text_nodes_revision_skipped,
+                samples,
+            ),
+            text_nodes_shaped: mean(text_work_totals.text_nodes_shaped, samples),
+            text_source_clones: mean(text_work_totals.text_source_clones, samples),
+            text_bytes_hashed: mean(text_work_totals.text_bytes_hashed, samples),
+            shape_cache_lookup: mean(text_work_totals.shape_cache_lookups, samples),
+            layout_cache_lookup: mean(text_work_totals.layout_cache_lookups, samples),
+            layouts_created: mean(text_work_totals.layouts_created, samples),
+            constraint_only_relayouts: mean(text_work_totals.constraint_only_relayouts, samples),
+            text_layouts_reused: mean(text_work_totals.text_layouts_reused, samples),
+        },
+    }
+}
+
+fn mean(total: usize, samples: usize) -> f64 {
+    if samples == 0 {
+        0.0
+    } else {
+        total as f64 / samples as f64
     }
 }
 
@@ -626,6 +758,18 @@ fn main() {
             |shape| vec![shape],
         );
 
+    let engine = match args
+        .iter()
+        .position(|arg| arg == "--engine")
+        .and_then(|index| args.get(index + 1))
+    {
+        None => Engine::Measure,
+        Some(raw) => Engine::parse(raw).unwrap_or_else(|| {
+            eprintln!("--engine must be `measure` or `nana-text`, not `{raw}`");
+            std::process::exit(2)
+        }),
+    };
+
     let row_counts =
         value("--rows").map_or_else(|| DIRTY_FRAME_ROW_GRID.to_vec(), |rows| vec![rows]);
     let dirty_counts =
@@ -639,7 +783,7 @@ fn main() {
                     if dirty_rows > rows {
                         continue;
                     }
-                    let cell = measure(shape, position, rows, dirty_rows, samples, warmup);
+                    let cell = measure(engine, shape, position, rows, dirty_rows, samples, warmup);
                     eprintln!(
                         "{:<7} {:<6} rows={:<5} nodes={:<5} dirty={:<4} flush p50={:.4} ms  style={} layout={} hit={} a11y={} render={}",
                         cell.shape,
@@ -688,6 +832,19 @@ fn main() {
                         cell.text_shape.key_builds,
                         cell.text_shape.cache_lookups,
                         cell.text_shape.skipped_unchanged,
+                    );
+                    eprintln!(
+                        "        text work ({}): considered={:.2} revision_skipped={:.2} shaped={:.2} source_clones={:.2} bytes_hashed={:.2} shape_lookups={:.2} layout_lookups={:.2} layouts_created={:.2} reused={:.2}",
+                        cell.engine,
+                        cell.text_work.text_nodes_considered,
+                        cell.text_work.text_nodes_revision_skipped,
+                        cell.text_work.text_nodes_shaped,
+                        cell.text_work.text_source_clones,
+                        cell.text_work.text_bytes_hashed,
+                        cell.text_work.shape_cache_lookup,
+                        cell.text_work.layout_cache_lookup,
+                        cell.text_work.layouts_created,
+                        cell.text_work.text_layouts_reused,
                     );
                     eprintln!(
                         "        text shape substages mean: clone={:.4} key={:.4} lookup={:.4} inner={:.4}",

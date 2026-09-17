@@ -213,6 +213,10 @@ jobs:
           cargo test -p nana-ui-scene --features benchmark --locked \
             --bin nana-dirty-frame-benchmark \
             the_migration_grid_still_spans_two_four_and_eight_thousand_nodes
+          # Issue #95: retained text nodes. Paint / transform / opacity never
+          # reach shaping or layout, a static frame does zero text work, and
+          # every #33 head-dirty candidate is decided on revision alone.
+          cargo test -p nana-ui-scene --locked --test retained_text_node
           python3 scripts/validate-runtime-performance.py --self-test
           python3 perf/contract.py --self-test
           mkdir -p target/performance/issue8/invariants
