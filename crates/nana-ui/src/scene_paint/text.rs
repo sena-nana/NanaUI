@@ -2271,23 +2271,7 @@ mod tests {
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("text affine test requires a WGPU adapter");
-        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("nana-ui text affine test"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        }))
-        .expect("text affine test requires a WGPU device")
+        crate::test_gpu::device("nana-ui text affine test")
     }
 }
 

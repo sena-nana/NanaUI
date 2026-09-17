@@ -1452,7 +1452,6 @@ fn affine_aabb(rect: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalR
 mod tests {
     use std::{collections::HashMap, sync::Arc, thread};
 
-    use pollster::block_on;
     use wgpu;
 
     use super::{
@@ -1875,24 +1874,7 @@ mod tests {
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("GPU texture lifecycle test requires a WGPU adapter");
-        let (device, queue) = block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("NanaUI GPU texture lifecycle test"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
-            memory_hints: wgpu::MemoryHints::MemoryUsage,
-            trace: wgpu::Trace::Off,
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-        }))
-        .expect("GPU texture lifecycle test requires a WGPU device");
-        (device, queue)
+        crate::test_gpu::device("NanaUI GPU texture lifecycle test")
     }
 }
 

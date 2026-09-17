@@ -89,6 +89,9 @@ pub mod widgets;
 pub mod window_chrome;
 pub mod workspace;
 
+#[cfg(all(test, feature = "gpu"))]
+mod test_gpu;
+
 pub mod runtime;
 
 pub use command::{

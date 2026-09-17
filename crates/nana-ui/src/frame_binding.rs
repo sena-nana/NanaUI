@@ -201,17 +201,7 @@ mod tests {
     use nana_frame_exchange::{CopyOutcome, DEFAULT_CAPACITY, FrameExchange};
 
     fn test_device() -> (Arc<wgpu::Device>, Arc<wgpu::Queue>) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::from_env().unwrap_or_default(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-            &instance, None,
-        ))
-        .expect("frame binding test requires a WGPU adapter");
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-                .expect("frame binding test requires a WGPU device");
+        let (device, queue) = crate::test_gpu::device("NanaUI frame binding test");
         (Arc::new(device), Arc::new(queue))
     }
 

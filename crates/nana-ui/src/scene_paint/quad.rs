@@ -1491,23 +1491,7 @@ fn solid_pipeline(
 
 #[cfg(test)]
 fn quad_paint_test_device() -> (wgpu::Device, wgpu::Queue) {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::from_env().unwrap_or_default(),
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    let adapter = pollster::block_on(wgpu::util::initialize_adapter_from_env_or_default(
-        &instance, None,
-    ))
-    .expect("quad paint test requires a WGPU adapter");
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-        label: Some("nana-ui quad paint test"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
-        memory_hints: wgpu::MemoryHints::MemoryUsage,
-        trace: wgpu::Trace::Off,
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
-    }))
-    .expect("quad paint test requires a WGPU device")
+    crate::test_gpu::device("nana-ui quad paint test")
 }
 
 #[cfg(test)]
