@@ -109,39 +109,37 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameBinding<E> {
             return false;
         }
         let inbox = inbox.filter(|inbox| inbox.device_generation() == self.device_generation);
-        if self
+        // A new epoch retires the bound frame and publishes its replacement in
+        // the same breath. The replacement is looked for first: unbinding on
+        // `stale` alone would show the 1x1 placeholder for the frame in
+        // between, which the window presents as a flash of nothing.
+        let stale = self
             .current
             .as_deref()
-            .is_some_and(|frame| !usable(inbox, &accept, frame))
+            .is_some_and(|frame| !usable(inbox, &accept, frame));
+        if let Some(inbox) = inbox
+            && inbox.latest().is_some_and(|frame| accept(&frame.token()))
+            && let Some(frame) = inbox
+                .try_take_latest()
+                .filter(|frame| accept(&frame.token()))
+            && self.token() != Some(frame.token())
         {
+            let (width, height) = frame.size();
+            self.texture.replace_view(frame.view().clone());
+            self.slot
+                .replace(self.texture.clone(), width, height, self.alpha);
+            self.showing_placeholder = false;
+            self.awaiting_present = true;
+            self.retired = self.current.replace(frame);
+            return true;
+        }
+        if stale {
             self.retired = self.current.take();
             self.bind_placeholder();
             self.awaiting_present = true;
             return true;
         }
-        let Some(inbox) = inbox else {
-            return false;
-        };
-        if !inbox.latest().is_some_and(|frame| accept(&frame.token())) {
-            return false;
-        }
-        let Some(frame) = inbox
-            .try_take_latest()
-            .filter(|frame| accept(&frame.token()))
-        else {
-            return false;
-        };
-        if self.token() == Some(frame.token()) {
-            return false;
-        }
-        let (width, height) = frame.size();
-        self.texture.replace_view(frame.view().clone());
-        self.slot
-            .replace(self.texture.clone(), width, height, self.alpha);
-        self.showing_placeholder = false;
-        self.awaiting_present = true;
-        self.retired = self.current.replace(frame);
-        true
+        false
     }
 
     /// Release the frame replaced before this present. Returns whether the
@@ -215,6 +213,72 @@ mod tests {
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .expect("frame binding test requires a WGPU device");
         (Arc::new(device), Arc::new(queue))
+    }
+
+    /// A new epoch retires the bound frame and publishes its replacement at
+    /// once. Unbinding first would put the 1x1 placeholder on screen for the
+    /// frame in between, which the window presents as a flash of nothing.
+    #[test]
+    fn a_new_epoch_swaps_straight_to_its_frame_without_a_placeholder() {
+        let (device, queue) = test_device();
+        let mut exchange = FrameExchange::new(
+            11,
+            Arc::clone(&device),
+            queue,
+            DEFAULT_CAPACITY,
+            0u64,
+            Arc::new(|| {}),
+        );
+        let inbox = exchange.inbox();
+        let source = |width: u32| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("epoch swap source"),
+                size: wgpu::Extent3d {
+                    width,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let publish = |exchange: &mut FrameExchange<u64>, width: u32, epoch: u64| {
+            assert_eq!(
+                exchange.copy_from(&source(width), epoch),
+                CopyOutcome::Submitted
+            );
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            assert!(exchange.poll());
+        };
+        let registry = HostTextureRegistry::new();
+        let size = || {
+            let binding = registry.get("epoch").expect("the slot stays registered");
+            (binding.width, binding.height)
+        };
+        let mut binding = FrameBinding::new(
+            &device,
+            11,
+            registry.slot("epoch"),
+            HostTextureAlphaMode::Premultiplied,
+        );
+        let all = |_: &FrameToken<u64>| true;
+
+        publish(&mut exchange, 4, 0);
+        assert!(binding.prepare(Some(&inbox), all));
+        assert_eq!(size(), (4, 4));
+        assert!(!binding.presented(Some(&inbox), all));
+
+        publish(&mut exchange, 8, 1);
+        assert!(binding.prepare(Some(&inbox), all));
+        assert_eq!(
+            size(),
+            (8, 4),
+            "the new epoch's frame must land without a placeholder in between"
+        );
     }
 
     #[test]

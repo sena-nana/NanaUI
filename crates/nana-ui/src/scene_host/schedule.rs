@@ -102,10 +102,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         {
             self.drain_host_work(event_loop);
         }
-        if self.host_work.take_pending() && !self.shutting_down {
-            self.host_work_deadline
-                .get_or_insert_with(|| Instant::now() + Duration::from_millis(1));
-        }
         #[cfg(target_os = "macos")]
         self.unpin_idle_present_transactions();
         let surface_retry_due = self
@@ -134,6 +130,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.wake(event_loop, now);
         }
         let frame_deadline = self.schedule_presentations(event_loop, now);
+        // Taken here, after everything above has had its chance to enqueue
+        // work: a signal raised on the host thread deliberately skips the
+        // proxy wake-up, so this deadline is the only thing that brings the
+        // loop back for it. Taken before `retry_surfaces` and
+        // `schedule_presentations`, whatever they signalled stayed pending
+        // with nothing scheduled, and waited for an unrelated event.
+        if self.host_work.take_pending() && !self.shutting_down {
+            self.host_work_deadline
+                .get_or_insert_with(|| Instant::now() + Duration::from_millis(1));
+        }
         let next_wakeup = [
             self.next_gpu_retry,
             (!self.render_suspended)

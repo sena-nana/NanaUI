@@ -1804,14 +1804,28 @@ fn geometry_maximized(window: &dyn winit::window::Window) -> bool {
     window.is_maximized()
 }
 
-fn window_screen_origin(window: &dyn winit::window::Window) -> Option<(f32, f32)> {
-    let scale = desktop_scale(
-        window.scale_factor().max(0.01),
-        window_reference_scale(window),
-    );
+/// Where a window sits in desktop-logical space, and what takes a point from
+/// the window's own logical scale into that same space.
+///
+/// The two differ whenever the window is not on the display that defines the
+/// desktop space — the usual mixed-DPI desktop — so a client point cannot be
+/// added to the origin as it stands. `size_ratios` in [`Desktop`] is the same
+/// factor for a display.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScreenSpace {
+    origin: (f32, f32),
+    client_ratio: f32,
+}
+
+fn window_screen_origin(window: &dyn winit::window::Window) -> Option<ScreenSpace> {
+    let own = window.scale_factor().max(0.01);
+    let scale = desktop_scale(own, window_reference_scale(window));
     window.outer_position().ok().map(|position| {
         let origin = position.to_logical::<f32>(scale);
-        (origin.x, origin.y)
+        ScreenSpace {
+            origin: (origin.x, origin.y),
+            client_ratio: (own / scale) as f32,
+        }
     })
 }
 
@@ -1886,8 +1900,13 @@ fn mouse_button_mask(button: i16) -> u16 {
     }
 }
 
-fn screen_position(origin: Option<(f32, f32)>, client: (f32, f32)) -> (f32, f32) {
-    origin.map_or(client, |origin| (origin.0 + client.0, origin.1 + client.1))
+fn screen_position(space: Option<ScreenSpace>, client: (f32, f32)) -> (f32, f32) {
+    space.map_or(client, |space| {
+        (
+            space.origin.0 + client.0 * space.client_ratio,
+            space.origin.1 + client.1 * space.client_ratio,
+        )
+    })
 }
 
 struct MappedPointer {
@@ -2035,7 +2054,7 @@ impl InputTracker {
     }
 
     /// Ends the mouse gesture whose release the platform will not deliver.
-    fn cancel_mouse(&mut self, screen_origin: Option<(f32, f32)>) -> InputEvent {
+    fn cancel_mouse(&mut self, screen_origin: Option<ScreenSpace>) -> InputEvent {
         let buttons = std::mem::take(&mut self.buttons);
         self.pointer_event(
             mapped_pointer(1, PointerType::Mouse, true, None),
@@ -2084,7 +2103,7 @@ impl InputTracker {
         buttons: u16,
         activation_click: bool,
         modifiers: InputModifiers,
-        screen_origin: Option<(f32, f32)>,
+        screen_origin: Option<ScreenSpace>,
         pressure: Option<f32>,
     ) -> InputEvent {
         let screen = screen_position(screen_origin, self.cursor);
@@ -2169,7 +2188,7 @@ impl InputTracker {
         &mut self,
         event: &WinitWindowEvent,
         scale: f32,
-        screen_origin: Option<(f32, f32)>,
+        screen_origin: Option<ScreenSpace>,
     ) -> Option<InputEvent> {
         let modifiers = platform_input_modifiers(self.modifiers);
         match event {
@@ -2499,6 +2518,7 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
 
 #[cfg(test)]
 mod tests {
+    use super::ScreenSpace;
     #[cfg(not(target_os = "macos"))]
     use super::desktop_scale;
     #[cfg(not(target_os = "android"))]
@@ -3074,7 +3094,10 @@ mod tests {
                     source: PointerSource::Mouse,
                 },
                 2.0,
-                Some((100.0, 200.0)),
+                Some(ScreenSpace {
+                    origin: (100.0, 200.0),
+                    client_ratio: 1.0,
+                }),
             )
             .expect("cursor move");
         let InputEvent::Pointer {
@@ -3107,7 +3130,10 @@ mod tests {
                     is_macos_activation_click: false,
                 },
                 2.0,
-                Some((100.0, 200.0)),
+                Some(ScreenSpace {
+                    origin: (100.0, 200.0),
+                    client_ratio: 1.0,
+                }),
             )
             .expect("mouse down");
         let InputEvent::Pointer {
@@ -3134,7 +3160,10 @@ mod tests {
                     is_macos_activation_click: true,
                 },
                 2.0,
-                Some((100.0, 200.0)),
+                Some(ScreenSpace {
+                    origin: (100.0, 200.0),
+                    client_ratio: 1.0,
+                }),
             )
             .expect("activation down");
         let InputEvent::Pointer {
@@ -3154,7 +3183,10 @@ mod tests {
                     kind: PointerKind::Mouse,
                 },
                 2.0,
-                Some((100.0, 200.0)),
+                Some(ScreenSpace {
+                    origin: (100.0, 200.0),
+                    client_ratio: 1.0,
+                }),
             )
             .expect("cursor left");
         let InputEvent::Pointer {
@@ -3180,7 +3212,10 @@ mod tests {
                     kind: PointerKind::Mouse,
                 },
                 2.0,
-                Some((100.0, 200.0)),
+                Some(ScreenSpace {
+                    origin: (100.0, 200.0),
+                    client_ratio: 1.0,
+                }),
             )
             .expect("pointer enter");
         let InputEvent::Pointer {
@@ -3643,9 +3678,35 @@ mod tests {
     fn screen_position_falls_back_to_client_without_origin() {
         assert_eq!(screen_position(None, (3.0, 4.0)), (3.0, 4.0));
         assert_eq!(
-            screen_position(Some((10.0, 20.0)), (3.0, 4.0)),
+            screen_position(
+                Some(ScreenSpace {
+                    origin: (10.0, 20.0),
+                    client_ratio: 1.0,
+                }),
+                (3.0, 4.0)
+            ),
             (13.0, 24.0)
         );
+    }
+
+    /// The origin is desktop-logical while the client point is in the window's
+    /// own logical scale. On a mixed-DPI desktop those are different units, and
+    /// adding them as they stand puts the screen position off by the ratio —
+    /// which is exactly what a context menu or tooltip is placed with.
+    #[test]
+    fn a_client_point_is_converted_before_it_is_added_to_the_origin() {
+        // A 2x window on a 1x desktop: 100 window-logical px span 200 of them.
+        let space = ScreenSpace {
+            origin: (400.0, 50.0),
+            client_ratio: 2.0,
+        };
+        assert_eq!(screen_position(Some(space), (100.0, 25.0)), (600.0, 100.0));
+        // And a 1x window on a 2x desktop the other way round.
+        let space = ScreenSpace {
+            origin: (400.0, 50.0),
+            client_ratio: 0.5,
+        };
+        assert_eq!(screen_position(Some(space), (100.0, 24.0)), (450.0, 62.0));
     }
 
     #[test]

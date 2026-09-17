@@ -29,9 +29,42 @@ pub(super) struct MotionGpuResources {
     keyframe_capacity: usize,
     uploaded_descriptors: Vec<u8>,
     uploaded_keyframes: Vec<u8>,
-    last_structure_epoch: u64,
+    upload: MotionUploadCache,
     last_surface_generation: u64,
     last_work: MotionWorkCounters,
+}
+
+/// Identifies the descriptor set the shared motion buffers hold.
+///
+/// The buffers are shared by every render target, but a structure epoch counts
+/// within one scene: two windows' scenes reach the same epoch while describing
+/// different motion, so the epoch alone cannot say whether the buffers are
+/// current.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MotionUploadKey {
+    scene: u64,
+    epoch: u64,
+}
+
+#[derive(Debug, Default)]
+struct MotionUploadCache {
+    held: Option<MotionUploadKey>,
+}
+
+impl MotionUploadCache {
+    /// Whether the buffers have to be rewritten for `wanted`, recording it as
+    /// held when they do.
+    fn needs_upload(&mut self, wanted: MotionUploadKey, capacity_grew: bool) -> bool {
+        if !capacity_grew && self.held == Some(wanted) {
+            return false;
+        }
+        self.held = Some(wanted);
+        true
+    }
+
+    fn invalidate(&mut self) {
+        self.held = None;
+    }
 }
 
 impl MotionGpuResources {
@@ -96,7 +129,7 @@ impl MotionGpuResources {
             keyframe_capacity,
             uploaded_descriptors: Vec::new(),
             uploaded_keyframes: Vec::new(),
-            last_structure_epoch: u64::MAX,
+            upload: MotionUploadCache::default(),
             last_surface_generation: 0,
             last_work: MotionWorkCounters::default(),
         }
@@ -124,15 +157,17 @@ impl MotionGpuResources {
         let lost = surface != self.last_surface_generation;
         if lost {
             self.last_surface_generation = surface;
-            self.last_structure_epoch = u64::MAX;
+            self.upload.invalidate();
             self.uploaded_descriptors.clear();
             self.uploaded_keyframes.clear();
         }
-        let need_descriptors = lost
-            || epoch != self.last_structure_epoch
-            || descriptors.len() > self.descriptor_capacity
+        let capacity_grew = descriptors.len() > self.descriptor_capacity
             || keyframes.len() > self.keyframe_capacity;
-        if need_descriptors {
+        let wanted = MotionUploadKey {
+            scene: scene.instance_id(),
+            epoch,
+        };
+        if self.upload.needs_upload(wanted, capacity_grew) {
             self.ensure_capacity(device, descriptors.len(), keyframes.len());
             let desc_bytes = pad_copy(
                 motion_gpu_as_bytes(descriptors),
@@ -160,7 +195,6 @@ impl MotionGpuResources {
             }
             self.uploaded_descriptors = desc_bytes;
             self.uploaded_keyframes = kf_bytes;
-            self.last_structure_epoch = epoch;
             self.last_work.record_descriptor_upload(
                 descriptors
                     .iter()
@@ -1020,5 +1054,31 @@ mod tests {
             painter.last_motion_work().motion_descriptors_uploaded > 0,
             "device/surface generation change must reupload descriptors"
         );
+    }
+
+    /// The motion buffers are shared by every render target while the structure
+    /// epoch counts within one scene. Keyed by the epoch alone, a second window
+    /// whose scene happened to reach the same epoch would render the first
+    /// window's descriptors.
+    #[test]
+    fn two_scenes_at_the_same_epoch_do_not_share_one_upload() {
+        let mut cache = MotionUploadCache::default();
+        let first = MotionUploadKey { scene: 1, epoch: 7 };
+        let second = MotionUploadKey { scene: 2, epoch: 7 };
+
+        assert!(cache.needs_upload(first, false));
+        assert!(
+            !cache.needs_upload(first, false),
+            "unchanged scene re-uploads"
+        );
+        assert!(cache.needs_upload(second, false));
+        assert!(
+            cache.needs_upload(first, false),
+            "switching back must rewrite the buffers the other scene left"
+        );
+        // Growing the buffers reallocates them, so their contents are gone.
+        assert!(cache.needs_upload(first, true));
+        cache.invalidate();
+        assert!(cache.needs_upload(first, false));
     }
 }
