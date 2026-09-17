@@ -2041,7 +2041,7 @@ fn flag_attr(spec: &SemanticSpec<'_>, names: &[&str]) -> bool {
         .is_some_and(truthy_attr)
 }
 
-fn parse_tristate_attr(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<bool> {
+pub(crate) fn parse_tristate_attr(spec: &SemanticSpec<'_>, names: &[&str]) -> Option<bool> {
     names
         .iter()
         .find_map(|name| spec.attr(name))

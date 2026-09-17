@@ -222,7 +222,8 @@ pub use layout_engine::{
     LayoutViewport, RetainedLayoutCache, RuntimeLayoutEngine, StyleLayoutNode,
 };
 pub use media_transport::{
-    MediaTransportBar, MediaTransportEvent, MediaTransportIcons, MediaTransportSlots,
+    MediaTransportBar, MediaTransportDensity, MediaTransportEvent, MediaTransportIcons,
+    MediaTransportPlacement, MediaTransportSlots, media_clock,
 };
 pub use menus::{
     ActionMenuItem, AnchoredActionMenu, ContextMenu, ContextMenuEvent, ContextMenuItem,

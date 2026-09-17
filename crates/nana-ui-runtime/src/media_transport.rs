@@ -1,21 +1,35 @@
-//! Dual-row media chrome with host-owned scene extras.
+//! Media transport chrome with host-owned scene extras.
 //!
 //! Built-in controls are play, progress (seek or live meter), volume, settings
 //! and fullscreen. Applications append scene-specific widgets into named slots.
 //! An empty or fully hidden `secondary` slot collapses the bar to a single row.
+//!
+//! [`MediaTransportDensity`] picks the regular two-level chrome or a compact
+//! single row; [`MediaTransportPlacement`] floats the bar over its stage or
+//! lets it take part in the parent's layout (a shell mini player strip, the
+//! bottom bar of a second window). Both are plain fields: the next
+//! [`AppContext::sync_media_transport_bar`] applies a change to assembled
+//! chrome.
+//!
+//! Seeking commits on release: dragging the progress range only previews the
+//! time readout, and [`MediaTransportEvent::Seek`] fires once per committed
+//! value (each keyboard step commits, as a native range does). Volume follows
+//! the drag live.
+//!
 //! Idle hide is [`crate::OverlayVisibility`] held on this control and driven by
-//! [`crate::AppContext::sync_overlay_visibility`].
+//! [`crate::AppContext::sync_overlay_visibility`]; an inline bar that the host
+//! never syncs that way stays visible.
 
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, PointerEventsSpec,
-    PopoverPlacement, PositionSpec, SemanticColorRole, UI_METRICS, space,
+    AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
+    PointerEventsSpec, PopoverPlacement, PositionSpec, SemanticColorRole, UI_METRICS, space,
 };
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
 use crate::view_components::{
-    Activate, IconButton, RangeChanged, RangeField, Stack, Text, project_common,
+    Activate, IconButton, RangeChanged, RangeField, RangeInput, Stack, Text, project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, ActionMenu, AppContext, ComponentView, Divider, Entity,
@@ -25,6 +39,7 @@ use crate::{
 
 const BAR_MAX_WIDTH: f32 = 820.0;
 const BAR_MARGIN: f32 = space::XL;
+const BAR_Z_INDEX: i32 = 30;
 const BACKPLATE_OPACITY: f32 = 0.88;
 const VOLUME_POPOVER_WIDTH: f32 = 240.0;
 
@@ -32,9 +47,36 @@ const VOLUME_POPOVER_WIDTH: f32 = 240.0;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MediaTransportEvent {
     PlayPause,
+    /// A committed seek target in seconds: pointer release or a keyboard /
+    /// accessibility step, never an in-flight drag.
     Seek(f64),
+    /// Live volume in `0..=100`, including drag previews.
     Volume(f64),
     Fullscreen,
+}
+
+/// How much chrome the bar spends on its controls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MediaTransportDensity {
+    /// Controls row with the time readout above the progress range; the
+    /// `secondary` slot opens a second row.
+    #[default]
+    Regular,
+    /// One tight row with the readout beside the range. Settings and
+    /// fullscreen are hidden unless shown explicitly; every slot still works.
+    Compact,
+}
+
+/// Where the bar sits relative to its parent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MediaTransportPlacement {
+    /// Absolute along the parent's bottom edge, capped at `max_width`; only
+    /// the chrome takes hits, so the stage underneath stays interactive.
+    #[default]
+    Overlay,
+    /// In the parent's flow with the chrome's own height, filling the width
+    /// the parent gives it. `max_width` does not apply.
+    Inline,
 }
 
 /// Icons the host supplies for chrome that is not in the shell catalog.
@@ -66,6 +108,9 @@ impl Default for MediaTransportIcons {
 /// Child nodes [`AppContext::assemble_media_transport_bar`] owns.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MediaTransportSlots {
+    pub chrome: Option<StableNodeId>,
+    pub row: Option<StableNodeId>,
+    pub center: Option<StableNodeId>,
     pub play: Option<StableNodeId>,
     pub leading: Option<StableNodeId>,
     pub time: Option<StableNodeId>,
@@ -74,13 +119,15 @@ pub struct MediaTransportSlots {
     pub trailing: Option<StableNodeId>,
     pub volume: Option<StableNodeId>,
     pub volume_menu: Option<StableNodeId>,
+    /// Holds [`Self::settings`] so the menu can be hidden as a whole.
+    pub settings_group: Option<StableNodeId>,
     pub settings: Option<StableNodeId>,
     pub fullscreen: Option<StableNodeId>,
     pub secondary: Option<StableNodeId>,
     pub secondary_row: Option<StableNodeId>,
 }
 
-/// Floating dual-row media bar (`nana.media-transport-bar`).
+/// Media transport bar (`nana.media-transport-bar`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaTransportBar {
     pub playing: bool,
@@ -92,6 +139,12 @@ pub struct MediaTransportBar {
     pub duration: f64,
     pub volume: f64,
     pub max_width: f32,
+    pub density: MediaTransportDensity,
+    pub placement: MediaTransportPlacement,
+    /// `None` follows the density: shown when regular, hidden when compact.
+    pub show_settings: Option<bool>,
+    /// `None` follows the density: shown when regular, hidden when compact.
+    pub show_fullscreen: Option<bool>,
     pub icons: MediaTransportIcons,
     pub play_label: Arc<str>,
     pub pause_label: Arc<str>,
@@ -103,6 +156,9 @@ pub struct MediaTransportBar {
     pub(crate) slots: MediaTransportSlots,
     pub(crate) visibility: OverlayVisibility,
     pub(crate) menu_was_open: bool,
+    /// Chrome layout the assembled children carry, so a playback tick skips
+    /// the layout pass.
+    pub(crate) applied: Option<ChromeLayout>,
 }
 
 impl MediaTransportBar {
@@ -117,6 +173,10 @@ impl MediaTransportBar {
             duration: 0.0,
             volume: 100.0,
             max_width: BAR_MAX_WIDTH,
+            density: MediaTransportDensity::Regular,
+            placement: MediaTransportPlacement::Overlay,
+            show_settings: None,
+            show_fullscreen: None,
             icons: MediaTransportIcons::default(),
             play_label: Arc::from("播放"),
             pause_label: Arc::from("暂停"),
@@ -124,10 +184,11 @@ impl MediaTransportBar {
             settings_label: Arc::from("播放设置"),
             fullscreen_label: Arc::from("全屏"),
             fullscreen_exit_label: Arc::from("退出全屏"),
-            style: overlay_style(),
+            style: bar_style(),
             slots: MediaTransportSlots::default(),
             visibility: OverlayVisibility::default(),
             menu_was_open: false,
+            applied: None,
         }
     }
 
@@ -143,6 +204,26 @@ impl MediaTransportBar {
 
     pub fn max_width(mut self, max_width: f32) -> Self {
         self.max_width = max_width.max(0.0);
+        self
+    }
+
+    pub fn density(mut self, density: MediaTransportDensity) -> Self {
+        self.density = density;
+        self
+    }
+
+    pub fn placement(mut self, placement: MediaTransportPlacement) -> Self {
+        self.placement = placement;
+        self
+    }
+
+    pub fn show_settings(mut self, show: bool) -> Self {
+        self.show_settings = Some(show);
+        self
+    }
+
+    pub fn show_fullscreen(mut self, show: bool) -> Self {
+        self.show_fullscreen = Some(show);
         self
     }
 
@@ -193,6 +274,19 @@ impl MediaTransportBar {
     pub fn fullscreen_button(&self) -> Option<Entity<IconButton>> {
         self.slots.fullscreen.map(Entity::from_stable_id)
     }
+
+    fn chrome_layout(&self) -> ChromeLayout {
+        let regular = self.density == MediaTransportDensity::Regular;
+        ChromeLayout {
+            density: self.density,
+            max_width: match self.placement {
+                MediaTransportPlacement::Overlay => Some(self.max_width.to_bits()),
+                MediaTransportPlacement::Inline => None,
+            },
+            settings: self.show_settings.unwrap_or(regular),
+            fullscreen: self.show_fullscreen.unwrap_or(regular),
+        }
+    }
 }
 
 impl Default for MediaTransportBar {
@@ -201,20 +295,54 @@ impl Default for MediaTransportBar {
     }
 }
 
-fn overlay_style() -> NodeStyle {
+/// Layout of the assembled chrome that depends on bar configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChromeLayout {
+    density: MediaTransportDensity,
+    /// `f32` bits; `None` when the placement does not cap the width.
+    max_width: Option<u32>,
+    settings: bool,
+    fullscreen: bool,
+}
+
+impl ChromeLayout {
+    fn chrome(self, layout: &mut LayoutStyle) {
+        layout.max_width = self
+            .max_width
+            .map(|bits| LengthSpec::Px(f32::from_bits(bits)));
+    }
+
+    fn row(self, layout: &mut LayoutStyle) {
+        let (gap, inline, top, bottom) = match self.density {
+            MediaTransportDensity::Regular => (space::XL, space::XL, space::XL, space::XS),
+            MediaTransportDensity::Compact => (space::MD, space::MD, space::SM, space::SM),
+        };
+        layout.gap = Some(LengthSpec::Px(gap));
+        layout.padding_left = Some(LengthSpec::Px(inline));
+        layout.padding_right = Some(LengthSpec::Px(inline));
+        layout.padding_top = Some(LengthSpec::Px(top));
+        layout.padding_bottom = Some(LengthSpec::Px(bottom));
+    }
+
+    fn center(self, layout: &mut LayoutStyle) {
+        let (direction, gap, align) = match self.density {
+            MediaTransportDensity::Regular => {
+                (FlexDirection::Column, space::XXS, AlignSpec::Stretch)
+            }
+            MediaTransportDensity::Compact => (FlexDirection::Row, space::MD, AlignSpec::Center),
+        };
+        layout.direction = Some(direction);
+        layout.gap = Some(LengthSpec::Px(gap));
+        layout.align_items = align;
+    }
+}
+
+/// Placement-independent defaults; [`MediaTransportBar::project`] adds the
+/// placement.
+fn bar_style() -> NodeStyle {
     let mut style = NodeStyle::default();
     let layout = Arc::make_mut(&mut style.layout);
-    layout.position = PositionSpec::Absolute;
-    layout.offset_left = Some(LengthSpec::Px(0.0));
-    layout.offset_right = Some(LengthSpec::Px(0.0));
-    layout.offset_bottom = Some(LengthSpec::Px(BAR_MARGIN));
-    layout.z_index = Some(30);
     layout.min_width = Some(LengthSpec::Px(0.0));
-    layout.justify_content = JustifySpec::Center;
-    layout.align_items = AlignSpec::End;
-    layout.pointer_events = Some(PointerEventsSpec::None);
-    layout.padding_left = Some(LengthSpec::Px(BAR_MARGIN));
-    layout.padding_right = Some(LengthSpec::Px(BAR_MARGIN));
     layout.direction = Some(FlexDirection::Row);
     layout.width = Some(LengthSpec::Fill);
     style
@@ -231,18 +359,37 @@ impl ComponentView for MediaTransportBar {
         next.slots = self.slots.clone();
         next.visibility = self.visibility.clone();
         next.menu_was_open = self.menu_was_open;
+        next.applied = self.applied;
         *self = next;
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
-        layout.position = PositionSpec::Absolute;
-        layout.offset_bottom = Some(LengthSpec::Px(BAR_MARGIN));
         layout.pointer_events = Some(PointerEventsSpec::None);
         layout.justify_content = JustifySpec::Center;
-        layout.align_items = AlignSpec::End;
         layout.width = Some(LengthSpec::Fill);
+        match self.placement {
+            MediaTransportPlacement::Overlay => {
+                layout.position = PositionSpec::Absolute;
+                layout.offset_left.get_or_insert(LengthSpec::Px(0.0));
+                layout.offset_right.get_or_insert(LengthSpec::Px(0.0));
+                layout
+                    .offset_bottom
+                    .get_or_insert(LengthSpec::Px(BAR_MARGIN));
+                layout.z_index.get_or_insert(BAR_Z_INDEX);
+                layout
+                    .padding_left
+                    .get_or_insert(LengthSpec::Px(BAR_MARGIN));
+                layout
+                    .padding_right
+                    .get_or_insert(LengthSpec::Px(BAR_MARGIN));
+                layout.align_items = AlignSpec::End;
+            }
+            MediaTransportPlacement::Inline => {
+                layout.align_items = AlignSpec::Center;
+            }
+        }
         project_common(
             id,
             world,
@@ -270,7 +417,11 @@ impl RegisterableComponent for MediaTransportBar {
     /// volume or settings popover, no fullscreen button.
     const RETAIN_SEMANTIC_STATE: bool = true;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
-        MediaTransportBar::new()
+        let keyword = |name: &str, value: &str| {
+            spec.attr(name)
+                .is_some_and(|raw| raw.trim().eq_ignore_ascii_case(value))
+        };
+        let mut bar = MediaTransportBar::new()
             .live(
                 spec.attr("live")
                     .is_some_and(|value| matches!(value, "true" | "1" | "live")),
@@ -279,7 +430,34 @@ impl RegisterableComponent for MediaTransportBar {
                 spec.attr("max-width")
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(BAR_MAX_WIDTH),
-            )
+            );
+        if keyword("density", "compact") {
+            bar.density = MediaTransportDensity::Compact;
+        }
+        if keyword("placement", "inline") {
+            bar.placement = MediaTransportPlacement::Inline;
+        }
+        bar.show_settings = shown_attr(spec, "show-settings");
+        bar.show_fullscreen = shown_attr(spec, "show-fullscreen");
+        bar
+    }
+    /// Markup only carries configuration. Playback state, labels, idle
+    /// visibility and the assembled chrome belong to the live bar, so a
+    /// rebind keeps them instead of assembling a second chrome.
+    fn reconcile_semantic(spec: &SemanticSpec<'_>, previous: Option<&Self>) -> Self {
+        let next = Self::from_semantic(spec);
+        let Some(previous) = previous else {
+            return next;
+        };
+        Self {
+            live: next.live,
+            max_width: next.max_width,
+            density: next.density,
+            placement: next.placement,
+            show_settings: next.show_settings,
+            show_fullscreen: next.show_fullscreen,
+            ..previous.clone()
+        }
     }
     fn finish_semantic(
         context: &mut AppContext,
@@ -287,6 +465,15 @@ impl RegisterableComponent for MediaTransportBar {
     ) -> Result<(), FrameworkError> {
         context.assemble_media_transport_bar(entity).map(|_| ())
     }
+}
+
+/// A boolean attribute: present without a value means shown.
+fn shown_attr(spec: &SemanticSpec<'_>, name: &str) -> Option<bool> {
+    let raw = spec.attr(name)?.trim();
+    if raw.is_empty() {
+        return Some(true);
+    }
+    crate::builtin_components::parse_tristate_attr(spec, &[name])
 }
 
 impl AppContext {
@@ -300,9 +487,11 @@ impl AppContext {
             .node(bar.stable_id())
             .ok_or(FrameworkError::MissingView(bar.stable_id()))?
             .document;
-        let snapshot = self.read(bar, Clone::clone)?;
-        let created = snapshot.slots.play.is_none();
+        // Hosts write the bar on every playback tick and each write lands
+        // here, so only a first assembly pays for the snapshot.
+        let created = self.read(bar, |bar| bar.slots.play.is_none())?;
         if created {
+            let snapshot = self.read(bar, Clone::clone)?;
             let chrome = self.create_detached_component(
                 document,
                 Stack::column(space::MD)
@@ -311,7 +500,6 @@ impl AppContext {
                     .with_layout(|layout| {
                         layout.position = PositionSpec::Relative;
                         layout.width = Some(LengthSpec::Fill);
-                        layout.max_width = Some(LengthSpec::Px(snapshot.max_width));
                         layout.min_width = Some(LengthSpec::Px(0.0));
                         layout.flex_grow = Some(1.0);
                         layout.flex_shrink = Some(1.0);
@@ -338,14 +526,10 @@ impl AppContext {
             self.append_child(chrome, backplate)?;
             let row = self.create_detached_component(
                 document,
-                Stack::row(space::XL).with_layout(|layout| {
+                Stack::row(0.0).with_layout(|layout| {
                     layout.width = Some(LengthSpec::Fill);
                     layout.min_width = Some(LengthSpec::Px(0.0));
                     layout.align_items = AlignSpec::Center;
-                    layout.padding_left = Some(LengthSpec::Px(space::XL));
-                    layout.padding_right = Some(LengthSpec::Px(space::XL));
-                    layout.padding_top = Some(LengthSpec::Px(space::XL));
-                    layout.padding_bottom = Some(LengthSpec::Px(space::XS));
                     layout.z_index = Some(1);
                 }),
             )?;
@@ -373,21 +557,19 @@ impl AppContext {
             self.append_child(left, leading)?;
             let center = self.create_detached_component(
                 document,
-                Stack::column(space::XXS).with_layout(|layout| {
+                Stack::column(0.0).with_layout(|layout| {
                     layout.width = Some(LengthSpec::Fill);
                     layout.min_width = Some(LengthSpec::Px(0.0));
                     layout.flex_grow = Some(1.0);
                     layout.flex_shrink = Some(1.0);
-                    layout.align_items = AlignSpec::Stretch;
                 }),
             )?;
             self.append_child(row, center)?;
-            let time = self.create_detached_component(
-                document,
-                Text::new("")
-                    .font_size(12.0)
-                    .color(SemanticColorRole::Muted),
-            )?;
+            let mut time = Text::new("")
+                .font_size(12.0)
+                .color(SemanticColorRole::Muted);
+            Arc::make_mut(&mut time.style.layout).flex_shrink = Some(0.0);
+            let time = self.create_detached_component(document, time)?;
             self.append_child(center, time)?;
             let mut seek = RangeField::new(0.0, 0.0, 1.0, 1.0)
                 .show_value(false)
@@ -407,6 +589,8 @@ impl AppContext {
                 let layout = Arc::make_mut(&mut live_progress.style.layout);
                 layout.width = Some(LengthSpec::Fill);
                 layout.min_width = Some(LengthSpec::Px(0.0));
+                layout.flex_grow = Some(1.0);
+                layout.flex_shrink = Some(1.0);
             }
             let live_progress = self.create_detached_component(document, live_progress)?;
             self.append_child(center, live_progress)?;
@@ -442,13 +626,21 @@ impl AppContext {
                     .size(ControlSize::Small),
             )?;
             self.append_child(volume_menu, volume)?;
+            let settings_group = self.create_detached_component(
+                document,
+                Stack::row(0.0).with_layout(|layout| {
+                    layout.align_items = AlignSpec::Center;
+                    layout.flex_shrink = Some(0.0);
+                }),
+            )?;
+            self.append_child(right, settings_group)?;
             let settings = self.create_detached_component(
                 document,
                 ActionMenu::new()
                     .trigger_icon(snapshot.icons.settings, snapshot.settings_label.as_ref())
                     .placement(PopoverPlacement::Top),
             )?;
-            self.append_child(right, settings)?;
+            self.append_child(settings_group, settings)?;
             let fullscreen = self.create_detached_component(
                 document,
                 chrome_icon(
@@ -486,10 +678,21 @@ impl AppContext {
             self.observe(play, bar, |_, _: &Activate, cx| {
                 cx.emit(MediaTransportEvent::PlayPause);
             })?;
-            self.observe(seek, bar, |_, event: &RangeChanged, cx| {
+            // Seek and volume write their target into the bar before the host
+            // hears of it and reassemble, so the ranges hold the new value
+            // instead of snapping back to the stale host value until the host
+            // catches up. The host's next write stays authoritative.
+            self.observe(seek, bar, |bar, event: &RangeChanged, cx| {
+                bar.position = event.value;
+                cx.reassemble();
                 cx.emit(MediaTransportEvent::Seek(event.value));
             })?;
-            self.observe(volume, bar, |_, event: &RangeChanged, cx| {
+            // The readout follows a drag even while a paused host sends no
+            // ticks.
+            self.observe(seek, bar, |_, _: &RangeInput, cx| cx.reassemble())?;
+            self.observe(volume, bar, |bar, event: &RangeInput, cx| {
+                bar.volume = event.value;
+                cx.reassemble();
                 cx.emit(MediaTransportEvent::Volume(event.value));
             })?;
             self.observe(fullscreen, bar, |_, _: &Activate, cx| {
@@ -498,6 +701,9 @@ impl AppContext {
 
             self.update_component(bar, |bar, _| {
                 bar.slots = MediaTransportSlots {
+                    chrome: Some(chrome.stable_id()),
+                    row: Some(row.stable_id()),
+                    center: Some(center.stable_id()),
                     play: Some(play.stable_id()),
                     leading: Some(leading.stable_id()),
                     time: Some(time.stable_id()),
@@ -506,46 +712,45 @@ impl AppContext {
                     trailing: Some(trailing.stable_id()),
                     volume: Some(volume.stable_id()),
                     volume_menu: Some(volume_menu.stable_id()),
+                    settings_group: Some(settings_group.stable_id()),
                     settings: Some(settings.stable_id()),
                     fullscreen: Some(fullscreen.stable_id()),
                     secondary: Some(secondary.stable_id()),
                     secondary_row: Some(secondary_row.stable_id()),
                 };
+                bar.applied = None;
             })?;
         }
         self.sync_media_transport_bar(bar)?;
         Ok(created)
     }
 
-    /// Refreshes built-in chrome and collapses an empty second row.
+    /// Refreshes built-in chrome and collapses an empty second row, writing
+    /// only values that changed. `update_component` on the bar already runs
+    /// it, so a playback tick needs no explicit call.
     pub fn sync_media_transport_bar(
         &mut self,
         bar: Entity<MediaTransportBar>,
     ) -> Result<(), FrameworkError> {
         let snapshot = self.read(bar, Clone::clone)?;
-        let slots = snapshot.slots.clone();
+        let slots = &snapshot.slots;
+        let chrome = snapshot.chrome_layout();
+        if snapshot.applied != Some(chrome) {
+            self.apply_chrome_layout(slots, chrome)?;
+            self.update_component(bar, |bar, _| bar.applied = Some(chrome))?;
+        }
         if let Some(play) = slots.play {
             let (icon, label) = if snapshot.playing {
-                (snapshot.icons.pause, snapshot.pause_label.as_ref())
+                (snapshot.icons.pause, &snapshot.pause_label)
             } else {
-                (snapshot.icons.play, snapshot.play_label.as_ref())
+                (snapshot.icons.play, &snapshot.play_label)
             };
-            self.update_component(Entity::<IconButton>::from_stable_id(play), |button, _| {
-                button.icon = icon;
-                if button.label.as_ref() != label {
-                    button.label = Arc::from(label);
-                    button.tooltip = Some(crate::IconButtonTooltip {
-                        label: button.label.clone(),
-                        config: Default::default(),
-                    });
-                }
-                button.disabled = snapshot.disabled;
-            })?;
+            sync_icon_button(self, play, icon, label, Some(snapshot.disabled))?;
         }
         let (position, duration) = media_time(&snapshot);
         let seek = slots.seek.map(Entity::<RangeField>::from_stable_id);
-        // A scrub keeps its own value until the host catches up through Seek;
-        // the readout previews it instead of the stale host position.
+        // A drag previews its value until release commits it through Seek;
+        // the readout follows the preview instead of the host position.
         let scrub = seek.and_then(|seek| {
             self.read(seek, |range| range.dragging.map(|_| range.value))
                 .ok()
@@ -554,96 +759,173 @@ impl AppContext {
         if let Some(time) = slots.time {
             let time = Entity::<Text>::from_stable_id(time);
             let shown = scrub.map_or(position, |value| value.min(duration));
-            let readout = time_readout(shown, duration);
-            // Hosts sync on every playback tick; skip the write while the
-            // shown second and visibility are unchanged.
+            // Compared without formatting: the shown second changes about
+            // once per second of the ticks that reach this line.
             let current = self.read(time, |text| {
-                text.value == readout && text.style.layout.hidden == snapshot.live
+                reads_time(&text.value, shown, duration)
+                    && text.style.layout.hidden == snapshot.live
             })?;
             if !current {
                 self.update_component(time, |text, _| {
-                    text.value = readout;
+                    text.value = time_readout(shown, duration);
                     Arc::make_mut(&mut text.style.layout).hidden = snapshot.live;
                 })?;
             }
         }
         if let Some(seek) = seek {
-            self.update_component(seek, |range, _| {
-                let layout = Arc::make_mut(&mut range.style.layout);
-                layout.hidden = snapshot.live;
-                range.disabled = snapshot.disabled || snapshot.live;
-                range.minimum = 0.0;
-                range.maximum = duration.max(1.0);
-                if scrub.is_none() {
-                    range.value = position;
-                }
+            let disabled = snapshot.disabled || snapshot.live;
+            let maximum = duration.max(1.0);
+            let stale = self.read(seek, |range| {
+                range.style.layout.hidden != snapshot.live
+                    || range.disabled != disabled
+                    || range.minimum != 0.0
+                    || range.maximum != maximum
+                    || (scrub.is_none() && range.value != position)
             })?;
+            if stale {
+                self.update_component(seek, |range, _| {
+                    Arc::make_mut(&mut range.style.layout).hidden = snapshot.live;
+                    range.disabled = disabled;
+                    range.minimum = 0.0;
+                    range.maximum = maximum;
+                    if scrub.is_none() {
+                        range.value = position;
+                    }
+                })?;
+            }
         }
         if let Some(live_progress) = slots.live_progress {
-            self.update_component(
-                Entity::<Progress>::from_stable_id(live_progress),
-                |progress, _| {
-                    let layout = Arc::make_mut(&mut progress.style.layout);
-                    layout.hidden = !snapshot.live;
-                },
-            )?;
+            let live_progress = Entity::<Progress>::from_stable_id(live_progress);
+            if self.read(live_progress, |progress| {
+                progress.style.layout.hidden == snapshot.live
+            })? {
+                self.update_component(live_progress, |progress, _| {
+                    Arc::make_mut(&mut progress.style.layout).hidden = !snapshot.live;
+                })?;
+            }
         }
         if let Some(volume) = slots.volume {
-            let dragging = self
-                .read(Entity::<RangeField>::from_stable_id(volume), |range| {
-                    range.dragging.is_some()
-                })
-                .unwrap_or(false);
-            self.update_component(Entity::<RangeField>::from_stable_id(volume), |range, _| {
-                range.disabled = snapshot.disabled;
-                if !dragging {
-                    range.value = snapshot.volume.clamp(0.0, 100.0);
-                }
+            let volume = Entity::<RangeField>::from_stable_id(volume);
+            let value = if snapshot.volume.is_finite() {
+                snapshot.volume.clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+            let stale = self.read(volume, |range| {
+                range.disabled != snapshot.disabled
+                    || (range.dragging.is_none() && range.value != value)
             })?;
+            if stale {
+                self.update_component(volume, |range, _| {
+                    range.disabled = snapshot.disabled;
+                    if range.dragging.is_none() {
+                        range.value = value;
+                    }
+                })?;
+            }
         }
         if let Some(volume_menu) = slots.volume_menu {
+            let volume_menu = Entity::<Popover>::from_stable_id(volume_menu);
             let muted = snapshot.muted || snapshot.volume <= 0.0;
             let icon = if muted {
                 snapshot.icons.volume_muted
             } else {
                 snapshot.icons.volume
             };
-            self.update_component(Entity::<Popover>::from_stable_id(volume_menu), |menu, _| {
-                menu.trigger_icon = Some(icon);
-                menu.trigger = Arc::clone(&snapshot.volume_label);
-            })?;
+            if self.read(volume_menu, |menu| {
+                menu.trigger_icon != Some(icon) || menu.trigger != snapshot.volume_label
+            })? {
+                self.update_component(volume_menu, |menu, _| {
+                    menu.trigger_icon = Some(icon);
+                    menu.trigger = Arc::clone(&snapshot.volume_label);
+                })?;
+            }
         }
         if let Some(fullscreen) = slots.fullscreen {
             let (icon, label) = if snapshot.fullscreen {
                 (
                     snapshot.icons.fullscreen_exit,
-                    snapshot.fullscreen_exit_label.as_ref(),
+                    &snapshot.fullscreen_exit_label,
                 )
             } else {
-                (
-                    snapshot.icons.fullscreen,
-                    snapshot.fullscreen_label.as_ref(),
-                )
+                (snapshot.icons.fullscreen, &snapshot.fullscreen_label)
             };
+            sync_icon_button(self, fullscreen, icon, label, None)?;
+        }
+        if let (Some(secondary), Some(secondary_row)) = (slots.secondary, slots.secondary_row) {
+            let hidden = !self.slot_has_visible_child(secondary);
+            if self
+                .world()
+                .node_style(secondary_row)
+                .is_some_and(|style| style.layout.hidden != hidden)
+            {
+                self.update_component(Entity::<Stack>::from_stable_id(secondary_row), |row, _| {
+                    *row = row.clone().with_layout(|layout| layout.hidden = hidden);
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes the configuration-dependent layout onto assembled chrome.
+    fn apply_chrome_layout(
+        &mut self,
+        slots: &MediaTransportSlots,
+        chrome: ChromeLayout,
+    ) -> Result<(), FrameworkError> {
+        let stacks: [(Option<StableNodeId>, fn(ChromeLayout, &mut LayoutStyle)); 3] = [
+            (slots.chrome, ChromeLayout::chrome),
+            (slots.row, ChromeLayout::row),
+            (slots.center, ChromeLayout::center),
+        ];
+        for (id, apply) in stacks {
+            if let Some(id) = id {
+                self.update_component(Entity::<Stack>::from_stable_id(id), |stack, _| {
+                    *stack = stack.clone().with_layout(|layout| apply(chrome, layout));
+                })?;
+            }
+        }
+        if let Some(group) = slots.settings_group {
+            self.update_component(Entity::<Stack>::from_stable_id(group), |stack, _| {
+                *stack = stack
+                    .clone()
+                    .with_layout(|layout| layout.hidden = !chrome.settings);
+            })?;
+        }
+        if let Some(fullscreen) = slots.fullscreen {
             self.update_component(
                 Entity::<IconButton>::from_stable_id(fullscreen),
                 |button, _| {
-                    button.icon = icon;
-                    if button.label.as_ref() != label {
-                        button.label = Arc::from(label);
-                        button.tooltip = Some(crate::IconButtonTooltip {
-                            label: button.label.clone(),
-                            config: Default::default(),
-                        });
-                    }
+                    Arc::make_mut(&mut button.style.layout).hidden = !chrome.fullscreen;
                 },
             )?;
         }
-        if let (Some(secondary), Some(secondary_row)) = (slots.secondary, slots.secondary_row) {
-            let visible = self.slot_has_visible_child(secondary);
-            self.update_component(Entity::<Stack>::from_stable_id(secondary_row), |row, _| {
-                *row = row.clone().with_layout(|layout| layout.hidden = !visible);
-            })?;
+        if !chrome.settings
+            && let Some(settings) = slots.settings
+        {
+            // A hidden menu must not stay open where nobody can reach it.
+            let settings = Entity::<ActionMenu>::from_stable_id(settings);
+            if self.read(settings, |menu| menu.popover.open)? {
+                self.update_component(settings, |menu, _| menu.popover.open = false)?;
+            }
+        }
+        // Nor may focus stay on a hidden control: it would keep the overlay
+        // locked visible and let the keyboard activate what is not shown.
+        let hidden = [
+            (!chrome.settings).then_some(slots.settings_group).flatten(),
+            (!chrome.fullscreen).then_some(slots.fullscreen).flatten(),
+        ];
+        if let Some(document) = slots
+            .chrome
+            .and_then(|id| self.world().node(id))
+            .map(|node| node.document)
+            && let Some(focused) = self.world().focused(document)
+            && hidden
+                .into_iter()
+                .flatten()
+                .any(|root| self.world().is_descendant_or_self(focused, root))
+        {
+            self.clear_focus(document)?;
         }
         Ok(())
     }
@@ -660,6 +942,39 @@ impl AppContext {
             })
             .unwrap_or(false)
     }
+}
+
+/// Writes an icon button's glyph, label (and tooltip), and optionally its
+/// disabled flag, only when one of them changed.
+fn sync_icon_button(
+    cx: &mut AppContext,
+    id: StableNodeId,
+    icon: Icon,
+    label: &Arc<str>,
+    disabled: Option<bool>,
+) -> Result<(), FrameworkError> {
+    let button = Entity::<IconButton>::from_stable_id(id);
+    let stale = cx.read(button, |button| {
+        button.icon != icon
+            || button.label != *label
+            || disabled.is_some_and(|disabled| button.disabled != disabled)
+    })?;
+    if !stale {
+        return Ok(());
+    }
+    cx.update_component(button, |button, _| {
+        button.icon = icon;
+        if button.label != *label {
+            button.label = Arc::clone(label);
+            button.tooltip = Some(crate::IconButtonTooltip {
+                label: Arc::clone(label),
+                config: Default::default(),
+            });
+        }
+        if let Some(disabled) = disabled {
+            button.disabled = disabled;
+        }
+    })
 }
 
 fn chrome_icon(icon: Icon, label: &str) -> IconButton {
@@ -683,17 +998,47 @@ fn media_time(bar: &MediaTransportBar) -> (f64, f64) {
 }
 
 fn time_readout(position: f64, duration: f64) -> String {
-    format!("{} / {}", clock(position), clock(duration))
+    format!("{} / {}", Clock(position), Clock(duration))
 }
 
-/// Whole seconds as `m:ss`, or `h:mm:ss` from one hour on.
-fn clock(seconds: f64) -> String {
-    let total = seconds as u64;
-    let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
+/// Whether `text` already reads [`time_readout`], checked without allocating.
+fn reads_time(text: &str, position: f64, duration: f64) -> bool {
+    struct Prefix<'a>(Option<&'a str>);
+    impl std::fmt::Write for Prefix<'_> {
+        fn write_str(&mut self, piece: &str) -> std::fmt::Result {
+            self.0 = self.0.and_then(|rest| rest.strip_prefix(piece));
+            Ok(())
+        }
+    }
+    let mut rest = Prefix(Some(text));
+    let _ = std::fmt::write(
+        &mut rest,
+        format_args!("{} / {}", Clock(position), Clock(duration)),
+    );
+    rest.0 == Some("")
+}
+
+/// Whole seconds as `m:ss`, or `h:mm:ss` from one hour on. Non-finite or
+/// negative input reads as `0:00`.
+pub fn media_clock(seconds: f64) -> String {
+    Clock(seconds).to_string()
+}
+
+struct Clock(f64);
+
+impl std::fmt::Display for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let total = if self.0.is_finite() {
+            self.0.max(0.0) as u64
+        } else {
+            0
+        };
+        let (hours, minutes, seconds) = (total / 3600, total / 60 % 60, total % 60);
+        if hours > 0 {
+            write!(f, "{hours}:{minutes:02}:{seconds:02}")
+        } else {
+            write!(f, "{minutes}:{seconds:02}")
+        }
     }
 }
 
@@ -819,32 +1164,48 @@ mod tests {
     }
 
     #[test]
-    fn play_and_seek_report_transport_events() {
-        let mut cx = AppContext::new();
-        let bar = cx
-            .create_component(document(), MediaTransportBar::new())
+    fn transport_events_are_the_same_for_both_densities() {
+        for density in [
+            MediaTransportDensity::Regular,
+            MediaTransportDensity::Compact,
+        ] {
+            let mut cx = AppContext::new();
+            let bar = cx
+                .create_component(document(), MediaTransportBar::new().density(density))
+                .unwrap();
+            cx.assemble_media_transport_bar(bar).unwrap();
+            cx.update_component(bar, |bar, _| bar.duration = 120.0)
+                .unwrap();
+            let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+            let seen = StdArc::new(Mutex::new(Vec::new()));
+            let out = StdArc::clone(&seen);
+            cx.on(bar, move |_, event: &MediaTransportEvent, _| {
+                out.lock().unwrap().push(*event);
+            })
             .unwrap();
-        cx.assemble_media_transport_bar(bar).unwrap();
-        cx.update_component(bar, |bar, _| bar.duration = 120.0)
-            .unwrap();
-        cx.sync_media_transport_bar(bar).unwrap();
-        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
-        let seen = StdArc::new(Mutex::new(Vec::new()));
-        let out = StdArc::clone(&seen);
-        cx.on(bar, move |_, event: &MediaTransportEvent, _| {
-            out.lock().unwrap().push(*event);
-        })
-        .unwrap();
-        cx.activate_icon_button(Entity::from_stable_id(slots.play.unwrap()))
-            .unwrap();
-        cx.set_range_value(Entity::from_stable_id(slots.seek.unwrap()), 12.0)
-            .unwrap();
-        let events = seen.lock().unwrap().clone();
-        assert!(events.contains(&MediaTransportEvent::PlayPause));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            MediaTransportEvent::Seek(value) if (*value - 12.0).abs() < f64::EPSILON
-        )));
+            cx.activate_icon_button(Entity::from_stable_id(slots.play.unwrap()))
+                .unwrap();
+            cx.set_range_value(Entity::from_stable_id(slots.seek.unwrap()), 12.0)
+                .unwrap();
+            let volume = Entity::<RangeField>::from_stable_id(slots.volume.unwrap());
+            cx.adjust_range(volume, crate::RangeAdjustment::PageDecrement)
+                .unwrap();
+            let level = cx.read(volume, |range| range.value).unwrap();
+            assert_eq!(
+                *seen.lock().unwrap(),
+                vec![
+                    MediaTransportEvent::PlayPause,
+                    MediaTransportEvent::Seek(12.0),
+                    MediaTransportEvent::Volume(level),
+                ],
+                "{density:?}"
+            );
+            assert_eq!(
+                cx.read(volume, |range| range.value).unwrap(),
+                level,
+                "{density:?}: the step holds until the host syncs its volume"
+            );
+        }
     }
 
     fn sync_time(
@@ -965,6 +1326,537 @@ mod tests {
             .unwrap();
         sync_time(&mut cx, bar, 45.0, 120.0);
         assert_eq!(readout(&cx, &slots), "0:45 / 2:00");
+    }
+
+    const STAGE_WIDTH: f32 = 1200.0;
+    const STAGE_HEIGHT: f32 = 600.0;
+    const SIBLING_HEIGHT: f32 = 100.0;
+
+    struct Stage {
+        cx: AppContext,
+        sibling: Entity<Stack>,
+        bar: Entity<MediaTransportBar>,
+    }
+
+    impl Stage {
+        fn new(document: DocumentId, bar: MediaTransportBar) -> Self {
+            let mut cx = AppContext::new();
+            let root = cx
+                .create_component(
+                    document,
+                    Stack::column(0.0).with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Px(STAGE_WIDTH));
+                        layout.height = Some(LengthSpec::Px(STAGE_HEIGHT));
+                    }),
+                )
+                .unwrap();
+            let sibling = cx
+                .create_detached_component(
+                    document,
+                    Stack::column(0.0).with_layout(|layout| {
+                        layout.width = Some(LengthSpec::Fill);
+                        layout.height = Some(LengthSpec::Px(SIBLING_HEIGHT));
+                        layout.flex_shrink = Some(0.0);
+                    }),
+                )
+                .unwrap();
+            cx.append_child(root, sibling).unwrap();
+            let bar = cx.create_detached_component(document, bar).unwrap();
+            cx.append_child(root, bar).unwrap();
+            cx.assemble_media_transport_bar(bar).unwrap();
+            let mut stage = Self { cx, sibling, bar };
+            stage.layout(document);
+            stage
+        }
+
+        fn layout(&mut self, document: DocumentId) {
+            let texts: Vec<_> = self.slots().time.into_iter().collect();
+            self.cx
+                .shape_text(&texts, &mut crate::MeasureTextShaper)
+                .unwrap();
+            self.cx
+                .layout_document(
+                    document,
+                    crate::LayoutViewport::new(STAGE_WIDTH, STAGE_HEIGHT),
+                )
+                .unwrap();
+        }
+
+        fn slots(&self) -> MediaTransportSlots {
+            self.cx.read(self.bar, |bar| bar.slots().clone()).unwrap()
+        }
+
+        fn frame(&self, id: StableNodeId) -> crate::LayoutBox {
+            self.cx.world().layout_box(id).unwrap()
+        }
+
+        fn hidden(&self, id: StableNodeId) -> bool {
+            self.cx.world().node_style(id).unwrap().layout.hidden
+        }
+    }
+
+    fn assert_close(actual: f32, expected: f32, what: &str) {
+        assert!(
+            (actual - expected).abs() < 0.5,
+            "{what}: {actual} != {expected}"
+        );
+    }
+
+    #[test]
+    fn overlay_floats_on_the_parent_bottom_edge_for_both_densities() {
+        let mut heights = Vec::new();
+        for density in [
+            MediaTransportDensity::Regular,
+            MediaTransportDensity::Compact,
+        ] {
+            let stage = Stage::new(document(), MediaTransportBar::new().density(density));
+            let slots = stage.slots();
+            let bar = stage.frame(stage.bar.stable_id());
+            let chrome = stage.frame(slots.chrome.unwrap());
+            assert_close(
+                bar.y + bar.height,
+                STAGE_HEIGHT - BAR_MARGIN,
+                "overlay bottom edge",
+            );
+            assert_close(
+                stage.frame(stage.sibling.stable_id()).y,
+                0.0,
+                "an overlay does not move siblings",
+            );
+            assert_close(chrome.width, BAR_MAX_WIDTH, "overlay keeps max_width");
+            assert_close(
+                chrome.x,
+                (STAGE_WIDTH - BAR_MAX_WIDTH) / 2.0,
+                "overlay centers the chrome",
+            );
+            heights.push(chrome.height);
+        }
+        let compact = heights[1];
+        assert!(
+            compact < heights[0],
+            "compact is shorter than regular: {heights:?}"
+        );
+        assert_close(
+            compact + BAR_MARGIN,
+            UI_METRICS.small_control_height() + space::SM * 2.0 + BAR_MARGIN,
+            "a compact overlay is one control row plus its margin",
+        );
+    }
+
+    #[test]
+    fn inline_takes_its_height_in_the_parent_flow_for_both_densities() {
+        for density in [
+            MediaTransportDensity::Regular,
+            MediaTransportDensity::Compact,
+        ] {
+            let stage = Stage::new(
+                document(),
+                MediaTransportBar::new()
+                    .density(density)
+                    .placement(MediaTransportPlacement::Inline),
+            );
+            let slots = stage.slots();
+            let bar = stage.frame(stage.bar.stable_id());
+            let chrome = stage.frame(slots.chrome.unwrap());
+            assert_close(bar.y, SIBLING_HEIGHT, "inline follows its sibling");
+            assert!(chrome.height > 0.0);
+            assert_close(bar.height, chrome.height, "inline is as tall as its chrome");
+            assert_close(chrome.width, STAGE_WIDTH, "inline fills the parent width");
+            let layout = &stage
+                .cx
+                .world()
+                .node_style(stage.bar.stable_id())
+                .unwrap()
+                .layout;
+            assert_ne!(layout.position, PositionSpec::Absolute);
+            assert_eq!(layout.offset_bottom, None);
+        }
+    }
+
+    #[test]
+    fn compact_is_one_row_with_settings_and_fullscreen_hidden_by_default() {
+        let stage = Stage::new(
+            document(),
+            MediaTransportBar::new().density(MediaTransportDensity::Compact),
+        );
+        let slots = stage.slots();
+        let time = stage.frame(slots.time.unwrap());
+        let seek = stage.frame(slots.seek.unwrap());
+        assert!(
+            time.x + time.width <= seek.x,
+            "readout sits beside the range"
+        );
+        assert_close(
+            time.y + time.height / 2.0,
+            seek.y + seek.height / 2.0,
+            "readout and range share one row",
+        );
+        assert!(stage.hidden(slots.settings_group.unwrap()));
+        assert!(stage.hidden(slots.fullscreen.unwrap()));
+        assert!(stage.hidden(slots.secondary_row.unwrap()));
+
+        let regular = Stage::new(document(), MediaTransportBar::new());
+        let slots = regular.slots();
+        let time = regular.frame(slots.time.unwrap());
+        assert!(
+            time.y + time.height <= regular.frame(slots.seek.unwrap()).y,
+            "regular keeps the readout above the range"
+        );
+        assert!(!regular.hidden(slots.settings_group.unwrap()));
+        assert!(!regular.hidden(slots.fullscreen.unwrap()));
+    }
+
+    #[test]
+    fn compact_slots_and_explicit_controls_stay_available() {
+        let mut stage = Stage::new(
+            document(),
+            MediaTransportBar::new()
+                .density(MediaTransportDensity::Compact)
+                .show_fullscreen(true),
+        );
+        let slots = stage.slots();
+        assert!(!stage.hidden(slots.fullscreen.unwrap()));
+        assert!(stage.hidden(slots.settings_group.unwrap()));
+
+        let next = stage
+            .cx
+            .create_detached_component(document(), IconButton::new(Icon::MonitorPlay, "下一个"))
+            .unwrap();
+        let trailing = stage
+            .cx
+            .read(stage.bar, |bar| bar.trailing())
+            .unwrap()
+            .unwrap();
+        stage.cx.append_child(trailing, next).unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        stage.layout(document());
+        let next = stage.frame(next.stable_id());
+        let row = stage.frame(slots.row.unwrap());
+        assert!(next.width > 0.0 && next.y >= row.y && next.y + next.height <= row.y + row.height);
+    }
+
+    #[test]
+    fn density_and_placement_changes_apply_on_sync() {
+        let mut stage = Stage::new(document(), MediaTransportBar::new());
+        let slots = stage.slots();
+        let settings = cx_settings(&stage);
+        assert!(stage.cx.toggle_action_menu(settings).unwrap());
+        assert!(
+            stage
+                .cx
+                .focus_node(document(), slots.fullscreen.unwrap())
+                .unwrap()
+        );
+        let regular = stage.frame(slots.chrome.unwrap()).height;
+
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| {
+                bar.density = MediaTransportDensity::Compact;
+                bar.placement = MediaTransportPlacement::Inline;
+            })
+            .unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        stage.layout(document());
+        assert!(stage.frame(slots.chrome.unwrap()).height < regular);
+        assert_close(
+            stage.frame(stage.bar.stable_id()).y,
+            SIBLING_HEIGHT,
+            "now inline",
+        );
+        assert!(stage.hidden(slots.settings_group.unwrap()));
+        assert!(
+            !stage.cx.read(settings, |menu| menu.popover.open).unwrap(),
+            "hiding the settings menu closes it"
+        );
+        assert_eq!(
+            stage.cx.world().focused(document()),
+            None,
+            "hiding the focused fullscreen button releases focus"
+        );
+
+        stage
+            .cx
+            .update_component(stage.bar, |bar, _| {
+                bar.density = MediaTransportDensity::Regular;
+                bar.placement = MediaTransportPlacement::Overlay;
+            })
+            .unwrap();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        stage.layout(document());
+        assert_close(
+            stage.frame(slots.chrome.unwrap()).height,
+            regular,
+            "back to regular",
+        );
+        assert!(!stage.hidden(slots.settings_group.unwrap()));
+
+        let generation = stage.cx.world().generation();
+        stage.cx.sync_media_transport_bar(stage.bar).unwrap();
+        assert_eq!(
+            stage.cx.world().generation(),
+            generation,
+            "an unchanged sync writes nothing"
+        );
+    }
+
+    fn cx_settings(stage: &Stage) -> Entity<ActionMenu> {
+        stage
+            .cx
+            .read(stage.bar, |bar| bar.settings())
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_seek_drag_previews_the_readout_and_seeks_once_on_release() {
+        let mut stage = Stage::new(
+            document(),
+            MediaTransportBar::new().density(MediaTransportDensity::Compact),
+        );
+        let (bar, slots) = (stage.bar, stage.slots());
+        sync_time(&mut stage.cx, bar, 10.0, 100.0);
+        stage.layout(document());
+        let seen = StdArc::new(Mutex::new(Vec::new()));
+        let out = StdArc::clone(&seen);
+        stage
+            .cx
+            .on(bar, move |_, event: &MediaTransportEvent, _| {
+                out.lock().unwrap().push(*event);
+            })
+            .unwrap();
+        let seek = slots.seek.unwrap();
+        let Some(crate::ComponentGeometry::Range { track, .. }) =
+            stage.cx.world().component_geometry(seek)
+        else {
+            panic!("seek range geometry");
+        };
+        let at = |fraction: f32| track.x + track.width * fraction;
+
+        stage
+            .cx
+            .begin_range_drag(document(), 1, seek, at(0.3))
+            .unwrap();
+        stage.cx.update_range_drag(document(), 1, at(0.6)).unwrap();
+        assert_eq!(
+            readout(&stage.cx, &slots),
+            "1:00 / 1:40",
+            "a paused host sends no tick, yet the drag previews the readout"
+        );
+        sync_time(&mut stage.cx, bar, 11.0, 100.0);
+        assert_eq!(readout(&stage.cx, &slots), "1:00 / 1:40");
+        assert_eq!(seek_value(&stage.cx, &slots), 60.0);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "no Seek while the drag is in flight"
+        );
+
+        stage.cx.end_range_drag(document(), 1, false).unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![MediaTransportEvent::Seek(60.0)]);
+        assert_eq!(
+            seek_value(&stage.cx, &slots),
+            60.0,
+            "the committed target holds until the host reports a position"
+        );
+
+        seen.lock().unwrap().clear();
+        stage
+            .cx
+            .begin_range_drag(document(), 2, seek, at(0.9))
+            .unwrap();
+        stage.cx.end_range_drag(document(), 2, true).unwrap();
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a cancelled drag never seeks"
+        );
+    }
+
+    #[test]
+    fn two_documents_in_one_context_each_drive_their_own_chrome() {
+        let mut cx = AppContext::new();
+        let documents = [document(), DocumentId::new(2).unwrap()];
+        let bars = documents.map(|document| {
+            let bar = cx
+                .create_component(
+                    document,
+                    MediaTransportBar::new().density(MediaTransportDensity::Compact),
+                )
+                .unwrap();
+            assert!(cx.assemble_media_transport_bar(bar).unwrap());
+            bar
+        });
+        let seen = StdArc::new(Mutex::new(Vec::new()));
+        for (index, bar) in bars.into_iter().enumerate() {
+            let out = StdArc::clone(&seen);
+            cx.on(bar, move |_, event: &MediaTransportEvent, _| {
+                out.lock().unwrap().push((index, *event));
+            })
+            .unwrap();
+        }
+        for (bar, document) in bars.into_iter().zip(documents) {
+            let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+            for id in [
+                slots.play,
+                slots.time,
+                slots.seek,
+                slots.volume_menu,
+                slots.settings,
+                slots.fullscreen,
+                slots.leading,
+                slots.trailing,
+                slots.secondary,
+            ] {
+                let id = id.expect("every built-in control is assembled");
+                assert_eq!(cx.world().node(id).unwrap().document, document);
+            }
+        }
+        sync_time(&mut cx, bars[1], 30.0, 60.0);
+        let second = cx.read(bars[1], |bar| bar.slots().clone()).unwrap();
+        let first = cx.read(bars[0], |bar| bar.slots().clone()).unwrap();
+        assert_eq!(readout(&cx, &second), "0:30 / 1:00");
+        assert_eq!(readout(&cx, &first), "0:00 / 0:00");
+        cx.activate_icon_button(Entity::from_stable_id(second.play.unwrap()))
+            .unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(1, MediaTransportEvent::PlayPause)]
+        );
+    }
+
+    #[test]
+    fn a_compact_inline_bar_shares_a_row_with_host_content() {
+        let mut cx = AppContext::new();
+        let strip = cx
+            .create_component(
+                document(),
+                Stack::row(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(STAGE_WIDTH));
+                    layout.height = Some(LengthSpec::Px(112.0));
+                    layout.align_items = AlignSpec::Center;
+                }),
+            )
+            .unwrap();
+        let cover = cx
+            .create_detached_component(
+                document(),
+                Stack::row(0.0).with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(120.0));
+                    layout.height = Some(LengthSpec::Px(68.0));
+                    layout.flex_shrink = Some(0.0);
+                }),
+            )
+            .unwrap();
+        cx.append_child(strip, cover).unwrap();
+        let mut bar = MediaTransportBar::new()
+            .density(MediaTransportDensity::Compact)
+            .placement(MediaTransportPlacement::Inline);
+        Arc::make_mut(&mut bar.style.layout).flex_grow = Some(1.0);
+        let bar = cx.create_detached_component(document(), bar).unwrap();
+        cx.append_child(strip, bar).unwrap();
+        cx.assemble_media_transport_bar(bar).unwrap();
+        cx.layout_document(
+            document(),
+            crate::LayoutViewport::new(STAGE_WIDTH, STAGE_HEIGHT),
+        )
+        .unwrap();
+        let bar = cx.world().layout_box(bar.stable_id()).unwrap();
+        assert_close(bar.x, 120.0, "the bar starts after the host cover");
+        assert_close(
+            bar.x + bar.width,
+            STAGE_WIDTH,
+            "and takes the rest of the row",
+        );
+        assert!(bar.y > 0.0 && bar.y + bar.height < 112.0, "{bar:?}");
+    }
+
+    #[test]
+    fn rebinding_markup_keeps_one_chrome_and_the_host_state() {
+        let mut cx = AppContext::new();
+        let id = StableNodeId::new(42).unwrap();
+        let mut queue = crate::MutationQueue::new();
+        queue.create(
+            id,
+            document(),
+            crate::NodeKind::Element {
+                tag: "media-transport-bar".into(),
+            },
+        );
+        cx.commit_mutations(queue).unwrap();
+        let type_id = cx
+            .resolve_component_tag("media-transport-bar")
+            .unwrap()
+            .clone();
+        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
+        let bind = |cx: &mut AppContext, attrs: &[(&str, &str)]| {
+            let spec = crate::SemanticSpec {
+                attrs,
+                ..crate::SemanticSpec::from_parts(&type_id, &layout)
+            };
+            let mut mutations = crate::MutationQueue::new();
+            let binding = cx
+                .prepare_semantic_binding(id, &spec, &mut mutations)
+                .unwrap();
+            cx.commit_mutations(mutations).unwrap();
+            cx.finish_semantic_binding(binding).unwrap();
+        };
+        bind(&mut cx, &[]);
+        let bar = Entity::<MediaTransportBar>::from_stable_id(id);
+        sync_time(&mut cx, bar, 30.0, 60.0);
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+
+        bind(&mut cx, &[("density", "compact")]);
+        assert_eq!(cx.world().node(id).unwrap().children.len(), 1, "one chrome");
+        let rebound = cx.read(bar, Clone::clone).unwrap();
+        assert_eq!(rebound.slots, slots);
+        assert_eq!(rebound.density, MediaTransportDensity::Compact);
+        assert_eq!(rebound.position, 30.0);
+        assert_eq!(readout(&cx, &slots), "0:30 / 1:00");
+        assert!(
+            cx.world()
+                .node_style(slots.fullscreen.unwrap())
+                .unwrap()
+                .layout
+                .hidden,
+            "the new density applies to the kept chrome"
+        );
+    }
+
+    #[test]
+    fn readout_comparison_matches_the_formatted_text() {
+        assert!(reads_time("1:05 / 1:00:00", 65.2, 3600.0));
+        assert!(!reads_time("1:05 / 1:00:0", 65.2, 3600.0));
+        assert!(!reads_time("1:05 / 1:00:000", 65.2, 3600.0));
+        assert!(!reads_time("", 0.0, 0.0));
+        assert!(reads_time(&time_readout(f64::NAN, 59.9), f64::NAN, 59.9));
+    }
+
+    #[test]
+    fn markup_attributes_pick_density_and_placement() {
+        let type_id = crate::ComponentTypeId::new("nana.media-transport-bar").unwrap();
+        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
+        let attrs = [
+            ("density", "compact"),
+            ("placement", "Inline"),
+            ("show-fullscreen", ""),
+        ];
+        let spec = crate::SemanticSpec {
+            attrs: &attrs,
+            ..crate::SemanticSpec::from_parts(&type_id, &layout)
+        };
+        let bar = MediaTransportBar::from_semantic(&spec);
+        assert_eq!(bar.density, MediaTransportDensity::Compact);
+        assert_eq!(bar.placement, MediaTransportPlacement::Inline);
+        assert_eq!(bar.show_fullscreen, Some(true));
+        assert_eq!(bar.show_settings, None);
+    }
+
+    #[test]
+    fn media_clock_formats_minutes_and_hours() {
+        assert_eq!(media_clock(0.0), "0:00");
+        assert_eq!(media_clock(65.9), "1:05");
+        assert_eq!(media_clock(3725.0), "1:02:05");
+        assert_eq!(media_clock(-3.0), "0:00");
+        assert_eq!(media_clock(f64::NAN), "0:00");
     }
 
     #[test]
