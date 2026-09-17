@@ -507,8 +507,9 @@ impl FontSystem {
         self.generation
     }
 
-    /// Which system this is, for caches that outlive one call.
-    pub(crate) fn instance_id(&self) -> u64 {
+    /// Which system this is, for caches that outlive one call. Process-unique:
+    /// a `FontId` or generation is only meaningful next to this identity.
+    pub fn instance_id(&self) -> u64 {
         self.instance
     }
 

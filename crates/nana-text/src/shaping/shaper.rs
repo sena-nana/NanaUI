@@ -542,6 +542,7 @@ impl Shaper {
             origin_x_px: 0.0,
             glyphs,
             metrics,
+            instance: instance.map(|instance| instance.key),
         })
     }
 }

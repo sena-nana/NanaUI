@@ -5,6 +5,7 @@
 //! grapheme segmentation, because a disagreement between the two is exactly
 //! the kind of finding this IR exists to surface.
 
+use crate::font::FontInstanceKey;
 use crate::id::{FontId, ShapeRunId};
 use crate::metrics::RunMetrics;
 use serde::{Deserialize, Serialize};
@@ -153,6 +154,13 @@ pub struct ShapedRun {
     pub origin_x_px: f32,
     #[serde(default)]
     pub metrics: RunMetrics,
+    /// The face at the axis coordinates and synthesis the glyphs were shaped
+    /// with. A rasterizer needs exactly this to draw the same outlines the
+    /// advances were measured from; re-deriving it from the style would
+    /// reintroduce a second instance resolution. `None` when the engine that
+    /// produced the run does not report it (the migration reference).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<FontInstanceKey>,
 }
 
 impl ShapedRun {

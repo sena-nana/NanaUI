@@ -13,9 +13,11 @@
 //! advances, per-line visual ordering, line box metrics, alignment, ellipsis
 //! and a bounded layout cache.
 //!
-//! [`NativeTextEngine`] ties the three together behind [`TextEngine`]. The
-//! product text path is still `nana-ui`'s cosmic-text shaper and cryoglyph
-//! painter; switching it over is a later step.
+//! [`NativeTextEngine`] ties the three together behind [`TextEngine`]. Since
+//! Phase 4 (#95) the UiWorld's retained text nodes can resolve through it and
+//! keep their layouts behind [`TextLayoutStore`] handles. The product painter
+//! is still `nana-ui`'s cryoglyph, fed by its cosmic-text shaper; drawing
+//! retained layouts is #97.
 //!
 //! # Boundaries
 //!
@@ -24,8 +26,9 @@
 //!   dev dependency, so it can never enter a product dependency edge. It is
 //!   temporary and is deleted along with that dependency once a native engine
 //!   lands.
-//! - **The product text path does not use this crate.** Product text still runs
-//!   through `nana-ui`'s cosmic-text shaper and cryoglyph painter.
+//! - **The product painter does not use this crate yet.** Product text is still
+//!   measured by `nana-ui`'s cosmic-text shaper and drawn by cryoglyph; the
+//!   Runtime only resolves through an engine for hosts that draw layouts.
 //! - **Typography vocabulary is borrowed, not re-declared.** `TextStyle` and
 //!   `TextConstraints` are built from `nana_ui_core`'s backend-neutral
 //!   typography types so the eventual UiWorld adapter is a field-for-field move
@@ -58,11 +61,13 @@ pub mod style;
 pub use constraints::{TextConstraints, TextScale};
 pub use counters::TextWorkCounters;
 pub use edit::{Affinity, CaretGeometry, CaretPosition, HitTestResult};
-pub use engine::{NativeTextEngine, TextEngine};
+pub use engine::{
+    NativeTextEngine, SharedTextEngine, TextEngine, TextEngineEpoch, lock_text_engine,
+};
 pub use id::{FontGeneration, FontId, FontSourceId, ShapeRunId, TextLayoutId, TextRevision};
 pub use layout::{
     IntrinsicWidths, LayoutCacheBudget, LayoutCounters, LayoutRequest, Layouter, LineBox,
-    LineBreakCause, OverflowFlags, TextLayout, TextRect,
+    LineBreakCause, OverflowFlags, StaleLayout, TextLayout, TextLayoutStore, TextRect,
 };
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, ScriptTag, ShapedGlyph, ShapedRun};

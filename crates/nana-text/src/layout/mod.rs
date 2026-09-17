@@ -39,6 +39,7 @@ mod engine;
 mod ir;
 mod key;
 mod lines;
+mod store;
 
 /// For the cross-list check in `source`'s tests: every one-byte separator that
 /// ends a line has to fold. Layout itself reaches the list through `breaks`.
@@ -47,3 +48,4 @@ pub(crate) use breaks::FORCED_BREAKS;
 pub use cache::LayoutCacheBudget;
 pub use engine::{IntrinsicWidths, LayoutCounters, LayoutRequest, Layouter};
 pub use ir::{LineBox, LineBreakCause, OverflowFlags, TextLayout, TextRect};
+pub use store::{StaleLayout, TextLayoutStore};

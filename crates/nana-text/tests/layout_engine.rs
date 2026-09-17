@@ -1983,3 +1983,22 @@ fn caret_and_hit_test_answers_come_straight_off_a_native_layout() {
         "a selection covering everything touches every line"
     );
 }
+
+#[test]
+fn a_language_change_moves_the_engine_epoch_and_a_repeat_does_not() {
+    // `locl` shaping and fallback read the language, so a layout retained under
+    // one hint is not current under another.
+    let mut engine = text_engine(UI);
+    let start = engine.epoch();
+    let hans = nana_text::font::LanguageTag::new("zh-Hans").unwrap();
+    engine.set_language(Some(hans.clone()));
+    let changed = engine.epoch();
+    assert_ne!(changed, start);
+    assert_eq!(changed.font_generation, start.font_generation);
+    engine.set_language(Some(hans));
+    assert_eq!(
+        engine.epoch(),
+        changed,
+        "the same hint again changes nothing"
+    );
+}

@@ -20,7 +20,7 @@ use crate::shaping::{ShapeCounters, ShapeRequest, ShapedText, Shaper};
 use crate::source::TextSource;
 use crate::style::{TextKind, TextStyle};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The character a truncated line ends with. One character, shaped like any
 /// other text, so it picks up the same face, features and fallback.
@@ -47,6 +47,33 @@ pub trait TextEngine {
     ) -> Arc<TextLayout>;
 }
 
+/// One engine shared by everything that shapes against the same font set:
+/// every document and window of a process, and the painter that rasterizes
+/// what they laid out. Sharing it is what lets one label's shaping serve
+/// every other copy of it.
+pub type SharedTextEngine = Arc<Mutex<NativeTextEngine>>;
+
+/// Locks a shared engine. A panic while it was held leaves no half-applied
+/// state a reader could observe — every cache insert is a single operation —
+/// so a poisoned lock is recovered rather than propagated.
+pub fn lock_text_engine(engine: &SharedTextEngine) -> MutexGuard<'_, NativeTextEngine> {
+    engine
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What a layout was produced against: the font system's identity and
+/// generation, and the language hint's generation. A retained layout is
+/// current only while all three match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct TextEngineEpoch {
+    pub font_system: u64,
+    pub font_generation: FontGeneration,
+    /// Bumped by every change of the language hint, which reaches `locl`
+    /// shaping and font fallback just as a face registration does.
+    pub language_generation: u64,
+}
+
 /// Fonts, shaping and layout behind one call.
 pub struct NativeTextEngine {
     fonts: FontSystem,
@@ -57,6 +84,7 @@ pub struct NativeTextEngine {
     /// node.
     ellipsis: TextSource,
     language: Option<LanguageTag>,
+    language_generation: u64,
     /// Strut metrics by face instance and size. Reading them means parsing the
     /// face's metrics tables, and every text node of one style asks for the
     /// same answer, so it is read once per face instance rather than once per
@@ -74,6 +102,7 @@ impl NativeTextEngine {
             layouter: Layouter::default(),
             ellipsis: TextSource::new(ELLIPSIS),
             language: None,
+            language_generation: 0,
             struts: HashMap::new(),
             strut_generation: FontGeneration::default(),
         }
@@ -81,7 +110,20 @@ impl NativeTextEngine {
 
     /// Language hint passed to shaping (`locl`) and to font fallback.
     pub fn set_language(&mut self, language: Option<LanguageTag>) {
-        self.language = language;
+        if self.language != language {
+            self.language = language;
+            self.language_generation += 1;
+        }
+    }
+
+    /// The identity and generation every layout this engine returns is
+    /// valid against.
+    pub fn epoch(&self) -> TextEngineEpoch {
+        TextEngineEpoch {
+            font_system: self.fonts.instance_id(),
+            font_generation: self.fonts.generation(),
+            language_generation: self.language_generation,
+        }
     }
 
     pub fn fonts(&self) -> &FontSystem {
@@ -217,13 +259,19 @@ impl TextEngine for NativeTextEngine {
         let after = self.shaper.counters();
 
         let shaped_now = after.shape_cache_misses - before.shape_cache_misses;
+        let shape_hits = after.shape_cache_hits - before.shape_cache_hits;
+        let layout_hits = layouts.layout_cache_hits - layouts_before.layout_cache_hits;
+        let layout_misses = layouts.layout_cache_misses - layouts_before.layout_cache_misses;
         counters.record_text_pass(1, usize::from(shaped_now > 0));
-        counters.record_shape_cache(after.shape_cache_hits - before.shape_cache_hits, shaped_now);
-        counters.record_layout_cache(
-            layouts.layout_cache_hits - layouts_before.layout_cache_hits,
-            layouts.layout_cache_misses - layouts_before.layout_cache_misses,
-        );
+        counters.record_shape_cache(shape_hits, shaped_now);
+        counters.record_layout_cache(layout_hits, layout_misses);
         counters.record_glyphs_resolved(layout.glyph_count());
+        counters.shape_cache_lookups += shape_hits + shaped_now;
+        counters.layout_cache_lookups += layout_hits + layout_misses;
+        counters.layouts_created += layouts.layout_created - layouts_before.layout_created;
+        counters.constraint_only_relayouts +=
+            layouts.constraint_only_relayouts - layouts_before.constraint_only_relayouts;
+        counters.text_bytes_hashed += after.text_bytes_hashed - before.text_bytes_hashed;
         layout
     }
 }

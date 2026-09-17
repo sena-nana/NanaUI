@@ -775,6 +775,7 @@ impl<'a> Builder<'a> {
             // Assigned by the caller once the line's visual order is known.
             origin_x_px: 0.0,
             metrics: run.metrics,
+            instance: run.instance.clone(),
         }
     }
 

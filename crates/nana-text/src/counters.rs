@@ -7,9 +7,10 @@
 //! rather than become a fake `0`, because a fake zero reads as "this work did
 //! not happen" when it means "nobody looked".
 //!
-//! These are the interfaces #89 reserves. They have no product producer yet;
-//! folding them into `WorkCounters` belongs at the UiWorld seam, when a real
-//! pass exists to fill them.
+//! #89 reserved the first seven fields. #95 gave them a product producer — the
+//! UiWorld text pass — and added the ones that explain what a pass that shaped
+//! nothing still spent: how many candidates were skipped on revision alone,
+//! and whether anything was cloned, hashed or looked up anyway.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,33 @@ pub struct TextWorkCounters {
     /// engine that resolves glyphs records it.
     #[serde(default)]
     pub glyphs_resolved: Option<usize>,
+    /// Considered nodes whose content, style, constraint and font revisions
+    /// all matched the layout they already hold, decided before any text was
+    /// read. Their per-node cost is independent of the text's length.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_nodes_revision_skipped: usize,
+    /// Text strings copied to build a source. Zero on a pass that only skips.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_source_clones: usize,
+    /// Text bytes fed to a content hash. A source hashes once per revision.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_bytes_hashed: usize,
+    /// Shape cache lookups (hits plus misses).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shape_cache_lookups: usize,
+    /// Layout cache lookups (hits plus misses).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub layout_cache_lookups: usize,
+    /// Layouts built rather than answered by the layout cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub layouts_created: usize,
+    /// Of [`Self::layouts_created`], the ones laid out from shaped runs that
+    /// were already cached: a constraint change, not new text.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub constraint_only_relayouts: usize,
+    /// Nodes that ended the pass holding the same layout they started with.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub text_layouts_reused: usize,
 }
 
 impl TextWorkCounters {
@@ -70,12 +98,26 @@ impl TextWorkCounters {
         fold_optional(&mut self.layout_cache_hits, other.layout_cache_hits);
         fold_optional(&mut self.layout_cache_misses, other.layout_cache_misses);
         fold_optional(&mut self.glyphs_resolved, other.glyphs_resolved);
+        self.text_nodes_revision_skipped += other.text_nodes_revision_skipped;
+        self.text_source_clones += other.text_source_clones;
+        self.text_bytes_hashed += other.text_bytes_hashed;
+        self.shape_cache_lookups += other.shape_cache_lookups;
+        self.layout_cache_lookups += other.layout_cache_lookups;
+        self.layouts_created += other.layouts_created;
+        self.constraint_only_relayouts += other.constraint_only_relayouts;
+        self.text_layouts_reused += other.text_layouts_reused;
     }
 
     /// True when no pass has touched any field.
     pub fn is_unobserved(&self) -> bool {
         *self == Self::default()
     }
+}
+
+/// The #95 fields are left out of a serialized record while zero, so a
+/// recorded golden from a pass that never produced them keeps its shape.
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 fn add_optional(slot: &mut Option<usize>, count: usize) {

@@ -633,6 +633,7 @@ fn shaped_run(
             descent_px,
             line_gap_px,
         },
+        instance: None,
     }
 }
 

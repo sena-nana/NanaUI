@@ -3,7 +3,10 @@
 
 mod support;
 
-use nana_text::{FontGeneration, FontId, TextRevision, TextSource};
+use nana_text::{
+    FontGeneration, FontId, StaleLayout, TextLayoutId, TextLayoutStore, TextRevision, TextSource,
+};
+use std::sync::Arc;
 
 /// The smallest thing that can issue and retire generational handles.
 struct FontSlots {
@@ -116,4 +119,68 @@ fn a_revision_is_only_meaningful_next_to_the_source_that_issued_it() {
     assert_eq!(left.revision(), right.revision());
     assert_ne!(left.text(), right.text());
     assert_eq!(TextRevision::default(), TextRevision::INITIAL);
+}
+
+fn layout_at(generation: FontGeneration) -> Arc<nana_text::TextLayout> {
+    let mut layout = support::latin_single_line();
+    layout.font_generation = generation;
+    Arc::new(layout)
+}
+
+#[test]
+fn a_released_layout_handle_stays_rejected_after_its_slot_is_reissued() {
+    let mut store = TextLayoutStore::new();
+    let generation = FontGeneration::new(1);
+    let first = store.insert(layout_at(generation));
+    assert!(store.get(first).is_some());
+
+    assert!(store.remove(first).is_some());
+    assert!(store.get(first).is_none(), "released means gone");
+    assert!(
+        store.remove(first).is_none(),
+        "a second release releases nothing"
+    );
+
+    let reused = store.insert(layout_at(generation));
+    assert_eq!(
+        reused.index(),
+        first.index(),
+        "the slot is reused; that is the risk"
+    );
+    assert!(store.get(reused).is_some());
+    assert_eq!(
+        store.resolve(first, generation).unwrap_err(),
+        StaleLayout::Retired,
+        "a handle kept across the release must not alias the new layout"
+    );
+    assert_eq!(store.len(), 1);
+}
+
+#[test]
+fn a_layout_handle_is_only_accepted_by_the_store_that_issued_it() {
+    let generation = FontGeneration::new(1);
+    let mut left = TextLayoutStore::new();
+    let mut right = TextLayoutStore::new();
+    let from_left = left.insert(layout_at(generation));
+    let from_right = right.insert(layout_at(generation));
+    assert_eq!(from_left.index(), from_right.index());
+    assert!(right.get(from_left).is_none(), "another document's handle");
+    assert!(left.get(from_right).is_none());
+    assert!(right.get(TextLayoutId::NULL).is_none());
+}
+
+#[test]
+fn a_retained_layout_from_an_older_font_generation_does_not_resolve() {
+    let mut store = TextLayoutStore::new();
+    let old = FontGeneration::new(4);
+    let handle = store.insert(layout_at(old));
+    assert!(store.resolve(handle, old).is_ok());
+    assert_eq!(
+        store.resolve(handle, old.bumped()).unwrap_err(),
+        StaleLayout::FontGeneration {
+            layout: old,
+            current: old.bumped(),
+        },
+        "a layout whose FontIds may name replaced faces is refused, not read"
+    );
 }

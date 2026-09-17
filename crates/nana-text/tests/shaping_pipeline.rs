@@ -341,6 +341,30 @@ fn variation_axes_reach_shaping_and_the_cache_key() {
 }
 
 #[test]
+fn a_run_names_the_instance_its_glyphs_were_shaped_at() {
+    // A rasterizer drawing these glyphs needs the coordinates the advances
+    // were measured with, not a second resolution from the style.
+    let (mut fonts, ids) = system(&["nana-test-vf"]);
+    let mut shaper = Shaper::default();
+    let source = TextSource::new("A");
+    let mut vf = style("NanaTestVF");
+    vf.variations = vec![FontVariationSetting::new(*b"wdth", 200.0)];
+    let shaped = shape(&mut shaper, &mut fonts, &source, &vf, DirSpec::Ltr);
+    let run = &shaped.runs[0];
+    let instance = run.instance.as_ref().expect("the native shaper reports it");
+    assert_eq!(instance.font, run.font);
+    assert_eq!(instance.font, ids[0]);
+    assert!(
+        instance
+            .coords
+            .iter()
+            .any(|coord| coord.tag == *b"wdth" && coord.value > 100.0),
+        "{:?}",
+        instance.coords
+    );
+}
+
+#[test]
 fn the_language_hint_reaches_opentype_locl() {
     // Noto Sans SC substitutes its digit glyphs through `locl` under the
     // `ZHS` language system of real scripts (`latn`, `hani`, ...), so the digit
