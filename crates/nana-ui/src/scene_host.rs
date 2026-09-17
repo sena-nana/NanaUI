@@ -1542,14 +1542,18 @@ fn scene_aux_window_attributes(
     desktop: &Desktop,
 ) -> Result<winit::window::WindowAttributes, String> {
     let attributes = scene_window_attributes(settings, desktop).with_visible(false);
+    if settings.modal && parent.is_none() {
+        return Err("modal window requires a parent".into());
+    }
+    // Any child is owned by its parent HWND, modal or not: it stays above the
+    // parent, minimizes with it and never gets its own taskbar button.
     #[cfg(target_os = "windows")]
-    let attributes = if settings.modal {
-        let parent = parent.ok_or_else(|| "modal window requires a parent".to_string())?;
+    let attributes = if let Some(parent) = parent {
         let handle = parent
             .window_handle()
-            .map_err(|error| format!("failed to acquire modal owner handle: {error}"))?;
+            .map_err(|error| format!("failed to acquire owner handle: {error}"))?;
         let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-            return Err("Windows modal owner is not an HWND".into());
+            return Err("Windows owner is not an HWND".into());
         };
         {
             let chrome = windows_scene_chrome(settings.system_caption, settings.transparent);
@@ -1570,11 +1574,8 @@ fn scene_aux_window_attributes(
             attributes.with_platform_attributes(Box::new(win))
         }
     } else {
-        let _ = parent;
         attributes
     };
-    #[cfg(not(target_os = "windows"))]
-    let _ = parent;
     Ok(attributes)
 }
 
