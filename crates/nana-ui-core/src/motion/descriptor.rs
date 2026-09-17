@@ -814,6 +814,32 @@ mod tests {
         );
     }
 
+    /// Consumers cache the packed tables on `(id, structure_epoch)`. Every
+    /// store starts its epoch at 0, and a clone goes on counting its own from
+    /// wherever it was copied, so an id shared with the original would let one
+    /// slab be served for the other.
+    #[test]
+    fn a_clone_is_a_store_of_its_own() {
+        let mut store = MotionDescriptorStore::new();
+        assert_ne!(store.id(), MotionDescriptorStore::new().id());
+
+        let mut clone = store.clone();
+        assert_ne!(clone.id(), store.id());
+        assert_eq!(clone.structure_epoch(), store.structure_epoch());
+
+        // Diverging leaves the epochs equal while the tables differ, which is
+        // exactly the case the ids have to separate.
+        let curve = MotionCurve::Easing(Easing::Linear);
+        store
+            .bind(&opacity_track(1, 0.0, 1.0, curve))
+            .expect("bind");
+        clone
+            .bind(&opacity_track(1, 0.0, 0.5, curve))
+            .expect("bind");
+        assert_eq!(clone.structure_epoch(), store.structure_epoch());
+        assert_ne!(clone.pack_gpu().0, store.pack_gpu().0);
+    }
+
     #[test]
     fn pack_gpu_indexes_match_handles_and_vacant_slots_keep_generation() {
         let mut store = MotionDescriptorStore::new();
