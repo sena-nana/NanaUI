@@ -1247,6 +1247,10 @@ impl UiWorld {
                     self.clear_overlay_references(id);
                     self.overlay_host_nodes.remove(&id);
                     self.drop_targets.remove(&id);
+                    // Every other per-node side table is cleared here; this one
+                    // grew for the life of the session on any view that mounts
+                    // and unmounts promoted nodes.
+                    self.compositor_layer_requests.remove(&id);
                     if self.drop_hover.is_some_and(|(hover, _)| hover == id) {
                         self.drop_hover = None;
                     }

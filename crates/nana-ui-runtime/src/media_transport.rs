@@ -264,6 +264,11 @@ impl ComponentView for MediaTransportBar {
 impl RegisterableComponent for MediaTransportBar {
     const TYPE_ID: &'static str = crate::component_descriptors::MEDIA_TRANSPORT_BAR.type_id;
     const TAGS: &'static [&'static str] = crate::component_descriptors::MEDIA_TRANSPORT_BAR.tags;
+    /// Without this the binding keeps no typed state and `finish_semantic` is
+    /// never installed, so a `<media-transport-bar>` from markup would project
+    /// an empty toolbar: no play button, no seek range, no time readout, no
+    /// volume or settings popover, no fullscreen button.
+    const RETAIN_SEMANTIC_STATE: bool = true;
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         MediaTransportBar::new()
             .live(
@@ -275,6 +280,12 @@ impl RegisterableComponent for MediaTransportBar {
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(BAR_MAX_WIDTH),
             )
+    }
+    fn finish_semantic(
+        context: &mut AppContext,
+        entity: Entity<Self>,
+    ) -> Result<(), FrameworkError> {
+        context.assemble_media_transport_bar(entity).map(|_| ())
     }
 }
 
@@ -694,6 +705,47 @@ mod tests {
 
     fn document() -> DocumentId {
         DocumentId::new(1).unwrap()
+    }
+
+    /// Markup binds through the registry, which only installs `finish` for a
+    /// type that retains its semantic state. Without that the bar projects as
+    /// an empty toolbar: no play button, no seek range, no time readout.
+    #[test]
+    fn a_bar_bound_from_markup_assembles_its_controls() {
+        let mut cx = AppContext::new();
+        let document = document();
+        let id = StableNodeId::new(42).unwrap();
+        let mut queue = crate::MutationQueue::new();
+        queue.create(
+            id,
+            document,
+            crate::NodeKind::Element {
+                tag: "media-transport-bar".into(),
+            },
+        );
+        cx.commit_mutations(queue).unwrap();
+
+        let type_id = cx
+            .resolve_component_tag("media-transport-bar")
+            .unwrap()
+            .clone();
+        let layout = Arc::new(nana_ui_core::LayoutStyle::default());
+        let spec = crate::SemanticSpec::from_parts(&type_id, &layout);
+        let mut mutations = crate::MutationQueue::new();
+        let binding = cx
+            .prepare_semantic_binding(id, &spec, &mut mutations)
+            .unwrap();
+        cx.commit_mutations(mutations).unwrap();
+        cx.finish_semantic_binding(binding).unwrap();
+
+        let bar = Entity::<MediaTransportBar>::from_stable_id(id);
+        let slots = cx.read(bar, |bar| bar.slots().clone()).unwrap();
+        assert!(
+            slots.play.is_some(),
+            "a bar from markup has no play button: {slots:?}"
+        );
+        assert!(slots.seek.is_some(), "and no seek range");
+        assert!(slots.time.is_some(), "and no time readout");
     }
 
     #[test]

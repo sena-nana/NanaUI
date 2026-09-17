@@ -291,7 +291,14 @@ impl TimelineBuilder<'_> {
             if let Some(target) = nana_ui_core::motion::MotionTargetId::new(self.target.get()) {
                 track.target = target;
             }
-            let Some(id) = user_animation_id(self.target, track.property) else {
+            // Keyed on the track as well as the property: a sequence that
+            // fades opacity in and then out compiles to two tracks on one
+            // property, and one id for both would let the second overwrite the
+            // first in the same mutation batch — only the last stage would
+            // ever play. The caller's own `MotionTrackId`s are stable across
+            // rebuilds of the same timeline, so re-running one still replaces
+            // it rather than stacking a second copy.
+            let Some(id) = user_timeline_animation_id(self.target, track.property, track.id) else {
                 continue;
             };
             let Some(target) = StableNodeId::new(track.target.get()) else {
@@ -443,6 +450,20 @@ fn user_animation_id(target: StableNodeId, property: AnimatableProperty) -> Opti
     hasher.write_u64(USER_MOTION);
     hasher.write_u64(target.get());
     hasher.write_u8(property_tag(property));
+    AnimationId::new(hasher.finish())
+}
+
+/// One id per (node, property, track) for a compiled timeline.
+fn user_timeline_animation_id(
+    target: StableNodeId,
+    property: AnimatableProperty,
+    track: nana_ui_core::motion::MotionTrackId,
+) -> Option<AnimationId> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_u64(USER_MOTION);
+    hasher.write_u64(target.get());
+    hasher.write_u8(property_tag(property));
+    hasher.write_u64(track.get());
     AnimationId::new(hasher.finish())
 }
 

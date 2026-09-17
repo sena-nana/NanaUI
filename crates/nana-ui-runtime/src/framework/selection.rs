@@ -156,6 +156,19 @@ impl AppContext {
                         self.set_file_drag_hover(document, target, paths)
                     }
                     nana_ui_core::FileDragKind::Drop => {
+                        // A node that was told `Hovered` is owed a terminal
+                        // event. Releasing over some *other* target — or over
+                        // nothing — used to clear the hover silently, leaving
+                        // whatever state it set on hover latched until an
+                        // unrelated drag happened to enter it again. `Cancel`
+                        // already emits `Left`; the two terminal paths agree
+                        // now.
+                        let previous = self.world.drop_hover();
+                        if let Some((id, _)) =
+                            previous.filter(|(id, _)| target.map(|(target, _)| target) != Some(*id))
+                        {
+                            self.emit_file_drop(id, crate::FileDropEvent::Left)?;
+                        }
                         let cleared = self.world.set_drop_hover(None);
                         if let Some((id, effect)) = target {
                             self.emit_file_drop(

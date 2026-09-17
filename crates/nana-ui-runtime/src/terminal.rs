@@ -707,8 +707,10 @@ impl AppContext {
 }
 
 fn view_from_spec(spec: &SemanticSpec<'_>, screen: Option<TerminalScreen>) -> TerminalView {
-    let columns = spec_u16(spec, &["columns", "cols"], 1);
-    let rows = spec_u16(spec, &["rows"], 1);
+    let (columns, rows) = clamped_grid(
+        spec_u16(spec, &["columns", "cols"], 1),
+        spec_u16(spec, &["rows"], 1),
+    );
     let mut view =
         TerminalView::new(screen.unwrap_or_else(|| TerminalScreen::blank(columns, rows)));
     view.disabled = spec.disabled;
@@ -905,6 +907,25 @@ fn parse_terminal_cursor(value: &serde_json::Value) -> Option<TerminalCursor> {
     })
 }
 
+/// Author-declared dimensions capped at [`MAX_TERMINAL_CELLS`].
+///
+/// `TerminalScreen::blank` answers an oversized grid with *no* cells, which
+/// fails `valid()` — and since the binding's `finish_semantic` propagates that,
+/// a `<terminal columns="1500" rows="1500">` would fail the whole binding
+/// rather than render. Rows give way first: a terminal is read top to bottom,
+/// so the visible window keeps its width.
+fn clamped_grid(columns: u16, rows: u16) -> (u16, u16) {
+    let columns = columns.max(1);
+    let rows = rows.max(1);
+    if usize::from(columns) * usize::from(rows) <= MAX_TERMINAL_CELLS {
+        return (columns, rows);
+    }
+    let rows = u16::try_from(MAX_TERMINAL_CELLS / usize::from(columns))
+        .unwrap_or(u16::MAX)
+        .max(1);
+    (columns, rows)
+}
+
 fn spec_u16(spec: &SemanticSpec<'_>, keys: &[&str], fallback: u16) -> u16 {
     keys.iter()
         .find_map(|key| spec.attr(key))
@@ -1000,6 +1021,27 @@ fn terminal_key_bytes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An author can write any number; `TerminalScreen::blank` answers an
+    /// oversized grid with no cells at all, and the binding then fails instead
+    /// of rendering.
+    #[test]
+    fn an_oversized_grid_is_clamped_rather_than_rejected() {
+        let (columns, rows) = clamped_grid(1500, 1500);
+        assert_eq!(columns, 1500, "the visible width is kept");
+        assert!(
+            usize::from(columns) * usize::from(rows) <= MAX_TERMINAL_CELLS,
+            "{columns}x{rows} still exceeds the cap"
+        );
+        let screen = TerminalScreen::blank(columns, rows);
+        assert!(!screen.cells.is_empty(), "a clamped screen has cells");
+
+        // A grid inside the cap is untouched.
+        assert_eq!(clamped_grid(80, 24), (80, 24));
+        // And zero is not a terminal.
+        assert_eq!(clamped_grid(0, 0), (1, 1));
+    }
+
     use std::sync::Mutex;
 
     #[test]

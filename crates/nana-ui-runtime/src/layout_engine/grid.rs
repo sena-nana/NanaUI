@@ -826,7 +826,12 @@ pub(super) fn place_grid_2d_items(
         let cell_h = grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
         let inline_x = col_off.get(item.col).copied().unwrap_or(0.0);
         let cell_x = if rtl_inline {
-            (content.width - inline_x - cell_w).max(0.0)
+            // No clamp: a track block wider than the content box overflows past
+            // the inline-*start* edge, which in RTL is the left one. Clamping at
+            // zero stacks every overflowing column on top of the first instead
+            // of letting them run off the edge, and fixed-px tracks are never
+            // shrunk by track sizing, so ordinary authored grids reach this.
+            content.width - inline_x - cell_w
         } else {
             inline_x
         };

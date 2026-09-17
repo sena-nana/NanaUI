@@ -2704,6 +2704,7 @@ fn component_assembler(
         crate::PathField => assemble_path_field,
         crate::FileTab => assemble_file_tab,
         crate::DiffView => assemble_diff_view,
+        crate::MediaTransportBar => assemble_media_transport_bar,
     }
     None
 }

@@ -648,6 +648,11 @@ impl AppContext {
                     },
                 )
                 .is_ok()
+                // `advance_animations` already pushed this target for the
+                // SIDEBAR sample, and the host reprojects once per entry:
+                // without the guard its sibling loops all carry, a toggling
+                // section is uploaded twice every frame of its transition.
+                && !frame.component_updates.contains(&target)
             {
                 frame.component_updates.push(target);
             }

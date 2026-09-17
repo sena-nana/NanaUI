@@ -682,4 +682,68 @@ mod tests {
         let sequenced = alpha(&cx, id);
         assert!(sequenced < 1.0 && sequenced > 0.25);
     }
+
+    /// A sequence that touches one property twice compiles to two tracks. Both
+    /// have to install: keying the animation on `(node, property)` alone lets
+    /// the second overwrite the first in the same batch, so the opening stage
+    /// never plays at all.
+    #[test]
+    fn a_sequence_on_one_property_plays_every_stage() {
+        fn stage(track: u64, start_ms: u64, duration_ms: u64, from: f32, to: f32) -> MotionTrack {
+            MotionTrack::transition(
+                MotionTrackId::new(track).unwrap(),
+                MotionTargetId::new(1).unwrap(),
+                crate::AnimatableProperty::Opacity,
+                crate::MotionValue::Scalar(from),
+                crate::MotionValue::Scalar(to),
+                MotionTiming::new(
+                    Duration::from_millis(start_ms),
+                    Duration::from_millis(duration_ms),
+                    Duration::from_millis(16),
+                ),
+                MotionCurve::Easing(crate::Easing::Linear),
+                AnimationPlayback::default(),
+            )
+        }
+
+        use crate::{
+            AnimationPlayback, MotionCurve, MotionGraph, MotionTargetId, MotionTiming, MotionTrack,
+            MotionTrackId, Timeline,
+        };
+
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Motion")).unwrap();
+        let id = button.stable_id();
+        cx.update_component(button, |_, ctx| {
+            ctx.node().timeline(Timeline::sequence([
+                MotionGraph::track(stage(1, 0, 100, 0.0, 1.0)),
+                MotionGraph::track(stage(2, 0, 100, 1.0, 0.0)),
+            ]));
+        })
+        .unwrap();
+
+        tick(&mut cx, 50);
+        let opening = alpha(&cx, id);
+        assert!(
+            opening > 0.0 && opening < 1.0,
+            "the first stage never ran: {opening}"
+        );
+        tick(&mut cx, 150);
+        let closing = alpha(&cx, id);
+        assert!(
+            closing > 0.0 && closing < 1.0,
+            "the second stage never ran: {closing}"
+        );
+        tick(&mut cx, 190);
+        let nearly_closed = alpha(&cx, id);
+        assert!(
+            nearly_closed < closing,
+            "the second stage is the closing one: {closing} -> {nearly_closed}"
+        );
+        assert!(
+            nearly_closed < 0.2,
+            "and it is nearly done: {nearly_closed}"
+        );
+    }
 }

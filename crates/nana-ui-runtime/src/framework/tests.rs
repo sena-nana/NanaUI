@@ -2897,6 +2897,64 @@ fn file_drag_resolves_hover_and_drop_onto_the_registered_target() {
 }
 
 #[test]
+fn a_drop_elsewhere_tells_the_hovered_target_it_was_left() {
+    use std::{
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
+
+    use nana_ui_core::{DropAccepts, DropEffect, FileDragKind};
+
+    use crate::FileDropEvent;
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut panel_style = NodeStyle::default();
+    {
+        let layout = Arc::make_mut(&mut panel_style.layout);
+        layout.width = Some(LengthSpec::Px(200.0));
+        layout.height = Some(LengthSpec::Px(100.0));
+    }
+    let panel = context
+        .create_component(document, Stack::column(0.0).style(panel_style))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+        .unwrap();
+    context
+        .set_drop_target(panel, DropAccepts::files().effect(DropEffect::Copy))
+        .unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&events);
+    context
+        .on(panel, move |_, event: &FileDropEvent, _| {
+            log.lock().unwrap().push(event.clone());
+        })
+        .unwrap();
+
+    let paths = [PathBuf::from("/tmp/note.md")];
+    context
+        .dispatch_file_drag(document, FileDragKind::Hover, &paths, Some((20.0, 20.0)))
+        .unwrap();
+    // Released outside every target: the panel still has to hear that the
+    // drag it was told about is over, the way a cancel tells it.
+    context
+        .dispatch_file_drag(document, FileDragKind::Drop, &paths, Some((380.0, 280.0)))
+        .unwrap();
+
+    let log = events.lock().unwrap();
+    assert!(
+        matches!(&log[0], FileDropEvent::Hovered { .. }),
+        "expected a hover first, got {log:?}"
+    );
+    assert!(
+        matches!(log.get(1), Some(FileDropEvent::Left)),
+        "the hovered target was never told the drag left: {log:?}"
+    );
+}
+
+#[test]
 fn file_drag_drop_miss_redraws_so_hover_chrome_clears() {
     use std::path::PathBuf;
 

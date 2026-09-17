@@ -2989,6 +2989,55 @@ fn rtl_grid_mirrors_column_order_and_justify_self() {
     );
 }
 
+/// Tracks wider than the content box overflow past the inline-start edge —
+/// the left one in RTL. Clamping the mirrored x at zero piles every
+/// overflowing column onto the first instead.
+#[test]
+fn rtl_grid_tracks_overflow_the_start_edge_instead_of_stacking() {
+    let cell = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(300.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            grid_columns: Some(vec![GridTrack::Px(200.0), GridTrack::Px(200.0)]),
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("a"), cell("b")],
+        text: None,
+    };
+    let boxes = box_map(&tree, 300.0, 20.0);
+    // Track 1 is the rightmost: 300 - 200 = 100.
+    assert!(
+        (boxes["a"].x - 100.0).abs() < 0.5,
+        "first track should sit at 100, got {:?}",
+        boxes["a"]
+    );
+    // Track 2 mirrors to 300 - 200 - 200 = -100, overflowing the left edge.
+    assert!(
+        (boxes["b"].x + 100.0).abs() < 0.5,
+        "second track should overflow to -100, got {:?}",
+        boxes["b"]
+    );
+    assert!(
+        boxes["b"].x + 200.0 <= boxes["a"].x + 0.5,
+        "the two tracks must not overlap: {:?} vs {:?}",
+        boxes["a"],
+        boxes["b"]
+    );
+}
+
 #[test]
 fn rtl_grid_keeps_ltr_geometry_when_direction_is_default() {
     let cell = |id: &str| StyleLayoutNode {
