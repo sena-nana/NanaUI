@@ -77,17 +77,16 @@ impl AppContext {
             let event = event
                 .downcast_ref::<E>()
                 .expect("handler is indexed by event type");
-            handler(
-                view,
-                event,
-                &mut ViewContext {
-                    entity,
-                    mutations,
-                    events,
-                    program_messages,
-                    now,
-                },
-            );
+            let mut cx = ViewContext {
+                entity,
+                mutations,
+                events,
+                program_messages,
+                now,
+                reassemble: false,
+            };
+            handler(view, event, &mut cx);
+            cx.reassemble
         };
         self.index_event_handler((entity.id, TypeId::of::<E>()), entity.id);
         self.event_handlers
@@ -160,17 +159,16 @@ impl AppContext {
             let event = event
                 .downcast_ref::<E>()
                 .expect("observer handler is indexed by event type");
-            handler(
-                view,
-                event,
-                &mut ViewContext {
-                    entity: observer,
-                    mutations,
-                    events,
-                    program_messages,
-                    now,
-                },
-            );
+            let mut cx = ViewContext {
+                entity: observer,
+                mutations,
+                events,
+                program_messages,
+                now,
+                reassemble: false,
+            };
+            handler(view, event, &mut cx);
+            cx.reassemble
         };
         self.index_event_handler((source.id, TypeId::of::<E>()), observer.id);
         self.event_handlers
@@ -211,6 +209,9 @@ impl AppContext {
         result
     }
 
+    /// Runs the handlers for queued events. Returns the observers whose
+    /// handlers asked, through [`ViewContext::reassemble`], for their
+    /// assembler to run once the caller commits.
     pub(super) fn deliver_events(
         &mut self,
         id: StableNodeId,
@@ -218,7 +219,8 @@ impl AppContext {
         mutations: &mut MutationQueue,
         events: &mut VecDeque<BoxedEvent>,
         program_messages: &mut Vec<ProgramMessage>,
-    ) -> Result<(), FrameworkError> {
+    ) -> Result<Vec<(StableNodeId, TypeId)>, FrameworkError> {
+        let mut reassemble = Vec::new();
         let mut delivered = 0;
         while let Some((emitter, event_type, event)) = events.pop_front() {
             delivered += 1;
@@ -244,7 +246,7 @@ impl AppContext {
                 let Some(mut observer) = self.views.remove(&handler.observer) else {
                     continue;
                 };
-                (handler.callback)(
+                let asked = (handler.callback)(
                     observer.as_mut(),
                     event.as_ref(),
                     mutations,
@@ -252,11 +254,18 @@ impl AppContext {
                     program_messages,
                     self.component_lifecycle.now,
                 );
+                let observer_type = (*observer).type_id();
+                if asked
+                    && super::component_assembler(observer_type).is_some()
+                    && !reassemble.iter().any(|(id, _)| *id == handler.observer)
+                {
+                    reassemble.push((handler.observer, observer_type));
+                }
                 self.views.insert(handler.observer, observer);
             }
             self.event_handlers.insert(key, handlers);
         }
-        Ok(())
+        Ok(reassemble)
     }
 }
 

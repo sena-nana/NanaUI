@@ -13,8 +13,8 @@ use crate::view_components::{
 };
 use crate::{
     AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
-    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, StableNodeId,
-    TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
+    FrameworkError, InteractionState, MutationQueue, NodeKind, NodeStyle, Popover, PopoverToggled,
+    StableNodeId, TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
 };
 
 const SWATCH_SIZE: f32 = 22.0;
@@ -42,6 +42,8 @@ pub struct ColorField {
     pub hue: f32,
     pub sat: f32,
     pub val: f32,
+    /// Whether the picker is open. It owns the picker's open state: write this
+    /// field, not the assembled `Popover`, which the next assembly overwrites.
     pub opened: bool,
     pub disabled: bool,
     pub invalid: bool,
@@ -258,10 +260,16 @@ impl AppContext {
         };
 
         if created {
-            self.observe(swatch, field, |field, _: &Activate, _cx| {
+            self.observe(swatch, field, |field, _: &Activate, cx| {
                 if !field.disabled {
                     field.opened = !field.opened;
+                    cx.reassemble();
                 }
+            })?;
+            // Light dismiss and Escape close the picker directly; mirror that
+            // so a later reassembly does not reopen it.
+            self.observe(picker, field, |field, event: &PopoverToggled, _| {
+                field.opened = event.open;
             })?;
             self.observe(hex, field, |field, event: &TextChanged, cx| {
                 if let Some(value) = parse_hex(&event.value) {
@@ -276,6 +284,7 @@ impl AppContext {
                 field.sat = sample.x.clamp(0.0, 1.0);
                 field.val = sample.y.clamp(0.0, 1.0);
                 field.apply_hsv();
+                cx.reassemble();
                 match event {
                     XYPadEvent::Input(_) => cx.emit(ColorInput { value: field.value }),
                     XYPadEvent::Change(_) => cx.emit(ColorChanged { value: field.value }),
@@ -284,11 +293,13 @@ impl AppContext {
             self.observe(hue, field, |field, event: &RangeInput, cx| {
                 field.hue = event.value as f32;
                 field.apply_hsv();
+                cx.reassemble();
                 cx.emit(ColorInput { value: field.value });
             })?;
             self.observe(hue, field, |field, event: &RangeChanged, cx| {
                 field.hue = event.value as f32;
                 field.apply_hsv();
+                cx.reassemble();
                 cx.emit(ColorChanged { value: field.value });
             })?;
         }
@@ -529,6 +540,32 @@ mod tests {
     }
 
     #[test]
+    fn the_swatch_opens_the_picker_and_a_dismissal_stays_closed() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let snapshot = context.read(field, Clone::clone).unwrap();
+        let picker = Entity::<Popover>::from_stable_id(snapshot.picker.unwrap());
+        let swatch = Entity::<Button>::from_stable_id(snapshot.swatch.unwrap());
+        let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
+        let open = |context: &AppContext| context.read(picker, |popover| popover.open).unwrap();
+
+        assert!(context.activate_button(swatch).unwrap());
+        assert!(open(&context), "the swatch opens the picker");
+
+        assert!(context.dismiss_popovers_outside(None).unwrap());
+        assert!(!context.read(field, |field| field.opened).unwrap());
+        context.set_range_value(hue, 200.0).unwrap();
+        assert!(
+            !open(&context),
+            "a picker change must not reopen a dismissed picker"
+        );
+    }
+
+    #[test]
     fn a_hue_commit_reports_a_committed_color() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -564,5 +601,37 @@ mod tests {
             green[1] > 0.99 && green[0] < 0.01,
             "hue 120 is green: {green:?}"
         );
+        drop(events);
+        let hex = context
+            .read(field, |field| field.hex)
+            .unwrap()
+            .map(Entity::<TextInput>::from_stable_id)
+            .unwrap();
+        assert_eq!(
+            context
+                .read(hex, |input| input.state.value.to_string())
+                .unwrap(),
+            "#00ff00",
+            "a picker change refreshes the hex field without a host write"
+        );
+
+        assert!(context.focus_node(document, hex.stable_id()).unwrap());
+        assert!(context.select_all_focused_text(document).unwrap());
+        let mut typed = String::new();
+        for key in "#00FF88".chars() {
+            typed.push(key);
+            context
+                .replace_focused_text(document, &key.to_string())
+                .unwrap();
+            assert_eq!(
+                context
+                    .read(hex, |input| input.state.value.to_string())
+                    .unwrap(),
+                typed,
+                "typing into the hex field is never rewritten"
+            );
+        }
+        let value = context.read(field, |field| field.value).unwrap();
+        assert!(value[2] > 0.5, "a complete hex still commits: {value:?}");
     }
 }

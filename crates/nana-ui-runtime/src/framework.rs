@@ -422,7 +422,8 @@ type ErasedEventHandler = Box<
             &mut VecDeque<BoxedEvent>,
             &mut Vec<ProgramMessage>,
             Duration,
-        ) + Send,
+        ) -> bool
+        + Send,
 >;
 struct EventHandler {
     key: Option<String>,
@@ -604,9 +605,18 @@ pub struct ViewContext<'a, V: View> {
     events: &'a mut VecDeque<BoxedEvent>,
     program_messages: &'a mut Vec<ProgramMessage>,
     now: Duration,
+    reassemble: bool,
 }
 
 impl<V: View> ViewContext<'_, V> {
+    /// From an `observe` handler that changed what a composite derives its
+    /// children from: run the observer's assembler once the update delivering
+    /// this event commits, as an `update_component` write would. Elsewhere the
+    /// update already reassembles its own component and this does nothing.
+    pub fn reassemble(&mut self) {
+        self.reassemble = true;
+    }
+
     pub const fn entity(&self) -> Entity<V> {
         self.entity
     }
@@ -2376,6 +2386,7 @@ impl AppContext {
                 events: &mut events,
                 program_messages: &mut program_messages,
                 now: self.component_lifecycle.now,
+                reassemble: false,
             },
         );
         self.inherit_segmented_option_surface(entity.id, &mut staged);
@@ -2390,18 +2401,24 @@ impl AppContext {
         if delivered.is_ok() {
             staged.project(entity.id, &self.world, &mut mutations);
         }
-        let commit = delivered.and_then(|()| self.commit_mutations(mutations).map(|_| ()));
+        let commit =
+            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
         if commit.is_ok() {
             self.views.insert(entity.id, Box::new(staged));
         } else {
             self.views.insert(entity.id, boxed);
         }
-        commit?;
+        let observers = commit?;
         if !self.world.is_mounted(entity.id) {
             self.suspend_component_lifecycle(entity.id);
         }
-        self.sync_component_lifecycle(entity.id)?;
-        self.run_component_assembler(entity.id, TypeId::of::<C>())?;
+        let own = self
+            .sync_component_lifecycle(entity.id)
+            .and_then(|()| self.run_component_assembler(entity.id, TypeId::of::<C>()));
+        // Observer handlers already changed their components; their chrome
+        // follows even when this component's own follow-up fails.
+        let observed = self.run_observer_assemblers(observers);
+        own.and(observed)?;
         Ok(result)
     }
 
@@ -2414,6 +2431,18 @@ impl AppContext {
     /// failure, so the write itself drives it. Assemblers are idempotent and
     /// return early when nothing changed; the guard keeps the
     /// `update_component` calls they make from re-entering.
+    fn run_observer_assemblers(
+        &mut self,
+        observers: Vec<(StableNodeId, TypeId)>,
+    ) -> Result<(), FrameworkError> {
+        let mut outcome = Ok(());
+        for (id, type_id) in observers {
+            let assembled = self.run_component_assembler(id, type_id);
+            outcome = outcome.and(assembled);
+        }
+        outcome
+    }
+
     fn run_component_assembler(
         &mut self,
         id: StableNodeId,
@@ -2461,6 +2490,7 @@ impl AppContext {
                 events: &mut events,
                 program_messages: &mut program_messages,
                 now: self.component_lifecycle.now,
+                reassemble: false,
             },
         );
         self.inherit_segmented_option_surface(entity.id, view);
@@ -2475,12 +2505,15 @@ impl AppContext {
         if delivered.is_ok() {
             project(view, &self.world, &mut mutations);
         }
-        let commit = delivered.and_then(|()| self.commit_mutations(mutations).map(|_| ()));
+        let commit =
+            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
         self.views.insert(entity.id, boxed);
-        if commit.is_ok() && !self.world.is_mounted(entity.id) {
+        let observers = commit?;
+        if !self.world.is_mounted(entity.id) {
             self.suspend_component_lifecycle(entity.id);
         }
-        commit.map(|_| result)
+        self.run_observer_assemblers(observers)?;
+        Ok(result)
     }
 
     pub fn remove_view<V: View>(&mut self, entity: Entity<V>) -> Result<V, FrameworkError> {
@@ -2678,7 +2711,7 @@ mod retained_interaction_tests;
 ///
 /// One table so [`AppContext::update_component`] and the explicit
 /// `assemble_*` entry points cannot disagree about which types self-assemble.
-fn component_assembler(
+pub(super) fn component_assembler(
     type_id: TypeId,
 ) -> Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>> {
     macro_rules! assemblers {
