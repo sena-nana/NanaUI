@@ -10159,3 +10159,67 @@ fn modal_accessibility_bounds_keep_surface_and_descendant_clipping() {
         "descendant remains clipped to the modal surface"
     );
 }
+
+#[test]
+fn an_invalid_measurement_neither_drops_nor_poisons_the_layout_cache() {
+    struct NanOnce {
+        failed: bool,
+    }
+    impl TextShaper for NanOnce {
+        fn shape(
+            &mut self,
+            id: StableNodeId,
+            text: &TextContent,
+            style: &ComputedStyle,
+            constraints: crate::TextShapeConstraints,
+        ) -> TextMetrics {
+            let mut metrics = MeasureTextShaper.shape(id, text, style, constraints);
+            if text.value == "bad" && !self.failed {
+                self.failed = true;
+                metrics.width = f32::NAN;
+            }
+            metrics
+        }
+    }
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "good".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let mut shaper = NanOnce { failed: false };
+    world.shape_text(&work.text, &mut shaper).unwrap();
+
+    let mut bad = MutationQueue::new();
+    bad.create(node(2), document(1), NodeKind::Text);
+    bad.set_text(
+        node(2),
+        TextContent {
+            value: "bad".into(),
+        },
+    );
+    bad.create(node(3), document(1), NodeKind::Text);
+    bad.set_text(
+        node(3),
+        TextContent {
+            value: "good".into(),
+        },
+    );
+    world.commit(bad).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert!(world.shape_text(&work.text, &mut shaper).is_err());
+
+    // The retry measures the failed text again instead of reading the NaN back,
+    // and the text measured before the failure is still cached.
+    world.shape_text(&work.text, &mut shaper).unwrap();
+    let retried = world.last_work_counters();
+    assert!(retried.text_layout_cache_hits >= 1, "{retried:?}");
+    assert!(world.text_metrics(node(2)).unwrap().width.is_finite());
+}

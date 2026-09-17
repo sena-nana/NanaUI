@@ -109,7 +109,11 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
             self.wrap_layouts = self.wrap_layouts.saturating_add(1);
         }
         let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        self.cache.insert(key, metrics);
+        // An invalid measurement fails the pass; caching it would fail every
+        // retry with the same answer the host has since stopped giving.
+        if validate_text_metrics(id, metrics).is_ok() {
+            self.cache.insert(key, metrics);
+        }
         metrics
     }
 
@@ -151,7 +155,11 @@ impl TextShaper for PreparedCountingShaper<'_> {
             *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
         }
         let metrics = inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
-        self.cache.insert(key, metrics);
+        // An invalid measurement fails the pass; caching it would fail every
+        // retry with the same answer the host has since stopped giving.
+        if validate_text_metrics(id, metrics).is_ok() {
+            self.cache.insert(key, metrics);
+        }
         metrics
     }
     fn shape_cached(
@@ -3221,115 +3229,128 @@ impl UiWorld {
         let mut modal_shaped = Vec::new();
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
-        for id in ids {
-            let computed = self.record(id).resolved.0.as_ref();
-            if let Some(visual @ StandardVisual::EmptyState { compact, .. }) = self.nodes.visual(id)
-            {
-                if computed.visible {
-                    let layout = self.record(id).layout;
-                    let horizontal = if *compact { 6.0 } else { 16.0 };
-                    let width = (layout.width - horizontal * 2.0).max(0.0);
-                    let intrinsic =
-                        shape_empty_state_text(id, visual, computed, Some(width), &mut shaper);
-                    validate_text_metrics(id, intrinsic.title)?;
-                    if let Some(message) = intrinsic.message {
-                        validate_text_metrics(id, message)?;
+        // Run the loop as one fallible unit so an invalid metric still hands
+        // the caches back to the world instead of dropping them.
+        let outcome = (|| -> Result<(), UiWorldError> {
+            for id in ids {
+                let computed = self.record(id).resolved.0.as_ref();
+                if let Some(visual @ StandardVisual::EmptyState { compact, .. }) =
+                    self.nodes.visual(id)
+                {
+                    if computed.visible {
+                        let layout = self.record(id).layout;
+                        let horizontal = if *compact { 6.0 } else { 16.0 };
+                        let width = (layout.width - horizontal * 2.0).max(0.0);
+                        let intrinsic =
+                            shape_empty_state_text(id, visual, computed, Some(width), &mut shaper);
+                        validate_text_metrics(id, intrinsic.title)?;
+                        if let Some(message) = intrinsic.message {
+                            validate_text_metrics(id, message)?;
+                        }
+                        // The shaped block is republished even when the metrics
+                        // are unchanged: it lives in `NodeStyle`, which
+                        // `EmptyState::project` rewrites from its own static
+                        // style, so an unrelated re-projection can drop it.
+                        empty_shaped.push((id, intrinsic));
                     }
-                    // The shaped block is republished even when the metrics
-                    // are unchanged: it lives in `NodeStyle`, which
-                    // `EmptyState::project` rewrites from its own static
-                    // style, so an unrelated re-projection can drop it.
-                    empty_shaped.push((id, intrinsic));
+                    continue;
                 }
-                continue;
-            }
-            if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
-                self.nodes.visual(id)
-            {
-                if computed.visible {
-                    let root = self.record(id).layout;
-                    let surface = crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
-                    let chrome = crate::overlay_surfaces::ModalChrome::measure(
-                        *kind,
-                        crate::TextMetrics::default(),
-                        None,
-                        slots.close_action.is_some(),
-                        slots.footer.is_some() || !slots.actions.is_empty(),
-                    );
-                    let wrap_width =
-                        chrome.text_width(surface.width, *kind, slots.close_action.is_some());
-                    let intrinsic =
-                        shape_modal_text(id, visual, computed, Some(wrap_width), &mut shaper);
-                    validate_text_metrics(id, intrinsic.title)?;
-                    if let Some(description) = intrinsic.description {
-                        validate_text_metrics(id, description)?;
+                if let Some(visual @ StandardVisual::ModalFrame { kind, slots, .. }) =
+                    self.nodes.visual(id)
+                {
+                    if computed.visible {
+                        let root = self.record(id).layout;
+                        let surface =
+                            crate::overlay_surfaces::modal_surface_bounds(root, *kind, None);
+                        let chrome = crate::overlay_surfaces::ModalChrome::measure(
+                            *kind,
+                            crate::TextMetrics::default(),
+                            None,
+                            slots.close_action.is_some(),
+                            slots.footer.is_some() || !slots.actions.is_empty(),
+                        );
+                        let wrap_width =
+                            chrome.text_width(surface.width, *kind, slots.close_action.is_some());
+                        let intrinsic =
+                            shape_modal_text(id, visual, computed, Some(wrap_width), &mut shaper);
+                        validate_text_metrics(id, intrinsic.title)?;
+                        if let Some(description) = intrinsic.description {
+                            validate_text_metrics(id, description)?;
+                        }
+                        if let Some(body) = intrinsic.body {
+                            validate_text_metrics(id, body)?;
+                        }
+                        if self.nodes.modal_text(id) != Some(&intrinsic) {
+                            modal_shaped.push((id, intrinsic));
+                        }
                     }
-                    if let Some(body) = intrinsic.body {
-                        validate_text_metrics(id, body)?;
-                    }
-                    if self.nodes.modal_text(id) != Some(&intrinsic) {
-                        modal_shaped.push((id, intrinsic));
-                    }
+                    continue;
                 }
-                continue;
-            }
-            if !computed.visible {
-                continue;
-            }
-            let presentation = self.text_input_presentation_source(id);
-            let empty = presentation.as_ref().map_or_else(
-                || self.record(id).text.value.is_empty(),
-                |source| source.text.value.is_empty(),
-            );
-            if empty {
-                continue;
-            }
-            #[cfg(any(test, feature = "benchmark"))]
-            crate::text_shape_stats::note_nonempty();
-            let constraints = self.text_shape_constraints(id);
-            if presentation.is_none()
-                && self.layout_shape_unchanged(id, &self.record(id).resolved.0, constraints)
-            {
+                if !computed.visible {
+                    continue;
+                }
+                let presentation = self.text_input_presentation_source(id);
+                let empty = presentation.as_ref().map_or_else(
+                    || self.record(id).text.value.is_empty(),
+                    |source| source.text.value.is_empty(),
+                );
+                if empty {
+                    continue;
+                }
                 #[cfg(any(test, feature = "benchmark"))]
-                crate::text_shape_stats::note_skipped_unchanged();
-                continue;
+                crate::text_shape_stats::note_nonempty();
+                let constraints = self.text_shape_constraints(id);
+                if presentation.is_none()
+                    && self.layout_shape_unchanged(id, &self.record(id).resolved.0, constraints)
+                {
+                    #[cfg(any(test, feature = "benchmark"))]
+                    crate::text_shape_stats::note_skipped_unchanged();
+                    continue;
+                }
+                let style = Arc::clone(&self.record(id).resolved.0);
+                let computed = style.as_ref();
+                let text;
+                let text_ref = if let Some(source) = presentation.as_ref() {
+                    text = clone_shaped_text(self, id, Some(source));
+                    &text
+                } else {
+                    &self.record(id).text
+                };
+                let metrics = shaper.shape(id, text_ref, computed, constraints);
+                validate_text_metrics(id, metrics)?;
+                let previous_overlays = self
+                    .nodes
+                    .text_input_presentation(id)
+                    .map(|stored| stored.overlay_metrics.clone())
+                    .unwrap_or_default();
+                let presentation = presentation.map(|source| {
+                    shape_text_input_presentation(
+                        id,
+                        source,
+                        computed,
+                        constraints,
+                        &previous_overlays,
+                        &mut shaper,
+                    )
+                });
+                if presentation.is_none() {
+                    self.remember_layout_shape(id, style, constraints);
+                }
+                if self.record(id).text_metrics != metrics
+                    || presentation
+                        .as_ref()
+                        .is_some_and(|value| self.nodes.text_input_presentation(id) != Some(value))
+                {
+                    shaped.push((id, metrics, presentation));
+                }
             }
-            let style = Arc::clone(&self.record(id).resolved.0);
-            let computed = style.as_ref();
-            let text;
-            let text_ref = if let Some(source) = presentation.as_ref() {
-                text = clone_shaped_text(self, id, Some(source));
-                &text
-            } else {
-                &self.record(id).text
-            };
-            let metrics = shaper.shape(id, text_ref, computed, constraints);
-            validate_text_metrics(id, metrics)?;
-            let previous_overlays = self
-                .nodes
-                .text_input_presentation(id)
-                .map(|stored| stored.overlay_metrics.clone())
-                .unwrap_or_default();
-            let presentation = presentation.map(|source| {
-                shape_text_input_presentation(
-                    id,
-                    source,
-                    computed,
-                    constraints,
-                    &previous_overlays,
-                    &mut shaper,
-                )
-            });
-            if presentation.is_none() {
-                self.remember_layout_shape(id, style, constraints);
-            }
-            if self.record(id).text_metrics != metrics
-                || presentation
-                    .as_ref()
-                    .is_some_and(|value| self.nodes.text_input_presentation(id) != Some(value))
-            {
-                shaped.push((id, metrics, presentation));
-            }
+            Ok(())
+        })();
+        if outcome.is_err() {
+            let _shaper = shaper;
+            self.text_layout_cache = cache;
+            self.glyph_cache = glyphs;
+            return outcome.map(|()| false);
         }
         let mut changed = !shaped.is_empty() || !modal_shaped.is_empty();
         for (id, metrics, presentation) in shaped {
@@ -3474,58 +3495,64 @@ impl UiWorld {
         let mut modal_shaped = Vec::new();
         #[cfg(any(test, feature = "benchmark"))]
         crate::text_shape_stats::note_scope(ids.len());
-        for &id in ids {
-            if !self.contains(id) {
-                let _shaper = shaper;
-                self.text_layout_cache = cache;
-                self.glyph_cache = glyphs;
-                return Err(UiWorldError::MissingNode(id));
-            }
-            let presentation = self.text_input_presentation_source(id);
-            let text = clone_shaped_text(self, id, presentation.as_ref());
-            let style = self.record(id).resolved.0.as_ref().clone();
-            #[cfg(any(test, feature = "benchmark"))]
-            if !text.value.is_empty() {
-                crate::text_shape_stats::note_nonempty();
-            }
-            if let Some(visual @ StandardVisual::EmptyState { .. }) = self.nodes.visual(id) {
-                let intrinsic = shape_empty_state_text(id, visual, &style, None, &mut shaper);
-                validate_text_metrics(id, intrinsic.title)?;
-                if let Some(message) = intrinsic.message {
-                    validate_text_metrics(id, message)?;
+        let outcome = (|| -> Result<(), UiWorldError> {
+            for &id in ids {
+                if !self.contains(id) {
+                    return Err(UiWorldError::MissingNode(id));
                 }
-                empty_shaped.push((id, intrinsic));
-            }
-            if let Some(visual @ StandardVisual::ModalFrame { .. }) = self.nodes.visual(id) {
-                let intrinsic = shape_modal_text(id, visual, &style, None, &mut shaper);
-                validate_text_metrics(id, intrinsic.title)?;
-                if let Some(description) = intrinsic.description {
-                    validate_text_metrics(id, description)?;
+                let presentation = self.text_input_presentation_source(id);
+                let text = clone_shaped_text(self, id, presentation.as_ref());
+                let style = self.record(id).resolved.0.as_ref().clone();
+                #[cfg(any(test, feature = "benchmark"))]
+                if !text.value.is_empty() {
+                    crate::text_shape_stats::note_nonempty();
                 }
-                if let Some(body) = intrinsic.body {
-                    validate_text_metrics(id, body)?;
+                if let Some(visual @ StandardVisual::EmptyState { .. }) = self.nodes.visual(id) {
+                    let intrinsic = shape_empty_state_text(id, visual, &style, None, &mut shaper);
+                    validate_text_metrics(id, intrinsic.title)?;
+                    if let Some(message) = intrinsic.message {
+                        validate_text_metrics(id, message)?;
+                    }
+                    empty_shaped.push((id, intrinsic));
                 }
-                modal_shaped.push((id, intrinsic));
+                if let Some(visual @ StandardVisual::ModalFrame { .. }) = self.nodes.visual(id) {
+                    let intrinsic = shape_modal_text(id, visual, &style, None, &mut shaper);
+                    validate_text_metrics(id, intrinsic.title)?;
+                    if let Some(description) = intrinsic.description {
+                        validate_text_metrics(id, description)?;
+                    }
+                    if let Some(body) = intrinsic.body {
+                        validate_text_metrics(id, body)?;
+                    }
+                    modal_shaped.push((id, intrinsic));
+                }
+                let constraints = self.text_shape_constraints(id);
+                let metrics = shaper.shape(id, &text, &style, constraints);
+                validate_text_metrics(id, metrics)?;
+                let previous_overlays = self
+                    .nodes
+                    .text_input_presentation(id)
+                    .map(|stored| stored.overlay_metrics.clone())
+                    .unwrap_or_default();
+                let presentation = presentation.map(|source| {
+                    shape_text_input_presentation(
+                        id,
+                        source,
+                        &style,
+                        constraints,
+                        &previous_overlays,
+                        &mut shaper,
+                    )
+                });
+                shaped.push((id, metrics, presentation));
             }
-            let constraints = self.text_shape_constraints(id);
-            let metrics = shaper.shape(id, &text, &style, constraints);
-            validate_text_metrics(id, metrics)?;
-            let previous_overlays = self
-                .nodes
-                .text_input_presentation(id)
-                .map(|stored| stored.overlay_metrics.clone())
-                .unwrap_or_default();
-            let presentation = presentation.map(|source| {
-                shape_text_input_presentation(
-                    id,
-                    source,
-                    &style,
-                    constraints,
-                    &previous_overlays,
-                    &mut shaper,
-                )
-            });
-            shaped.push((id, metrics, presentation));
+            Ok(())
+        })();
+        if outcome.is_err() {
+            let _shaper = shaper;
+            self.text_layout_cache = cache;
+            self.glyph_cache = glyphs;
+            return outcome;
         }
         for (id, metrics, presentation) in shaped {
             let previous = self.record(id).text_metrics;
