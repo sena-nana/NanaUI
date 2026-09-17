@@ -42,6 +42,17 @@ fn specific_script(ch: char) -> Option<ScriptTag> {
     Some(ScriptTag(bytes))
 }
 
+/// Byte offsets grapheme clusters start at.
+///
+/// The boundary data alone, without the script and emoji classification
+/// [`clusters`] pays for: layout needs it only to snap a span boundary onto the
+/// cluster the shaper would have snapped it to.
+pub fn cluster_starts(text: &str) -> Vec<usize> {
+    text.grapheme_indices(true)
+        .map(|(start, _)| start)
+        .collect()
+}
+
 /// Grapheme clusters of `text` in logical order.
 pub fn clusters(text: &str) -> Vec<ClusterInfo> {
     let emoji_presentation = CodePointSetData::new::<EmojiPresentation>();

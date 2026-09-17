@@ -831,6 +831,147 @@ fn folding_newlines_costs_one_copy_and_one_hash_per_revision() {
 }
 
 #[test]
+fn a_span_starting_inside_a_cluster_sizes_the_line_box_it_shaped_into() {
+    // The shaper snaps a span boundary back to the start of the grapheme
+    // cluster it lands in, because it cannot split one. Layout has to resolve
+    // the same way, or the run shapes at the span's size and is measured into a
+    // line box sized from the base style.
+    let mut engine = text_engine(UI);
+    let base = style(UI, 16.0);
+    let big = TextStyle {
+        font_size_px: 40.0,
+        line_height: Some(LineHeightSpec::Absolute(80.0)),
+        ..style(UI, 40.0)
+    };
+    // `e` + combining acute is one cluster of three bytes; the span starts at
+    // byte 1, inside it.
+    let mut source = TextSource::new("e\u{301}x");
+    source.set_spans(vec![nana_text::TextSpan {
+        range: 1..4,
+        style: big,
+        composition: None,
+    }]);
+    let mut counters = TextWorkCounters::default();
+    let layout = engine.layout(
+        TextKind::Label,
+        &source,
+        &base,
+        &TextConstraints::default(),
+        &mut counters,
+    );
+
+    let line = &layout.lines[0];
+    let tallest = layout
+        .line_runs(line)
+        .iter()
+        .map(|run| run.metrics.ascent_px + run.metrics.descent_px)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        line.metrics.height_px >= tallest,
+        "the line box ({}) is smaller than the run it holds ({tallest})",
+        line.metrics.height_px
+    );
+    assert!(
+        (line.metrics.height_px - 80.0).abs() < 0.001,
+        "the span's own line height sizes the line: {:?}",
+        line.metrics
+    );
+}
+
+#[test]
+fn a_trailing_newline_degrades_a_label_to_the_paragraph_path() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "abc\n";
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Label,
+        text,
+        &style,
+        &TextConstraints {
+            preserve_lines: true,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(
+        layout.lines.len(),
+        2,
+        "a trailing newline adds no paragraph, but it does add a line"
+    );
+    assert_eq!(engine.layout_counters().label_fast_paths, 0);
+    assert!(
+        layout
+            .caret_geometry(CaretPosition::new(text.len(), Affinity::Downstream, 1))
+            .is_some(),
+        "the caret after the newline has somewhere to go on either path"
+    );
+}
+
+#[test]
+fn an_overflowing_line_aligns_past_the_start_edge_instead_of_snapping_back() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let container = 20.0;
+    let mut bounds_of = |align| {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Label,
+            "Hamburgefonstiv",
+            &style,
+            &TextConstraints {
+                max_width_px: Some(container),
+                align,
+                ..TextConstraints::default()
+            },
+        );
+        layout.lines[0].bounds
+    };
+
+    let start = bounds_of(TextAlignSpec::Start);
+    assert_eq!(start.x, 0.0, "start still starts at the start edge");
+
+    let end = bounds_of(TextAlignSpec::End);
+    assert!(
+        end.x < 0.0,
+        "an overflowing line hangs off the start edge rather than snapping back"
+    );
+    assert!(
+        (end.right() - container).abs() < 0.01,
+        "so a clipped container shows the end the caller aligned to"
+    );
+
+    let centre = bounds_of(TextAlignSpec::Center);
+    assert!((centre.x - (container - centre.width) * 0.5).abs() < 0.01);
+}
+
+#[test]
+fn a_separator_too_long_to_fold_stays_a_line_break() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    // NEL is two bytes and U+2028 three, so neither can become a one-byte
+    // space without moving every offset after it. They break regardless of
+    // `preserve_lines`, and the doc on `with_folded_newlines` says so.
+    for text in ["one\u{85}two", "one\u{2028}two"] {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Paragraph,
+            text,
+            &style,
+            &TextConstraints::default(),
+        );
+        assert_eq!(layout.lines.len(), 2, "{text:?} is two lines either way");
+    }
+    let folded = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "one\ntwo",
+        &style,
+        &TextConstraints::default(),
+    );
+    assert_eq!(folded.lines.len(), 1, "a one-byte separator does fold");
+}
+
+#[test]
 fn han_wraps_between_ideographs_with_no_space_to_break_at() {
     let mut engine = text_engine(UI);
     let style = style(UI, 16.0);

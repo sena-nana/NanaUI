@@ -481,15 +481,17 @@ ShapedText（#91，Arc 共享）+ TextConstraints
 ### 单行 Label fast path 与降级
 
 `TextKind::Label` 且满足全部条件时走 fast path：不换行、`max_lines` 为 `None` 或 `1`、
-没有 `max_height_px`、`writing_mode` 是横排、shaping 只报了一个段落。
+没有 `max_height_px`、`writing_mode` 是横排、**`segments()` 只切出一段**。
 fast path 只做一件事：把自己的 run 累出 advance、算一次行盒、（需要时）裁一次省略号、
 出一个 `LineBox`。它不建 editor state、不扫段落结构、不找断行机会
 （`line_break_candidates` 恒为 0）、不为 color / transform 变化重排（那些根本进不了
 `LayoutKey`，见下）。
 
-任一条件不成立就降级到 paragraph path——**显式换行**（shaping 报出第二个段落）、任何 wrap、
-多行或零 `max_lines`、高度预算、需要回退的 writing mode。降级是可观测的：
-`label_fast_paths` / `paragraph_paths` 两个计数器分别计入。
+最后一条不自己重推，而是问 `segments()`（下面「断行」一节的同一个函数）：显式换行、forced break、
+以及**结尾的**换行（它不产生新段落，却产生一个空的末行）因此以同一种方式降级，不会有一条漏网。
+任一条件不成立就降级到 paragraph path——任何 wrap、多行或零 `max_lines`、高度预算、
+需要回退的 writing mode 同理。降级是可观测的：`label_fast_paths` / `paragraph_paths`
+两个计数器分别计入。
 
 ### 断行
 
@@ -552,8 +554,11 @@ baseline     = top + half_leading + strut.ascent
 语料对账就跑在这一模式下，见下。空行没有 run，行高取基础样式。
 
 `line-height` 由样式解析（`LineHeightSpec` → px，未写时是 `font-size × 1.2`，与
-`nana_ui_core::text_line_box_height_px` 同一个数），span 有自己的 `line-height` 时按覆盖该
-run 首字节的 span 取——与 shaper 解析 span 重叠的顺序相同，行高与塑形不会各认一个 span。
+`nana_ui_core::text_line_box_height_px` 同一个数）。span 有自己的 `line-height` 时，
+**按 shaper 用的同一条规则**解析：`TextSource::SnappedSpans` 把 span 边界吸附到所在字素簇的
+起点（shaper 切不开一个簇），再按「最后一个 composition span → 最后一个普通 span → base」取。
+shaping 与 layout 必须同解，否则一个落在簇中间的 span 会按 span 的字号塑形、却按 base 的行高
+量进行盒，glyph 就会溢出自己的行盒。没有 span 时这条路径一次解析都不做。
 
 **分数 scale**：`max_width_px` / `max_height_px` 是逻辑 px，乘 `scale` 后与物理 px 的
 advance 比较；layout 全程保留浮点，**不**向整数像素取整——那是 renderer / glyph 路径的事。
@@ -562,6 +567,11 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 
 `TextConstraints::align`（`nana_ui_core::TextAlignSpec`）：`start` / `end` 跟随段落方向，
 `left` / `right` 是物理方向。没有 `max_width_px` 就没有可对齐的容器，所有关键字都把行放在原点。
+行宽按去掉行尾空白算，所以 `"Save "` 与 `"Save"` 居中在同一处。
+
+超出容器的行**不被推回原点**：slack 取负值，`end` / `right` / `center` 让它按 CSS 那样往起始边
+外溢，于是被裁剪的容器露出的是调用方对齐的那一端。`bounds.x` 因此可以是负数——`TextRect` 本来就
+不把负值抹平。
 
 `justify` **明确延期**：`TextAlignSpec` 里没有这个关键字，产品也无从表达，因此不半做。
 
@@ -694,11 +704,12 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 ### 测试
 
-`tests/layout_engine.rs`：十二条来自 code review 的回归（换行时超宽的行不因省略号丢字节、
+`tests/layout_engine.rs`：十六条来自 code review 的回归（span 边界落在字素簇中间时行盒按 span 的
+行高算、结尾换行的 Label 也降级、超宽的行按对齐往起始边外溢、换行时超宽的行不因省略号丢字节、
 行尾空白悬挂不算溢出也不影响对齐、空文本两条路径都出一行、行尾换行留下 caret 可落的空行、
 被截断的空行保留自己的字节、同一行被裁两次只记一个省略号 run、U+2028 结束一行且不绘制、
 layout 自带请求方的 revision、`max-content` 是最宽的一行、悬挂空白里的 caret 有位置、
-折叠每个 revision 只做一次），加上：Label fast path（10k 标签 `paragraph_paths == 0`、
+折叠每个 revision 只做一次、折不动的分隔符仍然断行），加上：Label fast path（10k 标签 `paragraph_paths == 0`、
 `line_break_candidates == 0`；10k 同文本标签只建一个 layout）、显式换行 / wrap / max-lines 触发降级、
 换宽度只重排不重塑形、resize 只动受影响的那一段、word wrap 不切词、长词按 `word-break` 溢出或切开、
 汉字无空格断行、显式换行与空段落、mixed BiDi 单行与换行后每行各自重排、strut 稳住 baseline（以及不给

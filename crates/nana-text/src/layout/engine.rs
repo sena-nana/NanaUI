@@ -1,17 +1,17 @@
 //! The layout authority: shaped runs plus constraints in, an immutable
 //! [`TextLayout`] out, cached under a [`LayoutKey`](super::key::LayoutKey).
 
-use super::breaks;
 use super::cache::{LayoutCache, LayoutCacheBudget};
 use super::ir::{TextLayout, TextRect};
 use super::key::LayoutKey;
-use super::lines::{Builder, Ellipsis, LineInput, LineStrut};
+use super::lines::{Builder, Ellipsis, LineInput, LineStrut, segments};
 use crate::constraints::TextConstraints;
+use crate::font::unicode;
 use crate::id::TextLayoutId;
 use crate::metrics::RunMetrics;
 use crate::shape::RunDirection;
 use crate::shaping::ShapedText;
-use crate::source::{TextSource, TextSpan};
+use crate::source::{SnappedSpans, TextSource};
 use crate::style::{TextKind, TextStyle};
 use nana_ui_core::DirSpec;
 use serde::{Deserialize, Serialize};
@@ -314,21 +314,22 @@ fn line_input<'r>(
 /// When a label may skip the paragraph machinery entirely.
 ///
 /// A label degrades to the paragraph path as soon as it stops being one line of
-/// plain text: an authored newline (which the shaper reports as a second
-/// paragraph), a forced break the paragraph structure does not carry (VT, FF,
-/// U+2028), any wrap mode, a multi-line or zero `max_lines`, a height budget,
-/// or a writing mode this engine has to fall back on.
+/// plain text: any wrap mode, a multi-line or zero `max_lines`, a height
+/// budget, a writing mode this engine has to fall back on, or a source the
+/// paragraph path would cut into more than one segment.
 ///
-/// The character scan is not on the per-frame path: this runs when a layout is
-/// *built*, which a cache hit skips.
+/// That last question is asked of [`segments`] rather than re-derived, so an
+/// authored newline, a forced break and a *trailing* newline — which adds no
+/// paragraph but does add an empty last line — all degrade alike. The scan is
+/// not on the per-frame path: this runs when a layout is *built*, which a cache
+/// hit skips.
 fn uses_label_fast_path(request: &LayoutRequest<'_>) -> bool {
     request.kind == TextKind::Label
         && !request.constraints.wraps()
         && matches!(request.constraints.max_lines, None | Some(1))
         && request.constraints.max_height_px.is_none()
         && !request.constraints.wants_vertical_writing()
-        && request.shaped.paragraphs.len() <= 1
-        && !breaks::has_forced_break(request.source.text())
+        && segments(request.source.text(), &request.shaped.paragraphs).len() == 1
 }
 
 /// Line box height a style asks for, in physical px.
@@ -339,30 +340,29 @@ fn line_height_px(style: &TextStyle, scale: f32) -> f32 {
         * scale
 }
 
-/// The line box height of every shaped run, resolved from the span that styles
-/// its first byte.
+/// The line box height of every shaped run, resolved through the same span rule
+/// the shaper used.
+///
+/// [`SnappedSpans`] is what makes the two agree: a span boundary inside a
+/// grapheme cluster snaps to the cluster's start for both, so a run cannot be
+/// shaped at a span's size and then measured into a line box sized from the
+/// base style.
+///
+/// Without spans there is nothing to resolve and nothing to segment the text
+/// for — the common case costs one clone of a float.
 fn run_line_heights(request: &LayoutRequest<'_>, scale: f32) -> Vec<f32> {
+    let base = line_height_px(request.style, scale);
+    let spans = request.source.spans();
+    if spans.is_empty() {
+        return vec![base; request.shaped.runs.len()];
+    }
+    let text = request.source.text();
+    let starts = unicode::cluster_starts(text);
+    let snapped = SnappedSpans::new(spans, text.len(), &starts);
     request
         .shaped
         .runs
         .iter()
-        .map(|run| {
-            let style = style_at(request.source.spans(), request.style, run.source.start);
-            line_height_px(style, scale)
-        })
+        .map(|run| line_height_px(snapped.style_at(run.source.start, request.style), scale))
         .collect()
-}
-
-/// The style that governs one byte: a composition span first, then the last
-/// plain span covering it, then the base style — the order the shaper resolves
-/// overlaps in, so line height and shaping cannot disagree about which span
-/// won.
-fn style_at<'a>(spans: &'a [TextSpan], base: &'a TextStyle, byte: usize) -> &'a TextStyle {
-    let covering = |span: &&TextSpan| span.range.start <= byte && byte < span.range.end;
-    spans
-        .iter()
-        .filter(covering)
-        .find(|span| span.composition.is_some())
-        .or_else(|| spans.iter().rfind(covering))
-        .map_or(base, |span| &span.style)
 }

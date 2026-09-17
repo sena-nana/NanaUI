@@ -13,6 +13,10 @@ use std::sync::{Arc, OnceLock};
 
 /// Line separators a space can stand in for byte-for-byte: each is one byte,
 /// and so is the space that replaces it.
+///
+/// The others are longer: `U+0085 NEL` is two bytes, `U+2028 LINE SEPARATOR`
+/// and `U+2029 PARAGRAPH SEPARATOR` three. Folding one would move every offset
+/// after it, so they stay line breaks whatever `preserve_lines` says.
 const FOLDED_SEPARATORS: [char; 4] = ['\n', '\r', '\u{b}', '\u{c}'];
 
 /// An IME composition marker.
@@ -38,6 +42,68 @@ pub struct TextSpan {
     pub style: TextStyle,
     #[serde(default)]
     pub composition: Option<CompositionSegment>,
+}
+
+/// Span ranges snapped to grapheme cluster starts, and the rule for which span
+/// governs a byte.
+///
+/// Shaping and layout must answer this identically. A span boundary that falls
+/// inside a grapheme cluster is snapped back to the cluster's start — the
+/// shaper cannot split a cluster — so a layout reading the *raw* range would
+/// size a line box from the base style for a run the shaper shaped at the
+/// span's size, and the glyphs would overflow the line box they were measured
+/// into.
+pub(crate) struct SnappedSpans<'a> {
+    spans: Vec<(Range<usize>, &'a TextSpan)>,
+    text_len: usize,
+}
+
+impl<'a> SnappedSpans<'a> {
+    /// `cluster_starts` are the byte offsets grapheme clusters start at.
+    pub fn new(spans: &'a [TextSpan], text_len: usize, cluster_starts: &[usize]) -> Self {
+        let snap = |byte: usize| -> usize {
+            let byte = byte.min(text_len);
+            if byte == text_len {
+                return byte;
+            }
+            let index = cluster_starts.partition_point(|start| *start <= byte);
+            cluster_starts[index.saturating_sub(1)]
+        };
+        Self {
+            spans: spans
+                .iter()
+                .map(|span| (snap(span.range.start)..snap(span.range.end), span))
+                .collect(),
+            text_len,
+        }
+    }
+
+    /// Every offset where the governing style can change, `0` and the text's
+    /// end included.
+    pub fn cuts(&self) -> Vec<usize> {
+        let mut cuts: Vec<usize> = Vec::with_capacity(self.spans.len() * 2 + 2);
+        cuts.push(0);
+        cuts.push(self.text_len);
+        for (range, _) in &self.spans {
+            cuts.push(range.start);
+            cuts.push(range.end);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        cuts
+    }
+
+    /// The style governing `byte`: the last composition span covering it, then
+    /// the last plain span, then the base.
+    pub fn style_at(&self, byte: usize, base: &'a TextStyle) -> &'a TextStyle {
+        let covering =
+            |(range, _): &&(Range<usize>, &'a TextSpan)| range.start <= byte && byte < range.end;
+        self.spans
+            .iter()
+            .rfind(|entry| covering(entry) && entry.1.composition.is_some())
+            .or_else(|| self.spans.iter().rfind(covering))
+            .map_or(base, |(_, span)| &span.style)
+    }
 }
 
 /// Authored text, its spans, and the revision they are at.
@@ -183,10 +249,10 @@ impl TextSource {
     /// different constraints, and a reader that treated it as a newer revision
     /// would invalidate caches that are not stale.
     ///
-    /// `U+2028 LINE SEPARATOR` and `U+2029 PARAGRAPH SEPARATOR` are three bytes
-    /// each, so folding them to a space would move every offset after them.
-    /// They stay line breaks whatever `preserve_lines` says, and layout treats
-    /// them as such.
+    /// `U+0085 NEL` (two bytes), `U+2028 LINE SEPARATOR` and `U+2029 PARAGRAPH
+    /// SEPARATOR` (three each) are longer than a space, so folding one would
+    /// move every offset after it. They stay line breaks whatever
+    /// `preserve_lines` says, and layout treats them as such.
     ///
     /// A `\r\n` becomes **two** spaces, for the same reason. This engine does
     /// no whitespace collapsing at all — two authored spaces are two spaces —

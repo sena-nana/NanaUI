@@ -11,7 +11,7 @@ use crate::font::{
 };
 use crate::id::{FontGeneration, FontId, ShapeRunId};
 use crate::shape::{GlyphFlags, RunDirection, ScriptTag, ShapedGlyph, ShapedRun};
-use crate::source::TextSpan;
+use crate::source::{SnappedSpans, TextSpan};
 use crate::style::TextStyle;
 use nana_ui_core::{DirSpec, FontKerningSpec};
 use std::ops::Range;
@@ -581,31 +581,8 @@ fn style_segments<'a>(
     spans: &'a [TextSpan],
     language: Option<&LanguageTag>,
 ) -> Vec<StyleSegment<'a>> {
-    let snap = |byte: usize| -> usize {
-        let byte = byte.min(text.len());
-        if byte == text.len() {
-            return byte;
-        }
-        let index = boundaries.partition_point(|start| *start <= byte);
-        boundaries[index.saturating_sub(1)]
-    };
-    let mut cuts: Vec<usize> = vec![0, text.len()];
-    for span in spans {
-        cuts.push(snap(span.range.start));
-        cuts.push(snap(span.range.end));
-    }
-    cuts.sort_unstable();
-    cuts.dedup();
-
-    let style_at = |start: usize| -> &'a TextStyle {
-        let covering =
-            |span: &&TextSpan| snap(span.range.start) <= start && start < snap(span.range.end);
-        spans
-            .iter()
-            .rfind(|span| covering(span) && span.composition.is_some())
-            .or_else(|| spans.iter().rfind(covering))
-            .map_or(base, |span| &span.style)
-    };
+    let snapped = SnappedSpans::new(spans, text.len(), boundaries);
+    let cuts = snapped.cuts();
 
     let mut segments: Vec<StyleSegment<'a>> = Vec::new();
     for window in cuts.windows(2) {
@@ -613,7 +590,7 @@ fn style_segments<'a>(
         if range.is_empty() {
             continue;
         }
-        let style = style_at(range.start);
+        let style = snapped.style_at(range.start, base);
         match segments.last_mut() {
             Some(last) if std::ptr::eq(last.style, style) => last.range.end = range.end,
             _ => {

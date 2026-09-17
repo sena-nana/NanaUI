@@ -297,51 +297,8 @@ impl<'a> Builder<'a> {
         self.finish()
     }
 
-    /// Every run of text a line may not break out of, in order.
-    ///
-    /// One per BiDi paragraph, each split again at the forced breaks the
-    /// paragraph structure does not carry (VT, FF, U+2028). A separator falls
-    /// *between* two segments, so no segment covers one and nothing draws it —
-    /// the treatment `\n` already gets from the shaper.
-    ///
-    /// Two segments exist for a caret rather than for glyphs: empty text has no
-    /// BiDi paragraph at all, and text ending in a separator has no paragraph
-    /// after it. Both still need the line the caret sits on — pressing Enter at
-    /// the end of a field must not make the caret vanish.
-    ///
-    /// This is also what `intrinsic_widths` measures over, so `max-content`
-    /// cannot come back as the width of two lines joined end to end.
     fn segments(&self) -> Vec<Range<usize>> {
-        let text = self.input.text;
-        let mut segments: Vec<Range<usize>> = Vec::with_capacity(self.input.paragraphs.len());
-        for paragraph in self.input.paragraphs {
-            let content = content_range(text, &paragraph.range);
-            if !breaks::has_forced_break(&text[content.clone()]) {
-                segments.push(content);
-                continue;
-            }
-            let mut start = content.start;
-            let mut cursor = content.start;
-            while cursor < content.end {
-                let character = text[cursor..]
-                    .chars()
-                    .next()
-                    .expect("cursor is on a character boundary");
-                let width = character.len_utf8();
-                if breaks::FORCED_BREAKS.contains(&character) {
-                    segments.push(start..cursor);
-                    start = cursor + width;
-                }
-                cursor += width;
-            }
-            segments.push(start..content.end);
-        }
-        match segments.last() {
-            None => segments.push(0..0),
-            Some(last) if last.end < text.len() => segments.push(text.len()..text.len()),
-            Some(_) => {}
-        }
-        segments
+        segments(self.input.text, self.input.paragraphs)
     }
 
     /// One run of text with no forced break inside it: as many lines as the
@@ -812,11 +769,17 @@ impl<'a> Builder<'a> {
     /// With no `max_width_px` there is no container to align in, so every
     /// keyword lays the line out at the origin. `start` / `end` follow the
     /// paragraph direction; `left` / `right` do not.
+    ///
+    /// A line wider than the container gets **negative** slack rather than
+    /// being pushed back to the origin: `text-align: right` on an overflowing
+    /// line overflows past the start edge, so what a clipped container shows is
+    /// the end of the string — the end the caller aligned to. Clamping would
+    /// show the other end.
     fn align_offset(&self, width_px: f32) -> f32 {
         let Some(max_width) = self.max_width_px else {
             return 0.0;
         };
-        let slack = (max_width - width_px).max(0.0);
+        let slack = max_width - width_px;
         let rtl = self.input.constraints.base_direction == DirSpec::Rtl;
         match self.input.constraints.align {
             TextAlignSpec::Start => {
@@ -863,6 +826,54 @@ impl<'a> Builder<'a> {
             work: self.work,
         }
     }
+}
+
+/// Every run of text a line may not break out of, in order.
+///
+/// One per BiDi paragraph, each split again at the forced breaks the paragraph
+/// structure does not carry (VT, FF, U+2028). A separator falls *between* two
+/// segments, so no segment covers one and nothing draws it — the treatment
+/// `\n` already gets from the shaper.
+///
+/// Two segments exist for a caret rather than for glyphs: empty text has no
+/// BiDi paragraph at all, and text ending in a separator has no paragraph after
+/// it. Both still need the line the caret sits on — pressing Enter at the end
+/// of a field must not make the caret vanish.
+///
+/// Three callers read this, and that is the point: layout breaks at these
+/// boundaries, `intrinsic_widths` measures between them (so `max-content` is
+/// the widest line, not two lines joined end to end), and the Label fast path
+/// asks whether there is exactly one of them.
+pub(super) fn segments(text: &str, paragraphs: &[ShapedParagraph]) -> Vec<Range<usize>> {
+    let mut segments: Vec<Range<usize>> = Vec::with_capacity(paragraphs.len());
+    for paragraph in paragraphs {
+        let content = content_range(text, &paragraph.range);
+        if !breaks::has_forced_break(&text[content.clone()]) {
+            segments.push(content);
+            continue;
+        }
+        let mut start = content.start;
+        let mut cursor = content.start;
+        while cursor < content.end {
+            let character = text[cursor..]
+                .chars()
+                .next()
+                .expect("cursor is on a character boundary");
+            let width = character.len_utf8();
+            if breaks::FORCED_BREAKS.contains(&character) {
+                segments.push(start..cursor);
+                start = cursor + width;
+            }
+            cursor += width;
+        }
+        segments.push(start..content.end);
+    }
+    match segments.last() {
+        None => segments.push(0..0),
+        Some(last) if last.end < text.len() => segments.push(text.len()..text.len()),
+        Some(_) => {}
+    }
+    segments
 }
 
 /// A maximal run of consecutive cells belonging to one shaped run.
