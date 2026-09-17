@@ -528,6 +528,8 @@ layout 在那里断行、`preserve_lines: false` 把单字节的那些折成空�
   `"Save"` 的盒子里被裁成 `"Sa…"`，居中时也会比 `"Save"` 偏左半个空格。
 - 悬挂在软换行处的空白字节不属于任何行的 `source`，但仍是合法的 caret 位置：
   `caret_geometry` 把它们解析到所挂那一行的行尾（或下一行的行首，取决于 caret 报的是哪一行）。
+- 悬挂的方向跟着段落方向：L1 把行尾空白归到段落的**末端**，RTL 段落里那是视觉左侧，
+  因此行的起笔位置比对齐框左移悬挂宽度。画在框内会把所有真实 glyph 顶出另一侧。
 - 容器窄到一个字素都放不下时，仍然放一个字素——否则会产生空行与死循环。
 - **软换行不会产生空行**：段首空白后面有一个断行机会，在那里断会让首行什么都不画、空白也无处可去，
   因此这种机会直接跳过（emergency 切分同理）。空行只来自空段。
@@ -606,6 +608,8 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
   省略号真正该做的截断——`max_lines` / `max_height_px`——照常，并且带 `TRUNCATED_LINES`。
 - RTL 段落里省略号放在视觉末端（左侧）。
 - 截断但没有（或没能）塑形出省略号时，只报 `TRUNCATED_LINES`，不报 `ELLIPSIZED`：没画就不声称画了。
+- 截断行的 `break_cause` 说的是**哪条预算用完了**：`MaxLines` 或 `MaxHeight`。在 `max_lines`
+  根本没设的 layout 上写 `MaxLines`，等于对消费者断言一条从未存在的约束。
 
 ### LayoutKey 与 cache
 
@@ -716,7 +720,8 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 
 ### 测试
 
-`tests/layout_engine.rs`：十九条来自 code review 的回归（段首空白不产生空行、
+`tests/layout_engine.rs`：二十二条来自 code review 的回归（RTL 行的悬挂空白挂在起始边外、
+RTL 软换行处的 caret 留在原行、高度截断报 `MaxHeight`、段首空白不产生空行、
 省略号不画到容器外、U+001C–U+001E 结束一行且不绘制、span 边界落在字素簇中间时行盒按 span 的
 行高算、结尾换行的 Label 也降级、超宽的行按对齐往起始边外溢、换行时超宽的行不因省略号丢字节、
 行尾空白悬挂不算溢出也不影响对齐、空文本两条路径都出一行、行尾换行留下 caret 可落的空行、

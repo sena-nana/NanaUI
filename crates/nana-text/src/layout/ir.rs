@@ -65,6 +65,8 @@ pub enum LineBreakCause {
     Wrap,
     /// `max_lines` truncated here.
     MaxLines,
+    /// `max_height_px` truncated here: the next line did not fit the box.
+    MaxHeight,
     /// The text ended.
     EndOfText,
 }

@@ -225,9 +225,9 @@ impl TextLayout {
         let caret = if cells.is_empty() {
             CaretPosition::new(line.source.start, Affinity::Downstream, line.index)
         } else if x_px < cells[0].left {
-            CaretPosition::new(left_byte, Affinity::Downstream, line.index)
+            CaretPosition::new(left_byte, edge_affinity(line, left_byte), line.index)
         } else if x_px >= cells[cells.len() - 1].right {
-            CaretPosition::new(right_byte, end_affinity(line), line.index)
+            CaretPosition::new(right_byte, edge_affinity(line, right_byte), line.index)
         } else {
             let cell = cells
                 .iter()
@@ -375,11 +375,18 @@ fn cluster_cell_at(cells: &[Cell], byte: usize) -> Option<Cell> {
     Some(merged)
 }
 
-/// A caret dropped at the end of a soft-wrapped line stays on that line.
-fn end_affinity(line: &LineBox) -> Affinity {
-    match line.break_cause {
-        crate::layout::LineBreakCause::Wrap => Affinity::Upstream,
-        _ => Affinity::Downstream,
+/// A caret dropped at one of a line's two edges.
+///
+/// Only the **logical** end of a soft-wrapped line is ambiguous — that byte is
+/// also the start of the next line — and it is the visually *left* edge of an
+/// RTL line. Deciding by which edge was clicked instead would hand the
+/// "stay on the line above" affinity to the logical start, where there is
+/// nothing above.
+fn edge_affinity(line: &LineBox, byte: usize) -> Affinity {
+    if byte == line.source.end && line.break_cause == crate::layout::LineBreakCause::Wrap {
+        Affinity::Upstream
+    } else {
+        Affinity::Downstream
     }
 }
 

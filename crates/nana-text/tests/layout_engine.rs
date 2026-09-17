@@ -1144,6 +1144,90 @@ fn a_record_separator_ends_a_line_and_is_never_drawn() {
 }
 
 #[test]
+fn trailing_whitespace_hangs_off_the_start_edge_of_an_rtl_line() {
+    // Rule L1 puts a line's trailing whitespace at the paragraph's end, which
+    // is the visual *left* in an RTL paragraph. It is drawn but not measured,
+    // so it has to hang outside the aligned box — drawn inside it, it would
+    // push every real glyph off the other edge.
+    let mut engine = text_engine(UI_AND_ARABIC);
+    let style = style(UI_AND_ARABIC, 20.0);
+    let container = 200.0;
+    let mut line_of = |text: &str| {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Label,
+            text,
+            &style,
+            &TextConstraints {
+                max_width_px: Some(container),
+                base_direction: DirSpec::Rtl,
+                ..TextConstraints::default()
+            },
+        );
+        let line = layout.lines[0].clone();
+        (line.bounds, drawn_right_edge(&layout, &line))
+    };
+
+    let (plain_bounds, plain_edge) = line_of("عربي");
+    let (padded_bounds, padded_edge) = line_of("عربي ");
+    assert!(
+        (plain_bounds.x - padded_bounds.x).abs() < 0.01,
+        "the hung space moved the line box: {plain_bounds:?} vs {padded_bounds:?}"
+    );
+    assert!(
+        padded_edge <= container + 0.01,
+        "glyphs reach {padded_edge}, past the {container} px edge they were aligned to"
+    );
+    assert!(
+        (plain_edge - padded_edge).abs() < 0.01,
+        "the word itself moved: {plain_edge} vs {padded_edge}"
+    );
+}
+
+#[test]
+fn a_caret_at_the_wrap_point_of_an_rtl_line_stays_on_that_line() {
+    // The ambiguous byte is the line's *logical* end — also the next line's
+    // start — and on an RTL line that is the visually left edge. Deciding the
+    // affinity by which edge was clicked hands "stay on the line above" to the
+    // logical start, where there is no line above.
+    let mut engine = text_engine(UI_AND_ARABIC);
+    let style = style(UI_AND_ARABIC, 20.0);
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "عربي عربي عربي عربي",
+        &style,
+        &TextConstraints {
+            base_direction: DirSpec::Rtl,
+            ..wrapped(120.0)
+        },
+    );
+    assert!(layout.lines.len() > 1);
+    let first = &layout.lines[0];
+    assert_eq!(first.break_cause, LineBreakCause::Wrap);
+    let middle_y = first.metrics.top_y_px + first.metrics.height_px * 0.5;
+
+    let past_left = layout.hit_test(first.bounds.x - 5.0, middle_y);
+    assert_eq!(
+        past_left.caret.byte, first.source.end,
+        "the visually-left edge of an RTL line is its logical end"
+    );
+    assert_eq!(
+        past_left.caret.affinity,
+        Affinity::Upstream,
+        "and a caret dropped there stays on the line that wrapped"
+    );
+
+    let past_right = layout.hit_test(first.bounds.right() + 5.0, middle_y);
+    assert_eq!(past_right.caret.byte, first.source.start);
+    assert_eq!(
+        past_right.caret.affinity,
+        Affinity::Downstream,
+        "the logical start of the first line has no line above it"
+    );
+}
+
+#[test]
 fn han_wraps_between_ideographs_with_no_space_to_break_at() {
     let mut engine = text_engine(UI);
     let style = style(UI, 16.0);
@@ -1546,6 +1630,11 @@ fn a_height_budget_truncates_at_the_last_line_that_fits() {
     assert_eq!(short.lines.len(), 2);
     assert!(short.bounds.height <= line_height * 2.0 + 0.01);
     assert!(short.overflow.contains(OverflowFlags::TRUNCATED_LINES));
+    assert_eq!(
+        short.lines[1].break_cause,
+        LineBreakCause::MaxHeight,
+        "the budget that ran out was the height, and `max_lines` was never set"
+    );
 }
 
 #[test]

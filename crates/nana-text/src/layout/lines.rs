@@ -490,8 +490,12 @@ impl<'a> Builder<'a> {
         let over_height = self.max_height_px.is_some_and(|max| {
             !self.lines.is_empty() && self.next_top_px + prepared.height_px > max + WIDTH_EPSILON_PX
         });
-        if self.at_line_capacity() || over_height {
-            self.truncate_here();
+        if self.at_line_capacity() {
+            self.truncate_here(LineBreakCause::MaxLines);
+            return false;
+        }
+        if over_height {
+            self.truncate_here(LineBreakCause::MaxHeight);
             return false;
         }
         self.place(prepared, cause, empty_at);
@@ -499,10 +503,13 @@ impl<'a> Builder<'a> {
     }
 
     /// Marks the layout truncated and re-places the last line with an ellipsis.
-    fn truncate_here(&mut self) {
+    ///
+    /// `cause` says which budget ran out: a consumer reading `MaxLines` on a
+    /// layout whose `max_lines` was never set has been told something untrue.
+    fn truncate_here(&mut self, cause: LineBreakCause) {
         self.truncated = true;
         if let Some(line) = self.lines.last_mut() {
-            line.break_cause = LineBreakCause::MaxLines;
+            line.break_cause = cause;
         }
         self.ellipsize_last_line();
     }
@@ -632,7 +639,17 @@ impl<'a> Builder<'a> {
         let baseline_y_px = top_y_px + half_leading + strut_ascent;
 
         let run_start = self.runs.len() as u32;
-        let mut cursor = origin_x_px;
+        // Hung whitespace is drawn but not measured, and rule L1 put it at the
+        // paragraph's *end* — which is the visual left in an RTL paragraph. The
+        // cursor therefore starts before the aligned box by exactly what hangs
+        // there, or the hung space would sit inside the box and push every real
+        // glyph off the other edge.
+        let hung_px = self.width(self.trim(cells.start, cells.end), cells.end);
+        let mut cursor = if self.input.base_direction.is_rtl() {
+            origin_x_px - hung_px
+        } else {
+            origin_x_px
+        };
         // The ellipsis marks the visual end of the line, which is the left edge
         // in an RTL paragraph.
         let mut placed: Vec<ShapedRun> = Vec::with_capacity(ordered.len() + 1);
