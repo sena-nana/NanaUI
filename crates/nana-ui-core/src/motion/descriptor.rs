@@ -226,13 +226,33 @@ impl Slot {
 
 /// Generational slab of compositor descriptors. Start / retarget / cancel
 /// mutate it; timestamp evaluation does not.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MotionDescriptorStore {
     slots: Vec<Slot>,
     free: Vec<u32>,
     by_track: HashMap<MotionTrackId, MotionHandle>,
     registry: MotionCodecRegistry,
     structure_epoch: u64,
+    source: u64,
+}
+
+fn next_store_source() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A clone evolves independently, so it is a different descriptor source.
+impl Clone for MotionDescriptorStore {
+    fn clone(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            free: self.free.clone(),
+            by_track: self.by_track.clone(),
+            registry: self.registry.clone(),
+            structure_epoch: self.structure_epoch,
+            source: next_store_source(),
+        }
+    }
 }
 
 impl Default for MotionDescriptorStore {
@@ -249,6 +269,7 @@ impl MotionDescriptorStore {
             by_track: HashMap::new(),
             registry: MotionCodecRegistry::builtin(),
             structure_epoch: 0,
+            source: next_store_source(),
         }
     }
 
@@ -264,6 +285,13 @@ impl MotionDescriptorStore {
     /// leave this unchanged.
     pub fn structure_epoch(&self) -> u64 {
         self.structure_epoch
+    }
+
+    /// Process-unique identity of this store. Epochs of different stores (one
+    /// per window document) count independently, so consumers that cache a
+    /// packed table across documents key it by `(source, structure_epoch)`.
+    pub fn source(&self) -> u64 {
+        self.source
     }
 
     pub fn slot_capacity(&self) -> usize {

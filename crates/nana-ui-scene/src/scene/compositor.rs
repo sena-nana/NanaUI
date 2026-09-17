@@ -139,6 +139,7 @@ pub(super) struct CompositorRegistry {
 
 #[derive(Debug, Clone)]
 struct MotionGpuPack {
+    source: u64,
     structure_epoch: u64,
     slot_capacity: usize,
     now: Duration,
@@ -149,6 +150,7 @@ struct MotionGpuPack {
 impl Default for MotionGpuPack {
     fn default() -> Self {
         Self {
+            source: 0,
             structure_epoch: u64::MAX,
             slot_capacity: 0,
             now: Duration::ZERO,
@@ -172,12 +174,14 @@ impl CompositorRegistry {
 
     fn sync_gpu_pack(&mut self, store: &MotionDescriptorStore, now: Duration) {
         self.gpu.now = now;
-        if self.gpu.structure_epoch == store.structure_epoch()
+        if self.gpu.source == store.source()
+            && self.gpu.structure_epoch == store.structure_epoch()
             && self.gpu.slot_capacity == store.slot_capacity()
         {
             return;
         }
         let (descriptors, keyframes) = store.pack_gpu();
+        self.gpu.source = store.source();
         self.gpu.structure_epoch = store.structure_epoch();
         self.gpu.slot_capacity = store.slot_capacity();
         self.gpu.descriptors = descriptors;
@@ -270,6 +274,12 @@ impl UiScene {
 
     pub fn motion_gpu_structure_epoch(&self) -> u64 {
         self.compositor.gpu.structure_epoch
+    }
+
+    /// Descriptor store the packed table came from; see
+    /// `MotionDescriptorStore::source`.
+    pub fn motion_gpu_source(&self) -> u64 {
+        self.compositor.gpu.source
     }
 
     pub fn motion_gpu_descriptors(&self) -> &[MotionGpuDescriptor] {

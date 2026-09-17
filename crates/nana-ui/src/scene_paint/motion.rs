@@ -29,6 +29,9 @@ pub(super) struct MotionGpuResources {
     keyframe_capacity: usize,
     uploaded_descriptors: Vec<u8>,
     uploaded_keyframes: Vec<u8>,
+    /// Hosts share one painter across windows, and each window document has
+    /// its own descriptor store whose epochs count independently.
+    last_source: u64,
     last_structure_epoch: u64,
     last_surface_generation: u64,
     last_work: MotionWorkCounters,
@@ -96,6 +99,7 @@ impl MotionGpuResources {
             keyframe_capacity,
             uploaded_descriptors: Vec::new(),
             uploaded_keyframes: Vec::new(),
+            last_source: 0,
             last_structure_epoch: u64::MAX,
             last_surface_generation: 0,
             last_work: MotionWorkCounters::default(),
@@ -119,6 +123,7 @@ impl MotionGpuResources {
         self.last_work = MotionWorkCounters::default();
         let surface = scene.surface_generation();
         let epoch = scene.motion_gpu_structure_epoch();
+        let source = scene.motion_gpu_source();
         let descriptors = scene.motion_gpu_descriptors();
         let keyframes = scene.motion_gpu_keyframes();
         let lost = surface != self.last_surface_generation;
@@ -129,6 +134,7 @@ impl MotionGpuResources {
             self.uploaded_keyframes.clear();
         }
         let need_descriptors = lost
+            || source != self.last_source
             || epoch != self.last_structure_epoch
             || descriptors.len() > self.descriptor_capacity
             || keyframes.len() > self.keyframe_capacity;
@@ -160,6 +166,7 @@ impl MotionGpuResources {
             }
             self.uploaded_descriptors = desc_bytes;
             self.uploaded_keyframes = kf_bytes;
+            self.last_source = source;
             self.last_structure_epoch = epoch;
             self.last_work.record_descriptor_upload(
                 descriptors
@@ -1000,6 +1007,62 @@ mod tests {
             "steady timestamp must not reupload the descriptor table"
         );
         assert_eq!(second.motion_descriptor_bytes_uploaded, 0);
+    }
+
+    #[test]
+    fn a_painter_shared_by_windows_uploads_each_documents_descriptors() {
+        let (device, queue) = test_device();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let now = Duration::from_millis(200);
+        // Two window documents with identical structure epochs but different
+        // motion: one fades to opaque, the other stays transparent.
+        let (world_a, scene_a, handle_a, _) = compositor_motion_scene(
+            opacity_spec(
+                MotionCurve::Easing(Easing::Linear),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+            Duration::from_millis(16),
+        );
+        let (world_b, scene_b, handle_b, _) = compositor_motion_scene(
+            opacity_spec(
+                MotionCurve::Easing(Easing::Linear),
+                MotionTo::Value(MotionValue::Scalar(0.0)),
+            ),
+            Duration::from_millis(16),
+        );
+        assert_eq!(
+            scene_a.motion_gpu_structure_epoch(),
+            scene_b.motion_gpu_structure_epoch()
+        );
+        assert_eq!(handle_a, handle_b);
+        paint_once(&device, &queue, &mut painter, &scene_a);
+        paint_once(&device, &queue, &mut painter, &scene_b);
+        assert!(
+            painter.last_motion_work().motion_descriptors_uploaded > 0,
+            "another document's table must replace the shared upload"
+        );
+        for (world, scene, handle) in [
+            (&world_a, &scene_a, handle_a),
+            (&world_b, &scene_b, handle_b),
+        ] {
+            let cpu = world
+                .motion_descriptors()
+                .evaluate(handle, now)
+                .expect("cpu evaluate");
+            let readback = painter
+                .motion
+                .evaluate_readback(&device, &queue, scene, handle.index() + 1, now)
+                .expect("gpu evaluate");
+            let MotionValue::Scalar(expected) = cpu.value else {
+                panic!("expected scalar");
+            };
+            assert!(
+                (readback.pixels[0][0] - expected).abs() < GPU_CPU_TOL,
+                "cpu {expected} gpu {}",
+                readback.pixels[0][0]
+            );
+        }
     }
 
     #[test]
