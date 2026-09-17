@@ -186,17 +186,26 @@ impl crate::AppContext {
         }
     }
 
+    /// Open popovers and action menus, and the detached options of a
+    /// select, dropdown, search dropdown or color field, count as menus.
     fn descendant_menu_open(&self, root: crate::StableNodeId) -> bool {
+        fn open<C: crate::View>(
+            cx: &crate::AppContext,
+            id: crate::StableNodeId,
+            read: fn(&C) -> bool,
+        ) -> bool {
+            cx.view_entity::<C>(id)
+                .and_then(|entity| cx.read(entity, read).ok())
+                .unwrap_or(false)
+        }
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
-            if self
-                .view_entity::<crate::ActionMenu>(id)
-                .and_then(|entity| self.read(entity, |menu| menu.popover.open).ok())
-                .unwrap_or(false)
-                || self
-                    .view_entity::<crate::Popover>(id)
-                    .and_then(|entity| self.read(entity, |popover| popover.open).ok())
-                    .unwrap_or(false)
+            if open::<crate::ActionMenu>(self, id, |menu| menu.popover.open)
+                || open::<crate::Popover>(self, id, |popover| popover.open)
+                || open::<crate::Select>(self, id, |select| select.opened)
+                || open::<crate::Dropdown>(self, id, |dropdown| dropdown.opened)
+                || open::<crate::SearchDropdown>(self, id, |dropdown| dropdown.opened)
+                || open::<crate::ColorField>(self, id, |field| field.opened)
             {
                 return true;
             }
@@ -432,5 +441,53 @@ mod tests {
             cx.overlay_wakeup(bar).unwrap(),
             Some(now + Duration::from_secs(34))
         );
+    }
+
+    #[test]
+    fn open_field_options_lock_the_overlay_like_a_menu() {
+        use crate::{AppContext, ColorField, DocumentId, Dropdown, SearchDropdown, Select, Stack};
+
+        let document = DocumentId::new(1).unwrap();
+        let mut cx = AppContext::new();
+        let root = cx.create_component(document, Stack::column(0.0)).unwrap();
+        let select = cx
+            .create_detached_component(document, Select::new(None::<&str>))
+            .unwrap();
+        let dropdown = cx
+            .create_detached_component(document, Dropdown::single(None::<&str>))
+            .unwrap();
+        let search = cx
+            .create_detached_component(document, SearchDropdown::new(None::<&str>))
+            .unwrap();
+        let color = cx
+            .create_detached_component(document, ColorField::new([1.0; 4]))
+            .unwrap();
+        cx.append_child(root, select).unwrap();
+        cx.append_child(root, dropdown).unwrap();
+        cx.append_child(root, search).unwrap();
+        cx.append_child(root, color).unwrap();
+        let locked = |cx: &AppContext| cx.overlay_locks(document, root.stable_id()).menu_open;
+        assert!(!locked(&cx));
+        cx.update_component(select, |view, _| view.opened = true)
+            .unwrap();
+        assert!(locked(&cx));
+        cx.update_component(select, |view, _| view.opened = false)
+            .unwrap();
+        cx.update_component(dropdown, |view, _| view.opened = true)
+            .unwrap();
+        assert!(locked(&cx));
+        cx.update_component(dropdown, |view, _| view.opened = false)
+            .unwrap();
+        cx.update_component(search, |view, _| view.opened = true)
+            .unwrap();
+        assert!(locked(&cx));
+        cx.update_component(search, |view, _| view.opened = false)
+            .unwrap();
+        cx.update_component(color, |view, _| view.opened = true)
+            .unwrap();
+        assert!(locked(&cx));
+        cx.update_component(color, |view, _| view.opened = false)
+            .unwrap();
+        assert!(!locked(&cx));
     }
 }
