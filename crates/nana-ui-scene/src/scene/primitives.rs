@@ -343,7 +343,10 @@ impl UiScene {
                             z_index: node.z_index,
                             document_order: node_order,
                         },
-                        1,
+                        // Not slot 1: that is the custom-render primitive's,
+                        // and `insert_primitive` would have one silently
+                        // replace the other on any node that has both.
+                        collection_slot(DOCUMENT_TEXT_SELECTION, 0),
                         node.document_text_selection.iter().map(|line| SceneRect {
                             x: text_bounds.x + line.x,
                             y: text_bounds.y + line.y,

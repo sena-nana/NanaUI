@@ -20,6 +20,15 @@ pub const DEFAULT_FETCH_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const DEFAULT_FETCH_REDIRECTS: usize = 5;
 pub const DEFAULT_FETCH_WORKERS: usize = 4;
 const FETCH_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Longest one address may spend in the TCP handshake.
+///
+/// `TcpStream::connect_timeout` cannot be resumed, so it cannot be sliced for
+/// cancellation polling the way a read can: every slice abandons the half-open
+/// socket and sends a fresh SYN, and a peer whose handshake takes longer than
+/// one slice never connects at all. The handshake therefore runs in one piece;
+/// cancellation is checked between addresses, and this cap bounds how long a
+/// black-holed address can hold the request before the next one gets its turn.
+const FETCH_CONNECT_ATTEMPT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchRequest {
@@ -447,46 +456,49 @@ impl<In: Transport> Connector<In> for CancellableTcpConnector {
             .and_then(|duration| std::time::Instant::now().checked_add(*duration));
         let mut last_error = None;
         for address in &details.addrs {
-            loop {
-                if self.cancellation.is_cancelled() {
-                    return Err(cancelled_transport_error());
-                }
-                let remaining = deadline
-                    .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
-                if remaining.is_some_and(|remaining| remaining.is_zero()) {
-                    return Err(ureq::Error::Timeout(details.timeout.reason));
-                }
-                let attempt = remaining
-                    .map(|remaining| remaining.min(FETCH_CANCEL_POLL_INTERVAL))
-                    .unwrap_or(FETCH_CANCEL_POLL_INTERVAL);
-                match TcpStream::connect_timeout(address, attempt) {
-                    Ok(stream) => {
-                        if details.config.no_delay() {
-                            stream.set_nodelay(true).map_err(ureq::Error::Io)?;
-                        }
-                        self.cancellation
-                            .register_socket(&stream)
-                            .map_err(ureq::Error::Io)?;
-                        let buffers = LazyBuffers::new(
-                            details.config.input_buffer_size(),
-                            details.config.output_buffer_size(),
-                        );
-                        return Ok(Some(Either::B(CancellableTcpTransport {
-                            stream,
-                            buffers,
-                            cancellation: self.cancellation.clone(),
-                            read_timeout: None,
-                            write_timeout: None,
-                        })));
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::TimedOut => continue,
-                    Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                        last_error = Some(error);
-                        break;
-                    }
-                    Err(error) => return Err(ureq::Error::Io(error)),
-                }
+            if self.cancellation.is_cancelled() {
+                return Err(cancelled_transport_error());
             }
+            let remaining = deadline
+                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now()));
+            if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                return Err(ureq::Error::Timeout(details.timeout.reason));
+            }
+            let attempt = remaining.map_or(FETCH_CONNECT_ATTEMPT, |remaining| {
+                remaining.min(FETCH_CONNECT_ATTEMPT)
+            });
+            match TcpStream::connect_timeout(address, attempt) {
+                Ok(stream) => {
+                    if details.config.no_delay() {
+                        stream.set_nodelay(true).map_err(ureq::Error::Io)?;
+                    }
+                    self.cancellation
+                        .register_socket(&stream)
+                        .map_err(ureq::Error::Io)?;
+                    let buffers = LazyBuffers::new(
+                        details.config.input_buffer_size(),
+                        details.config.output_buffer_size(),
+                    );
+                    return Ok(Some(Either::B(CancellableTcpTransport {
+                        stream,
+                        buffers,
+                        cancellation: self.cancellation.clone(),
+                        read_timeout: None,
+                        write_timeout: None,
+                    })));
+                }
+                // Every failure moves on to the next resolved address, not just
+                // a refusal: a dual-stack machine with no IPv6 route gets
+                // `NetworkUnreachable` on the AAAA record that DNS put first,
+                // and the A record behind it would have connected.
+                Err(error) => last_error = Some(error),
+            }
+        }
+        if self.cancellation.is_cancelled() {
+            return Err(cancelled_transport_error());
+        }
+        if deadline.is_some_and(|deadline| deadline <= std::time::Instant::now()) {
+            return Err(ureq::Error::Timeout(details.timeout.reason));
         }
         Err(ureq::Error::Io(last_error.unwrap_or_else(|| {
             io::Error::new(

@@ -1533,6 +1533,73 @@ fn text_primitive_preserves_content_box_and_paint_semantics() {
     ));
 }
 
+/// A node can carry both a custom-rendered backdrop and a text selection, and
+/// `insert_primitive` keys on the slot: sharing one would silently drop
+/// whichever came second.
+#[test]
+fn a_custom_render_node_keeps_its_paint_while_text_is_selected() {
+    let mut text = node(1, None, &[]);
+    text.text = Some(TextContent {
+        value: "Hello".into(),
+    });
+    style_mut(&mut text).color = Some([1.0, 1.0, 1.0, 1.0]);
+    text.custom_render = Some(CustomRenderNode::new("nana.host-texture", "preview", 1));
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([text.clone()], []);
+    let custom_id = PrimitiveId {
+        node: id(1),
+        slot: 1,
+    };
+    assert!(
+        matches!(
+            scene.primitive(custom_id).map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::Custom { .. })
+        ),
+        "custom render paints before any selection exists"
+    );
+
+    text.document_text_selection = vec![LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 40.0,
+        height: 16.0,
+    }];
+    text.document_text_selection_color = [1.0, 0.0, 0.0, 1.0];
+    scene.apply_delta([text], []);
+
+    assert!(
+        matches!(
+            scene.primitive(custom_id).map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::Custom { .. })
+        ),
+        "selecting text must not blank the custom-painted content"
+    );
+    let fill_id = PrimitiveId {
+        node: id(1),
+        slot: collection_slot(DOCUMENT_TEXT_SELECTION, 0),
+    };
+    assert!(
+        matches!(
+            scene.primitive(fill_id).map(|primitive| &primitive.kind),
+            Some(ScenePrimitiveKind::QuadBatch { .. })
+        ),
+        "and the selection is still drawn"
+    );
+    let order = scene
+        .primitives()
+        .map(|primitive| primitive.id)
+        .collect::<Vec<_>>();
+    let custom_at = order.iter().position(|id| *id == custom_id);
+    let fill_at = order.iter().position(|id| *id == fill_id);
+    assert!(
+        custom_at
+            .zip(fill_at)
+            .is_some_and(|(custom, fill)| custom < fill),
+        "the selection paints over the custom content, under the glyphs"
+    );
+}
+
 #[test]
 fn document_selection_fill_paints_under_glyphs() {
     let mut text = node(1, None, &[]);
@@ -1552,7 +1619,7 @@ fn document_selection_fill_paints_under_glyphs() {
     scene.apply_delta([text], []);
     let fill_id = PrimitiveId {
         node: id(1),
-        slot: 1,
+        slot: collection_slot(DOCUMENT_TEXT_SELECTION, 0),
     };
     let glyph_id = PrimitiveId {
         node: id(1),
@@ -1576,8 +1643,8 @@ fn document_selection_fill_paints_under_glyphs() {
         "glyph run stays on slot 2"
     );
     assert!(
-        fill_id.slot < glyph_id.slot,
-        "selection fill slot must sort under the glyph slot"
+        primitive_paint_layer(fill_id.slot) < primitive_paint_layer(glyph_id.slot),
+        "selection fill must paint under the glyph run"
     );
     let order = scene
         .primitives()

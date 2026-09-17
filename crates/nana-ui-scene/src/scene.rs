@@ -151,6 +151,10 @@ fn collection_slot(namespace: u32, index: usize) -> u64 {
         | u64::from(u32::try_from(index).expect("primitive collection exceeds u32::MAX items"))
 }
 
+/// `::selection` fills share the custom-render slot's paint layer so they stay
+/// behind the glyphs, but live in their own namespace so the two cannot
+/// overwrite each other's key.
+const DOCUMENT_TEXT_SELECTION: u32 = 6;
 const TEXT_LINE_LABELS: u32 = 1;
 const TEXT_DIAGNOSTIC_MARKERS: u32 = 2;
 const TEXT_DIAGNOSTIC_LABELS: u32 = 3;
@@ -1464,6 +1468,9 @@ fn group_prefix(
 
 fn primitive_paint_layer(slot: u64) -> u64 {
     match slot >> 32 {
+        // Behind the glyphs (layer 2), above a custom-rendered backdrop
+        // (layer 1, broken by the much larger slot).
+        namespace if namespace == u64::from(DOCUMENT_TEXT_SELECTION) => 1,
         namespace if namespace == u64::from(TEXT_LINE_LABELS) => 40,
         namespace if namespace == u64::from(TEXT_DIAGNOSTIC_MARKERS) => 20,
         namespace if namespace == u64::from(TEXT_DIAGNOSTIC_LABELS) => 58,
