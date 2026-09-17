@@ -9,7 +9,7 @@ use nana_ui_core::{
 };
 
 use crate::view_components::{
-    Button, Card, RangeChanged, RangeField, Switch, Text, ToggleChanged, project_common,
+    Button, Card, RangeField, RangeInput, Switch, Text, ToggleChanged, project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
@@ -2030,7 +2030,7 @@ impl AppContext {
             self.observe(
                 Entity::<RangeField>::from_stable_id(id),
                 section,
-                |_, event: &RangeChanged, cx| {
+                |_, event: &RangeInput, cx| {
                     cx.emit(AppearanceEvent::BackdropOpacity(event.value as f32 / 100.0));
                 },
             )?;
@@ -2041,7 +2041,7 @@ impl AppContext {
             })?;
         }
         if created_radius {
-            self.observe(radius_range, section, |_, event: &RangeChanged, cx| {
+            self.observe(radius_range, section, |_, event: &RangeInput, cx| {
                 cx.emit(AppearanceEvent::StandardRadius(event.value.round() as u8));
             })?;
         }

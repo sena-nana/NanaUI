@@ -324,10 +324,10 @@ pub use view_components::{
     Activate, Button, Card, Checkbox, CodeEditing, ComponentView, Dialog, Divider, FileDropEvent,
     HostedTextarea, IconButton, IconButtonTooltip, IconGlyph, List, ListItem, ListItemSlots,
     NumberChanged, NumberInput, OverlayChanged, OverlayClosing, OverlayHost, RangeAdjustment,
-    RangeChanged, RangeDragState, RangeField, ScrollAnchor, ScrollAxes, ScrollChanged, ScrollView,
-    ScrollbarDragState, SecondaryPress, Stack, Switch, Table, TableCell, TableCellFocused,
-    TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted, ToggleChanged, Tooltip,
-    UserScroll,
+    RangeChanged, RangeDragState, RangeField, RangeInput, ScrollAnchor, ScrollAxes, ScrollChanged,
+    ScrollView, ScrollbarDragState, SecondaryPress, Stack, Switch, Table, TableCell,
+    TableCellFocused, TableRow, Text, TextArea, TextChanged, TextInput, TextSubmitted,
+    ToggleChanged, Tooltip, UserScroll,
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{

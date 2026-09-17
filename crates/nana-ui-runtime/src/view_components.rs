@@ -3428,6 +3428,16 @@ pub struct RangeDragState {
     pub initial_value: f64,
 }
 
+/// Every value the range shows, including a drag or keyboard step in flight.
+/// Observe this for live previews.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeInput {
+    pub value: f64,
+}
+
+/// A committed value: pointer release, a keyboard step, an accessibility
+/// `SetValue` or [`crate::AppContext::set_range_value`]. A drag emits it once,
+/// on release, and only when the value moved; a cancelled drag never does.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RangeChanged {
     pub value: f64,

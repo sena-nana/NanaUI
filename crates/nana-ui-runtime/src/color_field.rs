@@ -9,7 +9,7 @@ use nana_ui_core::{
 };
 
 use crate::view_components::{
-    Button, RangeChanged, RangeField, TextChanged, TextInput, project_common,
+    Button, RangeChanged, RangeField, RangeInput, TextChanged, TextInput, project_common,
 };
 use crate::{
     AccessibilityRole, AccessibilityState, Activate, AppContext, ComponentView, Entity,
@@ -19,11 +19,11 @@ use crate::{
 
 const SWATCH_SIZE: f32 = 22.0;
 
-/// Committed RGBA in 0..=1.
 /// Default accessible name. Applications localize it with
 /// [`ColorField::label`].
 const DEFAULT_LABEL: &str = "颜色";
 
+/// Committed RGBA in 0..=1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorChanged {
     pub value: [f32; 4],
@@ -281,10 +281,15 @@ impl AppContext {
                     XYPadEvent::Change(_) => cx.emit(ColorChanged { value: field.value }),
                 }
             })?;
-            self.observe(hue, field, |field, event: &RangeChanged, cx| {
+            self.observe(hue, field, |field, event: &RangeInput, cx| {
                 field.hue = event.value as f32;
                 field.apply_hsv();
                 cx.emit(ColorInput { value: field.value });
+            })?;
+            self.observe(hue, field, |field, event: &RangeChanged, cx| {
+                field.hue = event.value as f32;
+                field.apply_hsv();
+                cx.emit(ColorChanged { value: field.value });
             })?;
         }
 
@@ -521,5 +526,43 @@ mod tests {
         assert!(snapshot.pad.is_some());
         assert!(snapshot.hue_slider.is_some());
         assert!(!context.assemble_color_field(field).unwrap());
+    }
+
+    #[test]
+    fn a_hue_commit_reports_a_committed_color() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let field = context
+            .create_component(document, ColorField::new([1.0, 0.0, 0.0, 1.0]))
+            .unwrap();
+        context.assemble_color_field(field).unwrap();
+        let hue = context
+            .read(field, |field| field.hue_slider)
+            .unwrap()
+            .map(Entity::<RangeField>::from_stable_id)
+            .unwrap();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let input = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorInput, _| {
+                input.lock().unwrap().push(("input", event.value));
+            })
+            .unwrap();
+        let changed = std::sync::Arc::clone(&events);
+        context
+            .on(field, move |_, event: &ColorChanged, _| {
+                changed.lock().unwrap().push(("changed", event.value));
+            })
+            .unwrap();
+
+        assert!(context.set_range_value(hue, 120.0).unwrap());
+        let events = events.lock().unwrap();
+        let kinds: Vec<_> = events.iter().map(|(kind, _)| *kind).collect();
+        assert_eq!(kinds, ["input", "changed"]);
+        let green = events[1].1;
+        assert!(
+            green[1] > 0.99 && green[0] < 0.01,
+            "hue 120 is green: {green:?}"
+        );
     }
 }

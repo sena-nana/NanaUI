@@ -110,7 +110,7 @@ inactive overlay 与关闭菜单属于结构性隐藏：`ComputedStyle::box_visi
 
 可见的按下、输入、开关、选中都接到真实状态：`on` / `observe`，或 `update_component`。
 
-典型事件：`Activate`（按钮）、`TextChanged`、`ToggleChanged`、`RangeChanged`、`TabsEvent`、`SearchDropdownEvent`、`ContextMenuEvent`。签名以 rustdoc 为准。
+典型事件：`Activate`（按钮）、`TextChanged`、`ToggleChanged`、`RangeInput` / `RangeChanged`、`TabsEvent`、`SearchDropdownEvent`、`ContextMenuEvent`。签名以 rustdoc 为准。`RangeInput` 是每次可见取值（含拖拽中预览，适合实时预览）；`RangeChanged` 是提交：指针抬起且值变了、键盘步进、无障碍 `SetValue` 或 `set_range_value`，取消的拖拽不提交。
 
 ### 谁改状态
 

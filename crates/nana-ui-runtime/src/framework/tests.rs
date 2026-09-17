@@ -7,11 +7,11 @@ use std::{
 
 use crate::{
     Activate, AnimationId, AnimationSpec, Button, Card, Checkbox, Easing, IconButton, List,
-    ListItem, NodeStyle, RangeChanged, RangeField, ScrollAxes, ScrollChanged, ScrollView,
-    SegmentedControl, SegmentedOption, SegmentedSelectionRequested, Stack, StandardVisual, Switch,
-    TabOption, Table, TableCell, TableCellFocused, TableNavigation, TableRow, Tabs, Text, TextArea,
-    TextCaretIntent, TextChanged, TextCodeFold, TextContent, TextInlay, TextInput, TextSelection,
-    ToggleChanged,
+    ListItem, NodeStyle, RangeAdjustment, RangeChanged, RangeField, RangeInput, ScrollAxes,
+    ScrollChanged, ScrollView, SegmentedControl, SegmentedOption, SegmentedSelectionRequested,
+    Stack, StandardVisual, Switch, TabOption, Table, TableCell, TableCellFocused, TableNavigation,
+    TableRow, Tabs, Text, TextArea, TextCaretIntent, TextChanged, TextCodeFold, TextContent,
+    TextInlay, TextInput, TextSelection, ToggleChanged,
 };
 
 #[test]
@@ -4236,6 +4236,171 @@ fn composite_geometry_separates_text_controls_and_range_drag_axis() {
         .update_range_drag(document, 7, track.x + track.width)
         .unwrap();
     assert_eq!(context.read(range, |range| range.value).unwrap(), 100.0);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RangeEvent {
+    Input(f64),
+    Changed(f64),
+}
+
+fn record_range_events(
+    context: &mut AppContext,
+    range: Entity<RangeField>,
+) -> Arc<Mutex<Vec<RangeEvent>>> {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let input = Arc::clone(&events);
+    context
+        .on(range, move |_, event: &RangeInput, _| {
+            input.lock().unwrap().push(RangeEvent::Input(event.value));
+        })
+        .unwrap();
+    let changed = Arc::clone(&events);
+    context
+        .on(range, move |_, event: &RangeChanged, _| {
+            changed
+                .lock()
+                .unwrap()
+                .push(RangeEvent::Changed(event.value));
+        })
+        .unwrap();
+    events
+}
+
+fn laid_out_range(
+    context: &mut AppContext,
+    document: DocumentId,
+) -> (Entity<RangeField>, f32, f32) {
+    let range = context
+        .create_component(document, RangeField::new(0.0, 0.0, 100.0, 1.0))
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    layout.write_layout(
+        range.stable_id(),
+        crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 300.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(layout).unwrap();
+    let Some(crate::ComponentGeometry::Range { track, .. }) =
+        context.world().component_geometry(range.stable_id())
+    else {
+        panic!("range geometry must expose the interaction axis");
+    };
+    (range, track.x, track.width)
+}
+
+#[test]
+fn a_range_drag_previews_with_input_and_commits_once_on_release() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let (range, x, width) = laid_out_range(&mut context, document);
+    let events = record_range_events(&mut context, range);
+
+    context
+        .begin_range_drag(document, 7, range.stable_id(), x + width * 0.25)
+        .unwrap();
+    context
+        .update_range_drag(document, 7, x + width * 0.5)
+        .unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![RangeEvent::Input(25.0), RangeEvent::Input(50.0)],
+        "a drag in flight only previews"
+    );
+    assert!(context.end_range_drag(document, 7, false).unwrap());
+    assert_eq!(
+        events.lock().unwrap().last(),
+        Some(&RangeEvent::Changed(50.0)),
+        "release commits the dragged value once"
+    );
+    assert_eq!(context.world().pointer_capture(document, 7), None);
+
+    events.lock().unwrap().clear();
+    context
+        .begin_range_drag(document, 8, range.stable_id(), x + width * 0.5)
+        .unwrap();
+    assert!(context.end_range_drag(document, 8, false).unwrap());
+    assert!(
+        events.lock().unwrap().is_empty(),
+        "a press that does not move the value commits nothing"
+    );
+}
+
+#[test]
+fn a_cancelled_or_disabled_range_drag_restores_without_committing() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let (range, x, width) = laid_out_range(&mut context, document);
+    let events = record_range_events(&mut context, range);
+
+    context
+        .begin_range_drag(document, 7, range.stable_id(), x + width * 0.75)
+        .unwrap();
+    assert!(context.end_range_drag(document, 7, true).unwrap());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![RangeEvent::Input(75.0), RangeEvent::Input(0.0)]
+    );
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+
+    events.lock().unwrap().clear();
+    context
+        .begin_range_drag(document, 8, range.stable_id(), x + width * 0.75)
+        .unwrap();
+    context
+        .update_component(range, |range, _| range.disabled = true)
+        .unwrap();
+    assert!(context.end_range_drag(document, 8, false).unwrap());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![RangeEvent::Input(75.0), RangeEvent::Input(0.0)],
+        "a field disabled mid-drag must not commit the stale drag"
+    );
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
+}
+
+#[test]
+fn a_keyboard_step_commits_and_becomes_the_drag_cancel_target() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let (range, x, width) = laid_out_range(&mut context, document);
+    let events = record_range_events(&mut context, range);
+
+    assert!(
+        context
+            .adjust_range(range, RangeAdjustment::PageIncrement)
+            .unwrap()
+    );
+    let stepped = context.read(range, |range| range.value).unwrap();
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![RangeEvent::Input(stepped), RangeEvent::Changed(stepped)]
+    );
+
+    events.lock().unwrap().clear();
+    context
+        .begin_range_drag(document, 7, range.stable_id(), x + width * 0.75)
+        .unwrap();
+    assert!(
+        context
+            .adjust_range(range, RangeAdjustment::Minimum)
+            .unwrap()
+    );
+    assert!(context.end_range_drag(document, 7, true).unwrap());
+    assert_eq!(
+        *events.lock().unwrap(),
+        vec![
+            RangeEvent::Input(75.0),
+            RangeEvent::Input(0.0),
+            RangeEvent::Changed(0.0),
+        ],
+        "cancel keeps a value committed during the drag"
+    );
+    assert_eq!(context.read(range, |range| range.value).unwrap(), 0.0);
 }
 
 #[test]

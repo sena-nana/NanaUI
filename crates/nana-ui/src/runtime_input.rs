@@ -3583,6 +3583,65 @@ mod tests {
     }
 
     #[test]
+    fn a_pointer_drag_on_a_range_commits_once_on_release() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let range = context
+            .create_component(document, RangeField::new(0.0, 0.0, 1.0, 0.1))
+            .unwrap();
+        let mut layout = MutationQueue::new();
+        layout.write_layout(
+            range.stable_id(),
+            LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 300.0,
+                height: 32.0,
+            },
+        );
+        context.commit_mutations(layout).unwrap();
+        context.rebuild_hit_test(document);
+        let previews = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&previews);
+        context
+            .on(range, move |_, event: &nana_ui_runtime::RangeInput, _| {
+                observed.lock().unwrap().push(event.value);
+            })
+            .unwrap();
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&commits);
+        context
+            .on(range, move |_, event: &nana_ui_runtime::RangeChanged, _| {
+                observed.lock().unwrap().push(event.value);
+            })
+            .unwrap();
+        let track = match context.world().component_geometry(range.stable_id()) {
+            Some(ComponentGeometry::Range { track, .. }) => track,
+            _ => panic!("range geometry expected"),
+        };
+        let mut adapter = RuntimeInputAdapter::default();
+        for (phase, fraction) in [
+            (PointerPhase::Down, 0.2),
+            (PointerPhase::Move, 0.5),
+            (PointerPhase::Move, 0.7),
+            (PointerPhase::Up, 0.7),
+        ] {
+            adapter
+                .dispatch(
+                    &mut context,
+                    document,
+                    &pointer(phase, track.x + track.width * fraction, 20.0),
+                )
+                .unwrap();
+        }
+        assert_eq!(previews.lock().unwrap().len(), 3);
+        let commits = commits.lock().unwrap();
+        assert_eq!(commits.len(), 1, "one commit per drag: {commits:?}");
+        assert!((commits[0] - 0.7).abs() < 1e-9);
+        assert_eq!(context.world().pointer_capture(document, 1), None);
+    }
+
+    #[test]
     fn overlay_pointer_sequence_never_activates_the_underlay() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();

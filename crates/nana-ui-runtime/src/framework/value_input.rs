@@ -148,10 +148,21 @@ impl AppContext {
         Ok(true)
     }
 
+    /// Commits `value`: emits [`RangeInput`] then [`RangeChanged`]. During a
+    /// drag the committed value also becomes the value a cancel restores.
     pub fn set_range_value(
         &mut self,
         entity: Entity<RangeField>,
         value: f64,
+    ) -> Result<bool, FrameworkError> {
+        self.write_range_value(entity, value, true)
+    }
+
+    fn write_range_value(
+        &mut self,
+        entity: Entity<RangeField>,
+        value: f64,
+        commit: bool,
     ) -> Result<bool, FrameworkError> {
         if self.read(entity, |range| range.disabled)? {
             return Ok(false);
@@ -165,7 +176,13 @@ impl AppContext {
                 return false;
             }
             range.value = value;
-            cx.emit(RangeChanged { value });
+            cx.emit(RangeInput { value });
+            if commit {
+                if let Some(drag) = range.dragging.as_mut() {
+                    drag.initial_value = value;
+                }
+                cx.emit(RangeChanged { value });
+            }
             true
         })
     }
@@ -252,9 +269,12 @@ impl AppContext {
                 + f64::from(((x - track.x) / track.width).clamp(0.0, 1.0))
                     * (range.maximum - range.minimum)
         })?;
-        self.set_range_value(Entity::from_stable_id(target), value)
+        self.write_range_value(Entity::from_stable_id(target), value, false)
     }
 
+    /// Ends the drag `pointer_id` holds. Release commits the dragged value
+    /// with [`RangeChanged`] when it moved; cancel, or a field disabled
+    /// mid-drag, restores the value the drag started from and commits nothing.
     pub fn end_range_drag(
         &mut self,
         document: DocumentId,
@@ -267,22 +287,21 @@ impl AppContext {
         if !self.is_range_field(target) {
             return Ok(false);
         }
-        let initial = self.read(Entity::<RangeField>::from_stable_id(target), |range| {
-            range.dragging.map(|drag| drag.initial_value)
-        })?;
-        let restored = if cancel {
-            initial
-                .map(|value| self.set_range_value(Entity::from_stable_id(target), value))
-                .transpose()?
-                .unwrap_or(false)
-        } else {
-            false
-        };
         self.update_component(Entity::<RangeField>::from_stable_id(target), |range, cx| {
-            range.dragging = None;
             cx.mutations().release_pointer(pointer_id, target);
-        })?;
-        Ok(restored || initial.is_some())
+            let Some(drag) = range.dragging.take() else {
+                return false;
+            };
+            if range.value != drag.initial_value {
+                if cancel || range.disabled {
+                    range.value = drag.initial_value;
+                    cx.emit(RangeInput { value: range.value });
+                } else {
+                    cx.emit(RangeChanged { value: range.value });
+                }
+            }
+            true
+        })
     }
 
     pub fn begin_xy_pad_drag(

@@ -10,7 +10,7 @@ use nana_ui::runtime::{
     GraphMinimap, GraphMinimapEvent, GraphSize, IconButton, InteractiveCard, LabeledValue,
     LayoutViewport, LengthSpec, LevelMeter, ListItem, ListItemSlots, NativeMarkdown, NodeStyle,
     OverlayHost, PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode,
-    Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeChanged, RichTextEvent,
+    Popover, PopoverClosed, PopoverToggled, PositionSpec, Progress, RangeInput, RichTextEvent,
     RuntimeDocument, SearchDropdown, SearchDropdownEvent, SearchDropdownOption, SegmentedControl,
     SegmentedOption, SegmentedSelectionRequested, SemanticColorRole, SidebarFooter,
     SidebarFooterButton, SidebarFrame, SidebarRow, SidebarRowIcon, SidebarRowState, SidebarSection,
@@ -1413,7 +1413,7 @@ fn mount_controls(
                 .label("强度")
                 .unit("%"),
         ));
-        bind_event_ui(ui, range, Arc::clone(pending), |event: &RangeChanged| {
+        bind_event_ui(ui, range, Arc::clone(pending), |event: &RangeInput| {
             GalleryMessage::SetSlider(event.value.round() as u8)
         });
         let search = ui.parked(gallery_search(state));
@@ -2557,7 +2557,7 @@ fn mount_inspector(
                 .label("标准圆角")
                 .unit("px"),
         ));
-        bind_event_ui(ui, slider, Arc::clone(pending), |event: &RangeChanged| {
+        bind_event_ui(ui, slider, Arc::clone(pending), |event: &RangeInput| {
             GalleryMessage::SetStandardRadius(event.value.round() as u8)
         });
         let corners = ui.parked(Switch::new(
