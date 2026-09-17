@@ -71,6 +71,8 @@ nana-frame-exchange = { workspace = true, optional = true }
 nana-ui-core.workspace = true
 nana-icons-tabler = { workspace = true, optional = true }
 nana-ui-runtime.workspace = true
+# Issue #96: IME surrounding-text rules come from the editable text path.
+nana-text.workspace = true
 nana-ui-scene.workspace = true
 nana-ui-platform = { workspace = true, features = ["clipboard"] }
 nana-window = { workspace = true, optional = true }

@@ -786,6 +786,12 @@ pub(crate) fn runtime_ime_surrounding(
     clip_ime_surrounding(&state.value, state.selection.focus, state.selection.anchor)
 }
 
+/// At most [`IME_SURROUNDING_MAX_BYTES`] of the value around the selection.
+///
+/// A selection that fits is reported whole, with the rest of the budget split
+/// around it (unused space on one side goes to the other); only a selection
+/// longer than the budget is cut, around its cursor. The window never splits a
+/// character: [`nana_text::editable::ime::surrounding_window`].
 fn clip_ime_surrounding(
     text: &str,
     cursor: usize,
@@ -794,22 +800,26 @@ fn clip_ime_surrounding(
     if !text.is_char_boundary(cursor) || !text.is_char_boundary(anchor) {
         return None;
     }
-    if text.len() <= IME_SURROUNDING_MAX_BYTES {
-        return Some(ImeSurroundingSnapshot {
-            text: text.to_string(),
-            cursor,
-            anchor,
-        });
-    }
-    let start = text.floor_char_boundary(cursor.saturating_sub(IME_SURROUNDING_MAX_BYTES / 2));
-    let end = text.floor_char_boundary((start + IME_SURROUNDING_MAX_BYTES).min(text.len()));
-    if end <= start {
+    let selection = cursor.min(anchor)..cursor.max(anchor);
+    let window = if selection.len() <= IME_SURROUNDING_MAX_BYTES {
+        let spare = IME_SURROUNDING_MAX_BYTES - selection.len();
+        let after_available = text.len() - selection.end;
+        let before = selection
+            .start
+            .min((spare / 2).max(spare.saturating_sub(after_available)));
+        nana_text::editable::ime::surrounding_window(text, selection, before, spare - before)
+    } else {
+        let half = IME_SURROUNDING_MAX_BYTES / 2;
+        nana_text::editable::ime::surrounding_window(text, cursor..cursor, half, half)
+    };
+    if window.is_empty() && !text.is_empty() {
         return None;
     }
+    let local = |offset: usize| offset.clamp(window.start, window.end) - window.start;
     Some(ImeSurroundingSnapshot {
-        text: text[start..end].to_string(),
-        cursor: cursor.saturating_sub(start).min(end - start),
-        anchor: anchor.saturating_sub(start).min(end - start),
+        text: text[window.clone()].to_string(),
+        cursor: local(cursor),
+        anchor: local(anchor),
     })
 }
 
@@ -981,6 +991,24 @@ mod tests {
                 .unwrap()
         );
         assert!(runtime_ime_surrounding(&document).is_none());
+    }
+
+    #[test]
+    fn clip_ime_surrounding_keeps_a_selection_that_fits_and_uses_the_whole_budget() {
+        let text = "a".repeat(IME_SURROUNDING_MAX_BYTES * 3);
+        let clip = clip_ime_surrounding(&text, text.len(), text.len() - 3000).unwrap();
+        assert_eq!(clip.text.len(), IME_SURROUNDING_MAX_BYTES);
+        assert_eq!(
+            clip.cursor - clip.anchor,
+            3000,
+            "the whole selection is reported"
+        );
+        let short = "ab中cd";
+        let clip = clip_ime_surrounding(short, 5, 2).unwrap();
+        assert_eq!(
+            (clip.text.as_str(), clip.cursor, clip.anchor),
+            (short, 5, 2)
+        );
     }
 
     #[test]

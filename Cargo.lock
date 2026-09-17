@@ -2416,6 +2416,7 @@ dependencies = [
  "nana-frame-exchange",
  "nana-icons-tabler",
  "nana-svg-raster",
+ "nana-text",
  "nana-ui-core",
  "nana-ui-platform",
  "nana-ui-runtime",
