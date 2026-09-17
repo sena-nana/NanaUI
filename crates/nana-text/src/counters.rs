@@ -63,6 +63,35 @@ pub struct TextWorkCounters {
     /// Nodes that ended the pass holding the same layout they started with.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub text_layouts_reused: usize,
+    /// #96: edits that changed committed editable text.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub editable_mutations: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub editable_bytes_inserted: usize,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub editable_bytes_deleted: usize,
+    /// Selection changes that left a collapsed caret, with no text change.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub caret_only_updates: usize,
+    /// Selection changes that left a non-empty selection, with no text change.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub selection_only_updates: usize,
+    /// Preedit starts, changes and ends.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub composition_updates: usize,
+    /// Editor paragraphs laid out again after an edit or composition change
+    /// whose shaping missed the cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paragraphs_reshaped_from_edit: usize,
+    /// Editor paragraphs laid out again after an edit or composition change.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub paragraphs_relayout_from_edit: usize,
+    /// Points resolved to a text position against retained editor geometry.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub hit_test_queries: usize,
+    /// Carets placed against retained editor geometry.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub caret_geometry_queries: usize,
 }
 
 impl TextWorkCounters {
@@ -106,6 +135,16 @@ impl TextWorkCounters {
         self.layouts_created += other.layouts_created;
         self.constraint_only_relayouts += other.constraint_only_relayouts;
         self.text_layouts_reused += other.text_layouts_reused;
+        self.editable_mutations += other.editable_mutations;
+        self.editable_bytes_inserted += other.editable_bytes_inserted;
+        self.editable_bytes_deleted += other.editable_bytes_deleted;
+        self.caret_only_updates += other.caret_only_updates;
+        self.selection_only_updates += other.selection_only_updates;
+        self.composition_updates += other.composition_updates;
+        self.paragraphs_reshaped_from_edit += other.paragraphs_reshaped_from_edit;
+        self.paragraphs_relayout_from_edit += other.paragraphs_relayout_from_edit;
+        self.hit_test_queries += other.hit_test_queries;
+        self.caret_geometry_queries += other.caret_geometry_queries;
     }
 
     /// True when no pass has touched any field.

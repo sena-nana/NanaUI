@@ -213,3 +213,78 @@ fn an_empty_selection_range_selects_nothing() {
     let reversed = 3..1;
     assert!(layout.selection_rects(reversed).is_empty());
 }
+
+#[test]
+fn upstream_affinity_draws_a_bidi_boundary_caret_at_the_end_of_the_run_before_it() {
+    let layout = support::mixed_bidi_single_line();
+    // Byte 2 ends the leading LTR run at x = 20 and starts the RTL run, whose
+    // logical start is its right edge at x = 40.
+    let upstream = layout
+        .caret_geometry(CaretPosition::new(2, Affinity::Upstream, 0))
+        .unwrap();
+    assert_eq!(
+        (upstream.x_px, upstream.direction),
+        (20.0, RunDirection::Ltr)
+    );
+    // Byte 6 ends the RTL run at its left edge, x = 20, and starts the trailing
+    // LTR run at x = 40.
+    let upstream = layout
+        .caret_geometry(CaretPosition::new(6, Affinity::Upstream, 0))
+        .unwrap();
+    assert_eq!(
+        (upstream.x_px, upstream.direction),
+        (20.0, RunDirection::Rtl)
+    );
+}
+
+#[test]
+fn text_aware_hits_resolve_to_where_the_click_was_across_a_bidi_boundary() {
+    let layout = support::mixed_bidi_single_line();
+    let text = "abXXYYcd";
+    // The right half of the RTL cell drawn at 30..40 is its logical start,
+    // byte 2; a downstream caret there draws at 40, where it was clicked.
+    let hit = layout.hit_test_text(text, 38.0, 5.0);
+    let caret = layout.caret_geometry(hit.caret).unwrap();
+    assert_eq!(caret.x_px, 40.0);
+    // The left half of the cell at 20..30 is the RTL run's logical end, byte 6,
+    // which downstream would draw at 40 in the trailing LTR run.
+    let hit = layout.hit_test_text(text, 21.0, 5.0);
+    assert_eq!(hit.caret.byte, 6);
+    assert_eq!(hit.caret.affinity, Affinity::Upstream);
+    assert_eq!(layout.caret_geometry(hit.caret).unwrap().x_px, 20.0);
+}
+
+#[test]
+fn caret_stops_list_every_position_of_a_line_left_to_right() {
+    let layout = support::mixed_bidi_single_line();
+    let stops = layout.caret_stops(0, "abXXYYcd");
+    let xs: Vec<f32> = stops.iter().map(|stop| stop.x_px).collect();
+    assert!(xs.windows(2).all(|pair| pair[0] <= pair[1]), "{xs:?}");
+    assert_eq!(xs.first(), Some(&0.0));
+    assert_eq!(xs.last(), Some(&60.0));
+    // Both sides of both BiDi boundaries are stops, and positions sharing an x
+    // are adjacent in reading order.
+    for (byte, affinity, x) in [
+        (2, Affinity::Upstream, 20.0),
+        (2, Affinity::Downstream, 40.0),
+        (6, Affinity::Upstream, 20.0),
+        (6, Affinity::Downstream, 40.0),
+    ] {
+        assert!(
+            stops.iter().any(|stop| stop.caret.byte == byte
+                && stop.caret.affinity == affinity
+                && stop.x_px == x),
+            "missing {byte} {affinity:?} at {x}: {stops:?}"
+        );
+    }
+    let at_twenty: Vec<usize> = stops
+        .iter()
+        .filter(|stop| stop.x_px == 20.0)
+        .map(|stop| stop.caret.byte)
+        .collect();
+    assert_eq!(at_twenty, vec![2, 6]);
+    assert!(
+        layout.caret_stops(0, "short").is_empty(),
+        "not this layout's text"
+    );
+}

@@ -47,6 +47,7 @@
 pub mod constraints;
 pub mod counters;
 pub mod edit;
+pub mod editable;
 pub mod engine;
 pub mod font;
 pub mod id;
@@ -60,7 +61,11 @@ pub mod style;
 
 pub use constraints::{TextConstraints, TextScale};
 pub use counters::TextWorkCounters;
-pub use edit::{Affinity, CaretGeometry, CaretPosition, HitTestResult};
+pub use edit::{Affinity, CaretGeometry, CaretPosition, CaretStop, HitTestResult};
+pub use editable::{
+    CaretRect, Composition, EditChange, EditRevisions, EditSelection, EditSession, EditState,
+    EditableText, EditorGeometry, Motion, TextEdit,
+};
 pub use engine::{
     NativeTextEngine, SharedTextEngine, TextEngine, TextEngineEpoch, lock_text_engine,
 };

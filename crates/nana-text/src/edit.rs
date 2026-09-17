@@ -9,6 +9,7 @@ use crate::layout::{LineBox, TextLayout, TextRect};
 use crate::shape::RunDirection;
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Which side of a wrap boundary a caret belongs to.
 ///
@@ -82,6 +83,7 @@ enum GapSide {
 }
 
 /// One glyph's advance cell, flattened across the runs of a line.
+#[derive(Clone, Copy)]
 struct Cell {
     left: f32,
     right: f32,
@@ -142,8 +144,111 @@ impl Cell {
     }
 }
 
+/// A line's cells in visual order, plus their order by cluster so a byte can
+/// be resolved to its cell by binary search rather than a scan of the line.
+struct LineCells {
+    cells: Vec<Cell>,
+    /// Indices into `cells`, sorted by `(cluster, cluster_end)`. Built only
+    /// for many queries on one line; a single query scans.
+    by_cluster: Option<Vec<u32>>,
+}
+
+impl LineCells {
+    fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Every cell rendering the first cluster that satisfies `covers`, merged
+    /// into one visual extent.
+    ///
+    /// Clusters do not overlap, so over `by_cluster` both their starts and
+    /// their ends ascend: `before` (true for clusters wholly before `byte`) is
+    /// a partition, and no cluster starting after `byte` can cover it.
+    fn merged(
+        &self,
+        byte: usize,
+        covers: impl Fn(&Cell) -> bool,
+        before: impl Fn(&Cell) -> bool,
+    ) -> Option<Cell> {
+        let Some(by_cluster) = &self.by_cluster else {
+            // One query on a line: a scan is cheaper than sorting an index.
+            let found = *self.cells.iter().find(|cell| covers(cell))?;
+            return Some(self.cells.iter().fold(found, |mut merged, cell| {
+                if (cell.cluster, cell.cluster_end) == (found.cluster, found.cluster_end) {
+                    merged.left = merged.left.min(cell.left);
+                    merged.right = merged.right.max(cell.right);
+                }
+                merged
+            }));
+        };
+        let first = by_cluster.partition_point(|index| before(&self.cells[*index as usize]));
+        let found = by_cluster[first..]
+            .iter()
+            .map(|index| &self.cells[*index as usize])
+            .take_while(|cell| cell.cluster <= byte)
+            .find(|cell| covers(cell))?;
+        let (cluster, cluster_end) = (found.cluster, found.cluster_end);
+        let mut merged = Cell { ..*found };
+        // Cells of one cluster are adjacent in `by_cluster`: combining marks
+        // share their base's cluster range.
+        let start = by_cluster.partition_point(|index| {
+            let cell = &self.cells[*index as usize];
+            (cell.cluster, cell.cluster_end) < (cluster, cluster_end)
+        });
+        for index in &by_cluster[start..] {
+            let cell = &self.cells[*index as usize];
+            if (cell.cluster, cell.cluster_end) != (cluster, cluster_end) {
+                break;
+            }
+            merged.left = merged.left.min(cell.left);
+            merged.right = merged.right.max(cell.right);
+        }
+        Some(merged)
+    }
+
+    /// The cluster `byte` falls in: its first byte or an interior one.
+    fn containing(&self, byte: usize) -> Option<Cell> {
+        self.merged(
+            byte,
+            |cell| byte >= cell.cluster && byte < cell.cluster_end,
+            |cell| cell.cluster_end <= byte,
+        )
+    }
+
+    /// The cluster that ends exactly at `byte` or runs through it.
+    fn ending_at(&self, byte: usize) -> Option<Cell> {
+        self.merged(
+            byte,
+            |cell| byte > cell.cluster && byte <= cell.cluster_end,
+            |cell| cell.cluster_end < byte,
+        )
+    }
+}
+
 impl TextLayout {
-    fn cells(&self, line: &LineBox) -> Vec<Cell> {
+    fn cells(&self, line: &LineBox) -> LineCells {
+        LineCells {
+            cells: self.visual_cells(line),
+            by_cluster: None,
+        }
+    }
+
+    /// [`Self::cells`] with the cluster index, for a pass that resolves every
+    /// position of a line.
+    fn indexed_cells(&self, line: &LineBox) -> LineCells {
+        let cells = self.visual_cells(line);
+        let mut by_cluster: Vec<u32> = (0..cells.len() as u32).collect();
+        by_cluster.sort_by_key(|index| {
+            let cell = &cells[*index as usize];
+            (cell.cluster, cell.cluster_end)
+        });
+        LineCells {
+            cells,
+            by_cluster: Some(by_cluster),
+        }
+    }
+
+    fn visual_cells(&self, line: &LineBox) -> Vec<Cell> {
         let mut cells = Vec::new();
         for run in self.line_runs(line) {
             for (left, glyph) in run.glyph_cells() {
@@ -164,16 +269,23 @@ impl TextLayout {
         if y_px < first.bounds.y {
             return Some((first, false));
         }
-        for line in &self.lines {
-            if y_px < line.bounds.bottom() {
-                return Some((line, true));
-            }
+        // Lines stack downwards, so their bottoms ascend.
+        let below = self
+            .lines
+            .partition_point(|line| y_px >= line.bounds.bottom());
+        match self.lines.get(below) {
+            Some(line) => Some((line, true)),
+            None => self.lines.last().map(|line| (line, false)),
         }
-        self.lines.last().map(|line| (line, false))
     }
 
     fn line_by_index(&self, index: u32) -> Option<&LineBox> {
-        self.lines.iter().find(|line| line.index == index)
+        // Indices are assigned in order; fall back to a scan for a
+        // hand-built layout that numbers them otherwise.
+        match self.lines.get(index as usize) {
+            Some(line) if line.index == index => Some(line),
+            _ => self.lines.iter().find(|line| line.index == index),
+        }
     }
 
     /// Whether `byte` falls in the gap of hung whitespace after `line`, or in
@@ -207,11 +319,30 @@ impl TextLayout {
         }
     }
 
-    /// Resolves a point in layout space to a caret.
+    /// Resolves a point in layout space to a caret on a cluster edge.
     ///
     /// A point outside the laid-out bounds still yields the nearest caret, with
     /// `inside == false`, because callers drag-select past the edges.
+    ///
+    /// This is the IR-only answer the migration corpus records. An editor that
+    /// has the text uses [`Self::hit_test_text`], which can also land between
+    /// the graphemes of a ligature.
     pub fn hit_test(&self, x_px: f32, y_px: f32) -> HitTestResult {
+        self.hit(x_px, y_px, None)
+    }
+
+    /// [`Self::hit_test`] with the source text: the caret lands on the nearest
+    /// grapheme boundary even inside one glyph that draws several graphemes (a
+    /// ligature), and its affinity names the cluster that was clicked, so a
+    /// click on either side of a BiDi boundary draws the caret where the
+    /// pointer is.
+    ///
+    /// `text` is the text this layout was produced from.
+    pub fn hit_test_text(&self, text: &str, x_px: f32, y_px: f32) -> HitTestResult {
+        self.hit(x_px, y_px, Some(text))
+    }
+
+    fn hit(&self, x_px: f32, y_px: f32, text: Option<&str>) -> HitTestResult {
         let Some((line, inside_y)) = self.line_at_y(y_px) else {
             return HitTestResult {
                 caret: CaretPosition::default(),
@@ -222,14 +353,32 @@ impl TextLayout {
         let cells = self.cells(line);
         let inside_x = x_px >= line.bounds.x && x_px < line.bounds.right();
 
+        let past_left = !cells.is_empty() && x_px < cells.cells[0].left;
+        let past_right = !cells.is_empty() && x_px >= cells.cells[cells.cells.len() - 1].right;
         let caret = if cells.is_empty() {
             CaretPosition::new(line.source.start, Affinity::Downstream, line.index)
-        } else if x_px < cells[0].left {
+        } else if (past_left || past_right)
+            && let Some(text) = text
+            && let Some(stop) = {
+                // With the text, the position drawn at that edge — not the
+                // line's logical boundary, which a wrapped line ending in
+                // opposite-direction text draws at the other side.
+                let stops = self.caret_stops(line.index, text);
+                if past_left {
+                    stops.first().copied()
+                } else {
+                    stops.last().copied()
+                }
+            }
+        {
+            stop.caret
+        } else if past_left {
             CaretPosition::new(left_byte, edge_affinity(line, left_byte), line.index)
-        } else if x_px >= cells[cells.len() - 1].right {
+        } else if past_right {
             CaretPosition::new(right_byte, edge_affinity(line, right_byte), line.index)
         } else {
             let cell = cells
+                .cells
                 .iter()
                 .find(|cell| x_px >= cell.left && x_px < cell.right)
                 .unwrap_or_else(|| {
@@ -238,17 +387,23 @@ impl TextLayout {
                     // belongs to the run beside it, not to the start of the
                     // line.
                     cells
+                        .cells
                         .iter()
                         .min_by(|a, b| a.distance_to(x_px).total_cmp(&b.distance_to(x_px)))
                         .expect("the empty case returned above")
                 });
-            let midpoint = (cell.left + cell.right) * 0.5;
-            let byte = if x_px < midpoint {
-                cell.leading_byte()
-            } else {
-                cell.trailing_byte()
-            };
-            CaretPosition::new(byte, Affinity::Downstream, line.index)
+            match text {
+                None => {
+                    let midpoint = (cell.left + cell.right) * 0.5;
+                    let byte = if x_px < midpoint {
+                        cell.leading_byte()
+                    } else {
+                        cell.trailing_byte()
+                    };
+                    CaretPosition::new(byte, Affinity::Downstream, line.index)
+                }
+                Some(text) => self.hit_cluster(line, &cells, *cell, text, x_px),
+            }
         };
 
         HitTestResult {
@@ -257,53 +412,215 @@ impl TextLayout {
         }
     }
 
+    /// The grapheme boundary of the clicked cluster nearest `x_px`.
+    fn hit_cluster(
+        &self,
+        line: &LineBox,
+        cells: &LineCells,
+        cell: Cell,
+        text: &str,
+        x_px: f32,
+    ) -> CaretPosition {
+        let cluster = cells.containing(cell.cluster).unwrap_or(cell);
+        let mut best = (cluster.leading_byte(), f32::INFINITY);
+        // Segmented from the line's start, not the cluster's: a grapheme rule
+        // can depend on what precedes (regional indicator pairs).
+        let line_start = line.source.start.min(cluster.cluster);
+        if let Some(graphemes) = text.get(line_start..cluster.cluster_end) {
+            let boundaries = graphemes
+                .grapheme_indices(true)
+                .map(|(index, _)| line_start + index)
+                .skip_while(|byte| *byte < cluster.cluster)
+                .chain(std::iter::once(cluster.cluster_end));
+            for byte in boundaries {
+                let distance = (cluster.x_for_byte(byte) - x_px).abs();
+                if distance < best.1 {
+                    best = (byte, distance);
+                }
+            }
+        } else {
+            // Not the text this layout came from; the cluster edges are all
+            // that can be trusted.
+            let midpoint = (cluster.left + cluster.right) * 0.5;
+            best.0 = if x_px < midpoint {
+                cluster.leading_byte()
+            } else {
+                cluster.trailing_byte()
+            };
+        }
+        let byte = best.0;
+        let affinity =
+            if byte == line.source.end && line.break_cause == crate::layout::LineBreakCause::Wrap {
+                Affinity::Upstream
+            } else if byte == cluster.cluster_end && byte != cluster.cluster {
+                // The clicked cluster's logical end. Downstream would draw at the
+                // start of whatever follows it logically, which across a BiDi
+                // boundary is somewhere else on the line.
+                let upstream = cluster.x_for_byte(byte);
+                let downstream = self
+                    .place_caret(line, cells, byte, Affinity::Downstream)
+                    .map(|(x, _)| x);
+                if downstream.is_some_and(|x| (x - upstream).abs() <= CELL_JOIN_TOLERANCE_PX) {
+                    Affinity::Downstream
+                } else {
+                    Affinity::Upstream
+                }
+            } else {
+                Affinity::Downstream
+            };
+        CaretPosition::new(byte, affinity, line.index)
+    }
+
     /// Where to draw the given caret, or `None` if it names a line this layout
     /// does not have.
+    ///
+    /// Affinity decides between the two clusters that meet at a byte: an
+    /// upstream caret draws at the logical end of the cluster before it, a
+    /// downstream one at the logical start of the cluster after it. Within one
+    /// direction both are the same x; across a BiDi boundary they are the two
+    /// visually distinct places that byte can be.
     pub fn caret_geometry(&self, caret: CaretPosition) -> Option<CaretGeometry> {
         let line = self.line_by_index(caret.line)?;
-        let (left_byte, right_byte) = self.line_edge_bytes(line);
         let cells = self.cells(line);
-
-        let placed = cluster_cell_at(&cells, caret.byte)
-            .map(|cell| (cell.x_for_byte(caret.byte), cell.direction))
-            .or_else(|| {
-                // Not inside any cluster: it is one of the line's two edges.
-                //
-                // Both edges come from the cells, because those are what
-                // `hit_test` compares against when it decides a point is past
-                // one end of the line. Reading `bounds.x` for the left edge
-                // would disagree with it on any line whose first glyph does not
-                // start at the line box edge -- a centred or indented line --
-                // and the caret would jump away from the click that placed it.
-                // An empty line has no cells, and then the line box is all
-                // there is to go on.
-                let empty = line.bounds.x;
-                let left_edge = cells.first().map_or(empty, |cell| cell.left);
-                let right_edge = cells.last().map_or(empty, |cell| cell.right);
-                let logical_end = match self.gap_side(line, caret.byte) {
-                    // Hung whitespace: the bytes between two lines are drawn by
-                    // neither, and a caret in them sits at the end of the line
-                    // it hangs from.
-                    Some(GapSide::After) => true,
-                    Some(GapSide::Before) => false,
-                    None if caret.byte == left_byte => line.base_direction.is_rtl(),
-                    None if caret.byte == right_byte => !line.base_direction.is_rtl(),
-                    None => return None,
-                };
-                let edge = if logical_end == line.base_direction.is_rtl() {
-                    left_edge
-                } else {
-                    right_edge
-                };
-                Some((edge, line.base_direction))
-            })?;
-
+        let (x_px, direction) = self.place_caret(line, &cells, caret.byte, caret.affinity)?;
         Some(CaretGeometry {
-            x_px: placed.0,
+            x_px,
             top_y_px: line.metrics.top_y_px,
             height_px: line.metrics.height_px,
-            direction: placed.1,
+            direction,
         })
+    }
+
+    fn place_caret(
+        &self,
+        line: &LineBox,
+        cells: &LineCells,
+        byte: usize,
+        affinity: Affinity,
+    ) -> Option<(f32, RunDirection)> {
+        let cluster = match affinity {
+            Affinity::Upstream => cells.ending_at(byte).or_else(|| cells.containing(byte)),
+            Affinity::Downstream => cells.containing(byte),
+        };
+        if let Some(cell) = cluster {
+            return Some((cell.x_for_byte(byte), cell.direction));
+        }
+        // Not inside any cluster: it is one of the line's two edges.
+        //
+        // Both edges come from the cells, because those are what `hit_test`
+        // compares against when it decides a point is past one end of the
+        // line. Reading `bounds.x` for the left edge would disagree with it on
+        // any line whose first glyph does not start at the line box edge -- a
+        // centred or indented line -- and the caret would jump away from the
+        // click that placed it. An empty line has no cells, and then the line
+        // box is all there is to go on.
+        let (left_byte, right_byte) = self.line_edge_bytes(line);
+        let empty = line.bounds.x;
+        let left_edge = cells.cells.first().map_or(empty, |cell| cell.left);
+        let right_edge = cells.cells.last().map_or(empty, |cell| cell.right);
+        let logical_end = match self.gap_side(line, byte) {
+            // Hung whitespace: the bytes between two lines are drawn by
+            // neither, and a caret in them sits at the end of the line it
+            // hangs from.
+            Some(GapSide::After) => true,
+            Some(GapSide::Before) => false,
+            None if byte == left_byte => line.base_direction.is_rtl(),
+            None if byte == right_byte => !line.base_direction.is_rtl(),
+            None => return None,
+        };
+        let edge = if logical_end == line.base_direction.is_rtl() {
+            left_edge
+        } else {
+            right_edge
+        };
+        Some((edge, line.base_direction))
+    }
+
+    /// Every caret position on one line, ordered left to right, for moving a
+    /// caret visually through mixed-direction text. Positions at the same x
+    /// are ordered in the line's reading order.
+    ///
+    /// Each grapheme boundary of the line contributes its downstream position
+    /// and, where it draws elsewhere, its upstream one. The logical end of a
+    /// soft-wrapped line contributes only the upstream position: downstream it
+    /// belongs to the next line. Positions inside whitespace the wrap hung
+    /// after the line are upstream stops at its end. Empty when `text` is not the text this layout
+    /// was produced from, or the line does not exist.
+    pub fn caret_stops(&self, line_index: u32, text: &str) -> Vec<CaretStop> {
+        let Some(line) = self.line_by_index(line_index) else {
+            return Vec::new();
+        };
+        let Some(line_text) = text.get(line.source.clone()) else {
+            return Vec::new();
+        };
+        let cells = self.indexed_cells(line);
+        let wrapped = line.break_cause == crate::layout::LineBreakCause::Wrap;
+        let mut stops = Vec::new();
+        // A line starts on a grapheme boundary, so its own text segments the
+        // same as the whole paragraph around it.
+        let boundaries = line_text
+            .grapheme_indices(true)
+            .map(|(index, _)| line.source.start + index)
+            .chain(std::iter::once(line.source.end));
+        for byte in boundaries {
+            let at_wrap = wrapped && byte == line.source.end;
+            let downstream = (!at_wrap)
+                .then(|| self.place_caret(line, &cells, byte, Affinity::Downstream))
+                .flatten();
+            if let Some((x_px, _)) = downstream {
+                stops.push(CaretStop {
+                    x_px,
+                    caret: CaretPosition::new(byte, Affinity::Downstream, line.index),
+                });
+            }
+            if byte > line.source.start
+                && let Some((x_px, _)) = self.place_caret(line, &cells, byte, Affinity::Upstream)
+                && downstream.is_none_or(|(x, _)| (x - x_px).abs() > CELL_JOIN_TOLERANCE_PX)
+            {
+                stops.push(CaretStop {
+                    x_px,
+                    caret: CaretPosition::new(byte, Affinity::Upstream, line.index),
+                });
+            }
+        }
+        // Whitespace a wrap hung after this line belongs to no line's source,
+        // but every position inside it is still somewhere a caret can be; it
+        // draws at this line's end.
+        if wrapped
+            && let Some(next) = self
+                .lines
+                .iter()
+                .position(|candidate| candidate.index == line.index)
+                .and_then(|index| self.lines.get(index + 1))
+            && let Some(gap) = text.get(line.source.end..next.source.start)
+        {
+            let inner = gap
+                .grapheme_indices(true)
+                .map(|(index, _)| line.source.end + index)
+                .filter(|byte| *byte > line.source.end);
+            for byte in inner {
+                if let Some((x_px, _)) = self.place_caret(line, &cells, byte, Affinity::Upstream) {
+                    stops.push(CaretStop {
+                        x_px,
+                        caret: CaretPosition::new(byte, Affinity::Upstream, line.index),
+                    });
+                }
+            }
+        }
+        // Two positions can draw at one x — the logical end of an LTR line
+        // that ends in RTL text and the RTL run's logical start, say. They
+        // are still two positions an arrow key has to be able to reach, so
+        // they stay adjacent, in the line's reading order.
+        let rtl = line.base_direction.is_rtl();
+        stops.sort_by(|a, b| {
+            let bytes = if rtl {
+                b.caret.byte.cmp(&a.caret.byte)
+            } else {
+                a.caret.byte.cmp(&b.caret.byte)
+            };
+            snapped_x(a.x_px).cmp(&snapped_x(b.x_px)).then(bytes)
+        });
+        stops
     }
 
     /// Rectangles covering a source byte range, one or more per line.
@@ -316,8 +633,12 @@ impl TextLayout {
         }
         let mut rects = Vec::new();
         for line in &self.lines {
+            // A line's clusters lie inside its source range.
+            if line.source.end <= range.start || line.source.start >= range.end {
+                continue;
+            }
             let mut open: Option<(f32, f32)> = None;
-            for cell in self.cells(line) {
+            for cell in self.visual_cells(line) {
                 let selected = cell.cluster < range.end && cell.cluster_end > range.start;
                 match (selected, open) {
                     (true, None) => open = Some((cell.left, cell.right)),
@@ -346,33 +667,16 @@ impl TextLayout {
     }
 }
 
-/// The cell covering `byte`, merged across every cell rendering the same
-/// cluster.
-///
-/// One cluster is not always one cell. A combining mark carries no advance and
-/// shares its base's cluster, and in an RTL run HarfBuzz emits the mark
-/// *before* its base, so taking whichever cell comes first would resolve the
-/// caret against a zero-width cell and drop it a whole base glyph to the left.
-/// Merging first means the interpolation in [`Cell::x_for_byte`] runs over the
-/// extent the cluster actually draws in.
-fn cluster_cell_at(cells: &[Cell], byte: usize) -> Option<Cell> {
-    let first = cells
-        .iter()
-        .find(|cell| byte >= cell.cluster && byte < cell.cluster_end)?;
-    let mut merged = Cell {
-        left: first.left,
-        right: first.right,
-        cluster: first.cluster,
-        cluster_end: first.cluster_end,
-        direction: first.direction,
-    };
-    for cell in cells {
-        if cell.cluster == merged.cluster && cell.cluster_end == merged.cluster_end {
-            merged.left = merged.left.min(cell.left);
-            merged.right = merged.right.max(cell.right);
-        }
-    }
-    Some(merged)
+/// An x compared at the resolution two cells count as touching.
+fn snapped_x(x_px: f32) -> i64 {
+    (x_px / CELL_JOIN_TOLERANCE_PX).round() as i64
+}
+
+/// One place a caret can be on a line: see [`TextLayout::caret_stops`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CaretStop {
+    pub x_px: f32,
+    pub caret: CaretPosition,
 }
 
 /// A caret dropped at one of a line's two edges.
