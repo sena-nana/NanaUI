@@ -139,6 +139,10 @@ pub(super) struct CompositorRegistry {
 
 #[derive(Debug, Clone)]
 struct MotionGpuPack {
+    /// Which store the pack came from. The epoch counts within a store and
+    /// starts at 0 in every one of them, so two documents reach the same epoch
+    /// while describing different motion.
+    store: Option<u64>,
     structure_epoch: u64,
     slot_capacity: usize,
     now: Duration,
@@ -149,6 +153,7 @@ struct MotionGpuPack {
 impl Default for MotionGpuPack {
     fn default() -> Self {
         Self {
+            store: None,
             structure_epoch: u64::MAX,
             slot_capacity: 0,
             now: Duration::ZERO,
@@ -178,12 +183,14 @@ impl CompositorRegistry {
 
     fn sync_gpu_pack(&mut self, store: &MotionDescriptorStore, now: Duration) {
         self.gpu.now = now;
-        if self.gpu.structure_epoch == store.structure_epoch()
+        if self.gpu.store == Some(store.id())
+            && self.gpu.structure_epoch == store.structure_epoch()
             && self.gpu.slot_capacity == store.slot_capacity()
         {
             return;
         }
         let (descriptors, keyframes) = store.pack_gpu();
+        self.gpu.store = Some(store.id());
         self.gpu.structure_epoch = store.structure_epoch();
         self.gpu.slot_capacity = store.slot_capacity();
         self.gpu.descriptors = descriptors;
@@ -276,6 +283,13 @@ impl UiScene {
 
     pub fn motion_gpu_structure_epoch(&self) -> u64 {
         self.compositor.gpu.structure_epoch
+    }
+
+    /// Identity of the [`MotionDescriptorStore`] the packed tables came from,
+    /// `None` before the first sync. A GPU consumer caching the tables needs it
+    /// beside the epoch, which only counts within one store.
+    pub fn motion_gpu_store_id(&self) -> Option<u64> {
+        self.compositor.gpu.store
     }
 
     pub fn motion_gpu_descriptors(&self) -> &[MotionGpuDescriptor] {
@@ -1456,6 +1470,73 @@ mod tests {
         assert!(
             !scene.compositor_needs_tick(),
             "requested and phases must drain after demote"
+        );
+    }
+
+    /// The packed tables are cached on the store's epoch and capacity, both of
+    /// which start the same in every store. Re-pointing a scene at another
+    /// document's motion would otherwise keep serving the first one's slab.
+    #[test]
+    fn repointing_a_scene_at_another_store_repacks_the_slab() {
+        use nana_ui_runtime::{AnimationId, AnimationSpec, DocumentId, MutationQueue, UiWorld};
+        let animated = |to: f32| {
+            let node = id(1);
+            let mut world = UiWorld::new();
+            let mut queue = MutationQueue::new();
+            queue.create(node, DocumentId::new(1).unwrap(), NodeKind::Document);
+            queue.start_animation(
+                AnimationSpec::new(
+                    AnimationId::new(1).unwrap(),
+                    node,
+                    Duration::ZERO,
+                    Duration::from_millis(400),
+                    Duration::from_millis(16),
+                    Easing::Linear,
+                )
+                .with_property(AnimatableProperty::Opacity)
+                .with_range(
+                    MotionValue::Scalar(0.0),
+                    MotionTo::Value(MotionValue::Scalar(to)),
+                ),
+            );
+            world.commit(queue).unwrap();
+            world.advance_animations(Duration::ZERO);
+            world
+        };
+        let first = animated(1.0);
+        let second = animated(0.25);
+        assert_eq!(
+            first.motion_descriptors().structure_epoch(),
+            second.motion_descriptors().structure_epoch(),
+            "independent documents do reach the same epoch"
+        );
+        assert_ne!(
+            first.motion_descriptors().id(),
+            second.motion_descriptors().id()
+        );
+
+        let mut scene = UiScene::new();
+        scene.apply_delta(first.extract_nodes(&[id(1)]), []);
+        scene.apply_presentation(
+            first.presentation_store(),
+            Duration::from_millis(16),
+            Some(first.motion_descriptors()),
+        );
+        let packed = scene.motion_gpu_descriptors().to_vec();
+
+        scene.apply_presentation(
+            second.presentation_store(),
+            Duration::from_millis(16),
+            Some(second.motion_descriptors()),
+        );
+        assert_eq!(
+            scene.motion_gpu_store_id(),
+            Some(second.motion_descriptors().id())
+        );
+        assert_ne!(
+            scene.motion_gpu_descriptors(),
+            packed.as_slice(),
+            "the other store's descriptors must replace the packed slab"
         );
     }
 

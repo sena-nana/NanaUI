@@ -226,8 +226,9 @@ impl Slot {
 
 /// Generational slab of compositor descriptors. Start / retarget / cancel
 /// mutate it; timestamp evaluation does not.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MotionDescriptorStore {
+    id: u64,
     slots: Vec<Slot>,
     free: Vec<u32>,
     by_track: HashMap<MotionTrackId, MotionHandle>,
@@ -241,15 +242,45 @@ impl Default for MotionDescriptorStore {
     }
 }
 
+/// A clone is a store of its own from here on: both sides keep counting their
+/// epochs independently, so sharing an identity would let a consumer that
+/// caches by `(id, structure_epoch)` mistake one for the other.
+impl Clone for MotionDescriptorStore {
+    fn clone(&self) -> Self {
+        Self {
+            id: next_store_id(),
+            slots: self.slots.clone(),
+            free: self.free.clone(),
+            by_track: self.by_track.clone(),
+            registry: self.registry.clone(),
+            structure_epoch: self.structure_epoch,
+        }
+    }
+}
+
+fn next_store_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl MotionDescriptorStore {
     pub fn new() -> Self {
         Self {
+            id: next_store_id(),
             slots: Vec::new(),
             free: Vec::new(),
             by_track: HashMap::new(),
             registry: MotionCodecRegistry::builtin(),
             structure_epoch: 0,
         }
+    }
+
+    /// Identity of this slab, distinct from every other one in the process.
+    ///
+    /// [`Self::structure_epoch`] counts within a store and starts at 0 in all
+    /// of them, so it only tells two tables apart together with this.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     pub fn registry(&self) -> &MotionCodecRegistry {
