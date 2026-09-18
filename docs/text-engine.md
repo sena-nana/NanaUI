@@ -1046,7 +1046,7 @@ caret_geometry_queries          对保留几何的 caret 查询
 | 阶段 | 状态 |
 | --- | --- |
 | 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
-| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、点击、每趟度量）各做一次与文本长度成正比的字节比较以确认几何仍是这份文本（不 shape、不 layout）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
 | 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
 
 引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
@@ -1100,6 +1100,27 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 路仍是「从 focus 起步一格」（`moved_selection`）。两边的这条差别留在 IME 后端接 `EditSession`
 那一步一起收，不在本次改。Word/Line 意图按定义是逻辑的，垂直移动走自己的几何路径。
 
+### 为什么文本还没搬进 EditSession
+
+Issue #96 的「IME 单一语义后端」目前只兑现了一半，而且是有意的：**规则**已经全部委托给
+`nana-text`（grapheme / word / 行导航、IME 删除周边与 surrounding window、caret 几何与命中、
+视觉序移动），**存储**仍在 `TextInputState` + `ImeComposition`。剩下的这一半不是补几行能收的，
+它要先定三件事：
+
+1. **多光标**。`EditSession` 是单选区的；Runtime 支持 N 个光标同时编辑，`replace_selection` 是
+   一趟多点 splice。把编辑交给 session 就得先让 session 有多选区，或者接受 Runtime 继续在外面
+   remap 附加光标（现在就是这样）。
+2. **显示文本不只有 composition**。session 的显示文本 = committed + preedit；Runtime 画的那份
+   还叠了折叠摘要、inlay、secure 掩码。几何是按**画出来的那份**同步的，所以要么让 session 认识
+   这些产品概念（产品概念漏进 `nana-text`，不行），要么继续由 world 派生显示文本——那样 session
+   就只是 committed 文本 + 组字的权威，`EditorGeometry::sync_session` 的 revision 快路仍然用不上。
+3. **产品合同**。`TextInputState.value` 是 `pub String`，Vue / JS 直接读写；撤销日志按
+   `TextInputState` 快照存。存储换位置要么保留一份派生视图，要么动公开 API。
+
+所以这一项的下一步不是「改成 `EditSession`」，而是先挑一条：给 `nana-text` 的 session 加多选区，
+还是把 `TextContent.value` 换成 `Arc<str>`（顺带消掉每帧 3 处整值克隆并给探针一个天然身份）。
+两条都是独立的一块工作，不该混在 #96 的尾巴里做。
+
 ### 本阶段没做的
 
 | 项 | 状态 |
@@ -1108,6 +1129,7 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 | ~~Runtime 视觉序左右移动~~ **已接** | 见「视觉序的左右箭头」：`text_caret_visual_step` 探针 + `EditorGeometry::visual_move`，无几何时退回逻辑步进。选区非空时的塌缩端仍与 `EditSession` 不同 |
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |
+| IME 语义后端换 `EditSession` | 规则已全部委托，存储没换；三个前提见上一节 |
 | 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
 ## #33 迁移基准
@@ -1250,15 +1272,37 @@ O(文档) 工作。真正的缺口是那些工作，`--action caret` 那一行�
 
 profile（`/usr/bin/sample`，8,000 行）定位到的按帧 O(文档) 项，按大小排：
 
-| 项 | 8,000 行上的量级 | 性质 |
+| 项 | 8,000 行上的量级 | 怎么修掉的 |
 | --- | ---: | --- |
-| ~~`bracket_pair_colorization` 整文档栈扫描~~ **已修** | ~0.37 ms / 编辑帧 | 缓存按**整值相等**判命中，编辑后整篇重扫 + 整值克隆。着色只是括号字符序列的函数，所以改动区间里没有括号时只平移偏移；`text_shape_stats::bracket_rescans` 钉住这一点。minimap 行长表还是老样子（默认关闭） |
-| ~~`TextLayoutKey` 的整文本 SipHash~~ **已修** | ~0.19 ms × 每帧 4 次 shape | Runtime 侧 layout cache 把整文本拷进 key 再哈希；编辑器的测量权威是保留几何，这层缓存对它是纯开销。现在 `TextShaper::retains_measurement` 让保留测量的节点直接跳过这层缓存 |
-| `EditorGeometry::sync` 的段落表重建 | ~0.12 ms / 编辑帧 | 头部编辑要平移其后每个段落的 `start`（欠的，但每帧不止一次） |
-| a11y / scene primitive / extraction 的整值克隆 | 每帧 3～5 次 | `String` 克隆，可以是 `Arc<str>` |
-| `record_editable_change` 的前后缀 diff | ~0.06 ms / 编辑 | 只为计数器求插入/删除字节数，而 mutation 本来就知道被替换的区间 |
+| `bracket_pair_colorization` 整文档栈扫描 | ~0.37 ms / 编辑帧 | 着色只是括号字符序列的函数：改动区间里前后都没有括号字符时只平移偏移，缓存文本按同一处 splice 就地更新；真敲了括号才重扫。`text_shape_stats::bracket_rescans` 钉住这一点（minimap 行长表仍是整篇重扫，默认关闭） |
+| `TextLayoutKey` 的整文本 SipHash | ~0.19 ms × 每帧 4 次 shape | `TextShaper::retains_measurement(id)`：宿主自己保留了该节点测量时（编辑器的段落几何），内容寻址的 Runtime layout cache 对它只有开销，直接跳过 |
+| 前后缀 diff 逐字节扫描 | ~0.14 ms / 编辑 + 0.06 ms / 帧 | `changed_byte_range` 先 `==`（相等是最常见情况），再按 64 字节块 memcmp；逐字节 zip 编译不出向量化比较，而文档头部的编辑正是后缀扫描的最坏情况 |
+| 为两个布尔值构建整份 presentation | ~0.09 ms / 按键 | 框架每次按键都问 `text_shape_constraints`，它却要先构建 `TextInputPresentationSource`；改为从节点直接派生 `text_input_kind` |
+| 只动光标也重发整个值 | 每帧 2 次整值克隆 + 内容标脏 | 组件同步在值与附加光标都没变时改发 `SetTextSelection` |
+| `EditorGeometry::sync` 的段落表重建 | ~0.09 ms / 编辑帧 | 保留的段落原地不动，只 splice 掉前后缀之间那几段并给后缀的 `start` 加长度差 |
+| 无 snippet 会话也克隆编辑前的值 | 1 次整值克隆 / 按键 | 只有 snippet 会话需要它 |
 
-这一节的表是基线：每修掉一项就在同一台机器上重跑 `type` 与 `caret` 两行并贴回来。
+同机同轮复测（Apple M4，macOS，2026-09-18，release，p50，80 samples / 20 warmup）：
+
+| 行 | 字节 | type input | type flush | caret input | caret flush |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 250 | 9.4 KB | 0.008 → 0.003 ms | 0.035 → 0.013 ms | 0.002 → 0.009 ms | 0.013 → 0.011 ms |
+| 1,000 | 37.9 KB | 0.021 → 0.009 ms | 0.105 → 0.035 ms | 0.006 → 0.013 ms | 0.035 → 0.027 ms |
+| 4,000 | 154.9 KB | 0.081 → 0.029 ms | 0.388 → 0.111 ms | 0.019 → 0.030 ms | 0.113 → 0.082 ms |
+| 8,000 | 310.9 KB | 0.166 → 0.067 ms | 0.762 → 0.214 ms | 0.036 → 0.051 ms | 0.222 → 0.162 ms |
+
+310 KB 文档上一次按键从 0.93 ms 降到 0.28 ms。`caret input` 变大是这一轮同时接入的**视觉序
+左右移动**：方向键现在要问一次几何探针（见「视觉序的左右箭头」），换来的是 BiDi 与换行处
+caret 不再跳位。
+
+还剩下的按帧 O(文档) 项（都已量到，等各自的前提）：
+
+| 项 | 8,000 行上的量级 | 为什么还没修 |
+| --- | ---: | --- |
+| a11y / scene primitive / extraction 的整值克隆 | 每帧 3 次 | `TextContent.value` 是 `String`；换成 `Arc<str>` 能一次消掉这三处克隆，并给探针一个天然的身份（指针相等），但那是跨 6 个 crate 的公开 API 变更 |
+| presentation 每帧重建显示文本 | 1 次整值克隆 + 一次 memcmp | 要么按 TextDirty 位缓存（漏一个失效就画出过期文本），要么等编辑路径改成传「编辑」而不是传整值 |
+| `metrics_of_geometry` 累加全部段落 | ~0.02 ms × 每帧 2 次 | 段落高度和可以增量维护 |
+| 撤销日志按整值快照 | 每步 2 份整值（上限 200 步） | 明确的既有设计（`text_history.rs` 有说明）；310 KB 文档最坏 124 MB，按字节数封顶是个小改动，但属于另一个题目 |
 
 ## Phase 0 明确没做的
 
