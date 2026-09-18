@@ -498,6 +498,12 @@ pub struct UiScene {
     /// rebuild writes. See `rebuild_node_primitives`.
     build: u64,
     compositor: CompositorRegistry,
+    /// Nodes that [`may_be_dest_group`] admits. Paint asks
+    /// [`UiScene::opacity_groups`] once per primitive, and even the memoized
+    /// walk behind it has to read a cold `ExtractedNode` and its style for the
+    /// queried node itself; a zero here proves no walk can find a group, so no
+    /// frame of a scene without isolation pays for it at all.
+    dest_group_candidates: usize,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -525,6 +531,7 @@ impl Default for UiScene {
             ordered: BTreeSet::new(),
             build: 0,
             compositor: CompositorRegistry::default(),
+            dest_group_candidates: 0,
             instance: next_scene_instance(),
         }
     }
@@ -555,6 +562,7 @@ impl Clone for UiScene {
             ordered: self.ordered.clone(),
             build: self.build,
             compositor: self.compositor.clone(),
+            dest_group_candidates: self.dest_group_candidates,
             instance: next_scene_instance(),
         }
     }
@@ -628,6 +636,9 @@ impl UiScene {
     /// The stamp is the scene instance, which `apply_delta` moves whenever a
     /// node, a style or a parent changed — the only three things this reads.
     pub fn opacity_groups(&self, node: StableNodeId) -> Arc<[OpacityGroup]> {
+        if self.dest_group_candidates == 0 {
+            return empty_opacity_groups();
+        }
         let Some(candidate) = self.nodes.get(&node) else {
             return empty_opacity_groups();
         };
@@ -706,6 +717,7 @@ impl UiScene {
         let mut inherited_roots = HashSet::new();
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
+                self.dest_group_candidates -= usize::from(may_be_dest_group(&old));
                 delta.removed.push(id);
                 self.projections.remove(&id);
                 self.unadjustable_projections.remove(&id);
@@ -816,7 +828,11 @@ impl UiScene {
             // has and retires the ones it does not. Dropping them here would
             // only mean taking each one out of `ordered` and putting it back.
             self.retain_compositor_requests(&node);
-            self.nodes.insert(node.id, Arc::new(node));
+            let candidate = may_be_dest_group(&node);
+            let replaced = self.nodes.insert(node.id, Arc::new(node));
+            self.dest_group_candidates -=
+                usize::from(replaced.as_deref().is_some_and(may_be_dest_group));
+            self.dest_group_candidates += usize::from(candidate);
             updated_nodes += 1;
         }
         let order_rebuilt = (updated_nodes != 0 || removed_nodes != 0)
@@ -895,6 +911,24 @@ impl UiScene {
             }
             self.instance = next_scene_instance();
         }
+        // The counter is what lets `opacity_groups` answer without touching the
+        // node map, so a path that edits it without maintaining the counter
+        // would drop isolation groups from paint and show nothing else. There
+        // are two such paths today; this catches a third being added.
+        // Rescanning is linear in the scene, so it is bounded to the small
+        // trees unit tests build — a new mutation site will be reached by one
+        // of those long before it is reached by a scene big enough for the
+        // bound to matter.
+        debug_assert!(
+            self.nodes.len() > RETAINED_AUDIT_LIMIT
+                || self.dest_group_candidates
+                    == self
+                        .nodes
+                        .iter()
+                        .filter(|(_, node)| may_be_dest_group(node))
+                        .count(),
+            "dest_group_candidates drifted from the node map"
+        );
         delta.order_changed = order_rebuilt || stacking_changed;
         delta.stats = SceneDeltaStats {
             updated_nodes,
@@ -1512,20 +1546,51 @@ struct PaintOrderFacts {
 }
 
 fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
-    let opacity = local_opacity(node);
     let paint = &node.source_style.layout.paint;
     PaintOrderFacts {
         z_index: node.z_index,
-        translucent: opacity > 0.0 && opacity < 1.0,
+        translucent: is_translucent(node),
         filter: paint.filter.filter(|filter| !filter.is_identity()),
         mix_blend: paint.mix_blend,
         stacking_context: node.source_style.layout.creates_paint_stacking_context(),
     }
 }
 
-fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+/// Scene size up to which `apply_delta` re-derives
+/// [`UiScene::dest_group_candidates`] under `debug_assertions`. Unit-test
+/// scenes are a handful of nodes; product scenes are thousands, and auditing
+/// those on every delta would slow debug builds without testing anything the
+/// small scenes do not.
+const RETAINED_AUDIT_LIMIT: usize = 512;
+
+/// The only thing [`is_opacity_group`] asks of a node's opacity. Keep the two
+/// readings together: a group test that started caring about the value itself
+/// would need every caller that tracks group membership to care again too.
+fn is_translucent(node: &ExtractedNode) -> bool {
     let opacity = local_opacity(node);
-    let translucent = opacity > 0.0 && opacity < 1.0 && has_extracted_child(nodes, node);
+    opacity > 0.0 && opacity < 1.0
+}
+
+/// Node-local necessary condition for [`is_opacity_group`].
+///
+/// Every disjunct there needs one of these to hold, and none of them can be
+/// turned on by a *different* node, so a scene where no node passes this has no
+/// opacity group whatever its shape. [`UiScene::dest_group_candidates`] counts
+/// these as nodes are inserted and removed, which is why this must stay a
+/// superset: a term added to [`is_opacity_group`] needs its own term here.
+fn may_be_dest_group(node: &ExtractedNode) -> bool {
+    is_translucent(node)
+        || node
+            .source_style
+            .layout
+            .paint
+            .filter
+            .is_some_and(|filter| !filter.is_identity())
+        || !node.source_style.layout.paint.mix_blend.is_normal()
+}
+
+fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+    let translucent = is_translucent(node) && has_extracted_child(nodes, node);
     translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()

@@ -8106,3 +8106,104 @@ fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
         "nor may it stay in the scene unpainted"
     );
 }
+
+/// `opacity_groups` now answers `[]` from a counter instead of a parent walk,
+/// so the counter has to survive the whole node lifecycle. Drift in either
+/// direction is silent: too low and an isolation group stops being painted,
+/// too high and the walk comes back for every primitive.
+#[test]
+fn dest_group_candidate_count_tracks_inserts_updates_and_removals() {
+    let translucent = |value: u64, parent: Option<u64>, children: &[u64]| {
+        let mut node = node(value, parent, children);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                opacity: Some(0.5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let rescan = |scene: &UiScene| {
+        scene
+            .nodes
+            .values()
+            .filter(|node| may_be_dest_group(node))
+            .count()
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [
+            node(1, None, &[2, 3]),
+            node(2, Some(1), &[]),
+            node(3, Some(1), &[]),
+        ],
+        [],
+    );
+    assert_eq!(scene.dest_group_candidates, 0);
+    assert_eq!(rescan(&scene), 0);
+    assert!(scene.opacity_groups(id(2)).is_empty());
+
+    // Opaque -> translucent, then a second group, on nodes already retained.
+    scene.apply_delta([translucent(1, None, &[2, 3])], []);
+    assert_eq!(scene.dest_group_candidates, 1);
+    assert_eq!(rescan(&scene), 1);
+    assert_eq!(
+        scene
+            .opacity_groups(id(2))
+            .iter()
+            .map(|group| group.node)
+            .collect::<Vec<_>>(),
+        vec![id(1)]
+    );
+    scene.apply_delta([translucent(2, Some(1), &[])], []);
+    assert_eq!(scene.dest_group_candidates, 2);
+    assert_eq!(rescan(&scene), 2);
+
+    // Re-extracting the same translucent node must not double count it.
+    scene.apply_delta([translucent(2, Some(1), &[])], []);
+    assert_eq!(scene.dest_group_candidates, 2);
+    assert_eq!(rescan(&scene), 2);
+
+    // Translucent -> opaque, and removal of the other one.
+    scene.apply_delta([node(1, None, &[2, 3])], []);
+    assert_eq!(scene.dest_group_candidates, 1);
+    assert_eq!(rescan(&scene), 1);
+    scene.apply_delta([], [id(2)]);
+    assert_eq!(scene.dest_group_candidates, 0);
+    assert_eq!(rescan(&scene), 0);
+    assert!(scene.opacity_groups(id(3)).is_empty());
+}
+
+/// The counter is only sound while [`may_be_dest_group`] admits everything
+/// [`is_opacity_group`] does, and that is not something the type system checks.
+#[test]
+fn every_opacity_group_is_a_dest_group_candidate() {
+    let mut styles = vec![
+        nana_ui_core::LayoutStyle {
+            opacity: Some(0.5),
+            ..Default::default()
+        },
+        nana_ui_core::LayoutStyle::default(),
+        nana_ui_core::LayoutStyle::default(),
+    ];
+    styles[1].paint.filter = Some(ColorFilter {
+        blur_radius: 4.0,
+        ..Default::default()
+    });
+    styles[2].paint.mix_blend = MixBlendMode::Multiply;
+    for style in styles {
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(style),
+            ..Default::default()
+        };
+        let child = node(2, Some(1), &[]);
+        let nodes: SceneNodes = [(id(1), Arc::new(parent.clone())), (id(2), Arc::new(child))]
+            .into_iter()
+            .collect();
+        assert!(is_opacity_group(&nodes, &parent));
+        assert!(may_be_dest_group(&parent));
+    }
+}
