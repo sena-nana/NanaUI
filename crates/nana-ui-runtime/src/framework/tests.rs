@@ -6519,4 +6519,45 @@ fn a_secure_field_never_probes_its_plaintext_for_a_visual_caret_step() {
             .unwrap()
     );
     assert_eq!(shaper.probed, vec!["hunter2".to_owned()]);
+
+    // A composition that ended sends an empty preedit rather than clearing the
+    // slot. The display text is the value again then, so the arrow still asks
+    // the geometry.
+    assert!(
+        context
+            .set_ime_preedit(document, String::new(), None)
+            .unwrap()
+    );
+    context
+        .update_component(plain, |input, _| {
+            input.state.selection = TextSelection::caret(0);
+        })
+        .unwrap();
+    assert!(
+        context
+            .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+            .unwrap()
+    );
+    assert_eq!(shaper.probed.len(), 2, "{:?}", shaper.probed);
+
+    // A live preedit draws inline text the value does not contain -- and no
+    // caret move runs at all then, which is the invariant the probe's guard
+    // relies on instead of testing the preedit itself.
+    assert!(
+        context
+            .set_ime_preedit(document, "ni".into(), None)
+            .unwrap()
+    );
+    context
+        .update_component(plain, |input, _| {
+            input.state.selection = TextSelection::caret(0);
+        })
+        .unwrap();
+    assert!(
+        !context
+            .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+            .unwrap(),
+        "a composing editor does not move its caret"
+    );
+    assert_eq!(shaper.probed.len(), 2, "{:?}", shaper.probed);
 }

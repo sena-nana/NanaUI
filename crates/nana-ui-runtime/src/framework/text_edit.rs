@@ -259,14 +259,19 @@ impl EditorGeometry<'_> {
 /// Whether an editor's drawn text is its value, so a geometry probe of the
 /// value asks about the layout its caret is drawn in.
 ///
-/// A secure field draws bullets, an empty field draws its placeholder, and a
-/// field with a live preedit draws that inline. Probing with the value there
-/// would answer from a layout that is not on screen, and would push the value
-/// -- a password among it -- into the host's retained geometry and its shape
-/// cache. Those cases step by grapheme instead, which is what "left" means in
-/// a column of identical bullets anyway.
+/// A secure field draws bullets and an empty one draws its placeholder.
+/// Probing with the value there would answer from a layout that is not on
+/// screen, and would push the value -- a password among it -- into the host's
+/// retained geometry and its shape cache. Those cases step by grapheme
+/// instead, which is what "left" means in a column of identical bullets
+/// anyway.
+///
+/// A live preedit also draws text the value does not contain, but no caret
+/// move can run then: [`AppContext::focused_text_editor`] refuses while
+/// composing. An ENDED composition leaves an empty preedit in place, and the
+/// display text is the value again then, so it must not disable this.
 fn editor_draws_its_value(world: &crate::UiWorld, node: StableNodeId, value: &str) -> bool {
-    !value.is_empty() && !world.text_input_is_secure(node) && world.ime(node).is_none()
+    !value.is_empty() && !world.text_input_is_secure(node)
 }
 
 /// Whether this intent is the horizontal arrow, and which way it points on
