@@ -150,13 +150,15 @@ impl Action {
         matches!(self, Self::Type | Self::Delete)
     }
 
-    /// Whether this step is one of the keystrokes the cell reports. Typing
-    /// runs as insert/backspace pairs, so half the steps are the other
-    /// direction and only put the document back.
-    fn records(self, step: usize) -> bool {
+    /// Whether a step going in `flip`'s direction is one of the keystrokes the
+    /// cell reports. Typing runs as insert/backspace pairs, so half the steps
+    /// are the other direction and only put the document back -- which half
+    /// depends on the direction, not on the step number, because the first
+    /// direction is chosen per cell (see [`Fixture::input`]).
+    fn records(self, flip: bool) -> bool {
         match self {
-            Self::Type => step.is_multiple_of(2),
-            Self::Delete => !step.is_multiple_of(2),
+            Self::Type => flip,
+            Self::Delete => !flip,
             _ => true,
         }
     }
@@ -408,22 +410,15 @@ impl Fixture {
 
     /// Run the interaction, reporting whether it changed anything.
     ///
-    /// `step` alternates the direction so the caret and the text stay where
+    /// `flip` alternates the direction so the caret and the text stay where
     /// the cell put them: an insert is followed by the backspace that undoes
     /// it, so a long run does not silently grow the line it types into (which
     /// would make later samples measure a longer paragraph than the cell
-    /// claims). The first direction points away from the end the caret sits
-    /// at, because Right at the end of the text moves nothing -- and a sample
-    /// of an interaction that did nothing is not a sample of it.
-    fn input(
-        &mut self,
-        action: Action,
-        position: Position,
-        step: usize,
-        point: (f32, f32),
-    ) -> bool {
+    /// claims). The caller points the first direction away from the end the
+    /// caret sits at, because Right at the end of the text moves nothing --
+    /// and a sample of an interaction that did nothing is not a sample of it.
+    fn input(&mut self, action: Action, flip: bool, point: (f32, f32)) -> bool {
         let document = self.document;
-        let flip = step.is_multiple_of(2) != (position == Position::Tail);
         let Fixture {
             runtime, shaper, ..
         } = self;
@@ -545,11 +540,15 @@ fn measure(
         .map(|_| Vec::with_capacity(samples))
         .collect();
 
-    let mut iteration = 0;
+    let mut iteration = 0usize;
     while flushes.len() < samples {
-        let recorded = iteration >= warmup && action.records(iteration);
+        // Away from the end the caret sits at on the first step, so no step is
+        // a no-op -- and `records` follows the same direction, or a `tail` cell
+        // would record the backspace and report it as typing.
+        let flip = iteration.is_multiple_of(2) != (position == Position::Tail);
+        let recorded = iteration >= warmup && action.records(flip);
         let start = Instant::now();
-        let changed = fixture.input(action, position, iteration, point);
+        let changed = fixture.input(action, flip, point);
         let input = start.elapsed();
         let start = Instant::now();
         let (worked, work) = fixture.flush();
@@ -568,6 +567,20 @@ fn measure(
         );
         if !recorded {
             continue;
+        }
+        // The recorded half has to be the keystroke the cell claims: the
+        // alternation and the choice of which half to record are two
+        // decisions, and getting them out of step would report backspaces as
+        // typing.
+        if action.edits() {
+            let inserted = work.editable_bytes_inserted;
+            let deleted = work.editable_bytes_deleted;
+            let forwards = action == Action::Type;
+            assert!(
+                (inserted > 0) == forwards && (deleted > 0) != forwards,
+                "{} recorded a frame that inserted {inserted} and deleted {deleted} bytes",
+                action.name(),
+            );
         }
         let storage_time = storage_sample(&mut storage, action, offset);
         let start = Instant::now();
