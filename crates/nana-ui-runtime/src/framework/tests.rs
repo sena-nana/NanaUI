@@ -6422,3 +6422,101 @@ fn rejected_reconciliation_keeps_active_overlay_and_focus_lifecycle_untouched() 
     assert!(context.world.is_mounted(panel.id));
     assert_eq!(context.world.node(panel.id).unwrap().parent, Some(host.id));
 }
+
+/// A secure field draws bullets, not its value. The visual-order arrow probe
+/// must therefore not be asked about the value: the answer would come from a
+/// layout that is not on screen, and the host would retain the plaintext in
+/// its geometry and shape cache. Those fields step by grapheme instead, which
+/// is what "left" means in a column of identical bullets.
+#[test]
+fn a_secure_field_never_probes_its_plaintext_for_a_visual_caret_step() {
+    #[derive(Default)]
+    struct RecordingShaper {
+        probed: Vec<String>,
+    }
+    impl crate::TextShaper for RecordingShaper {
+        fn shape(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            _style: &crate::ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+        ) -> crate::TextMetrics {
+            crate::TextMetrics {
+                width: text.value.chars().count() as f32 * 7.0,
+                height: 16.0,
+                ascent: None,
+            }
+        }
+
+        fn text_caret_visual_step(
+            &mut self,
+            _id: StableNodeId,
+            text: &TextContent,
+            offset: usize,
+            _affinity: crate::TextAffinity,
+            rightwards: bool,
+            _style: &crate::ComputedStyle,
+            _constraints: crate::TextShapeConstraints,
+        ) -> Option<crate::TextHit> {
+            self.probed.push(text.value.clone());
+            let next = if rightwards {
+                crate::text_editing::next_grapheme(&text.value, offset)
+            } else {
+                crate::text_editing::prev_grapheme(&text.value, offset)
+            };
+            next.map(crate::TextHit::downstream)
+        }
+    }
+
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let secret = context
+        .create_component(document, TextInput::new("hunter2").secure(true))
+        .unwrap();
+    let plain = context
+        .create_component(document, TextInput::new("hunter2"))
+        .unwrap();
+    let mut shaper = RecordingShaper::default();
+
+    // The secure field: the caret still moves, by grapheme.
+    assert!(context.focus_node(document, secret.stable_id()).unwrap());
+    context
+        .update_component(secret, |input, _| {
+            input.state.selection = TextSelection::caret(0);
+        })
+        .unwrap();
+    assert!(
+        context
+            .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+            .unwrap()
+    );
+    assert_eq!(
+        context
+            .world()
+            .text_input(secret.stable_id())
+            .unwrap()
+            .selection
+            .focus,
+        1
+    );
+    assert!(
+        shaper.probed.is_empty(),
+        "the secure field's value must not reach a geometry probe: {:?}",
+        shaper.probed
+    );
+
+    // The same field without `secure`: this one is probed, with its value.
+    assert!(context.focus_node(document, plain.stable_id()).unwrap());
+    context
+        .update_component(plain, |input, _| {
+            input.state.selection = TextSelection::caret(0);
+        })
+        .unwrap();
+    assert!(
+        context
+            .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+            .unwrap()
+    );
+    assert_eq!(shaper.probed, vec!["hunter2".to_owned()]);
+}

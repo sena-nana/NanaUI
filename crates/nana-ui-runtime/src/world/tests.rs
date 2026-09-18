@@ -4292,6 +4292,50 @@ fn an_edit_without_a_bracket_shifts_the_colour_spans_instead_of_rescanning() {
     assert_eq!(spans(&world), full_scan(without));
 }
 
+/// Replacing a CJK character with one that shares its UTF-8 prefix leaves the
+/// changed byte range inside a character. The bracket cache slices the value
+/// with that range, so it has to be a character boundary -- this used to panic
+/// with "byte index 6 is not a char boundary".
+#[test]
+fn an_edit_inside_one_character_does_not_panic_the_bracket_cache() {
+    let mut world = UiWorld::default();
+    options_editor_world(
+        &mut world,
+        "(你好)",
+        crate::TextSelection::caret(0),
+        Arc::from([]),
+        crate::TextEditorRenderOptions::default(),
+        false,
+    );
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+    let spans = |world: &UiWorld| {
+        world
+            .text_input_presentation(node(1))
+            .expect("presentation")
+            .bracket_color_spans
+            .clone()
+    };
+    let before = spans(&world);
+
+    let mut edit = MutationQueue::new();
+    edit.set_text_input(
+        node(1),
+        Some(crate::TextInputState {
+            value: "(你奿)".into(),
+            selection: crate::TextSelection::caret(0),
+            additional_selections: Vec::new(),
+        }),
+    );
+    world.commit(edit).unwrap();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+    assert_eq!(
+        spans(&world),
+        before,
+        "the brackets did not move, so neither do their spans"
+    );
+}
+
 #[test]
 fn bracket_pair_colors_follow_text_edits_and_option_off_disables() {
     let mut world = UiWorld::default();

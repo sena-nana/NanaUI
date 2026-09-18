@@ -1886,7 +1886,11 @@ impl UiWorld {
                     .text_input_mut(*id)
                     .expect("entity must have runtime component");
                 if state.selection != *selection {
-                    record_selection_change(&mut self.pending_edit_work, *selection);
+                    record_selection_change(
+                        &mut self.pending_edit_work,
+                        *selection,
+                        &state.additional_selections,
+                    );
                 }
                 state.selection = *selection;
                 self.nodes
@@ -2399,11 +2403,18 @@ fn record_editable_change(
     }
 }
 
+/// Counts a selection-only change the way [`record_editable_change`] does: a
+/// caret update means EVERY cursor is collapsed, so an editor with a live
+/// multi-cursor selection is never reported as a bare caret move.
 fn record_selection_change(
     work: &mut nana_text::TextWorkCounters,
     selection: crate::TextSelection,
+    additional: &[crate::TextSelection],
 ) {
-    if selection.anchor == selection.focus {
+    let collapsed = additional
+        .iter()
+        .all(|selection| selection.anchor == selection.focus);
+    if collapsed && selection.anchor == selection.focus {
         work.caret_only_updates += 1;
     } else {
         work.selection_only_updates += 1;

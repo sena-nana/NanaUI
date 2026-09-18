@@ -256,6 +256,19 @@ impl EditorGeometry<'_> {
     }
 }
 
+/// Whether an editor's drawn text is its value, so a geometry probe of the
+/// value asks about the layout its caret is drawn in.
+///
+/// A secure field draws bullets, an empty field draws its placeholder, and a
+/// field with a live preedit draws that inline. Probing with the value there
+/// would answer from a layout that is not on screen, and would push the value
+/// -- a password among it -- into the host's retained geometry and its shape
+/// cache. Those cases step by grapheme instead, which is what "left" means in
+/// a column of identical bullets anyway.
+fn editor_draws_its_value(world: &crate::UiWorld, node: StableNodeId, value: &str) -> bool {
+    !value.is_empty() && !world.text_input_is_secure(node) && world.ime(node).is_none()
+}
+
 /// Whether this intent is the horizontal arrow, and which way it points on
 /// screen. `None` for every other intent: only Left/Right follow visual
 /// order -- word and line intents are logical by definition, and the vertical
@@ -592,8 +605,9 @@ impl AppContext {
                 .world
                 .text_input_pointer_context(focused.node)
                 .map_or(0.0, |(content, _)| content.height);
-            let geometric =
-                (vertical && focused.multiline) || horizontal_rightwards(intent).is_some();
+            let geometric = (vertical && focused.multiline)
+                || (horizontal_rightwards(intent).is_some()
+                    && editor_draws_its_value(&self.world, focused.node, probe_value));
             let shape_context = if geometric && shaper.is_some() {
                 self.world.text_input_shape_context(focused.node)
             } else {
@@ -762,23 +776,22 @@ impl AppContext {
             // Left/Right follow visual order wherever the backend's layout can
             // say what "left" is; without geometry they are grapheme steps in
             // logical order, which is all "left" could mean then.
-            let visual =
-                horizontal_rightwards(intent)
-                    .zip(shaper)
-                    .and_then(|(rightwards, shaper)| {
-                        let (style, constraints) =
-                            self.world.text_input_shape_context(focused.node)?;
-                        let mut geometry = EditorGeometry {
-                            shaper,
-                            node: focused.node,
-                            text: TextContent {
-                                value: probe_value.to_owned(),
-                            },
-                            style,
-                            constraints,
-                        };
-                        geometry.visual_step(selection, rightwards)
-                    });
+            let visual = horizontal_rightwards(intent)
+                .filter(|_| editor_draws_its_value(&self.world, focused.node, probe_value))
+                .zip(shaper)
+                .and_then(|(rightwards, shaper)| {
+                    let (style, constraints) = self.world.text_input_shape_context(focused.node)?;
+                    let mut geometry = EditorGeometry {
+                        shaper,
+                        node: focused.node,
+                        text: TextContent {
+                            value: probe_value.to_owned(),
+                        },
+                        style,
+                        constraints,
+                    };
+                    geometry.visual_step(selection, rightwards)
+                });
             match visual {
                 Some(stepped) if extend => stepped,
                 Some(stepped) => {

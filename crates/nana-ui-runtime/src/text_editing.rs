@@ -1413,11 +1413,10 @@ pub fn matching_bracket_pair(value: &str, caret: usize) -> Option<(usize, usize)
 /// `(start, previous_end, next_end)`: the bytes before `start`, and the bytes
 /// after the two ends, are identical. `None` when the two are the same text.
 ///
-/// These are byte offsets, not character boundaries -- a change inside one
-/// character reports the bytes that differ. Callers that need boundaries snap
-/// them themselves; callers that only ask about ASCII (a bracket, a line feed)
-/// can use them directly, since an ASCII byte never appears inside a
-/// multi-byte sequence.
+/// All three are character boundaries in their own string, so callers can
+/// slice with them. A change inside one character therefore reports the whole
+/// character: replacing 好 (`E5 A5 BD`) with 奿 (`E5 A5 BF`) shares two bytes,
+/// but the range covers all three.
 pub fn changed_byte_range(previous: &str, next: &str) -> Option<(usize, usize, usize)> {
     // The common case is "nothing changed", and `==` answers it a whole
     // vector register at a time where the byte-wise scans below cannot: they
@@ -1426,9 +1425,19 @@ pub fn changed_byte_range(previous: &str, next: &str) -> Option<(usize, usize, u
         return None;
     }
     let (old, new) = (previous.as_bytes(), next.as_bytes());
-    let prefix = common_prefix(old, new);
-    let suffix = common_suffix(&old[prefix..], &new[prefix..]);
-    Some((prefix, old.len() - suffix, new.len() - suffix))
+    let mut start = common_prefix(old, new);
+    let mut suffix = common_suffix(&old[start..], &new[start..]);
+    // Snap onto character boundaries. The bytes below `start` are the same in
+    // both strings, so a boundary there is a boundary in both; the bytes from
+    // the two ends on are the same too, so one `suffix` answers for both ends
+    // (a boundary is decided by the byte at it, and those bytes are equal).
+    while start > 0 && !previous.is_char_boundary(start) {
+        start -= 1;
+    }
+    while suffix > 0 && !previous.is_char_boundary(old.len() - suffix) {
+        suffix -= 1;
+    }
+    Some((start, old.len() - suffix, new.len() - suffix))
 }
 
 /// Bytes at the front of both slices that are equal.
@@ -2285,7 +2294,9 @@ mod tests {
 
     /// The block comparison must agree with the byte-wise answer it replaced,
     /// for edits anywhere in the text (including the front and the very end,
-    /// where the blocks cannot be aligned).
+    /// where the blocks cannot be aligned), it must land on character
+    /// boundaries so callers can slice with it, and splicing `next`'s range
+    /// into `previous` must reproduce `next`.
     #[test]
     fn the_changed_range_matches_a_byte_wise_diff() {
         let byte_wise = |previous: &str, next: &str| -> Option<(usize, usize, usize)> {
@@ -2322,17 +2333,49 @@ mod tests {
                 cases.push((base.clone(), replaced));
             }
         }
+        // Multi-byte characters that share a UTF-8 prefix (好 / 奿) or a
+        // suffix (好 / 楽): the byte-wise answer lands inside a character,
+        // and the range has to cover the whole one.
+        let cjk = "(你好吗)";
+        cases.push((cjk.to_owned(), cjk.replace('好', "奿")));
+        cases.push((cjk.to_owned(), cjk.replace('好', "楽")));
+        cases.push(("好".to_owned(), "奿".to_owned()));
+        cases.push(("好你".to_owned(), "楽你".to_owned()));
         for (previous, next) in cases {
+            let range = changed_byte_range(&previous, &next);
             assert_eq!(
-                changed_byte_range(&previous, &next),
-                byte_wise(&previous, &next),
+                range.is_none(),
+                previous == next,
                 "{previous:?} -> {next:?}"
             );
-            assert_eq!(
-                changed_byte_range(&next, &previous),
-                byte_wise(&next, &previous),
-                "{next:?} -> {previous:?}"
-            );
+            if previous.is_ascii() && next.is_ascii() {
+                assert_eq!(
+                    range,
+                    byte_wise(&previous, &next),
+                    "{previous:?} -> {next:?}"
+                );
+            }
+            for (previous, next) in [(&previous, &next), (&next, &previous)] {
+                let Some((start, previous_end, next_end)) = changed_byte_range(previous, next)
+                else {
+                    continue;
+                };
+                assert!(
+                    previous.is_char_boundary(start)
+                        && previous.is_char_boundary(previous_end)
+                        && next.is_char_boundary(start)
+                        && next.is_char_boundary(next_end),
+                    "{previous:?} -> {next:?}: ({start}, {previous_end}, {next_end}) \
+                     must be sliceable"
+                );
+                let spliced = format!(
+                    "{}{}{}",
+                    &previous[..start],
+                    &next[start..next_end],
+                    &previous[previous_end..]
+                );
+                assert_eq!(&spliced, next, "{previous:?} -> {next:?}");
+            }
         }
     }
 

@@ -184,8 +184,13 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         // A node the host measures from a retained layout: keying the cache
         // would copy and hash the whole text to find what the host answers
         // with one read. Editors are exactly that, and their text is the
-        // longest in the document.
+        // longest in the document. The measurement still counts as a run the
+        // cache did not answer -- only the key and the lookup are skipped.
         if self.inner.retains_measurement(id) {
+            self.runs = self.runs.saturating_add(1);
+            if constraints.wrap {
+                self.wrap_layouts = self.wrap_layouts.saturating_add(1);
+            }
             return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
         }
         let key = layout_cache_key(text, style, constraints, self.font_generation);
@@ -256,8 +261,12 @@ impl TextShaper for PreparedCountingShaper<'_> {
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
         // See [`CountingShaper::shape`]: no cache in front of a retained
-        // measurement.
+        // measurement, and the run is still counted.
         if self.inner.retains_measurement(id) {
+            *self.runs = self.runs.saturating_add(1);
+            if constraints.wrap {
+                *self.wrap_layouts = self.wrap_layouts.saturating_add(1);
+            }
             return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
         }
         let key = layout_cache_key(text, style, constraints, self.font_generation);
@@ -3166,6 +3175,14 @@ impl UiWorld {
             self.nodes
                 .get(id)
                 .is_some_and(|node| node.accessibility.multiline),
+        )
+    }
+
+    /// Whether the editor draws bullets instead of its value.
+    pub(crate) fn text_input_is_secure(&self, id: StableNodeId) -> bool {
+        matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { secure: true, .. })
         )
     }
 
