@@ -153,6 +153,14 @@ cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts
 | `<iframe>` | 无 | 显式 skip（`skipped_replaced = iframe`），不加载 `src`。不是应用内浏览器 |
 | `WebView`（未实现） | `"nana.host-texture"` + `webview:{id}` | 拟议控件 `nana.webview`。像素仍走 HostTexture；引擎、URL、权限在应用侧。见 [应用内浏览器](#应用内浏览器) |
 
+### 按实际绘制像素准备内容
+
+`HostTextureRegistry::painted_extent(slot)` 返回这个 slot **上一帧真正被画到的设备像素尺寸**：`ContentFit` 之后的目标矩形、节点自己的变换、当时的缩放因子都已经算进去了。宿主要按播放区真实像素准备内容（放大一道 pass、按需重新解码、挑清晰度）时读它。
+
+不要用「布局盒 + 自己再算一遍 `ContentFit` × 缩放因子」代替：那拿到的是**上一帧的布局**，窗口改尺寸时会差一帧，而且不包含节点的变换。还没画过、或 slot 刚被 `remove` 时返回 `None`；某一边为 0 表示这一帧它没有可见面积。
+
+它是只读的观测量，不是请求：登记多大的纹理仍由宿主决定，framework 不会因为这个数去改采样或重新分配。
+
 没有 `data-nana-canvas` / `data-nana-gpu` 的 `<canvas>` 是空盒子（`skipped_replaced = canvas`），不会把 `src` 或 pixmap 写进 `content_image` 假装成 2D 位图。无槽且无 poster 的 `<video>` 同样是空盒子（`skipped_replaced = video`）。
 
 `GraphCanvas` 默认画 Scene Quad / Stroke。`"graph-canvas"` 自定义 renderer 不会自动投影；未登记时整帧拒绝。
