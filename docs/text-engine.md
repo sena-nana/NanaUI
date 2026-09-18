@@ -1494,10 +1494,43 @@ text_prepare_nodes_considered / skipped / culled
   节点越多省得越多，因为省掉的是按字节算的那一项。渲染出来的 557 张画廊帧逐字节不变
   ——这一条只动存储。
 
-  还剩的大头在 `BTreeMap` 的进出：一次容器样式改动里，`remove_node_primitives` 和
-  `insert_primitive` 各把整棵子树的图元搬进搬出一遍，`sort_primitives` 再排一遍。
-  采样里这三项已经是 `apply_delta` 中最大的几块。要再降得把插入收口成一次批量提交，
-  那是 `UiScene` 图元存储的改动，不在这一期。
+- **淡入淡出不再重排整个场景**。绘制序只问一个节点「是不是半透明」——
+  `is_opacity_group` 看的是 `opacity > 0 && opacity < 1`，不是那个值。但判断要不要
+  重排时比的是 `local_opacity` 的 bits，于是一个容器从 0.35 淡到 0.37，每帧都要把
+  全场景的图元重新算一遍键、重新排一遍序。改成比 `paint_order_facts`（z-index、
+  是否半透明、非 identity 的 filter、mix-blend、是否开层叠上下文）之后：一千标签
+  opacity 1.911 → 1.693 ms，十六层包裹下 3.338 → 2.725 ms，一万标签 29.162 →
+  25.595 ms。
+
+- **图元记住自己在绘制序里的位置，重建就地覆写**。原来重建一个节点的图元要对每个
+  图元做四次 B 树操作——从 `primitives` 里删掉再插回去，从 `ordered` 里删掉再插回去
+  ——而那两个键各要走一遍父链，删的那一次算完就扔。绝大多数时候删掉和插回去的是同
+  一个图元、同一个键。
+
+  现在图元和它的 `SceneOrderKey` 存在一起：删除直接用存着的键；重建不先清空，
+  `insert_primitive` 就地覆写，键没变就不动 `ordered`；每次重建给写过的槽盖一个戳，
+  没盖到的槽就是这个节点不再有的图元，收尾时退掉。`apply_delta` 里那句「先把抽取到
+  的节点的图元全删掉」也随之去掉。绘制序的 stack 换成 `Arc<[(i32, usize)]>`，一个
+  节点的所有图元共用一份。
+
+  | 用例 | 前 | 后 |
+  | --- | --- | --- |
+  | 一千标签 color，扁 | 1.574 ms | 1.155 ms |
+  | 一千标签 opacity，扁 | 1.549 ms | 1.101 ms |
+  | 一千标签 transform，扁 | 1.822 ms | 1.411 ms |
+  | 一千标签 opacity，十六层 | 2.452 ms | 1.643 ms |
+  | 一万标签 mutate-1pct | 0.324 ms | 0.240 ms |
+  | 一万标签 opacity，扁 | 23.664 ms | **18.720 ms** |
+  | 一万标签 transform，扁 | 27.532 ms | 23.178 ms |
+
+  还剩的大头不在场景的存储里，在「谁需要重建」这个判断上：一个容器改一次样式，
+  运行时会把它下面每个后代都重新抽取一遍（`updated_nodes` 在一百个标签的 opacity
+  用例里是 102，而 `mutate-1pct` 只有 1–3），`apply_delta` 又因为
+  `old.source_style.layout != node.source_style.layout` 把整棵子树排进重建队列。
+  可是容器一旦是 opacity group，它的不透明度就不进后代图元
+  （`compute_ancestor_state` 里 `if !is_opacity_group(ancestor)` 才乘），也就是说
+  那一百个后代重建出来的图元逐字节相同。要拿下这一条得同时动运行时的抽取和
+  `inherited_changed` 的判断，不在这一期。
 
 ### 怎么跑，怎么判
 
