@@ -1213,7 +1213,7 @@ fn ancestor_clip_transform_and_opacity_are_composed() {
         .unwrap();
     assert_eq!(custom.opacity, 0.5);
     assert_eq!(
-        scene.opacity_groups(id(2)),
+        scene.opacity_groups(id(2)).to_vec(),
         vec![OpacityGroup {
             node: id(1),
             opacity: 0.5,
@@ -6387,7 +6387,7 @@ fn css_filter_group_omits_leaf_shader_on_parent_quad() {
     }
     assert_eq!(scene.filter_groups(id(2)).len(), 1);
     assert_eq!(
-        scene.opacity_groups(id(2)),
+        scene.opacity_groups(id(2)).to_vec(),
         vec![OpacityGroup {
             node: id(1),
             opacity: 1.0,
@@ -6421,7 +6421,7 @@ fn css_mix_blend_and_element_blur_isolate_dest_groups() {
     let mut scene = UiScene::new();
     scene.apply_delta([blended], []);
     assert_eq!(
-        scene.opacity_groups(id(1)),
+        scene.opacity_groups(id(1)).to_vec(),
         vec![OpacityGroup {
             node: id(1),
             opacity: 1.0,

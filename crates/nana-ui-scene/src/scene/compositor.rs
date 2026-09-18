@@ -527,22 +527,66 @@ impl UiScene {
         if self.compositor.layers.is_empty() {
             return logical_opacity.clamp(0.0, 1.0);
         }
-        let mut opacity = logical_opacity;
-        for id in super::ancestor_ids(&self.nodes, node) {
-            if let Some(layer) = self.compositor.layers.get(&id) {
-                let Some(extracted) = self.nodes.get(&id) else {
-                    break;
-                };
-                let logical = local_opacity(extracted);
-                let factor = if logical.abs() < 1e-8 {
-                    layer.opacity
-                } else {
-                    layer.opacity / logical
-                };
-                opacity *= factor;
+        // `draw_primitive` asks this for every primitive, so the ancestor half
+        // is memoized the same way dest groups are: a container's factor is
+        // its parent's times its own. The queried node's own factor is not
+        // stored — every primitive names a different node.
+        let own = self.layer_opacity_factor(node);
+        let inherited = match self.nodes.get(&node).and_then(|node| node.parent) {
+            Some(parent) => {
+                let mut cache = self
+                    .layer_factor_cache
+                    .lock()
+                    .expect("scene compositor factors");
+                self.ancestor_layer_factor(&mut cache, parent, 0)
             }
+            None => 1.0,
+        };
+        (logical_opacity * own * inherited).clamp(0.0, 1.0)
+    }
+
+    /// What this node's own layer does to the opacity below it: the presented
+    /// opacity divided by the logical one it was derived from.
+    fn layer_opacity_factor(&self, id: StableNodeId) -> f32 {
+        let Some(layer) = self.compositor.layers.get(&id) else {
+            return 1.0;
+        };
+        let Some(extracted) = self.nodes.get(&id) else {
+            return 1.0;
+        };
+        let logical = local_opacity(extracted);
+        if logical.abs() < 1e-8 {
+            layer.opacity
+        } else {
+            layer.opacity / logical
         }
-        opacity.clamp(0.0, 1.0)
+    }
+
+    fn ancestor_layer_factor(
+        &self,
+        cache: &mut super::LayerFactorCache,
+        id: StableNodeId,
+        depth: usize,
+    ) -> f32 {
+        if depth >= super::MAX_ANCESTOR_DEPTH {
+            return 1.0;
+        }
+        let stamp = (self.instance_id(), self.attribute_epoch);
+        if let Some((held, factor)) = cache.get(&id)
+            && *held == stamp
+        {
+            return *factor;
+        }
+        let Some(extracted) = self.nodes.get(&id) else {
+            return 1.0;
+        };
+        let inherited = match extracted.parent {
+            Some(parent) => self.ancestor_layer_factor(cache, parent, depth + 1),
+            None => 1.0,
+        };
+        let factor = inherited * self.layer_opacity_factor(id);
+        cache.insert(id, (stamp, factor));
+        factor
     }
 
     /// Nested compositor opacity: product of ancestor (and self) layer opacities.
@@ -1653,6 +1697,44 @@ mod tests {
         scene.apply_delta([parent, node(2, Some(1), &[])], []);
         assert!(!scene.opacity_groups(id(2)).is_empty());
         assert!(scene.compositor_layers().next().is_none());
+    }
+
+    #[test]
+    fn a_deeper_tree_does_not_change_what_a_group_query_answers() {
+        // The memo is what keeps `opacity_groups` off the per-primitive
+        // ancestor walk. It may not change the answer, and it must notice when
+        // a style below it did.
+        let mut scene = UiScene::new();
+        let mut chain = Vec::new();
+        for level in 1..=12u64 {
+            let children: Vec<u64> = if level == 12 { vec![] } else { vec![level + 1] };
+            let mut entry = node(level, (level > 1).then(|| level - 1), &children);
+            if level == 1 {
+                entry.source_style.layout = Arc::new(LayoutStyle {
+                    opacity: Some(0.5),
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    ..LayoutStyle::default()
+                });
+            }
+            chain.push(entry);
+        }
+        scene.apply_delta(chain, []);
+        let deep = scene.opacity_groups(id(12));
+        assert_eq!(deep.len(), 1, "one translucent ancestor, however deep");
+        assert_eq!(deep[0].node, id(1));
+        // Asked twice, answered from the memo the second time, and the same.
+        assert_eq!(scene.opacity_groups(id(12)).to_vec(), deep.to_vec());
+        // The ancestor stops being a group; the memo must not outlive that.
+        let mut opaque = node(1, None, &[2]);
+        opaque.source_style.layout = Arc::new(LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..LayoutStyle::default()
+        });
+        scene.apply_delta([opaque], []);
+        assert!(
+            scene.opacity_groups(id(12)).is_empty(),
+            "a style change upstream has to reach every node under it"
+        );
     }
 
     #[test]

@@ -466,6 +466,13 @@ pub struct UiScene {
     /// ordinary scrolling must not scan every retained descendant.
     unadjustable_projections: HashSet<StableNodeId>,
     draw_attributes: std::sync::Mutex<HashMap<StableNodeId, DrawAttributes>>,
+    /// Dest groups per node, stamped with the scene instance they were read
+    /// at. See [`UiScene::opacity_groups`].
+    opacity_group_cache: std::sync::Mutex<OpacityGroupCache>,
+    /// Ancestor compositor-layer opacity factors, stamped with the scene
+    /// instance and the attribute epoch. See
+    /// [`UiScene::compositor_paint_opacity`].
+    pub(super) layer_factor_cache: std::sync::Mutex<LayerFactorCache>,
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
@@ -489,6 +496,8 @@ impl Default for UiScene {
             projections: HashMap::new(),
             unadjustable_projections: HashSet::new(),
             draw_attributes: std::sync::Mutex::new(HashMap::new()),
+            opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
+            layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
             nodes: HashMap::new(),
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
@@ -513,6 +522,10 @@ impl Clone for UiScene {
                     .expect("scene attributes")
                     .clone(),
             ),
+            // Stamped with the instance they were read at, and a clone is a
+            // new instance, so carrying them over would only be work.
+            opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
+            layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
@@ -574,8 +587,72 @@ impl UiScene {
     }
 
     /// Isolating opacity groups from outermost to innermost that contain `node`.
-    pub fn opacity_groups(&self, node: StableNodeId) -> Vec<OpacityGroup> {
-        opacity_groups_from(&self.nodes, node)
+    /// Dest groups containing `node`, outermost first.
+    ///
+    /// Asked once per primitive per frame, and again by culling, so the
+    /// *ancestor* half of the answer is memoized: a container's list is its
+    /// parent's list plus itself when it is a group. The queried node's own
+    /// list is not stored — every primitive names a different node, so an
+    /// entry for it would be written once and read never.
+    ///
+    /// A node that is not a group **shares** its parent's list rather than
+    /// copying it, so a shell whose containers are all opaque allocates
+    /// nothing here at all.
+    ///
+    /// The stamp is the scene instance, which `apply_delta` moves whenever a
+    /// node, a style or a parent changed — the only three things this reads.
+    pub fn opacity_groups(&self, node: StableNodeId) -> Arc<[OpacityGroup]> {
+        let Some(candidate) = self.nodes.get(&node) else {
+            return empty_opacity_groups();
+        };
+        let base = match candidate.parent {
+            Some(parent) => {
+                let mut cache = self
+                    .opacity_group_cache
+                    .lock()
+                    .expect("scene opacity groups");
+                self.ancestor_opacity_groups(&mut cache, parent, 0)
+            }
+            None => empty_opacity_groups(),
+        };
+        if is_dest_group(&self.nodes, candidate) {
+            let mut groups = base.to_vec();
+            groups.push(dest_group(&self.nodes, node, candidate));
+            return Arc::from(groups);
+        }
+        base
+    }
+
+    fn ancestor_opacity_groups(
+        &self,
+        cache: &mut OpacityGroupCache,
+        id: StableNodeId,
+        depth: usize,
+    ) -> Arc<[OpacityGroup]> {
+        if depth >= MAX_ANCESTOR_DEPTH {
+            return empty_opacity_groups();
+        }
+        if let Some((stamp, groups)) = cache.get(&id)
+            && *stamp == self.instance
+        {
+            return Arc::clone(groups);
+        }
+        let Some(candidate) = self.nodes.get(&id) else {
+            return empty_opacity_groups();
+        };
+        let base = match candidate.parent {
+            Some(parent) => self.ancestor_opacity_groups(cache, parent, depth + 1),
+            None => empty_opacity_groups(),
+        };
+        let groups = if is_dest_group(&self.nodes, candidate) {
+            let mut groups = base.to_vec();
+            groups.push(dest_group(&self.nodes, id, candidate));
+            Arc::from(groups)
+        } else {
+            base
+        };
+        cache.insert(id, (self.instance, Arc::clone(&groups)));
+        groups
     }
 
     /// Isolating filter groups from outermost to innermost that contain `node`.
@@ -1293,7 +1370,7 @@ fn inset_shadow_overlay(node: &ExtractedNode) -> Option<InsetShadowOverlay> {
 /// guard. They run once per primitive per frame — a set allocation each cost
 /// more than the walk it was protecting, and a depth cap protects the same
 /// thing.
-const MAX_ANCESTOR_DEPTH: usize = 4096;
+pub(super) const MAX_ANCESTOR_DEPTH: usize = 4096;
 
 /// `node` and its ancestors by id, innermost first.
 ///
@@ -1337,33 +1414,40 @@ fn ancestor_nodes(
     })
 }
 
-fn opacity_groups_from(
+/// Dest groups per node, stamped with the scene instance they were read at.
+type OpacityGroupCache = HashMap<StableNodeId, (u64, Arc<[OpacityGroup]>)>;
+
+/// Ancestor layer factors, stamped with the scene instance and the attribute
+/// epoch.
+pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
+
+/// The list every node that is not itself a group shares with its parent.
+fn empty_opacity_groups() -> Arc<[OpacityGroup]> {
+    static EMPTY: std::sync::OnceLock<Arc<[OpacityGroup]>> = std::sync::OnceLock::new();
+    Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
+}
+
+fn dest_group(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
-    node: StableNodeId,
-) -> Vec<OpacityGroup> {
-    let mut groups = Vec::new();
-    for (id, candidate) in ancestor_nodes(nodes, node) {
-        if is_dest_group(nodes, candidate) {
-            groups.push(OpacityGroup {
-                node: id,
-                opacity: local_opacity(candidate),
-                filter: if dest_filter_applies(nodes, candidate) {
-                    candidate
-                        .source_style
-                        .layout
-                        .paint
-                        .filter
-                        .unwrap_or_default()
-                } else {
-                    ColorFilter::default()
-                },
-                mix_blend: candidate.source_style.layout.paint.mix_blend,
-                inset_shadow: inset_shadow_overlay(candidate),
-            });
-        }
+    id: StableNodeId,
+    candidate: &ExtractedNode,
+) -> OpacityGroup {
+    OpacityGroup {
+        node: id,
+        opacity: local_opacity(candidate),
+        filter: if dest_filter_applies(nodes, candidate) {
+            candidate
+                .source_style
+                .layout
+                .paint
+                .filter
+                .unwrap_or_default()
+        } else {
+            ColorFilter::default()
+        },
+        mix_blend: candidate.source_style.layout.paint.mix_blend,
+        inset_shadow: inset_shadow_overlay(candidate),
     }
-    groups.reverse();
-    groups
 }
 
 fn clip_path_region(

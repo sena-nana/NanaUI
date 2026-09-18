@@ -571,7 +571,7 @@ impl SceneWgpuPainter {
                         &mut group_slots,
                         &mut max_group_depth,
                         &mut group_slots_uniforms,
-                        scene.opacity_groups(primitive.node),
+                        &scene.opacity_groups(primitive.node),
                         scene,
                         origin,
                         scale,
@@ -1180,7 +1180,7 @@ impl SceneWgpuPainter {
                     &mut group_slots,
                     &mut max_group_depth,
                     &mut group_slots_uniforms,
-                    Vec::new(),
+                    &[],
                     scene,
                     origin,
                     scale,
@@ -1500,7 +1500,7 @@ fn sync_opacity_groups(
     slots: &mut u32,
     max_depth: &mut usize,
     uniforms: &mut Vec<GroupSlot>,
-    needed: Vec<nana_ui_scene::OpacityGroup>,
+    needed: &[nana_ui_scene::OpacityGroup],
     scene: &nana_ui_scene::UiScene,
     origin: [f32; 2],
     scale: f32,
@@ -1514,15 +1514,15 @@ fn sync_opacity_groups(
     while stack.len() > common {
         emitted |= pop_opacity_group(commands, stack, depth, slots, uniforms);
     }
-    for group in needed.into_iter().skip(common) {
+    for group in needed.iter().skip(common) {
         let layer = *depth;
         let slot = *slots;
         *slots = slots.saturating_add(1);
         *depth = depth.saturating_add(1);
         *max_depth = (*max_depth).max(*depth);
-        uniforms.push(dest_group_slot(&group, scene, origin, scale));
+        uniforms.push(dest_group_slot(group, scene, origin, scale));
         commands.push(DrawCommand::PushGroup { layer, slot });
-        stack.push(group);
+        stack.push(*group);
         emitted = true;
     }
     emitted

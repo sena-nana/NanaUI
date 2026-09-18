@@ -2066,7 +2066,9 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
         [],
     );
     assert_eq!(
-        scene.opacity_groups(nana_ui_runtime::StableNodeId::new(2).unwrap()),
+        scene
+            .opacity_groups(nana_ui_runtime::StableNodeId::new(2).unwrap())
+            .to_vec(),
         vec![nana_ui_scene::OpacityGroup {
             node: nana_ui_runtime::StableNodeId::new(1).unwrap(),
             opacity: 0.5,
