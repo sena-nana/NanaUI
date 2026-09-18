@@ -7685,8 +7685,9 @@ fn text_below_the_clip_band_costs_no_draw_and_no_pixels() {
     let (lone, lone_pixels) = paint(&scene_with(&[]));
     assert!(lone.draw_calls > 0, "the single-label scene must draw");
 
-    // Eight labels far below the 64px viewport: cryoglyph drops every one of
-    // their layout runs, so they must cost neither a draw call nor a pixel.
+    // Eight labels far below the 64px viewport: the resolver drops every one
+    // of their layout runs before a glyph is rasterized, so they must cost
+    // neither a draw call nor a pixel.
     let (below, below_pixels) = paint(&scene_with(&[
         200.0, 220.0, 240.0, 260.0, 280.0, 300.0, 320.0, 340.0,
     ]));

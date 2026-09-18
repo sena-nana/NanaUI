@@ -778,7 +778,10 @@ impl SceneWgpuPainter {
                             // This painter still lays text out itself through
                             // cosmic-text, and its hosts' shapers measure with
                             // the same engine, so no scene it paints carries a
-                            // layout. Drawing retained layouts is #97's.
+                            // layout. #97 moved the *glyph* half to
+                            // `NanaRenderer::text`, whose resolver is the one
+                            // place that reads a laid-out paragraph; feeding it
+                            // this handle instead is #99's cutover.
                             layout: _,
                         } => {
                             let mut push_text =
