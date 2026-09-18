@@ -1589,11 +1589,24 @@ text_prepare_nodes_considered / skipped / culled
   | transform-panel，一万标签 | 9.933 ms | **5.698 ms** |
   | transform，一万标签（最坏） | 19.733 ms | 17.224 ms |
 
-  还剩的大头在逐图元的那几次查表：`draw_primitive` 每个图元要查一次 `projections`、
-  再在 `Mutex<HashMap>` 里查一次 `draw_attributes`，而这些按 `StableNodeId` 索引的
-  表用的是默认的 SipHash——采样里光哈希本身就占 paint 的 9.7%。再往下，同一个被改
-  祖先下面所有后代的 delta 数学上是同一个（`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记
-  一份就够，但那要先证明「下面那段链没动」，不在这一期。
+- **按节点索引的表换成整数哈希**。标准库默认的 SipHash 是带密钥的 MAC：对键来自外部
+  输入的表是对的默认，对一个进程外没人能选的计数器是白付。绘制一个图元要问好几张这样
+  的表（`projections`、`draw_attributes`、`nodes`、两个祖先记忆……），采样里光哈希就
+  占 paint 的 9.7%。现在它们都是 `NodeMap` / `NodeSet`，混合那步用 rustc 的
+  「转、异或、乘奇数」。
+
+  这改变了这些表的遍历顺序，所以「557 张画廊帧逐字节不变」在这一条里是承重的：没有
+  哪一处渲染结果依赖过它们的顺序。
+
+  数字这次给不准：测的时候本机 load 接近 10，同一个二进制在两轮之间能差到一倍。九轮
+  配对取比值中位数——transform-panel 一万标签 -13.3%，transform 一万标签 -6.1%，
+  color 一千标签 -14.0%，九轮里大多数轮次都在 1.0 以下。采样给出的上限是 9.7%，两者
+  量级一致。
+
+  还剩的：同样的换法在 `nana-ui-runtime` 里还没做（`store.rs` 23 处、`framework.rs`
+  18 处、`layout_engine.rs` 16 处……），那一侧的哈希在采样里是 paint 之外的另一半。
+  再往下，同一个被改祖先下面所有后代的 delta 数学上是同一个
+  （`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记一份就够，但那要先证明「下面那段链没动」。
 
 ### 怎么跑，怎么判
 
