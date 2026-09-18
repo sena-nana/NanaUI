@@ -420,7 +420,7 @@ struct SceneOrderKey {
     /// contiguous against siblings, except `position: fixed` surfaces which
     /// paint in the root stacking context so Popover/menu chrome is not trapped
     /// in a parent card. Not full CSS Appendix E.
-    stack: Vec<(i32, usize)>,
+    stack: GroupPrefix,
     /// Collection identity must not lift scrolling text above sticky bands,
     /// minimaps or popup surfaces owned by the same component.
     paint_layer: u64,
@@ -456,6 +456,20 @@ pub struct SceneDeltaStats {
     pub primitive_count: usize,
 }
 
+/// A primitive plus what the scene needs to keep it in paint order.
+#[derive(Debug, Clone)]
+struct RetainedPrimitive {
+    primitive: ScenePrimitive,
+    /// Where this primitive sits in `ordered`. Kept rather than recomputed:
+    /// the walk that produces it is the expensive half of touching a
+    /// primitive, and removal has to use the key it was filed under.
+    key: SceneOrderKey,
+    /// The rebuild that last wrote this slot, against the scene's `build`
+    /// counter. A slot an ongoing rebuild has not written is one the node no
+    /// longer has.
+    build: u64,
+}
+
 #[derive(Debug)]
 pub struct UiScene {
     frame_plan: OnceLock<Arc<FramePlan>>,
@@ -478,8 +492,11 @@ pub struct UiScene {
     rebuild_scratch: std::sync::Mutex<RebuildScratch>,
     nodes: SceneNodes,
     node_order: HashMap<StableNodeId, usize>,
-    primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
+    primitives: BTreeMap<PrimitiveId, RetainedPrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
+    /// Bumped once per node rebuild and stamped onto every primitive that
+    /// rebuild writes. See `rebuild_node_primitives`.
+    build: u64,
     compositor: CompositorRegistry,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
@@ -506,6 +523,7 @@ impl Default for UiScene {
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
+            build: 0,
             compositor: CompositorRegistry::default(),
             instance: next_scene_instance(),
         }
@@ -535,6 +553,7 @@ impl Clone for UiScene {
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
             ordered: self.ordered.clone(),
+            build: self.build,
             compositor: self.compositor.clone(),
             instance: next_scene_instance(),
         }
@@ -575,10 +594,12 @@ impl UiScene {
 
     pub fn primitives(&self) -> impl Iterator<Item = &ScenePrimitive> {
         self.ordered.iter().filter_map(|key| {
-            self.primitives.get(&PrimitiveId {
-                node: key.node,
-                slot: key.slot,
-            })
+            self.primitives
+                .get(&PrimitiveId {
+                    node: key.node,
+                    slot: key.slot,
+                })
+                .map(|held| &held.primitive)
         })
     }
 
@@ -776,10 +797,10 @@ impl UiScene {
                 }
                 self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             }
-            // Drop the retained primitives while the old node is still in
-            // place: their order keys are derived from it, and a key computed
-            // against the new node would leave stale entries in `ordered`.
-            self.remove_node_primitives(node.id);
+            // The primitives stay where they are: every extracted node is
+            // rebuilt below, and that rebuild overwrites the slots it still
+            // has and retires the ones it does not. Dropping them here would
+            // only mean taking each one out of `ordered` and putting it back.
             self.retain_compositor_requests(&node);
             self.nodes.insert(node.id, Arc::new(node));
             updated_nodes += 1;
@@ -790,9 +811,9 @@ impl UiScene {
         if updated_nodes != 0 || removed_nodes != 0 {
             if order_rebuilt {
                 self.rebuild_document_order();
-                for primitive in self.primitives.values_mut() {
-                    if let Some(order) = self.node_order.get(&primitive.node) {
-                        primitive.document_order = *order;
+                for held in self.primitives.values_mut() {
+                    if let Some(order) = self.node_order.get(&held.primitive.node) {
+                        held.primitive.document_order = *order;
                     }
                 }
             }
@@ -879,10 +900,10 @@ impl UiScene {
                     slot: u64::MAX,
                 },
             )
-            .map(|(id, primitive)| {
+            .map(|(id, held)| {
                 (
                     *id,
-                    match &primitive.kind {
+                    match &held.primitive.kind {
                         ScenePrimitiveKind::Custom { node, .. } => {
                             Some((node.renderer.clone(), node.resource.clone()))
                         }
@@ -894,7 +915,7 @@ impl UiScene {
     }
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
-        self.primitives.get(&id)
+        self.primitives.get(&id).map(|held| &held.primitive)
     }
 
     /// Rewrite one primitive kind and bump instance identity.
@@ -902,10 +923,10 @@ impl UiScene {
     /// Painter tests use this to probe stroke variants without a second
     /// Runtime extraction ABI.
     pub fn replace_primitive_kind(&mut self, id: PrimitiveId, kind: ScenePrimitiveKind) -> bool {
-        let Some(primitive) = self.primitives.get_mut(&id) else {
+        let Some(held) = self.primitives.get_mut(&id) else {
             return false;
         };
-        primitive.kind = kind;
+        held.primitive.kind = kind;
         self.frame_plan.take();
         self.visibility.take();
         self.instance = next_scene_instance();
@@ -1193,34 +1214,72 @@ impl UiScene {
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
+        self.retire_node_primitives(id, |_| true);
+    }
+
+    /// Drop the node's primitives that `doomed` names, and their places in
+    /// `ordered`.
+    ///
+    /// The key comes off the primitive rather than out of a fresh ancestor
+    /// walk: a key computed against a node the delta has already replaced
+    /// would not match the one this primitive entered `ordered` at, and would
+    /// leave it there forever.
+    fn retire_node_primitives(
+        &mut self,
+        id: StableNodeId,
+        doomed: impl Fn(&RetainedPrimitive) -> bool,
+    ) {
         let slots = self
-            .primitives_for_node(id)
-            .map(|primitive| primitive.id)
+            .node_primitives(id)
+            .filter(|(_, held)| doomed(held))
+            .map(|(slot, _)| *slot)
             .collect::<Vec<_>>();
         for slot in slots {
-            if let Some(primitive) = self.primitives.remove(&slot) {
-                let key = self.scene_order_key(&primitive);
-                self.ordered.remove(&key);
+            if let Some(held) = self.primitives.remove(&slot) {
+                self.ordered.remove(&held.key);
             }
         }
     }
 
-    /// The paint-order key, reusing the group prefix while the rebuild pass
-    /// holds one: every primitive of a node shares it, and a node is removed
-    /// and re-inserted in the same pass.
+    #[cfg(test)]
+    fn primitives_for_node(&self, node: StableNodeId) -> impl Iterator<Item = &ScenePrimitive> {
+        self.node_primitives(node).map(|(_, held)| &held.primitive)
+    }
+
+    fn node_primitive_count(&self, node: StableNodeId) -> usize {
+        self.node_primitives(node).count()
+    }
+
+    fn node_primitives(
+        &self,
+        node: StableNodeId,
+    ) -> impl Iterator<Item = (&PrimitiveId, &RetainedPrimitive)> {
+        self.primitives.range(
+            PrimitiveId { node, slot: 0 }..=PrimitiveId {
+                node,
+                slot: u64::MAX,
+            },
+        )
+    }
+
+    /// The paint-order key.
+    ///
+    /// Every primitive of a node sits under the same stack — the z-index and
+    /// document order in it are the node's — so while the rebuild pass runs it
+    /// is computed once per node and every primitive shares that `Arc`.
     fn scene_order_key(&self, primitive: &ScenePrimitive) -> SceneOrderKey {
         if let Ok(mut scratch) = self.rebuild_scratch.lock()
             && scratch.active
         {
-            if let Some((node, prefix)) = scratch.group_prefix.as_ref()
+            if let Some((node, stack)) = scratch.order_stack.as_ref()
                 && *node == primitive.node
             {
-                return order_key_from_prefix(&self.nodes, prefix, primitive);
+                return SceneOrderKey::at(Arc::clone(stack), primitive);
             }
             let prefix = self.group_prefix_of(&mut scratch, primitive.node);
-            let key = order_key_from_prefix(&self.nodes, &prefix, primitive);
-            scratch.group_prefix = Some((primitive.node, prefix));
-            return key;
+            let stack = order_stack(&self.nodes, &prefix, primitive);
+            scratch.order_stack = Some((primitive.node, Arc::clone(&stack)));
+            return SceneOrderKey::at(stack, primitive);
         }
         order_key(&self.nodes, &self.node_order, primitive)
     }
@@ -1268,17 +1327,6 @@ impl UiScene {
         Arc::from(prefix)
     }
 
-    fn primitives_for_node(&self, node: StableNodeId) -> impl Iterator<Item = &ScenePrimitive> {
-        self.primitives
-            .range(
-                PrimitiveId { node, slot: 0 }..=PrimitiveId {
-                    node,
-                    slot: u64::MAX,
-                },
-            )
-            .map(|(_, primitive)| primitive)
-    }
-
     fn node_descends_from(&self, id: StableNodeId, ancestor: StableNodeId) -> bool {
         let mut current = Some(id);
         while let Some(candidate) = current {
@@ -1292,10 +1340,29 @@ impl UiScene {
 
     fn insert_primitive(&mut self, primitive: ScenePrimitive) {
         let key = self.scene_order_key(&primitive);
-        if let Some(previous) = self.primitives.insert(primitive.id, primitive) {
-            let previous = self.scene_order_key(&previous);
-            self.ordered.remove(&previous);
+        let build = self.build;
+        if let Some(held) = self.primitives.get_mut(&primitive.id) {
+            // A rebuild usually puts the same primitive back in the same
+            // place. Re-entering `ordered` at a key it already holds is the
+            // work this avoids.
+            let moved = held.key != key;
+            let previous = std::mem::replace(&mut held.key, key.clone());
+            held.primitive = primitive;
+            held.build = build;
+            if moved {
+                self.ordered.remove(&previous);
+                self.ordered.insert(key);
+            }
+            return;
         }
+        self.primitives.insert(
+            primitive.id,
+            RetainedPrimitive {
+                primitive,
+                key: key.clone(),
+                build,
+            },
+        );
         self.ordered.insert(key);
     }
 }
@@ -1577,7 +1644,9 @@ type GroupPrefix = Arc<[(i32, usize)]>;
 struct RebuildScratch {
     active: bool,
     ancestor_state: Option<((StableNodeId, bool, bool), AncestorState)>,
-    group_prefix: Option<(StableNodeId, GroupPrefix)>,
+    /// The paint-order stack of the node being rebuilt, shared by all of its
+    /// primitives.
+    order_stack: Option<(StableNodeId, GroupPrefix)>,
     /// The same, for the chain *above* a node: siblings share it, so the pass
     /// pays the walk once per container instead of once per node.
     inherited_prefix: Option<(StableNodeId, GroupPrefix)>,
@@ -1587,14 +1656,14 @@ impl RebuildScratch {
     fn begin(&mut self) {
         self.active = true;
         self.ancestor_state = None;
-        self.group_prefix = None;
+        self.order_stack = None;
         self.inherited_prefix = None;
     }
 
     fn end(&mut self) {
         self.active = false;
         self.ancestor_state = None;
-        self.group_prefix = None;
+        self.order_stack = None;
         self.inherited_prefix = None;
     }
 }
@@ -1758,33 +1827,38 @@ fn order_key(
     node_order: &HashMap<StableNodeId, usize>,
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {
-    order_key_from_prefix(
-        nodes,
-        &group_prefix(nodes, node_order, primitive.node),
-        primitive,
-    )
+    let prefix: GroupPrefix = group_prefix(nodes, node_order, primitive.node).into();
+    SceneOrderKey::at(order_stack(nodes, &prefix, primitive), primitive)
 }
 
-fn order_key_from_prefix(
+/// The stacking entries a node's primitives paint under, outermost first.
+pub(super) fn order_stack(
     nodes: &SceneNodes,
-    prefix: &[(i32, usize)],
+    prefix: &GroupPrefix,
     primitive: &ScenePrimitive,
-) -> SceneOrderKey {
-    let mut stack = Vec::with_capacity(prefix.len() + 1);
-    stack.extend_from_slice(prefix);
+) -> GroupPrefix {
     // A group's own paint is the prefix, before its descendants. Repeating its
     // outer z-index here incorrectly puts lower-z children behind its backplate.
-    if !nodes
+    if nodes
         .get(&primitive.node)
         .is_some_and(|node| is_stacking_group(nodes, node))
     {
-        stack.push((primitive.z_index, primitive.document_order));
+        return Arc::clone(prefix);
     }
-    SceneOrderKey {
-        stack,
-        paint_layer: primitive_paint_layer(primitive.id.slot),
-        slot: primitive.id.slot,
-        node: primitive.node,
+    let mut stack = Vec::with_capacity(prefix.len() + 1);
+    stack.extend_from_slice(prefix);
+    stack.push((primitive.z_index, primitive.document_order));
+    Arc::from(stack)
+}
+
+impl SceneOrderKey {
+    fn at(stack: GroupPrefix, primitive: &ScenePrimitive) -> Self {
+        Self {
+            stack,
+            paint_layer: primitive_paint_layer(primitive.id.slot),
+            slot: primitive.id.slot,
+            node: primitive.node,
+        }
     }
 }
 

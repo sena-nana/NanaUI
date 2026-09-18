@@ -7977,3 +7977,47 @@ fn the_rebuild_scratch_does_not_hand_one_parents_prefix_to_another() {
     assert_eq!(under_two[0].0, 5, "the z of the container above it");
     assert_eq!(under_three[0].0, 1);
 }
+
+#[test]
+fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
+    // A rebuild writes a node's primitives in place rather than clearing them
+    // first, so the slots it does not write are the ones that have to go.
+    let mut plain = node(1, None, &[]);
+    plain.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut labelled = plain.clone();
+    labelled.text = Some(TextContent {
+        value: "hello".into(),
+    });
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([labelled], []);
+    let slots = |scene: &UiScene| {
+        scene
+            .primitives()
+            .map(|primitive| primitive.id.slot)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        slots(&scene),
+        vec![0, 2],
+        "a label paints its quad and its text"
+    );
+
+    scene.apply_delta([plain], []);
+    assert_eq!(
+        slots(&scene),
+        vec![0],
+        "the text the node no longer has must not still paint"
+    );
+    assert_eq!(
+        scene.primitive_count(),
+        1,
+        "nor may it stay in the scene unpainted"
+    );
+}

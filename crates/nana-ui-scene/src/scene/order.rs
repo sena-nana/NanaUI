@@ -4,21 +4,28 @@ use super::*;
 
 impl UiScene {
     pub(super) fn sort_primitives(&mut self) {
-        // The group prefix is a per-node parent walk; a node usually owns
-        // several primitives, so walk once and reuse it.
-        let mut prefixes: HashMap<StableNodeId, Vec<(i32, usize)>> = HashMap::new();
+        // The stack is a per-node parent walk and every primitive of a node
+        // sits under the same one, so walk once per node and hand out that
+        // `Arc`.
+        let mut stacks: HashMap<StableNodeId, GroupPrefix> = HashMap::new();
         let keys: Vec<SceneOrderKey> = self
             .primitives
             .values()
-            .map(|primitive| {
-                let prefix = prefixes
-                    .entry(primitive.node)
-                    .or_insert_with(|| group_prefix(&self.nodes, &self.node_order, primitive.node));
-                order_key_from_prefix(&self.nodes, prefix, primitive)
+            .map(|held| {
+                let primitive = &held.primitive;
+                let stack = stacks.entry(primitive.node).or_insert_with(|| {
+                    let prefix: GroupPrefix =
+                        group_prefix(&self.nodes, &self.node_order, primitive.node).into();
+                    order_stack(&self.nodes, &prefix, primitive)
+                });
+                SceneOrderKey::at(Arc::clone(stack), primitive)
             })
             .collect();
-        self.ordered.clear();
-        self.ordered.extend(keys);
+        // Same order, same map: the nth key belongs to the nth primitive.
+        for (held, key) in self.primitives.values_mut().zip(keys.iter()) {
+            held.key = key.clone();
+        }
+        self.ordered = keys.into_iter().collect();
     }
 }
 

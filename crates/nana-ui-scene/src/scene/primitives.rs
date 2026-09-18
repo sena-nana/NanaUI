@@ -35,18 +35,31 @@ struct GeometryPaintContext<'a> {
 }
 
 impl UiScene {
+    /// Rebuild one node's primitives, in place.
+    ///
+    /// The node's primitives are not dropped first: a rebuild almost always
+    /// writes the same slots back at the same paint-order keys, and dropping
+    /// them would mean taking every one of them back out of `ordered` and
+    /// putting it in again. Each write stamps the slot with this rebuild, so
+    /// the slots the node no longer has are the ones left unstamped.
     pub(super) fn rebuild_node_primitives(&mut self, id: StableNodeId) -> usize {
-        self.remove_node_primitives(id);
+        self.build = self.build.wrapping_add(1);
+        let build = self.build;
+        self.build_node_primitives(id);
+        self.retire_node_primitives(id, |held| held.build != build);
+        self.node_primitive_count(id)
+    }
+
+    fn build_node_primitives(&mut self, id: StableNodeId) {
         self.unadjustable_projections.remove(&id);
         let Some(node) = self.nodes.get(&id).cloned() else {
-            return 0;
+            return;
         };
         if is_descendant_of_rasterized_svg(&self.nodes, &node)
             || is_descendant_of_icon_visual(&self.nodes, &node)
         {
-            return 0;
+            return;
         }
-        let before = self.primitives.len();
         let (parent_transform, parent_opacity, parent_clips, parent_blocks_3d) =
             self.ancestor_state(&node);
         let layout = node.layout;
@@ -1704,6 +1717,5 @@ impl UiScene {
                 ));
             }
         }
-        self.primitives.len() - before
     }
 }
