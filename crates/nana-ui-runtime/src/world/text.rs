@@ -1854,6 +1854,38 @@ fn derive_diagnostic_decorations(
     (marks, labels, hits)
 }
 
+/// The constraints an editor's presentation geometry is built with.
+///
+/// Editing geometry must remain available outside a clipped viewport so the
+/// Runtime can scroll the caret into view, so the viewport's height and any
+/// clamping never reach it. Single-line fields keep their unwrapped
+/// presentation even if their authored style omits nowrap.
+///
+/// Every caret, selection and hit probe of an editor has to be asked under
+/// these, not under the node's layout constraints: a probe under different
+/// constraints is asking about geometry the editor is not drawn from, and a
+/// host that retains its geometry would lay the whole text out again for each
+/// of the two.
+pub(super) fn text_input_presentation_constraints(
+    constraints: crate::TextShapeConstraints,
+    multiline: bool,
+) -> crate::TextShapeConstraints {
+    crate::TextShapeConstraints {
+        max_width: if multiline {
+            constraints.max_width
+        } else {
+            None
+        },
+        max_height: None,
+        wrap: multiline && constraints.wrap,
+        ellipsis: false,
+        max_lines: None,
+        shaping: constraints.shaping,
+        preserve_lines: constraints.preserve_lines,
+        wrap_break: constraints.wrap_break,
+    }
+}
+
 pub(super) fn shape_text_input_presentation(
     id: StableNodeId,
     source: TextInputPresentationSource,
@@ -1862,23 +1894,8 @@ pub(super) fn shape_text_input_presentation(
     previous_overlays: &crate::components::TextOverlayMetrics,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
-    // Editing geometry must remain available outside a clipped viewport so the
-    // Runtime can scroll the caret into view. Single-line fields retain their
-    // unwrapped presentation even if their authored style omits nowrap.
-    let presentation_constraints = crate::TextShapeConstraints {
-        max_width: if source.multiline {
-            constraints.max_width
-        } else {
-            None
-        },
-        max_height: None,
-        wrap: source.multiline && constraints.wrap,
-        ellipsis: false,
-        max_lines: None,
-        shaping: constraints.shaping,
-        preserve_lines: constraints.preserve_lines,
-        wrap_break: constraints.wrap_break,
-    };
+    let presentation_constraints =
+        text_input_presentation_constraints(constraints, source.multiline);
     shaper.with_text_probes(&source.text, style, presentation_constraints, |shaper| {
         shape_text_input_probes(
             id,
@@ -3126,20 +3143,44 @@ impl UiWorld {
     /// Shape against the last published content box when it exists so wrap
     /// height can stop or propagate LAYOUT. Unmeasured nodes stay unconstrained.
     pub(crate) fn text_shape_constraints(&self, id: StableNodeId) -> crate::TextShapeConstraints {
-        self.text_shape_constraints_for(id, self.text_input_presentation_source(id).as_ref())
+        self.text_shape_constraints_for(id, self.text_input_kind(id))
     }
 
-    /// [`Self::text_shape_constraints`] for a caller that already built the
-    /// node's editor presentation source (or knows it has none).
+    /// Whether the node is an editor, and whether it is multiline: the only
+    /// two things [`Self::text_shape_constraints_for`] needs to know about its
+    /// presentation.
+    ///
+    /// Derived from the node rather than from a built presentation source: a
+    /// caret move asks for the constraints it should probe with, and building
+    /// a whole presentation (display text, decorations and all) to learn two
+    /// booleans is O(document) per key press.
+    pub(super) fn text_input_kind(&self, id: StableNodeId) -> Option<bool> {
+        if !matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { .. })
+        ) || self.nodes.text_input(id).is_none()
+        {
+            return None;
+        }
+        Some(
+            self.nodes
+                .get(id)
+                .is_some_and(|node| node.accessibility.multiline),
+        )
+    }
+
+    /// [`Self::text_shape_constraints`] for a caller that already knows
+    /// whether the node is an editor and whether it is multiline (the built
+    /// presentation source's `multiline`).
     pub(super) fn text_shape_constraints_for(
         &self,
         id: StableNodeId,
-        presentation: Option<&TextInputPresentationSource>,
+        editor_multiline: Option<bool>,
     ) -> crate::TextShapeConstraints {
         let source = &self.record(id).style;
         let layout = self.record(id).layout;
-        let text_input_multiline = presentation.is_some_and(|source| source.multiline);
-        let is_text_input = presentation.is_some();
+        let text_input_multiline = editor_multiline.unwrap_or(false);
+        let is_text_input = editor_multiline.is_some();
         let wrap = if is_text_input {
             text_input_multiline && source.layout.text_wraps()
         } else {
@@ -3627,7 +3668,8 @@ impl UiWorld {
                 }
                 #[cfg(any(test, feature = "benchmark"))]
                 crate::text_shape_stats::note_nonempty();
-                let constraints = self.text_shape_constraints_for(id, presentation.as_ref());
+                let constraints =
+                    self.text_shape_constraints_for(id, presentation.as_ref().map(|s| s.multiline));
                 let Some(presentation) = presentation else {
                     let (metrics, layout) = self.resolve_plain_text(
                         id,
@@ -4179,7 +4221,8 @@ impl UiWorld {
                     }
                     modal_shaped.push((id, intrinsic));
                 }
-                let constraints = self.text_shape_constraints_for(id, presentation.as_ref());
+                let constraints =
+                    self.text_shape_constraints_for(id, presentation.as_ref().map(|s| s.multiline));
                 let Some(presentation) = presentation else {
                     let (metrics, layout) = self.resolve_plain_text(
                         id,
@@ -4395,10 +4438,14 @@ impl UiWorld {
         ) {
             return None;
         }
+        let multiline = self.text_input_kind(id)?;
         let node = self.nodes.get(id)?;
         Some((
             node.resolved.0.as_ref().clone(),
-            self.text_shape_constraints(id),
+            // The geometry the editor is drawn from, so a probe reads the same
+            // layout the caret is painted in -- and the host does not hold two
+            // of them for one node.
+            text_input_presentation_constraints(self.text_shape_constraints(id), multiline),
         ))
     }
 }
