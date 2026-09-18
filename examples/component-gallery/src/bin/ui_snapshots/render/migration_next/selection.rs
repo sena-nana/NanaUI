@@ -134,13 +134,15 @@ pub(super) fn exercise_segmented_contract(
                 ids[0]
             };
             let (x, y) = center(document, id);
-            adapter
+            let handled = adapter
                 .dispatch(
                     document.context_mut(),
                     document_id,
                     &pointer(PointerPhase::Move, x, y),
                 )?
-                .prevent_default
+                .prevent_default;
+            settle_hover(document.context_mut());
+            handled
         }
         "pressed" | "selected-pressed" => {
             let id = if fixture.state == "pressed" {

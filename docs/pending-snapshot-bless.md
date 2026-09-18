@@ -1,6 +1,6 @@
 # 待重录的快照
 
-这一轮组件改动改变了 40 张快照的像素。它们**没有**在开发机上 `--bless`：那台机器的
+下面这些改动动了快照的像素，但**没有**在开发机上 `--bless`：那台机器的
 字体栅格化与录制基线的机器不同，difference 图是整幅画面的文字重影，blessing 会把
 开发机的文字渲染写进共享基线。要在**录制基线的那台机器/平台**上重录。
 
@@ -76,11 +76,39 @@ token——否则 8 会有两个来源，等于把刚修掉的问题换个地方
 **变化都是 1–2px 的横向位移**，逐张确认文字没有被裁、没有与相邻元素重叠即可。
 全量测试 3047 通过 0 失败：现有测试断言的是行为契约，没有硬编码这三个数值。
 
+### hover 态从来没画出来（18 张）
+
+- `component-migration/{button,checkbox,icon-button,switch,text-input}/{dark,light}/hover.png`
+- `component-migration/list-item/{dark,light}/{hover,selected-hover}.png`
+- `component-migration/segmented-control/{dark,light}/{hover,selected-hover}.png`
+
+hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMove` 只是把它**起动**；
+`interpolate_color` 在 `progress = 0` 时返回的是**静息**颜色。两处 fixture 路径
+（`apply_runtime_state` 和 `exercise_segmented_contract`）派发完直接 flush，动画时钟一步
+没走，于是「hover」参考帧画的是没被 hover 的样子——**基线里记的也是这个**。现在两处都在
+派发后 `advance_animations(HOVER_COLOR)` 把过渡走完。
+
+量过的证据：同一个 Button，hover 派发后 Quad 的 `background` 仍是 `None`、
+`next_animation_deadline = Some(0ns)`；把时钟推到 120ms 之后变成
+`Some([0.176, 0.176, 0.176, 1.0])`。
+
+这一改只动了上面 18 张，且每张的变化都圈在被 hover 元素自己的行盒里
+（`button/dark/hover` 是 `changed=2496 bbox=(20,20 82x32)`，正好是按钮的 32px 行盒）。
+**逐张要确认的是**：hover 底色铺满整个命中区域，没有溢出到相邻控件。
+
+改完之后 `button`/`list-item` 的 `hover` 与 `pointer-activation` 变成字节相同——这是对的，
+指针激活结束时指针仍停在控件上。
+
 ## 不在此列
 
-`gallery-sidebar-collapsed-dark.png` **在干净工作树上就已经失败**，且自身抖动
-（同一棵树连续两次跑给出 3.90% / 4.09%，抖动来自会自转的 `Spinner`）。它与本轮改动
-无关，需要单独处理：要么把 Spinner 的相位在快照里固定住，要么把这张排除出套件。
+`gallery-sidebar-collapsed-dark.png` **在干净工作树上就已经失败**，且自身抖动，抖动来自
+会自转的 `Spinner`。2026-09-18 复核：同一份代码连续跑两遍，全套 557 张里**只有它**一张
+前后不一致，其余逐字节可复现。它与本轮改动无关，需要单独处理：要么把 Spinner 的相位在
+快照里固定住，要么把这张排除出套件。
 
-套件还自报「12 snapshot(s) painted nothing but the clear colour… prove nothing」——
-12 张只画了清屏色，对任何基线都成立、什么也证明不了。同样值得单独清理。
+套件还自报「painted nothing but the clear colour… prove nothing」——只画了清屏色的快照，
+对任何基线都成立、什么也证明不了（2026-09-18 是 4 张：`segmented-control/{dark,light}/empty`、
+`overlay-host/{dark,light}/stacked`）。同样值得单独清理。
+
+另有 2 张从来没录过基线：`component-migration/donut-chart/{dark,light}/slices.png`，
+每次跑都报 MISSING。也要在录制机上补录。

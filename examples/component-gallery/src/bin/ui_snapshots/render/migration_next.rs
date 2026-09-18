@@ -1530,6 +1530,16 @@ fn slot_label_style() -> NodeStyle {
     style
 }
 
+/// Settles the hover transition a pointer move starts.
+///
+/// The move only *starts* it: at progress 0 `interpolate_color` still returns
+/// the resting colour, so a frame taken right after the dispatch is the
+/// un-hovered one. The animation clock is absolute and starts at zero, so
+/// advancing to the transition's own duration lands on the settled colour.
+fn settle_hover(context: &mut nana_ui::runtime::AppContext) {
+    context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
+}
+
 fn apply_runtime_state(
     document: &mut RuntimeDocument,
     fixture: Fixture,
@@ -1548,13 +1558,17 @@ fn apply_runtime_state(
         _ => (bounds.x, bounds.width, center_y),
     };
     match fixture.state {
-        "hover" | "selected-hover" => Ok(adapter
-            .dispatch(
-                context,
-                document_id,
-                &pointer(PointerPhase::Move, center_x, center_y),
-            )?
-            .prevent_default),
+        "hover" | "selected-hover" => {
+            let handled = adapter
+                .dispatch(
+                    context,
+                    document_id,
+                    &pointer(PointerPhase::Move, center_x, center_y),
+                )?
+                .prevent_default;
+            settle_hover(context);
+            Ok(handled)
+        }
         "open" if !matches!(fixture.component, Component::Tooltip) => Ok(true),
         "tooltip-delay" | "tooltip-edge" | "open" | "edge" => {
             adapter.dispatch_at(
