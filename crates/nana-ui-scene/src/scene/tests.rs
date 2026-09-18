@@ -8207,3 +8207,183 @@ fn every_opacity_group_is_a_dest_group_candidate() {
         assert!(may_be_dest_group(&parent));
     }
 }
+
+/// A fade is a new opacity on the same node every frame. Opacity reaches the
+/// paint-order key only as "is it translucent", so a fade between two
+/// translucent values must keep the order, the frame plan and the visibility
+/// index — and crossing out of translucency must drop all three, because the
+/// group stops isolating and its children rejoin their parent's stack.
+#[test]
+fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_it() {
+    let group = |opacity: Option<f32>| {
+        let mut node = node(2, Some(1), &[3, 4]);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                opacity,
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let leaf = |value: u64| {
+        let mut node = node(value, Some(2), &[]);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [node(1, None, &[2]), group(Some(0.35)), leaf(3), leaf(4)],
+        [],
+    );
+    let plan = scene.frame_plan().expect("plan");
+    let _ = scene
+        .visible_operations(SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 1000.0,
+        })
+        .expect("index");
+    assert!(scene.visibility.get().is_some());
+    let order: Vec<_> = scene.primitives().map(|primitive| primitive.id).collect();
+
+    // Fade, twice, staying translucent.
+    for opacity in [0.6, 0.95] {
+        let delta = scene.apply_delta([group(Some(opacity))], []);
+        assert!(!delta.order_changed, "a fade reordered the scene");
+        assert!(
+            Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+            "a fade rebuilt the frame plan"
+        );
+        assert!(
+            scene.visibility.get().is_some(),
+            "a fade dropped the visibility index"
+        );
+        assert_eq!(
+            scene.primitives().map(|p| p.id).collect::<Vec<_>>(),
+            order,
+            "a fade moved a primitive"
+        );
+        assert_eq!(
+            scene
+                .opacity_groups(id(3))
+                .iter()
+                .map(|found| (found.node, found.opacity))
+                .collect::<Vec<_>>(),
+            vec![(id(2), opacity)],
+            "the group's own opacity must still follow the fade"
+        );
+    }
+
+    // Out of translucency: the group stops isolating, so the order must move.
+    let delta = scene.apply_delta([group(Some(1.0))], []);
+    assert!(
+        delta.order_changed,
+        "leaving translucency kept the old order"
+    );
+    assert!(scene.opacity_groups(id(3)).is_empty());
+    assert!(
+        !Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "leaving translucency kept the old frame plan"
+    );
+
+    // And back in.
+    let delta = scene.apply_delta([group(Some(0.5))], []);
+    assert!(
+        delta.order_changed,
+        "entering translucency kept the old order"
+    );
+    assert_eq!(
+        scene
+            .opacity_groups(id(3))
+            .iter()
+            .map(|found| found.node)
+            .collect::<Vec<_>>(),
+        vec![id(2)]
+    );
+}
+
+/// Rotating a container does move every descendant's bound, so the index has to
+/// re-derive them — but from the frame plan it already holds. The bounds must
+/// track the rotation (the audit inside `apply_delta` proves they equal a fresh
+/// build), and culling must follow them out of the viewport and back.
+#[test]
+fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
+    let container = |transform: Option<nana_ui_core::PaintTransform>| {
+        let mut node = node(2, Some(1), &[3]);
+        node.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let mut leaf = node(3, Some(2), &[]);
+    leaf.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([node(1, None, &[2]), container(None), leaf], []);
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 1000.0,
+    };
+    let visible = scene.visible_operations(viewport).expect("index");
+    assert!(!visible.is_empty());
+    let plan = scene.frame_plan().expect("plan");
+
+    // Translate the leaf's container far off-screen; the index must cull it.
+    let offscreen = nana_ui_core::PaintTransform {
+        e: 50_000.0,
+        f: 50_000.0,
+        ..nana_ui_core::PaintTransform::default()
+    };
+    scene.apply_delta([container(Some(offscreen))], []);
+    assert!(
+        Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "a transform change rebuilt the frame plan"
+    );
+    assert!(
+        scene.visibility.get().is_some(),
+        "a transform change dropped the visibility index"
+    );
+    assert!(
+        scene
+            .visible_operations(viewport)
+            .expect("index")
+            .is_empty(),
+        "a container moved off-screen kept its descendant visible"
+    );
+
+    // And back: a stale bound would keep it culled.
+    scene.apply_delta([container(None)], []);
+    assert_eq!(
+        scene.visible_operations(viewport).expect("index"),
+        visible,
+        "a container moved back on-screen stayed culled"
+    );
+}

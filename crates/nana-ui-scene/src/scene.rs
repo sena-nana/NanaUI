@@ -761,7 +761,8 @@ impl UiScene {
                 // clip or transform changes. Refresh their inherited projection
                 // without rebuilding invertible retained geometry.
                 self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
-                inherited_geometry_changed = true;
+                inherited_geometry_changed |=
+                    previous.is_none_or(|old| inherited_transform_changed(old, &node));
                 inherited_roots.insert(node.id);
             }
             if previous.is_none() {
@@ -902,15 +903,20 @@ impl UiScene {
                 self.frame_plan.take();
                 self.visibility.take();
             }
-            if inherited_geometry_changed {
-                self.visibility.take();
-            }
             if let Some(mut visibility) = self.visibility.take() {
-                audited_translation |= !scroll_translations.is_empty();
-                for (root, offset) in scroll_translations {
-                    visibility.translate_subtree(root, offset);
+                if inherited_geometry_changed {
+                    // An ancestor's projection moved, and its retained
+                    // descendants are not in `rebuild`, so every bound has to be
+                    // re-derived — but from the plan this index already holds,
+                    // not from a new one.
+                    visibility.refresh_bounds(self);
+                } else {
+                    audited_translation |= !scroll_translations.is_empty();
+                    for (root, offset) in scroll_translations {
+                        visibility.translate_subtree(root, offset);
+                    }
+                    visibility.update(self, &rebuild);
                 }
-                visibility.update(self, &rebuild);
                 let _ = self.visibility.set(visibility);
             }
             self.instance = next_scene_instance();
@@ -1544,6 +1550,32 @@ fn local_opacity(node: &ExtractedNode) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+/// Whether re-extracting this node can move a *retained descendant's* projected
+/// transform, which is the only way one node's change reaches another node's
+/// visibility bound.
+///
+/// `project_ancestor_state` builds that transform from each ancestor's
+/// `position` (where the chain starts), its local scene transform, and whether
+/// it closes a 3D context — and nothing else. Everything else a style carries
+/// still bumps `attribute_epoch`, because the *clip* chain paint reads is wider
+/// than this; it just does not move a bound, so it must not cost a pass over
+/// every primitive in the scene. A fade is the case that matters: it rewrites
+/// one node's style every frame and moves nothing.
+fn inherited_transform_changed(old: &ExtractedNode, node: &ExtractedNode) -> bool {
+    if old.parent != node.parent
+        || old.layout != node.layout
+        || old.source_style.layout.position != node.source_style.layout.position
+        || old.source_style.layout.fails_closed_3d_context()
+            != node.source_style.layout.fails_closed_3d_context()
+    {
+        return true;
+    }
+    [false, true].into_iter().any(|blocks_3d| {
+        node_scene_transform(old.source_style.layout.as_ref(), old.layout, blocks_3d)
+            != node_scene_transform(node.source_style.layout.as_ref(), node.layout, blocks_3d)
+    })
+}
+
 fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     matches!(
         node.kind.as_ref(),
@@ -1638,9 +1670,10 @@ fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
 /// builds without testing anything the small scenes do not.
 const RETAINED_AUDIT_LIMIT: usize = 512;
 
-/// The only thing [`is_opacity_group`] asks of a node's opacity. Keep the two
-/// readings together: a group test that started caring about the value itself
-/// would need every caller that tracks group membership to care again too.
+/// The only thing [`is_opacity_group`] — and so every descendant's paint-order
+/// key — asks of a node's opacity. Keep the readings together: a group test
+/// that started caring about the value itself would need `stacking_changed` and
+/// [`may_be_dest_group`] to care again too.
 fn is_translucent(node: &ExtractedNode) -> bool {
     let opacity = local_opacity(node);
     opacity > 0.0 && opacity < 1.0

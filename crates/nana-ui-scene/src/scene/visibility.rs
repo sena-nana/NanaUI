@@ -287,6 +287,32 @@ impl VisibilityIndex {
         }
         index
     }
+    /// Re-derive every bound from the current scene, keeping the structure the
+    /// frame plan gave this index.
+    ///
+    /// The leaves this writes are exactly the ones [`Self::new`] would, so the
+    /// result is a rebuild minus rebuilding `nodes` and `descendants` — which
+    /// depend only on `plan.operations` and on each node's parent and
+    /// `position`, and a delta that moved any of those has already dropped the
+    /// frame plan and this index with it. That is worth skipping: those two
+    /// maps cost an ancestor walk and a `Vec` per operation.
+    pub(super) fn refresh_bounds(&mut self, scene: &UiScene) {
+        // Every internal bound below is re-derived from the leaves, so nothing
+        // is left owing a scroll offset.
+        self.shifts.fill([0.0, 0.0]);
+        let plan = Arc::clone(&self.plan);
+        for (offset, operation) in plan.operations.iter().enumerate() {
+            let id = match operation {
+                RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id) => *id,
+                RenderOperation::PrepareExternal(_) => continue,
+            };
+            self.bounds[self.leaf + offset] = primitive_bounds(scene, id);
+        }
+        for offset in (1..self.leaf).rev() {
+            self.bounds[offset] = union(self.bounds[offset * 2], self.bounds[offset * 2 + 1]);
+        }
+    }
+
     fn shift(&mut self, at: usize, offset: [f32; 2]) {
         if let Some(bounds) = self.bounds[at].as_mut() {
             bounds.x += offset[0];
