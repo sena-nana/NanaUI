@@ -17,6 +17,14 @@ impl UiScene {
             self.validate_plan_resources(plan)?;
             return Ok(Arc::clone(plan));
         }
+        let plan = self.build_frame_plan()?;
+        let _ = self.frame_plan.set(Arc::clone(&plan));
+        Ok(plan)
+    }
+
+    /// [`Self::frame_plan`] ignoring the cache. The retained-projection audit
+    /// needs the answer the cache is claiming to stand in for.
+    pub(super) fn build_frame_plan(&self) -> Result<Arc<FramePlan>, GraphError> {
         let graph = self.frame_graph(ResourceId(1))?;
         let mut preparations = Vec::new();
         let mut custom_nodes = Vec::new();
@@ -32,13 +40,11 @@ impl UiScene {
             }
             operations.push(operation);
         }
-        let plan = Arc::new(FramePlan {
+        Ok(Arc::new(FramePlan {
             operations: operations.into(),
             preparations: preparations.into(),
             custom_nodes: custom_nodes.into(),
-        });
-        let _ = self.frame_plan.set(Arc::clone(&plan));
-        Ok(plan)
+        }))
     }
 
     /// The first host-texture slot two nodes claim with different revisions

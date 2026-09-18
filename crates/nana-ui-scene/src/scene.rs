@@ -709,6 +709,9 @@ impl UiScene {
         extracted: impl IntoIterator<Item = ExtractedNode>,
         removals: impl IntoIterator<Item = StableNodeId>,
     ) -> SceneDelta {
+        // Set once the visibility index has been shifted rather than
+        // re-derived; see `audit_retained_projection`.
+        let mut audited_translation = false;
         let mut delta = SceneDelta::default();
         let mut previous_structure = HashMap::new();
         let mut removed_nodes = 0;
@@ -903,6 +906,7 @@ impl UiScene {
                 self.visibility.take();
             }
             if let Some(mut visibility) = self.visibility.take() {
+                audited_translation |= !scroll_translations.is_empty();
                 for (root, offset) in scroll_translations {
                     visibility.translate_subtree(root, offset);
                 }
@@ -911,6 +915,8 @@ impl UiScene {
             }
             self.instance = next_scene_instance();
         }
+        #[cfg(debug_assertions)]
+        self.audit_retained_projection(audited_translation);
         // The counter is what lets `opacity_groups` answer without touching the
         // node map, so a path that edits it without maintaining the counter
         // would drop isolation groups from paint and show nothing else. There
@@ -938,6 +944,74 @@ impl UiScene {
             primitive_count: self.primitives.len(),
         };
         delta
+    }
+
+    /// Assert that whatever [`Self::apply_delta`] chose to keep still equals
+    /// what recomputing it would produce.
+    ///
+    /// Retaining the paint order, the frame plan or the visibility index is a
+    /// judgement about which style changes can move them, and getting that
+    /// wrong paints the right pixels in the wrong order — the kind of bug no
+    /// still-frame snapshot catches, because the frame it is wrong on is the
+    /// one *after* a mutation. Running the check inside every delta makes the
+    /// whole existing suite a test of the invalidation rules, at O(scene) per
+    /// delta, which is why it is bounded to the trees unit tests build.
+    ///
+    /// `translated` skips the visibility half: the scroll fast path shifts
+    /// retained bounds by an offset instead of re-deriving them from layout,
+    /// so the two agree to a float ulp rather than exactly. Order and plan are
+    /// still checked.
+    #[cfg(debug_assertions)]
+    fn audit_retained_projection(&self, translated: bool) {
+        if self.nodes.len() > RETAINED_AUDIT_LIMIT {
+            return;
+        }
+        let mut stacks: HashMap<StableNodeId, GroupPrefix> = HashMap::new();
+        let fresh: BTreeSet<SceneOrderKey> = self
+            .primitives
+            .values()
+            .map(|held| {
+                let primitive = &held.primitive;
+                let stack = stacks.entry(primitive.node).or_insert_with(|| {
+                    let prefix: GroupPrefix =
+                        group_prefix(&self.nodes, &self.node_order, primitive.node).into();
+                    order_stack(&self.nodes, &prefix, primitive)
+                });
+                SceneOrderKey::at(Arc::clone(stack), primitive)
+            })
+            .collect();
+        assert!(
+            self.ordered == fresh,
+            "retained paint order disagrees with a fresh sort"
+        );
+        assert!(
+            self.primitives
+                .values()
+                .all(|held| self.ordered.contains(&held.key)),
+            "a retained primitive is filed under a key the order does not hold"
+        );
+        let Some(plan) = self.frame_plan.get() else {
+            return;
+        };
+        match self.build_frame_plan() {
+            Ok(fresh) => assert!(
+                plan.operations == fresh.operations
+                    && plan.preparations == fresh.preparations
+                    && plan.custom_nodes == fresh.custom_nodes,
+                "retained frame plan disagrees with a fresh build"
+            ),
+            // A plan that no longer compiles is reported by `frame_plan`, not here.
+            Err(_) => return,
+        }
+        if translated {
+            return;
+        }
+        if let Some(visibility) = self.visibility.get() {
+            assert!(
+                visibility.matches(&VisibilityIndex::new(self, Arc::clone(plan))),
+                "retained visibility index disagrees with a fresh build"
+            );
+        }
     }
 
     fn node_structure(&self, node: StableNodeId) -> Vec<PrimitiveStructure> {
@@ -1556,11 +1630,12 @@ fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
     }
 }
 
-/// Scene size up to which `apply_delta` re-derives
-/// [`UiScene::dest_group_candidates`] under `debug_assertions`. Unit-test
-/// scenes are a handful of nodes; product scenes are thousands, and auditing
-/// those on every delta would slow debug builds without testing anything the
-/// small scenes do not.
+/// Scene size up to which `apply_delta` re-derives what it retained under
+/// `debug_assertions` — [`UiScene::dest_group_candidates`] and, in
+/// [`UiScene::audit_retained_projection`], the paint order, the frame plan and
+/// the visibility index. Unit-test scenes are a handful of nodes; product
+/// scenes are thousands, and auditing those on every delta would slow debug
+/// builds without testing anything the small scenes do not.
 const RETAINED_AUDIT_LIMIT: usize = 512;
 
 /// The only thing [`is_opacity_group`] asks of a node's opacity. Keep the two

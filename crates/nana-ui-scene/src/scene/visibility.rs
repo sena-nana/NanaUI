@@ -366,6 +366,42 @@ impl VisibilityIndex {
             }
         }
     }
+    /// Bitwise equality of everything a query reads, for the retained-projection
+    /// audit. Bounds are produced by the same arithmetic on both sides, so an
+    /// index that is still valid compares equal to the ground truth exactly;
+    /// anything looser would not catch a bound that drifted by an ulp and then
+    /// culled a primitive a pixel early.
+    #[cfg(debug_assertions)]
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        fn rect_bits(bounds: &[Option<SceneRect>]) -> Vec<Option<[u32; 4]>> {
+            bounds
+                .iter()
+                .map(|rect| {
+                    rect.map(|rect| {
+                        [
+                            rect.x.to_bits(),
+                            rect.y.to_bits(),
+                            rect.width.to_bits(),
+                            rect.height.to_bits(),
+                        ]
+                    })
+                })
+                .collect()
+        }
+        fn shift_bits(shifts: &[[f32; 2]]) -> Vec<[u32; 2]> {
+            shifts
+                .iter()
+                .map(|shift| [shift[0].to_bits(), shift[1].to_bits()])
+                .collect()
+        }
+        self.leaf == other.leaf
+            && self.plan.operations == other.plan.operations
+            && rect_bits(&self.bounds) == rect_bits(&other.bounds)
+            && shift_bits(&self.shifts) == shift_bits(&other.shifts)
+            && self.nodes == other.nodes
+            && self.descendants == other.descendants
+    }
+
     fn visit(
         &self,
         at: usize,
