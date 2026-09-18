@@ -3,7 +3,6 @@
 //! [`OpacityGroup`] / [`FilterGroup`] stay dest-isolation groups. They are not
 //! renamed into this type. Layout-class properties (width/height) never promote.
 
-use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use nana_ui_core::motion::{
@@ -12,7 +11,7 @@ use nana_ui_core::motion::{
     MotionValue, MotionWorkCounters, PresentationStore,
 };
 use nana_ui_core::{ColorFilter, PaintTransform};
-use nana_ui_runtime::{ExtractedNode, StableNodeId};
+use nana_ui_runtime::{ExtractedNode, NodeMap, NodeSet, StableNodeId};
 
 use super::{AffineTransform, ClipRegion, UiScene, local_opacity, node_scene_transform};
 
@@ -130,9 +129,9 @@ enum LayerPhase {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CompositorRegistry {
-    layers: HashMap<StableNodeId, CompositorLayer>,
-    phases: HashMap<StableNodeId, LayerPhase>,
-    requested: HashSet<StableNodeId>,
+    layers: NodeMap<CompositorLayer>,
+    phases: NodeMap<LayerPhase>,
+    requested: NodeSet,
     presentation_epoch: u64,
     surface_generation: u64,
     last_promoted: usize,
@@ -452,7 +451,7 @@ impl UiScene {
             }
         }
 
-        let active_nodes: HashSet<_> = self.compositor.layers.keys().copied().collect();
+        let active_nodes: NodeSet = self.compositor.layers.keys().copied().collect();
         for layer in self.compositor.layers.values_mut() {
             let parent = nearest_layer_parent(&self.nodes, layer.node, &active_nodes);
             if layer.parent != parent {
@@ -768,7 +767,7 @@ fn hold_elapsed(now: Duration, since: Duration, hold: Duration) -> bool {
 fn nearest_layer_parent(
     nodes: &super::SceneNodes,
     node: StableNodeId,
-    active: &HashSet<StableNodeId>,
+    active: &NodeSet,
 ) -> Option<CompositorLayerId> {
     let parent = nodes.get(&node).and_then(|node| node.parent)?;
     super::ancestor_ids(nodes, parent)

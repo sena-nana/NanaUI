@@ -8,8 +8,8 @@ pub(super) struct VisibilityIndex {
     bounds: Vec<Option<SceneRect>>,
     leaf: usize,
     shifts: Vec<[f32; 2]>,
-    descendants: HashMap<StableNodeId, Vec<std::ops::Range<usize>>>,
-    nodes: HashMap<StableNodeId, Vec<(usize, PrimitiveId)>>,
+    descendants: NodeMap<Vec<std::ops::Range<usize>>>,
+    nodes: NodeMap<Vec<(usize, PrimitiveId)>>,
 }
 
 fn union(a: Option<SceneRect>, b: Option<SceneRect>) -> Option<SceneRect> {
@@ -218,8 +218,8 @@ impl VisibilityIndex {
             bounds: vec![None; leaf * 2],
             leaf,
             shifts: vec![[0.0, 0.0]; leaf * 2],
-            descendants: HashMap::new(),
-            nodes: HashMap::new(),
+            descendants: NodeMap::default(),
+            nodes: NodeMap::default(),
         };
         for (offset, operation) in index.plan.operations.iter().enumerate() {
             let id = match operation {

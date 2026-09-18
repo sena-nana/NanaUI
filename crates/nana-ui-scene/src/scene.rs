@@ -24,8 +24,8 @@ use nana_ui_core::{
 };
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
-    LayoutBox, NodeKind, StableNodeId, StandardVisual, TextFoldGutter, TextHorizontalAlignment,
-    TextShaping, TextVerticalAlignment, TextWhitespaceKind,
+    LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, StandardVisual, TextFoldGutter,
+    TextHorizontalAlignment, TextShaping, TextVerticalAlignment, TextWhitespaceKind,
 };
 
 use crate::{
@@ -475,11 +475,11 @@ pub struct UiScene {
     frame_plan: OnceLock<Arc<FramePlan>>,
     visibility: OnceLock<VisibilityIndex>,
     attribute_epoch: u64,
-    projections: HashMap<StableNodeId, (u64, AffineTransform, usize)>,
+    projections: NodeMap<(u64, AffineTransform, usize)>,
     /// Projections that cannot be adjusted by an inverse delta. Usually empty;
     /// ordinary scrolling must not scan every retained descendant.
-    unadjustable_projections: HashSet<StableNodeId>,
-    draw_attributes: std::sync::Mutex<HashMap<StableNodeId, DrawAttributes>>,
+    unadjustable_projections: NodeSet,
+    draw_attributes: std::sync::Mutex<NodeMap<DrawAttributes>>,
     /// Dest groups per node, stamped with the scene instance they were read
     /// at. See [`UiScene::opacity_groups`].
     opacity_group_cache: std::sync::Mutex<OpacityGroupCache>,
@@ -491,7 +491,7 @@ pub struct UiScene {
     /// node it touches. See [`RebuildScratch`].
     rebuild_scratch: std::sync::Mutex<RebuildScratch>,
     nodes: SceneNodes,
-    node_order: HashMap<StableNodeId, usize>,
+    node_order: NodeMap<usize>,
     primitives: BTreeMap<PrimitiveId, RetainedPrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
     /// Bumped once per node rebuild and stamped onto every primitive that
@@ -513,14 +513,14 @@ impl Default for UiScene {
             frame_plan: OnceLock::new(),
             visibility: OnceLock::new(),
             attribute_epoch: 0,
-            projections: HashMap::new(),
-            unadjustable_projections: HashSet::new(),
-            draw_attributes: std::sync::Mutex::new(HashMap::new()),
-            opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
-            layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
+            projections: NodeMap::default(),
+            unadjustable_projections: NodeSet::default(),
+            draw_attributes: std::sync::Mutex::new(NodeMap::default()),
+            opacity_group_cache: std::sync::Mutex::new(OpacityGroupCache::default()),
+            layer_factor_cache: std::sync::Mutex::new(LayerFactorCache::default()),
             rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
-            nodes: HashMap::new(),
-            node_order: HashMap::new(),
+            nodes: SceneNodes::default(),
+            node_order: NodeMap::default(),
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
             build: 0,
@@ -546,8 +546,8 @@ impl Clone for UiScene {
             ),
             // Stamped with the instance they were read at, and a clone is a
             // new instance, so carrying them over would only be work.
-            opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
-            layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
+            opacity_group_cache: std::sync::Mutex::new(OpacityGroupCache::default()),
+            layer_factor_cache: std::sync::Mutex::new(LayerFactorCache::default()),
             rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
@@ -833,7 +833,7 @@ impl UiScene {
             }
             let mut rebuild = changed;
             if !subtree_rebuild.is_empty() {
-                let extracted: HashSet<_> = rebuild.iter().copied().collect();
+                let extracted: NodeSet = rebuild.iter().copied().collect();
                 for root in subtree_rebuild {
                     collect_unextracted_descendants(&self.nodes, root, &extracted, &mut rebuild);
                 }
@@ -1409,7 +1409,7 @@ impl UiScene {
 fn collect_unextracted_descendants(
     nodes: &SceneNodes,
     root: StableNodeId,
-    extracted: &HashSet<StableNodeId>,
+    extracted: &NodeSet,
     out: &mut Vec<StableNodeId>,
 ) {
     let Some(node) = nodes.get(&root) else {
@@ -1685,11 +1685,11 @@ fn ancestor_nodes(
 }
 
 /// Dest groups per node, stamped with the scene instance they were read at.
-type OpacityGroupCache = HashMap<StableNodeId, (u64, Arc<[OpacityGroup]>)>;
+type OpacityGroupCache = NodeMap<(u64, Arc<[OpacityGroup]>)>;
 
 /// Ancestor layer factors, stamped with the scene instance and the attribute
 /// epoch.
-pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
+pub(super) type LayerFactorCache = NodeMap<((u64, u64), f32)>;
 
 /// The scene's nodes.
 ///
@@ -1697,7 +1697,7 @@ pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
 /// owned handle while `&mut self` inserts them, and an `ExtractedNode` is 784
 /// bytes. A container style change rebuilds every descendant, so that clone
 /// used to be most of a megabyte of memmove per frame.
-pub(super) type SceneNodes = HashMap<StableNodeId, Arc<ExtractedNode>>;
+pub(super) type SceneNodes = NodeMap<Arc<ExtractedNode>>;
 
 /// Which chain an [`AncestorState`] was read for: the parent it starts at,
 /// whether the node breaks out of it, and whether the caller wanted the
@@ -1879,7 +1879,7 @@ fn filter_groups_from(nodes: &SceneNodes, node: StableNodeId) -> Vec<FilterGroup
 /// plus `isolation` and positioned + `z-index`.
 fn group_prefix(
     nodes: &SceneNodes,
-    node_order: &HashMap<StableNodeId, usize>,
+    node_order: &NodeMap<usize>,
     node: StableNodeId,
 ) -> Vec<(i32, usize)> {
     let mut stack = Vec::new();
@@ -1916,7 +1916,7 @@ fn primitive_paint_layer(slot: u64) -> u64 {
 
 fn order_key(
     nodes: &SceneNodes,
-    node_order: &HashMap<StableNodeId, usize>,
+    node_order: &NodeMap<usize>,
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {
     let prefix: GroupPrefix = group_prefix(nodes, node_order, primitive.node).into();

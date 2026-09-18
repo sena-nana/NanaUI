@@ -7,7 +7,7 @@ impl UiScene {
         // The stack is a per-node parent walk and every primitive of a node
         // sits under the same one, so walk once per node and hand out that
         // `Arc`.
-        let mut stacks: HashMap<StableNodeId, GroupPrefix> = HashMap::new();
+        let mut stacks: NodeMap<GroupPrefix> = NodeMap::default();
         let keys: Vec<SceneOrderKey> = self
             .primitives
             .values()
@@ -33,7 +33,7 @@ impl UiScene {
     pub(super) fn visit_order(
         &mut self,
         id: StableNodeId,
-        visited: &mut HashSet<StableNodeId>,
+        visited: &mut NodeSet,
         order: &mut usize,
     ) {
         if !visited.insert(id) {
@@ -62,7 +62,7 @@ impl UiScene {
             .map(|node| node.id)
             .collect::<Vec<_>>();
         roots.sort_unstable();
-        let mut visited = HashSet::new();
+        let mut visited = NodeSet::default();
         let mut order = 0;
         for root in roots {
             self.visit_order(root, &mut visited, &mut order);
