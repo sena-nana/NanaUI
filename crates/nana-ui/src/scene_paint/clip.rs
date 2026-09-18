@@ -264,29 +264,52 @@ impl FragmentClip {
     }
 }
 
+fn axis_aligned_rounded_clip(
+    clip: &nana_ui_scene::ClipRegion,
+    origin: [f32; 2],
+) -> Option<FragmentClip> {
+    if clip.transform.is_projective() {
+        return None;
+    }
+    let affine = paint_affine(clip.transform.0, origin);
+    if !is_axis_aligned(affine) || clip.corner_radius <= 0.0 {
+        return None;
+    }
+    let inverse = invert_affine(affine)?;
+    Some(FragmentClip::from_local(
+        clip.bounds,
+        inverse,
+        clip.corner_radius,
+        None,
+    ))
+}
+
 fn axis_aligned_rounded_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
     clips
         .iter()
-        .filter_map(|clip| {
-            if clip.transform.is_projective() {
-                return None;
-            }
-            let affine = paint_affine(clip.transform.0, origin);
-            if !is_axis_aligned(affine) || clip.corner_radius <= 0.0 {
-                return None;
-            }
-            let inverse = invert_affine(affine)?;
-            Some(FragmentClip::from_local(
-                clip.bounds,
-                inverse,
-                clip.corner_radius,
-                None,
-            ))
-        })
+        .filter_map(|clip| axis_aligned_rounded_clip(clip, origin))
         .collect()
+}
+
+fn polygon_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<FragmentClip> {
+    let points = clip.polygon_clip.as_ref()?;
+    if points.len() != 1 && points.len() < 3 {
+        return None;
+    }
+    if clip.transform.is_projective() {
+        return None;
+    }
+    let affine = paint_affine(clip.transform.0, origin);
+    let inverse = invert_affine(affine)?;
+    Some(FragmentClip::from_local(
+        clip.bounds,
+        inverse,
+        clip.corner_radius,
+        Some(points),
+    ))
 }
 
 pub(super) fn polygon_fragment_clips(
@@ -295,74 +318,66 @@ pub(super) fn polygon_fragment_clips(
 ) -> Vec<FragmentClip> {
     clips
         .iter()
-        .filter_map(|clip| {
-            let points = clip.polygon_clip.as_ref()?;
-            if points.len() != 1 && points.len() < 3 {
-                return None;
-            }
-            if clip.transform.is_projective() {
-                return None;
-            }
-            let affine = paint_affine(clip.transform.0, origin);
-            let inverse = invert_affine(affine)?;
-            let local: Vec<[f32; 2]> = points.to_vec();
-            Some(FragmentClip::from_local(
-                clip.bounds,
-                inverse,
-                clip.corner_radius,
-                Some(&local),
-            ))
-        })
+        .filter_map(|clip| polygon_clip(clip, origin))
         .collect()
 }
 
 /// Outer-to-inner non-axis-aligned clips. Empty when every clip is axis-aligned
 /// (GPU scissor is exact) or the list is empty.
+fn rotated_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<FragmentClip> {
+    if clip.transform.is_projective() {
+        return None;
+    }
+    let affine = paint_affine(clip.transform.0, origin);
+    if is_axis_aligned(affine) {
+        return None;
+    }
+    Some(match invert_affine(affine) {
+        Some(inverse) => FragmentClip::from_local(
+            clip.bounds,
+            inverse,
+            clip.corner_radius,
+            clip.polygon_clip.as_deref(),
+        ),
+        None => FragmentClip::REJECT,
+    })
+}
+
 pub(super) fn rotated_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
     clips
         .iter()
-        .filter_map(|clip| {
-            if clip.transform.is_projective() {
-                return None;
-            }
-            let affine = paint_affine(clip.transform.0, origin);
-            if is_axis_aligned(affine) {
-                return None;
-            }
-            Some(match invert_affine(affine) {
-                Some(inverse) => FragmentClip::from_local(
-                    clip.bounds,
-                    inverse,
-                    clip.corner_radius,
-                    clip.polygon_clip.as_deref(),
-                ),
-                None => FragmentClip::REJECT,
-            })
-        })
+        .filter_map(|clip| rotated_clip(clip, origin))
         .collect()
 }
 
 /// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
 /// Extra outers are [`extra_fragment_clips`] and dest-composited.
 pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
-    if let Some(rotated) = rotated_fragment_clips(clips, origin)
-        .into_iter()
-        .next_back()
+    // Innermost first, so the answer is the first match rather than the last
+    // element of three lists. Every primitive of every frame asks this, and a
+    // `FragmentClip` is thirty words: collecting the other candidates only to
+    // drop them is a heap allocation per clipped node per frame.
+    if let Some(rotated) = clips
+        .iter()
+        .rev()
+        .find_map(|clip| rotated_clip(clip, origin))
     {
         return rotated;
     }
-    if let Some(polygon) = polygon_fragment_clips(clips, origin)
-        .into_iter()
-        .next_back()
+    if let Some(polygon) = clips
+        .iter()
+        .rev()
+        .find_map(|clip| polygon_clip(clip, origin))
     {
         return polygon;
     }
-    axis_aligned_rounded_fragment_clips(clips, origin)
-        .into_iter()
-        .next_back()
+    clips
+        .iter()
+        .rev()
+        .find_map(|clip| axis_aligned_rounded_clip(clip, origin))
         .unwrap_or(FragmentClip::PASS)
 }
 
@@ -373,6 +388,12 @@ pub(super) fn extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
+    // The overwhelming majority of nodes are under plain axis-aligned clips,
+    // which the scissor handles exactly. Answering those without building the
+    // innermost clip — thirty words — is what keeps this off the per-node path.
+    if !clips.iter().any(|clip| needs_fragment_test(clip, origin)) {
+        return Vec::new();
+    }
     let inner_bits = fragment_clip(clips, origin).to_bits();
     let mut extras = Vec::new();
     for clip in rotated_fragment_clips(clips, origin) {
@@ -389,6 +410,18 @@ pub(super) fn extra_fragment_clips(
         push_unique_clip(&mut extras, clip);
     }
     extras
+}
+
+/// Whether this clip needs more than the scissor: rotated, rounded, or a
+/// polygon. A cheap predicate, so the common answer costs no `FragmentClip`.
+fn needs_fragment_test(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> bool {
+    if clip.polygon_clip.is_some() || clip.corner_radius > 0.0 {
+        return true;
+    }
+    if clip.transform.is_projective() {
+        return false;
+    }
+    !is_axis_aligned(paint_affine(clip.transform.0, origin))
 }
 
 fn push_unique_clip(extras: &mut Vec<FragmentClip>, clip: FragmentClip) {
@@ -522,6 +555,18 @@ pub(super) fn transformed_aabb_projective(
     transform: [f32; 6],
     persp: [f32; 2],
 ) -> LogicalRect {
+    // A translation is what nearly every node is under, including the scene
+    // origin a scrolled viewport folds in, and its box is the same box moved.
+    // Four projective corners and a min/max fold to discover that is the kind
+    // of thing a per-primitive path cannot afford.
+    if is_translation_projective(transform, persp) {
+        return LogicalRect {
+            x: bounds.x + transform[4],
+            y: bounds.y + transform[5],
+            width: bounds.width.max(0.0),
+            height: bounds.height.max(0.0),
+        };
+    }
     let corners = [
         transform_point_projective(transform, persp, bounds.x, bounds.y),
         transform_point_projective(transform, persp, bounds.x + bounds.width, bounds.y),
