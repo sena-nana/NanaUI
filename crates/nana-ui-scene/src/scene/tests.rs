@@ -1338,6 +1338,55 @@ fn losing_group_isolation_reorders_descendants_that_were_not_reextracted() {
 }
 
 #[test]
+fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
+    let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some(color),
+            opacity,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut parent = node(1, None, &[2]);
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.5));
+    let mut child = node(2, Some(1), &[]);
+    child.z_index = 10;
+    child.source_style = solid([1.0, 0.0, 0.0, 1.0], None);
+    let mut sibling = node(3, None, &[]);
+    sibling.source_style = solid([0.0, 1.0, 0.0, 1.0], None);
+    let mut scene = UiScene::new();
+    scene.apply_delta([parent.clone(), child, sibling], []);
+    let order = |scene: &UiScene| {
+        scene
+            .primitives()
+            .map(|primitive| primitive.node.get())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(order(&scene), vec![1, 2, 3]);
+
+    // A fade ticks the opacity every frame. The group is still a group at
+    // every step, so nobody's key moved and re-sorting the whole scene would
+    // be work for a result that is already there.
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.4));
+    let delta = scene.apply_delta([parent.clone()], []);
+    assert!(
+        !delta.order_changed,
+        "a fade that stays translucent must not report an order change"
+    );
+    assert_eq!(order(&scene), vec![1, 2, 3]);
+
+    // Reaching the end of the fade does stop the isolation, and that one does
+    // move the retained child.
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(1.0));
+    let delta = scene.apply_delta([parent], []);
+    assert!(
+        delta.order_changed,
+        "becoming opaque ends the group and must reorder"
+    );
+    assert_eq!(order(&scene), vec![1, 3, 2]);
+}
+
+#[test]
 fn positioned_z_index_keeps_high_z_child_contiguous() {
     let mut parent = node(1, None, &[2]);
     parent.z_index = 0;

@@ -750,18 +750,11 @@ impl UiScene {
             });
             let scroll_changed =
                 previous.is_some_and(|old| old.scroll_offset != node.scroll_offset);
-            // A node's z_index and group opacity are part of every descendant's
-            // paint-order key, and descendants do not have to be re-extracted
-            // with it, so such a change costs a full reorder.
-            stacking_changed |= previous.is_some_and(|old| {
-                old.z_index != node.z_index
-                    || local_opacity(old).to_bits() != local_opacity(&node).to_bits()
-                    || old.source_style.layout.paint.filter != node.source_style.layout.paint.filter
-                    || old.source_style.layout.paint.mix_blend
-                        != node.source_style.layout.paint.mix_blend
-                    || old.source_style.layout.creates_paint_stacking_context()
-                        != node.source_style.layout.creates_paint_stacking_context()
-            });
+            // A node's z_index and whether it opens a group are part of every
+            // descendant's paint-order key, and descendants do not have to be
+            // re-extracted with it, so such a change costs a full reorder.
+            stacking_changed |=
+                previous.is_some_and(|old| paint_order_facts(old) != paint_order_facts(&node));
             changed.push(node.id);
             if scroll_changed {
                 inherited_roots.insert(node.id);
@@ -1419,6 +1412,34 @@ fn dest_filter_applies(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
             .as_ref()
             .is_some_and(|text| !text.value.is_empty())
         || node.custom_render.is_some()
+}
+
+/// What a node's own paint style contributes to the paint-order keys of its
+/// subtree — the reason a change to it costs a reorder.
+///
+/// The *value* of `opacity` is not in it: [`is_opacity_group`] only asks
+/// whether the node is translucent at all, so fading a container from 0.35 to
+/// 0.37 must not re-sort the scene. Neither is an identity filter, which
+/// [`dest_filter_applies`] already reads as no filter.
+#[derive(PartialEq)]
+struct PaintOrderFacts {
+    z_index: i32,
+    translucent: bool,
+    filter: Option<ColorFilter>,
+    mix_blend: MixBlendMode,
+    stacking_context: bool,
+}
+
+fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
+    let opacity = local_opacity(node);
+    let paint = &node.source_style.layout.paint;
+    PaintOrderFacts {
+        z_index: node.z_index,
+        translucent: opacity > 0.0 && opacity < 1.0,
+        filter: paint.filter.filter(|filter| !filter.is_identity()),
+        mix_blend: paint.mix_blend,
+        stacking_context: node.source_style.layout.creates_paint_stacking_context(),
+    }
 }
 
 fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
