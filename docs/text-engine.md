@@ -810,8 +810,9 @@ transform 的样式变更测试守住。
 
 现在消费这张图的是文本 pass：它只读 content / shape / constraint 三个 revision 决定是否重做
 shape / layout。scene 提取仍按 RENDER 脏整节点重新提取，`SCENE_PAINT` / `SCENE_GEOMETRY` /
-`EDITOR_OVERLAY` / `COMPOSITOR` 与 `paint` / `edit` revision 是给绘制 retained layout 的 #97 和
-可编辑路径 #96 的合同，还没有更细的提取消费者。
+`EDITOR_OVERLAY` / `COMPOSITOR` 与 `paint` / `edit` revision 是给绘制 retained layout（#97 换了
+renderer，#99 才把产品路径的段落换成 `TextLayout`）和可编辑路径 #96 的合同，还没有更细的提取
+消费者。
 
 ### 零工作快路径
 
@@ -841,8 +842,9 @@ shape / layout。scene 提取仍按 RENDER 脏整节点重新提取，`SCENE_PAI
 - `text_engine()`：返回 `Some(SharedTextEngine)` 时，纯文本节点经 `nana-text` 解析，保留
   它读出度量的那份 `TextLayout`。**只有能绘制 retained layout 的宿主才该返回引擎**，否则同一节点
   会出现两个测量权威。`NanaTextEngineShaper` 是这样的宿主：纯文本走 `text_engine()`，其余文本
-  （EmptyState / Modal / editor）的 `shape()` 也走同一个引擎。产品的 `SceneWgpuPainter` 还不绘制
-  layout（#97），所以 `NanaTextShaper` 不返回引擎。
+  （EmptyState / Modal / editor）的 `shape()` 也走同一个引擎。产品的 `SceneWgpuPainter` 从 #97 起绘制的是
+  自有的 `NanaGlyphRun`，但那些 run 仍由它自己用 cosmic 塑形得来——喂它 `TextLayout` 是 #99
+  的事，所以 `NanaTextShaper` 目前仍不返回引擎。
 
 度量合同：宽 = 最宽行的 `width_px`，高 = 各行 `height_px` 之和，ascent = 首行 baseline − top；
 未声明行高按宿主一直用的 1.2em 传给引擎；只写了带 `mono` 的具名字体族时补上 `monospace`
@@ -1059,7 +1061,7 @@ caret_geometry_queries          对保留几何的 caret 查询
 | 阶段 | 状态 |
 | --- | --- |
 | 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
-| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）保持原样，直到 #99 把塑形与测量切到 `nana-text`——#97 只换了绘制，产品路径的段落仍是 cosmic 排的，此时让宿主返回引擎就会出现两个测量权威 |
 | 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
 
 引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
