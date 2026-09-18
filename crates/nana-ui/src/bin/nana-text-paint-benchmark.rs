@@ -131,10 +131,29 @@ impl Percentiles {
 
 fn main() {
     let mut output = None;
+    // Filters, so one cell can be re-measured on an otherwise idle machine
+    // rather than inside a fifteen-minute sweep that shares the GPU with
+    // whatever else is running.
+    let mut only_labels: Vec<usize> = Vec::new();
+    let mut only_workload: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--output" => output = args.next(),
+            "--labels" => {
+                let Some(value) = args.next().and_then(|raw| raw.parse().ok()) else {
+                    eprintln!("--labels needs a count");
+                    std::process::exit(2);
+                };
+                only_labels.push(value);
+            }
+            "--workload" => {
+                let Some(value) = args.next() else {
+                    eprintln!("--workload needs an id");
+                    std::process::exit(2);
+                };
+                only_workload.push(value);
+            }
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -147,6 +166,9 @@ fn main() {
     };
     let mut cells = Vec::new();
     for labels in LABEL_GRID {
+        if !only_labels.is_empty() && !only_labels.contains(&labels) {
+            continue;
+        }
         for workload in [
             Workload::Static,
             Workload::StaticUnique,
@@ -155,6 +177,9 @@ fn main() {
             Workload::Transform,
             Workload::Mutate,
         ] {
+            if !only_workload.is_empty() && !only_workload.iter().any(|id| id == workload.id()) {
+                continue;
+            }
             let rates: &[usize] = if workload.animated() {
                 &RATE_GRID
             } else {

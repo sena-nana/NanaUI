@@ -67,7 +67,12 @@ struct VsOut {
     @location(0) color: vec4<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) world_pos: vec2<f32>,
-    @location(3) @interpolate(flat) control: u32,
+    @location(3) @interpolate(flat) content: u32,
+    // `presentation << 3 | flags`. Carried rather than re-read: the vertex
+    // stage already has the run, and these are the same for every fragment of
+    // a paragraph, so reading the row again per fragment would be a dependent
+    // load for a value that cannot vary.
+    @location(4) @interpolate(flat) run_flags: u32,
 }
 
 @vertex
@@ -93,15 +98,16 @@ fn vs_main(input: VsIn) -> VsOut {
     out.color = color;
     out.uv = atlas_uv(texel, content);
     out.world_pos = world;
-    out.control = input.control;
+    out.content = content;
+    out.run_flags = (run.presentation << 3u) | (run.flags & 7u);
     return out;
 }
 
 @fragment
 fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
-    let run = text_runs[input.control >> 2u];
-    if (run.flags & RUN_CLIP) != 0u {
-        let presentation = text_presentations[run.presentation];
+    let flags = input.run_flags & 7u;
+    if (flags & RUN_CLIP) != 0u {
+        let presentation = text_presentations[input.run_flags >> 3u];
         if !inside_fragment_clip(
             input.world_pos,
             presentation.clip_rect,
@@ -117,8 +123,8 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
             discard;
         }
     }
-    let linear = (run.flags & RUN_LINEAR) != 0u;
-    if (input.control & 1u) == 0u {
+    let linear = (flags & RUN_LINEAR) != 0u;
+    if input.content == 0u {
         var coverage = 0.0;
         if linear {
             coverage = textureSampleLevel(mask_atlas, atlas_linear, input.uv, 0.0).x;
