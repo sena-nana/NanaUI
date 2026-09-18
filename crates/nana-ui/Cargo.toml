@@ -130,6 +130,11 @@ name = "nana-gpu-scene-benchmark"
 path = "src/bin/nana-gpu-scene-benchmark.rs"
 required-features = ["gpu"]
 
+[[bin]]
+name = "nana-text-paint-benchmark"
+path = "src/bin/nana-text-paint-benchmark.rs"
+required-features = ["gpu"]
+
 
 [[example]]
 name = "desktop-overlay-probe"
