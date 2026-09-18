@@ -1387,6 +1387,112 @@ fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
 }
 
 #[test]
+fn moving_one_subtree_leaves_the_culling_index_right_for_both() {
+    // Two sibling panels of four rows each. One scrolls — which the index
+    // answers by leaving a shift pending on the nodes covering that range —
+    // and then the other is moved, which refreshes its own range through those
+    // same nodes. The pending shift has to reach the still panel exactly once.
+    let panel = |first: u64, x: f32, transform: Option<f32>, scroll: f32| {
+        let rows: Vec<u64> = (first + 1..first + 5).collect();
+        let mut panel = node(first, Some(1), &rows);
+        panel.layout.x = x;
+        panel.layout.width = 120.0;
+        panel.scroll_offset.y = scroll;
+        panel.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                overflow_y: nana_ui_core::OverflowSpec::Scroll,
+                transform: transform.map(|dx| nana_ui_core::PaintTransform {
+                    e: dx,
+                    ..nana_ui_core::PaintTransform::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut nodes = vec![panel];
+        for (index, row) in rows.into_iter().enumerate() {
+            let mut row = node(row, Some(first), &[]);
+            row.layout.x = x;
+            row.layout.y = index as f32 * 20.0;
+            row.layout.width = 120.0;
+            row.layout.height = 18.0;
+            row.source_style = NodeStyle {
+                layout: Arc::new(nana_ui_core::LayoutStyle {
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            nodes.push(row);
+        }
+        nodes
+    };
+    let tree = |dx: f32, scroll: f32| {
+        let mut nodes = vec![node(1, None, &[2, 10])];
+        nodes.extend(panel(2, 0.0, Some(dx), 0.0));
+        nodes.extend(panel(10, 400.0, None, scroll));
+        nodes
+    };
+    let viewports = [0.0, 150.0, 300.0, 450.0].map(|x| SceneRect {
+        x,
+        y: 0.0,
+        width: 150.0,
+        height: 80.0,
+    });
+
+    let mut animated = UiScene::new();
+    animated.apply_delta(tree(0.0, 0.0), []);
+    for viewport in viewports {
+        animated.visible_operations(viewport).expect("index builds");
+    }
+
+    let mut scroll = 0.0;
+    for dx in [120.0, 260.0, 380.0] {
+        // Both panels scroll first — which leaves the shift pending on the
+        // nodes covering their rows — and only then does one of them move, so
+        // the refresh walks into a range that still owes a translation.
+        scroll += 17.0;
+        let scrolled = tree(dx, scroll)
+            .into_iter()
+            .filter(|n| n.id == id(2) || n.id == id(10))
+            .map(|mut n| {
+                n.scroll_offset.y = scroll;
+                n
+            })
+            .collect::<Vec<_>>();
+        animated.apply_delta(scrolled, []);
+        let moving = tree(dx, scroll)
+            .into_iter()
+            .find(|n| n.id == id(2))
+            .map(|mut n| {
+                n.scroll_offset.y = scroll;
+                n
+            });
+        animated.apply_delta(moving, []);
+
+        let mut fresh = UiScene::new();
+        fresh.apply_delta(
+            tree(dx, scroll).into_iter().map(|mut n| {
+                if n.id == id(2) {
+                    n.scroll_offset.y = scroll;
+                }
+                n
+            }),
+            [],
+        );
+        for viewport in viewports {
+            assert_eq!(
+                animated.visible_operations(viewport).unwrap(),
+                fresh.visible_operations(viewport).unwrap(),
+                "dx {dx} scroll {scroll} viewport {viewport:?}: refreshing one subtree \
+                 must answer what a rebuilt index would"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
     // What the runtime schedules for a container's transform animation: the
     // container is extracted again, its descendants are not. They keep the

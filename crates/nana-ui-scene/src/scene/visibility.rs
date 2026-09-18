@@ -292,6 +292,56 @@ impl VisibilityIndex {
             }
         }
     }
+    /// Recompute every projected bound under `root`, in place.
+    ///
+    /// What an ancestor's transform changes is where its subtree lands, not
+    /// which primitives are in it. Throwing the index away would hash every
+    /// node in the document again and walk every parent chain to rebuild the
+    /// subtree ranges — and it would do that for the primitives that did not
+    /// move as well as the ones that did.
+    ///
+    /// Viewport-fixed descendants are not in `descendants`, which is what makes
+    /// skipping them right: layout resolves them against the viewport, so an
+    /// ancestor's transform never reached them in the first place.
+    pub(super) fn refresh_subtree(&mut self, scene: &UiScene, root: StableNodeId) {
+        let Some(ranges) = self.descendants.get(&root).cloned() else {
+            return;
+        };
+        let plan = Arc::clone(&self.plan);
+        for range in ranges {
+            self.refresh_range(scene, &plan, 1, 0, self.leaf, &range);
+        }
+    }
+
+    fn refresh_range(
+        &mut self,
+        scene: &UiScene,
+        plan: &FramePlan,
+        at: usize,
+        start: usize,
+        end: usize,
+        range: &std::ops::Range<usize>,
+    ) {
+        if start >= range.end || end <= range.start {
+            return;
+        }
+        if end - start == 1 {
+            self.bounds[at] = match plan.operations.get(start) {
+                Some(RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id)) => {
+                    primitive_bounds(scene, *id)
+                }
+                _ => None,
+            };
+            self.shifts[at] = [0.0, 0.0];
+            return;
+        }
+        self.push(at);
+        let mid = (start + end) / 2;
+        self.refresh_range(scene, plan, at * 2, start, mid, range);
+        self.refresh_range(scene, plan, at * 2 + 1, mid, end, range);
+        self.bounds[at] = union(self.bounds[at * 2], self.bounds[at * 2 + 1]);
+    }
+
     fn set_bound(
         &mut self,
         at: usize,

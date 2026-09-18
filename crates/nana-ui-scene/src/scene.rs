@@ -883,12 +883,17 @@ impl UiScene {
                 self.frame_plan.take();
                 self.visibility.take();
             }
-            if inherited_geometry_changed {
-                self.visibility.take();
-            }
             if let Some(mut visibility) = self.visibility.take() {
                 for (root, offset) in scroll_translations {
                     visibility.translate_subtree(root, offset);
+                }
+                if inherited_geometry_changed {
+                    // Every projected bound under these roots moved. Which
+                    // primitives are under them did not, and that is the half
+                    // rebuilding the index would pay for again.
+                    for &root in &inherited_roots {
+                        visibility.refresh_subtree(self, root);
+                    }
                 }
                 visibility.update(self, &rebuild);
                 let _ = self.visibility.set(visibility);
