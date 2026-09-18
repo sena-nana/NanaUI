@@ -93,6 +93,8 @@ struct Report {
 struct Cell {
     workload: String,
     labels: usize,
+    /// Wrapper elements between the document and the labels.
+    depth: usize,
     viewport: [u32; 2],
     frames: usize,
     /// Glyphs the visible labels resolve to, so a per-glyph reading is possible.
@@ -137,6 +139,7 @@ fn main() {
     let mut only_labels: Vec<usize> = Vec::new();
     let mut only_workload: Vec<String> = Vec::new();
     let mut frame_override: Option<usize> = None;
+    let mut depth = 0usize;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -154,6 +157,13 @@ fn main() {
                     std::process::exit(2);
                 };
                 frame_override = Some(value);
+            }
+            "--depth" => {
+                let Some(value) = args.next().and_then(|raw| raw.parse().ok()) else {
+                    eprintln!("--depth needs a count");
+                    std::process::exit(2);
+                };
+                depth = value;
             }
             "--workload" => {
                 let Some(value) = args.next() else {
@@ -195,7 +205,7 @@ fn main() {
             };
             for frames in rates {
                 let frames = frame_override.unwrap_or(*frames);
-                cells.push(run(&device, &queue, workload, labels, frames));
+                cells.push(run(&device, &queue, workload, labels, frames, depth));
             }
         }
     }
@@ -252,6 +262,7 @@ fn run(
     workload: Workload,
     labels: usize,
     frames: usize,
+    depth: usize,
 ) -> Cell {
     let physical = viewport_for(labels);
     let document_id = DocumentId::new(1).expect("document");
@@ -261,8 +272,23 @@ fn run(
     let ticker = StableNodeId::new(3).expect("ticker");
     let mut build = MutationQueue::new();
     build.create(root, document_id, NodeKind::Document);
+    // Wrappers between the document and the labels. A real shell's text sits
+    // ten to twenty elements deep, and everything the painter asks per
+    // primitive walks that chain.
+    let mut parent = root;
+    for level in 0..depth {
+        let wrapper = StableNodeId::new(1_000_000 + level as u64).expect("wrapper");
+        build.create(
+            wrapper,
+            document_id,
+            NodeKind::Element { tag: "div".into() },
+        );
+        build.insert(parent, wrapper, None);
+        build.set_style(wrapper, column_style(None, None));
+        parent = wrapper;
+    }
     build.create(column, document_id, NodeKind::Element { tag: "div".into() });
-    build.insert(root, column, None);
+    build.insert(parent, column, None);
     build.set_style(column, column_style(None, None));
     build.create(ticker, document_id, NodeKind::Text);
     build.insert(column, ticker, None);
@@ -411,6 +437,7 @@ fn run(
     Cell {
         workload: workload.id().to_string(),
         labels,
+        depth,
         viewport: physical,
         frames,
         live_glyphs: warm_glyph.unwrap_or_default(),
