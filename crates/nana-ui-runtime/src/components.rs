@@ -1957,6 +1957,31 @@ pub trait TextShaper {
         None
     }
 
+    /// The caret one position visually left or right of this one, for a
+    /// backend that can answer it from its layout.
+    ///
+    /// Visual order is what an arrow key follows: in `abc ابج` a right arrow
+    /// walks the Arabic word from its logical end towards its start, because
+    /// that is left to right on screen. It also crosses a soft wrap onto the
+    /// neighbouring line, and the two sides of a wrap are one offset with two
+    /// affinities, so the answer carries the affinity.
+    ///
+    /// `None` makes the caller step by grapheme in logical order -- which is
+    /// all a backend without wrapping or direction information could mean by
+    /// "left" anyway.
+    fn text_caret_visual_step(
+        &mut self,
+        _id: StableNodeId,
+        _text: &TextContent,
+        _offset: usize,
+        _affinity: TextAffinity,
+        _rightwards: bool,
+        _style: &ComputedStyle,
+        _constraints: TextShapeConstraints,
+    ) -> Option<TextHit> {
+        None
+    }
+
     /// Return highlight rectangles in paragraph-local coordinates.
     ///
     /// The default preserves the backend-neutral explicit-newline behavior.

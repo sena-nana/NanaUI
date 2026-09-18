@@ -550,3 +550,57 @@ fn an_editors_frames_never_key_the_runtime_layout_cache() {
     assert_eq!(work.editable_mutations, 1);
     assert_eq!(cache(&fixture), (0, 0), "an edit");
 }
+
+/// Arrow keys follow visual order, not logical order. The clearest case a
+/// Latin/CJK font can show is a soft wrap: the end of the wrapped line and the
+/// start of the next are one byte offset with two affinities, two positions on
+/// screen, and therefore two key presses. A logical step would skip the line's
+/// own end entirely and jump a character.
+#[test]
+fn a_right_arrow_at_a_wrap_steps_onto_the_next_line_rather_than_past_a_character() {
+    let mut fixture = Fixture::new(&"中".repeat(120));
+    let content = fixture.content();
+    let line_height = fixture.line_height();
+    let document = fixture.document;
+
+    // Past the right end of the first line: the wrap offset, drawn as that
+    // line's end (see the click test above).
+    fixture.click(
+        content.x + content.width - 1.0,
+        content.y + line_height * 0.5,
+    );
+    let at_line_end = fixture.selection();
+    let (end_x, end_y) = fixture.caret();
+    assert_eq!(at_line_end.affinity, TextAffinity::Upstream);
+    assert_eq!(end_y, 0.0);
+
+    // Right: the same offset, now the second line's start.
+    let step = |fixture: &mut Fixture, intent| {
+        let Fixture {
+            runtime, shaper, ..
+        } = fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, false, Some(shaper))
+                .unwrap(),
+            "{intent:?}"
+        );
+        fixture.flush();
+        (fixture.selection(), fixture.caret())
+    };
+    let (wrapped, (start_x, start_y)) = step(&mut fixture, TextCaretIntent::Right);
+    assert_eq!(
+        wrapped.focus, at_line_end.focus,
+        "the line's end and the next line's start are one offset"
+    );
+    assert_eq!(wrapped.affinity, TextAffinity::Downstream);
+    assert_eq!(start_y, line_height, "the caret crossed onto the next line");
+    assert!(start_x < end_x, "and to that line's start: {start_x}");
+
+    // And back: Left returns to the position it came from, not to the
+    // character before it.
+    let (back, (back_x, back_y)) = step(&mut fixture, TextCaretIntent::Left);
+    assert_eq!(back, at_line_end);
+    assert_eq!((back_x, back_y), (end_x, end_y));
+}

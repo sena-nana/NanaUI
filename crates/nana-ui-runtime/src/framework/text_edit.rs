@@ -212,6 +212,26 @@ impl EditorGeometry<'_> {
         ))
     }
 
+    /// One visual step left or right, from the backend's own layout: the
+    /// caret an arrow key lands on. `None` when the backend has no geometry,
+    /// or there is nothing in that direction.
+    fn visual_step(&mut self, selection: TextSelection, rightwards: bool) -> Option<TextSelection> {
+        let hit = self.shaper.text_caret_visual_step(
+            self.node,
+            &self.text,
+            selection.focus,
+            selection.affinity,
+            rightwards,
+            &self.style,
+            self.constraints,
+        )?;
+        Some(TextSelection {
+            anchor: selection.anchor,
+            focus: hit.offset,
+            affinity: hit.affinity,
+        })
+    }
+
     fn supports_point_hits(&mut self) -> bool {
         self.shaper
             .text_hit_at_point(
@@ -233,6 +253,18 @@ impl EditorGeometry<'_> {
         y: f32,
     ) -> (f32, f32) {
         (x - content.x + scroll.x, y - content.y + scroll.y)
+    }
+}
+
+/// Whether this intent is the horizontal arrow, and which way it points on
+/// screen. `None` for every other intent: only Left/Right follow visual
+/// order -- word and line intents are logical by definition, and the vertical
+/// ones have their own geometry path.
+fn horizontal_rightwards(intent: TextCaretIntent) -> Option<bool> {
+    match intent {
+        TextCaretIntent::Left => Some(false),
+        TextCaretIntent::Right => Some(true),
+        _ => None,
     }
 }
 
@@ -462,6 +494,17 @@ impl AppContext {
             return caret_focus(value, selection, mapped)
                 .map(|focus| (moved_selection(selection, focus, extend), None));
         }
+        if let Some(geometry) = geometry
+            && let Some(rightwards) = horizontal_rightwards(intent)
+            && let Some(stepped) = geometry.visual_step(selection, rightwards)
+        {
+            let moved = if extend {
+                stepped
+            } else {
+                TextSelection::caret(stepped.focus).with_affinity(stepped.affinity)
+            };
+            return Some((moved, None));
+        }
         caret_focus(value, selection, intent)
             .map(|focus| (moved_selection(selection, focus, extend), None))
     }
@@ -549,7 +592,9 @@ impl AppContext {
                 .world
                 .text_input_pointer_context(focused.node)
                 .map_or(0.0, |(content, _)| content.height);
-            let shape_context = if vertical && focused.multiline && shaper.is_some() {
+            let geometric =
+                (vertical && focused.multiline) || horizontal_rightwards(intent).is_some();
+            let shape_context = if geometric && shaper.is_some() {
                 self.world.text_input_shape_context(focused.node)
             } else {
                 None
@@ -714,9 +759,35 @@ impl AppContext {
             }
         } else {
             self.text_edit.caret_goal_x = None;
-            match caret_focus(probe_value, selection, intent) {
-                Some(focus) => moved_selection(selection, focus, extend),
-                None => return Ok(false),
+            // Left/Right follow visual order wherever the backend's layout can
+            // say what "left" is; without geometry they are grapheme steps in
+            // logical order, which is all "left" could mean then.
+            let visual =
+                horizontal_rightwards(intent)
+                    .zip(shaper)
+                    .and_then(|(rightwards, shaper)| {
+                        let (style, constraints) =
+                            self.world.text_input_shape_context(focused.node)?;
+                        let mut geometry = EditorGeometry {
+                            shaper,
+                            node: focused.node,
+                            text: TextContent {
+                                value: probe_value.to_owned(),
+                            },
+                            style,
+                            constraints,
+                        };
+                        geometry.visual_step(selection, rightwards)
+                    });
+            match visual {
+                Some(stepped) if extend => stepped,
+                Some(stepped) => {
+                    TextSelection::caret(stepped.focus).with_affinity(stepped.affinity)
+                }
+                None => match caret_focus(probe_value, selection, intent) {
+                    Some(focus) => moved_selection(selection, focus, extend),
+                    None => return Ok(false),
+                },
             }
         };
         let moved = if vertical {

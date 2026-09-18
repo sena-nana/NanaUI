@@ -1081,12 +1081,31 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
   中的行，BiDi 边界点哪一侧就画哪一侧。
 - a11y 没有 affinity（AccessKit 的选区只有字符下标），`AccessibilityAction::SetSelection` 落 `Downstream`。
 
+### 视觉序的左右箭头
+
+`TextCaretIntent::Left/Right` 在**能问到几何**时走视觉序，问不到时退回逻辑 grapheme 步进
+（没有换行与方向信息的宿主，「左」本来也只能是这个意思）。探针是
+`TextShaper::text_caret_visual_step(offset, affinity, rightwards, ..)`，引擎宿主用
+`EditorGeometry::visual_move` 回答——定义只有 `nana-text` 一份，Runtime 不重造。
+
+规则一条，不按平台分叉：**Left/Right 一律视觉序**（浏览器与 Windows 编辑框的行为；纯 LTR
+文本里视觉序与逻辑序完全一致，所以只有 BiDi 与换行处会变）。两处可见的差别：
+
+- `abc ابج` 里按 Right 走进阿拉伯语词，逻辑上是从词尾往词首走，因为那在屏幕上是从左往右；
+- 软换行处（CJK 行尾这类没有悬挂空白的换行）行尾与下一行行首是同一个字节的两个 affinity，
+  于是是**两次**按键：一次落在行尾（`Upstream`），一次落到下一行行首（`Downstream`）。逻辑步进
+  会跳过行尾那个位置，直接越过一个字符。
+
+`nana-text` 的 `EditSession` 在 Left/Right 且选区非空时会塌缩到选区的**视觉边缘**；Runtime 这条
+路仍是「从 focus 起步一格」（`moved_selection`）。两边的这条差别留在 IME 后端接 `EditSession`
+那一步一起收，不在本次改。Word/Line 意图按定义是逻辑的，垂直移动走自己的几何路径。
+
 ### 本阶段没做的
 
 | 项 | 状态 |
 | --- | --- |
 | caret blink | Runtime 目前没有 blink；它属于 scene overlay 的可见性 / 不透明度（paint），不得推进任何文本 revision。`nana-text` 侧门禁已钉住「只查询几何」零文本工作 |
-| Runtime 视觉序左右移动 | `nana-text` 提供 `Motion::Left/Right`；Runtime 的 `TextCaretIntent::Left/Right` 仍是逻辑 grapheme 移动，接视觉序需要平台语义决定 |
+| ~~Runtime 视觉序左右移动~~ **已接** | 见「视觉序的左右箭头」：`text_caret_visual_step` 探针 + `EditorGeometry::visual_move`，无几何时退回逻辑步进。选区非空时的塌缩端仍与 `EditSession` 不同 |
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |
 | 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |

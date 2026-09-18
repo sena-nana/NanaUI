@@ -141,6 +141,27 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
             .text_hit_at_point(id, text, x, y, style, constraints)
     }
 
+    fn text_caret_visual_step(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: crate::TextAffinity,
+        rightwards: bool,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Option<crate::TextHit> {
+        self.inner.text_caret_visual_step(
+            id,
+            text,
+            offset,
+            affinity,
+            rightwards,
+            style,
+            constraints,
+        )
+    }
+
     fn text_highlights(
         &mut self,
         id: StableNodeId,
@@ -311,6 +332,27 @@ impl TextShaper for PreparedCountingShaper<'_> {
     ) -> Option<crate::TextHit> {
         self.inner
             .text_hit_at_point(id, text, x, y, style, constraints)
+    }
+
+    fn text_caret_visual_step(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: crate::TextAffinity,
+        rightwards: bool,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> Option<crate::TextHit> {
+        self.inner.text_caret_visual_step(
+            id,
+            text,
+            offset,
+            affinity,
+            rightwards,
+            style,
+            constraints,
+        )
     }
 
     fn text_highlights(

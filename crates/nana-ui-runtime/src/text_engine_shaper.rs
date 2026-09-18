@@ -200,6 +200,27 @@ impl NanaTextEngineShaper {
         })
     }
 
+    /// The caret one visual step away, read off the retained geometry.
+    fn visual_step(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: Affinity,
+        rightwards: bool,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        synced: bool,
+    ) -> Option<TextHit> {
+        if !is_caret_boundary(&text.value, offset) {
+            return None;
+        }
+        let (offset, affinity) = self
+            .editor_geometry(id, &text.value, style, constraints, synced, true)?
+            .visual_move(offset, affinity, rightwards)?;
+        Some(TextHit { offset, affinity })
+    }
+
     fn measure(
         &mut self,
         id: StableNodeId,
@@ -376,6 +397,28 @@ impl TextShaper for NanaTextEngineShaper {
         self.hit_at_point(id, text, x, y, style, constraints, false)
     }
 
+    fn text_caret_visual_step(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: Affinity,
+        rightwards: bool,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Option<TextHit> {
+        self.visual_step(
+            id,
+            text,
+            offset,
+            affinity,
+            rightwards,
+            style,
+            constraints,
+            false,
+        )
+    }
+
     /// The whole engine epoch, folded: a language change or another engine is
     /// as much a new measurement as a font registration.
     fn font_generation(&self) -> u64 {
@@ -534,5 +577,28 @@ impl TextShaper for PreparedEngineShaper<'_> {
         let synced = self.synced(id, text, style, constraints);
         self.host
             .hit_at_point(id, text, x, y, style, constraints, synced)
+    }
+
+    fn text_caret_visual_step(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: Affinity,
+        rightwards: bool,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Option<TextHit> {
+        let synced = self.synced(id, text, style, constraints);
+        self.host.visual_step(
+            id,
+            text,
+            offset,
+            affinity,
+            rightwards,
+            style,
+            constraints,
+            synced,
+        )
     }
 }
