@@ -355,6 +355,11 @@ fn run(
         end.text_prepare_nodes_skipped,
         warm.text_prepare_nodes_skipped,
     );
+    delta(
+        "text_prepare_nodes_culled",
+        end.text_prepare_nodes_culled,
+        warm.text_prepare_nodes_culled,
+    );
     counters.insert(
         "text_gpu_entries_active".to_string(),
         end.text_gpu_entries_active as f64,

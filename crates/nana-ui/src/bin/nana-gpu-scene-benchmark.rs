@@ -404,6 +404,13 @@ fn text_counters_per_frame(
         end.text_prepare_nodes_skipped,
         warm.text_prepare_nodes_skipped,
     );
+    // Without this the three prepare counters do not add up and a reader is
+    // left guessing whether the difference was rebuilt or never drawn.
+    delta(
+        "text_prepare_nodes_culled",
+        end.text_prepare_nodes_culled,
+        warm.text_prepare_nodes_culled,
+    );
     out.insert(
         "text_gpu_entries_active".to_string(),
         end.text_gpu_entries_active as f64,
