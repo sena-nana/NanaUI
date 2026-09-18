@@ -560,6 +560,12 @@ impl InstanceArena {
         self.capacity
     }
 
+    /// Slots handed out, holes included.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> u32 {
+        self.len
+    }
+
     pub(super) fn note_breaks(&mut self, breaks: u32) {
         self.breaks = breaks;
     }
@@ -578,6 +584,16 @@ impl InstanceArena {
             // needs to be and every new block lands further from its
             // neighbours.
             || (self.len > 64 && self.live * 2 < self.len)
+    }
+
+    /// Give back everything, keeping the buffer. For the case where no entry
+    /// means what it meant and they are all dropped at once.
+    pub(super) fn reset(&mut self) {
+        self.len = 0;
+        self.live = 0;
+        self.free.clear();
+        self.breaks = 0;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Start a repack: every offset handed out before this is void.
@@ -646,6 +662,12 @@ impl RunSlots {
 
     pub(super) fn release(&mut self, slot: u32) {
         self.free.push(slot);
+    }
+
+    /// Give back every row. For the case where every entry is dropped at once.
+    pub(super) fn reset(&mut self) {
+        self.next = 0;
+        self.free.clear();
     }
 
     /// Rows the table must hold for every live slot to be addressable.

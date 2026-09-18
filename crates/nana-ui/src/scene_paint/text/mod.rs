@@ -639,8 +639,7 @@ impl TextPipeline {
             self.font_generation = generation;
             self.shape_cache.clear();
             self.raster.invalidate();
-            let atlas = &mut self.atlas;
-            self.target.entries.clear(|handle| atlas.release(handle));
+            self.drop_every_entry();
         }
         self.atlas.begin_frame(self.raster.generation());
         self.shape_cache.begin_frame();
@@ -681,6 +680,21 @@ impl TextPipeline {
                 |generation, offset, capacity| arena.release(generation, offset, capacity),
             );
         }
+    }
+
+    /// Drop every retained entry and everything it held.
+    ///
+    /// The blocks and run rows go back too: without that, the arena and the
+    /// run table would grow past every `@font-face` registration a session
+    /// sees, because the entries that owned them are gone and can no longer
+    /// give them back.
+    fn drop_every_entry(&mut self) {
+        let atlas = &mut self.atlas;
+        self.target.entries.clear(|handle| atlas.release(handle));
+        self.target.arena.reset();
+        self.target.run_slots.reset();
+        self.target.run_table.clear();
+        self.target.run_dirty = None;
     }
 
     /// Bumped whenever a placement moved or died. A render target that kept
@@ -2506,6 +2520,37 @@ mod tests {
             "only the label that really changed is reshaped; the cache has to \
              hold one frame's worth of text, which is a property of the view"
         );
+    }
+
+    #[test]
+    fn a_face_set_change_gives_back_the_blocks_and_rows_its_entries_held() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let labels = (0..12)
+            .map(|index| Label {
+                top: index as f32 * 18.0,
+                ..Label::new("Face set row", index + 1)
+            })
+            .collect::<Vec<_>>();
+        text_frame(&device, &queue, &mut pipeline, &labels);
+        let rows = pipeline.target.run_table.len();
+        let slots = pipeline.target.arena.len();
+        assert_eq!(rows, labels.len());
+        assert!(slots > 0);
+        // What `@font-face` does: every entry stops meaning what it meant.
+        pipeline.drop_every_entry();
+        text_frame(&device, &queue, &mut pipeline, &labels);
+        assert_eq!(
+            pipeline.target.run_table.len(),
+            rows,
+            "the rows the dropped entries held are handed out again, not added to"
+        );
+        assert_eq!(
+            pipeline.target.arena.len(),
+            slots,
+            "and so are their arena blocks"
+        );
+        assert_eq!(pipeline.glyph_counters().text_gpu_entries_active, 12);
     }
 
     #[test]
