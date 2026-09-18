@@ -838,7 +838,7 @@ fn runtime_fixture(
             set_full_width(&mut component.style);
             if fixture.state == "three-slots" {
                 let item = document.context_mut().build(document_id, |ui| {
-                    let leading = ui.parked(RuntimeText::new("●"));
+                    let leading = ui.detached(RuntimeText::new("●"));
                     let content = ui.detached(RuntimeText::new("Camera source"));
                     let trailing = ui.detached(RuntimeText::new("⌘1"));
                     let item = ui.child("item", component);
@@ -1022,7 +1022,7 @@ fn runtime_fixture(
         }
         Component::Dialog => {
             let (dialog, body, close) = document.context_mut().build(document_id, |ui| {
-                let body = ui.parked(RuntimeText::new("Camera A"));
+                let body = ui.detached(RuntimeText::new("Camera A"));
                 let close = ui.detached(RuntimeIconButton::new(Icon::Close, "Close"));
                 let dialog = ui.child(
                     "dialog",
@@ -1063,7 +1063,7 @@ fn runtime_fixture(
                         .loading(fixture.state == "busy"),
                     );
                     let close = (fixture.state != "busy")
-                        .then(|| ui.parked(RuntimeIconButton::new(Icon::Close, "Close")));
+                        .then(|| ui.detached(RuntimeIconButton::new(Icon::Close, "Close")));
                     let confirm = ui.child("confirm", confirm);
                     (confirm, cancel, accept, close)
                 })?;
@@ -1081,7 +1081,7 @@ fn runtime_fixture(
         }
         Component::Drawer => {
             let (drawer, body, close) = document.context_mut().build(document_id, |ui| {
-                let body = ui.parked(RuntimeText::new("Properties"));
+                let body = ui.detached(RuntimeText::new("Properties"));
                 let close = ui.detached(RuntimeIconButton::new(Icon::Close, "Close"));
                 let drawer = ui.child(
                     "drawer",
@@ -1357,7 +1357,7 @@ fn runtime_fixture(
         Component::Settings => {
             let control = document
                 .context_mut()
-                .build_detached(document_id, |ui| ui.parked(RuntimeText::new("暗色")))?;
+                .build_detached(document_id, |ui| ui.detached(RuntimeText::new("暗色")))?;
             let row = document.context_mut().mount_settings_leaf_row(
                 document_id,
                 "主题",
@@ -1620,10 +1620,10 @@ fn apply_runtime_state(
                 document_id,
                 AccessibilityActionRequest {
                     target,
-                    action: AccessibilityAction::SetSelection(TextSelection {
-                        anchor: 0,
-                        focus: "release".len(),
-                    }),
+                    action: AccessibilityAction::SetSelection(TextSelection::new(
+                        0,
+                        "release".len(),
+                    )),
                 },
             )?)
         }
@@ -1633,10 +1633,10 @@ fn apply_runtime_state(
                 document_id,
                 AccessibilityActionRequest {
                     target,
-                    action: AccessibilityAction::SetSelection(TextSelection {
-                        anchor: "First ".len(),
-                        focus: "First line\nSecond line\nThird".len(),
-                    }),
+                    action: AccessibilityAction::SetSelection(TextSelection::new(
+                        "First ".len(),
+                        "First line\nSecond line\nThird".len(),
+                    )),
                 },
             )?)
         }

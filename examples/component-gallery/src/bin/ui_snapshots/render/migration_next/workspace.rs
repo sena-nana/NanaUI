@@ -288,7 +288,7 @@ pub(super) fn mount_runtime_appearance_section(
 ) -> Result<nana_ui::runtime::Entity<RuntimeAppearanceSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.parked(RuntimeAppearanceSection::new(
+        ui.detached(RuntimeAppearanceSection::new(
             theme,
             AppearanceSettings::default(),
         ))
@@ -304,7 +304,7 @@ pub(super) fn mount_runtime_about_section(
 ) -> Result<nana_ui::runtime::Entity<RuntimeAboutSection>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let section = document.context_mut().build_detached(document_id, |ui| {
-        ui.parked(RuntimeAboutSection::new(
+        ui.detached(RuntimeAboutSection::new(
             RuntimeAboutMetadata::new("NanaUI Gallery", "0.1.0")
                 .description("Injected product metadata for the about card."),
         ))
@@ -365,12 +365,12 @@ pub(super) fn mount_runtime_desktop_shell(
     let model = snapshot_settings_model().clone();
     let state = snapshot_settings_state().clone();
     let sidebar = document.context_mut().build_detached(document_id, |ui| {
-        ui.parked(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
+        ui.detached(RuntimeSettingsSidebar::new(model.clone(), state.clone()))
     })?;
     document.context_mut().assemble_settings_sidebar(sidebar)?;
     let content = mount_runtime_appearance_section(document, theme)?;
     let page = document.context_mut().build_detached(document_id, |ui| {
-        ui.parked(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
+        ui.detached(RuntimeSettingsPage::new(model, state).content(content.stable_id()))
     })?;
     document.context_mut().assemble_settings_page(page)?;
     let shell = document.context_mut().build(document_id, |ui| {
