@@ -37,6 +37,14 @@ struct EditorEntry {
     style: NanaTextStyle,
     constraints: NanaTextConstraints,
     geometry: EditorGeometry,
+    /// The editor's measurement, kept for as long as the geometry it was
+    /// summed from is untouched.
+    ///
+    /// Summing it is O(lines), and [`TextShaper::shape`] asks for it on every
+    /// pass -- twice a frame on a document whose caret only moved. Only
+    /// `GeometrySync::unchanged` may keep it: a sync that laid no paragraph
+    /// out can still have dropped one.
+    metrics: Option<TextMetrics>,
 }
 
 #[derive(Clone)]
@@ -101,6 +109,7 @@ impl NanaTextEngineShaper {
                     style: nana_style.clone(),
                     constraints: nana_constraints,
                     geometry: EditorGeometry::new(),
+                    metrics: None,
                 }
             }
             None => return None,
@@ -119,9 +128,29 @@ impl NanaTextEngineShaper {
                 &mut self.work,
             );
             self.work.text_source_clones += sync.paragraphs_laid_out;
+            if !sync.unchanged {
+                entry.metrics = None;
+            }
         }
         self.editors.push(entry);
         self.editors.last().map(|entry| &entry.geometry)
+    }
+
+    /// The node's measurement, summed from its paragraphs once per change.
+    fn editor_metrics(
+        &mut self,
+        id: StableNodeId,
+        text: &str,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> Option<TextMetrics> {
+        self.editor_geometry(id, text, style, constraints, false, false)?;
+        let entry = self.editors.last_mut()?;
+        Some(
+            *entry
+                .metrics
+                .get_or_insert_with(|| metrics_of_geometry(&entry.geometry)),
+        )
     }
 
     fn position(
@@ -230,10 +259,8 @@ impl NanaTextEngineShaper {
     ) -> TextMetrics {
         // An editor measures from the geometry its probes read, so an edit
         // lays out its own paragraph rather than the whole text.
-        if let Some(geometry) =
-            self.editor_geometry(id, &text.value, style, constraints, false, false)
-        {
-            return metrics_of_geometry(geometry);
+        if let Some(metrics) = self.editor_metrics(id, &text.value, style, constraints) {
+            return metrics;
         }
         let source = TextSource::new(text.value.as_str());
         let layout = nana_text::lock_text_engine(&self.engine).layout(

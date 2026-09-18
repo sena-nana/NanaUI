@@ -77,6 +77,15 @@ pub struct GeometrySync {
     /// constraints and engine epoch, rather than a first layout or a
     /// relayout of everything.
     pub incremental: bool,
+    /// The layouts already laid this text out: NOTHING about the geometry
+    /// changed, not even a paragraph's offset or the set of them.
+    ///
+    /// `paragraphs_laid_out == 0` does not mean that: a deletion can drop a
+    /// paragraph without laying any out (removing the line feed that made an
+    /// empty first paragraph merges it away), which moves every offset after
+    /// it and changes the total height. A caller caching anything derived
+    /// from the geometry has to key it on this.
+    pub unchanged: bool,
 }
 
 /// A caret to draw, in geometry space.
@@ -199,6 +208,7 @@ impl EditorGeometry {
             return GeometrySync {
                 paragraphs_kept: self.paragraphs.len(),
                 incremental: true,
+                unchanged: true,
                 ..GeometrySync::default()
             };
         }
@@ -267,6 +277,7 @@ impl EditorGeometry {
             return GeometrySync {
                 paragraphs_kept: self.paragraphs.len(),
                 incremental: true,
+                unchanged: true,
                 ..GeometrySync::default()
             };
         }

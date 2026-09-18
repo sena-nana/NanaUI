@@ -720,3 +720,60 @@ fn a_right_arrow_crosses_a_collapsed_fold_summary_on_the_geometry_path() {
         assert_eq!(focus(&runtime), expected, "one press per position");
     }
 }
+
+/// The host keeps an editor's measurement until its paragraphs change, so the
+/// invalidation has to fire on the edits that change it: a new line makes the
+/// content taller, and deleting it again makes it shorter.
+#[test]
+fn an_edit_that_adds_a_line_remeasures_the_editor() {
+    let mut fixture = Fixture::new(&paragraphs(4));
+    let document = fixture.document;
+    fn height(fixture: &Fixture) -> f32 {
+        fixture
+            .runtime
+            .context()
+            .world()
+            .text_input_presentation(fixture.area.stable_id())
+            .expect("presentation")
+            .content_size
+            .height
+    }
+    let line_height = fixture.line_height();
+    let before = height(&fixture);
+
+    fixture
+        .runtime
+        .context_mut()
+        .select_focused_text_range(document, 0, 0)
+        .unwrap();
+    fixture.flush();
+    assert_eq!(height(&fixture), before, "a caret move measures the same");
+
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .insert_focused_text_newline(document)
+            .unwrap()
+    );
+    fixture.flush();
+    let taller = height(&fixture);
+    assert!(
+        (taller - before - line_height).abs() < 0.51,
+        "one more line: {before} -> {taller} (line {line_height})"
+    );
+
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .delete_focused_text(document, nana_ui_runtime::TextDeleteKind::Backward)
+            .unwrap()
+    );
+    fixture.flush();
+    assert!(
+        (height(&fixture) - before).abs() < 0.51,
+        "and back: {} vs {before}",
+        height(&fixture)
+    );
+}
