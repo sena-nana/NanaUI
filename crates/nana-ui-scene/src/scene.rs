@@ -724,7 +724,11 @@ impl UiScene {
             }
         }
         let mut updated_nodes = 0;
-        let mut scroll_rebuild = Vec::new();
+        // Roots whose retained descendants have to be rebuilt because what
+        // they inherit changed. A scrolled projective subtree cannot be
+        // re-projected, and a group that stops isolating hands its opacity
+        // down to primitives that baked it.
+        let mut subtree_rebuild = Vec::new();
         let mut scroll_translations = Vec::new();
         let mut stacking_changed = false;
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
@@ -776,6 +780,16 @@ impl UiScene {
             // re-extracted with it, so such a change costs a full reorder.
             stacking_changed |=
                 previous.is_some_and(|old| paint_order_facts(old) != paint_order_facts(&node));
+            // Of what a node hands down, its opacity is the one a descendant
+            // bakes into its primitive rather than re-deriving at draw time. A
+            // group isolates it, so the number that reaches descendants is 1.0
+            // until the node stops being a group.
+            if previous.is_some_and(|old| {
+                inherited_opacity(&self.nodes, old).to_bits()
+                    != inherited_opacity(&self.nodes, &node).to_bits()
+            }) {
+                subtree_rebuild.push(node.id);
+            }
             changed.push(node.id);
             if scroll_changed {
                 inherited_roots.insert(node.id);
@@ -787,7 +801,7 @@ impl UiScene {
                     blocks_3d,
                 ));
                 if transform.is_projective() {
-                    scroll_rebuild.push(node.id);
+                    subtree_rebuild.push(node.id);
                     self.visibility.take();
                 } else {
                     let dx = old.scroll_offset.x - node.scroll_offset.x;
@@ -818,9 +832,9 @@ impl UiScene {
                 }
             }
             let mut rebuild = changed;
-            if !scroll_rebuild.is_empty() {
+            if !subtree_rebuild.is_empty() {
                 let extracted: HashSet<_> = rebuild.iter().copied().collect();
-                for root in scroll_rebuild {
+                for root in subtree_rebuild {
                     collect_unextracted_descendants(&self.nodes, root, &extracted, &mut rebuild);
                 }
             }
@@ -1515,6 +1529,18 @@ fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()
+}
+
+/// The opacity this node multiplies into every descendant's primitive.
+///
+/// A group composites its subtree as one layer, so its own opacity is applied
+/// there once and never reaches a descendant's primitive.
+fn inherited_opacity(nodes: &SceneNodes, node: &ExtractedNode) -> f32 {
+    if is_opacity_group(nodes, node) {
+        1.0
+    } else {
+        local_opacity(node)
+    }
 }
 
 fn is_stacking_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {

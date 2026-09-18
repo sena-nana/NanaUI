@@ -1387,6 +1387,91 @@ fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
 }
 
 #[test]
+fn a_fade_that_keeps_the_group_leaves_the_descendants_primitives_alone() {
+    let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some(color),
+            opacity,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut parent = node(1, None, &[2]);
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.5));
+    let mut child = node(2, Some(1), &[]);
+    child.source_style = solid([1.0, 0.0, 0.0, 1.0], None);
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([parent.clone(), child], []);
+    let painted = |scene: &UiScene| {
+        let primitive = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("the child paints")
+            .clone();
+        let group = scene.opacity_groups(id(2))[0].opacity;
+        (primitive, group)
+    };
+    let (before, group) = painted(&scene);
+    assert_eq!(group, 0.5);
+
+    // The container is still a group at 0.37, so the number that reaches the
+    // child is still 1.0 and nothing it paints has moved. The new opacity is
+    // the group's, applied once where the subtree composites.
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.37));
+    scene.apply_delta([parent], []);
+    let (after, group) = painted(&scene);
+    assert_eq!(group, 0.37, "the group carries the fade");
+    assert_eq!(
+        after, before,
+        "and the descendant's primitive is the one it already had"
+    );
+}
+
+#[test]
+fn a_faded_out_ancestor_that_comes_back_repaints_the_descendants_it_hid() {
+    let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some(color),
+            opacity,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut parent = node(1, None, &[2]);
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.0));
+    let mut child = node(2, Some(1), &[]);
+    child.source_style = solid([1.0, 0.0, 0.0, 1.0], None);
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([parent.clone(), child], []);
+    let child_opacity = |scene: &UiScene| {
+        scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .map(|primitive| primitive.opacity)
+    };
+    assert_eq!(
+        child_opacity(&scene),
+        None,
+        "a fully transparent ancestor is not a group: the child inherits the zero and paints nothing"
+    );
+
+    // Coming back makes the ancestor a group again, and a group's opacity
+    // composites once instead of reaching descendants. That number is the one
+    // thing a descendant bakes into its primitive rather than re-deriving at
+    // draw time, so the child has to be rebuilt — and it is not re-extracted
+    // here, only the parent is.
+    parent.source_style = solid([0.0, 0.0, 1.0, 1.0], Some(0.5));
+    scene.apply_delta([parent], []);
+    assert_eq!(
+        child_opacity(&scene),
+        Some(1.0),
+        "the group isolates its opacity again, so the child paints at full"
+    );
+}
+
+#[test]
 fn positioned_z_index_keeps_high_z_child_contiguous() {
     let mut parent = node(1, None, &[2]);
     parent.z_index = 0;
