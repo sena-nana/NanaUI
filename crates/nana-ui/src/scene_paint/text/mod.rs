@@ -338,13 +338,18 @@ impl ShapeKey {
 /// that uses it, so the rectangle is read back through the handle at flush
 /// time. A frame that baked UVs here would sample a neighbour's glyph after a
 /// compaction — the exact ABA the handle exists to rule out.
+///
+/// Twenty bytes, because a text-heavy frame writes one per glyph and reads
+/// them all again at flush: the color rides as the same packed sRGB the
+/// instance carries, and the origin as the whole pixels it was already
+/// rounded to.
 #[derive(Clone, Copy, Debug)]
 struct RunPlacement {
     entry: GlyphAtlasEntryId,
     /// Quad top-left in physical pixels. World space for an axis run, the
     /// pre-transform space of its node for an affine one.
-    origin: [f32; 2],
-    color: [f32; 4],
+    origin: [i32; 2],
+    color: u32,
 }
 
 /// How a run reaches the screen.
@@ -861,6 +866,9 @@ impl TextPipeline {
         let placements = &mut runs[run_index].placements;
         placements.reserve(resolved.glyphs.len());
         for run in &resolved.runs {
+            // The run's color is the same for every glyph under it, so it is
+            // packed once rather than per glyph.
+            let color = pipeline::pack_srgb(run.color);
             for placed in resolved.glyphs_of(run) {
                 *resolve_requests += 1;
                 let (key, pen) = run.raster_key(placed);
@@ -891,8 +899,8 @@ impl TextPipeline {
                 }
                 placements.push(RunPlacement {
                     entry,
-                    origin: [origin[0] as f32, origin[1] as f32],
-                    color: run.color,
+                    origin,
+                    color,
                 });
             }
         }
@@ -1009,7 +1017,7 @@ impl TextPipeline {
                 match run.transform {
                     RunTransform::Axis => {
                         instances.push(GlyphInstance::new(
-                            [placement.origin[0] as i32, placement.origin[1] as i32],
+                            placement.origin,
                             entry.size,
                             entry.origin,
                             placement.color,
@@ -1128,8 +1136,8 @@ fn push_affine_glyph(
     let clip = fragment_clip.for_physical_pixels(scale);
     // The quad is transformed in logical space, like every other Scene
     // primitive, and scaled back to physical afterwards.
-    let x = placement.origin[0] / scale;
-    let y = placement.origin[1] / scale;
+    let x = placement.origin[0] as f32 / scale;
+    let y = placement.origin[1] as f32 / scale;
     let w = entry.size[0] as f32 / scale;
     let h = entry.size[1] as f32 / scale;
     let [tl, tr, bl, br] = transform_glyph_quad(affine, persp, x, y, w, h);
@@ -1137,11 +1145,15 @@ fn push_affine_glyph(
     let v0 = entry.origin[1];
     let u1 = u0 + entry.size[0];
     let v1 = v0 + entry.size[1];
+    // This path builds few vertices, so it keeps a float color: quantizing a
+    // shadow's alpha ramp to eight bits here would band it, and it already
+    // costs six vertices a glyph.
+    let color = pipeline::unpack_srgb(placement.color);
     let color = if content == CONTENT_COLOR {
         // A color bitmap carries its own color; only the run's alpha applies.
-        [1.0, 1.0, 1.0, placement.color[3]]
+        [1.0, 1.0, 1.0, color[3]]
     } else {
-        pack_linear(placement.color)
+        pack_linear(color)
     };
     for (position, uv) in [
         (tl, [u0, v0]),
@@ -1858,8 +1870,8 @@ mod tests {
                 .enumerate()
                 .map(|(index, entry)| RunPlacement {
                     entry: *entry,
-                    origin: [index as f32 * 6.0, 0.0],
-                    color: [1.0; 4],
+                    origin: [index as i32 * 6, 0],
+                    color: pipeline::pack_srgb([1.0; 4]),
                 })
                 .collect(),
             segments: 0..0,
@@ -2350,5 +2362,15 @@ mod tests {
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
         crate::test_gpu::device()
+    }
+}
+
+#[cfg(test)]
+mod placement_size {
+    #[test]
+    fn a_retained_placement_stays_twenty_bytes() {
+        // One per glyph, written at resolve and read again at flush. A
+        // text-heavy frame moves ten thousand of them twice.
+        assert_eq!(std::mem::size_of::<super::RunPlacement>(), 20);
     }
 }

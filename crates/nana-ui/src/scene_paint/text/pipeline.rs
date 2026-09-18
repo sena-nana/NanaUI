@@ -495,14 +495,14 @@ impl GlyphInstance {
         origin: [i32; 2],
         size: [u32; 2],
         texel: [u32; 2],
-        color: [f32; 4],
+        color: u32,
         content: u32,
     ) -> Self {
         Self {
             origin,
             dim: (size[0] & 0xffff) | ((size[1] & 0xffff) << 16),
             uv: (texel[0] & 0xffff) | ((texel[1] & 0xffff) << 16),
-            color: pack_srgb(color),
+            color,
             content,
         }
     }
@@ -528,9 +528,21 @@ impl AffineVertex {
     }
 }
 
-fn pack_srgb(color: [f32; 4]) -> u32 {
+/// sRGB `a<<24 | r<<16 | g<<8 | b`, the form the instance and the retained
+/// placement both carry.
+pub(super) fn pack_srgb(color: [f32; 4]) -> u32 {
     let [r, g, b, a] = crate::scene_paint::color::to_rgba8(color);
     (u32::from(a) << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
+}
+
+/// Inverse of [`pack_srgb`], still sRGB-encoded.
+pub(super) fn unpack_srgb(color: u32) -> [f32; 4] {
+    [
+        ((color >> 16) & 0xff) as f32 / 255.0,
+        ((color >> 8) & 0xff) as f32 / 255.0,
+        (color & 0xff) as f32 / 255.0,
+        (color >> 24) as f32 / 255.0,
+    ]
 }
 
 #[cfg(test)]
@@ -543,7 +555,7 @@ mod tests {
             [3, -4],
             [17, 260],
             [40, 1030],
-            [1.0, 0.0, 0.0, 0.5],
+            pack_srgb([1.0, 0.0, 0.0, 0.5]),
             CONTENT_MASK,
         );
         assert_eq!(instance.origin, [3, -4]);
