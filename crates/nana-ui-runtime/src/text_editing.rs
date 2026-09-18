@@ -1419,11 +1419,14 @@ pub fn matching_bracket_pair(value: &str, caret: usize) -> Option<(usize, usize)
 /// can use them directly, since an ASCII byte never appears inside a
 /// multi-byte sequence.
 pub fn changed_byte_range(previous: &str, next: &str) -> Option<(usize, usize, usize)> {
-    let (old, new) = (previous.as_bytes(), next.as_bytes());
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    if prefix == old.len() && prefix == new.len() {
+    // The common case is "nothing changed", and `==` answers it a whole
+    // vector register at a time where the byte-wise scans below cannot: they
+    // only stop early when there IS a difference.
+    if previous == next {
         return None;
     }
+    let (old, new) = (previous.as_bytes(), next.as_bytes());
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
     let suffix = old[prefix..]
         .iter()
         .rev()
