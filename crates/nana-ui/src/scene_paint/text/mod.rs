@@ -246,6 +246,35 @@ impl ShapeCache {
     }
 }
 
+/// FNV-1a over the shape key.
+///
+/// Not a general-purpose hasher and deliberately not the default one: this
+/// runs once per text node per frame over the whole string, and it is the
+/// single largest item left in the text path. What guards against a collision
+/// is [`ShapeKey::matches`], which decides the hit — a collision costs a
+/// reshape, never the wrong glyphs.
+#[derive(Default)]
+struct ShapeHasher(u64);
+
+impl Hasher for ShapeHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut state = if self.0 == 0 {
+            0xcbf2_9ce4_8422_2325
+        } else {
+            self.0
+        };
+        for byte in bytes {
+            state ^= u64::from(*byte);
+            state = state.wrapping_mul(0x1000_0000_01b3);
+        }
+        self.0 = state;
+    }
+}
+
 /// Everything that determines the shaped output. Position is applied at draw
 /// time via `TextArea` and plain-text color via `default_color`, so neither
 /// is part of the key; rich spans bake their colors into shaping attrs and
@@ -311,7 +340,7 @@ struct ShapeKeyRef<'a> {
 
 impl ShapeKeyRef<'_> {
     fn hash64(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher = ShapeHasher::default();
         self.content.hash(&mut hasher);
         self.family.hash(&mut hasher);
         self.weight.hash(&mut hasher);
@@ -2477,6 +2506,107 @@ mod tests {
             "only the label that really changed is reshaped; the cache has to \
              hold one frame's worth of text, which is a property of the view"
         );
+    }
+
+    #[test]
+    fn a_paragraph_that_stopped_being_drawn_is_eventually_given_back() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let keep = Label::new("Still here", 1);
+        let gone = Label {
+            top: 40.0,
+            ..Label::new("Closed panel", 2)
+        };
+        text_frame(&device, &queue, &mut pipeline, &[keep, gone]);
+        let warm = pipeline.glyph_counters();
+        assert_eq!(warm.text_gpu_entries_active, 2);
+        assert_eq!(warm.text_gpu_entries_destroyed, 0);
+        // The panel closes. Long enough that a tab flipped back and forth
+        // would have paid for neither direction, and then long enough that
+        // this one is really gone.
+        for _ in 0..RETIRE_AFTER_FRAMES + RETIRE_INTERVAL {
+            text_frame(&device, &queue, &mut pipeline, &[keep]);
+        }
+        let after = pipeline.glyph_counters();
+        assert_eq!(
+            after.text_gpu_entries_active, 1,
+            "the entry of a paragraph nothing draws any more is given back"
+        );
+        assert_eq!(after.text_gpu_entries_destroyed, 1);
+        assert!(
+            after.text_gpu_entry_glyphs < warm.text_gpu_entry_glyphs,
+            "and so are its instances"
+        );
+        assert_eq!(
+            after.text_instance_rebuilds, warm.text_instance_rebuilds,
+            "the paragraph that stayed was never resolved again"
+        );
+    }
+
+    /// A shape key for `content` with everything else at its default.
+    fn shape_key_ref(content: &str) -> ShapeKeyRef<'_> {
+        ShapeKeyRef {
+            content,
+            family: None,
+            weight: None,
+            font_size_bits: 16f32.to_bits(),
+            line_height_bits: 20f32.to_bits(),
+            wrap: false,
+            wrap_break: nana_ui_core::TextWrapBreak::Word,
+            italic: false,
+            ellipsis: false,
+            max_lines: None,
+            shaping: 1,
+            letter_spacing_bits: 0f32.to_bits(),
+            word_break: 0,
+            line_break: 0,
+            kerning: 0,
+            features: &[],
+            variations: &[],
+            width_bits: 100f32.to_bits(),
+            height_bits: 20f32.to_bits(),
+            align: 0,
+            direction: 0,
+            writing_mode: 0,
+            spans: None,
+            font_features: &[],
+        }
+    }
+
+    #[test]
+    fn a_shape_hash_collision_reshapes_instead_of_painting_the_other_text() {
+        // The hash finds the entry; the stored key decides the hit. A weak
+        // hash may therefore cost a reshape, and may never paint the wrong
+        // letters — which is the whole reason the key is kept at all.
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut fonts = crate::nana_text::lock_font_system(&pipeline.font_system);
+        let buffer = Buffer::new(&mut fonts, Metrics::new(16.0, 20.0));
+        drop(fonts);
+        let collision = 0x5ca1_ab1e_u64;
+        pipeline.shape_cache.insert(
+            collision,
+            shape_key_ref("first paragraph").to_owned_key(),
+            buffer,
+        );
+        let (hits, misses, _) = pipeline.shape_cache_stats();
+        assert!(
+            pipeline
+                .shape_cache
+                .get(collision, &shape_key_ref("first paragraph"))
+                .is_some(),
+            "its own key still hits"
+        );
+        assert!(
+            pipeline
+                .shape_cache
+                .get(collision, &shape_key_ref("a different paragraph"))
+                .is_none(),
+            "another paragraph at the same hash must miss, not read that buffer"
+        );
+        let (after_hits, after_misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(after_hits, hits + 1);
+        assert_eq!(after_misses, misses + 1);
     }
 
     #[test]
