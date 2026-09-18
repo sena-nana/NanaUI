@@ -4,7 +4,7 @@
 //! and one program would pay the wrong cost for both:
 //!
 //! - [`Axis`](SegmentKind::Axis): pixel-aligned glyphs under a translation.
-//!   One 20-byte instance per glyph, four vertices, clipped by the scissor the
+//!   One 24-byte instance per glyph, four vertices, clipped by the scissor the
 //!   batch already carries. This is essentially every glyph a shell draws.
 //!   Nearest sampling: the quad lands on the texel grid, so filtering would
 //!   only soften it.
@@ -31,44 +31,7 @@ const INITIAL_INSTANCES: usize = 512;
 const INITIAL_VERTICES: usize = 256;
 
 const AXIS_SHADER: &str = concat!(
-    r#"
-struct Globals {
-    transform: mat4x4<f32>,
-}
-
-@group(0) @binding(0)
-var<uniform> globals: Globals;
-"#,
-    r#"
-@group(1) @binding(0)
-var mask_atlas: texture_2d<f32>;
-
-@group(1) @binding(1)
-var color_atlas: texture_2d<f32>;
-
-@group(1) @binding(2)
-var atlas_nearest: sampler;
-
-@group(1) @binding(3)
-var atlas_linear: sampler;
-"#,
-    r#"
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        return c / 12.92;
-    }
-    return pow((c + 0.055) / 1.055, 2.4);
-}
-
-fn unpack_srgb(color: u32) -> vec4<f32> {
-    return vec4<f32>(
-        srgb_to_linear(f32((color & 0x00ff0000u) >> 16u) / 255.0),
-        srgb_to_linear(f32((color & 0x0000ff00u) >> 8u) / 255.0),
-        srgb_to_linear(f32(color & 0x000000ffu) / 255.0),
-        f32((color & 0xff000000u) >> 24u) / 255.0,
-    );
-}
-"#,
+    include_str!("../shader/text_atlas.wgsl"),
     r#"
 struct VsIn {
     @builtin(vertex_index) vertex: u32,
@@ -95,17 +58,10 @@ fn vs_main(input: VsIn) -> VsOut {
     let position = input.origin + vec2<i32>(offset);
     let texel = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u) + offset;
 
-    var dim = vec2<u32>(1u);
-    if input.content == 0u {
-        dim = textureDimensions(mask_atlas);
-    } else {
-        dim = textureDimensions(color_atlas);
-    }
-
     var out: VsOut;
     out.position = globals.transform * vec4<f32>(vec2<f32>(position), 0.0, 1.0);
     out.color = unpack_srgb(input.color);
-    out.uv = vec2<f32>(texel) / vec2<f32>(dim);
+    out.uv = atlas_uv(texel, input.content);
     out.content = input.content;
     return out;
 }
@@ -116,6 +72,8 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         let coverage = textureSampleLevel(mask_atlas, atlas_nearest, input.uv, 0.0).x;
         return vec4<f32>(input.color.rgb, input.color.a * coverage);
     }
+    // A color bitmap carries its own color; only the run's alpha applies, so a
+    // faded or shadowed emoji fades instead of painting at full strength.
     let sampled = textureSampleLevel(color_atlas, atlas_nearest, input.uv, 0.0);
     return vec4<f32>(sampled.rgb, sampled.a * input.color.a);
 }
@@ -124,31 +82,11 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 
 const AFFINE_SHADER: &str = concat!(
     include_str!("../shader/color.wgsl"),
-    r#"
-struct Globals {
-    transform: mat4x4<f32>,
-}
-
-@group(0) @binding(0)
-var<uniform> globals: Globals;
-"#,
-    r#"
-@group(1) @binding(0)
-var mask_atlas: texture_2d<f32>;
-
-@group(1) @binding(1)
-var color_atlas: texture_2d<f32>;
-
-@group(1) @binding(2)
-var atlas_nearest: sampler;
-
-@group(1) @binding(3)
-var atlas_linear: sampler;
-"#,
+    include_str!("../shader/text_atlas.wgsl"),
     r#"
 struct VsIn {
     @location(0) position: vec2<f32>,
-    @location(1) uv: vec2<f32>,
+    @location(1) uv: vec2<u32>,
     @location(2) color: vec4<f32>,
     @location(3) clip_rect: vec4<f32>,
     @location(4) clip_inv_abcd: vec4<f32>,
@@ -169,15 +107,9 @@ struct VsOut {
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
-    var dim = vec2<u32>(1u);
-    if input.content == 0u {
-        dim = textureDimensions(mask_atlas);
-    } else {
-        dim = textureDimensions(color_atlas);
-    }
     var out: VsOut;
     out.position = globals.transform * vec4<f32>(input.position, 0.0, 1.0);
-    out.uv = input.uv / vec2<f32>(dim);
+    out.uv = atlas_uv(input.uv, input.content);
     out.color = input.color;
     out.world_pos = input.position;
     out.clip_rect = input.clip_rect;
@@ -239,7 +171,8 @@ pub(super) struct GlyphInstance {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(super) struct AffineVertex {
     position: [f32; 2],
-    uv: [f32; 2],
+    /// Atlas texels, normalized in the vertex stage like the axis path's are.
+    uv: [u32; 2],
     /// Already linear: this path builds few vertices and keeping the float
     /// color avoids quantizing a shadow's alpha ramp to 8 bits.
     color: [f32; 4],
@@ -370,7 +303,7 @@ impl TextGpu {
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array!(
                         0 => Float32x2,
-                        1 => Float32x2,
+                        1 => Uint32x2,
                         2 => Float32x4,
                         3 => Float32x4,
                         4 => Float32x4,
@@ -578,7 +511,7 @@ impl GlyphInstance {
 impl AffineVertex {
     pub(super) fn new(
         position: [f32; 2],
-        uv: [f32; 2],
+        uv: [u32; 2],
         color: [f32; 4],
         clip: &clip::FragmentClip,
         content: u32,

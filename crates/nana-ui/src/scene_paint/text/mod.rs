@@ -1133,10 +1133,10 @@ fn push_affine_glyph(
     let w = entry.size[0] as f32 / scale;
     let h = entry.size[1] as f32 / scale;
     let [tl, tr, bl, br] = transform_glyph_quad(affine, persp, x, y, w, h);
-    let u0 = entry.origin[0] as f32;
-    let v0 = entry.origin[1] as f32;
-    let u1 = u0 + entry.size[0] as f32;
-    let v1 = v0 + entry.size[1] as f32;
+    let u0 = entry.origin[0];
+    let v0 = entry.origin[1];
+    let u1 = u0 + entry.size[0];
+    let v1 = v0 + entry.size[1];
     let color = if content == CONTENT_COLOR {
         // A color bitmap carries its own color; only the run's alpha applies.
         [1.0, 1.0, 1.0, placement.color[3]]
@@ -1972,6 +1972,13 @@ mod tests {
         assert_eq!(
             counters.atlas_stale_handle_rejects, 0,
             "a frame must never build an instance from a placement it lost"
+        );
+        // One region per glyph faulted in, and not one more: a full page must
+        // not repack — and therefore re-upload its whole live set — for every
+        // glyph it cannot place.
+        assert_eq!(
+            counters.glyph_upload_regions, counters.glyph_atlas_miss,
+            "a churning atlas must upload each placement once"
         );
     }
 

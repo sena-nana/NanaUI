@@ -82,6 +82,12 @@ impl GlyphUploadQueue {
             let Some(texture) = atlas.page_texture(upload.page) else {
                 continue;
             };
+            debug_assert_eq!(
+                upload.kind.bytes_per_texel(),
+                upload.image.format.bytes_per_pixel(),
+                "a region's page kind and its bitmap's format must agree, or \
+                 the row stride below reads the wrong number of bytes"
+            );
             let texel = upload.kind.bytes_per_texel();
             let row = upload.cell[0] as usize * texel;
             let total = row * upload.cell[1] as usize;

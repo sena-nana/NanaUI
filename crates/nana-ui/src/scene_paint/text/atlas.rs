@@ -36,6 +36,12 @@ const PLACEHOLDER_EDGE: u32 = 1;
 /// Ceiling on atlas texture memory across every page and kind. The two
 /// placeholder pages are inside it, so it is also what makes them free.
 const BYTE_BUDGET: usize = 48 * 1024 * 1024;
+/// Repack only while this much of a kind's pages is still free.
+///
+/// A failed allocation with most of the page free is fragmentation, and
+/// repacking reclaims it. A failed allocation with the page nearly full is
+/// just full, and repacking would re-upload every live glyph to learn that.
+const COMPACT_BELOW_OCCUPANCY: u64 = 500;
 
 /// Page size and memory ceiling. Separated from the manager so a test can
 /// reach eviction, growth and compaction with a handful of glyphs instead of
@@ -170,6 +176,9 @@ pub(super) struct GlyphAtlasManager {
     max_edge: u32,
     /// The mask and color placeholder pages, in that order.
     placeholders: [u32; 2],
+    /// Last frame each kind was repacked, so a frame that faults in a hundred
+    /// glyphs into a tight atlas repacks once rather than a hundred times.
+    compacted_frame: [u64; 2],
     limits: GlyphAtlasLimits,
     frame: u64,
     hits: u64,
@@ -224,6 +233,7 @@ impl GlyphAtlasManager {
             bind_groups: HashMap::new(),
             max_edge,
             placeholders: [0, 1],
+            compacted_frame: [u64::MAX; 2],
             limits,
             frame: 0,
             hits: 0,
@@ -458,7 +468,6 @@ impl GlyphAtlasManager {
         if cell[0] > limit || cell[1] > limit {
             return None;
         }
-        let mut compacted = false;
         loop {
             if let Some(placed) = self.try_pages(kind, cell) {
                 return Some(placed);
@@ -472,10 +481,18 @@ impl GlyphAtlasManager {
             // Shelf packing strands space when glyph heights vary: a page can
             // refuse a glyph while half of it is free. Repacking the live set
             // is what reclaims that, and it is tried before eviction because
-            // it costs uploads rather than re-rasterization. Once per
-            // allocation: a second pass would find the same layout.
-            if !compacted {
-                compacted = true;
+            // it costs uploads rather than re-rasterization.
+            //
+            // Once per frame per kind, and only while the page is mostly free.
+            // Ungated, a tight atlas would repack — and therefore re-upload
+            // every live glyph — once per glyph faulted in, which is quadratic
+            // in the frame's glyph count and buys nothing when the page is
+            // genuinely full rather than fragmented.
+            let slot = Self::kind_slot(kind);
+            if self.compacted_frame[slot] != self.frame
+                && self.occupancy_permille(kind) < COMPACT_BELOW_OCCUPANCY
+            {
+                self.compacted_frame[slot] = self.frame;
                 if self.compact(kind, raster, uploads) {
                     continue;
                 }
@@ -484,6 +501,29 @@ impl GlyphAtlasManager {
                 return None;
             }
         }
+    }
+
+    const fn kind_slot(kind: AtlasPageKind) -> usize {
+        match kind {
+            AtlasPageKind::Mask => 0,
+            AtlasPageKind::Color => 1,
+        }
+    }
+
+    /// Live glyph area per mille of the pages of one kind.
+    fn occupancy_permille(&self, kind: AtlasPageKind) -> u64 {
+        let (live, texels) = self.pages.iter().filter(|page| page.kind == kind).fold(
+            (0u64, 0u64),
+            |(live, texels), page| {
+                (
+                    live + page.allocator.allocated_space().max(0) as u64,
+                    texels + u64::from(page.edge) * u64::from(page.edge),
+                )
+            },
+        );
+        live.saturating_mul(1000)
+            .checked_div(texels)
+            .unwrap_or(1000)
     }
 
     fn try_pages(
@@ -573,15 +613,21 @@ impl GlyphAtlasManager {
                 self.release_slot(index, false);
                 continue;
             };
-            uploads.push(kind, page, min, cell, image, GLYPH_PADDING);
+            let origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];
             if let Some(slot) = self.slots.get_mut(index as usize)
                 && let Some(entry) = slot.live.as_mut()
             {
+                // A repack often hands a glyph its own rectangle back. Its
+                // pixels are already there, so re-uploading them would be pure
+                // traffic, and counting it would overstate how much moved.
+                if entry.entry.page != page || entry.entry.origin != origin {
+                    uploads.push(kind, page, min, cell, image, GLYPH_PADDING);
+                    self.relocations += 1;
+                }
                 entry.entry.page = page;
-                entry.entry.origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];
+                entry.entry.origin = origin;
                 entry.alloc = alloc;
             }
-            self.relocations += 1;
         }
         true
     }
@@ -903,12 +949,13 @@ mod tests {
     }
 
     #[test]
-    fn a_repacked_page_moves_glyphs_without_letting_two_own_one_rectangle() {
+    fn a_page_churned_by_short_glyphs_still_serves_a_tall_one() {
         let (device, _queue) = crate::test_gpu::device();
         let (mut atlas, mut raster, mut uploads) = small_atlas(&device);
+        // Frame 1 fills the page with 8-texel shelves; frame 2 lets them go
+        // cold. A 30-texel glyph fits in none of those shelves, so placing it
+        // has to go through growth, repacking and eviction in turn.
         atlas.begin_frame(raster.generation());
-        // Shelves of one height first, then a taller glyph that no shelf can
-        // take: the page is far from full, but the packer cannot serve it.
         fill(
             &mut atlas,
             &mut raster,
@@ -917,20 +964,27 @@ mod tests {
             &device,
             0..40,
         );
-        fill(
+        atlas.begin_frame(raster.generation());
+        let tall = fill(
             &mut atlas,
             &mut raster,
             &mut uploads,
             &mut Squares { edge: 28 },
             &device,
-            200..203,
+            200..202,
         );
-        assert_no_overlap(&atlas);
-        let counters = atlas.counters();
         assert!(
-            counters.relocations > 0 || counters.evictions > 0,
-            "a fragmented page must repack or evict rather than refuse forever"
+            tall.iter().all(|(_, id)| id.is_some()),
+            "a tall glyph must be placed once the cold short ones give way"
         );
+        for (_, id) in &tall {
+            let id = id.expect("placed above");
+            assert!(
+                atlas.entry(id).is_some(),
+                "and the handle it was issued must resolve"
+            );
+        }
+        assert_no_overlap(&atlas);
     }
 
     #[test]
