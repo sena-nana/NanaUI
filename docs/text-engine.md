@@ -1226,6 +1226,18 @@ TextShape 绝对值前后持平，2k 一格倍率的变化来自 Layout 本身�
 Layout 在 1.25–1.53 ms 之间），不是文本工作；三格 `text_work` 仍是全部候选凭 revision 跳过、
 `layouts_created == 0`。
 
+#96 收尾的一轮编辑器性能改动之后复测（同一台 Apple M4，2026-09-18，p50，150 samples /
+30 warmup）。这一格里没有编辑器，改动只经过共享的 shape 路径（`CountingShaper` 多问一次
+`retains_measurement`），确认没有回归：
+
+| 节点 | TextShape | Layout | TextShape / Layout |
+| ---: | ---: | ---: | ---: |
+| 2,002 | 0.014 ms | 0.963 ms | 1.4% |
+| 4,002 | 0.037 ms | 2.155 ms | 1.7% |
+| 8,002 | 0.122 ms | 5.595 ms | 2.2% |
+
+（这一轮 Layout 的绝对值比上一轮低不少——同一台机器不同时间的负载差别，只看倍率。）
+
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
