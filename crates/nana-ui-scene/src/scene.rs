@@ -584,15 +584,7 @@ impl UiScene {
     }
 
     pub fn is_node_in_subtree(&self, root: StableNodeId, candidate: StableNodeId) -> bool {
-        let mut current = Some(candidate);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
-            if id == root {
-                return true;
-            }
-            current = self.nodes.get(&id).and_then(|node| node.parent);
-        }
-        false
+        ancestor_ids(&self.nodes, candidate).any(|id| id == root)
     }
 
     /// Apply Runtime's dirty extraction and tombstone stream atomically.
@@ -951,16 +943,14 @@ impl UiScene {
         node: &ExtractedNode,
         visual: bool,
     ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
-        let mut ancestors = Vec::new();
-        let mut parent = node.parent;
-        let mut visited = HashSet::new();
-        while let Some(id) = parent.filter(|id| visited.insert(*id)) {
-            let Some(node) = self.nodes.get(&id) else {
-                break;
-            };
-            ancestors.push(node);
-            parent = node.parent;
-        }
+        let mut ancestors = node
+            .parent
+            .map(|parent| {
+                ancestor_nodes(&self.nodes, parent)
+                    .map(|(_, node)| node)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         ancestors.reverse();
         // Layout resolves fixed boxes against the viewport even below a
         // transformed ancestor. Keep structural opacity, but begin geometry at
@@ -1196,12 +1186,10 @@ fn is_descendant_of_rasterized_svg(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: &ExtractedNode,
 ) -> bool {
-    let mut current = node.parent;
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        let Some(parent) = nodes.get(&id) else {
-            break;
-        };
+    let Some(parent) = node.parent else {
+        return false;
+    };
+    for (_, parent) in ancestor_nodes(nodes, parent) {
         if parent
             .custom_render
             .as_ref()
@@ -1213,7 +1201,6 @@ fn is_descendant_of_rasterized_svg(
         {
             return true;
         }
-        current = parent.parent;
     }
     false
 }
@@ -1222,18 +1209,11 @@ fn is_descendant_of_icon_visual(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: &ExtractedNode,
 ) -> bool {
-    let mut current = node.parent;
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        let Some(parent) = nodes.get(&id) else {
-            break;
-        };
-        if matches!(parent.standard_visual, Some(StandardVisual::Icon { .. })) {
-            return true;
-        }
-        current = parent.parent;
-    }
-    false
+    let Some(parent) = node.parent else {
+        return false;
+    };
+    ancestor_nodes(nodes, parent)
+        .any(|(_, parent)| matches!(parent.standard_visual, Some(StandardVisual::Icon { .. })))
 }
 
 fn has_extracted_child(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
@@ -1307,17 +1287,62 @@ fn inset_shadow_overlay(node: &ExtractedNode) -> Option<InsetShadowOverlay> {
     })
 }
 
+/// A parent chain longer than this is a bug in extraction, not a deep tree.
+///
+/// It replaces the per-call `HashSet` these walks used to carry as a cycle
+/// guard. They run once per primitive per frame — a set allocation each cost
+/// more than the walk it was protecting, and a depth cap protects the same
+/// thing.
+const MAX_ANCESTOR_DEPTH: usize = 4096;
+
+/// `node` and its ancestors by id, innermost first.
+///
+/// Yields an id whether or not the scene still holds that node, and stops
+/// after one it does not: the chain cannot continue past a node whose parent
+/// nobody knows.
+pub(super) fn ancestor_ids(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: StableNodeId,
+) -> impl Iterator<Item = StableNodeId> + '_ {
+    let mut current = Some(node);
+    let mut depth = 0usize;
+    std::iter::from_fn(move || {
+        let id = current.take()?;
+        if depth >= MAX_ANCESTOR_DEPTH {
+            return None;
+        }
+        depth += 1;
+        current = nodes.get(&id).and_then(|node| node.parent);
+        Some(id)
+    })
+}
+
+/// `node` and its ancestors, innermost first, stopping at the first one the
+/// scene no longer holds.
+fn ancestor_nodes(
+    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    node: StableNodeId,
+) -> impl Iterator<Item = (StableNodeId, &ExtractedNode)> {
+    let mut current = Some(node);
+    let mut depth = 0usize;
+    std::iter::from_fn(move || {
+        let id = current.take()?;
+        if depth >= MAX_ANCESTOR_DEPTH {
+            return None;
+        }
+        depth += 1;
+        let entry = nodes.get(&id)?;
+        current = entry.parent;
+        Some((id, entry))
+    })
+}
+
 fn opacity_groups_from(
     nodes: &HashMap<StableNodeId, ExtractedNode>,
     node: StableNodeId,
 ) -> Vec<OpacityGroup> {
     let mut groups = Vec::new();
-    let mut current = Some(node);
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        let Some(candidate) = nodes.get(&id) else {
-            break;
-        };
+    for (id, candidate) in ancestor_nodes(nodes, node) {
         if is_dest_group(nodes, candidate) {
             groups.push(OpacityGroup {
                 node: id,
@@ -1336,7 +1361,6 @@ fn opacity_groups_from(
                 inset_shadow: inset_shadow_overlay(candidate),
             });
         }
-        current = candidate.parent;
     }
     groups.reverse();
     groups
@@ -1417,12 +1441,7 @@ fn filter_groups_from(
     node: StableNodeId,
 ) -> Vec<FilterGroup> {
     let mut groups = Vec::new();
-    let mut current = Some(node);
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        let Some(candidate) = nodes.get(&id) else {
-            break;
-        };
+    for (id, candidate) in ancestor_nodes(nodes, node) {
         if is_filter_group(nodes, candidate) {
             groups.push(FilterGroup {
                 node: id,
@@ -1434,7 +1453,6 @@ fn filter_groups_from(
                     .unwrap_or_default(),
             });
         }
-        current = candidate.parent;
     }
     groups.reverse();
     groups
@@ -1449,12 +1467,7 @@ fn group_prefix(
     node: StableNodeId,
 ) -> Vec<(i32, usize)> {
     let mut stack = Vec::new();
-    let mut current = Some(node);
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        let Some(candidate) = nodes.get(&id) else {
-            break;
-        };
+    for (id, candidate) in ancestor_nodes(nodes, node) {
         if is_stacking_group(nodes, candidate) {
             let z_index = candidate.z_index;
             let order = node_order.get(&id).copied().unwrap_or(0);
@@ -1466,7 +1479,6 @@ fn group_prefix(
             // a later sibling card would cover an open Popover.
             break;
         }
-        current = candidate.parent;
     }
     stack.reverse();
     stack

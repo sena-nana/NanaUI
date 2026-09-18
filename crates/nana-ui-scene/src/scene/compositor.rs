@@ -474,13 +474,10 @@ impl UiScene {
     }
 
     pub(super) fn invalidate_compositor_cache(&mut self, id: StableNodeId) {
-        let mut current = Some(id);
-        let mut visited = HashSet::new();
-        while let Some(node) = current.filter(|id| visited.insert(*id)) {
+        for node in super::ancestor_ids(&self.nodes, id).collect::<Vec<_>>() {
             if let Some(layer) = self.compositor.layers.get_mut(&node) {
                 layer.cache_generation = layer.cache_generation.saturating_add(1);
             }
-            current = self.nodes.get(&node).and_then(|node| node.parent);
         }
     }
 
@@ -525,9 +522,7 @@ impl UiScene {
     /// Logical primitive opacity multiplied by compositor layer factors.
     pub fn compositor_paint_opacity(&self, node: StableNodeId, logical_opacity: f32) -> f32 {
         let mut opacity = logical_opacity;
-        let mut current = Some(node);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layers.get(&id) {
                 let Some(extracted) = self.nodes.get(&id) else {
                     break;
@@ -540,7 +535,6 @@ impl UiScene {
                 };
                 opacity *= factor;
             }
-            current = self.nodes.get(&id).and_then(|node| node.parent);
         }
         opacity.clamp(0.0, 1.0)
     }
@@ -548,13 +542,10 @@ impl UiScene {
     /// Nested compositor opacity: product of ancestor (and self) layer opacities.
     pub fn composed_layer_opacity(&self, node: StableNodeId) -> f32 {
         let mut opacity = 1.0;
-        let mut current = Some(node);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layers.get(&id) {
                 opacity *= layer.opacity;
             }
-            current = self.nodes.get(&id).and_then(|node| node.parent);
         }
         opacity.clamp(0.0, 1.0)
     }
