@@ -1286,9 +1286,183 @@ bind group、一个顶点缓冲），以及同 device 的窗口之间不再各�
 | 项 | 状态 |
 | --- | --- |
 | 逻辑 `TextLayout` 与 raster scale 解耦 | 塑形仍在物理 px 上做（hinting 要求如此），所以 DPI 变化会重塑形一次。renderer 这一侧已经只把 scale 放进栅格键；真正的解耦要等 #99 把 `nana-text` 的逻辑 layout 接上来 |
-| 持久 GPU instance / 零 prepare | #98。今天仍是每帧重建 instance，只是重建不再触碰栅格化、atlas 或上传 |
+| 持久 GPU instance / 零 prepare | #98 做了，见下一节 |
 | SDF / MSDF / LCD | #97 非目标。`GlyphRenderMode` 与 `AtlasPageKind` 是留好的扩展点 |
 | 跨 Device 共享 CPU 位图 | 一个 painter 一个 raster cache。同 Device 多窗口共享（`swap_target` 只换 per-target 缓冲），换 Device 会重栅格化一次 |
+
+## 保留期文本（Phase 7，#98）
+
+Phase 6 把**画**这一半换成了 NanaUI 自己的子系统，但每一帧仍然从零重建 instance：
+遍历每个字形、查 atlas、写 24 字节、再和上一帧比对。只要屏幕上有任何一处在动，
+批次就要重建，这笔钱就要付一遍——一个 48k 字形的界面因为角落里一个 spinner
+在转，每帧要走四万八千次。
+
+Phase 7 让它不用走。
+
+```text
+layout 没变     ── 还是那一段塑形结果
+phase 没变      ── 位图就是为这个亚像素相位栅格化的
+字体代际没变    ── face id 还是那一批
+atlas 没变      ── 矩形还是这些字形的
+        ↓
+      复用 TextGpuEntry 的 instance range
+        ↓
+      画
+```
+
+前三条在 `prepare` 里比对，任何一条不成立就**只**重建这一个 entry。第四条不重建而是
+**修补**：entry 为每个字形留着 atlas 句柄，搬动之后重读矩形就行，不塑形、不栅格化、
+不上传。
+
+### 三张表，各自的生命周期
+
+`scene_paint/text/` 现在多了 `entry.rs`：
+
+| | 内容 | 什么时候写 |
+| --- | --- | --- |
+| entry block | 一段文本解析出来的 instance（24 B/字形）+ 每字形一个 atlas 句柄（8 B） | 文本 / 相位 / 字体代际变了 |
+| run row | 该段文本的**整像素原点、颜色、不透明度、用哪份 presentation**（48 B） | 它移动、改色、淡入淡出了 |
+| presentation row | 变换与裁剪（160 B），按位去重 | 变换或裁剪变了 |
+
+instance 里**不再**有位置、颜色和变换——它只有相对 run 原点的偏移、atlas 矩形，以及
+一个 run 行号。所以：
+
+- **移动**（整像素）：改 run row 的两个 float。亚像素移动仍要重解析，因为那真的换了位图。
+- **改色**：改 run row 的四个 float。纯色文本的字形不带自己的颜色，它们继承 run 行；
+  只有 rich span 里与段落色不同的字形才带，改色也只动它自己那一块。
+- **淡入淡出**：run row 的 `opacity`，着色器里乘在 alpha 上。**不再**折进颜色，所以
+  rich text 淡入不会因为 span 颜色变了而重新塑形——这是 Phase 6 遗留的一个真缺陷。
+- **旋转 / 透视**：presentation row 的一行。四个角的单应变换搬进了顶点着色器。
+
+### 一条管线，不再是两条
+
+Phase 6 的 Axis / Affine 两条管线合成了一条。差别缩成 run row 里的两个 flag：
+角点要不要过单应变换、采样是 nearest 还是 linear。旋转文字因此也是每字形一个
+24 字节 instance、四个顶点，而不是六个顶点各带一份变换和裁剪。
+
+顺带修好的：旋转 / 缩放文字过去不吃 `clip-path: polygon()` 和 `circle()`——affine 着色器
+把多边形数硬编成 0。现在多边形跟着 presentation row 一起进 GPU，文字和它旁边的 Quad
+被同一个形状裁。
+
+### arena：画序与存储序不是一回事
+
+instance 在 GPU 上的位置由 `InstanceArena` 发，一块一直归它的 entry 所有：
+
+- 一段文本变了，动的只有它自己那几百字节；后面的段落不搬家。
+- 块按 size class 留 1/8 的余量（至少 4 个槽），余量填成尺寸为 0 的 instance。
+  打字打到第十二个字符不会越级，也就不会让它后面的每一段都重传一遍。
+- 相邻的两块合成一个 draw——余量在中间也没关系，它画不出像素。不相邻就多一个 draw。
+- 攒够 8 个「多出来的 draw」，或者空洞占了一半，就按画序整理一次（`repack`），
+  下一帧又是一个 draw。整理会推进 arena 代际，跨帧保留的 draw command 因此重建。
+
+run 行号同理是**每个 entry 一个固定槽**，不是画序下标。一个列表滚掉第一行，
+留下的十一行不会因为「都往前挪了一位」而把每个 instance 重写一遍。
+
+### in-flight
+
+`queue.write_buffer` 在调用时就把字节拷进 queue 自己的 staging，传输排在下一次提交之前，
+所以 painter 不需要自己的 ring——它既不拥有 submit 也不拥有 surface。缓冲区换掉时，
+wgpu 自己保证旧的活到引用它的命令完成为止；这一侧要保证的是**没有句柄还指着旧布局**，
+那是 arena 代际和 `GlyphAtlasEntryId` 的代际两道闸。
+
+atlas 槽位多了一个引用计数：一个 entry 还在画的字形，不会因为「这一帧没人查过它」
+就被当成冷的淘汰掉。淘汰仍然可以拿它——上限是硬的——只是排在没人引用的后面。
+
+### 计数器
+
+`text_glyph_counters()` 在 Phase 6 那一批之外新增：
+
+```text
+text_gpu_entries_active / created / destroyed / reused
+text_gpu_entry_glyphs
+text_instance_rebuilds        // 重新解析了一段文本
+text_instance_patches         // 只改了矩形或 run 行号
+text_instance_upload_bytes
+text_presentation_upload_bytes
+text_prepare_nodes_considered / skipped / culled
+```
+
+`rebuilds` 与 `upload_bytes` 是这一期的验收面：静止帧两个都必须是 0。
+
+### 基准
+
+`nana-text-paint-benchmark`（同机 Apple M4，release）。每一格都是**会重建批次**的帧——
+静止那一格靠一个每帧换文本的小节点把批次缓存打掉，因为那正是产品里的情形：
+角落里有个东西在动，旁边的字要不要重算。
+
+| workload | 标签数 | 屏上字形 | resolve/帧 | rebuild/帧 | instance 字节/帧 | batch p50（前 → 后）|
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| static | 1 000 | 4 842 | 5 842 → **2** | — → 1 | — → 144 | 0.765 → **0.564** ms |
+| static | 10 000 | 48 432 | 58 432 → **2** | — → 1 | — → 144 | 9.524 → **7.778** ms |
+| static-unique | 1 000 | 5 892 | 6 892 → **2** | — → 1 | — → 144 | 11.979 → **0.567** ms |
+| static-unique | 10 000 | 68 892 | 78 892 → **2** | — → 1 | — → 144 | 135.941 → **10.029** ms |
+| color | 10 000 | 48 431 | 58 431 → **0** | — → 0 | — → **0** | 8.618 → **6.434** ms |
+| opacity | 10 000 | 48 431 | 58 431 → **0** | — → 0 | — → **0** | 16.652 → 14.017 ms |
+| transform | 10 000 | 48 431 | 58 431 → **0** | — → 0 | — → 550 509 | 130.355 → **13.703** ms |
+| mutate 1% | 10 000 | 48 451 | 58 548 → **697** | — → 100 | — → 65 302 | 9.807 → **8.314** ms |
+
+动画那三格 60 / 120 / 240 Hz 的每帧数字一致（表里只列 60 Hz），因为这里没有任何一项是按
+时间摊的：改一次颜色就是改一行，跑多少帧都一样。
+
+读法：
+
+- **`static` 的 resolve/帧 从五万八千掉到 2。** 那 2 是每帧真的换了文本的那个小节点——
+  批次缓存正是被它打掉的。屏上另外一万个标签一个字形都没有重新解析。
+- **`color` / `opacity` / `transform` 的 instance 字节是 0**（transform 在一万标签那格不是，
+  见下），三者都只写表。颜色写 run 行，不透明度走 opacity group，旋转写 presentation 行。
+- **`transform` 一万标签那格还有半兆字节**：容器在转，每帧有几十个标签转进转出视口，
+  arena 里它们的块就不再挨着，攒够预算就整理一次。整理是一次连续写，不是重新解析——
+  同一格的 `resolve/帧` 和 `rebuild/帧` 都是 0。
+- **`static-unique` 的 12 ms → 0.57 ms 不是保留期换来的**，是塑形缓存容量改成跟着上一帧
+  实际画了多少段落走：一屏里不重复的段落多过缓存容量时，它过去会为了给下一段腾地方
+  而挤掉刚画过的那一段，然后每帧把整屏重新塑形一遍。
+- **batch p50 在纯平移那几格只快了一到两成**，因为一万个文本节点的帧里，剩下的时间是
+  每节点的固定开销（可见性、裁剪、塑形键哈希），不是每字形的开销。字形那一半已经没了。
+
+### 怎么跑，怎么判
+
+```bash
+cargo run --release --locked -p nana-ui --features gpu \
+    --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
+
+# #8 门禁那一行：一千个标签，其中一个每帧换文本
+python3 perf/runners/nana/run.py --scenario gpu-scene-text-retained \
+    --output target/performance/issue98/nana-text-retained.json
+python3 perf/contract.py --self-test
+```
+
+`perf/scenarios/gpu-scene-text-retained.json` 的 `params.text_ticker` 是这条门禁能成立的
+前提：不换文本的话 painter 直接复用上一帧的批次，那一帧什么都没做，counter 全是 0，
+门禁也就永远不会红。extractor 会核对报告里回显的 `text_ticker`，跑了不动的场景不算数。
+
+五条判据各自独立成立（`retained_text_tests.py` 逐条打脸验证）：
+`text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、
+`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900`。
+
+### 与 #97 的像素差
+
+同一台机器上，component-gallery 的 561 帧里 17 帧变了，全部是**每通道 ≤ 2/255、
+至多 619 个像素**，并且全在透明度动画或变换动画的文字上：
+
+- 不透明度不再折进颜色再量化成 8 位，而是以 f32 乘在着色器里的 alpha 上。一条从 0
+  淡入的文字过去要等 alpha 越过 1/255 才出现。
+- 旋转 / 透视的四个角改在顶点着色器里算。同一套公式，f32 的最后一位可能不同。
+
+另外两处是**行为修正**，不是噪声：
+
+- 圆角 / 多边形裁剪下的文字过去不吃 `clip-path: polygon()` 和 `circle()`——旧的 affine
+  着色器把多边形数硬编成 0。
+- 只有平移但带圆角裁剪的文字过去不做像素对齐（它走的是 affine 路径，栅格相位对应
+  变换前的位置）。现在它是一条平移 run，和它旁边的文字一样对齐到整像素。
+
+### 这一阶段没做的
+
+| 项 | 状态 |
+| --- | --- |
+| 亚像素移动的零重建 | 移动不到整像素时字形的栅格相位真的变了，位图就是不一样的。要零重建只能量化相位，那会改现有渲染，这一期没有理由改 |
+| 行级裁剪 | entry 与视口无关，所以一段超长不换行的文字现在把整段 instance 都交给 scissor 去裁。段落级的裁剪在 `prepare` 里按 ink 做 |
+| 逻辑 layout 与 raster scale 解耦 | 仍是 #99。DPI 变化换 shape key，也就换 entry |
+| 每节点的固定开销 | 一万个文本节点的帧里，剩下的 batch 时间是可见性、裁剪与塑形键哈希，与字形数无关。#99 把 `nana-text` 的 layout 句柄接上来之后，塑形键那一项可以换成一次代际比较 |
 
 ## #33 迁移基准
 
