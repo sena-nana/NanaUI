@@ -67,10 +67,15 @@ use crate::nana_text::{
 };
 
 const SHAPE_CACHE_CAP: usize = 512;
-/// Hard ceiling on shaped paragraphs, whatever one frame asks for. A view that
-/// really holds this much text reshapes some of it; an unbounded cache would
-/// instead hold every paragraph a session ever drew.
+/// Hard ceiling on shaped paragraphs, whatever the view asks for.
 const SHAPE_CACHE_MAX: usize = 32_768;
+/// Frames a paragraph stays un-evictable after it was last drawn. Two, so a
+/// painter alternating between two windows holds both of their text.
+const PIN_FRAMES: u64 = 2;
+/// How far along the LRU order one insert looks for a paragraph nothing wants.
+/// The front is the oldest; if the oldest this many are all still on screen,
+/// so is everything behind them.
+const EVICT_PROBES: usize = 64;
 /// Frames between retirement sweeps, and how long an entry survives without
 /// being drawn. A tab switch that flips back and forth must not pay for
 /// either direction.
@@ -141,10 +146,6 @@ struct ShapeCache {
     entries: HashMap<u64, ShapeEntry>,
     order: VecDeque<u64>,
     frame: u64,
-    /// Paragraphs the frame in flight has asked for, and what the one before
-    /// it asked for. See [`Self::capacity`].
-    asked: usize,
-    asked_before: usize,
     hits: usize,
     misses: usize,
     evictions: usize,
@@ -153,23 +154,6 @@ struct ShapeCache {
 impl ShapeCache {
     fn begin_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
-        self.asked_before = self.asked;
-        self.asked = 0;
-    }
-
-    /// How many paragraphs the cache holds before it starts evicting.
-    ///
-    /// The floor is [`SHAPE_CACHE_CAP`]; above it, whatever the last frame
-    /// actually drew plus a quarter. A view with more distinct strings on
-    /// screen than the floor would otherwise be trimmed back to the floor by
-    /// the first paragraph of the *next* frame — before the rest of the rows
-    /// it had just drawn were touched again — and then reshape every one of
-    /// them, every frame. What the cache has to hold is one frame's worth of
-    /// text, and that is a property of the view, not a constant.
-    fn capacity(&self) -> usize {
-        SHAPE_CACHE_CAP
-            .max(self.asked_before + self.asked_before / 4)
-            .min(SHAPE_CACHE_MAX)
     }
 
     fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Buffer> {
@@ -177,12 +161,10 @@ impl ShapeCache {
         match self.entries.get_mut(&hash) {
             Some(entry) if entry.key.matches(key) => {
                 entry.last_used = frame;
-                self.asked += 1;
                 self.hits += 1;
                 Some(&entry.buffer)
             }
             _ => {
-                self.asked += 1;
                 self.misses += 1;
                 None
             }
@@ -200,34 +182,51 @@ impl ShapeCache {
         self.order.clear();
     }
 
-    /// Store a shaped paragraph, evicting the coldest **older** frame's.
+    /// Store a shaped paragraph, evicting the coldest paragraph nothing on
+    /// screen still wants.
     ///
-    /// A paragraph this frame already asked for is never the victim. A table
-    /// with more distinct strings on screen than the cache's nominal capacity
-    /// would otherwise evict the row it is about to draw to make room for the
-    /// next one, and reshape every one of them on every frame — the cache
-    /// would turn a steady frame into the most expensive kind. The nominal
-    /// capacity is what the cache shrinks back to once the view does.
+    /// A paragraph a recent frame asked for is never the victim. A view with
+    /// more distinct strings on it than [`SHAPE_CACHE_CAP`] would otherwise
+    /// evict the row it is about to draw to make room for the next one, and
+    /// reshape every one of them on every frame — the cache would turn a
+    /// steady frame into the most expensive kind there is. So the nominal
+    /// capacity is a floor the cache shrinks back to once the view does, not a
+    /// ceiling it enforces against the view in front of it.
+    ///
+    /// "Recent" rather than "this frame" because two windows on one painter
+    /// take turns: what window A drew last frame is still on screen while
+    /// window B is drawing, and the cache has to hold both.
     fn insert(&mut self, hash: u64, key: ShapeKey, buffer: Buffer) {
         let frame = self.frame;
-        let capacity = self.capacity();
-        let mut scanned = 0;
-        while self.entries.len() >= capacity && scanned < self.order.len() {
+        let pinned = frame.saturating_sub(PIN_FRAMES);
+        let mut probes = 0;
+        while self.entries.len() >= SHAPE_CACHE_CAP && probes < EVICT_PROBES {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
-            scanned += 1;
+            probes += 1;
             match self.entries.get(&oldest) {
-                Some(entry) if entry.last_used == frame => {
-                    // Still on screen. Put it back and keep looking.
+                Some(entry) if entry.last_used >= pinned => {
+                    // Still on a screen. Put it back and look further along.
                     self.order.push_back(oldest);
                 }
                 Some(_) => {
                     self.entries.remove(&oldest);
                     self.evictions += 1;
-                    scanned = 0;
+                    probes = 0;
                 }
-                None => scanned = 0,
+                None => probes = 0,
+            }
+        }
+        // A hard ceiling, in case a single view really does hold this much
+        // text: the alternative is a cache that remembers every paragraph a
+        // session ever drew.
+        while self.entries.len() >= SHAPE_CACHE_MAX {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.entries.remove(&oldest).is_some() {
+                self.evictions += 1;
             }
         }
         if self
@@ -2477,6 +2476,48 @@ mod tests {
             3,
             "only the label that really changed is reshaped; the cache has to \
              hold one frame's worth of text, which is a property of the view"
+        );
+    }
+
+    #[test]
+    fn two_windows_taking_turns_keep_each_others_paragraphs_shaped() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut second: Option<TextPipelineTarget> = None;
+        // Each window alone fits the cache; together they do not. What window
+        // A drew last frame is still on A's screen while B is drawing.
+        let half = SHAPE_CACHE_CAP * 2 / 3;
+        let window = |offset: usize| {
+            (0..half)
+                .map(|index| format!("Window {offset} row {index}"))
+                .collect::<Vec<_>>()
+        };
+        let (left, right) = (window(0), window(1));
+        let paint = |pipeline: &mut TextPipeline, contents: &[String]| {
+            let labels = contents
+                .iter()
+                .enumerate()
+                .map(|(index, content)| Label {
+                    top: index as f32 * 2.0,
+                    ..Label::new(content.as_str(), index as u64 + 1)
+                })
+                .collect::<Vec<_>>();
+            text_frame(&device, &queue, pipeline, &labels);
+        };
+        paint(&mut pipeline, &left);
+        pipeline.swap_target(&mut second, &device);
+        paint(&mut pipeline, &right);
+        let (_, warm_misses, _) = pipeline.shape_cache_stats();
+        for _ in 0..3 {
+            pipeline.swap_target(&mut second, &device);
+            paint(&mut pipeline, &left);
+            pipeline.swap_target(&mut second, &device);
+            paint(&mut pipeline, &right);
+        }
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            misses, warm_misses,
+            "neither window may evict the other's text: both are on screen"
         );
     }
 
