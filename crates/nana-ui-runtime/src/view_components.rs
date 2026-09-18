@@ -168,8 +168,20 @@ fn project_text_field(
     mutations: &mut MutationQueue,
     field: TextFieldProjection<'_>,
 ) {
-    if world.text_input(id) != Some(field.state) {
-        mutations.set_text_input(id, Some(field.state.clone()));
+    match world.text_input(id) {
+        // Only the caret or the primary selection moved. Publishing the whole
+        // state would clone the value, make the world diff it to discover it
+        // did not change, and mark the node's text content dirty for a move
+        // that did not touch a byte of it.
+        Some(current)
+            if current.value == field.state.value
+                && current.additional_selections == field.state.additional_selections =>
+        {
+            if current.selection != field.state.selection {
+                mutations.set_text_selection(id, field.state.selection);
+            }
+        }
+        _ => mutations.set_text_input(id, Some(field.state.clone())),
     }
     if world.highlight_request(id) != field.highlight {
         mutations.set_highlight_request(id, field.highlight.cloned());
