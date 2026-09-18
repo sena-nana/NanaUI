@@ -6647,6 +6647,48 @@ fn sibling_reorder_does_not_recompute_unchanged_descendant_styles() {
 }
 
 #[test]
+fn turning_a_container_moves_its_subtree_without_re_extracting_it() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=3 {
+        queue.create(node(id), document(1), NodeKind::Text);
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let mut turn = MutationQueue::new();
+    turn.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                transform: Some(nana_ui_core::PaintTransform {
+                    a: 0.0,
+                    b: 1.0,
+                    c: -1.0,
+                    d: 0.0,
+                    ..nana_ui_core::PaintTransform::default()
+                }),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(turn).unwrap();
+    let work = world.take_system_work();
+    // The whole subtree moved in viewport space, which hit-testing and
+    // accessibility both have to know.
+    assert_eq!(work.transform, vec![node(1), node(2), node(3)]);
+    assert_eq!(work.input_hit_test, vec![node(1), node(2), node(3)]);
+    // The renderer does not: a descendant's primitives live in its own space
+    // and are projected by the chain above it, which the scene re-projects
+    // from the retained node rather than rebuilding.
+    assert_eq!(work.render_extraction, vec![node(1)]);
+    assert!(work.layout.is_empty());
+}
+
+#[test]
 fn fading_a_container_resolves_its_subtree_without_re_extracting_it() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();

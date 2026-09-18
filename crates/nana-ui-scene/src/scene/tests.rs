@@ -1387,6 +1387,143 @@ fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
 }
 
 #[test]
+fn a_subtree_that_was_not_re_extracted_draws_where_rebuilding_it_would() {
+    // What the runtime schedules for a container's transform animation: the
+    // container is extracted again, its descendants are not. They keep the
+    // primitives they were built under, and `draw_primitive` re-projects them.
+    // Everything those primitives inherit has to survive that: the clip the
+    // container imposes, a scroll offset below it, a descendant's own
+    // transform, and an opacity group in between.
+    let turned = |angle: f32| {
+        let (sin, cos) = angle.sin_cos();
+        nana_ui_core::PaintTransform {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            ..nana_ui_core::PaintTransform::default()
+        }
+    };
+    let tree = |angle: f32| {
+        let mut root = node(1, None, &[2]);
+        root.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                overflow_x: nana_ui_core::OverflowSpec::Hidden,
+                overflow_y: nana_ui_core::OverflowSpec::Hidden,
+                transform: Some(turned(angle)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut scroller = node(2, Some(1), &[3]);
+        scroller.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([0.0, 1.0, 0.0, 1.0]),
+                overflow_y: nana_ui_core::OverflowSpec::Scroll,
+                opacity: Some(0.4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        scroller.scroll_offset.y = 37.0;
+        let mut inner = node(3, Some(2), &[4]);
+        inner.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 1.0, 0.0, 1.0]),
+                transform: Some(turned(0.2)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut leaf = node(4, Some(3), &[]);
+        leaf.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        [root, scroller, inner, leaf]
+    };
+
+    let [root, scroller, inner, leaf] = tree(0.3);
+    let mut animated = UiScene::new();
+    animated.apply_delta([root, scroller, inner, leaf], []);
+    let [turned_root, _, _, _] = tree(0.9);
+    animated.apply_delta([turned_root], []);
+
+    let mut rebuilt = UiScene::new();
+    rebuilt.apply_delta(tree(0.9), []);
+
+    let drawn = |scene: &UiScene| {
+        scene
+            .primitives()
+            .map(|primitive| {
+                let draw = scene.draw_primitive(primitive.id).expect("primitive draws");
+                let clips = draw
+                    .clips
+                    .iter()
+                    .map(|clip| (clip.bounds, clip.transform.0, clip.corner_radius))
+                    .collect::<Vec<_>>();
+                (primitive.id, draw.transform.0, clips, draw.paint_opacity)
+            })
+            .collect::<Vec<_>>()
+    };
+    let animated = drawn(&animated);
+    let rebuilt = drawn(&rebuilt);
+    assert_eq!(
+        animated.len(),
+        rebuilt.len(),
+        "the same primitives have to be there"
+    );
+    // Re-projection composes with one inverse where a rebuild multiplies the
+    // chain out again, so the two agree to float rounding rather than to the
+    // bit. The error does not accumulate: every frame derives its delta from
+    // the same recorded base.
+    let close = |a: f32, b: f32| (a - b).abs() <= 1e-4 * b.abs().max(1.0);
+    for (animated, rebuilt) in animated.iter().zip(rebuilt.iter()) {
+        assert_eq!(animated.0, rebuilt.0, "same primitive, same place in order");
+        assert_eq!(animated.3, rebuilt.3, "{:?}: opacity", animated.0);
+        assert!(
+            animated
+                .1
+                .iter()
+                .zip(rebuilt.1.iter())
+                .all(|(a, b)| close(*a, *b)),
+            "{:?}: transform {:?} against {:?}",
+            animated.0,
+            animated.1,
+            rebuilt.1
+        );
+        assert_eq!(
+            animated.2.len(),
+            rebuilt.2.len(),
+            "{:?}: same number of clips",
+            animated.0
+        );
+        for (animated_clip, rebuilt_clip) in animated.2.iter().zip(rebuilt.2.iter()) {
+            assert_eq!(
+                animated_clip.0, rebuilt_clip.0,
+                "{:?}: clip bounds",
+                animated.0
+            );
+            assert!(
+                animated_clip
+                    .1
+                    .iter()
+                    .zip(rebuilt_clip.1.iter())
+                    .all(|(a, b)| close(*a, *b)),
+                "{:?}: clip transform {:?} against {:?}",
+                animated.0,
+                animated_clip.1,
+                rebuilt_clip.1
+            );
+        }
+    }
+}
+
+#[test]
 fn a_fade_that_keeps_the_group_leaves_the_descendants_primitives_alone() {
     let solid = |color: [f32; 4], opacity: Option<f32>| NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {

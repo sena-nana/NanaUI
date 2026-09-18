@@ -1387,10 +1387,14 @@ impl UiWorld {
                 if transform_changed {
                     // Scene extract and hit-test read `layout.transform`; LAYOUT
                     // does not, so paint-transform is not a layout dirty.
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::TRANSFORM | DirtyMask::INPUT | DirtyMask::RENDER,
-                    );
+                    self.mark_subtree(*id, DirtyMask::TRANSFORM | DirtyMask::INPUT);
+                    // Only this node is extracted again. A descendant's
+                    // primitives are built in its own space and projected by
+                    // the chain above it, and the renderer re-projects a
+                    // retained descendant from the ancestor's new transform
+                    // rather than rebuilding it. Extracting the subtree every
+                    // frame of an animation would hand back the same geometry.
+                    self.mark(*id, DirtyMask::RENDER);
                 } else if stacking_changed {
                     self.mark_subtree(*id, DirtyMask::INPUT | DirtyMask::RENDER);
                 }
