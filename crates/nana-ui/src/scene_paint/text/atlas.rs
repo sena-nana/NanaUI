@@ -140,6 +140,11 @@ struct Slot {
     /// answered from its own block instead. Eviction prefers unreferenced
     /// slots and only falls back to referenced ones, so this steers the LRU
     /// without pinning the atlas.
+    ///
+    /// It is a hint, not a lifetime: a count that drifted high — a render
+    /// target dropped with its entries still holding claims — costs eviction
+    /// quality and nothing else, because a referenced slot is still a victim
+    /// when nothing cheaper is left.
     refs: u32,
 }
 

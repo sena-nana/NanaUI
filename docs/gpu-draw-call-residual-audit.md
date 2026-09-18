@@ -163,6 +163,8 @@ scissor 本身是冗余的，合并后取并集是逐像素等价的。
 > #97 之后这条结论更强了：`NanaRenderer::text` 的 axis 路径**只**靠 scissor 裁剪，
 > 逐字形只做一次整块的 AABB 剔除，用的正是 `physical_scissor` 的 `floor/ceil` 矩形。
 > 「合并后取并集是逐像素等价」于是不再依赖两套裁剪盒的包含关系，而是同一个矩形。
+> #98 之后连那次逐字形剔除也没有了：retained entry 与视口无关，整段文字的 instance
+> 都交给 scissor 去裁，剔除只在 `prepare` 里按段落的 ink 做一次。
 > 收益为 0 的结论不变，所以仍然不做。
 
 实验（`push_text_run` 去掉 `*open == scissor`，命令上存 `union_physical`）：
