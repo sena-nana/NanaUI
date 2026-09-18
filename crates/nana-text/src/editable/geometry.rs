@@ -257,8 +257,20 @@ impl EditorGeometry {
         constraints: &TextConstraints,
         counters: &mut TextWorkCounters,
     ) -> GeometrySync {
-        self.revisions = None;
         let epoch = engine.epoch();
+        // The layouts already lay this text out. A caller without a session's
+        // revisions -- a host answering probes -- syncs before every probe, so
+        // recognising it here is what keeps an unchanged probe a comparison
+        // instead of a rebuild of every paragraph. The last sync's revisions
+        // still describe these layouts, so they survive.
+        if self.lays_out(text, composition, epoch, style, constraints) {
+            return GeometrySync {
+                paragraphs_kept: self.paragraphs.len(),
+                incremental: true,
+                ..GeometrySync::default()
+            };
+        }
+        self.revisions = None;
         let current = self.is_current(epoch, style, constraints) && !self.paragraphs.is_empty();
         let split = splits_paragraphs(constraints);
 
@@ -391,6 +403,45 @@ impl EditorGeometry {
         self.constraints = Some(*constraints);
         self.epoch = Some(epoch);
         sync
+    }
+
+    /// Whether the retained paragraphs already lay `text` out with these
+    /// composition marks, under this engine epoch, style and constraints.
+    ///
+    /// Compares the bytes: a caller that can name its text cheaply (a session,
+    /// through [`Self::sync_session`]) never reaches this.
+    fn lays_out(
+        &self,
+        text: &str,
+        composition: Option<&CompositionMarks>,
+        epoch: TextEngineEpoch,
+        style: &TextStyle,
+        constraints: &TextConstraints,
+    ) -> bool {
+        if self.text_len != text.len()
+            || self.paragraphs.is_empty()
+            || !self.is_current(epoch, style, constraints)
+        {
+            return false;
+        }
+        let mut next = 0;
+        for paragraph in &self.paragraphs {
+            let end = paragraph.end();
+            let same = paragraph.start == next
+                && text.get(paragraph.start..end) == Some(paragraph.text())
+                && if paragraph.newline {
+                    text.as_bytes().get(end) == Some(&b'\n')
+                } else {
+                    text.len() == end
+                }
+                && composition.and_then(|marks| marks.within(paragraph.start..end))
+                    == paragraph.marks;
+            if !same {
+                return false;
+            }
+            next = paragraph.next_start();
+        }
+        next == text.len()
     }
 
     /// The text and composition revisions of the session last synced from.

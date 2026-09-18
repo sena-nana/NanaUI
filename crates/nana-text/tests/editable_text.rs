@@ -1020,6 +1020,48 @@ fn a_caret_after_typed_rtl_text_draws_beside_what_was_typed() {
     );
 }
 
+/// A host answering probes has no session to name its text with, so it syncs
+/// before every probe. Re-syncing to text the layouts already lay out must
+/// cost a comparison: the paragraphs keep the very layouts they had, no
+/// engine work happens, and the session that put them there still sees the
+/// geometry as its own.
+#[test]
+fn syncing_to_text_the_layouts_already_lay_out_keeps_them() {
+    let mut editor = Editor::new(UI, "one\ntwo\nthree", None);
+    let layouts = |geometry: &EditorGeometry| -> Vec<usize> {
+        geometry
+            .paragraph_layouts()
+            .map(|(_, _, layout)| Arc::as_ptr(layout) as usize)
+            .collect()
+    };
+    let before = layouts(&editor.geometry);
+    assert_eq!(before.len(), 3);
+    let work = editor.engine_work();
+    let display = editor.session.display_text().into_owned();
+
+    let sync = editor.geometry.sync(
+        &mut editor.engine,
+        &display,
+        None,
+        &editor.style,
+        &editor.constraints,
+        &mut editor.counters,
+    );
+
+    assert_eq!(sync.paragraphs_laid_out, 0, "{sync:?}");
+    assert_eq!(sync.paragraphs_kept, 3, "{sync:?}");
+    assert_eq!(
+        layouts(&editor.geometry),
+        before,
+        "the layouts are the same"
+    );
+    assert_eq!(editor.engine_work(), work, "no shaping and no layout");
+    assert!(
+        editor.geometry.synced_from(editor.session.revisions()),
+        "a host probe of unchanged text does not make the geometry stale"
+    );
+}
+
 #[test]
 fn geometry_synced_from_one_session_is_stale_for_another() {
     let editor = Editor::new(UI, "abc\ndef", None);
