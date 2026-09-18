@@ -39,6 +39,9 @@ const LABEL: [f32; 2] = [104.0, 20.0];
 /// measure the shape cache instead of the paint path.
 const DISTINCT_LABELS: usize = 64;
 
+/// Labels inside the panel [`Workload::TransformPanel`] animates.
+const PANEL_ROWS: usize = 8;
+
 /// Label counts Issue #98 asks for.
 const LABEL_GRID: [usize; 4] = [1, 100, 1_000, 10_000];
 /// Frame counts standing in for 60 / 120 / 240 Hz of one second of animation.
@@ -59,6 +62,10 @@ enum Workload {
     Opacity,
     /// The container rotates. Presentation only.
     Transform,
+    /// A panel of [`PANEL_ROWS`] labels rotates while the rest of the document
+    /// stands still — what an animation in a real shell moves. `Transform`
+    /// rotates everything, which is the worst case, not the common one.
+    TransformPanel,
     /// One label in a hundred gets new text.
     Mutate,
 }
@@ -71,6 +78,7 @@ impl Workload {
             Self::Color => "color",
             Self::Opacity => "opacity",
             Self::Transform => "transform",
+            Self::TransformPanel => "transform-panel",
             Self::Mutate => "mutate-1pct",
         }
     }
@@ -78,7 +86,10 @@ impl Workload {
     /// Whether the workload is an animation, and therefore worth running at
     /// each of [`RATE_GRID`].
     fn animated(self) -> bool {
-        matches!(self, Self::Color | Self::Opacity | Self::Transform)
+        matches!(
+            self,
+            Self::Color | Self::Opacity | Self::Transform | Self::TransformPanel
+        )
     }
 }
 
@@ -197,6 +208,7 @@ fn main() {
             Workload::Color,
             Workload::Opacity,
             Workload::Transform,
+            Workload::TransformPanel,
             Workload::Mutate,
         ] {
             if !only_workload.is_empty() && !only_workload.iter().any(|id| id == workload.id()) {
@@ -298,11 +310,24 @@ fn run(
     build.insert(column, ticker, None);
     build.set_text(ticker, TextContent { value: ".".into() });
     build.set_style(ticker, label_style());
+    // The panel `TransformPanel` animates. Only that workload builds it, so
+    // every other row keeps the tree it has always been measured on.
+    let panel = StableNodeId::new(2_000_000).expect("panel");
+    if workload == Workload::TransformPanel {
+        build.create(panel, document_id, NodeKind::Element { tag: "div".into() });
+        build.insert(column, panel, None);
+        build.set_style(panel, column_style(None, None));
+    }
     let mut rows = Vec::with_capacity(labels);
     for index in 0..labels {
         let label = StableNodeId::new(4 + index as u64).expect("label");
+        let parent = if workload == Workload::TransformPanel && index < PANEL_ROWS {
+            panel
+        } else {
+            column
+        };
         build.create(label, document_id, NodeKind::Text);
-        build.insert(column, label, None);
+        build.insert(parent, label, None);
         build.set_text(
             label,
             TextContent {
@@ -338,7 +363,18 @@ fn run(
     let mut warm_glyph = None;
     let mut warm_shape = None;
     for frame in 0..WARMUP_FRAMES + frames {
-        mutate(&mut document, workload, column, ticker, &rows, frame);
+        mutate(
+            &mut document,
+            workload,
+            if workload == Workload::TransformPanel {
+                panel
+            } else {
+                column
+            },
+            ticker,
+            &rows,
+            frame,
+        );
         let flush_started = std::time::Instant::now();
         document.flush(viewport, &mut shaper).expect("flush");
         let flush_elapsed = flush_started.elapsed();
@@ -497,7 +533,7 @@ fn mutate(
             let opacity = 0.35 + 0.6 * ((frame % 32) as f32 / 32.0);
             queue.set_style(column, column_style(Some(opacity), None));
         }
-        Workload::Transform => {
+        Workload::Transform | Workload::TransformPanel => {
             let angle = (frame % 360) as f32 * std::f32::consts::PI / 180.0;
             let (sin, cos) = angle.sin_cos();
             queue.set_style(
