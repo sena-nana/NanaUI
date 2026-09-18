@@ -738,7 +738,7 @@ impl UiScene {
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
                     || old.layout != node.layout
-                    || old.source_style.layout != node.source_style.layout
+                    || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)
             });
             if inherited_changed {
@@ -762,7 +762,7 @@ impl UiScene {
             if previous.is_none_or(|old| {
                 old.parent != node.parent
                     || old.layout != node.layout
-                    || old.source_style.layout != node.source_style.layout
+                    || inherited_layout_changed(&old.source_style.layout, &node.source_style.layout)
                     || inherited_component_clip(old) != inherited_component_clip(&node)
             }) {
                 delta.clips.push(node.id);
@@ -1529,6 +1529,33 @@ fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()
+}
+
+/// Whether the two styles differ in anything a descendant inherits the
+/// *projection* of — the transform it sits under, the clips it is cut by,
+/// where the fixed boundary is.
+///
+/// `opacity` is left out. It does reach descendants, but not through the
+/// projection: [`inherited_opacity`] decides whether it moved and asks for the
+/// subtree to be rebuilt, and a fade that keeps a container a group does not
+/// move anything at all. Bumping the attribute epoch for it would make every
+/// descendant re-derive its transform and clips on the next frame's draw.
+///
+/// Every other field is compared as a whole, so a field added later cannot be
+/// forgotten here.
+fn inherited_layout_changed(
+    old: &Arc<nana_ui_core::LayoutStyle>,
+    new: &Arc<nana_ui_core::LayoutStyle>,
+) -> bool {
+    if Arc::ptr_eq(old, new) || old == new {
+        return false;
+    }
+    if old.opacity == new.opacity {
+        return true;
+    }
+    let mut without_the_fade = old.as_ref().clone();
+    without_the_fade.opacity = new.opacity;
+    &without_the_fade != new.as_ref()
 }
 
 /// The opacity this node multiplies into every descendant's primitive.
