@@ -1446,9 +1446,24 @@ text_prepare_nodes_considered / skipped / culled
   文本自己剩下约 2 ms，其中最大的一项是塑形键哈希——#99 把 `nana-text` 的 layout
   句柄接上来之后，那一项可以换成一次代际比较。
 
-  还留在循环里的是每个图元各自一趟的祖先链查询（`opacity_groups` 与
-  `dest_filter_applies` 合计约 11%、`draw_primitive` 约 8%）。要再降就得把它们从
-  「每个图元问一次」改成「场景按代际算一次」，那是 `UiScene` 的接口改动，不在这一期。
+  循环里原来还有每个图元各自一趟的祖先链查询——`opacity_groups` 每帧问两遍（绘制
+  一遍、剔除一遍），`compositor_paint_opacity` 在 `draw_primitive` 里问一遍。这两条
+  的代价随**树深**涨，而一个真实 shell 的文字坐在十到二十层元素之下。现在按节点
+  记忆祖先那一半（不是 group 的节点共用父节点那一份 `Arc`，所以不分配）：
+
+  | 包裹层数（`--depth`） | 前 | 后 |
+  | ---: | --- | --- |
+  | 0 | 0.319 ms | 0.307 ms |
+  | 4 | 0.410 ms | 0.308 ms |
+  | 8 | 0.483 ms | 0.311 ms |
+  | 16 | 0.631 ms | **0.303 ms** |
+
+  原来每多八层多两成，现在是平的。表里其余各格都是 `--depth 0`，也就是最扁的那棵
+  树——真实界面的收益比表里的大。
+
+  仍然随树深涨的是 `transform` 那一格，但那已经不在 painter 里了：容器每帧换样式，
+  整棵子树的图元要重建（`rebuild_node_primitives` / `group_prefix` / 主键重排），
+  那是 scene 应用 delta 的代价，另一条线。
 
 ### 怎么跑，怎么判
 
