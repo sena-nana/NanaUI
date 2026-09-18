@@ -23,8 +23,8 @@ use nana_text::{
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
 use crate::{
-    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextHorizontalAlignment, TextMetrics,
-    TextShapeConstraints, TextShaper,
+    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextHit, TextHorizontalAlignment,
+    TextMetrics, TextShapeConstraints, TextShaper,
 };
 
 /// Editors whose geometry is kept. Each entry holds layouts of one editor's
@@ -129,6 +129,7 @@ impl NanaTextEngineShaper {
         id: StableNodeId,
         text: &TextContent,
         offset: usize,
+        affinity: Affinity,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
         synced: bool,
@@ -137,7 +138,7 @@ impl NanaTextEngineShaper {
             return (0.0, 0.0, 0.0);
         }
         self.editor_geometry(id, &text.value, style, constraints, synced, true)
-            .and_then(|geometry| geometry.caret_rect(offset, Affinity::Downstream))
+            .and_then(|geometry| geometry.caret_rect(offset, affinity))
             .map_or((0.0, 0.0, 0.0), |caret| {
                 (caret.x_px, caret.y_px, caret.height_px)
             })
@@ -174,7 +175,11 @@ impl NanaTextEngineShaper {
             .unwrap_or_default()
     }
 
-    fn offset_at_point(
+    /// The caret a point hits, with the affinity the geometry resolved: the
+    /// end of a line that wrapped without hanging whitespace is the next
+    /// line's start, and only `Upstream` keeps the caret on the line that was
+    /// clicked.
+    fn hit_at_point(
         &mut self,
         id: StableNodeId,
         text: &TextContent,
@@ -183,28 +188,16 @@ impl NanaTextEngineShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
         synced: bool,
-    ) -> Option<usize> {
+    ) -> Option<TextHit> {
         if text.value.is_empty() {
-            return Some(0);
+            return Some(TextHit::default());
         }
         let geometry = self.editor_geometry(id, &text.value, style, constraints, synced, true)?;
         let hit = geometry.hit_test(x, y);
-        // Probes carry no affinity and draw downstream. The end of a line that
-        // wrapped without hanging whitespace is also the next line's start, so
-        // downstream it would draw a line below where it was hit — and a
-        // vertical move to it would never leave that line. The grapheme
-        // before it stays on the hit line.
-        if hit.affinity == Affinity::Upstream {
-            let upstream = geometry.caret_rect(hit.offset, Affinity::Upstream);
-            let downstream = geometry.caret_rect(hit.offset, Affinity::Downstream);
-            if let (Some(upstream), Some(downstream)) = (upstream, downstream)
-                && (upstream.y_px - downstream.y_px).abs() > f32::EPSILON
-            {
-                return nana_text::editable::navigation::prev_grapheme(&text.value, hit.offset)
-                    .or(Some(hit.offset));
-            }
-        }
-        Some(hit.offset)
+        Some(TextHit {
+            offset: hit.offset,
+            affinity: hit.affinity,
+        })
     }
 
     fn measure(
@@ -330,7 +323,27 @@ impl TextShaper for NanaTextEngineShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> (f32, f32, f32) {
-        self.position(id, text, byte_offset, style, constraints, false)
+        self.position(
+            id,
+            text,
+            byte_offset,
+            Affinity::Downstream,
+            style,
+            constraints,
+            false,
+        )
+    }
+
+    fn text_caret_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        affinity: Affinity,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.position(id, text, byte_offset, affinity, style, constraints, false)
     }
 
     fn text_highlights(
@@ -344,7 +357,7 @@ impl TextShaper for NanaTextEngineShaper {
         self.highlights(id, text, selection, style, constraints, false)
     }
 
-    fn text_offset_at_point(
+    fn text_hit_at_point(
         &mut self,
         id: StableNodeId,
         text: &TextContent,
@@ -352,8 +365,8 @@ impl TextShaper for NanaTextEngineShaper {
         y: f32,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
-    ) -> Option<usize> {
-        self.offset_at_point(id, text, x, y, style, constraints, false)
+    ) -> Option<TextHit> {
+        self.hit_at_point(id, text, x, y, style, constraints, false)
     }
 
     /// The whole engine epoch, folded: a language change or another engine is
@@ -460,8 +473,29 @@ impl TextShaper for PreparedEngineShaper<'_> {
         constraints: TextShapeConstraints,
     ) -> (f32, f32, f32) {
         let synced = self.synced(id, text, style, constraints);
+        self.host.position(
+            id,
+            text,
+            byte_offset,
+            Affinity::Downstream,
+            style,
+            constraints,
+            synced,
+        )
+    }
+
+    fn text_caret_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        affinity: Affinity,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        let synced = self.synced(id, text, style, constraints);
         self.host
-            .position(id, text, byte_offset, style, constraints, synced)
+            .position(id, text, byte_offset, affinity, style, constraints, synced)
     }
 
     fn text_highlights(
@@ -477,7 +511,7 @@ impl TextShaper for PreparedEngineShaper<'_> {
             .highlights(id, text, selection, style, constraints, synced)
     }
 
-    fn text_offset_at_point(
+    fn text_hit_at_point(
         &mut self,
         id: StableNodeId,
         text: &TextContent,
@@ -485,9 +519,9 @@ impl TextShaper for PreparedEngineShaper<'_> {
         y: f32,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
-    ) -> Option<usize> {
+    ) -> Option<TextHit> {
         let synced = self.synced(id, text, style, constraints);
         self.host
-            .offset_at_point(id, text, x, y, style, constraints, synced)
+            .hit_at_point(id, text, x, y, style, constraints, synced)
     }
 }

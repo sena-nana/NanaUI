@@ -10,7 +10,8 @@ use std::sync::{Arc, Mutex};
 use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem, GenericFamily, font_blob};
 use nana_text::{NativeTextEngine, SharedTextEngine, TextWorkCounters};
 use nana_ui_runtime::{
-    DocumentId, Entity, LayoutViewport, NanaTextEngineShaper, TextArea, TextCaretIntent,
+    DocumentId, Entity, LayoutBox, LayoutViewport, NanaTextEngineShaper, TextAffinity, TextArea,
+    TextCaretIntent, TextSelection,
 };
 use nana_ui_scene::RuntimeDocument;
 
@@ -110,6 +111,58 @@ impl Fixture {
             .text_input_presentation(self.area.stable_id())
             .unwrap();
         (presentation.caret_x, presentation.caret_y)
+    }
+
+    fn selection(&self) -> TextSelection {
+        self.runtime
+            .context()
+            .world()
+            .text_input(self.area.stable_id())
+            .unwrap()
+            .selection
+    }
+
+    fn content(&self) -> LayoutBox {
+        self.runtime
+            .context()
+            .world()
+            .text_input_pointer_context(self.area.stable_id())
+            .unwrap()
+            .0
+    }
+
+    fn line_height(&self) -> f32 {
+        self.runtime
+            .context()
+            .world()
+            .text_input_presentation(self.area.stable_id())
+            .unwrap()
+            .line_height
+    }
+
+    /// One click at a document point, settled.
+    fn click(&mut self, x: f32, y: f32) {
+        let document = self.document;
+        let node = self.area.stable_id();
+        let Fixture {
+            runtime, shaper, ..
+        } = self;
+        runtime
+            .context_mut()
+            .text_editor_pointer_press(
+                document,
+                node,
+                1,
+                x,
+                y,
+                false,
+                false,
+                std::time::Duration::from_secs(10),
+                shaper,
+            )
+            .unwrap();
+        runtime.context_mut().text_editor_pointer_release(1);
+        self.flush();
     }
 }
 
@@ -406,4 +459,47 @@ fn up_and_clicks_at_the_end_of_a_wrap_without_whitespace_stay_on_that_line() {
         previous = top;
     }
     assert_eq!(previous, 0.0);
+}
+
+#[test]
+fn a_click_past_a_wrapped_cjk_line_end_keeps_the_caret_after_that_line() {
+    // One offset, two places: the end of a line that wrapped with no hanging
+    // whitespace is also the next line's start. The click decides which, and
+    // the affinity it resolves is what the editor stores and draws.
+    let mut fixture = Fixture::new(&"中".repeat(120));
+    let content = fixture.content();
+    let line_height = fixture.line_height();
+    let layouts = fixture.layouts_created();
+
+    // The second line's start, hit from its own line.
+    fixture.click(content.x + 0.5, content.y + line_height * 1.5);
+    let downstream = fixture.selection();
+    let (start_x, start_y) = fixture.caret();
+    assert_eq!(downstream.affinity, TextAffinity::Downstream);
+    assert_eq!(start_y, line_height, "hit on the second line");
+    assert!(
+        start_x < line_height,
+        "at the second line's start: {start_x}"
+    );
+    assert!(downstream.focus > 0, "past the first line");
+
+    // Past the right end of the first line: the same offset, drawn as that
+    // line's end rather than the next line's start.
+    fixture.click(
+        content.x + content.width - 1.0,
+        content.y + line_height * 0.5,
+    );
+    let upstream = fixture.selection();
+    let (end_x, end_y) = fixture.caret();
+    assert_eq!(
+        upstream.focus, downstream.focus,
+        "the line's end is the next line's start"
+    );
+    assert_eq!(upstream.affinity, TextAffinity::Upstream);
+    assert_eq!(end_y, 0.0, "the caret stays on the clicked line");
+    assert!(
+        end_x > content.width - line_height,
+        "after the last character of the first line, not before it: {end_x}"
+    );
+    assert_eq!(fixture.layouts_created(), layouts, "clicks lay nothing out");
 }

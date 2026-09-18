@@ -1211,10 +1211,7 @@ fn committed_text_replaces_runtime_owned_unicode_selection() {
             input,
             TextInputState {
                 value: "你好ab".into(),
-                selection: nana_ui_runtime::TextSelection {
-                    anchor: 0,
-                    focus: "你".len(),
-                },
+                selection: nana_ui_runtime::TextSelection::new(0, "你".len()),
                 additional_selections: Vec::new(),
             }
         ));
@@ -2107,10 +2104,7 @@ fn accessibility_selection_updates_runtime_and_allows_read_only_text() {
         assert!(document.set_text_input_state(input, TextInputState::new("你a")));
     }
     let mut engine = RecordingEngine::default();
-    let selection = nana_ui_runtime::TextSelection {
-        anchor: "你".len(),
-        focus: "你a".len(),
-    };
+    let selection = nana_ui_runtime::TextSelection::new("你".len(), "你a".len());
 
     assert!(
         host.accessibility_set_selection(&mut engine, input, selection)

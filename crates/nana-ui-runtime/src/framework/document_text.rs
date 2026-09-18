@@ -227,10 +227,12 @@ impl AppContext {
             .unwrap_or((x, y));
         let local_x = layout_x - content.x + scroll.x;
         let local_y = layout_y - content.y + scroll.y;
-        if let Some(offset) =
-            shaper.text_offset_at_point(node, &shaped, local_x, local_y, &style, constraints)
+        // 静态可选文本只有 anchor / focus，没有 caret 可画，命中的 affinity
+        // 在这里没有去处。
+        if let Some(hit) =
+            shaper.text_hit_at_point(node, &shaped, local_x, local_y, &style, constraints)
         {
-            return Some(offset);
+            return Some(hit.offset);
         }
         Some(caret_offset_at_point(
             &shaped.value,

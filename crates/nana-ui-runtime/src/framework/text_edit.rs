@@ -158,9 +158,14 @@ impl EditorGeometry<'_> {
             return None;
         }
         let focus = clamp_focus(value, selection.focus);
-        let (x, y, height) =
-            self.shaper
-                .text_position(self.node, &self.text, focus, &self.style, self.constraints);
+        let (x, y, height) = self.shaper.text_caret_position(
+            self.node,
+            &self.text,
+            focus,
+            selection.affinity,
+            &self.style,
+            self.constraints,
+        );
         let height = height.max(1.0);
         let goal = goal_x.unwrap_or(x);
         let upwards = matches!(intent, TextCaretIntent::Up | TextCaretIntent::PageUp);
@@ -193,7 +198,7 @@ impl EditorGeometry<'_> {
                 None => y + height + 0.5,
             }
         };
-        let offset = self.shaper.text_offset_at_point(
+        let hit = self.shaper.text_hit_at_point(
             self.node,
             &self.text,
             goal,
@@ -201,12 +206,15 @@ impl EditorGeometry<'_> {
             &self.style,
             self.constraints,
         )?;
-        Some((moved_selection(selection, offset, extend), goal))
+        Some((
+            moved_selection(selection, hit.offset, extend).with_affinity(hit.affinity),
+            goal,
+        ))
     }
 
     fn supports_point_hits(&mut self) -> bool {
         self.shaper
-            .text_offset_at_point(
+            .text_hit_at_point(
                 self.node,
                 &self.text,
                 0.0,
@@ -247,15 +255,9 @@ fn snap_selection_over_atoms(
         let selection = moved_selection(previous, snapped, true);
         let range = expand_range_over_atoms(selection.ordered(), atoms);
         if selection.focus >= selection.anchor {
-            TextSelection {
-                anchor: range.start,
-                focus: range.end,
-            }
+            TextSelection::new(range.start, range.end)
         } else {
-            TextSelection {
-                anchor: range.end,
-                focus: range.start,
-            }
+            TextSelection::new(range.end, range.start)
         }
     } else {
         TextSelection::caret(snapped)
@@ -495,6 +497,7 @@ impl AppContext {
                 Some(view) => TextSelection {
                     anchor: view.display_of(selection.anchor),
                     focus: view.display_of(selection.focus),
+                    affinity: selection.affinity,
                 },
                 None => selection,
             }
@@ -504,6 +507,7 @@ impl AppContext {
                 Some(view) => TextSelection {
                     anchor: view.value_of(selection.anchor),
                     focus: view.value_of(selection.focus),
+                    affinity: selection.affinity,
                 },
                 None => selection,
             }
@@ -526,6 +530,7 @@ impl AppContext {
                     TextSelection {
                         anchor: view.value_of(moved.anchor),
                         focus,
+                        affinity: moved.affinity,
                     }
                 }
                 None => moved,
@@ -1111,10 +1116,7 @@ impl AppContext {
         self.write_editor_selections(
             focused.node,
             focused.kind,
-            TextSelection {
-                anchor: start,
-                focus: end,
-            },
+            TextSelection::new(start, end),
             Vec::new(),
         )
     }
@@ -1235,10 +1237,7 @@ impl AppContext {
             return Ok(false);
         };
         let mut next = state;
-        if !next.add_selections(&[TextSelection {
-            anchor: found.start,
-            focus: found.end,
-        }]) {
+        if !next.add_selections(&[TextSelection::new(found.start, found.end)]) {
             return Ok(false);
         }
         self.write_editor_selections(
@@ -1279,10 +1278,7 @@ impl AppContext {
         let candidates: Vec<TextSelection> = matches
             .iter()
             .filter(|found| !is_covered(found, &selections))
-            .map(|found| TextSelection {
-                anchor: found.start,
-                focus: found.end,
-            })
+            .map(|found| TextSelection::new(found.start, found.end))
             .collect();
         if candidates.is_empty() {
             return Ok(false);
@@ -1414,10 +1410,7 @@ impl AppContext {
         self.write_editor_selection(
             focused.node,
             focused.kind,
-            TextSelection {
-                anchor: found.start,
-                focus: found.end,
-            },
+            TextSelection::new(found.start, found.end),
         )
     }
 
@@ -1447,10 +1440,7 @@ impl AppContext {
         self.write_editor_selection(
             focused.node,
             focused.kind,
-            TextSelection {
-                anchor: found.start,
-                focus: found.end,
-            },
+            TextSelection::new(found.start, found.end),
         )
     }
 
@@ -1506,10 +1496,7 @@ impl AppContext {
                 next.push_str(&value[range.end..]);
                 Some(CursorEdit::Transform {
                     next,
-                    selection: TextSelection {
-                        anchor: range.start,
-                        focus: range.start + text.len(),
-                    },
+                    selection: TextSelection::new(range.start, range.start + text.len()),
                 })
             },
         )
@@ -1569,10 +1556,10 @@ impl AppContext {
                 replaced = count;
                 Some(EditorEdit {
                     value,
-                    selection: TextSelection {
-                        anchor: first.start,
-                        focus: first.start + first_replacement.len(),
-                    },
+                    selection: TextSelection::new(
+                        first.start,
+                        first.start + first_replacement.len(),
+                    ),
                 })
             },
         )?;
@@ -1670,9 +1657,10 @@ impl AppContext {
         }
         // 命中换算与拖选共用同一条 offset 路径（折叠视图按显示空间命中
         // 后映射回值空间）。
-        let Some(offset) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
+        let Some(hit) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
             return Ok(false);
         };
+        let offset = hit.offset;
         // 拖拽移动选中文本：普通按下落在主选区内部（多行、单选区、非
         // IME 组合期）时不落光标，进入拖拽状态机；Alt 按住为复制（macOS
         // 惯例；取舍：选区内的 Alt+click 由多光标添加让位给拖拽复制）。
@@ -1706,38 +1694,30 @@ impl AppContext {
         // Alt+click toggles an extra cursor on multiline editors; single-line
         // fields keep their plain click semantics.
         if add_cursor && focused.multiline && count == 1 {
-            return self.text_editor_toggle_cursor(node, focused.kind, &state, offset);
+            return self.text_editor_toggle_cursor(node, focused.kind, &state, hit);
         }
         let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, focused.kind));
         let (selection, additional) = match count {
             2 => {
                 let (start, end) = word_range_at(&state.value, offset);
                 let range = expand_range_over_atoms(start..end, &atoms);
-                (
-                    TextSelection {
-                        anchor: range.start,
-                        focus: range.end,
-                    },
-                    Vec::new(),
-                )
+                (TextSelection::new(range.start, range.end), Vec::new())
             }
             3 => {
                 let (start, end) = logical_line_range(&state.value, offset);
                 let range = expand_range_over_atoms(start..end, &atoms);
-                (
-                    TextSelection {
-                        anchor: range.start,
-                        focus: range.end,
-                    },
-                    Vec::new(),
-                )
+                (TextSelection::new(range.start, range.end), Vec::new())
             }
+            // 单击落点带着命中的 affinity：软换行行尾点在左侧就留在这一行。
             _ if extend => (
-                moved_selection(state.selection, offset, true),
+                moved_selection(state.selection, offset, true).with_affinity(hit.affinity),
                 state.additional_selections.clone(),
             ),
             // A plain click naturally collapses to one primary cursor.
-            _ => (moved_selection(state.selection, offset, false), Vec::new()),
+            _ => (
+                moved_selection(state.selection, offset, false).with_affinity(hit.affinity),
+                Vec::new(),
+            ),
         };
         if count != 1 {
             self.text_edit.text_pointer_drag = None;
@@ -1782,8 +1762,9 @@ impl AppContext {
         node: StableNodeId,
         kind: TextEditorKind,
         state: &TextInputState,
-        offset: usize,
+        hit: crate::TextHit,
     ) -> Result<bool, FrameworkError> {
+        let offset = hit.offset;
         let mut next = state.clone();
         let before = next.additional_selections.len();
         next.additional_selections.retain(|selection| {
@@ -1795,7 +1776,7 @@ impl AppContext {
             let on_primary = primary.start <= offset && offset <= primary.end;
             if !on_primary {
                 next.additional_selections
-                    .push(TextSelection::caret(offset));
+                    .push(TextSelection::caret(offset).with_affinity(hit.affinity));
             }
         }
         next.normalize_selections();
@@ -1846,19 +1827,16 @@ impl AppContext {
         }
         let state = self.editor_state(node, focused.kind)?;
         // 命中换算与点击共用同一条 offset 路径。
-        let Some(offset) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
+        let Some(hit) = self.text_editor_hit_offset(node, focused.kind, x, y, shaper)? else {
             return Ok(false);
         };
-        if offset == state.selection.focus {
+        if hit.offset == state.selection.focus && hit.affinity == state.selection.affinity {
             return Ok(false);
         }
         self.write_editor_selection(
             node,
             focused.kind,
-            TextSelection {
-                anchor,
-                focus: offset,
-            },
+            TextSelection::new(anchor, hit.offset).with_affinity(hit.affinity),
         )
     }
 
@@ -1950,7 +1928,10 @@ impl AppContext {
             }
             drag.active = true;
         }
-        let Some(target) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
+        let Some(target) = self
+            .text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)?
+            .map(|hit| hit.offset)
+        else {
             self.text_edit.text_selection_drag = Some(drag);
             return Ok(true);
         };
@@ -2015,18 +1996,20 @@ impl AppContext {
         }
         if !drag.active {
             // 低于阈值：按原点击语义处理（落 caret）。
-            let Some(offset) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)?
-            else {
+            let Some(hit) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
                 return Ok(false);
             };
             return self.write_editor_selections(
                 drag.node,
                 focused.kind,
-                TextSelection::caret(offset),
+                TextSelection::caret(hit.offset).with_affinity(hit.affinity),
                 Vec::new(),
             );
         }
-        let Some(target) = self.text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)? else {
+        let Some(target) = self
+            .text_editor_hit_offset(drag.node, drag.kind, x, y, shaper)?
+            .map(|hit| hit.offset)
+        else {
             return Ok(true);
         };
         let state = self.editor_state(drag.node, focused.kind)?;
@@ -2077,10 +2060,7 @@ impl AppContext {
                 target,
             )
         };
-        let selection = TextSelection {
-            anchor: insert_at,
-            focus: insert_at + length,
-        };
+        let selection = TextSelection::new(insert_at, insert_at + length);
         self.commit_editor_value(
             drag.node,
             focused.kind,
@@ -2110,8 +2090,12 @@ impl AppContext {
         }
     }
 
-    /// 指针位置 → 值空间偏移（折叠视图按显示空间命中后映射回值空间；
+    /// 指针位置 → 值空间 caret（折叠视图按显示空间命中后映射回值空间；
     /// 与点击/拖选共用同一换算）。无法解析时返回 `None`。
+    ///
+    /// affinity 由命中点决定，随选区一路写进编辑器状态：CJK 这类没有悬挂
+    /// 空白的软换行行尾即下一行行首，只有 `Upstream` 才把 caret 留在被点
+    /// 中的那一行。宿主答不出命中时按 downstream 的探针搜索退化。
     fn text_editor_hit_offset(
         &self,
         node: StableNodeId,
@@ -2119,7 +2103,7 @@ impl AppContext {
         x: f32,
         y: f32,
         shaper: &mut dyn crate::TextShaper,
-    ) -> Result<Option<usize>, FrameworkError> {
+    ) -> Result<Option<crate::TextHit>, FrameworkError> {
         let Some((content, scroll)) = self.world.text_input_pointer_context(node) else {
             return Ok(None);
         };
@@ -2139,7 +2123,7 @@ impl AppContext {
             constraints,
         };
         let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
-        let hit = match geometry.shaper.text_offset_at_point(
+        let hit = match geometry.shaper.text_hit_at_point(
             node,
             &geometry.text,
             local_x,
@@ -2148,14 +2132,29 @@ impl AppContext {
             geometry.constraints,
         ) {
             Some(hit) => hit,
-            None => caret_offset_at_point(probe_value, local_x, local_y, geometry.probe()),
+            None => crate::TextHit::downstream(caret_offset_at_point(
+                probe_value,
+                local_x,
+                local_y,
+                geometry.probe(),
+            )),
         };
-        let hit = match &fold_view {
-            Some(view) => view.value_of(hit),
-            None => hit,
+        let offset = match &fold_view {
+            Some(view) => view.value_of(hit.offset),
+            None => hit.offset,
         };
         let atoms = atoms_in(&state.value, &self.editor_text_atoms(node, kind));
-        Ok(Some(snap_pointer_caret(hit, &atoms)))
+        let snapped = snap_pointer_caret(offset, &atoms);
+        // 吸附到原子边界后落点不再是被点中的那个位置，affinity 随之作废。
+        let affinity = if snapped == offset {
+            hit.affinity
+        } else {
+            crate::TextAffinity::Downstream
+        };
+        Ok(Some(crate::TextHit {
+            offset: snapped,
+            affinity,
+        }))
     }
 
     /// Delete the atom identified by `token` through the normal editor history
@@ -2185,10 +2184,7 @@ impl AppContext {
         self.write_editor_selection(
             focused.node,
             focused.kind,
-            TextSelection {
-                anchor: atom.start,
-                focus: atom.end,
-            },
+            TextSelection::new(atom.start, atom.end),
         )?;
         if !self.delete_focused_text(document, TextDeleteKind::Backward)? {
             return Ok(false);
@@ -2637,10 +2633,7 @@ impl AppContext {
             && let Some(range) = group.ranges.first()
         {
             let mut next = self.editor_state(focused.node, focused.kind)?;
-            next.selection = TextSelection {
-                anchor: range.start,
-                focus: range.end,
-            };
+            next.selection = TextSelection::new(range.start, range.end);
             next.replace_primary_selection(&label);
             let changed = self.commit_editor_value(
                 focused.node,
@@ -2713,19 +2706,13 @@ impl AppContext {
                 .expect("validated disjoint edits");
             let mut next = current;
             for (range, text) in replacements.into_iter().rev() {
-                next.selection = TextSelection {
-                    anchor: range.start,
-                    focus: range.end,
-                };
+                next.selection = TextSelection::new(range.start, range.end);
                 next.replace_primary_selection(&text);
             }
             next.selection = edit
                 .stops
                 .first()
-                .map(|stop| TextSelection {
-                    anchor: base + stop.start,
-                    focus: base + stop.end,
-                })
+                .map(|stop| TextSelection::new(base + stop.start, base + stop.end))
                 .unwrap_or_else(|| TextSelection::caret(base + edit.text.len()));
             let changed = self.commit_editor_value(
                 focused.node,
@@ -3209,14 +3196,7 @@ impl AppContext {
                     .get(session.index.saturating_sub(1))
                     .copied()
                     .unwrap_or(caret);
-                self.write_editor_selection(
-                    node,
-                    focused.kind,
-                    TextSelection {
-                        anchor: caret,
-                        focus: end,
-                    },
-                )?;
+                self.write_editor_selection(node, focused.kind, TextSelection::new(caret, end))?;
             }
         }
         if session.exit_on_last && session.index == session.stops.len() {
@@ -3451,10 +3431,7 @@ mod fold_snippet_tests {
         let (mut context, document, area, node) = offered_editor(value, &[fold]);
         context
             .update_component(area, |area_view, _| {
-                area_view.state.selection = TextSelection {
-                    anchor: 13,
-                    focus: 17,
-                };
+                area_view.state.selection = TextSelection::new(13, 17);
             })
             .unwrap();
         assert!(
@@ -3468,16 +3445,7 @@ mod fold_snippet_tests {
         let state = context.world().text_input(node).unwrap();
         assert_eq!(
             state.selections().into_owned(),
-            vec![
-                TextSelection {
-                    anchor: 13,
-                    focus: 17
-                },
-                TextSelection {
-                    anchor: 33,
-                    focus: 37
-                },
-            ]
+            vec![TextSelection::new(13, 17), TextSelection::new(33, 37),]
         );
         assert_eq!(state.value, value);
     }
@@ -3662,10 +3630,7 @@ mod fold_snippet_tests {
         // 编辑区间严格覆盖 $1 跳位（删除覆盖它的 span）→ 会话失效结束。
         context
             .update_component(area, |area_view, _| {
-                area_view.state.selection = TextSelection {
-                    anchor: 2,
-                    focus: 6,
-                };
+                area_view.state.selection = TextSelection::new(2, 6);
             })
             .unwrap();
         assert!(
@@ -4579,15 +4544,7 @@ mod find_scope_smart_select_tests {
 
         // 选区 3..12（"cd ab cd"）：范围内只有一个 "ab"，导航反复循环在
         // 6..8，不越界到边界外或范围外的命中。
-        set_selection(
-            &mut context,
-            area,
-            TextSelection {
-                anchor: 3,
-                focus: 12,
-            },
-            Vec::new(),
-        );
+        set_selection(&mut context, area, TextSelection::new(3, 12), Vec::new());
         assert!(
             context
                 .find_next_focused_text_match(document, "ab", options, TextFindScope::Selection)
@@ -4625,15 +4582,7 @@ mod find_scope_smart_select_tests {
         assert_eq!(selection_span(&context, node), (12, 14));
 
         // 替换全部限定在选区内：只有范围内的两个 "cd" 被替换。
-        set_selection(
-            &mut context,
-            area,
-            TextSelection {
-                anchor: 3,
-                focus: 12,
-            },
-            Vec::new(),
-        );
+        set_selection(&mut context, area, TextSelection::new(3, 12), Vec::new());
         let replaced = context
             .replace_all_focused_text_matches(
                 document,
@@ -4924,10 +4873,7 @@ mod read_only_tests {
         );
         assert_eq!(
             context.read(area, |area| area.state.selection).unwrap(),
-            TextSelection {
-                anchor: 0,
-                focus: 3
-            }
+            TextSelection::new(0, 3)
         );
         assert_eq!(
             context.read(other, |area| area.state.selection).unwrap(),
@@ -4987,10 +4933,7 @@ mod read_only_tests {
         context.focus_node(document, other.stable_id()).unwrap();
         assert_eq!(
             context.read(area, |area| area.state.selection).unwrap(),
-            TextSelection {
-                anchor: 0,
-                focus: "猫 and 猫".len()
-            }
+            TextSelection::new(0, "猫 and 猫".len())
         );
     }
     #[test]

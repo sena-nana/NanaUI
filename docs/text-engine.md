@@ -1046,25 +1046,46 @@ caret_geometry_queries          对保留几何的 caret 查询
 | 阶段 | 状态 |
 | --- | --- |
 | 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
-| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_highlights` / 新增的 `TextShaper::text_offset_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、点击、每趟度量）各做一次与文本长度成正比的字节比较以确认几何仍是这份文本（不 shape、不 layout）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、点击、每趟度量）各做一次与文本长度成正比的字节比较以确认几何仍是这份文本（不 shape、不 layout）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）在 #97 切换绘制前保持原样 |
 | 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
 
 引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
 caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；在 30 段 TextArea 中间打一个字只新建
 1 个 layout（`paragraphs_relayout_from_edit == 1`）；每次 preedit 更新只新建 1 个 layout，preedit 不计
-`editable_mutations`；点击经 `text_offset_at_point` 命中且不排版。
+`editable_mutations`；点击经 `text_hit_at_point` 命中且不排版；软换行行尾（`"中" * 120`）行内点一次、下一行行首点一次拿到同一个偏移，caret 分别画在两行上。
 
 顺带修正：多行编辑器的值保留换行，不再跟随 `white-space` 折叠（此前引擎宿主会把 TextArea 排成一段）；
 组字中焦点移走时取消的 preedit 不再继续画在原编辑器里（`remove_ime` 重新派生 presentation）；
 初次挂载编辑器不再计作一次编辑；
 单行字段的选区 / preedit x 改用本批次已持有的 presentation 布局探测，不再额外排一份不换行的全文。
 
+### Runtime caret affinity
+
+`TextSelection { anchor, focus, affinity }` 的 affinity 属于 `focus`——caret 那一端，类型就是
+`nana_text::Affinity`（Runtime 重导出为 `TextAffinity`），探针直接把它交给引擎的 caret 几何，不再多一层
+转换。同一个字节偏移在屏幕上可以是两个位置：没有悬挂空白的软换行处（CJK 这类行尾即下一行行首）
+`Upstream` 是上一行行尾、`Downstream` 是下一行行首；BiDi 边界两侧同理。只有指针命中与视觉移动知道
+用户指的是哪一个，所以它们把 affinity 一路写进选区；纯按字节派生选区的构造（`TextSelection::new` /
+`caret`，以及所有编辑）取默认的 `Downstream`，不换行的文本两者画在同一处。
+
+- affinity 计入 `TextSelection` 的相等性：同一偏移换一侧就是屏幕上的另一个位置，`SetTextSelection`
+  因此照常标脏重画，并记一次 caret 更新。
+- 编辑把 affinity 归零：附加光标的偏移被编辑挪动过就退回 `Downstream`（当初解析在哪一侧不再作数），
+  `TextSelection::new` 与合并选区同样如此；吸附到原子边界改了落点时也归零。
+- 探针合同：`TextShaper::text_caret_position(offset, affinity, ..)` 回答「带这个 affinity 的 caret 画在
+  哪」，`text_position` 仍是「这个边界的原点」（选区条带、run 起点、括号框等按字节派生的几何用它）；
+  `text_hit_at_point` 返回 `TextHit { offset, affinity }`。默认实现忽略 affinity，不换行或分不出两侧的
+  宿主每个偏移只有一个位置——产品 `NanaTextShaper`（cosmic）就走这条路，一律 `Downstream`。
+- `NanaTextEngineShaper` 直接用 `EditorGeometry::caret_rect(offset, affinity)` 与 `hit_test` 的 affinity，
+  #96 里「命中软换行行尾退回前一个 grapheme」的兜底已经删掉：那个行尾位置现在点得到，caret 留在被点
+  中的行，BiDi 边界点哪一侧就画哪一侧。
+- a11y 没有 affinity（AccessKit 的选区只有字符下标），`AccessibilityAction::SetSelection` 落 `Downstream`。
+
 ### 本阶段没做的
 
 | 项 | 状态 |
 | --- | --- |
 | caret blink | Runtime 目前没有 blink；它属于 scene overlay 的可见性 / 不透明度（paint），不得推进任何文本 revision。`nana-text` 侧门禁已钉住「只查询几何」零文本工作 |
-| Runtime caret affinity | `TextSelection` / `TextShaper` 探针合同没有 affinity（140 处构造，且是 Vue / JS 合同），Runtime 按 downstream 画 caret。引擎宿主的点命中在「没有悬挂空白的软换行行尾」（CJK 这类行尾即下一行行首）退回前一个 grapheme，caret 留在被点中的行、上方向键不会卡住；代价是这个行尾位置本身点不到，BiDi 边界点击也可能画到另一侧。`nana-text` 的 `EditSelection` 已带 affinity，接入需要单独改合同 |
 | Runtime 视觉序左右移动 | `nana-text` 提供 `Motion::Left/Right`；Runtime 的 `TextCaretIntent::Left/Right` 仍是逻辑 grapheme 移动，接视觉序需要平台语义决定 |
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |

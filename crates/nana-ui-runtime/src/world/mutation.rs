@@ -462,11 +462,7 @@ impl<'a> ValidationPlan<'a> {
                             || *end > text.len()
                             || !text.is_char_boundary(*start)
                             || !text.is_char_boundary(*end)
-                            || !crate::TextSelection {
-                                anchor: *start,
-                                focus: *end,
-                            }
-                            .is_valid_for(text))
+                            || !crate::TextSelection::new(*start, *end).is_valid_for(text))
                     {
                         return Err(UiWorldError::InvalidIme(*id));
                     }

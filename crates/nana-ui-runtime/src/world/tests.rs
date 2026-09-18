@@ -1790,13 +1790,7 @@ fn committed_text_selection_is_unicode_safe_and_batch_atomic() {
         },
     );
     queue.set_text_input(node(1), Some(TextInputState::new("你好ab")));
-    queue.set_text_selection(
-        node(1),
-        crate::TextSelection {
-            anchor: 0,
-            focus: "你".len(),
-        },
-    );
+    queue.set_text_selection(node(1), crate::TextSelection::new(0, "你".len()));
     queue.replace_text_selection(node(1), "娜");
     world.commit(queue).unwrap();
     let state = world.text_input(node(1)).unwrap();
@@ -1805,13 +1799,7 @@ fn committed_text_selection_is_unicode_safe_and_batch_atomic() {
 
     let generation = world.generation();
     let mut invalid = MutationQueue::new();
-    invalid.set_text_selection(
-        node(1),
-        crate::TextSelection {
-            anchor: 1,
-            focus: 1,
-        },
-    );
+    invalid.set_text_selection(node(1), crate::TextSelection::new(1, 1));
     assert_eq!(
         world.commit(invalid),
         Err(UiWorldError::InvalidTextInput(node(1)))
@@ -1896,10 +1884,7 @@ fn text_input_presentation_masks_graphemes_and_replaces_selection_with_preedit()
     let value = "A👩‍💻界";
     let state = TextInputState {
         value: value.into(),
-        selection: crate::TextSelection {
-            anchor: "A".len(),
-            focus: "A👩‍💻".len(),
-        },
+        selection: crate::TextSelection::new("A".len(), "A👩‍💻".len()),
         additional_selections: Vec::new(),
     };
     let masked = build_text_input_presentation_source(
@@ -4713,26 +4698,12 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
 
     // 多行选区：无标记。
     let value = "one\ntwo";
-    let presentation = present(
-        value,
-        crate::TextSelection {
-            anchor: 0,
-            focus: value.len(),
-        },
-        true,
-    );
+    let presentation = present(value, crate::TextSelection::new(0, value.len()), true);
     assert!(presentation.occurrence_marks.is_empty());
 
     // 非空单行选区：选中文本按子串匹配（"cou" 命中 "counts" 内部），
     // 选区本身不重复画。
-    let presentation = present(
-        "cou cou counts",
-        crate::TextSelection {
-            anchor: 0,
-            focus: 3,
-        },
-        true,
-    );
+    let presentation = present("cou cou counts", crate::TextSelection::new(0, 3), true);
     assert_eq!(presentation.occurrence_marks.len(), 2);
 
     // 上限截断：250 处出现时最多画 199 条（200 上限内再扣掉光标处）。
@@ -5021,10 +4992,7 @@ fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
     let value = "甲乙\nthird\n末";
     let state = TextInputState {
         value: value.into(),
-        selection: crate::TextSelection {
-            anchor: "甲".len(),
-            focus: "甲乙\nthird\n".len(),
-        },
+        selection: crate::TextSelection::new("甲".len(), "甲乙\nthird\n".len()),
         additional_selections: Vec::new(),
     };
     let style = ComputedStyle {
@@ -5144,10 +5112,7 @@ fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
     // 主选区（第二行）+ 两个收起的附加光标（第二、三行）。
     let state = TextInputState {
         value: value.into(),
-        selection: crate::TextSelection {
-            anchor: "甲".len(),
-            focus: "甲乙\nthird\n".len(),
-        },
+        selection: crate::TextSelection::new("甲".len(), "甲乙\nthird\n".len()),
         additional_selections: vec![
             crate::TextSelection::caret("甲乙\n".len()),
             crate::TextSelection::caret(value.len()),
@@ -5170,10 +5135,10 @@ fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
     let ranged = TextInputState {
         value: value.into(),
         selection: crate::TextSelection::caret(0),
-        additional_selections: vec![crate::TextSelection {
-            anchor: "甲乙\nth".len(),
-            focus: "甲乙\nthird".len(),
-        }],
+        additional_selections: vec![crate::TextSelection::new(
+            "甲乙\nth".len(),
+            "甲乙\nthird".len(),
+        )],
     };
     let presentation = present(&ranged, None);
     assert_eq!(presentation.selection_lines.len(), 1);

@@ -116,10 +116,7 @@ fn maxlength_advanced_replace_rejects_growth_without_changing_selection_and_acce
         .unwrap();
     cx.focus_node(doc, input.stable_id()).unwrap();
     cx.update_component(input, |view, _| {
-        view.state.selection = TextSelection {
-            anchor: 0,
-            focus: 2,
-        }
+        view.state.selection = TextSelection::new(0, 2)
     })
     .unwrap();
     let before = cx.read(input, |view| view.state.clone()).unwrap();

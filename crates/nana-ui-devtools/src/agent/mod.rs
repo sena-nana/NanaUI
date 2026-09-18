@@ -36,7 +36,8 @@ pub use vue::{VueAgentSession, semantic_counter_artifact, semantic_counter_sourc
 use std::collections::BTreeMap;
 
 use nana_ui::runtime::{
-    AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId, TextSelection,
+    AccessibilityNode, AccessibilityRole, SelectionOrientation, StableNodeId,
+    TextAffinity as Affinity, TextSelection,
 };
 use serde::{Deserialize, Serialize};
 
@@ -78,6 +79,14 @@ pub struct BoundsDump {
 pub struct SelectionDump {
     pub anchor: usize,
     pub focus: usize,
+    /// 见 `TextSelection::affinity`：`focus` 落在软换行 / BiDi 边界时 caret
+    /// 画在哪一侧。a11y 自己没有 affinity，这里投影的是 Runtime 的状态。
+    #[serde(default, skip_serializing_if = "is_downstream")]
+    pub affinity: Affinity,
+}
+
+fn is_downstream(affinity: &Affinity) -> bool {
+    *affinity == Affinity::Downstream
 }
 
 /// Every field an [`AccessibilityNode`] carries.
@@ -229,6 +238,7 @@ fn selection_dump(selection: TextSelection) -> SelectionDump {
     SelectionDump {
         anchor: selection.anchor,
         focus: selection.focus,
+        affinity: selection.affinity,
     }
 }
 

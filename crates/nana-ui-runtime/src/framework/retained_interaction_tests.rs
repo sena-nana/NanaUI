@@ -19,10 +19,7 @@ fn keyed_input_props_preserve_selection_and_preedit_until_value_changes() {
     let input = input.unwrap();
     assert!(cx.focus_node(document(), input.id).unwrap());
     cx.update_component(input, |field, _| {
-        field.state.selection = TextSelection {
-            anchor: 1,
-            focus: 3,
-        }
+        field.state.selection = TextSelection::new(1, 3)
     })
     .unwrap();
     let mut mutations = MutationQueue::new();
@@ -41,10 +38,7 @@ fn keyed_input_props_preserve_selection_and_preedit_until_value_changes() {
     .unwrap();
     assert_eq!(
         cx.read(input, |field| field.state.selection).unwrap(),
-        TextSelection {
-            anchor: 1,
-            focus: 3
-        }
+        TextSelection::new(1, 3)
     );
     assert!(cx.world.ime(input.id).is_some());
     cx.mount(parent, |ui| {

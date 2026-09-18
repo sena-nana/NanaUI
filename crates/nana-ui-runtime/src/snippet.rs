@@ -522,10 +522,10 @@ impl crate::components::TextSnippetSession {
             .filter(|(r, _)| r.end <= primary.start && r.start != start)
             .map(|(r, t)| t.len() as isize - r.len() as isize)
             .sum();
-        let selection = crate::TextSelection {
-            anchor: selection.anchor.checked_add_signed(shift)?,
-            focus: selection.focus.checked_add_signed(shift)?,
-        };
+        let selection = crate::TextSelection::new(
+            selection.anchor.checked_add_signed(shift)?,
+            selection.focus.checked_add_signed(shift)?,
+        );
         let mut output = old.to_owned();
         let mut session = self.clone();
         for (range, text) in edits.into_iter().rev() {

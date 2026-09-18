@@ -21,6 +21,13 @@ pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorR
 
 use crate::{NodeKind, StableNodeId};
 
+/// Which side of a byte offset a caret belongs to — see [`TextSelection`].
+///
+/// The Runtime contract speaks `nana-text`'s affinity rather than a parallel
+/// enum of its own: a probe hands it straight to the engine's caret geometry,
+/// and a host without an engine only ever produces the default.
+pub use nana_text::Affinity as TextAffinity;
+
 static DEFAULT_LAYOUT_STYLE: LazyLock<Arc<LayoutStyle>> =
     LazyLock::new(|| Arc::new(LayoutStyle::default()));
 
@@ -1759,6 +1766,24 @@ pub enum TextShaping {
     Advanced,
 }
 
+/// A pointer hit resolved onto a caret: the UTF-8 boundary, plus which side of
+/// it the point fell on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextHit {
+    pub offset: usize,
+    pub affinity: TextAffinity,
+}
+
+impl TextHit {
+    /// A hit whose backend cannot tell the two sides of an offset apart.
+    pub const fn downstream(offset: usize) -> Self {
+        Self {
+            offset,
+            affinity: TextAffinity::Downstream,
+        }
+    }
+}
+
 pub trait TextShaper {
     /// Run related probes against one immutable text snapshot. Backends may keep
     /// its validated layout resident for the callback; individual probe results
@@ -1882,10 +1907,33 @@ pub trait TextShaper {
         )
     }
 
-    /// The UTF-8 boundary whose caret is nearest a paragraph-local point, for
-    /// backends that can answer it from their layout directly. `None` makes
-    /// callers search with [`Self::text_position`] probes instead.
-    fn text_offset_at_point(
+    /// Where a caret with this affinity draws, as [`Self::text_position`]
+    /// reports a boundary's origin.
+    ///
+    /// The default ignores affinity: a backend that does not wrap, or cannot
+    /// tell the two sides of a wrap apart, draws one position per offset.
+    /// Backends with paragraph geometry override this and answer the side the
+    /// caret is on.
+    fn text_caret_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        byte_offset: usize,
+        _affinity: TextAffinity,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.text_position(id, text, byte_offset, style, constraints)
+    }
+
+    /// The caret nearest a paragraph-local point, for backends that can answer
+    /// it from their layout directly. `None` makes callers search with
+    /// [`Self::text_position`] probes instead.
+    ///
+    /// The hit carries affinity because the point decides it: at a soft wrap
+    /// with no hung whitespace the line's end and the next line's start are
+    /// one offset, and only the side that was clicked says which.
+    fn text_hit_at_point(
         &mut self,
         _id: StableNodeId,
         _text: &TextContent,
@@ -1893,7 +1941,7 @@ pub trait TextShaper {
         _y: f32,
         _style: &ComputedStyle,
         _constraints: TextShapeConstraints,
-    ) -> Option<usize> {
+    ) -> Option<TextHit> {
         None
     }
 
@@ -2579,18 +2627,44 @@ pub struct ImeComposition {
     pub selection: Option<(usize, usize)>,
 }
 
+/// A caret (`anchor == focus`) or a selection, in committed-value bytes.
+///
+/// `affinity` belongs to `focus` — the caret end. One byte offset can be two
+/// positions on screen: the end of the line before a soft wrap
+/// ([`TextAffinity::Upstream`]) and the start of the line after it
+/// ([`TextAffinity::Downstream`]), and either side of a BiDi boundary. Only a
+/// pointer hit and visual motion know which one the user meant, so they carry
+/// it here; everything that derives a selection from bytes alone
+/// ([`TextSelection::new`], [`TextSelection::caret`], every edit) leaves the
+/// default, and text that does not wrap draws both the same.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TextSelection {
     pub anchor: usize,
     pub focus: usize,
+    /// Which side of `focus` the caret draws on. Equality counts it: the same
+    /// offset with the other affinity is a different place on screen.
+    pub affinity: TextAffinity,
 }
 
 impl TextSelection {
     pub const fn caret(offset: usize) -> Self {
+        Self::new(offset, offset)
+    }
+
+    /// A selection whose caret draws downstream — the affinity every offset
+    /// derived from bytes alone gets.
+    pub const fn new(anchor: usize, focus: usize) -> Self {
         Self {
-            anchor: offset,
-            focus: offset,
+            anchor,
+            focus,
+            affinity: TextAffinity::Downstream,
         }
+    }
+
+    /// The same span with the caret on `affinity`'s side of `focus`.
+    pub const fn with_affinity(mut self, affinity: TextAffinity) -> Self {
+        self.affinity = affinity;
+        self
     }
 
     pub fn ordered(self) -> std::ops::Range<usize> {
@@ -2632,10 +2706,7 @@ fn merge_selection_set(
             Some((last, last_is_primary)) if last.ordered().end >= next.ordered().start => {
                 let start = last.ordered().start;
                 let end = last.ordered().end.max(next.ordered().end);
-                *last = TextSelection {
-                    anchor: start,
-                    focus: end,
-                };
+                *last = TextSelection::new(start, end);
                 *last_is_primary |= is_primary;
             }
             _ => merged.push((next, is_primary)),
@@ -2804,8 +2875,13 @@ impl TextInputState {
                     start + inserted
                 }
             };
+            let focus = map(selection.focus);
+            // 偏移被编辑挪动过，它当初解析在软换行哪一侧就不再作数。
+            if focus != selection.focus {
+                selection.affinity = TextAffinity::Downstream;
+            }
             selection.anchor = map(selection.anchor);
-            selection.focus = map(selection.focus);
+            selection.focus = focus;
         }
     }
 
@@ -2928,10 +3004,10 @@ impl TextInputState {
             self.remap_selections_after_edit(range.start, range.len(), 0);
         }
         self.selection = if composing {
-            TextSelection {
-                anchor: deletion.map_offset(anchor.start),
-                focus: deletion.map_offset(anchor.end),
-            }
+            TextSelection::new(
+                deletion.map_offset(anchor.start),
+                deletion.map_offset(anchor.end),
+            )
         } else {
             TextSelection::caret(deletion.before.start)
         };
@@ -3196,7 +3272,41 @@ impl StandardVisual {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextInputState, TextSelection};
+    use super::{TextAffinity, TextInputState, TextSelection};
+
+    #[test]
+    fn affinity_is_part_of_where_a_caret_is() {
+        // 同一偏移的两侧是屏幕上的两个位置，所以它们不是同一个选区——
+        // 否则换一侧不会标脏，caret 不会重画。
+        let downstream = TextSelection::caret(3);
+        let upstream = downstream.with_affinity(TextAffinity::Upstream);
+        assert_eq!(downstream.affinity, TextAffinity::Downstream);
+        assert_ne!(downstream, upstream);
+        assert_eq!(upstream.ordered(), downstream.ordered());
+        assert!(upstream.is_valid_for("abcdef"));
+    }
+
+    #[test]
+    fn an_edit_that_moves_an_extra_cursor_drops_its_affinity() {
+        let mut multi = state(
+            "abcdef",
+            TextSelection::caret(0),
+            vec![
+                TextSelection::caret(1).with_affinity(TextAffinity::Upstream),
+                TextSelection::caret(5).with_affinity(TextAffinity::Upstream),
+            ],
+        );
+        // 在 3 处插一个字节：1 不动，5 右移——右移的那个当初解析在软换行
+        // 哪一侧不再作数。
+        multi.remap_selections_after_edit(3, 0, 1);
+        assert_eq!(
+            multi.additional_selections,
+            vec![
+                TextSelection::caret(1).with_affinity(TextAffinity::Upstream),
+                TextSelection::caret(6),
+            ]
+        );
+    }
 
     fn state(
         value: &str,
@@ -3219,44 +3329,23 @@ mod tests {
         // 附加光标按 offset 排序；主光标保持自身身份（不必排在最前）。
         let multi = state(
             "abcd",
-            TextSelection {
-                anchor: 3,
-                focus: 4,
-            },
+            TextSelection::new(3, 4),
             vec![TextSelection::caret(0)],
         );
         assert_eq!(
             multi.selections().into_owned(),
-            vec![
-                TextSelection::caret(0),
-                TextSelection {
-                    anchor: 3,
-                    focus: 4
-                }
-            ]
+            vec![TextSelection::caret(0), TextSelection::new(3, 4)]
         );
-        assert_eq!(
-            multi.selection,
-            TextSelection {
-                anchor: 3,
-                focus: 4
-            }
-        );
+        assert_eq!(multi.selection, TextSelection::new(3, 4));
     }
 
     #[test]
     fn normalize_fuses_touching_spans_into_the_primary() {
         let mut multi = state(
             "abcdef",
-            TextSelection {
-                anchor: 2,
-                focus: 3,
-            },
+            TextSelection::new(2, 3),
             vec![
-                TextSelection {
-                    anchor: 3,
-                    focus: 5,
-                },
+                TextSelection::new(3, 5),
                 TextSelection::caret(5),
                 TextSelection::caret(0),
             ],
@@ -3264,13 +3353,7 @@ mod tests {
         multi.normalize_selections();
         // 主光标吸收与其相接的 span（身份不转移），其余保持附加集合。
         // caret(5) 与 [2,5) 相接但为空跨度，不延长并集。
-        assert_eq!(
-            multi.selection,
-            TextSelection {
-                anchor: 2,
-                focus: 5
-            }
-        );
+        assert_eq!(multi.selection, TextSelection::new(2, 5));
         assert_eq!(multi.additional_selections, vec![TextSelection::caret(0)]);
     }
 

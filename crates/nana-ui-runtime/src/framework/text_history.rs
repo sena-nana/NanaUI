@@ -380,10 +380,7 @@ mod editor_tests {
                         crate::AccessibilityActionRequest {
                             target: area.stable_id(),
                             action: crate::AccessibilityAction::SetSelection(
-                                crate::TextSelection {
-                                    anchor: 0,
-                                    focus: 5
-                                }
+                                crate::TextSelection::new(0, 5)
                             ),
                         }
                     )
@@ -414,10 +411,9 @@ mod editor_tests {
                 document(),
                 crate::AccessibilityActionRequest {
                     target: area.stable_id(),
-                    action: crate::AccessibilityAction::SetSelection(crate::TextSelection {
-                        anchor: 0,
-                        focus: 999
-                    }),
+                    action: crate::AccessibilityAction::SetSelection(crate::TextSelection::new(
+                        0, 999
+                    )),
                 }
             )
             .unwrap()

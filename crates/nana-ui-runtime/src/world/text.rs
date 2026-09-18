@@ -111,7 +111,20 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
             .text_position(id, text, offset, style, constraints)
     }
 
-    fn text_offset_at_point(
+    fn text_caret_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: crate::TextAffinity,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.inner
+            .text_caret_position(id, text, offset, affinity, style, constraints)
+    }
+
+    fn text_hit_at_point(
         &mut self,
         id: StableNodeId,
         text: &TextContent,
@@ -119,9 +132,9 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         y: f32,
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
-    ) -> Option<usize> {
+    ) -> Option<crate::TextHit> {
         self.inner
-            .text_offset_at_point(id, text, x, y, style, constraints)
+            .text_hit_at_point(id, text, x, y, style, constraints)
     }
 
     fn text_highlights(
@@ -254,7 +267,20 @@ impl TextShaper for PreparedCountingShaper<'_> {
         self.inner
             .text_position(id, text, offset, style, constraints)
     }
-    fn text_offset_at_point(
+
+    fn text_caret_position(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        offset: usize,
+        affinity: crate::TextAffinity,
+        style: &ComputedStyle,
+        constraints: crate::TextShapeConstraints,
+    ) -> (f32, f32, f32) {
+        self.inner
+            .text_caret_position(id, text, offset, affinity, style, constraints)
+    }
+    fn text_hit_at_point(
         &mut self,
         id: StableNodeId,
         text: &TextContent,
@@ -262,9 +288,9 @@ impl TextShaper for PreparedCountingShaper<'_> {
         y: f32,
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
-    ) -> Option<usize> {
+    ) -> Option<crate::TextHit> {
         self.inner
-            .text_offset_at_point(id, text, x, y, style, constraints)
+            .text_hit_at_point(id, text, x, y, style, constraints)
     }
 
     fn text_highlights(
@@ -1117,8 +1143,12 @@ pub(super) struct TextInputPresentationSource {
     pub(super) placeholder: bool,
     pub(super) selection: Option<(usize, usize)>,
     pub(super) caret: usize,
-    /// 附加多光标的显示空间 `(start, end)` 区间（收起时光标也在 `caret` 表）。
-    pub(super) additional: Vec<(usize, usize)>,
+    /// `caret` 落在软换行 / BiDi 边界时画在哪一侧。占位符与组字期的 caret
+    /// 由本模块自己派生（不是用户落的点），一律 downstream。
+    pub(super) caret_affinity: crate::TextAffinity,
+    /// 附加多光标的显示空间 `(start, end)` 区间与 caret 的 affinity（收起时
+    /// 光标也在 `caret` 表）。
+    pub(super) additional: Vec<(usize, usize, crate::TextAffinity)>,
     pub(super) preedit: Option<(usize, usize)>,
     pub(super) multiline: bool,
     /// 代码编辑器扩展：诊断标记 / 查找匹配高亮 / 行号栏（占位符态跳过行号）。
@@ -1215,6 +1245,7 @@ pub(super) fn build_text_input_presentation_source(
             placeholder: true,
             selection: None,
             caret: 0,
+            caret_affinity: crate::TextAffinity::Downstream,
             additional: Vec::new(),
             preedit: None,
             multiline,
@@ -1285,6 +1316,7 @@ pub(super) fn build_text_input_presentation_source(
             placeholder: false,
             selection: None,
             caret: preedit_start + ime_focus,
+            caret_affinity: crate::TextAffinity::Downstream,
             additional: Vec::new(),
             preedit: Some((preedit_start, preedit_end)),
             multiline,
@@ -1322,7 +1354,7 @@ pub(super) fn build_text_input_presentation_source(
         .map(|selection| {
             let start = map_offset(display_offset(&state.value, selection.anchor));
             let end = map_offset(display_offset(&state.value, selection.focus));
-            (start.min(end), start.max(end))
+            (start.min(end), start.max(end), selection.affinity)
         })
         .collect();
     // 诊断/匹配 span 端点映射到显示空间；完全被隐藏的 span 丢弃。
@@ -1390,6 +1422,7 @@ pub(super) fn build_text_input_presentation_source(
         placeholder: false,
         selection: (anchor != focus).then_some((anchor.min(focus), anchor.max(focus))),
         caret: focus,
+        caret_affinity: selection.affinity,
         additional,
         preedit: None,
         multiline,
@@ -1804,10 +1837,11 @@ fn shape_text_input_probes(
     previous_overlays: &crate::components::TextOverlayMetrics,
     shaper: &mut dyn TextShaper,
 ) -> TextInputPresentation {
-    let (caret_x, caret_y, line_height) = shaper.text_position(
+    let (caret_x, caret_y, line_height) = shaper.text_caret_position(
         id,
         &source.text,
         source.caret,
+        source.caret_affinity,
         style,
         presentation_constraints,
     );
@@ -1816,7 +1850,7 @@ fn shape_text_input_probes(
     let mut selection_lines = source.selection.map_or_else(Vec::new, |selection| {
         shaper.text_highlights(id, &source.text, selection, style, presentation_constraints)
     });
-    for &(start, end) in &source.additional {
+    for &(start, end, _) in &source.additional {
         selection_lines.extend(shaper.text_highlights(
             id,
             &source.text,
@@ -2346,12 +2380,13 @@ fn shape_text_input_probes(
             source
                 .additional
                 .iter()
-                .filter(|(start, end)| start == end)
-                .map(|&(offset, _)| {
-                    let (x, y, _) = shaper.text_position(
+                .filter(|(start, end, _)| start == end)
+                .map(|&(offset, _, affinity)| {
+                    let (x, y, _) = shaper.text_caret_position(
                         id,
                         &source.text,
                         offset,
+                        affinity,
                         style,
                         presentation_constraints,
                     );

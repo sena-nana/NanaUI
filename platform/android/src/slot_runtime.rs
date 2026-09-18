@@ -874,10 +874,10 @@ mod tests {
         assert!(
             slot.apply_accessibility_action(AccessibilityActionRequest {
                 target,
-                action: AccessibilityAction::SetSelection(nana_ui::runtime::TextSelection {
-                    anchor: 0,
-                    focus: "你".len(),
-                }),
+                action: AccessibilityAction::SetSelection(nana_ui::runtime::TextSelection::new(
+                    0,
+                    "你".len()
+                )),
             })
             .expect("set selection")
         );

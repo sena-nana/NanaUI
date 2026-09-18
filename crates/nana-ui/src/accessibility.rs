@@ -450,10 +450,12 @@ impl AccessibilityProjector {
                     return None;
                 }
                 let value = node.value.as_deref().unwrap_or_default();
-                nana_ui_runtime::AccessibilityAction::SetSelection(nana_ui_runtime::TextSelection {
-                    anchor: character_index_to_byte(value, selection.anchor.character_index)?,
-                    focus: character_index_to_byte(value, selection.focus.character_index)?,
-                })
+                nana_ui_runtime::AccessibilityAction::SetSelection(
+                    nana_ui_runtime::TextSelection::new(
+                        character_index_to_byte(value, selection.anchor.character_index)?,
+                        character_index_to_byte(value, selection.focus.character_index)?,
+                    ),
+                )
             }
             _ => return None,
         };
@@ -1782,10 +1784,7 @@ mod tests {
         input.role = AccessibilityRole::TextInput;
         input.editable = true;
         input.value = Some("你a".into());
-        input.selection = Some(nana_ui_runtime::TextSelection {
-            anchor: 0,
-            focus: "你".len(),
-        });
+        input.selection = Some(nana_ui_runtime::TextSelection::new(0, "你".len()));
         let (projector, update) = AccessibilityProjector::new(vec![root, input], true, 1.0);
         let text_run_id = projector.text_runs[&StableNodeId::new(2).unwrap()];
         let input = &update
@@ -1829,10 +1828,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             projected.action,
-            nana_ui_runtime::AccessibilityAction::SetSelection(nana_ui_runtime::TextSelection {
-                anchor: "你a".len(),
-                focus: "你".len(),
-            })
+            nana_ui_runtime::AccessibilityAction::SetSelection(
+                nana_ui_runtime::TextSelection::new("你a".len(), "你".len())
+            )
         );
 
         for (node, character_index) in [(text_run_id, 3), (NodeId(2), 0)] {

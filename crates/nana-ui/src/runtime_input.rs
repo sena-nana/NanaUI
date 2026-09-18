@@ -5534,10 +5534,7 @@ mod tests {
         // 选中第一个 "ab" 后替换，并选中替换后的文本。
         context
             .update_component(area, |area, _cx| {
-                area.state.selection = TextSelection {
-                    anchor: 0,
-                    focus: 2,
-                };
+                area.state.selection = TextSelection::new(0, 2);
             })
             .unwrap();
         assert!(
@@ -5775,10 +5772,7 @@ mod tests {
         // Ctrl+Shift+U 转大写选区，Ctrl+U 转小写。
         context
             .update_component(area, |area, _cx| {
-                area.state.selection = TextSelection {
-                    anchor: 0,
-                    focus: 5,
-                };
+                area.state.selection = TextSelection::new(0, 5);
             })
             .unwrap();
         assert!(
@@ -6000,10 +5994,7 @@ mod tests {
         let events = track_text_changed(&mut context, area);
         context
             .update_component(area, |area, _cx| {
-                area.state.selection = TextSelection {
-                    anchor: 0,
-                    focus: "pear\napple\npear".len(),
-                };
+                area.state.selection = TextSelection::new(0, "pear\napple\npear".len());
             })
             .unwrap();
 
@@ -6022,10 +6013,7 @@ mod tests {
         // 降序还原顺序差异。
         context
             .update_component(area, |area, _cx| {
-                area.state.selection = TextSelection {
-                    anchor: 0,
-                    focus: "apple\npear".len(),
-                };
+                area.state.selection = TextSelection::new(0, "apple\npear".len());
             })
             .unwrap();
         assert!(
@@ -6073,13 +6061,10 @@ mod tests {
     ) {
         context
             .update_component(area, |area, _cx| {
-                area.state.selection = TextSelection {
-                    anchor: primary.0,
-                    focus: primary.1,
-                };
+                area.state.selection = TextSelection::new(primary.0, primary.1);
                 area.state.additional_selections = additional
                     .into_iter()
-                    .map(|(anchor, focus)| TextSelection { anchor, focus })
+                    .map(|(anchor, focus)| TextSelection::new(anchor, focus))
                     .collect();
             })
             .unwrap();

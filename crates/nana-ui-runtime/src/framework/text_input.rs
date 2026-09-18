@@ -416,10 +416,7 @@ impl AppContext {
             return Ok(false);
         }
         let changed = self.update_component(entity, |editable, cx| {
-            let selection = TextSelection {
-                anchor: 0,
-                focus: editable.state().value.len(),
-            };
+            let selection = TextSelection::new(0, editable.state().value.len());
             if editable.state().selection == selection
                 && !editable.state().has_additional_selections()
             {
@@ -465,10 +462,7 @@ impl AppContext {
                     else {
                         return false;
                     };
-                    state.selection = TextSelection {
-                        anchor: previous,
-                        focus: caret,
-                    };
+                    state.selection = TextSelection::new(previous, caret);
                 }
             }
             if !editable.replace_selection("") {
@@ -603,10 +597,8 @@ impl AppContext {
                 let range = editable.state().selection.ordered();
                 let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
                 if expanded != range {
-                    editable.state_mut().selection = crate::TextSelection {
-                        anchor: expanded.start,
-                        focus: expanded.end,
-                    };
+                    editable.state_mut().selection =
+                        crate::TextSelection::new(expanded.start, expanded.end);
                 }
             }
             if !editable.replace_selection(text) {

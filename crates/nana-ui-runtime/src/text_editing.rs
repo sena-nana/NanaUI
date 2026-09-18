@@ -86,10 +86,7 @@ pub fn moved_selection(
     extend: bool,
 ) -> crate::TextSelection {
     if extend {
-        crate::TextSelection {
-            anchor: selection.anchor,
-            focus,
-        }
+        crate::TextSelection::new(selection.anchor, focus)
     } else {
         crate::TextSelection::caret(focus)
     }
@@ -957,7 +954,7 @@ pub fn toggle_line_comment(
     };
     let anchor = map(selection.anchor);
     let focus = map(selection.focus);
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 /// Insert one indentation unit at the caret, or indent every touched line
@@ -974,13 +971,7 @@ pub fn indent_selection(
         next.push_str(indent_unit);
         next.push_str(&value[range.start..]);
         let caret = range.start + indent_unit.len();
-        return Some((
-            next,
-            crate::TextSelection {
-                anchor: caret,
-                focus: caret,
-            },
-        ));
+        return Some((next, crate::TextSelection::new(caret, caret)));
     }
     shift_selected_lines(value, selection, indent_unit, 1)
 }
@@ -1054,7 +1045,7 @@ fn shift_selected_lines(
     };
     let anchor = map(selection.anchor);
     let focus = map(selection.focus);
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 fn remove_indent(text: &str, indent_unit: &str) -> usize {
@@ -1159,7 +1150,7 @@ pub fn move_lines(
     let map = |offset: usize| clamp_boundary(&next, (offset as isize + delta).max(0) as usize);
     let anchor = map(selection.anchor);
     let focus = map(selection.focus);
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 /// Copy the block of lines the selection touches and insert the copy on the
@@ -1185,7 +1176,7 @@ pub fn duplicate_lines(
     let map = |offset: usize| clamp_boundary(&next, (offset as isize + delta).max(0) as usize);
     let anchor = map(selection.anchor);
     let focus = map(selection.focus);
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 /// Delete the block of lines the selection touches, including one adjacent
@@ -1286,7 +1277,7 @@ pub fn join_lines(
     };
     let anchor = clamp_boundary(&next, map(selection.anchor));
     let focus = clamp_boundary(&next, map(selection.focus));
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 /// Uppercase (`upper`) or lowercase the selection. UTF-8 safe: case
@@ -1322,7 +1313,7 @@ pub fn transform_selection_case(
     };
     let anchor = clamp_boundary(&next, map(selection.anchor));
     let focus = clamp_boundary(&next, map(selection.focus));
-    Some((next, crate::TextSelection { anchor, focus }))
+    Some((next, crate::TextSelection::new(anchor, focus)))
 }
 
 /// Sort the lines the selection touches by byte order (`str` `Ord`, so the
@@ -1365,15 +1356,9 @@ pub fn sort_lines(
     next.push_str(suffix);
     let block_end_next = next.len() - suffix.len();
     let selection = if selection.anchor <= selection.focus {
-        crate::TextSelection {
-            anchor: block_start,
-            focus: block_end_next,
-        }
+        crate::TextSelection::new(block_start, block_end_next)
     } else {
-        crate::TextSelection {
-            anchor: block_end_next,
-            focus: block_start,
-        }
+        crate::TextSelection::new(block_end_next, block_start)
     };
     Some((next, selection))
 }
@@ -1545,23 +1530,14 @@ pub fn expanded_selection(
         && let (word_start, word_end) = word_range_at(value, start)
         && word_start < word_end
     {
-        return Some(crate::TextSelection {
-            anchor: word_start,
-            focus: word_end,
-        });
+        return Some(crate::TextSelection::new(word_start, word_end));
     }
     if let Some((open, close)) = bracket_interior_containing(value, start, end)
         && (open != start || close != end)
     {
-        return Some(crate::TextSelection {
-            anchor: open,
-            focus: close,
-        });
+        return Some(crate::TextSelection::new(open, close));
     }
-    (start != 0 || end != value.len()).then_some(crate::TextSelection {
-        anchor: 0,
-        focus: value.len(),
-    })
+    (start != 0 || end != value.len()).then_some(crate::TextSelection::new(0, value.len()))
 }
 
 /// Literal search options for [`find_matches`] and friends. Regex search is
@@ -1939,10 +1915,7 @@ fn translate_selection(
             own.output_start + (offset - own.range.start)
         }
     };
-    crate::TextSelection {
-        anchor: to_output(selection.anchor),
-        focus: to_output(selection.focus),
-    }
+    crate::TextSelection::new(to_output(selection.anchor), to_output(selection.focus))
 }
 
 /// Apply every cursor's edit in one pass: edits are computed per selection
@@ -2020,10 +1993,10 @@ pub fn apply_cursor_edits(
                 let (span, edited) = &accepted[accepted_index];
                 translate_selection(*edited, span, &spans)
             }
-            None => crate::TextSelection {
-                anchor: remap_offset(selection.anchor, &spans),
-                focus: remap_offset(selection.focus, &spans),
-            },
+            None => crate::TextSelection::new(
+                remap_offset(selection.anchor, &spans),
+                remap_offset(selection.focus, &spans),
+            ),
         };
         result.push(output);
     }
@@ -2231,10 +2204,7 @@ mod tests {
     #[test]
     fn selection_delete_collapses_onto_the_range_start() {
         let value = "abcdef";
-        let selection = crate::TextSelection {
-            anchor: 2,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(2, 5);
         let replacement = delete_backward(value, selection).unwrap();
         assert_eq!(apply_replacement(value, &replacement), ("abf".into(), 2));
     }
@@ -2247,16 +2217,10 @@ mod tests {
 
     #[test]
     fn moved_selection_extends_or_collapses() {
-        let selection = crate::TextSelection {
-            anchor: 2,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(2, 5);
         assert_eq!(
             moved_selection(selection, 8, true),
-            crate::TextSelection {
-                anchor: 2,
-                focus: 8
-            }
+            crate::TextSelection::new(2, 8)
         );
         assert_eq!(
             moved_selection(selection, 1, false),
@@ -2389,10 +2353,7 @@ mod tests {
         assert_eq!(apply_replacement(value, &replacement), ("fn()".into(), 4));
         // Wrapping a selection.
         let value = "x + y";
-        let selection = crate::TextSelection {
-            anchor: 0,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(0, 5);
         let wrap = auto_pair_edit(value, selection, '(').unwrap();
         assert_eq!(apply_replacement(value, &wrap), ("(x + y)".into(), 6));
         // Next to an identifier no pair completes.
@@ -2435,10 +2396,7 @@ mod tests {
     #[test]
     fn comment_toggle_inserts_and_removes() {
         let value = "let a = 1;\nlet b = 2;";
-        let selection = crate::TextSelection {
-            anchor: 4,
-            focus: 17,
-        };
+        let selection = crate::TextSelection::new(4, 17);
         let (commented, commented_selection) = toggle_line_comment(value, selection, "//").unwrap();
         assert_eq!(commented, "//let a = 1;\n//let b = 2;");
         assert_eq!(commented_selection.anchor, 6);
@@ -2450,10 +2408,7 @@ mod tests {
     #[test]
     fn comment_toggle_skips_blank_lines() {
         let value = "a\n\nb";
-        let selection = crate::TextSelection {
-            anchor: 0,
-            focus: 4,
-        };
+        let selection = crate::TextSelection::new(0, 4);
         let (commented, _) = toggle_line_comment(value, selection, "//").unwrap();
         assert_eq!(commented, "//a\n\n//b");
     }
@@ -2461,17 +2416,12 @@ mod tests {
     #[test]
     fn indent_shifts_lines_and_outdent_restores() {
         let value = "a\nb\nc";
-        let selection = crate::TextSelection {
-            anchor: 0,
-            focus: 4,
-        };
+        let selection = crate::TextSelection::new(0, 4);
         let (indented, indented_selection) = indent_selection(value, selection, "  ").unwrap();
         assert_eq!(indented, "  a\n  b\nc");
         assert_eq!(indented_selection.focus, 8);
-        let shifted = crate::TextSelection {
-            anchor: indented_selection.anchor,
-            focus: indented_selection.focus,
-        };
+        let shifted =
+            crate::TextSelection::new(indented_selection.anchor, indented_selection.focus);
         let (restored, _) = outdent_selection(&indented, shifted, "  ").unwrap();
         assert_eq!(restored, value);
         // Caret indent inserts the unit at the caret.
@@ -2786,43 +2736,22 @@ mod tests {
     #[test]
     fn lines_move_up_and_down_with_their_selection() {
         let value = "ab\ncd\nef";
-        let selection = crate::TextSelection {
-            anchor: 3,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(3, 5);
         // "cd" 与上一行交换，选区跟随移动后的文本。
         let (up, up_selection) = move_lines(value, selection, TextLineDirection::Up).unwrap();
         assert_eq!(up, "cd\nab\nef");
-        assert_eq!(
-            up_selection,
-            crate::TextSelection {
-                anchor: 0,
-                focus: 2
-            }
-        );
+        assert_eq!(up_selection, crate::TextSelection::new(0, 2));
         // "cd" 再与下一行交换并回到原位。
         let (down, _) = move_lines(&up, up_selection, TextLineDirection::Down).unwrap();
         assert_eq!(down, value);
         // 多行块整体移动。
-        let block = crate::TextSelection {
-            anchor: 0,
-            focus: 5,
-        };
+        let block = crate::TextSelection::new(0, 5);
         let (down, down_selection) = move_lines(value, block, TextLineDirection::Down).unwrap();
         assert_eq!(down, "ef\nab\ncd");
-        assert_eq!(
-            down_selection,
-            crate::TextSelection {
-                anchor: 3,
-                focus: 8
-            }
-        );
+        assert_eq!(down_selection, crate::TextSelection::new(3, 8));
         // 已移到顶部后继续上移是空操作；末行继续下移同样是空操作。
         assert!(move_lines(&up, up_selection, TextLineDirection::Up).is_none());
-        let last = crate::TextSelection {
-            anchor: 6,
-            focus: 8,
-        };
+        let last = crate::TextSelection::new(6, 8);
         assert!(move_lines(value, last, TextLineDirection::Down).is_none());
     }
 
@@ -2842,10 +2771,7 @@ mod tests {
         assert_eq!(up, "\na");
         // 选区结束在行首时该行不算触碰（与注释切换同一约定）。
         let value = "a\nb\nc";
-        let boundary = crate::TextSelection {
-            anchor: 0,
-            focus: 2,
-        };
+        let boundary = crate::TextSelection::new(0, 2);
         let (moved, _) = move_lines(value, boundary, TextLineDirection::Down).unwrap();
         assert_eq!(moved, "b\na\nc");
     }
@@ -2853,20 +2779,11 @@ mod tests {
     #[test]
     fn duplicate_lines_copies_below_and_selects_the_copy() {
         let value = "ab\ncd";
-        let selection = crate::TextSelection {
-            anchor: 3,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(3, 5);
         let (next, duplicated) = duplicate_lines(value, selection).unwrap();
         assert_eq!(next, "ab\ncd\ncd");
         // 选区落在副本上。
-        assert_eq!(
-            duplicated,
-            crate::TextSelection {
-                anchor: 6,
-                focus: 8
-            }
-        );
+        assert_eq!(duplicated, crate::TextSelection::new(6, 8));
         // 纯光标：复制光标所在整行，光标停在副本同一列。
         let value = "xy";
         let (next, duplicated) = duplicate_lines(value, crate::TextSelection::caret(1)).unwrap();
@@ -2880,10 +2797,7 @@ mod tests {
     fn delete_lines_removes_the_block_and_one_adjacent_newline() {
         // 中间行：换行随行一起删除，前后两行拼合。
         let value = "a\nb\nc";
-        let middle = crate::TextSelection {
-            anchor: 2,
-            focus: 3,
-        };
+        let middle = crate::TextSelection::new(2, 3);
         let (next, deleted) = delete_lines(value, middle).unwrap();
         assert_eq!(next, "a\nc");
         assert_eq!(deleted, crate::TextSelection::caret(2));
@@ -2892,10 +2806,7 @@ mod tests {
         let (next, _) = delete_lines(value, first).unwrap();
         assert_eq!(next, "b\nc");
         // 末行（无结尾换行）：连同前导换行一起删除，光标落在上一行末尾。
-        let last = crate::TextSelection {
-            anchor: 4,
-            focus: 5,
-        };
+        let last = crate::TextSelection::new(4, 5);
         let (next, deleted) = delete_lines(value, last).unwrap();
         assert_eq!(next, "a\nb");
         assert_eq!(deleted, crate::TextSelection::caret(3));
@@ -2911,41 +2822,18 @@ mod tests {
     fn join_lines_merges_touched_lines_with_single_space_seams() {
         // 相邻行合并插入单个空格。
         let value = "ab\ncd\nef";
-        let selection = crate::TextSelection {
-            anchor: 1,
-            focus: 8,
-        };
+        let selection = crate::TextSelection::new(1, 8);
         let (next, joined) = join_lines(value, selection).unwrap();
         assert_eq!(next, "ab cd ef");
         // 选区映射到合并后的行（起点不动，终点收缩到行尾）。
-        assert_eq!(
-            joined,
-            crate::TextSelection {
-                anchor: 1,
-                focus: 8
-            }
-        );
+        assert_eq!(joined, crate::TextSelection::new(1, 8));
         // 下一行的前导空白被移除；左侧已有尾随空白时不再补空格。
         let value = "a \n  b";
-        let (next, _) = join_lines(
-            value,
-            crate::TextSelection {
-                anchor: 0,
-                focus: 5,
-            },
-        )
-        .unwrap();
+        let (next, _) = join_lines(value, crate::TextSelection::new(0, 5)).unwrap();
         assert_eq!(next, "a b");
         // 空行参与合并不产生空格。
         let value = "a\n\nb";
-        let (next, _) = join_lines(
-            value,
-            crate::TextSelection {
-                anchor: 0,
-                focus: 3,
-            },
-        )
-        .unwrap();
+        let (next, _) = join_lines(value, crate::TextSelection::new(0, 3)).unwrap();
         assert_eq!(next, "a\nb");
         // 裸光标：把光标行和下一行合并。
         let value = "ab\ncd";
@@ -2963,10 +2851,7 @@ mod tests {
     fn join_lines_keeps_utf8_offsets_valid() {
         // 多字节字符行参与合并时选区映射仍落在字符边界。
         let value = "界界\nhéllo";
-        let selection = crate::TextSelection {
-            anchor: "界".len(),
-            focus: value.len(),
-        };
+        let selection = crate::TextSelection::new("界".len(), value.len());
         let (next, joined) = join_lines(value, selection).unwrap();
         assert_eq!(next, "界界 héllo");
         for offset in [joined.anchor, joined.focus] {
@@ -2980,10 +2865,7 @@ mod tests {
     fn case_transform_is_utf8_safe_and_declines_empty_selections() {
         // ASCII 直接变换。
         let value = "ab CD";
-        let selection = crate::TextSelection {
-            anchor: 0,
-            focus: 5,
-        };
+        let selection = crate::TextSelection::new(0, 5);
         let (upper, upper_selection) = transform_selection_case(value, selection, true).unwrap();
         assert_eq!(upper, "AB CD");
         assert_eq!(upper_selection, selection);
@@ -2991,34 +2873,16 @@ mod tests {
         assert_eq!(lower, "ab cd");
         // ﬁ → FI 的字节收缩把选区终点平移到有效边界。
         let value = "aﬁb";
-        let selection = crate::TextSelection {
-            anchor: 1,
-            focus: 4,
-        };
+        let selection = crate::TextSelection::new(1, 4);
         let (upper, upper_selection) = transform_selection_case(value, selection, true).unwrap();
         assert_eq!(upper, "aFIb");
-        assert_eq!(
-            upper_selection,
-            crate::TextSelection {
-                anchor: 1,
-                focus: 3
-            }
-        );
+        assert_eq!(upper_selection, crate::TextSelection::new(1, 3));
         // İ → i + 组合点 的字节膨胀同样保持边界有效。
         let value = "aİb";
-        let selection = crate::TextSelection {
-            anchor: 1,
-            focus: 3,
-        };
+        let selection = crate::TextSelection::new(1, 3);
         let (lower, lower_selection) = transform_selection_case(value, selection, false).unwrap();
         assert_eq!(lower, "ai\u{307}b");
-        assert_eq!(
-            lower_selection,
-            crate::TextSelection {
-                anchor: 1,
-                focus: 4
-            }
-        );
+        assert_eq!(lower_selection, crate::TextSelection::new(1, 4));
         // 空选区拒绝。
         assert!(transform_selection_case(value, crate::TextSelection::caret(1), true).is_none());
     }
@@ -3026,36 +2890,18 @@ mod tests {
     #[test]
     fn sort_lines_orders_reverses_and_dedups() {
         let value = "pear\napple\npear\nbanana";
-        let whole = crate::TextSelection {
-            anchor: 0,
-            focus: value.len(),
-        };
+        let whole = crate::TextSelection::new(0, value.len());
         let (asc, asc_selection) = sort_lines(value, whole, false, false).unwrap();
         assert_eq!(asc, "apple\nbanana\npear\npear");
-        assert_eq!(
-            asc_selection,
-            crate::TextSelection {
-                anchor: 0,
-                focus: asc.len()
-            }
-        );
+        assert_eq!(asc_selection, crate::TextSelection::new(0, asc.len()));
         let (desc, _) = sort_lines(value, whole, true, false).unwrap();
         assert_eq!(desc, "pear\npear\nbanana\napple");
         let (unique, _) = sort_lines(value, whole, false, true).unwrap();
         assert_eq!(unique, "apple\nbanana\npear");
         // 逆序选区（anchor > focus）保持方向并覆盖排序后的块。
-        let reversed = crate::TextSelection {
-            anchor: value.len(),
-            focus: 0,
-        };
+        let reversed = crate::TextSelection::new(value.len(), 0);
         let (_, sorted_selection) = sort_lines(value, reversed, false, false).unwrap();
-        assert_eq!(
-            sorted_selection,
-            crate::TextSelection {
-                anchor: 22,
-                focus: 0
-            }
-        );
+        assert_eq!(sorted_selection, crate::TextSelection::new(22, 0));
         // 单行排序无变化。
         assert!(sort_lines("a\nb", crate::TextSelection::caret(2), false, false).is_none());
     }
@@ -3243,10 +3089,7 @@ mod tests {
         assert_eq!(snap_pointer_caret(5, &atoms), 2);
         assert_eq!(snap_pointer_caret(6, &atoms), 8);
         assert_eq!(snap_moved_caret(1, 0, &atoms), 0);
-        let partial = crate::TextSelection {
-            anchor: 1,
-            focus: 4,
-        };
+        let partial = crate::TextSelection::new(1, 4);
         assert_eq!(
             apply_replacement(
                 value,

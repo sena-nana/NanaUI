@@ -728,10 +728,7 @@ fn native_components_project_final_event_state_into_one_retained_tree() {
     assert!(context.activate_button(button).unwrap());
     context
         .update_component(input, |input, _cx| {
-            input.state.selection = TextSelection {
-                anchor: 0,
-                focus: "你".len(),
-            };
+            input.state.selection = TextSelection::new(0, "你".len());
         })
         .unwrap();
     assert!(context.replace_text_input_selection(input, "娜").unwrap());
@@ -1029,10 +1026,7 @@ fn text_area_reuses_utf8_editing_and_projects_multiline_semantics() {
         .unwrap();
     context
         .update_component(area, |area, _cx| {
-            area.state.selection = TextSelection {
-                anchor: "第一".len(),
-                focus: "第一行\n".len(),
-            };
+            area.state.selection = TextSelection::new("第一".len(), "第一行\n".len());
         })
         .unwrap();
     let changes = Arc::new(Mutex::new(Vec::new()));
