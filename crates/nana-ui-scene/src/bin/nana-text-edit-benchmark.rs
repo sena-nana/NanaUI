@@ -345,29 +345,49 @@ impl Fixture {
         fixture
     }
 
-    fn flush(&mut self) -> TextWorkCounters {
-        self.runtime
+    /// One frame. The bool says whether it did any work: the frame profile and
+    /// the work counters both retain the last NON-IDLE frame, so a sample
+    /// taken after an idle flush would report an older frame's numbers.
+    fn flush(&mut self) -> (bool, TextWorkCounters) {
+        let update = self
+            .runtime
             .flush(viewport(), &mut self.shaper)
             .expect("flush");
-        self.runtime.context().world().last_text_work_counters()
+        (
+            !update.is_idle(),
+            self.runtime.context().world().last_text_work_counters(),
+        )
     }
 
     fn settle(&mut self) {
         for _ in 0..4 {
-            self.flush();
+            let _ = self.flush();
         }
     }
 
     fn place_caret(&mut self, offset: usize) {
         let document = self.document;
-        assert!(
-            self.runtime
-                .context_mut()
-                .select_focused_text_range(document, offset, offset)
-                .expect("select"),
+        // The write reports "no change" when the caret is already there --
+        // which is exactly the `tail` cell, since a mounted editor starts with
+        // its caret at the end of its text -- so the landing is what has to be
+        // asserted, not the write.
+        self.runtime
+            .context_mut()
+            .select_focused_text_range(document, offset, offset)
+            .expect("select");
+        self.settle();
+        let selection = self
+            .runtime
+            .context()
+            .world()
+            .text_input(self.area.stable_id())
+            .expect("the editor has state")
+            .selection;
+        assert_eq!(
+            (selection.anchor, selection.focus),
+            (offset, offset),
             "the caret lands at {offset}"
         );
-        self.settle();
     }
 
     /// The content box the pointer coordinates are relative to, and one line's
@@ -386,14 +406,24 @@ impl Fixture {
         (content, line_height)
     }
 
-    /// Run the interaction. `step` alternates the direction so the caret and
-    /// the text stay where the cell put them: an insert is followed by the
-    /// backspace that undoes it, so a long run does not silently grow the
-    /// line it types into (which would make later samples measure a longer
-    /// paragraph than the cell claims).
-    fn input(&mut self, action: Action, step: usize, point: (f32, f32)) {
+    /// Run the interaction, reporting whether it changed anything.
+    ///
+    /// `step` alternates the direction so the caret and the text stay where
+    /// the cell put them: an insert is followed by the backspace that undoes
+    /// it, so a long run does not silently grow the line it types into (which
+    /// would make later samples measure a longer paragraph than the cell
+    /// claims). The first direction points away from the end the caret sits
+    /// at, because Right at the end of the text moves nothing -- and a sample
+    /// of an interaction that did nothing is not a sample of it.
+    fn input(
+        &mut self,
+        action: Action,
+        position: Position,
+        step: usize,
+        point: (f32, f32),
+    ) -> bool {
         let document = self.document;
-        let flip = step.is_multiple_of(2);
+        let flip = step.is_multiple_of(2) != (position == Position::Tail);
         let Fixture {
             runtime, shaper, ..
         } = self;
@@ -401,11 +431,11 @@ impl Fixture {
         match action {
             Action::Type | Action::Delete => {
                 if flip {
-                    context.replace_focused_text(document, "x").expect("type");
+                    context.replace_focused_text(document, "x").expect("type")
                 } else {
                     context
                         .delete_focused_text_backward(document)
-                        .expect("backspace");
+                        .expect("backspace")
                 }
             }
             Action::Caret | Action::Select | Action::Vertical => {
@@ -422,12 +452,12 @@ impl Fixture {
                         action == Action::Select,
                         Some(shaper),
                     )
-                    .expect("caret move");
+                    .expect("caret move")
             }
             Action::Click => {
                 let (x, y) = point;
                 let x = if flip { x } else { x + 24.0 };
-                context
+                let pressed = context
                     .text_editor_pointer_press(
                         document,
                         self.area.stable_id(),
@@ -441,12 +471,13 @@ impl Fixture {
                     )
                     .expect("press");
                 context.text_editor_pointer_release(1);
+                pressed
             }
             Action::Ime => {
                 let preedit = if flip { "ni" } else { "n" };
                 context
                     .set_ime_preedit(document, preedit.into(), None)
-                    .expect("preedit");
+                    .expect("preedit")
             }
         }
     }
@@ -518,12 +549,23 @@ fn measure(
     while flushes.len() < samples {
         let recorded = iteration >= warmup && action.records(iteration);
         let start = Instant::now();
-        fixture.input(action, iteration, point);
+        let changed = fixture.input(action, position, iteration, point);
         let input = start.elapsed();
         let start = Instant::now();
-        let work = fixture.flush();
+        let (worked, work) = fixture.flush();
         let flush = start.elapsed();
         iteration += 1;
+        // A cell only means anything if every sample really is the interaction
+        // it claims. Both accessors below retain the last NON-IDLE frame, so
+        // recording a no-op would report an earlier frame's stage timings and
+        // counters as this one's.
+        assert!(
+            changed && worked,
+            "{} at the {} of a {lines}-line document did nothing on step {iteration} \
+             (interaction changed={changed}, frame did work={worked}): nothing to measure",
+            action.name(),
+            position.name(),
+        );
         if !recorded {
             continue;
         }
