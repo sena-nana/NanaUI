@@ -316,7 +316,7 @@ fn run(
     if workload == Workload::TransformPanel {
         build.create(panel, document_id, NodeKind::Element { tag: "div".into() });
         build.insert(column, panel, None);
-        build.set_style(panel, column_style(None, None));
+        build.set_style(panel, panel_style(None));
     }
     let mut rows = Vec::with_capacity(labels);
     for index in 0..labels {
@@ -536,18 +536,20 @@ fn mutate(
         Workload::Transform | Workload::TransformPanel => {
             let angle = (frame % 360) as f32 * std::f32::consts::PI / 180.0;
             let (sin, cos) = angle.sin_cos();
+            let turned = Some(PaintTransform {
+                a: cos,
+                b: sin,
+                c: -sin,
+                d: cos,
+                ..PaintTransform::default()
+            });
             queue.set_style(
                 column,
-                column_style(
-                    None,
-                    Some(PaintTransform {
-                        a: cos,
-                        b: sin,
-                        c: -sin,
-                        d: cos,
-                        ..PaintTransform::default()
-                    }),
-                ),
+                if workload == Workload::TransformPanel {
+                    panel_style(turned)
+                } else {
+                    column_style(None, turned)
+                },
             );
         }
         Workload::Mutate => {
@@ -582,6 +584,26 @@ fn label_style() -> NodeStyle {
         layout: Arc::new(LayoutStyle {
             width: Some(LengthSpec::Px(LABEL[0])),
             height: Some(LengthSpec::Px(LABEL[1])),
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    }
+}
+
+/// The panel [`Workload::TransformPanel`] animates.
+///
+/// Sized to the labels it holds rather than filling the column: a `Fill` box
+/// here would take the whole viewport and push every other label off screen,
+/// and the cell would measure a document nobody paints.
+fn panel_style(transform: Option<PaintTransform>) -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Px(LABEL[0] * PANEL_ROWS as f32)),
+            height: Some(LengthSpec::Px(LABEL[1])),
+            direction: Some(FlexDirection::Row),
+            flex_wrap: FlexWrap::Wrap,
+            transform,
+            transform_origin: transform.is_some().then(TransformOrigin::default),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
