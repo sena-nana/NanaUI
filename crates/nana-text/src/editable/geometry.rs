@@ -274,12 +274,15 @@ impl EditorGeometry {
         let current = self.is_current(epoch, style, constraints) && !self.paragraphs.is_empty();
         let split = splits_paragraphs(constraints);
 
-        let old = if current {
-            std::mem::take(&mut self.paragraphs)
-        } else {
+        if !current {
             self.paragraphs.clear();
-            Vec::new()
-        };
+        }
+        // The retained paragraphs stay where they are and are spliced in
+        // place: an edit near the top of a long document shifts every
+        // paragraph after it, and moving them all into a fresh vector costs
+        // more than the one layout the edit actually owes.
+        let old = &self.paragraphs;
+        let old_count = old.len();
         let old_len = self.text_len;
         let marks_for = |range: Range<usize>| composition.and_then(|marks| marks.within(range));
 
@@ -306,9 +309,9 @@ impl EditorGeometry {
         let mut suffix_start = text.len();
         // Unsplit text is one paragraph that has to be laid out whole: a
         // shifted tail is not a paragraph of its own.
-        if split && prefix < old.len() {
-            while suffix < old.len() - prefix {
-                let paragraph = &old[old.len() - 1 - suffix];
+        if split && prefix < old_count {
+            while suffix < old_count - prefix {
+                let paragraph = &old[old_count - 1 - suffix];
                 let Some(start) = (paragraph.start + text.len()).checked_sub(old_len) else {
                     break;
                 };
@@ -330,10 +333,7 @@ impl EditorGeometry {
             }
         }
 
-        let mut old = old.into_iter();
-        let mut paragraphs: Vec<Paragraph> = old.by_ref().take(prefix).collect();
-        let kept_prefix = paragraphs.len();
-        let finished = paragraphs.last().is_some_and(|last| !last.newline);
+        let finished = prefix > 0 && !old[prefix - 1].newline;
 
         // The bytes in between, as fresh paragraphs.
         let mut ranges = Vec::new();
@@ -360,6 +360,7 @@ impl EditorGeometry {
             incremental: current,
             ..GeometrySync::default()
         };
+        let mut fresh = Vec::with_capacity(ranges.len());
         for (range, newline) in ranges {
             let marks = marks_for(range.clone());
             let source = paragraph_source(&text[range.clone()], marks.as_ref(), style);
@@ -370,7 +371,7 @@ impl EditorGeometry {
                 sync.paragraphs_reshaped += 1;
             }
             counters.accumulate(work);
-            paragraphs.push(Paragraph {
+            fresh.push(Paragraph {
                 start: range.start,
                 source,
                 newline,
@@ -380,24 +381,27 @@ impl EditorGeometry {
                 top_px: 0.0,
             });
         }
-        let skipped = old.len() - suffix;
+        // Replace the paragraphs between the kept prefix and the kept suffix,
+        // then move the suffix's starts by what the edit changed in length.
+        let fresh_count = fresh.len();
+        self.paragraphs.splice(prefix..old_count - suffix, fresh);
         let delta = text.len() as isize - old_len as isize;
-        paragraphs.extend(old.skip(skipped).map(|mut paragraph| {
-            paragraph.start = (paragraph.start as isize + delta) as usize;
-            paragraph
-        }));
-        sync.paragraphs_kept = kept_prefix + suffix;
+        if delta != 0 {
+            for paragraph in &mut self.paragraphs[prefix + fresh_count..] {
+                paragraph.start = (paragraph.start as isize + delta) as usize;
+            }
+        }
+        sync.paragraphs_kept = prefix + suffix;
         if current {
             counters.paragraphs_relayout_from_edit += sync.paragraphs_laid_out;
             counters.paragraphs_reshaped_from_edit += sync.paragraphs_reshaped;
         }
 
         let mut top = 0.0;
-        for paragraph in &mut paragraphs {
+        for paragraph in &mut self.paragraphs {
             paragraph.top_px = top;
             top += paragraph.height_px;
         }
-        self.paragraphs = paragraphs;
         self.text_len = text.len();
         self.style = Some(style.clone());
         self.constraints = Some(*constraints);
