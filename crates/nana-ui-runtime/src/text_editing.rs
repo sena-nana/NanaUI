@@ -1426,14 +1426,47 @@ pub fn changed_byte_range(previous: &str, next: &str) -> Option<(usize, usize, u
         return None;
     }
     let (old, new) = (previous.as_bytes(), next.as_bytes());
-    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-    let suffix = old[prefix..]
-        .iter()
-        .rev()
-        .zip(new[prefix..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
+    let prefix = common_prefix(old, new);
+    let suffix = common_suffix(&old[prefix..], &new[prefix..]);
     Some((prefix, old.len() - suffix, new.len() - suffix))
+}
+
+/// Bytes at the front of both slices that are equal.
+///
+/// Block compared rather than zipped byte by byte: `==` on a slice is a
+/// vectorised memcmp, an iterator of byte pairs is not, and an edit far from
+/// the front makes the scan walk the whole document to find out.
+fn common_prefix(old: &[u8], new: &[u8]) -> usize {
+    const BLOCK: usize = 64;
+    let max = old.len().min(new.len());
+    let mut matched = 0;
+    while matched + BLOCK <= max && old[matched..matched + BLOCK] == new[matched..matched + BLOCK] {
+        matched += BLOCK;
+    }
+    while matched < max && old[matched] == new[matched] {
+        matched += 1;
+    }
+    matched
+}
+
+/// Bytes at the end of both slices that are equal. See [`common_prefix`].
+fn common_suffix(old: &[u8], new: &[u8]) -> usize {
+    const BLOCK: usize = 64;
+    let max = old.len().min(new.len());
+    let mut matched = 0;
+    let block = |slice: &[u8], from_end: usize| from_end + BLOCK <= slice.len();
+    while matched + BLOCK <= max
+        && block(old, matched)
+        && block(new, matched)
+        && old[old.len() - matched - BLOCK..old.len() - matched]
+            == new[new.len() - matched - BLOCK..new.len() - matched]
+    {
+        matched += BLOCK;
+    }
+    while matched < max && old[old.len() - matched - 1] == new[new.len() - matched - 1] {
+        matched += 1;
+    }
+    matched
 }
 
 /// Whether `text` contains a bracket character
@@ -2248,6 +2281,59 @@ mod tests {
     fn newlines_normalize_to_lf() {
         assert_eq!(normalize_newlines("a\r\nb\rc"), "a\nb\nc");
         assert_eq!(normalize_newlines("abc"), "abc");
+    }
+
+    /// The block comparison must agree with the byte-wise answer it replaced,
+    /// for edits anywhere in the text (including the front and the very end,
+    /// where the blocks cannot be aligned).
+    #[test]
+    fn the_changed_range_matches_a_byte_wise_diff() {
+        let byte_wise = |previous: &str, next: &str| -> Option<(usize, usize, usize)> {
+            if previous == next {
+                return None;
+            }
+            let (old, new) = (previous.as_bytes(), next.as_bytes());
+            let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+            let suffix = old[prefix..]
+                .iter()
+                .rev()
+                .zip(new[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            Some((prefix, old.len() - suffix, new.len() - suffix))
+        };
+        let base: String = (0..40).map(|index| format!("line {index}\n")).collect();
+        let mut cases = vec![
+            (String::new(), String::new()),
+            (String::new(), "x".to_owned()),
+            ("x".to_owned(), String::new()),
+            (base.clone(), base.clone()),
+            ("aaaa".repeat(40), "aaaa".repeat(40) + "a"),
+        ];
+        for at in [0usize, 1, 7, 63, 64, 65, 100, 200] {
+            let at = at.min(base.len());
+            let mut inserted = base.clone();
+            inserted.insert(at, '!');
+            cases.push((base.clone(), inserted));
+            cases.push((base.clone(), base[..at].to_owned()));
+            let mut replaced = base.clone();
+            if at < base.len() {
+                replaced.replace_range(at..at + 1, "Z");
+                cases.push((base.clone(), replaced));
+            }
+        }
+        for (previous, next) in cases {
+            assert_eq!(
+                changed_byte_range(&previous, &next),
+                byte_wise(&previous, &next),
+                "{previous:?} -> {next:?}"
+            );
+            assert_eq!(
+                changed_byte_range(&next, &previous),
+                byte_wise(&next, &previous),
+                "{next:?} -> {previous:?}"
+            );
+        }
     }
 
     #[test]
