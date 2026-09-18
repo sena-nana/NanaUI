@@ -1176,11 +1176,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         host.native_controls = found.map(|(node, _)| node);
-        let Some((_, Some(bounds))) = found else {
-            return;
-        };
-        host.native_controls_box.set(Some(bounds));
-        place_native_controls(host);
+        match found {
+            // A hidden placeholder keeps its box: showing the buttons again
+            // lays the titlebar out, and the box is what puts them back
+            // before that frame is drawn.
+            Some((_, None)) => {}
+            Some((_, Some(bounds))) => {
+                host.native_controls_box.set(Some(bounds));
+                place_native_controls(host);
+            }
+            // Nothing marks a spot any more; the platform owns them again.
+            None => host.native_controls_box.set(None),
+        }
     }
 
     /// Puts the native buttons back on the placeholder right after something

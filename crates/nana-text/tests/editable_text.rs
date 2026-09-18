@@ -1062,6 +1062,147 @@ fn syncing_to_text_the_layouts_already_lay_out_keeps_them() {
     );
 }
 
+/// Every incremental sync has to land on exactly the geometry a sync from
+/// scratch would produce. The prefix/suffix matching and the in-place splice
+/// are what could drift, and drift would only show up after a sequence of
+/// edits -- so this walks one geometry through a sequence while comparing it,
+/// at every step, against a geometry that has only ever seen the current
+/// text: paragraph starts and tops, line count, size, every caret, and a grid
+/// of hits.
+#[test]
+fn incremental_syncs_land_where_syncing_from_scratch_does() {
+    #[derive(Debug, PartialEq)]
+    struct Snapshot {
+        paragraphs: Vec<(usize, f32, usize)>,
+        lines: usize,
+        size: (f32, f32),
+        carets: Vec<Option<(f32, f32, f32)>>,
+        hits: Vec<(usize, Affinity, bool)>,
+    }
+    let snapshot = |geometry: &EditorGeometry, text: &str| Snapshot {
+        paragraphs: geometry
+            .paragraph_layouts()
+            .map(|(start, top, layout)| (start, top, layout.lines.len()))
+            .collect(),
+        lines: geometry.line_count(),
+        size: geometry.size(),
+        carets: (0..=text.len())
+            .filter(|offset| text.is_char_boundary(*offset))
+            .flat_map(|offset| {
+                [Affinity::Downstream, Affinity::Upstream].map(move |affinity| (offset, affinity))
+            })
+            .map(|(offset, affinity)| {
+                geometry
+                    .caret_rect(offset, affinity)
+                    .map(|caret| (caret.x_px, caret.y_px, caret.height_px))
+            })
+            .collect(),
+        hits: (0..6)
+            .flat_map(|row| (0..6).map(move |column| (column as f32 * 40.0, row as f32 * 12.0)))
+            .map(|(x, y)| {
+                let hit = geometry.hit_test(x, y);
+                (hit.offset, hit.affinity, hit.inside)
+            })
+            .collect(),
+    };
+
+    // Insert and delete at the head, in the middle and at the tail; split and
+    // join paragraphs; grow and lose a trailing line feed; empty the text and
+    // fill it again; and change one byte inside a multi-byte character.
+    let sequence = [
+        "one
+two
+three",
+        "Zone
+two
+three",
+        "Zone
+two
+three!",
+        "Zone
+two and more
+three!",
+        "Zone
+two and more
+three!
+",
+        "Zone
+two and more
+
+three!
+",
+        "Zone
+two and morethree!
+",
+        "Zone
+two and morethree!",
+        "",
+        "
+",
+        "你好
+吗",
+        "你奿
+吗",
+        "你奿
+吗 and a much longer line that has to wrap somewhere",
+        "你奿
+吗 and a much longer line that has to wrap elsewhere",
+        "one
+two
+three",
+    ];
+    // Composition marks are part of what the prefix/suffix matching compares,
+    // so every other step carries a preedit over the second line.
+    let marks_for = |step: usize, text: &str| -> Option<CompositionMarks> {
+        if !step.is_multiple_of(2) {
+            return None;
+        }
+        let start = text.find('\n').map(|index| index + 1)?;
+        let end = text[start..]
+            .find('\n')
+            .map_or(text.len(), |index| start + index);
+        if start >= end {
+            return None;
+        }
+        Some(CompositionMarks {
+            range: start..end,
+            target: Some(start..end),
+        })
+    };
+    for width in [None, Some(150.0)] {
+        let mut engine = engine(UI);
+        let style = style(UI);
+        let constraints = editor_constraints(width);
+        let mut counters = TextWorkCounters::default();
+        let mut incremental = EditorGeometry::new();
+        for (step, text) in sequence.into_iter().enumerate() {
+            let marks = marks_for(step, text);
+            incremental.sync(
+                &mut engine,
+                text,
+                marks.as_ref(),
+                &style,
+                &constraints,
+                &mut counters,
+            );
+            let mut fresh = EditorGeometry::new();
+            fresh.sync(
+                &mut engine,
+                text,
+                marks.as_ref(),
+                &style,
+                &constraints,
+                &mut counters,
+            );
+            assert_eq!(
+                snapshot(&incremental, text),
+                snapshot(&fresh, text),
+                "{width:?} step {step} {text:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn geometry_synced_from_one_session_is_stale_for_another() {
     let editor = Editor::new(UI, "abc\ndef", None);
