@@ -604,3 +604,63 @@ fn a_right_arrow_at_a_wrap_steps_onto_the_next_line_rather_than_past_a_character
     assert_eq!(back, at_line_end);
     assert_eq!((back_x, back_y), (end_x, end_y));
 }
+
+/// The host keeps geometry for a bounded number of editors, so a document with
+/// more of them than that evicts entries between frames. Evicting one must not
+/// cost a layout: the engine still holds the layouts its paragraphs were made
+/// of, and a caret move owes no text work whatever the document holds.
+#[test]
+fn more_editors_than_the_geometry_cache_holds_still_lay_nothing_out() {
+    let document = DocumentId::new(DOCUMENT).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let first = runtime
+        .context_mut()
+        .build(document, |ui| {
+            let mut first = None;
+            for index in 0..40 {
+                let child = ui.child(
+                    format!("editor{index}"),
+                    nana_ui_runtime::TextInput::new(format!("field value {index}")),
+                );
+                if index == 0 {
+                    first = Some(child);
+                }
+            }
+            first.expect("the first field")
+        })
+        .unwrap();
+    let engine = engine();
+    let mut shaper = NanaTextEngineShaper::new(Arc::clone(&engine));
+    assert!(
+        runtime
+            .context_mut()
+            .focus_node(document, first.stable_id())
+            .unwrap()
+    );
+    runtime
+        .context_mut()
+        .select_focused_text_range(document, 0, 0)
+        .unwrap();
+    for _ in 0..6 {
+        runtime.flush(viewport(), &mut shaper).unwrap();
+    }
+    let layouts = || {
+        nana_text::lock_text_engine(&engine)
+            .layout_counters()
+            .layout_created
+    };
+    let before = layouts();
+
+    assert!(
+        runtime
+            .context_mut()
+            .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+            .unwrap()
+    );
+    runtime.flush(viewport(), &mut shaper).unwrap();
+
+    let work = runtime.context().world().last_text_work_counters();
+    assert_eq!(work.layouts_created, 0, "{work:?}");
+    assert_eq!(work.paragraphs_relayout_from_edit, 0, "{work:?}");
+    assert_eq!(layouts(), before, "the engine laid nothing out");
+}
