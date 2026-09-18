@@ -7,13 +7,13 @@ use component_gallery::{
 use nana_ui::runtime::{
     AppShell, AppTitleBar, AppTitleBarControls, Button as RuntimeButton, Card as RuntimeCard,
     Checkbox as RuntimeCheckbox, Dock as RuntimeDock, DockAxis, DockDropZone, DockNode, DocumentId,
-    IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
+    Entity, IconButton as RuntimeIconButton, LayoutBox, LayoutViewport, List as RuntimeList,
     ListItem as RuntimeListItem, MutationQueue, NodeStyle, RangeField as RuntimeRangeField,
     RuntimeDocument, ScrollAxes, ScrollOffset, ScrollView as RuntimeScrollView,
     Switch as RuntimeSwitch, TabOption as RuntimeTabOption, Table as RuntimeTable,
     TableCell as RuntimeTableCell, TableRow as RuntimeTableRow, Tabs as RuntimeTabs,
     Text as RuntimeText, TextArea as RuntimeTextArea, TextInput as RuntimeTextInput,
-    TextVerticalAlignment,
+    TextVerticalAlignment, UiBuilder,
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
@@ -38,13 +38,6 @@ use offscreen::OffscreenSnapshots;
 
 const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
 const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
-
-#[derive(Clone, Copy)]
-enum DockPreviewPhase {
-    Candidate,
-    Settled,
-    Retarget,
-}
 
 pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Error>> {
     let mut snapshots = OffscreenSnapshots::new()?;
@@ -158,32 +151,16 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
                 &format!("dock-preview-{name}-{suffix}.png"),
                 theme,
                 zone,
-                DockPreviewPhase::Settled,
+                false,
             )?;
         }
-        dock_preview_snapshot(
-            &mut snapshots,
-            &mut recorder,
-            &format!("dock-preview-retarget-tab-{suffix}.png"),
-            theme,
-            DockDropZone::Left,
-            DockPreviewPhase::Retarget,
-        )?;
-        dock_preview_snapshot(
-            &mut snapshots,
-            &mut recorder,
-            &format!("dock-hover-left-{suffix}.png"),
-            theme,
-            DockDropZone::Left,
-            DockPreviewPhase::Candidate,
-        )?;
         dock_preview_snapshot(
             &mut snapshots,
             &mut recorder,
             &format!("dock-preview-outside-{suffix}.png"),
             theme,
             DockDropZone::Left,
-            DockPreviewPhase::Candidate,
+            true,
         )?;
     }
 
@@ -1075,21 +1052,8 @@ fn titlebar_document(
             400,
         ));
         let trailing = ui.parked(labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400));
-        let minimize = ui.parked(window_control(Icon::Minimize, "Minimize"));
-        let maximize = ui.parked(window_control(Icon::Maximize, "Maximize"));
-        let close = ui.parked(window_control(Icon::Close, "Close"));
-        let controls = ui.parked(
-            AppTitleBarControls::new(false)
-                .native(false)
-                .minimize(minimize.stable_id())
-                .maximize(maximize.stable_id())
-                .close(close.stable_id()),
-        );
-        ui.nest(controls, |ui| {
-            ui.adopt(minimize);
-            ui.adopt(maximize);
-            ui.adopt(close);
-        });
+        let native = !chrome.uses_custom_controls();
+        let controls = title_bar_controls(ui, native);
         let title = ui.child(
             "title",
             AppTitleBar::new("NanaUI")
@@ -1098,8 +1062,8 @@ fn titlebar_document(
                 .trailing(trailing.stable_id())
                 .controls(controls.stable_id())
                 .center_width(420.0)
-                .native_controls(false)
-                .show_window_controls(chrome.uses_custom_controls()),
+                .native_controls(native)
+                .show_window_controls(true),
         );
         ui.nest(title, |ui| {
             ui.adopt(leading);
@@ -1156,7 +1120,17 @@ fn dock_window_document(
         .title("editor", "Editor");
     let (shell, dock) = document.context_mut().build(document_id, |ui| {
         let dock = ui.parked(dock);
-        let title = ui.parked(AppTitleBar::new("NanaUI Gallery"));
+        let native = !chrome.uses_custom_controls();
+        let controls = title_bar_controls(ui, native);
+        let title = ui.parked(
+            AppTitleBar::new("NanaUI Gallery")
+                .controls(controls.stable_id())
+                .native_controls(native)
+                .show_window_controls(true),
+        );
+        ui.nest(title, |ui| {
+            ui.adopt(controls);
+        });
         let shell = ui.child(
             "shell",
             AppShell::new()
@@ -1198,10 +1172,10 @@ fn dock_preview_snapshot(
     name: &str,
     theme: ThemeMode,
     zone: DockDropZone,
-    phase: DockPreviewPhase,
+    outside: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = Size::new(420, 240);
-    let document = dock_preview_document(theme, zone, phase, name.contains("outside"), size)?;
+    let document = dock_preview_document(theme, zone, outside, size)?;
     let clear = clear_color(theme);
     let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
     recorder.record(name, size, &pixels, clear)
@@ -1210,7 +1184,6 @@ fn dock_preview_snapshot(
 fn dock_preview_document(
     theme: ThemeMode,
     zone: DockDropZone,
-    phase: DockPreviewPhase,
     outside: bool,
     size: Size<u32>,
 ) -> Result<RuntimeDocument, Box<dyn std::error::Error>> {
@@ -1220,15 +1193,9 @@ fn dock_preview_document(
     let drop = if outside {
         None
     } else {
-        let target = match (zone, phase) {
-            (_, DockPreviewPhase::Retarget) => "editor",
-            (DockDropZone::Left | DockDropZone::Top, _) => "source",
-            (DockDropZone::Right | DockDropZone::Bottom | DockDropZone::Tab, _) => "editor",
-        };
-        let zone = if matches!(phase, DockPreviewPhase::Retarget) {
-            DockDropZone::Tab
-        } else {
-            zone
+        let target = match zone {
+            DockDropZone::Left | DockDropZone::Top => "source",
+            DockDropZone::Right | DockDropZone::Bottom | DockDropZone::Tab => "editor",
         };
         Some((target, zone))
     };
@@ -1340,6 +1307,39 @@ fn labeled_text(
     layout.font_size = Some(size);
     layout.font_weight = Some(weight);
     RuntimeText::new(value).style(style)
+}
+
+/// A title bar's controls slot for one window chrome: custom Minimize /
+/// Maximize / Close buttons, or the empty placeholder the platform's own
+/// buttons are moved onto.
+///
+/// The bar that adopts this keeps `show_window_controls` true either way.
+/// Turning it off hides the placeholder, and with it the leading band the
+/// native buttons live in — the native fixture would then lay out exactly
+/// like the custom one, which is what these snapshots exist to tell apart.
+fn title_bar_controls(ui: &mut UiBuilder<'_>, native: bool) -> Entity<AppTitleBarControls> {
+    if native {
+        // The placeholder stands for buttons it does not own, so it stays
+        // childless: `AppTitleBarControls` projects no children in this mode,
+        // and any mounted here would just paint inside the band.
+        return ui.parked(AppTitleBarControls::new(false).native(true));
+    }
+    let minimize = ui.parked(window_control(Icon::Minimize, "Minimize"));
+    let maximize = ui.parked(window_control(Icon::Maximize, "Maximize"));
+    let close = ui.parked(window_control(Icon::Close, "Close"));
+    let controls = ui.parked(
+        AppTitleBarControls::new(false)
+            .native(false)
+            .minimize(minimize.stable_id())
+            .maximize(maximize.stable_id())
+            .close(close.stable_id()),
+    );
+    ui.nest(controls, |ui| {
+        ui.adopt(minimize);
+        ui.adopt(maximize);
+        ui.adopt(close);
+    });
+    controls
 }
 
 fn window_control(icon: Icon, label: &'static str) -> RuntimeIconButton {
