@@ -1546,12 +1546,33 @@ text_prepare_nodes_considered / skipped / culled
   | 一千标签 opacity，十六层 | 1.914 ms | **0.124 ms** | 0.854 ms | **0.312 ms** |
   | 一万标签 opacity，扁 | 20.861 ms | 3.907 ms | 9.449 ms | 6.126 ms |
 
-  还剩的大头是同一个形状的下一条：变换也一样 `mark_subtree(... | RENDER)`
-  （`mutation.rs` 里 `transform_changed` 那支），而后代的变换和裁剪本来就是绘制时
-  按 `projections` / `draw_attributes` 重推的——`inherited_changed` 推 `attribute_epoch`
-  就是为了这个。一万标签 transform 的 `flush p50` 还有 26 ms 花在这上面。要动它得
-  先确认那条重推的路和重建出来的结果完全等价（投影/奇异变换那批已经由
-  `unadjustable_projections` 单独排进重建），不在这一期。
+- **改变换也不再重新抽取整棵子树**。同一个形状：后代的图元建在自己的空间里，由上面
+  那条链投影过去，而那条投影绘制时本来就会重推——`projections` 记着建图元那一刻的
+  投影，`draw_primitive` 用当前投影和它的逆求出一个 delta，补到图元的变换和它自己
+  那几个裁剪上（保留期后代跟着祖先滚动走的就是这条路）。所以变换现在只给子树标
+  `TRANSFORM | INPUT`，`RENDER` 只给节点自己；投影/奇异变换那批仍由
+  `unadjustable_projections` 单独排进重建。
+
+  等价性有测试钉着：一棵四层的树（hidden overflow 裁剪 + 滚动偏移 + opacity group +
+  后代自己的变换），只抽取容器和整棵重建两种走法逐个图元比绘制出来的变换、裁剪和
+  不透明度，差在 1e-4 以内——重推是拿一次逆去凑，重建是把链重新乘一遍；误差不累积，
+  每帧的 delta 都从同一个记下来的 base 推。
+
+  代价挪到了 batch：后代每帧都走重推那条路，所以那条路本身也收了两处——祖先状态按
+  父节点记一个位置（绘制侧没有括号来清它，按 `(instance, attribute_epoch)` 盖戳），
+  图元自己没有裁剪时直接共用祖先那一份 `Arc`。
+
+  | 用例 | flush 前 | flush 后 | batch 前 | batch 后 |
+  | --- | --- | --- | --- | --- |
+  | 一千标签 transform | 1.191 ms | 0.388 ms | 0.446 ms | 0.544 ms |
+  | 一万标签 transform | 21.417 ms | **7.718 ms** | 7.541 ms | 9.487 ms |
+
+  一帧总账：一千标签 1.64 → 0.93 ms，一万标签 28.96 → 17.21 ms。
+
+  还剩的大头在 batch 那一侧的重推路本身：`draw_attributes` 是按节点记的，一万个节点
+  就是一万次 `Mutex` 加锁和哈希插入。数学上同一个被改祖先下面所有后代的 delta 是同一
+  个（`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记一份就够——但那要先证明「下面那段链没
+  动」，不在这一期。
 
 ### 怎么跑，怎么判
 
