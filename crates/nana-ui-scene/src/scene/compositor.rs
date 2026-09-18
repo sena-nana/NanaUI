@@ -474,6 +474,9 @@ impl UiScene {
     }
 
     pub(super) fn invalidate_compositor_cache(&mut self, id: StableNodeId) {
+        if self.compositor.layers.is_empty() {
+            return;
+        }
         for node in super::ancestor_ids(&self.nodes, id).collect::<Vec<_>>() {
             if let Some(layer) = self.compositor.layers.get_mut(&node) {
                 layer.cache_generation = layer.cache_generation.saturating_add(1);
@@ -521,6 +524,9 @@ impl UiScene {
 
     /// Logical primitive opacity multiplied by compositor layer factors.
     pub fn compositor_paint_opacity(&self, node: StableNodeId, logical_opacity: f32) -> f32 {
+        if self.compositor.layers.is_empty() {
+            return logical_opacity.clamp(0.0, 1.0);
+        }
         let mut opacity = logical_opacity;
         for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layers.get(&id) {
@@ -541,6 +547,9 @@ impl UiScene {
 
     /// Nested compositor opacity: product of ancestor (and self) layer opacities.
     pub fn composed_layer_opacity(&self, node: StableNodeId) -> f32 {
+        if self.compositor.layers.is_empty() {
+            return 1.0;
+        }
         let mut opacity = 1.0;
         for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layers.get(&id) {
@@ -552,14 +561,14 @@ impl UiScene {
 
     /// Nested compositor transform: outer layers then inner.
     pub fn composed_layer_transform(&self, node: StableNodeId) -> AffineTransform {
+        if self.compositor.layers.is_empty() {
+            return AffineTransform::IDENTITY;
+        }
         let mut chain = Vec::new();
-        let mut current = Some(node);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layers.get(&id) {
                 chain.push(layer.transform);
             }
-            current = self.nodes.get(&id).and_then(|node| node.parent);
         }
         chain
             .into_iter()
@@ -574,15 +583,14 @@ impl UiScene {
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
         let transform = self.gpu_motion_id_for(node, 0);
         let mut opacity = self.gpu_motion_id_for(node, 1);
-        if opacity == 0 {
-            let mut current = self.nodes.get(&node).and_then(|node| node.parent);
-            let mut visited = HashSet::new();
-            while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        if opacity == 0
+            && let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent)
+        {
+            for id in super::ancestor_ids(&self.nodes, parent) {
                 opacity = self.gpu_motion_id_for(id, 1);
                 if opacity != 0 {
                     break;
                 }
-                current = self.nodes.get(&id).and_then(|node| node.parent);
             }
         }
         (transform, opacity)
@@ -618,9 +626,7 @@ impl UiScene {
             return paint_opacity;
         }
         let index = opacity_id - 1;
-        let mut current = Some(node);
-        let mut visited = HashSet::new();
-        while let Some(id) = current.filter(|id| visited.insert(*id)) {
+        for id in super::ancestor_ids(&self.nodes, node) {
             if let Some(layer) = self.compositor.layer(id)
                 && layer
                     .bindings
@@ -632,7 +638,6 @@ impl UiScene {
                 }
                 return (paint_opacity / layer.opacity).clamp(0.0, 1.0);
             }
-            current = self.nodes.get(&id).and_then(|node| node.parent);
         }
         paint_opacity
     }
@@ -721,15 +726,10 @@ fn nearest_layer_parent(
     node: StableNodeId,
     active: &HashSet<StableNodeId>,
 ) -> Option<CompositorLayerId> {
-    let mut current = nodes.get(&node).and_then(|node| node.parent);
-    let mut visited = HashSet::new();
-    while let Some(id) = current.filter(|id| visited.insert(*id)) {
-        if active.contains(&id) {
-            return Some(CompositorLayerId::from_node(id));
-        }
-        current = nodes.get(&id).and_then(|node| node.parent);
-    }
-    None
+    let parent = nodes.get(&node).and_then(|node| node.parent)?;
+    super::ancestor_ids(nodes, parent)
+        .find(|id| active.contains(id))
+        .map(CompositorLayerId::from_node)
 }
 
 #[derive(Clone)]

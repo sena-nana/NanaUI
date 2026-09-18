@@ -389,39 +389,59 @@ pub(super) fn extra_fragment_clips(
     origin: [f32; 2],
 ) -> Vec<FragmentClip> {
     // The overwhelming majority of nodes are under plain axis-aligned clips,
-    // which the scissor handles exactly. Answering those without building the
-    // innermost clip — thirty words — is what keeps this off the per-node path.
-    if !clips.iter().any(|clip| needs_fragment_test(clip, origin)) {
+    // which the scissor handles exactly. Answering those costs one cheap
+    // predicate per clip and no `FragmentClip` at all — thirty words each.
+    if !clips.iter().any(needs_fragment_test) {
         return Vec::new();
     }
-    let inner_bits = fragment_clip(clips, origin).to_bits();
+    // Each candidate list once, and the innermost derived from them rather
+    // than by asking `fragment_clip` — which would classify every clip three
+    // more times for an answer these lists already hold. The overwhelming
+    // majority of nodes are under plain axis-aligned clips, which the scissor
+    // handles exactly, and all three come back empty without allocating.
+    let rotated = rotated_fragment_clips(clips, origin);
+    let rounded = axis_aligned_rounded_fragment_clips(clips, origin);
+    let polygons = polygon_fragment_clips(clips, origin);
+    let Some(inner) = rotated
+        .last()
+        .or_else(|| polygons.last())
+        .or_else(|| rounded.last())
+    else {
+        return Vec::new();
+    };
+    let inner_bits = inner.to_bits();
     let mut extras = Vec::new();
-    for clip in rotated_fragment_clips(clips, origin) {
+    for clip in rotated {
         if clip.to_bits() != inner_bits {
             push_unique_clip(&mut extras, clip);
         }
     }
-    for clip in axis_aligned_rounded_fragment_clips(clips, origin) {
+    for clip in rounded {
         if clip.to_bits() != inner_bits {
             push_unique_clip(&mut extras, clip);
         }
     }
-    for clip in polygon_fragment_clips(clips, origin) {
+    for clip in polygons {
         push_unique_clip(&mut extras, clip);
     }
     extras
 }
 
-/// Whether this clip needs more than the scissor: rotated, rounded, or a
-/// polygon. A cheap predicate, so the common answer costs no `FragmentClip`.
-fn needs_fragment_test(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> bool {
+/// Whether this clip needs more than the scissor: rounded, polygonal or
+/// rotated.
+///
+/// The scene origin does not enter it. For a non-projective clip the origin is
+/// a post-translation, which cannot turn an axis-aligned rectangle into a
+/// rotated one — so the six multiplies of `paint_affine` would only ever
+/// confirm what `clip.transform` already says.
+fn needs_fragment_test(clip: &nana_ui_scene::ClipRegion) -> bool {
     if clip.polygon_clip.is_some() || clip.corner_radius > 0.0 {
         return true;
     }
     if clip.transform.is_projective() {
         return false;
     }
-    !is_axis_aligned(paint_affine(clip.transform.0, origin))
+    !is_axis_aligned(clip.transform.0)
 }
 
 fn push_unique_clip(extras: &mut Vec<FragmentClip>, clip: FragmentClip) {
