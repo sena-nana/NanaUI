@@ -988,6 +988,72 @@ mod tests {
     }
 
     #[test]
+    fn a_fragmented_page_repacks_its_survivors_and_keeps_their_handles() {
+        let (device, _queue) = crate::test_gpu::device();
+        let (mut atlas, mut raster, mut uploads) = small_atlas(&device);
+        atlas.begin_frame(raster.generation());
+        // Eight shelves of 8 texels, covering the page top to bottom.
+        let placed = fill(
+            &mut atlas,
+            &mut raster,
+            &mut uploads,
+            &mut Squares { edge: 6 },
+            &device,
+            0..64,
+        );
+        let live: Vec<_> = placed.iter().filter_map(|(_, id)| *id).collect();
+        assert!(
+            live.len() >= 48,
+            "the page must fill before it can fragment"
+        );
+
+        // Free all but one glyph per shelf. Every shelf survives, so the page
+        // is 8 texels tall eight times over with almost nothing in it — a
+        // 30-texel glyph fits no shelf and there is no room for a new one.
+        for (index, id) in live.iter().enumerate() {
+            if index % 8 != 0 {
+                atlas.free_slot(id.index);
+            }
+        }
+        let survivors: Vec<_> = live
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index % 8 == 0)
+            .map(|(_, id)| *id)
+            .collect();
+        assert!(
+            atlas.occupancy_permille(AtlasPageKind::Mask) < COMPACT_BELOW_OCCUPANCY,
+            "the survivors must leave the page mostly free, or nothing repacks"
+        );
+
+        atlas.begin_frame(raster.generation());
+        let tall = fill(
+            &mut atlas,
+            &mut raster,
+            &mut uploads,
+            &mut Squares { edge: 28 },
+            &device,
+            200..201,
+        );
+        assert!(
+            tall[0].1.is_some(),
+            "repacking the survivors must reclaim room for the tall glyph"
+        );
+        assert!(
+            atlas.counters().relocations > 0,
+            "and it must be a repack, not an eviction"
+        );
+        for id in &survivors {
+            assert!(
+                atlas.entry(*id).is_some(),
+                "a relocated glyph keeps the handle it was issued: that is what \
+                 lets a run built before the repack still draw it"
+            );
+        }
+        assert_no_overlap(&atlas);
+    }
+
+    #[test]
     fn a_new_raster_epoch_drops_every_placement_and_frees_the_pages() {
         let (device, _queue) = crate::test_gpu::device();
         let (mut atlas, mut raster, mut uploads) = small_atlas(&device);
