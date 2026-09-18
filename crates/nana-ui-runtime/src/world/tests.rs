@@ -6647,6 +6647,48 @@ fn sibling_reorder_does_not_recompute_unchanged_descendant_styles() {
 }
 
 #[test]
+fn fading_a_container_resolves_its_subtree_without_re_extracting_it() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=3 {
+        queue.create(node(id), document(1), NodeKind::Text);
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let mut fade = MutationQueue::new();
+    fade.set_style(
+        node(1),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                opacity: Some(0.8),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(fade).unwrap();
+    let work = world.take_system_work();
+    // The accumulated opacity is part of every descendant's resolved style, so
+    // they still resolve.
+    assert_eq!(work.style, vec![node(1), node(2), node(3)]);
+    // But nothing downstream of extraction reads it, and a container with
+    // descendants to fade is an opacity group: its opacity composites once at
+    // the group rather than reaching each descendant's primitive. Extracting
+    // them again would rebuild the same bytes, every frame of the fade.
+    assert_eq!(work.render_extraction, vec![node(1)]);
+    assert!(work.layout.is_empty());
+    world.resolve_styles(&work.style).unwrap();
+    assert_eq!(
+        world.extract_nodes(&[node(3)])[0].style.opacity,
+        0.8,
+        "the descendant still resolves the accumulated opacity"
+    );
+}
+
+#[test]
 fn paint_only_style_change_does_not_schedule_subtree_layout() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();

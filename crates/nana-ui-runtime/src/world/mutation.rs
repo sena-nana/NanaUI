@@ -1274,9 +1274,9 @@ impl UiWorld {
                     || previous.layout.line_break != style.layout.line_break;
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
-                    || previous.layout.opacity != style.layout.opacity
                     || previous.layout.selection_background != style.layout.selection_background
                     || previous.layout.selection_color != style.layout.selection_color;
+                let inherited_opacity_changed = previous.layout.opacity != style.layout.opacity;
                 let paint_visibility_changed =
                     previous.layout.paint.visibility != style.layout.paint.visibility;
                 let pointer_events_changed =
@@ -1320,6 +1320,17 @@ impl UiWorld {
                 }
                 if inherited_paint_changed {
                     self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                } else if inherited_opacity_changed {
+                    // Descendants resolve a new accumulated opacity, but they
+                    // do not paint differently for it: nothing downstream of
+                    // extraction reads `ComputedStyle::opacity`. The renderer
+                    // walks the ancestor chain itself, and a container with
+                    // descendants to fade is an opacity group, whose opacity
+                    // composites once at the group instead of reaching each
+                    // descendant's primitive. Re-extracting the subtree every
+                    // frame of a fade would rebuild primitives byte for byte
+                    // the same.
+                    self.mark_subtree(*id, DirtyMask::STYLE);
                 }
                 if inherited_text_changed {
                     self.mark_subtree(
