@@ -14,7 +14,7 @@ description: Maintain NanaUI's Workspace and UI system. Product path is Runtime 
 - Treat Runtime / UiScene / `SceneWgpuPainter` as the product view path.
 - Preserve stable Region/Settings identities, sizing constraints, serialization, and public export
   compatibility.
-- Overlay title bars use `AppTitleBar::transparent(true)` and its mounted slots; keep drag ownership in NanaUI. Fullscreen consumers retain business slots with `drag_enabled(false)` and `show_window_controls(false)`, not a parallel pointer gesture.
+- Overlay title bars use `AppTitleBar::transparent(true)` and its mounted slots; keep drag ownership in NanaUI. Fullscreen consumers retain business slots with `drag_enabled(false)` and `show_window_controls(false)`, not a parallel pointer gesture. Window buttons are the `AppTitleBarControls` component on every platform: custom trailing buttons, or on macOS a leading placeholder the host moves the native traffic lights onto, so insetting the title bar moves them too; never reserve a hard-coded traffic-light band.
 - Centralize shared tokens and component states. Every visible action must update real Rust state.
 - Use `Panel` on an independent `OverlayHost` for nonmodal task surfaces; reuse overlay presence and focus lifecycle. Application routes, pinning and viewport reservations stay application-owned. Keep `Dialog` / `Drawer` modal, and do not assign Menu/Dialog accessibility roles to nonmodal panels. `focus_first_in` uses Runtime's sequential focus rules.
 - Mount `ContextMenu` on an `OverlayHost` and open it with `activate_overlay`; the framework owns Escape and outside-press dismissal and syncs the view's own `open` plus `ContextMenuEvent::Dismiss`. Do not rebuild a per-application outside-press test.

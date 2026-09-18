@@ -119,6 +119,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     visible,
                     duration,
                 );
+                // Showing or hiding them lays the titlebar out again, which
+                // puts them back on the system spot.
+                self.reapply_native_window_controls(id);
             }
             RoutedWindowCommand::SetIcon(id) => {
                 let WindowCommand::SetIcon { icon, .. } = command else {
@@ -585,6 +588,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 mode: None,
                 pending_fullscreen,
                 native_controls_visible: true,
+                native_controls: None,
+                native_controls_box: std::cell::Cell::new(None),
                 skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
                 skip_taskbar_report,
                 pointer_presence: presence::PointerPresence::default(),
@@ -1121,6 +1126,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         };
         let window = host.surface.window();
         apply_client_chrome_after_create(window.as_ref(), &host.settings);
+        // `prepare_client_chrome` centers the buttons the way a window
+        // without a laid-out placeholder wants them.
+        place_native_controls(host);
         // Style changes can bring hidden native buttons back.
         if !host.native_controls_visible {
             let _ = nana_window::set_native_window_controls_visible(
@@ -1128,6 +1136,61 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 false,
                 std::time::Duration::ZERO,
             );
+        }
+        self.request_redraw(id);
+    }
+
+    /// Moves the native window buttons onto the title bar's placeholder.
+    ///
+    /// The document is searched only after structural changes until a
+    /// placeholder exists. The move itself runs every frame: AppKit lays the
+    /// titlebar out on its own schedule and puts the buttons back, and the
+    /// move returns without touching them once they sit on the box.
+    pub(super) fn sync_native_window_controls(
+        &mut self,
+        id: WindowId,
+        update: &nana_ui_scene::RuntimeFrameUpdate,
+    ) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        let Some(host) = self.window_contexts.get(&id) else {
+            return;
+        };
+        let hint = host.native_controls;
+        let structure_changed = !update.scene.added.is_empty() || update.scene.order_changed;
+        if host.settings.system_caption || (hint.is_none() && !structure_changed) {
+            return;
+        }
+        let found = self
+            .program
+            .read_document(id, |document| {
+                crate::window_chrome::native_window_controls(
+                    document.context(),
+                    document.document(),
+                    hint,
+                )
+            })
+            .flatten();
+        let Some(host) = self.window_contexts.get_mut(&id) else {
+            return;
+        };
+        host.native_controls = found.map(|(node, _)| node);
+        let Some((_, Some(bounds))) = found else {
+            return;
+        };
+        host.native_controls_box.set(Some(bounds));
+        place_native_controls(host);
+    }
+
+    /// Puts the native buttons back on the placeholder right after something
+    /// AppKit reacts to by laying the titlebar out again.
+    fn reapply_native_window_controls(&self, id: WindowId) {
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        if let Some(host) = self.window_contexts.get(&id) {
+            place_native_controls(host);
         }
     }
     pub(super) fn scale_factor(&self, id: WindowId) -> f32 {
@@ -1508,6 +1571,21 @@ pub(super) struct WindowAppearance {
     theme: crate::ThemeMode,
     material: nana_window::MaterialEffect,
     opacity: f32,
+}
+
+/// Moves a window's native buttons onto the placeholder box last laid out
+/// for it. Without a box, or off macOS, nothing moves.
+pub(super) fn place_native_controls(host: &WindowContext) {
+    let Some(bounds) = host.native_controls_box.get() else {
+        return;
+    };
+    let _ = nana_window::place_native_window_controls(
+        host.surface.window().as_ref(),
+        f64::from(bounds.x),
+        f64::from(bounds.y),
+        f64::from(bounds.width),
+        f64::from(bounds.height),
+    );
 }
 
 fn apply_changed_appearance(

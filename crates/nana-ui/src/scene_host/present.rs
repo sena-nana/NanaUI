@@ -142,6 +142,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if update.cursor_changed {
             self.sync_window_cursor_forced(id);
         }
+        self.sync_native_window_controls(id, &update);
         let Some(pending) = self.accessibility_pending_mut(id) else {
             self.rearm_frame_demand(id);
             return;

@@ -1080,6 +1080,7 @@ fn titlebar_document(
         let close = ui.parked(window_control(Icon::Close, "Close"));
         let controls = ui.parked(
             AppTitleBarControls::new(false)
+                .native(false)
                 .minimize(minimize.stable_id())
                 .maximize(maximize.stable_id())
                 .close(close.stable_id()),
@@ -1097,8 +1098,7 @@ fn titlebar_document(
                 .trailing(trailing.stable_id())
                 .controls(controls.stable_id())
                 .center_width(420.0)
-                .leading_inset(chrome.leading_inset)
-                .trailing_inset(chrome.trailing_inset)
+                .native_controls(false)
                 .show_window_controls(chrome.uses_custom_controls()),
         );
         ui.nest(title, |ui| {
@@ -1156,12 +1156,7 @@ fn dock_window_document(
         .title("editor", "Editor");
     let (shell, dock) = document.context_mut().build(document_id, |ui| {
         let dock = ui.parked(dock);
-        let title = ui.parked(
-            AppTitleBar::new("NanaUI Gallery")
-                .leading_inset(chrome.leading_inset)
-                .trailing_inset(chrome.trailing_inset)
-                .show_window_controls(chrome.uses_custom_controls()),
-        );
+        let title = ui.parked(AppTitleBar::new("NanaUI Gallery"));
         let shell = ui.child(
             "shell",
             AppShell::new()

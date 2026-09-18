@@ -1,4 +1,4 @@
-use nana_ui_core::{LengthSpec, LogicalPoint};
+use nana_ui_core::LogicalPoint;
 use nana_ui_platform::host::WindowCommand;
 use nana_ui_platform::{InputEvent, PointerPhase, WindowId};
 use nana_ui_runtime::{
@@ -294,21 +294,77 @@ fn title_bar_pointer_hit(
             if let Some(action) = control {
                 return TitleBarHit::Control(action);
             }
-            if native_title_bar_control_hit(context, id, x, y) {
-                return TitleBarHit::None;
-            }
             return if title_bar_drag_enabled(context, id) {
                 TitleBarHit::Drag(id)
             } else {
                 TitleBarHit::None
             };
         }
-        if is_title_bar_control(context, id) && control.is_none() {
+        // Native buttons keep their own clicks; the bar must not drag there.
+        if (is_title_bar_control(context, id) || is_native_window_controls(context, id))
+            && control.is_none()
+        {
             return TitleBarHit::None;
         }
         current = context.world().node(id).and_then(|node| node.parent);
     }
     TitleBarHit::None
+}
+
+/// The native window-button placeholder of `document`, with its layout box
+/// while it is shown. `hint` is the placeholder found last time; the document
+/// is searched only when it no longer is one.
+///
+/// Any [`AppTitleBarControls`] with `native` set marks the spot, wherever it
+/// is mounted — a title bar's controls slot is only the usual home. A window
+/// has one set of native buttons, so the first such node in document order
+/// wins.
+#[cfg(feature = "hosted")]
+pub(crate) fn native_window_controls(
+    context: &AppContext,
+    document: DocumentId,
+    hint: Option<nana_ui_runtime::StableNodeId>,
+) -> Option<(
+    nana_ui_runtime::StableNodeId,
+    Option<nana_ui_runtime::LayoutBox>,
+)> {
+    let mounted = |id| is_native_window_controls(context, id) && context.world().is_mounted(id);
+    let id = hint.filter(|&id| mounted(id)).or_else(|| {
+        context
+            .world()
+            .document_order(document)
+            .into_iter()
+            .find(|&id| mounted(id))
+    })?;
+    let bounds = context
+        .world()
+        .layout_box(id)
+        .filter(|bounds| bounds.width > 0.0 && bounds.height > 0.0 && !hidden_in_tree(context, id));
+    Some((id, bounds))
+}
+
+fn is_native_window_controls(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
+    context
+        .read(
+            Entity::<AppTitleBarControls>::from_stable_id(id),
+            |controls| controls.native,
+        )
+        .unwrap_or(false)
+}
+
+fn hidden_in_tree(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
+    let mut current = Some(id);
+    while let Some(id) = current {
+        if context
+            .world()
+            .node_style(id)
+            .is_some_and(|style| style.layout.hidden)
+        {
+            return true;
+        }
+        current = context.world().node(id).and_then(|node| node.parent);
+    }
+    false
 }
 
 /// Maps a custom-title-bar chrome action to host window commands.
@@ -355,18 +411,7 @@ fn title_bar_drag_enabled(context: &AppContext, bar: nana_ui_runtime::StableNode
     {
         return false;
     }
-    let mut current = Some(bar);
-    while let Some(id) = current {
-        if context
-            .world()
-            .node_style(id)
-            .is_some_and(|style| style.layout.hidden)
-        {
-            return false;
-        }
-        current = context.world().node(id).and_then(|node| node.parent);
-    }
-    true
+    !hidden_in_tree(context, bar)
 }
 
 fn is_app_title_bar(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
@@ -411,45 +456,6 @@ fn is_title_bar_controls(context: &AppContext, id: nana_ui_runtime::StableNodeId
         })
 }
 
-fn native_title_bar_control_hit(
-    context: &AppContext,
-    title_bar: nana_ui_runtime::StableNodeId,
-    x: f32,
-    y: f32,
-) -> bool {
-    let Some(bounds) = context.world().layout_box(title_bar) else {
-        return false;
-    };
-    if let Ok(hit) = context.read(Entity::<AppTitleBar>::from_stable_id(title_bar), |bar| {
-        bar.native_control_hit(bounds, x, y)
-    }) {
-        return hit;
-    }
-    let style = context.world().node_style(title_bar);
-    let leading = style
-        .map(|s| px_length(s.layout.padding_left))
-        .unwrap_or(0.0);
-    let trailing = style
-        .map(|s| px_length(s.layout.padding_right))
-        .unwrap_or(0.0);
-    WindowChrome::new(
-        if leading > 0.0 {
-            WindowControlMode::NativeLeading
-        } else if trailing > 0.0 {
-            WindowControlMode::NativeTrailing
-        } else {
-            WindowControlMode::Custom
-        },
-        leading,
-        trailing,
-    )
-    .native_control_hit(
-        nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
-        x,
-        y,
-    )
-}
-
 fn is_title_bar_control(context: &AppContext, id: nana_ui_runtime::StableNodeId) -> bool {
     context.world().accessibility(id).is_some_and(|state| {
         // Editable text keeps press-drag for caret and selection; a window
@@ -459,13 +465,6 @@ fn is_title_bar_control(context: &AppContext, id: nana_ui_runtime::StableNodeId)
             AccessibilityRole::Button | AccessibilityRole::TextInput
         )
     })
-}
-
-fn px_length(spec: Option<LengthSpec>) -> f32 {
-    match spec {
-        Some(LengthSpec::Px(value)) => value,
-        _ => 0.0,
-    }
 }
 
 fn distance(from: LogicalPoint, to: LogicalPoint) -> f32 {
@@ -785,6 +784,83 @@ mod tests {
             text_box.x + text_box.width / 2.0,
             text_box.y + text_box.height / 2.0
         ));
+    }
+
+    #[test]
+    fn native_window_controls_placeholder_blocks_drag_and_reports_its_box() {
+        use super::title_bar_drag_hit;
+        let (mut context, document, bar, _) = title_bar_document();
+        context
+            .update_component(bar, |bar, _| {
+                bar.native_controls = true;
+                bar.show_window_controls = true;
+            })
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        context.rebuild_hit_test(document);
+        let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
+        let placeholder = context.world().layout_box(controls).unwrap();
+        let (x, y) = (
+            placeholder.x + placeholder.width / 2.0,
+            placeholder.y + placeholder.height / 2.0,
+        );
+        assert!(!title_bar_drag_hit(&context, document, x, y));
+        assert!(title_bar_drag_hit(&context, document, 400.0, y));
+
+        #[cfg(feature = "hosted")]
+        {
+            let found = super::native_window_controls(&context, document, None);
+            assert_eq!(found, Some((controls, Some(placeholder))));
+            context
+                .update_component(bar, |bar, _| bar.show_window_controls = false)
+                .unwrap();
+            context
+                .layout_document(document, nana_ui_runtime::LayoutViewport::new(800.0, 400.0))
+                .unwrap();
+            assert_eq!(
+                super::native_window_controls(&context, document, Some(controls)),
+                Some((controls, None))
+            );
+        }
+    }
+
+    #[cfg(feature = "hosted")]
+    #[test]
+    fn a_native_controls_placeholder_marks_the_spot_wherever_it_is_mounted() {
+        use nana_ui_runtime::{AppContext, AppTitleBarControls, DocumentId, LayoutViewport};
+
+        let document = DocumentId::new(7).unwrap();
+        let mut context = AppContext::new();
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        {
+            let layout = std::sync::Arc::make_mut(&mut style.layout);
+            layout.position = nana_ui_core::PositionSpec::Absolute;
+            layout.offset_left = Some(nana_ui_core::LengthSpec::Px(240.0));
+            layout.offset_top = Some(nana_ui_core::LengthSpec::Px(48.0));
+        }
+        let root = context
+            .create_component(document, nana_ui_runtime::Stack::fill_column(0.0))
+            .unwrap();
+        let controls = context
+            .create_detached_component(
+                document,
+                AppTitleBarControls::new(false).native(true).style(style),
+            )
+            .unwrap();
+        context.append_child(root, controls).unwrap();
+        context
+            .layout_document(document, LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+
+        let (found, bounds) = super::native_window_controls(&context, document, None)
+            .expect("a mounted native placeholder is the target");
+        assert_eq!(found, controls.stable_id());
+        let bounds = bounds.expect("a shown placeholder reports its box");
+        assert_eq!((bounds.x, bounds.y), (240.0, 48.0));
+        assert!(bounds.width > 0.0 && bounds.height > 0.0);
     }
 
     #[test]

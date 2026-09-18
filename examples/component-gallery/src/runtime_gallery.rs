@@ -25,7 +25,7 @@ use nana_ui::{
 use nana_ui_platform::InputEvent;
 
 use super::runtime_host::{
-    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_insets,
+    DEFAULT_VIEWPORT, HostStack, RuntimeChrome, RuntimeSceneInput, apply_title_bar_maximized,
     apply_workspace_corners, bind_event, bind_event_ui, hugging_text, labeled_text,
     node_is_or_under, reconcile_children, runtime_input_event, search_command_button,
     sidebar_toggle_button, styled_text, take_pending, theme_toggle_button,
@@ -553,15 +553,7 @@ impl GalleryRuntime {
             self.shell,
             state.appearance.workspace_corners_enabled(),
         );
-        let chrome = state.window_chrome.chrome();
-        apply_title_bar_insets(
-            context,
-            self.shell,
-            chrome.leading_inset,
-            chrome.trailing_inset,
-            state.window_chrome.is_maximized(),
-            chrome.uses_custom_controls(),
-        );
+        apply_title_bar_maximized(context, self.shell, state.window_chrome.is_maximized());
         self.flush(state.gallery_viewport_size());
     }
 

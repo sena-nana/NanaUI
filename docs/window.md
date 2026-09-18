@@ -12,10 +12,12 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 叠加在舞台上的标题栏仍使用 `AppTitleBar`，通过 `leading / center / trailing / controls` 布局槽承载文字和操作，并调用 `assemble_app_title_bar`。`transparent(true)` 仅移除栏背景，保留内容与命中，不需要开启整窗透明。`drag_enabled(false)` 禁止栏内空白与文字启动拖窗，并在后续输入时取消已按下但未完成的手势；隐藏或卸载标题栏也会取消。默认分别为 `false`、`true`。全屏保留业务入口时设置 `drag_enabled(false)` 和 `show_window_controls(false)`；不要另外添加顶边坐标拖动逻辑。语义入口支持 `transparent` 和 `drag-enabled`。标题为空且没有 center 内容时不保留中间占位，右侧按内容宽度保留空间，左侧使用剩余宽度并可收缩；有标题或 center 时保持左右对称布局。
 
-- macOS：透明标题栏 + full-size content，NanaUI 画 36px 标题栏，左侧给系统红黄绿留 78px。系统默认只把红黄绿放在标准标题栏高度内居中，`prepare_client_chrome` 会按标题栏高度平移按钮容器，使其在 36px 内居中。
-- Windows / Linux：关掉系统 decorations，由 `AppTitleBar` 画最小化、最大化、关闭，控件组贴标题栏右缘。
+系统窗口按钮是标题栏的 `controls` 组件 `AppTitleBarControls`，布局由组件节点决定，两平台对外一致：
 
-按指针显现 chrome 的应用用 `WindowCommand::SetNativeWindowControlsVisible { id, visible, duration }` 让原生窗口按钮随 chrome 淡入淡出：macOS 以 `duration` 渐变红黄绿透明度，隐藏在渐变结束后移出绘制与命中，中途收到显示则从当前值接管；宿主记住隐藏状态，全屏切换等改写原生样式后重新隐藏。Windows / Linux 的按钮是 `AppTitleBar` 控件，命令为空操作，由应用随标题栏一起显隐。`leading_inset` 不随显隐变化，布局保持不动。
+- macOS（`native_controls`）：透明标题栏 + full-size content，NanaUI 画 36px 标题栏；`controls` 是 leading 列首位 78px 宽的空占位，红黄绿仍是系统原生按钮（悬停图标、绿键菜单、失焦变灰与无障碍不变）。宿主在每帧布局后把原生按钮簇居中到占位的布局盒，并在显隐命令、原生样式改写与全屏模式切换后立即重放，所以标题栏平移或内缩（例如避开窗口圆角）时红黄绿随之移动。移动作用在按钮所在的整个系统标题栏视图上：按钮自身的 frame 被 AppKit 的约束覆盖设了不生效，而只移动按钮分组会让它越出父视图边界——画得出来但收不到点击。淡入淡出或隐藏期间（`alphaValue < 1` 或 `isHidden`）不移动，此时按钮正被 AppKit 动着，读到的位置会把整簇带偏；恢复显示时以满透明度重新落位。占位接收指针，其上不会启动拖窗。占位不限于标题栏的 controls 槽：`AppTitleBarControls` 是普通组件，挂在窗口文档的任何位置都能决定该窗口原生按钮的落点（一个窗口一组按钮，按文档顺序取第一个），位置只要在窗口内即可，按钮自身尺寸与间距不变。创建窗口时 `prepare_client_chrome` 先按标题栏高度垂直居中，布局出来后以占位为准。
+- Windows / Linux：关掉系统 decorations，由 `AppTitleBarControls` 画最小化、最大化、关闭，放在 trailing 列末位、贴标题栏右缘。
+
+按指针显现 chrome 的应用用 `WindowCommand::SetNativeWindowControlsVisible { id, visible, duration }` 让原生窗口按钮随 chrome 淡入淡出：macOS 以 `duration` 渐变红黄绿透明度，隐藏在渐变结束后移出绘制与命中，中途收到显示则从当前值接管；宿主记住隐藏状态，全屏切换等改写原生样式后重新隐藏。Windows / Linux 的按钮是 `AppTitleBar` 控件，命令为空操作，由应用随标题栏一起显隐。淡出只改透明度，占位布局保持不动；`show_window_controls(false)` 才会隐藏占位并让出左侧空间。
 
 自绘 chrome 可拖窗口客户区最外 8px 缩放（四边与四角）。系统 caption、最大化、全屏、`resizable: false` 交给平台边框或禁用，不叠第二套命中。
 

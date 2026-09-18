@@ -19,6 +19,7 @@ pub use chrome::FrameResizeEdge;
 pub use chrome::LiveFrameResize;
 pub use chrome::drag_custom_title_bar;
 pub use chrome::native_live_resize_active;
+pub use chrome::place_native_window_controls;
 pub use chrome::prepare_client_chrome;
 pub use chrome::prepare_custom_title_bar;
 pub use chrome::resize_custom_frame;

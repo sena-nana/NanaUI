@@ -273,18 +273,59 @@ impl LiveFrameResize {
 
 /// Centers macOS traffic lights inside a custom titlebar `titlebar_height`
 /// logical points tall: the system keeps them centered in the standard
-/// titlebar strip, which reads high inside NanaUI's taller bar. Other
-/// platforms have no native leading controls and always succeed.
-#[cfg(target_os = "macos")]
+/// titlebar strip, which reads high inside NanaUI's taller bar. The
+/// horizontal position stays the system's until the title bar lays out a
+/// placeholder ([`place_native_window_controls`]). Other platforms have no
+/// native controls and always succeed.
 fn center_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, titlebar_height: f64) -> bool {
+    move_traffic_lights(window, None, titlebar_height / 2.0)
+}
+
+/// Centers the native window buttons (macOS traffic lights) on a rectangle
+/// in window logical points from the top-left corner, normally the layout box
+/// of the title bar's window-controls placeholder.
+///
+/// Any rectangle inside the window works — leading, inset, lower, or further
+/// in — and the buttons keep their own size and spacing; only the center of
+/// the cluster follows. A rectangle that reaches outside the window moves
+/// them out of the frame that draws and hits them, so callers keep it within
+/// the window. Windows that keep the system caption own their own buttons
+/// and must not call this.
+///
+/// The move shifts the whole titlebar view the buttons live in. A frame set
+/// on a button itself is dropped, because AppKit lays the buttons out under
+/// constraints, and shifting only their group leaves it outside its parent's
+/// bounds, where the buttons still draw but no longer take clicks. AppKit
+/// puts the titlebar back whenever it lays it out again — when the buttons
+/// are shown, hidden, faded, or the window changes style — so hosts call
+/// this every frame and right after those events. Other platforms have no
+/// native controls and always succeed.
+pub fn place_native_window_controls<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> bool {
+    move_traffic_lights(window, Some(x + width / 2.0), y + height / 2.0)
+}
+
+/// Moves the traffic-light cluster so its center lands on `center_x` (kept
+/// when `None`) and `center_y`, measured from the window's top-left corner.
+#[cfg(target_os = "macos")]
+fn move_traffic_lights<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    center_x: Option<f64>,
+    center_y: f64,
+) -> bool {
     use objc2_app_kit::NSWindowButton;
     use objc2_foundation::NSPoint;
 
     let Some(window) = appkit_window(window) else {
         return false;
     };
-    // All three buttons must exist and share one container view: the fix
-    // moves that container so the buttons keep their spacing.
+    // All three buttons must exist and share one container view, so the
+    // buttons keep their spacing while the titlebar around them moves.
     let (Some(close), Some(miniaturize), Some(zoom)) = (
         window.standardWindowButton(NSWindowButton::CloseButton),
         window.standardWindowButton(NSWindowButton::MiniaturizeButton),
@@ -294,10 +335,20 @@ fn center_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, titlebar_heigh
     };
     // SAFETY: plain property reads on live views owned by this window.
     let container = unsafe { close.superview() };
-    let container_parent = container
+    // The titlebar view is what moves, not the button group inside it: a
+    // group shifted past its parent's bounds keeps drawing but stops being
+    // hit, and the buttons would no longer answer clicks.
+    // SAFETY: plain property reads on live views owned by this window.
+    let titlebar = container
         .as_ref()
         .and_then(|view| unsafe { view.superview() });
-    let (Some(container), Some(container_parent)) = (container, container_parent) else {
+    // SAFETY: plain property reads on live views owned by this window.
+    let titlebar_parent = titlebar
+        .as_ref()
+        .and_then(|view| unsafe { view.superview() });
+    let (Some(container), Some(titlebar), Some(titlebar_parent)) =
+        (container, titlebar, titlebar_parent)
+    else {
         return false;
     };
     // SAFETY: plain property reads on live views owned by this window.
@@ -307,35 +358,57 @@ fn center_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, titlebar_heigh
         return false;
     }
 
-    // Vertical center of the buttons measured from the top of the window.
-    // Window base coordinates grow upward from the bottom-left corner.
-    let close_in_window = close.convertRect_toView(close.bounds(), None);
-    let current_from_top =
-        window.frame().size.height - (close_in_window.origin.y + close_in_window.size.height / 2.0);
-    let delta = titlebar_height / 2.0 - current_from_top;
-    if delta.abs() < 0.5 {
+    // Buttons that are fading or hidden are mid-flight: AppKit is moving
+    // them itself, and a position read now sends the cluster somewhere else.
+    // Leaving them be is safe — a reveal restores them at full alpha, and
+    // the window places them again then.
+    if [&close, &miniaturize, &zoom]
+        .into_iter()
+        .any(|button| button.isHidden() || button.alphaValue() < 1.0)
+    {
         return true;
     }
 
-    // Learn how the container's parent maps its y axis onto window space
-    // (titlebar views are flipped, the window is not) instead of assuming.
-    let y_up_per_unit = container_parent
-        .convertPoint_toView(NSPoint::new(0.0, 1.0), None)
-        .y
-        - container_parent
-            .convertPoint_toView(NSPoint::new(0.0, 0.0), None)
-            .y;
-    if y_up_per_unit == 0.0 {
+    // Current cluster center in window space. Window base coordinates grow
+    // upward from the bottom-left corner.
+    let close_in_window = close.convertRect_toView(close.bounds(), None);
+    let zoom_in_window = zoom.convertRect_toView(zoom.bounds(), None);
+    let width = zoom_in_window.origin.x + zoom_in_window.size.width - close_in_window.origin.x;
+    if width <= 0.0 || close_in_window.size.height <= 0.0 {
         return false;
     }
-    let mut frame = container.frame();
-    frame.origin.y -= delta / y_up_per_unit;
-    container.setFrameOrigin(frame.origin);
+    let current_x = close_in_window.origin.x + width / 2.0;
+    let current_from_top =
+        window.frame().size.height - (close_in_window.origin.y + close_in_window.size.height / 2.0);
+    let delta_x = center_x.map_or(0.0, |x| x - current_x);
+    let delta_y = center_y - current_from_top;
+    if delta_x.abs() < 0.5 && delta_y.abs() < 0.5 {
+        return true;
+    }
+
+    // Learn how the titlebar's parent maps its axes onto window space
+    // (titlebar views are flipped, the window is not) instead of assuming.
+    let origin = titlebar_parent.convertPoint_toView(NSPoint::new(0.0, 0.0), None);
+    let unit_x = titlebar_parent.convertPoint_toView(NSPoint::new(1.0, 0.0), None);
+    let unit_y = titlebar_parent.convertPoint_toView(NSPoint::new(0.0, 1.0), None);
+    let x_per_unit = unit_x.x - origin.x;
+    let y_up_per_unit = unit_y.y - origin.y;
+    if x_per_unit == 0.0 || y_up_per_unit == 0.0 {
+        return false;
+    }
+    let mut frame = titlebar.frame();
+    frame.origin.x += delta_x / x_per_unit;
+    frame.origin.y -= delta_y / y_up_per_unit;
+    titlebar.setFrameOrigin(frame.origin);
     true
 }
 
 #[cfg(not(target_os = "macos"))]
-fn center_traffic_lights<W: HasWindowHandle + ?Sized>(_window: &W, _titlebar_height: f64) -> bool {
+fn move_traffic_lights<W: HasWindowHandle + ?Sized>(
+    _window: &W,
+    _center_x: Option<f64>,
+    _center_y: f64,
+) -> bool {
     true
 }
 

@@ -21,6 +21,9 @@ const DEFAULT_CENTER_WIDTH: f32 = 168.0;
 /// Extra gap after the native traffic-light exclusion so leading chrome
 /// (sidebar toggle) cannot sit on the caption buttons.
 const NATIVE_LEADING_CLEARANCE: f32 = 8.0;
+/// Width of the native window-button placeholder: the macOS traffic-light
+/// cluster centered with equal margins.
+const NATIVE_WINDOW_CONTROLS_WIDTH: f32 = 78.0;
 const TITLE_FONT_SIZE: f32 = 13.0;
 const TITLE_FONT_WEIGHT: u16 = 600;
 const OVERLAY_Z_INDEX: i32 = 1;
@@ -71,8 +74,10 @@ pub struct AppTitleBar {
     pub trailing: Option<StableNodeId>,
     pub controls: Option<StableNodeId>,
     pub center_width: f32,
-    pub leading_inset: f32,
-    pub trailing_inset: f32,
+    /// Window buttons are the platform's native ones (macOS traffic lights):
+    /// the controls slot is an empty leading placeholder the host moves them
+    /// onto. Otherwise it holds the custom trailing buttons.
+    pub native_controls: bool,
     pub show_window_controls: bool,
     pub maximized: bool,
     pub style: NodeStyle,
@@ -89,9 +94,8 @@ impl AppTitleBar {
             trailing: None,
             controls: None,
             center_width: DEFAULT_CENTER_WIDTH,
-            leading_inset: WindowChrome::platform_default().leading_inset,
-            trailing_inset: 0.0,
-            show_window_controls: WindowChrome::platform_default().uses_custom_controls(),
+            native_controls: !WindowChrome::platform_default().uses_custom_controls(),
+            show_window_controls: true,
             maximized: false,
             style: NodeStyle::default(),
         }
@@ -134,13 +138,8 @@ impl AppTitleBar {
         self
     }
 
-    pub fn leading_inset(mut self, inset: f32) -> Self {
-        self.leading_inset = valid_inset(inset);
-        self
-    }
-
-    pub fn trailing_inset(mut self, inset: f32) -> Self {
-        self.trailing_inset = valid_inset(inset);
+    pub fn native_controls(mut self, native: bool) -> Self {
+        self.native_controls = native;
         self
     }
 
@@ -159,35 +158,22 @@ impl AppTitleBar {
         self
     }
 
-    /// True when `(x, y)` is in the platform traffic-light / caption exclusion
-    /// of a title bar laid out at `bounds`. Drag hit-testing must skip it.
-    pub fn native_control_hit(&self, bounds: crate::LayoutBox, x: f32, y: f32) -> bool {
-        nana_ui_core::WindowChrome::new(
-            if self.show_window_controls {
-                nana_ui_core::WindowControlMode::Custom
-            } else {
-                nana_ui_core::WindowControlMode::NativeLeading
-            },
-            self.leading_inset,
-            self.trailing_inset,
-        )
-        .native_control_hit(
-            nana_ui_core::LogicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height),
-            x,
-            y,
-        )
-    }
-
     fn resolved_center_width(&self) -> f32 {
         finite_positive(self.center_width, DEFAULT_CENTER_WIDTH).max(1.0)
     }
 
+    /// Whether the native placeholder leads the bar.
+    fn leads_with_native_controls(&self) -> bool {
+        self.native_controls && self.show_window_controls
+    }
+
+    /// An unassembled bar has no placeholder, so it keeps the native band
+    /// clear with padding instead.
     fn chrome_padding_left(&self) -> f32 {
-        let inset = valid_inset(self.leading_inset);
-        if inset > 0.0 && !self.show_window_controls {
-            inset + NATIVE_LEADING_CLEARANCE
+        if self.leads_with_native_controls() && self.controls.is_none() {
+            NATIVE_WINDOW_CONTROLS_WIDTH + NATIVE_LEADING_CLEARANCE
         } else {
-            inset
+            0.0
         }
     }
 
@@ -216,7 +202,7 @@ impl AppTitleBar {
             layout.padding_right = Some(LengthSpec::Px(0.0));
         } else {
             layout.padding_left = Some(LengthSpec::Px(self.chrome_padding_left()));
-            layout.padding_right = Some(LengthSpec::Px(valid_inset(self.trailing_inset)));
+            layout.padding_right = Some(LengthSpec::Px(0.0));
         }
         layout.overflow_x = OverflowSpec::Hidden;
         style
@@ -244,8 +230,15 @@ impl AppTitleBar {
                     patch_layout(world, mutations, child, |layout| {
                         apply_fill_column(layout, JustifySpec::Start);
                         layout.overflow_x = OverflowSpec::Hidden;
-                        layout.padding_left =
-                            Some(LengthSpec::Px(SLOT_PADDING + self.chrome_padding_left()));
+                        // The native placeholder sits flush with the bar edge
+                        // and carries its own clearance.
+                        layout.padding_left = Some(LengthSpec::Px(
+                            if self.leads_with_native_controls() && self.controls.is_some() {
+                                0.0
+                            } else {
+                                SLOT_PADDING + self.chrome_padding_left()
+                            },
+                        ));
                         layout.padding_right = Some(LengthSpec::Px(SLOT_PADDING));
                         layout.padding_top = Some(LengthSpec::Px(0.0));
                         layout.padding_bottom = Some(LengthSpec::Px(0.0));
@@ -270,11 +263,13 @@ impl AppTitleBar {
                         layout.padding_left = Some(LengthSpec::Px(SLOT_PADDING));
                         // Custom controls hug the window edge; native or
                         // absent controls keep the shared slot padding.
-                        layout.padding_right = Some(LengthSpec::Px(if self.show_window_controls {
-                            0.0
-                        } else {
-                            SLOT_PADDING + valid_inset(self.trailing_inset)
-                        }));
+                        layout.padding_right = Some(LengthSpec::Px(
+                            if self.show_window_controls && !self.native_controls {
+                                0.0
+                            } else {
+                                SLOT_PADDING
+                            },
+                        ));
                         layout.padding_top = Some(LengthSpec::Px(0.0));
                         layout.padding_bottom = Some(LengthSpec::Px(0.0));
                     });
@@ -327,7 +322,9 @@ impl AppTitleBar {
             });
             return;
         }
-        AppTitleBarControls::new(self.maximized).project(controls, world, mutations);
+        AppTitleBarControls::new(self.maximized)
+            .native(self.native_controls)
+            .project(controls, world, mutations);
     }
 }
 
@@ -432,10 +429,19 @@ impl ComponentView for AppTitleBarSlot {
     }
 }
 
-/// Host-mounted Minimize / Maximize-or-Restore / Close icons.
+/// The window's system buttons. Custom controls are host-mounted Minimize /
+/// Maximize-or-Restore / Close icons; native controls are an empty placeholder
+/// the size of the platform's own buttons, which the window host moves onto
+/// the placeholder's layout box.
+///
+/// A title bar's controls slot is the usual home for the placeholder, and
+/// `assemble_app_title_bar` puts it there. It is an ordinary component
+/// though: mounted anywhere in a window's document, it still says where that
+/// window's native buttons belong.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppTitleBarControls {
     pub maximized: bool,
+    pub native: bool,
     pub minimize: Option<StableNodeId>,
     pub maximize: Option<StableNodeId>,
     pub close: Option<StableNodeId>,
@@ -446,11 +452,17 @@ impl AppTitleBarControls {
     pub fn new(maximized: bool) -> Self {
         Self {
             maximized,
+            native: !WindowChrome::platform_default().uses_custom_controls(),
             minimize: None,
             maximize: None,
             close: None,
             style: NodeStyle::default(),
         }
+    }
+
+    pub fn native(mut self, native: bool) -> Self {
+        self.native = native;
+        self
     }
 
     pub fn minimize(mut self, minimize: StableNodeId) -> Self {
@@ -476,6 +488,20 @@ impl AppTitleBarControls {
     fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
+        if self.native {
+            let width = NATIVE_WINDOW_CONTROLS_WIDTH;
+            layout.width = Some(LengthSpec::Px(width));
+            layout.min_width = Some(LengthSpec::Px(width));
+            layout.max_width = Some(LengthSpec::Px(width));
+            layout.height = Some(LengthSpec::Fill);
+            layout.padding_left = Some(LengthSpec::Px(0.0));
+            layout.padding_right = Some(LengthSpec::Px(0.0));
+            layout.margin_right = Some(LengthSpec::Px(SLOT_PADDING + NATIVE_LEADING_CLEARANCE));
+            layout.flex_grow = Some(0.0);
+            layout.flex_shrink = Some(0.0);
+            layout.hidden = false;
+            return style;
+        }
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::End;
@@ -533,8 +559,10 @@ impl ComponentView for AppTitleBarControls {
             world,
             mutations,
             &self.effective_style(),
+            // The native placeholder takes the pointer so the title bar never
+            // starts a drag over the buttons it stands for.
             InteractionState {
-                pointer_events: false,
+                pointer_events: self.native,
                 focusable: false,
             },
             AccessibilityState {
@@ -542,6 +570,9 @@ impl ComponentView for AppTitleBarControls {
                 ..AccessibilityState::default()
             },
         );
+        if self.native {
+            return;
+        }
         for (action, child) in WindowChromeAction::ALL
             .into_iter()
             .zip(self.control_ids(world, id))
@@ -967,8 +998,8 @@ impl AppContext {
     ///
     /// Leading and trailing columns fill leftover width; the center column is a
     /// fixed title slot. Custom Minimize / Maximize / Close buttons live in the
-    /// trailing column. Host-mounted slots and Vue extras are reparented, not
-    /// recreated.
+    /// trailing column; the native window-button placeholder leads the leading
+    /// column. Host-mounted slots and Vue extras are reparented, not recreated.
     pub fn assemble_app_title_bar(
         &mut self,
         bar: Entity<AppTitleBar>,
@@ -986,9 +1017,17 @@ impl AppContext {
             .filter(|id| self.world().contains(*id))
             .or_else(|| find_title_bar_controls_child(self, parent));
         let mut changed = false;
-        if snapshot.show_window_controls {
-            let mounted =
-                ensure_window_controls(self, document, parent, controls, snapshot.maximized)?;
+        // A native placeholder is mounted even while hidden, so showing the
+        // controls later still has a box for the platform buttons to follow.
+        if snapshot.show_window_controls || snapshot.native_controls {
+            let mounted = ensure_window_controls(
+                self,
+                document,
+                parent,
+                controls,
+                snapshot.maximized,
+                snapshot.native_controls,
+            )?;
             changed |= controls != Some(mounted);
             controls = Some(mounted);
             if changed {
@@ -1018,7 +1057,11 @@ impl AppContext {
             })
             .unwrap_or((None, None));
 
+        let controls = controls.filter(|id| self.world().contains(*id));
         let mut leading_children = Vec::new();
+        if let Some(controls) = controls.filter(|_| snapshot.native_controls) {
+            leading_children.push(controls);
+        }
         if let Some(leading) = snapshot.leading.filter(|id| self.world().contains(*id)) {
             leading_children.push(leading);
         }
@@ -1030,7 +1073,7 @@ impl AppContext {
         if let Some(trailing) = snapshot.trailing.filter(|id| self.world().contains(*id)) {
             trailing_children.push(trailing);
         }
-        if let Some(controls) = controls.filter(|id| self.world().contains(*id)) {
+        if let Some(controls) = controls.filter(|_| !snapshot.native_controls) {
             trailing_children.push(controls);
         }
         let mut reserved_shell_children = Vec::new();
@@ -1518,10 +1561,39 @@ fn ensure_window_controls(
     parent: StableNodeId,
     existing: Option<StableNodeId>,
     maximized: bool,
+    native: bool,
 ) -> Result<StableNodeId, FrameworkError> {
     let controls = existing
         .filter(|id| context.world().contains(*id))
         .or_else(|| find_title_bar_controls_child(context, parent));
+    if native {
+        // The platform draws the buttons; the placeholder has no children.
+        if let Some(controls) = controls {
+            if view_is::<AppTitleBarControls>(context, controls) {
+                context.update_component(
+                    Entity::<AppTitleBarControls>::from_stable_id(controls),
+                    |controls, _| {
+                        controls.maximized = maximized;
+                        controls.native = true;
+                    },
+                )?;
+            }
+            // Custom buttons left from an earlier mode have no place here.
+            if context
+                .world()
+                .node(controls)
+                .is_some_and(|node| !node.children.is_empty())
+            {
+                reconcile_ids(context, controls, &[])?;
+            }
+            return Ok(controls);
+        }
+        let controls = context.create_detached_component(
+            document,
+            AppTitleBarControls::new(maximized).native(true),
+        )?;
+        return Ok(controls.stable_id());
+    }
     if let Some(controls) = controls {
         let count = context
             .world()
@@ -1535,6 +1607,7 @@ fn ensure_window_controls(
                     Entity::<AppTitleBarControls>::from_stable_id(controls),
                     |controls, _| {
                         controls.maximized = maximized;
+                        controls.native = false;
                         controls.minimize = Some(minimize);
                         controls.maximize = Some(maximize);
                         controls.close = Some(close);
@@ -1547,6 +1620,7 @@ fn ensure_window_controls(
                 Entity::<AppTitleBarControls>::from_stable_id(controls),
                 |controls, _| {
                     controls.maximized = maximized;
+                    controls.native = false;
                 },
             )?;
         }
@@ -1556,6 +1630,7 @@ fn ensure_window_controls(
     let controls = context.create_detached_component(
         document,
         AppTitleBarControls::new(maximized)
+            .native(false)
             .minimize(minimize)
             .maximize(maximize)
             .close(close),
@@ -2017,14 +2092,6 @@ fn patch_layout(
     }
 }
 
-fn valid_inset(value: f32) -> f32 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
-}
-
 fn finite_positive(value: f32, fallback: f32) -> f32 {
     if value.is_finite() && value > 0.0 {
         value
@@ -2141,7 +2208,7 @@ mod tests {
                     .leading(leading.stable_id())
                     .trailing(trailing.stable_id())
                     .show_window_controls(true)
-                    .leading_inset(0.0),
+                    .native_controls(false),
             )
             .unwrap();
         context.assemble_app_title_bar(bar).unwrap();
@@ -2226,10 +2293,11 @@ mod tests {
         assert!(style.layout.background.is_none());
         assert_eq!(style.layout.direction, Some(FlexDirection::Row));
         let chrome = WindowChrome::platform_default();
-        let expected_leading_pad = if chrome.leading_inset > 0.0 && !chrome.uses_custom_controls() {
-            chrome.leading_inset + NATIVE_LEADING_CLEARANCE
+        // Unassembled, a native bar has no placeholder and pads the band clear.
+        let expected_leading_pad = if chrome.uses_custom_controls() {
+            0.0
         } else {
-            chrome.leading_inset
+            NATIVE_WINDOW_CONTROLS_WIDTH + NATIVE_LEADING_CLEARANCE
         };
         assert_eq!(
             style.layout.padding_left,
@@ -2243,30 +2311,19 @@ mod tests {
         assert_eq!(bounds.height, TITLE_BAR_HEIGHT);
         assert_eq!(bounds.width, 800.0);
         let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
-        assert_eq!(bar_view.leading_inset, chrome.leading_inset);
-        assert_eq!(bar_view.show_window_controls, chrome.uses_custom_controls());
-        if chrome.leading_inset > 0.0 {
-            assert!(bar_view.native_control_hit(bounds, bounds.x + 8.0, bounds.y + 8.0));
-            assert!(!bar_view.native_control_hit(
-                bounds,
-                bounds.x + chrome.leading_inset + 8.0,
-                bounds.y + 8.0
-            ));
-        } else {
-            assert!(!bar_view.native_control_hit(bounds, bounds.x + 8.0, bounds.y + 8.0));
-        }
+        assert!(bar_view.show_window_controls);
+        assert_eq!(bar_view.native_controls, !chrome.uses_custom_controls());
     }
 
     #[test]
     fn assemble_title_bar_mounts_custom_window_controls_when_enabled() {
         let mut context = AppContext::new();
         let bar = context
-            .create_component(document(), AppTitleBar::new("Nana"))
+            .create_component(document(), AppTitleBar::new("Nana").native_controls(false))
             .unwrap();
         let mounted = context.assemble_app_title_bar(bar).unwrap();
-        let chrome = WindowChrome::platform_default();
         let snapshot = context.read(bar, Clone::clone).unwrap();
-        if chrome.uses_custom_controls() {
+        {
             assert!(mounted);
             let controls = snapshot.controls.expect("custom chrome mounts controls");
             assert_eq!(
@@ -2313,12 +2370,120 @@ mod tests {
                     })
             );
             assert!(!context.assemble_app_title_bar(bar).unwrap());
-        } else {
-            assert!(mounted);
-            assert!(snapshot.controls.is_none());
-            let columns = context.world().node(bar.stable_id()).unwrap().children;
-            assert_eq!(columns.len(), 3, "native chrome still uses three columns");
         }
+    }
+
+    fn native_title_bar(
+        context: &mut AppContext,
+        style: NodeStyle,
+    ) -> (Entity<AppTitleBar>, Entity<IconButton>) {
+        let leading = context
+            .create_component(
+                document(),
+                IconButton::new(Icon::Sidebar, "sidebar").size(ControlSize::Small),
+            )
+            .unwrap();
+        let bar = context
+            .create_component(
+                document(),
+                AppTitleBar::new("")
+                    .native_controls(true)
+                    .leading(leading.stable_id())
+                    .style(style),
+            )
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        (bar, leading)
+    }
+
+    #[test]
+    fn explicit_custom_controls_are_never_treated_as_native() {
+        let mut context = AppContext::new();
+        let bar = context
+            .create_component(document(), AppTitleBar::new("Nana").native_controls(false))
+            .unwrap();
+        context.assemble_app_title_bar(bar).unwrap();
+        let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
+        let stored = context
+            .read(
+                Entity::<AppTitleBarControls>::from_stable_id(controls),
+                |controls| controls.native,
+            )
+            .unwrap();
+        assert!(!stored);
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        assert_eq!(context.world().node(controls).unwrap().children.len(), 3);
+    }
+
+    #[test]
+    fn native_window_controls_are_an_empty_leading_placeholder() {
+        let mut context = AppContext::new();
+        let (bar, leading) = native_title_bar(&mut context, NodeStyle::default());
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let controls = context
+            .read(bar, |bar| bar.controls)
+            .unwrap()
+            .expect("native chrome mounts a placeholder");
+        assert!(context.world().node(controls).unwrap().children.is_empty());
+        let columns = context.world().node(bar.stable_id()).unwrap().children;
+        assert_eq!(
+            context.world().node(columns[0]).unwrap().children.first(),
+            Some(&controls)
+        );
+        let placeholder = context.world().layout_box(controls).unwrap();
+        assert_eq!(placeholder.x, 0.0);
+        assert_eq!(placeholder.width, NATIVE_WINDOW_CONTROLS_WIDTH);
+        assert_eq!(placeholder.height, TITLE_BAR_HEIGHT);
+        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        assert!(
+            leading.x + 0.5 >= placeholder.x + placeholder.width + NATIVE_LEADING_CLEARANCE,
+            "leading chrome overlapped the native buttons"
+        );
+        assert!(!context.assemble_app_title_bar(bar).unwrap());
+    }
+
+    #[test]
+    fn native_window_controls_follow_an_inset_title_bar() {
+        let mut context = AppContext::new();
+        let root = context
+            .create_component(document(), crate::Stack::fill_column(0.0))
+            .unwrap();
+        let mut style = NodeStyle::default();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.position = PositionSpec::Absolute;
+            layout.offset_top = Some(LengthSpec::Px(12.0));
+            layout.offset_left = Some(LengthSpec::Px(12.0));
+            layout.offset_right = Some(LengthSpec::Px(12.0));
+        }
+        let (bar, leading) = native_title_bar(&mut context, style);
+        context.append_child(root, bar).unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let controls = context.read(bar, |bar| bar.controls).unwrap().unwrap();
+        let placeholder = context.world().layout_box(controls).unwrap();
+        assert_eq!((placeholder.x, placeholder.y), (12.0, 12.0));
+        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        assert!(leading.x + 0.5 >= placeholder.x + placeholder.width);
+    }
+
+    #[test]
+    fn hidden_native_controls_release_the_leading_band() {
+        let mut context = AppContext::new();
+        let (bar, leading) = native_title_bar(&mut context, NodeStyle::default());
+        context
+            .update_component(bar, |bar, _| bar.show_window_controls = false)
+            .unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
+            .unwrap();
+        let leading = context.world().layout_box(leading.stable_id()).unwrap();
+        assert!(leading.x < NATIVE_WINDOW_CONTROLS_WIDTH);
     }
 
     #[test]
@@ -2329,8 +2494,7 @@ mod tests {
             .create_component(
                 document(),
                 AppTitleBar::new("Nana")
-                    .leading_inset(0.0)
-                    .trailing_inset(0.0)
+                    .native_controls(false)
                     .show_window_controls(true),
             )
             .unwrap();
@@ -2477,10 +2641,12 @@ mod tests {
             "leading chrome must hug, got width {}",
             leading_box.width
         );
-        assert!(
-            leading_box.x + 0.5 >= bar_box.x + WindowChrome::platform_default().leading_inset,
-            "leading must start after the traffic-light inset"
-        );
+        if !WindowChrome::platform_default().uses_custom_controls() {
+            assert!(
+                leading_box.x + 0.5 >= bar_box.x + NATIVE_WINDOW_CONTROLS_WIDTH,
+                "leading must start after the traffic lights"
+            );
+        }
         let title_mid = center_col.x + center_col.width / 2.0;
         assert!(
             (title_mid - (bar_box.x + bar_box.width / 2.0)).abs() < 48.0,
@@ -2544,39 +2710,6 @@ mod tests {
     }
 
     #[test]
-    fn leading_chrome_stays_clear_of_native_traffic_lights() {
-        let mut context = AppContext::new();
-        let leading = context
-            .create_component(
-                document(),
-                IconButton::new(Icon::Sidebar, "sidebar").size(ControlSize::Small),
-            )
-            .unwrap();
-        let bar = context
-            .create_component(
-                document(),
-                AppTitleBar::new("Nana").leading(leading.stable_id()),
-            )
-            .unwrap();
-        context.append_child(bar, leading).unwrap();
-        context
-            .layout_document(document(), LayoutViewport::new(800.0, 400.0))
-            .unwrap();
-
-        let bar_box = context.world().layout_box(bar.stable_id()).unwrap();
-        let leading_box = context.world().layout_box(leading.stable_id()).unwrap();
-        let bar_view = context.read(bar, |bar| bar.clone()).unwrap();
-        assert!(
-            !bar_view.native_control_hit(
-                bar_box,
-                leading_box.x + 1.0,
-                leading_box.y + leading_box.height / 2.0
-            ),
-            "sidebar toggle overlapped the native caption exclusion"
-        );
-    }
-
-    #[test]
     fn controls_helper_projects_three_icons_and_restore() {
         let mut context = AppContext::new();
         let minimize = context
@@ -2601,6 +2734,7 @@ mod tests {
             .create_component(
                 document(),
                 AppTitleBarControls::new(false)
+                    .native(false)
                     .minimize(minimize.stable_id())
                     .maximize(maximize.stable_id())
                     .close(close.stable_id()),
@@ -2703,6 +2837,7 @@ mod tests {
             .create_component(
                 document(),
                 AppTitleBarControls::new(false)
+                    .native(false)
                     .minimize(minimize.stable_id())
                     .maximize(maximize.stable_id())
                     .close(close.stable_id()),
@@ -2715,6 +2850,7 @@ mod tests {
             .create_component(
                 document(),
                 AppTitleBar::new("Nana")
+                    .native_controls(false)
                     .controls(controls.stable_id())
                     .show_window_controls(false),
             )
@@ -3267,8 +3403,13 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.center_width, 420.0);
         assert!(!snapshot.show_window_controls);
+        // Only the hidden, empty native placeholder may remain mounted.
         assert!(
-            snapshot.controls.is_none(),
+            snapshot
+                .controls
+                .is_none_or(|controls| snapshot.native_controls
+                    && context.world().node(controls).unwrap().children.is_empty()
+                    && context.world().node_style(controls).unwrap().layout.hidden),
             "suppressed chrome must not mount a second control strip"
         );
 
@@ -3805,21 +3946,12 @@ mod tests {
             "leading chrome must hug, got {}",
             leading_box.width
         );
-        let chrome = WindowChrome::platform_default();
-        assert!(
-            leading_box.x + 0.5 >= bar_box.x + chrome.leading_inset,
-            "toggle overlapped the traffic-light inset"
-        );
-        let bar_view = context
-            .read(Entity::<AppTitleBar>::from_stable_id(title_bar), |bar| {
-                bar.clone()
-            })
-            .unwrap();
-        assert!(!bar_view.native_control_hit(
-            bar_box,
-            leading_box.x + 1.0,
-            leading_box.y + leading_box.height / 2.0
-        ));
+        if !WindowChrome::platform_default().uses_custom_controls() {
+            assert!(
+                leading_box.x + 0.5 >= bar_box.x + NATIVE_WINDOW_CONTROLS_WIDTH,
+                "toggle overlapped the traffic lights"
+            );
+        }
 
         let nav_box = context.world().layout_box(navigation.stable_id()).unwrap();
         let files_box = context.world().layout_box(files.stable_id()).unwrap();

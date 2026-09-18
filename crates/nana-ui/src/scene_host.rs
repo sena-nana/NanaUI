@@ -163,6 +163,11 @@ struct WindowContext {
     pending_fullscreen: Option<FullscreenRequest>,
     /// Native window buttons shown; re-applied after native style changes.
     native_controls_visible: bool,
+    /// Title-bar placeholder the native window buttons follow, once found.
+    native_controls: Option<nana_ui_runtime::StableNodeId>,
+    /// Its last laid-out box, so a visibility or style change can put the
+    /// buttons back within the same turn instead of a frame later.
+    native_controls_box: std::cell::Cell<Option<nana_ui_runtime::LayoutBox>>,
     /// Taskbar entry state last applied successfully.
     skip_taskbar: bool,
     /// Descriptor outcome, applied before the first show and delivered after `Ready`.
@@ -646,6 +651,8 @@ fn initialize<Program: RuntimeProgram>(
         mode: None,
         pending_fullscreen: settings.fullscreen,
         native_controls_visible: true,
+        native_controls: None,
+        native_controls_box: std::cell::Cell::new(None),
         skip_taskbar: matches!(skip_taskbar_report, Some(Ok(()))),
         skip_taskbar_report,
         pointer_presence: presence::PointerPresence::default(),

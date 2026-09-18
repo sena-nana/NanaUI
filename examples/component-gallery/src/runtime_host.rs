@@ -55,13 +55,10 @@ impl RuntimeChrome {
     }
 }
 
-pub(super) fn apply_title_bar_insets(
+pub(super) fn apply_title_bar_maximized(
     context: &mut AppContext,
     shell: Entity<DesktopShell>,
-    leading_inset: f32,
-    trailing_inset: f32,
     maximized: bool,
-    show_window_controls: bool,
 ) {
     if let Ok(Some(title_bar)) = context.read(shell, |shell| {
         shell
@@ -69,10 +66,7 @@ pub(super) fn apply_title_bar_insets(
             .map(Entity::<nana_ui::runtime::AppTitleBar>::from_stable_id)
     }) {
         let _ = context.update_component(title_bar, |bar, _| {
-            bar.leading_inset = leading_inset;
-            bar.trailing_inset = trailing_inset;
             bar.maximized = maximized;
-            bar.show_window_controls = show_window_controls;
         });
     }
 }
