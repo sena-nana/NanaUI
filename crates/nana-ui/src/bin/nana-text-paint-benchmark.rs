@@ -101,6 +101,10 @@ struct Cell {
     live_glyphs: u64,
     /// Per sampled frame.
     counters: BTreeMap<String, f64>,
+    /// `RuntimeDocument::flush`: extraction, layout and the scene delta. The
+    /// painter's `batch_ms` does not include it, and a container style change
+    /// spends most of a frame here rather than there.
+    flush_ms: Percentiles,
     batch_ms: Percentiles,
     gpu_upload_ms: Percentiles,
 }
@@ -328,13 +332,16 @@ fn run(
     };
 
     let mut batch = Vec::new();
+    let mut flush = Vec::new();
     let mut upload = Vec::new();
     let mut warm = None;
     let mut warm_glyph = None;
     let mut warm_shape = None;
     for frame in 0..WARMUP_FRAMES + frames {
         mutate(&mut document, workload, column, ticker, &rows, frame);
+        let flush_started = std::time::Instant::now();
         document.flush(viewport, &mut shaper).expect("flush");
+        let flush_elapsed = flush_started.elapsed();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-text-paint-benchmark"),
         });
@@ -355,6 +362,7 @@ fn run(
             warm_shape = Some(painter.text_shape_cache_stats());
         }
         if frame >= WARMUP_FRAMES {
+            flush.push(flush_elapsed.as_secs_f64() * 1000.0);
             let timings = painter.last_gpu_timings().expect("timed frame");
             batch.push(timings.batch.as_secs_f64() * 1000.0);
             upload.push(timings.gpu_upload.as_secs_f64() * 1000.0);
@@ -442,6 +450,7 @@ fn run(
         frames,
         live_glyphs: warm_glyph.unwrap_or_default(),
         counters,
+        flush_ms: Percentiles::of(flush),
         batch_ms: Percentiles::of(batch),
         gpu_upload_ms: Percentiles::of(upload),
     }
@@ -580,7 +589,7 @@ fn color_target(device: &wgpu::Device, physical: [u32; 2]) -> wgpu::TextureView 
 
 fn print_table(cells: &[Cell]) {
     println!(
-        "{:<12} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>12} {:>10}",
+        "{:<12} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10} {:>10}",
         "workload",
         "labels",
         "Hz",
@@ -589,12 +598,13 @@ fn print_table(cells: &[Cell]) {
         "rebuild/f",
         "inst B/f",
         "reshape/f",
+        "flush p50",
         "batch p50"
     );
     for cell in cells {
         let get = |name: &str| cell.counters.get(name).copied().unwrap_or_default();
         println!(
-            "{:<12} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>12.0} {:>9.3}m",
+            "{:<12} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>9.3}m {:>9.3}m",
             cell.workload,
             cell.labels,
             cell.frames,
@@ -603,6 +613,7 @@ fn print_table(cells: &[Cell]) {
             get("text_instance_rebuilds"),
             get("text_instance_upload_bytes"),
             get("shape_cache_misses"),
+            cell.flush_ms.p50,
             cell.batch_ms.p50,
         );
     }
