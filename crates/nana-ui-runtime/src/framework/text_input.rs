@@ -188,15 +188,22 @@ impl AppContext {
             .ime(entity.stable_id())
             .is_some_and(|composition| !composition.text.is_empty());
         let snippet = self.world.text_snippet_session(entity.stable_id());
-        let old = self.read(entity, |editable| editable.state().value.clone())?;
+        // Only a snippet session diffs the pre-edit value (to follow its
+        // linked placeholders). Cloning the whole value for every keystroke of
+        // every editor would be O(document) for nothing.
+        let old = snippet
+            .as_ref()
+            .map(|_| self.read(entity, |editable| editable.state().value.clone()))
+            .transpose()?;
         let mut linked = None;
         let changed = self.commit_editor_edit(entity, TextEditOrigin::Ime, |editable, _| {
             if !editable.delete_surrounding(before_bytes, after_bytes, composing) {
                 return false;
             }
             if let Some(session) = &snippet
+                && let Some(old) = old.as_deref()
                 && let Some((value, selection, session)) =
-                    session.linked_edit(&old, &editable.state().value, editable.state().selection)
+                    session.linked_edit(old, &editable.state().value, editable.state().selection)
             {
                 editable.state_mut().value = value;
                 editable.state_mut().selection = selection;
