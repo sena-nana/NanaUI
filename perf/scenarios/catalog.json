@@ -32,6 +32,9 @@
     "gpu-scene-ui-dense-2k",
     "gpu-scene-host-textures-64"
   ],
+  "nana_text_ids": [
+    "gpu-scene-text-retained"
+  ],
   "nana_motion_ids": [
     "compositor-steady",
     "compositor-tracks-1",

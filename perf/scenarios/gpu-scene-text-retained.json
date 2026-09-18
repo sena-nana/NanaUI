@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-text-retained",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [
+      1280,
+      800
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 320,
+      "height": 180
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view"
+    ],
+    "node_repeat": {
+      "text": 1000
+    },
+    "text_ticker": true
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_retained_steady_rebuilds_only_what_changed",
+      "path": "text_counters.text_instance_rebuilds",
+      "op": "lte",
+      "value": 1,
+      "status": "required",
+      "note": "One label's text changes per frame. Every other paragraph must be answered by its retained entry. Missing stays not-evaluable."
+    },
+    {
+      "name": "text_retained_steady_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 4,
+      "status": "required",
+      "note": "The ticker's digits are the only glyphs a steady frame can fault in, and only until it has seen all ten."
+    },
+    {
+      "name": "text_retained_steady_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 4096,
+      "status": "required",
+      "note": "Same bound, in bytes: a steady frame may fault a digit, never a page."
+    },
+    {
+      "name": "text_retained_steady_moves_no_other_instance",
+      "path": "text_counters.text_instance_upload_bytes",
+      "op": "lte",
+      "value": 4096,
+      "status": "required",
+      "note": "Only the changed paragraph's block may reach the GPU. A thousand labels is about 120 KiB, so this fails closed on a whole-arena rewrite."
+    },
+    {
+      "name": "text_retained_steady_answers_nodes_from_entries",
+      "path": "text_counters.text_prepare_nodes_skipped",
+      "op": "gte",
+      "value": 900,
+      "status": "required",
+      "note": "Nodes that reached a draw without resolving a glyph. Missing stays not-evaluable and must never be read as 0."
+    }
+  ],
+  "notes": "Issue #98 retained-text gate. One label changes per frame so the painter cannot answer from its prepared batch \u2014 which is what every frame beside an animation looks like. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+}

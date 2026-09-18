@@ -1037,7 +1037,25 @@ def _extract_nana_gpu_scene(
     report["frame_stages"] = {
         name: {"status": "ran"} for name in GPU_HOST_STAGES
     }
+    # Per sampled frame, and only when the scenario kept the batch moving:
+    # a frame the painter answered from its prepared batch redid nothing by
+    # construction, and reading that as "the text path redid nothing" would be
+    # a gate that cannot fail.
+    text = payload.get("text_counters")
+    if isinstance(text, dict) and params_text_ticker(scenario):
+        report["text_counters"] = {
+            key: value for key, value in text.items() if isinstance(value, (int, float))
+        }
+        notes.append(
+            "text_counters are per sampled frame: what one frame asked the "
+            "retained-text path to resolve, rebuild and upload again."
+        )
     return report
+
+
+
+def params_text_ticker(scenario: Mapping[str, Any]) -> bool:
+    return bool(scenario.get("params", {}).get("text_ticker"))
 
 
 
@@ -1065,6 +1083,12 @@ def _require_ui_only_materialization(
         raise KeyError(
             f"nana-gpu-scene-benchmark materialization.node_repeat={echoed.get('node_repeat')!r} "
             f"does not match scenario JSON {repeat!r}"
+        )
+    if bool(echoed.get("text_ticker")) != bool(params.get("text_ticker")):
+        raise KeyError(
+            "nana-gpu-scene-benchmark materialization.text_ticker="
+            f"{echoed.get('text_ticker')!r} does not match scenario JSON "
+            f"{params.get('text_ticker')!r}"
         )
     if bool(echoed.get("shared_gpu_view_slot")) != bool(params.get("shared_gpu_view_slot")):
         raise KeyError(

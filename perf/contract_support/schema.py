@@ -790,6 +790,8 @@ def _validate_gpu_scene_ui_only(params: Mapping[str, Any]) -> list[str]:
         params["shared_gpu_view_slot"], bool
     ):
         errors.append("GpuScene UiOnly params.shared_gpu_view_slot must be a boolean")
+    if "text_ticker" in params and not isinstance(params["text_ticker"], bool):
+        errors.append("GpuScene UiOnly params.text_ticker must be a boolean")
     return errors
 
 
@@ -844,6 +846,19 @@ def _validate_motion_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
 
 
 
+def _validate_text_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
+    """Issue #98 retained-text work-counter rows. Outside harness_ids for the
+    same reason as the motion rows: the gate is what one frame redid, not what
+    a shared CI runner clocked."""
+    return _validate_named_id_list(
+        catalog,
+        base,
+        key="nana_text_ids",
+        must_stay_out_of_harness=True,
+    )
+
+
+
 def _validate_named_id_list(
     catalog: Mapping[str, Any],
     base: Path,
@@ -893,6 +908,7 @@ def validate_all_scenarios(root: Path | None = None) -> list[str]:
             errors.append(f"{path.name}: id must equal file stem")
     errors.extend(_validate_gpu_scale_ids(catalog, base))
     errors.extend(_validate_motion_ids(catalog, base))
+    errors.extend(_validate_text_ids(catalog, base))
     issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
     same = list(issue12.get("same_scenario_ids") or [])
     unsupported = list(issue12.get("unsupported_ids") or [])

@@ -58,6 +58,10 @@ struct Report {
     frames: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gpu_work: Option<GpuWorkSnapshot>,
+    /// Per sampled frame, so a gate reads "what one frame redid" rather than
+    /// a running total. Only emitted when the scenario keeps the batch moving.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_counters: Option<BTreeMap<String, f64>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     frame_stages: Option<BTreeMap<String, StageStatusReport>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,6 +88,9 @@ struct Materialization {
     ui_nodes: Vec<String>,
     node_repeat: BTreeMap<String, usize>,
     shared_gpu_view_slot: bool,
+    /// Echoed so a runner cannot quietly measure a frame the painter answered
+    /// from its prepared batch and call it a retained-text gate.
+    text_ticker: bool,
     ui_entity_count: usize,
     host_texture_resources: usize,
     scene_primitive_kinds: Vec<String>,
@@ -183,6 +190,12 @@ struct ScenarioParams {
     viewport: [u32; 2],
     host_texture: HostTextureParams,
     ui_nodes: Vec<String>,
+    /// Change one label's text every frame. Without it the painter answers
+    /// from its prepared batch and the frame measures nothing at all — which
+    /// is right for a draw-call scale row and useless for a text row, because
+    /// what a shell actually pays for is the frame *beside* an animation.
+    #[serde(default)]
+    text_ticker: bool,
 }
 
 impl ScenarioParams {
@@ -339,6 +352,65 @@ HostTexture evidence from a UiOnly encode is not Live2D. Required by #8 / not im
     )
 }
 
+/// What one sampled frame asked the text path to redo.
+///
+/// Deltas, not totals: a gate that read a running total would pass or fail on
+/// how long the bench ran.
+fn text_counters_per_frame(
+    warm: nana_ui::TextGlyphCounters,
+    end: nana_ui::TextGlyphCounters,
+    frames: usize,
+) -> BTreeMap<String, f64> {
+    let per_frame = frames as f64;
+    let mut out = BTreeMap::new();
+    let mut delta = |name: &str, after: u64, before: u64| {
+        out.insert(
+            name.to_string(),
+            after.saturating_sub(before) as f64 / per_frame,
+        );
+    };
+    delta(
+        "glyph_resolve_requests",
+        end.glyph_resolve_requests,
+        warm.glyph_resolve_requests,
+    );
+    delta(
+        "glyph_rasterized",
+        end.glyph_rasterized,
+        warm.glyph_rasterized,
+    );
+    delta(
+        "glyph_upload_bytes",
+        end.glyph_upload_bytes,
+        warm.glyph_upload_bytes,
+    );
+    delta(
+        "text_instance_rebuilds",
+        end.text_instance_rebuilds,
+        warm.text_instance_rebuilds,
+    );
+    delta(
+        "text_instance_upload_bytes",
+        end.text_instance_upload_bytes,
+        warm.text_instance_upload_bytes,
+    );
+    delta(
+        "text_prepare_nodes_considered",
+        end.text_prepare_nodes_considered,
+        warm.text_prepare_nodes_considered,
+    );
+    delta(
+        "text_prepare_nodes_skipped",
+        end.text_prepare_nodes_skipped,
+        warm.text_prepare_nodes_skipped,
+    );
+    out.insert(
+        "text_gpu_entries_active".to_string(),
+        end.text_gpu_entries_active as f64,
+    );
+    out
+}
+
 fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -> Report {
     Report {
         schema_version: 1,
@@ -351,6 +423,7 @@ fn unsupported(scenario_id: Option<String>, composition: &str, reason: String) -
         adapter: None,
         frames: None,
         gpu_work: None,
+        text_counters: None,
         frame_stages: None,
         stages: None,
         sampling: None,
@@ -407,10 +480,11 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         })
         .collect::<Vec<_>>();
 
-    let mut document = match ui_document(params) {
-        Ok(document) => document,
+    let (mut document, ticker) = match ui_document(params) {
+        Ok(built) => built,
         Err(reason) => return unsupported(Some(scenario.id), "UiOnly", reason),
     };
+    let ticker = params.text_ticker.then_some(ticker).flatten();
     let mut shaper = NanaTextShaper::default();
     let viewport = LayoutViewport::new(params.viewport[0] as f32, params.viewport[1] as f32);
     document
@@ -423,6 +497,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         ui_nodes: params.ui_nodes.clone(),
         node_repeat: params.node_repeat.clone(),
         shared_gpu_view_slot: params.shared_gpu_view_slot,
+        text_ticker: params.text_ticker,
         host_texture_resources: resource_count,
         ui_entity_count: document
             .context()
@@ -462,6 +537,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         .gpu_timestamps
         .then(|| timestamps::TimestampProbe::new(&device));
     let mut sampled_at = None;
+    let mut warm_text = None;
     let warmup_started = Instant::now();
     let warmup = Duration::from_secs(if args.sample_seconds.is_some() { 2 } else { 0 });
     let mut frame = 0usize;
@@ -474,6 +550,13 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         let sampling = frame >= WARMUP && warmup_started.elapsed() >= warmup;
         if sampling && sampled_at.is_none() {
             sampled_at = Some(Instant::now());
+            warm_text = Some(painter.text_glyph_counters());
+        }
+        if let Some(ticker) = ticker {
+            document
+                .context_mut()
+                .set_component(ticker, Text::new(format!("tick {frame}")))
+                .expect("ticker text");
         }
         let runtime_started = Instant::now();
         let (update, runtime_allocations) = allocations::measure(args.allocation_counts, || {
@@ -567,6 +650,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         }
         frame += 1;
     };
+    let text = warm_text.map(|warm| {
+        text_counters_per_frame(warm, painter.text_glyph_counters(), batch.len().max(1))
+    });
     Report {
         schema_version: 1,
         status: "ok",
@@ -578,6 +664,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         adapter: Some(adapter),
         frames: Some(batch.len()),
         gpu_work: Some(GpuWorkSnapshot::from(work)),
+        text_counters: text,
         frame_stages: Some(last_stages),
         sampling: Some(SamplingReport {
             elapsed_seconds: sampled_at.unwrap().elapsed().as_secs_f64(),
@@ -610,7 +697,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     }
 }
 
-fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
+fn ui_document(
+    params: &ScenarioParams,
+) -> Result<(RuntimeDocument, Option<nana_ui::runtime::Entity<Text>>), String> {
     if !params.ui_nodes.iter().any(|node| node == "list") {
         return Err("UiOnly ui_nodes must include list as the document root".into());
     }
@@ -635,6 +724,7 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
         .expect("list");
     let mut texture_index = 0;
     let mut gpu_view_index = 0u64;
+    let mut ticker = None;
     for kind in &params.ui_nodes {
         for _ in 0..params.repeat(kind) {
             match kind.as_str() {
@@ -648,6 +738,7 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
                         .context_mut()
                         .append_child(root, child)
                         .expect("text child");
+                    ticker.get_or_insert(child);
                 }
                 "icon" => {
                     let child = document
@@ -726,7 +817,7 @@ fn ui_document(params: &ScenarioParams) -> Result<RuntimeDocument, String> {
             }
         }
     }
-    Ok(document)
+    Ok((document, ticker))
 }
 
 /// Wrapping row. A column would push every repeated node past the viewport, and

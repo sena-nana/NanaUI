@@ -27,6 +27,24 @@ Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆
 否则 extractor 拒绝该报告。基线与判据见
 [`docs/gpu-node-scale.md`](../docs/gpu-node-scale.md)。
 
+## Issue #98 保留期文本
+
+`catalog.json` 的 `nana_text_ids` 目前只有 `gpu-scene-text-retained`：一千个文本节点，
+其中一个每帧换文本。它**不在** `harness_ids` 里，理由和 motion 那组一样——判据是这一帧
+让文本路径重做了什么（`text_counters.*`），不是公共 CI 的 GPU timing。
+
+`params.text_ticker` 是它能成立的前提：不换文本的话 painter 直接复用上一帧的批次，
+那一帧什么都没做，五条 counter 全是 0，门禁永远不会红。extractor 核对报告里回显的
+`text_ticker`，跑了不动的场景会被拒绝。
+
+```bash
+python3 perf/runners/nana/run.py --scenario gpu-scene-text-retained --output target/performance/issue98/nana-text-retained.json
+# 标签数 × 动画频率的完整报告（不是门禁，是可复现数字）
+cargo run --release --locked -p nana-ui --features gpu --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
+```
+
+判据与前后数字见 [`docs/text-engine.md`](../docs/text-engine.md) 的「保留期文本」一节。
+
 ## Issue #87 compositor motion
 
 `catalog.json` 的 `nana_motion_ids` 列出 compositor-only 结构门禁与 1/100/1k/10k
