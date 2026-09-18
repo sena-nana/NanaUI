@@ -476,7 +476,7 @@ pub struct UiScene {
     /// What the primitive-rebuild pass would otherwise recompute for every
     /// node it touches. See [`RebuildScratch`].
     rebuild_scratch: std::sync::Mutex<RebuildScratch>,
-    nodes: HashMap<StableNodeId, ExtractedNode>,
+    nodes: SceneNodes,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
     ordered: BTreeSet<SceneOrderKey>,
@@ -788,7 +788,7 @@ impl UiScene {
             // against the new node would leave stale entries in `ordered`.
             self.remove_node_primitives(node.id);
             self.retain_compositor_requests(&node);
-            self.nodes.insert(node.id, node);
+            self.nodes.insert(node.id, Arc::new(node));
             updated_nodes += 1;
         }
         let order_rebuilt = (updated_nodes != 0 || removed_nodes != 0)
@@ -1308,7 +1308,7 @@ impl UiScene {
 }
 
 fn collect_unextracted_descendants(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     root: StableNodeId,
     extracted: &HashSet<StableNodeId>,
     out: &mut Vec<StableNodeId>,
@@ -1369,10 +1369,7 @@ fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     )
 }
 
-fn is_descendant_of_rasterized_svg(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
-    node: &ExtractedNode,
-) -> bool {
+fn is_descendant_of_rasterized_svg(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let Some(parent) = node.parent else {
         return false;
     };
@@ -1392,10 +1389,7 @@ fn is_descendant_of_rasterized_svg(
     false
 }
 
-fn is_descendant_of_icon_visual(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
-    node: &ExtractedNode,
-) -> bool {
+fn is_descendant_of_icon_visual(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let Some(parent) = node.parent else {
         return false;
     };
@@ -1403,11 +1397,11 @@ fn is_descendant_of_icon_visual(
         .any(|(_, parent)| matches!(parent.standard_visual, Some(StandardVisual::Icon { .. })))
 }
 
-fn has_extracted_child(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn has_extracted_child(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     node.children.iter().any(|child| nodes.contains_key(child))
 }
 
-fn dest_filter_applies(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn dest_filter_applies(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let Some(filter) = node
         .source_style
         .layout
@@ -1427,7 +1421,7 @@ fn dest_filter_applies(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &Extr
         || node.custom_render.is_some()
 }
 
-fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     let opacity = local_opacity(node);
     let translucent = opacity > 0.0 && opacity < 1.0 && has_extracted_child(nodes, node);
     translucent
@@ -1435,17 +1429,17 @@ fn is_opacity_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &Extract
         || !node.source_style.layout.paint.mix_blend.is_normal()
 }
 
-fn is_stacking_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn is_stacking_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     is_opacity_group(nodes, node)
         || (has_extracted_child(nodes, node)
             && node.source_style.layout.creates_paint_stacking_context())
 }
 
-fn is_filter_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn is_filter_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     dest_filter_applies(nodes, node)
 }
 
-fn is_dest_group(nodes: &HashMap<StableNodeId, ExtractedNode>, node: &ExtractedNode) -> bool {
+fn is_dest_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
     is_opacity_group(nodes, node)
 }
 
@@ -1488,7 +1482,7 @@ pub(super) const MAX_ANCESTOR_DEPTH: usize = 4096;
 /// after one it does not: the chain cannot continue past a node whose parent
 /// nobody knows.
 pub(super) fn ancestor_ids(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     node: StableNodeId,
 ) -> impl Iterator<Item = StableNodeId> + '_ {
     let mut current = Some(node);
@@ -1507,7 +1501,7 @@ pub(super) fn ancestor_ids(
 /// `node` and its ancestors, innermost first, stopping at the first one the
 /// scene no longer holds.
 fn ancestor_nodes(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     node: StableNodeId,
 ) -> impl Iterator<Item = (StableNodeId, &ExtractedNode)> {
     let mut current = Some(node);
@@ -1520,7 +1514,7 @@ fn ancestor_nodes(
         depth += 1;
         let entry = nodes.get(&id)?;
         current = entry.parent;
-        Some((id, entry))
+        Some((id, entry.as_ref()))
     })
 }
 
@@ -1530,6 +1524,14 @@ type OpacityGroupCache = HashMap<StableNodeId, (u64, Arc<[OpacityGroup]>)>;
 /// Ancestor layer factors, stamped with the scene instance and the attribute
 /// epoch.
 pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
+
+/// The scene's nodes.
+///
+/// `Arc` rather than the node itself: rebuilding a node's primitives needs an
+/// owned handle while `&mut self` inserts them, and an `ExtractedNode` is 784
+/// bytes. A container style change rebuilds every descendant, so that clone
+/// used to be most of a megabyte of memmove per frame.
+pub(super) type SceneNodes = HashMap<StableNodeId, Arc<ExtractedNode>>;
 
 /// What a node inherits from the chain above it.
 type AncestorState = (AffineTransform, f32, Arc<[ClipRegion]>, bool);
@@ -1582,11 +1584,7 @@ fn empty_opacity_groups() -> Arc<[OpacityGroup]> {
     Arc::clone(EMPTY.get_or_init(|| Arc::from(Vec::new())))
 }
 
-fn dest_group(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
-    id: StableNodeId,
-    candidate: &ExtractedNode,
-) -> OpacityGroup {
+fn dest_group(nodes: &SceneNodes, id: StableNodeId, candidate: &ExtractedNode) -> OpacityGroup {
     OpacityGroup {
         node: id,
         opacity: local_opacity(candidate),
@@ -1675,10 +1673,7 @@ fn clip_path_region(
     }
 }
 
-fn filter_groups_from(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
-    node: StableNodeId,
-) -> Vec<FilterGroup> {
+fn filter_groups_from(nodes: &SceneNodes, node: StableNodeId) -> Vec<FilterGroup> {
     let mut groups = Vec::new();
     for (id, candidate) in ancestor_nodes(nodes, node) {
         if is_filter_group(nodes, candidate) {
@@ -1701,7 +1696,7 @@ fn filter_groups_from(
 /// including) `node`, outermost first. Opacity / filter / mix-blend dest groups
 /// plus `isolation` and positioned + `z-index`.
 fn group_prefix(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     node_order: &HashMap<StableNodeId, usize>,
     node: StableNodeId,
 ) -> Vec<(i32, usize)> {
@@ -1738,7 +1733,7 @@ fn primitive_paint_layer(slot: u64) -> u64 {
 }
 
 fn order_key(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     node_order: &HashMap<StableNodeId, usize>,
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {
@@ -1750,7 +1745,7 @@ fn order_key(
 }
 
 fn order_key_from_prefix(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &SceneNodes,
     prefix: &[(i32, usize)],
     primitive: &ScenePrimitive,
 ) -> SceneOrderKey {

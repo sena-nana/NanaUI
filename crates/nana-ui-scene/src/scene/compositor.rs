@@ -766,7 +766,7 @@ fn hold_elapsed(now: Duration, since: Duration, hold: Duration) -> bool {
 }
 
 fn nearest_layer_parent(
-    nodes: &HashMap<StableNodeId, ExtractedNode>,
+    nodes: &super::SceneNodes,
     node: StableNodeId,
     active: &HashSet<StableNodeId>,
 ) -> Option<CompositorLayerId> {

@@ -533,7 +533,7 @@ impl UiScene {
                 z_index: node.z_index,
                 document_order: node_order,
             };
-            match node.standard_visual {
+            match &node.standard_visual {
                 Some(StandardVisual::Button { loading_phase, .. }) => {
                     if let Some(ComponentGeometry::Button {
                         spinner,
@@ -1277,7 +1277,7 @@ impl UiScene {
                             corner_radius: corner_radii(4.0),
                         },
                     ));
-                    if indeterminate {
+                    if *indeterminate {
                         let dash_height = (extent / 8.0).max(1.5);
                         let dash_inset = extent / 4.0;
                         self.insert_primitive(visual_quad(
@@ -1296,7 +1296,7 @@ impl UiScene {
                                 corner_radius: corner_radii(dash_height / 2.0),
                             },
                         ));
-                    } else if checked {
+                    } else if *checked {
                         self.insert_primitive(ScenePrimitive {
                             id: PrimitiveId { node: id, slot: 4 },
                             node: id,
@@ -1352,7 +1352,7 @@ impl UiScene {
                         z_index: node.z_index,
                         document_order: node_order,
                         kind: ScenePrimitiveKind::Icon {
-                            icon,
+                            icon: *icon,
                             color: node.standard_visual_foreground.or(node.style.color),
                         },
                     });
@@ -1416,7 +1416,7 @@ impl UiScene {
                             corner_radius: corner_radii(5.0),
                         },
                     ));
-                    if loading {
+                    if *loading {
                         self.insert_primitive(ScenePrimitive {
                             id: PrimitiveId { node: id, slot: 6 },
                             node: id,
@@ -1581,7 +1581,7 @@ impl UiScene {
                     loading_phase,
                     ..
                 }) => {
-                    if loading {
+                    if *loading {
                         let spinner_bounds = match node.component_geometry.as_deref() {
                             Some(ComponentGeometry::Card {
                                 spinner: Some(spinner),
