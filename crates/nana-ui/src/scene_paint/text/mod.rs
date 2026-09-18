@@ -67,6 +67,10 @@ use crate::nana_text::{
 };
 
 const SHAPE_CACHE_CAP: usize = 512;
+/// Hard ceiling on shaped paragraphs, whatever one frame asks for. A view that
+/// really holds this much text reshapes some of it; an unbounded cache would
+/// instead hold every paragraph a session ever drew.
+const SHAPE_CACHE_MAX: usize = 32_768;
 /// Frames between retirement sweeps, and how long an entry survives without
 /// being drawn. A tab switch that flips back and forth must not pay for
 /// either direction.
@@ -122,6 +126,8 @@ pub struct TextGlyphCounters {
 struct ShapeEntry {
     key: ShapeKey,
     buffer: Buffer,
+    /// Frame this paragraph was last asked for.
+    last_used: u64,
 }
 
 /// Shaped buffers keyed by [`ShapeKeyRef::hash64`].
@@ -134,19 +140,49 @@ struct ShapeEntry {
 struct ShapeCache {
     entries: HashMap<u64, ShapeEntry>,
     order: VecDeque<u64>,
+    frame: u64,
+    /// Paragraphs the frame in flight has asked for, and what the one before
+    /// it asked for. See [`Self::capacity`].
+    asked: usize,
+    asked_before: usize,
     hits: usize,
     misses: usize,
     evictions: usize,
 }
 
 impl ShapeCache {
+    fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        self.asked_before = self.asked;
+        self.asked = 0;
+    }
+
+    /// How many paragraphs the cache holds before it starts evicting.
+    ///
+    /// The floor is [`SHAPE_CACHE_CAP`]; above it, whatever the last frame
+    /// actually drew plus a quarter. A view with more distinct strings on
+    /// screen than the floor would otherwise be trimmed back to the floor by
+    /// the first paragraph of the *next* frame — before the rest of the rows
+    /// it had just drawn were touched again — and then reshape every one of
+    /// them, every frame. What the cache has to hold is one frame's worth of
+    /// text, and that is a property of the view, not a constant.
+    fn capacity(&self) -> usize {
+        SHAPE_CACHE_CAP
+            .max(self.asked_before + self.asked_before / 4)
+            .min(SHAPE_CACHE_MAX)
+    }
+
     fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Buffer> {
-        match self.entries.get(&hash) {
+        let frame = self.frame;
+        match self.entries.get_mut(&hash) {
             Some(entry) if entry.key.matches(key) => {
+                entry.last_used = frame;
+                self.asked += 1;
                 self.hits += 1;
                 Some(&entry.buffer)
             }
             _ => {
+                self.asked += 1;
                 self.misses += 1;
                 None
             }
@@ -164,18 +200,46 @@ impl ShapeCache {
         self.order.clear();
     }
 
+    /// Store a shaped paragraph, evicting the coldest **older** frame's.
+    ///
+    /// A paragraph this frame already asked for is never the victim. A table
+    /// with more distinct strings on screen than the cache's nominal capacity
+    /// would otherwise evict the row it is about to draw to make room for the
+    /// next one, and reshape every one of them on every frame — the cache
+    /// would turn a steady frame into the most expensive kind. The nominal
+    /// capacity is what the cache shrinks back to once the view does.
     fn insert(&mut self, hash: u64, key: ShapeKey, buffer: Buffer) {
-        while self.entries.len() >= SHAPE_CACHE_CAP {
+        let frame = self.frame;
+        let capacity = self.capacity();
+        let mut scanned = 0;
+        while self.entries.len() >= capacity && scanned < self.order.len() {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
-            if self.entries.remove(&oldest).is_some() {
-                self.evictions += 1;
+            scanned += 1;
+            match self.entries.get(&oldest) {
+                Some(entry) if entry.last_used == frame => {
+                    // Still on screen. Put it back and keep looking.
+                    self.order.push_back(oldest);
+                }
+                Some(_) => {
+                    self.entries.remove(&oldest);
+                    self.evictions += 1;
+                    scanned = 0;
+                }
+                None => scanned = 0,
             }
         }
         if self
             .entries
-            .insert(hash, ShapeEntry { key, buffer })
+            .insert(
+                hash,
+                ShapeEntry {
+                    key,
+                    buffer,
+                    last_used: frame,
+                },
+            )
             .is_none()
         {
             self.order.push_back(hash);
@@ -551,6 +615,7 @@ impl TextPipeline {
             self.target.entries.clear(|handle| atlas.release(handle));
         }
         self.atlas.begin_frame(self.raster.generation());
+        self.shape_cache.begin_frame();
         let target = &mut self.target;
         target.frame = target.frame.wrapping_add(1);
         target.live_runs = 0;
@@ -2374,6 +2439,45 @@ mod tests {
         }
         pipeline.flush_runs();
         pipeline.upload(device, queue, None);
+    }
+
+    #[test]
+    fn more_distinct_paragraphs_than_the_cache_holds_still_shape_once_each() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // One more label than the cache's nominal capacity, all on screen at
+        // once, behind a label that changes every frame. That first insert is
+        // what a fixed capacity answers by evicting the rows it is about to
+        // draw — and then it reshapes every one of them, every frame.
+        let contents = (0..SHAPE_CACHE_CAP + 1)
+            .map(|index| format!("Distinct row {index}"))
+            .collect::<Vec<_>>();
+        let frame = |pipeline: &mut TextPipeline, tick: usize| {
+            let ticking = format!("tick {tick}");
+            let mut labels = vec![Label::new(ticking.as_str(), 1)];
+            labels.extend(contents.iter().enumerate().map(|(index, content)| Label {
+                top: index as f32 * 2.0,
+                ..Label::new(content.as_str(), index as u64 + 2)
+            }));
+            text_frame(&device, &queue, pipeline, &labels);
+        };
+        frame(&mut pipeline, 0);
+        let (_, warm_misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            warm_misses,
+            contents.len() + 1,
+            "the first frame shapes each paragraph once"
+        );
+        for tick in 1..4 {
+            frame(&mut pipeline, tick);
+        }
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            misses - warm_misses,
+            3,
+            "only the label that really changed is reshaped; the cache has to \
+             hold one frame's worth of text, which is a property of the view"
+        );
     }
 
     #[test]
