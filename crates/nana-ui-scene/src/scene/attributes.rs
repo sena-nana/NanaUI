@@ -51,39 +51,29 @@ impl UiScene {
         super::visibility::transform(self.node_bounds(id)?, transform)
     }
 
-    pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
-        let primitive = self.primitive(id)?;
-        let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
-        let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&id.node)
-        else {
-            return Some(SceneDraw {
-                primitive,
-                transform: primitive.transform,
-                clips: Arc::clone(&primitive.clips),
-                paint_opacity,
-            });
+    /// How a retained primitive's own transform and clips relate to the current
+    /// frame. `None` when the node behind them is gone, which is the one case
+    /// [`Self::draw_primitive`] reports as a missing draw.
+    fn node_projection(&self, node: StableNodeId) -> Option<NodeProjection> {
+        let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&node) else {
+            return Some(NodeProjection::Retained);
         };
         if epoch == self.attribute_epoch {
-            return Some(SceneDraw {
-                primitive,
-                transform: primitive.transform,
-                clips: Arc::clone(&primitive.clips),
-                paint_opacity,
-            });
+            return Some(NodeProjection::Retained);
         }
         let cached = self
             .draw_attributes
             .lock()
             .expect("scene attributes")
-            .get(&id.node)
+            .get(&node)
             .filter(|entry| entry.epoch == self.attribute_epoch)
             .cloned();
         let attributes = if let Some(attributes) = cached {
             attributes
         } else {
-            let node = self.nodes.get(&id.node)?;
-            let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(node);
-            let current = parent.then(self.resolved_local_transform(node, blocks_3d));
+            let extracted = self.nodes.get(&node)?;
+            let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(extracted);
+            let current = parent.then(self.resolved_local_transform(extracted, blocks_3d));
             let delta = inverse(base_transform)
                 .map_or(AffineTransform::IDENTITY, |inverse| current.then(inverse));
             let attributes = DrawAttributes {
@@ -94,28 +84,73 @@ impl UiScene {
             self.draw_attributes
                 .lock()
                 .expect("scene attributes")
-                .insert(id.node, attributes.clone());
+                .insert(node, attributes.clone());
             attributes
         };
-        let mut clips = attributes.parent_clips.to_vec();
-        clips.extend(
-            primitive
-                .clips
-                .iter()
-                .skip(parent_clip_count)
-                .cloned()
-                .map(|mut clip| {
-                    clip.transform = attributes.delta.then(clip.transform);
-                    clip
-                }),
-        );
-        Some(SceneDraw {
-            primitive,
-            transform: attributes.delta.then(primitive.transform),
-            clips: clips.into(),
-            paint_opacity,
+        Some(NodeProjection::Rebased {
+            attributes,
+            parent_clip_count,
         })
     }
+
+    pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
+        let primitive = self.primitive(id)?;
+        let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
+        match self.node_projection(primitive.node)? {
+            NodeProjection::Retained => Some(SceneDraw {
+                primitive,
+                transform: primitive.transform,
+                clips: Arc::clone(&primitive.clips),
+                paint_opacity,
+            }),
+            NodeProjection::Rebased {
+                attributes,
+                parent_clip_count,
+            } => {
+                let mut clips = attributes.parent_clips.to_vec();
+                clips.extend(primitive.clips.iter().skip(parent_clip_count).cloned().map(
+                    |mut clip| {
+                        clip.transform = attributes.delta.then(clip.transform);
+                        clip
+                    },
+                ));
+                Some(SceneDraw {
+                    primitive,
+                    transform: attributes.delta.then(primitive.transform),
+                    clips: clips.into(),
+                    paint_opacity,
+                })
+            }
+        }
+    }
+
+    /// [`Self::draw_primitive`]'s transform alone, for a primitive already in
+    /// hand.
+    ///
+    /// The visibility index wants only this. Going through `draw_primitive` for
+    /// it also built the rebased clip list — two allocations per primitive —
+    /// and resolved a compositor paint opacity, and the index reads neither;
+    /// on a frame that rebuilds the index that was the whole scene's worth of
+    /// work thrown away.
+    pub(super) fn draw_transform(&self, primitive: &ScenePrimitive) -> Option<AffineTransform> {
+        Some(match self.node_projection(primitive.node)? {
+            NodeProjection::Retained => primitive.transform,
+            NodeProjection::Rebased { attributes, .. } => {
+                attributes.delta.then(primitive.transform)
+            }
+        })
+    }
+}
+
+enum NodeProjection {
+    /// The retained transform and clips are already current.
+    Retained,
+    /// Rebase them by `attributes.delta`, keeping `parent_clip_count` inherited
+    /// clips from the projection they were retained against.
+    Rebased {
+        attributes: DrawAttributes,
+        parent_clip_count: usize,
+    },
 }
 
 #[cfg(test)]

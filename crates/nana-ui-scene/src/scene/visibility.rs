@@ -9,7 +9,35 @@ pub(super) struct VisibilityIndex {
     leaf: usize,
     shifts: Vec<[f32; 2]>,
     descendants: HashMap<StableNodeId, Vec<std::ops::Range<usize>>>,
-    nodes: HashMap<StableNodeId, Vec<(usize, PrimitiveId)>>,
+    nodes: HashMap<StableNodeId, NodeSlots>,
+}
+
+/// Where one node's primitives sit in the operation list.
+///
+/// Almost every node owns exactly one, and a `Vec` for each cost an allocation
+/// per node when the index is built and another per node when it is updated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NodeSlots {
+    One(usize, PrimitiveId),
+    Many(Vec<(usize, PrimitiveId)>),
+}
+
+impl NodeSlots {
+    fn push(&mut self, offset: usize, id: PrimitiveId) {
+        match self {
+            Self::One(first_offset, first_id) => {
+                *self = Self::Many(vec![(*first_offset, *first_id), (offset, id)]);
+            }
+            Self::Many(slots) => slots.push((offset, id)),
+        }
+    }
+
+    fn extend_into(&self, out: &mut Vec<(usize, PrimitiveId)>) {
+        match self {
+            Self::One(offset, id) => out.push((*offset, *id)),
+            Self::Many(slots) => out.extend_from_slice(slots),
+        }
+    }
 }
 
 fn union(a: Option<SceneRect>, b: Option<SceneRect>) -> Option<SceneRect> {
@@ -60,7 +88,8 @@ pub(super) fn transform(bounds: SceneRect, affine: AffineTransform) -> Option<Sc
         })
 }
 fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
-    let primitive = scene.draw_primitive(id)?;
+    let primitive = scene.primitive(id)?;
+    let draw_transform = scene.draw_transform(primitive)?;
     // Destination groups need their complete source, including pixels that a
     // blur or blend can move into the viewport. Do not cull their source leaves.
     if !scene.opacity_groups(id.node).is_empty() {
@@ -120,9 +149,9 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
         // self clip still gives a sound bound without shaping offscreen text.
         // Ancestor clips are deliberately excluded: scrolling their contents
         // must not translate a stationary ancestor clip in this index.
-        _ => return self_clip_bounds(scene, &primitive),
+        _ => return self_clip_bounds(scene, primitive, draw_transform),
     }
-    transform(bounds, primitive.transform)
+    transform(bounds, draw_transform)
 }
 
 fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<SceneRect> {
@@ -164,7 +193,11 @@ fn stroke_bounds(points: &[[f32; 2]], width: f32, widths: &[f32]) -> Option<Scen
     Some(bounds)
 }
 
-fn self_clip_bounds(scene: &UiScene, primitive: &SceneDraw<'_>) -> Option<SceneRect> {
+fn self_clip_bounds(
+    scene: &UiScene,
+    primitive: &ScenePrimitive,
+    draw_transform: AffineTransform,
+) -> Option<SceneRect> {
     let node = scene.nodes.get(&primitive.node)?;
     let layout = node.layout;
     let (x, y, width, height) = node.source_style.layout.overflow_clip_box(
@@ -183,7 +216,6 @@ fn self_clip_bounds(scene: &UiScene, primitive: &SceneDraw<'_>) -> Option<SceneR
     // Some editor popups deliberately use only parent_clips. Check the
     // retained primitive's self-clip suffix rather than inferring from style.
     if !primitive
-        .primitive
         .clips
         .iter()
         .skip(parent_clip_count)
@@ -191,7 +223,7 @@ fn self_clip_bounds(scene: &UiScene, primitive: &SceneDraw<'_>) -> Option<SceneR
     {
         return None;
     }
-    transform(bounds, primitive.transform)
+    transform(bounds, draw_transform)
 }
 
 fn batch_bounds(rectangles: &[SceneRect]) -> Option<SceneRect> {
@@ -227,7 +259,11 @@ impl VisibilityIndex {
                 RenderOperation::PrepareExternal(_) => continue,
             };
             index.bounds[leaf + offset] = primitive_bounds(scene, id);
-            index.nodes.entry(id.node).or_default().push((offset, id));
+            index
+                .nodes
+                .entry(id.node)
+                .and_modify(|slots| slots.push(offset, id))
+                .or_insert(NodeSlots::One(offset, id));
             let scroll_parent = |id| {
                 scene.nodes.get(&id).and_then(|node| {
                     (node.source_style.layout.position != nana_ui_core::PositionSpec::Fixed)
@@ -315,11 +351,17 @@ impl VisibilityIndex {
         self.bounds[at] = union(self.bounds[at * 2], self.bounds[at * 2 + 1]);
     }
     pub(super) fn update(&mut self, scene: &UiScene, changed: &[StableNodeId]) {
+        // Reused across the whole update: `set_bound` needs `&mut self`, so the
+        // slots have to be copied out of the map first, and doing that into a
+        // fresh `Vec` per node was an allocation per changed node per frame.
+        let mut slots = Vec::new();
         for node in changed {
-            let Some(slots) = self.nodes.get(node).cloned() else {
+            slots.clear();
+            let Some(found) = self.nodes.get(node) else {
                 continue;
             };
-            for (offset, id) in slots {
+            found.extend_into(&mut slots);
+            for &(offset, id) in &slots {
                 self.set_bound(1, 0, self.leaf, offset, primitive_bounds(scene, id));
             }
         }
