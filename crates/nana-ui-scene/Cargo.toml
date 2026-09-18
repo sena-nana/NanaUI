@@ -35,6 +35,11 @@ path = "src/bin/nana-dirty-frame-benchmark.rs"
 required-features = ["benchmark"]
 
 [[bin]]
+name = "nana-text-edit-benchmark"
+path = "src/bin/nana-text-edit-benchmark.rs"
+required-features = ["benchmark"]
+
+[[bin]]
 name = "nana-scene-benchmark"
 path = "src/bin/nana-scene-benchmark.rs"
 required-features = ["benchmark"]

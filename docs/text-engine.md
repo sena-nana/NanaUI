@@ -1089,7 +1089,7 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 | Runtime 视觉序左右移动 | `nana-text` 提供 `Motion::Left/Right`；Runtime 的 `TextCaretIntent::Left/Right` 仍是逻辑 grapheme 移动，接视觉序需要平台语义决定 |
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |
-| 大文档存储 | 仍是 `String`，rope / piece table 由 benchmark 决定 |
+| 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
 ## #33 迁移基准
 
@@ -1188,6 +1188,58 @@ Layout 在 1.25–1.53 ms 之间），不是文本工作；三格 `text_work` �
 规则：**`nana-text` 每落一个阶段，重跑这三格，把数字贴回本表，并说明是哪台机器。
 `TextShape` 相对同一轮 `Layout` 的倍率不得变差。** 这不是时间门禁，是人工对比——
 接进 `perf/` 合同需要新的 scenario `kind`、extractor 和 fixture，等真有引擎可测再做。
+
+## 大文档编辑基准（#96）
+
+`nana-text-edit-benchmark`：一个聚焦的 `TextArea`，按行数扫（每行 ~38 B），每个格子测**同一次交互**
+的四个时间，就是为了回答「存储要不要换 rope」这个 #96 留给真实数字的问题：
+
+- `input_ms`——事件本身（`replace_focused_text` / `move_focused_text_caret` / 指针按下）。批次外的
+  探针与值克隆都在这里；
+- `flush_ms`——紧随其后的那一帧（`RuntimeDocument::flush`），并按 `FrameStage` 拆开；
+- `storage_ms`——同一次编辑打在一个裸 `EditableText` 上：只有存储，没有布局、没有 presentation、
+  没有帧。**这就是 rope 能改善的那个数**；
+- `value_clone_ms`——一次整值 `String::clone`，作为「O(文档) 一遍」的单位。
+
+打字是 insert/backspace 成对跑的（只记其中一半），否则一长串样本会把被打的那一行越打越长，
+后面的样本测的就不是格子声称的文档了。
+
+复现：
+
+```bash
+cargo build --release -p nana-ui-scene --features benchmark --bin nana-text-edit-benchmark
+./target/release/nana-text-edit-benchmark --action type  --position head --samples 80 --warmup 20
+./target/release/nana-text-edit-benchmark --action caret --position head --samples 80 --warmup 20
+```
+
+首轮（Apple M4，macOS，2026-09-18，release，p50，80 samples / 20 warmup，`--position head`）：
+
+| 行 | 字节 | type input | type flush | 其中 TextShape | storage | 整值 clone |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 250 | 9.4 KB | 0.008 ms | 0.035 ms | 0.026 ms | 0.0002 ms | 0.0002 ms |
+| 1,000 | 37.9 KB | 0.021 ms | 0.105 ms | 0.093 ms | 0.0006 ms | 0.0005 ms |
+| 4,000 | 154.9 KB | 0.081 ms | 0.388 ms | 0.363 ms | 0.0025 ms | 0.0025 ms |
+| 8,000 | 310.9 KB | 0.166 ms | 0.762 ms | 0.714 ms | 0.0050 ms | 0.0055 ms |
+
+纯光标移动（不改文本，`--action caret`）同机同轮：250 / 1,000 / 4,000 / 8,000 行的 flush 为
+0.013 / 0.035 / 0.113 / 0.222 ms，`layouts_created == 0`、`editable_mutations == 0`。
+
+**结论：不换存储。** 310 KB 文档上敲一个字符 ~0.93 ms，其中 `String` 的 memmove 是 0.005 ms
+（0.5%），跟一次整值克隆同阶；把它换成 rope 最多省下这 0.5%，而同一次按键里另有 ~180 倍于它的
+O(文档) 工作。真正的缺口是那些工作，`--action caret` 那一行说得更清楚：**一次不改文本的光标移动，
+在 310 KB 文档上也要 0.22 ms**，而它欠的工作是零。
+
+profile（`/usr/bin/sample`，8,000 行）定位到的按帧 O(文档) 项，按大小排：
+
+| 项 | 8,000 行上的量级 | 性质 |
+| --- | ---: | --- |
+| `bracket_pair_colorization` 整文档栈扫描 | ~0.37 ms / 编辑帧 | 缓存按**整值相等**判命中，编辑后整篇重扫 + 整值克隆 |
+| `TextLayoutKey` 的整文本 SipHash | ~0.19 ms × 每帧 4 次 shape | Runtime 侧 layout cache 把整文本拷进 key 再哈希；编辑器的测量权威是保留几何，这层缓存对它是纯开销 |
+| `EditorGeometry::sync` 的段落表重建 | ~0.12 ms / 编辑帧 | 头部编辑要平移其后每个段落的 `start`（欠的，但每帧不止一次） |
+| a11y / scene primitive / extraction 的整值克隆 | 每帧 3～5 次 | `String` 克隆，可以是 `Arc<str>` |
+| `record_editable_change` 的前后缀 diff | ~0.06 ms / 编辑 | 只为计数器求插入/删除字节数，而 mutation 本来就知道被替换的区间 |
+
+这一节的表是基线：每修掉一项就在同一台机器上重跑 `type` 与 `caret` 两行并贴回来。
 
 ## Phase 0 明确没做的
 
