@@ -17,6 +17,8 @@ mod mesh;
 mod motion;
 mod quad;
 mod text;
+
+pub use self::text::TextGlyphCounters;
 pub(crate) mod url_texture_cache;
 mod validate;
 
@@ -305,7 +307,7 @@ impl SceneWgpuPainter {
 
     /// Native glyph renderer counters: resolve, raster cache, atlas, upload
     /// and draw. Tests pin the cache and atlas contracts through these.
-    pub fn text_glyph_counters(&self) -> text::TextGlyphCounters {
+    pub fn text_glyph_counters(&self) -> TextGlyphCounters {
         self.text.glyph_counters()
     }
 
@@ -784,6 +786,13 @@ impl SceneWgpuPainter {
                             // this handle instead is #99's cutover.
                             layout: _,
                         } => {
+                            // A text node's glyphs are retained per node and
+                            // per pass, so the shadows under a label are their
+                            // own entries over the same shaped paragraph and
+                            // the same glyph bitmaps.
+                            let node = primitive.node.get();
+                            let slot = id.slot;
+                            let mut pass = 0u32;
                             let mut push_text =
                                 |commands: &mut Vec<DrawCommand>,
                                  batching: &mut Batching,
@@ -817,7 +826,9 @@ impl SceneWgpuPainter {
                                         frag_clip,
                                         opacity,
                                         extra_offset,
+                                        text::EntryKey { node, slot, pass },
                                     );
+                                    pass += 1;
                                     if let Some(prepared) = prepared {
                                         let painted = painted_bounds(
                                             prepared.ink,

@@ -2879,9 +2879,17 @@ fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels(
         steady.glyph_upload_regions, warm.glyph_upload_regions,
         "nor re-upload one"
     );
+    assert_eq!(
+        steady.glyph_resolve_requests, warm.glyph_resolve_requests,
+        "a repaint must not resolve a glyph: the entry already holds them"
+    );
     assert!(
-        steady.glyph_atlas_hit > warm.glyph_atlas_hit,
-        "the repaints must be answered by the shared atlas"
+        steady.text_gpu_entries_reused >= warm.text_gpu_entries_reused + 4,
+        "every repaint must be answered by the retained entry"
+    );
+    assert_eq!(
+        steady.text_instance_rebuilds, warm.text_instance_rebuilds,
+        "and rebuild no instance"
     );
     assert_eq!(steady.glyph_atlas_evict, 0);
     assert_eq!(steady.atlas_stale_handle_rejects, 0);

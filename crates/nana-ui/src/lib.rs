@@ -293,7 +293,8 @@ pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
     HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
-    SceneWgpuPainter, resolve_background_image_url, set_background_image_url_base,
+    SceneWgpuPainter, TextGlyphCounters, resolve_background_image_url,
+    set_background_image_url_base,
 };
 pub use selection::{SelectionMove, SingleSelection};
 pub use settings::{

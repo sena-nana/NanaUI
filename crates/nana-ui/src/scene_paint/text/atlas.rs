@@ -109,6 +109,15 @@ pub(super) struct GlyphAtlasEntryId {
     generation: u32,
 }
 
+impl GlyphAtlasEntryId {
+    /// A handle that names nothing. The slab hands these out for slots a
+    /// retained block has not filled yet, and every lookup rejects them.
+    pub(super) const STALE: Self = Self {
+        index: u32::MAX,
+        generation: 0,
+    };
+}
+
 /// One glyph's placement. Read through [`GlyphAtlasManager::entry`].
 #[derive(Clone, Copy, Debug)]
 pub(super) struct AtlasEntry {
@@ -126,6 +135,12 @@ struct Slot {
     /// Odd while live, bumped on every free so a kept handle fails closed.
     generation: u32,
     live: Option<LiveEntry>,
+    /// Retained instances pointing at this placement. A glyph a `TextGpuEntry`
+    /// still draws is not cold just because no frame looked it up: the entry
+    /// answered from its own block instead. Eviction prefers unreferenced
+    /// slots and only falls back to referenced ones, so this steers the LRU
+    /// without pinning the atlas.
+    refs: u32,
 }
 
 struct LiveEntry {
@@ -294,6 +309,27 @@ impl GlyphAtlasManager {
         }
     }
 
+    /// Claim `id` on behalf of a retained block.
+    pub(super) fn retain(&mut self, id: GlyphAtlasEntryId) {
+        let Some(slot) = self.slots.get_mut(id.index as usize) else {
+            return;
+        };
+        if slot.generation == id.generation {
+            slot.refs = slot.refs.saturating_add(1);
+        }
+    }
+
+    /// Give up a claim taken by [`Self::retain`]. A handle whose slot has been
+    /// reissued is ignored: its claim died with the placement.
+    pub(super) fn release(&mut self, id: GlyphAtlasEntryId) {
+        let Some(slot) = self.slots.get_mut(id.index as usize) else {
+            return;
+        };
+        if slot.generation == id.generation {
+            slot.refs = slot.refs.saturating_sub(1);
+        }
+    }
+
     /// The placement a handle names, or `None` when the handle is stale.
     pub(super) fn entry(&self, id: GlyphAtlasEntryId) -> Option<&AtlasEntry> {
         let slot = self.slots.get(id.index as usize)?;
@@ -365,6 +401,7 @@ impl GlyphAtlasManager {
             Some(index) => {
                 let slot = &mut self.slots[index as usize];
                 slot.generation = slot.generation.wrapping_add(1).max(1);
+                slot.refs = 0;
                 slot.live = Some(live);
                 GlyphAtlasEntryId {
                     index,
@@ -374,6 +411,7 @@ impl GlyphAtlasManager {
             None => {
                 self.slots.push(Slot {
                     generation: 1,
+                    refs: 0,
                     live: Some(live),
                 });
                 GlyphAtlasEntryId {
@@ -674,14 +712,22 @@ impl GlyphAtlasManager {
     /// only case where a glyph cannot be placed at all.
     fn evict_coldest(&mut self, kind: AtlasPageKind) -> bool {
         let frame = self.frame;
-        let mut victims: Vec<(u64, u32)> = self
+        // Unreferenced first, then by age. A glyph no retained block names is
+        // the cheapest one to lose: nothing has to be rebuilt to stop drawing
+        // it. Referenced ones are still evictable — the atlas must not grow
+        // without bound because a panel kept a paragraph alive — but taking
+        // one costs the entries that named it a rebuild.
+        let mut victims: Vec<(u32, u64, u32)> = self
             .slots
             .iter()
             .enumerate()
             .filter_map(|(index, slot)| {
                 let live = slot.live.as_ref()?;
-                (live.entry.kind == kind && live.last_used != frame)
-                    .then_some((live.last_used, index as u32))
+                (live.entry.kind == kind && live.last_used != frame).then_some((
+                    slot.refs.min(1),
+                    live.last_used,
+                    index as u32,
+                ))
             })
             .collect();
         if victims.is_empty() {
@@ -692,7 +738,7 @@ impl GlyphAtlasManager {
         // not evict once per glyph, small enough that one large glyph does not
         // clear the working set.
         let drop = (victims.len() / 4).max(1);
-        for (_, index) in victims.into_iter().take(drop) {
+        for (_, _, index) in victims.into_iter().take(drop) {
             self.free_slot(index);
             self.evictions += 1;
         }
@@ -716,6 +762,9 @@ impl GlyphAtlasManager {
             return;
         };
         slot.generation = slot.generation.wrapping_add(1).max(1);
+        // The claims died with the placement; a stale handle released later
+        // names the reissued slot and must not touch its count.
+        slot.refs = 0;
         self.free_slots.push(index);
         self.index.remove(&live.key);
         if release_rect && let Some(page) = self.pages.get_mut(live.entry.page as usize) {
