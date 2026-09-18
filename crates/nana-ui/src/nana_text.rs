@@ -30,7 +30,12 @@ pub(crate) const RTL_ISOLATE_SUFFIX: &str = "\u{2069}";
 /// memoized layouts cannot outlive the font data they were shaped against.
 static FONT_DB_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-fn font_db_generation() -> u64 {
+/// The face-set generation every text cache is keyed against.
+///
+/// Bumped by registration, removal and alias changes, so a cache that holds
+/// shaped runs or rasterized glyphs can tell in O(1) that the faces under them
+/// changed (Issue #97's glyph raster cache reads this too).
+pub(crate) fn font_db_generation() -> u64 {
     FONT_DB_GENERATION.load(Ordering::Relaxed)
 }
 

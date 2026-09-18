@@ -2774,7 +2774,7 @@ fn two_host_texture_layers_with_chrome_scene(
 }
 
 /// A labeled button under a rotation, so its text takes the affine glyph
-/// path rather than the cryoglyph atlas path.
+/// path rather than the axis-aligned instanced one.
 fn rotated_label_scene() -> UiScene {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -2803,7 +2803,7 @@ fn rotated_label_scene() -> UiScene {
 }
 
 #[test]
-fn affine_text_reuses_gpu_resources_across_repaints_with_identical_pixels() {
+fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
@@ -2840,31 +2840,51 @@ fn affine_text_reuses_gpu_resources_across_repaints_with_identical_pixels() {
     };
 
     let first = paint_once(&mut painter, &scene);
-    let (hits, misses, _) = painter.affine_text_cache_stats();
+    let warm = painter.text_glyph_counters();
     assert!(
-        misses > 0,
-        "rotated label must take the affine glyph path at least once"
+        warm.glyph_rasterized > 0,
+        "the first paint of a rotated label must rasterize its glyphs"
     );
-    assert_eq!(hits, 0);
+    assert!(
+        warm.glyph_upload_regions > 0,
+        "and upload them to the atlas"
+    );
 
-    // Each miss creates an atlas texture, a bind group and a vertex buffer.
-    // Repainting an unchanged rotated label must create none of them. Clones
-    // carry the same label under a fresh instance so every frame is
-    // rebatched and the affine cache is what has to absorb it.
+    // Clones carry the same label under a fresh scene instance, so every frame
+    // is rebatched and the shared caches are what have to absorb it. A rotated
+    // label used to allocate a texture, a bind group and a vertex buffer per
+    // distinct transform; now it re-rasterizes nothing, re-uploads nothing and
+    // allocates nothing.
     for _ in 0..4 {
         let repaint = paint_once(&mut painter, &scene.clone());
         assert_eq!(
             first, repaint,
-            "reused affine GPU resources must produce identical pixels"
+            "reused glyph atlas entries must produce identical pixels"
+        );
+        assert_eq!(
+            painter
+                .last_gpu_work()
+                .expect("encoded frame")
+                .gpu_buffer_reallocations,
+            0,
+            "static affine text must not create GPU resources per frame"
         );
     }
-    let (hits, misses_after, evictions) = painter.affine_text_cache_stats();
+    let steady = painter.text_glyph_counters();
     assert_eq!(
-        misses_after, misses,
-        "static affine text must not recreate GPU resources per frame"
+        steady.glyph_rasterized, warm.glyph_rasterized,
+        "a repainted rotated label must not re-rasterize a glyph"
     );
-    assert_eq!(hits, misses * 4);
-    assert_eq!(evictions, 0);
+    assert_eq!(
+        steady.glyph_upload_regions, warm.glyph_upload_regions,
+        "nor re-upload one"
+    );
+    assert!(
+        steady.glyph_atlas_hit > warm.glyph_atlas_hit,
+        "the repaints must be answered by the shared atlas"
+    );
+    assert_eq!(steady.glyph_atlas_evict, 0);
+    assert_eq!(steady.atlas_stale_handle_rejects, 0);
 }
 
 fn labeled_selected_button_scene() -> UiScene {

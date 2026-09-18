@@ -141,6 +141,10 @@ struct PreparedBatch {
     /// Read off the document order that built `commands`; it cannot be
     /// recovered from the merged list.
     glyph_then_quad: bool,
+    /// Text instances name atlas rectangles. Reusing them after the atlas has
+    /// evicted or relocated a glyph would sample whatever now owns that
+    /// rectangle, so a changed epoch forces the batch to be rebuilt.
+    text_placement_epoch: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -299,11 +303,10 @@ impl SceneWgpuPainter {
         self.text.shape_cache_stats()
     }
 
-    /// Affine (rotated / skewed) text GPU resource cache counters: (hits,
-    /// misses, evictions). Each miss creates an atlas texture, a bind group and
-    /// a vertex buffer, so a static transform must not keep missing.
-    pub fn affine_text_cache_stats(&self) -> (usize, usize, usize) {
-        self.text.affine_cache_stats()
+    /// Native glyph renderer counters: resolve, raster cache, atlas, upload
+    /// and draw. Tests pin the cache and atlas contracts through these.
+    pub fn text_glyph_counters(&self) -> text::TextGlyphCounters {
+        self.text.glyph_counters()
     }
 
     /// Record host `queue.submit` duration for the last encoded frame.
@@ -380,8 +383,7 @@ impl SceneWgpuPainter {
         self.quads.swap_target(&mut state.quads, &self.device);
         self.meshes.swap_target(&mut state.meshes, &self.device);
         self.icons.swap_target(&mut state.icons, &self.device);
-        self.text
-            .swap_target(&mut state.text, &self.device, &self.queue, self.format);
+        self.text.swap_target(&mut state.text, &self.device);
         self.backdrop.swap_target(&mut state.backdrop, &self.device);
         self.host_textures.swap_target(&mut state.host_textures);
     }
@@ -502,6 +504,7 @@ impl SceneWgpuPainter {
                 && batch.resources == resolved.resources
                 && batch.renderers == resolved.renderers
                 && batch.image_revision == self.image_revision
+                && batch.text_placement_epoch == self.text.placement_epoch()
         });
         let reused = cached.is_some();
         let (commands, max_group_depth, group_slots_uniforms, glyph_then_quad, batch, gpu_upload) =
@@ -520,7 +523,7 @@ impl SceneWgpuPainter {
                 self.host_textures.begin_frame();
                 self.meshes.begin_frame();
                 self.icons.begin_frame(dest_physical);
-                self.text.begin_frame(&self.queue, dest_physical);
+                self.text.begin_frame(dest_physical);
                 self.backdrop.begin_frame();
 
                 let mut commands = Vec::new();
@@ -785,8 +788,6 @@ impl SceneWgpuPainter {
                                  color_override: Option<[f32; 4]>| {
                                     let prepared = self.text.prepare(
                                         &self.device,
-                                        &self.queue,
-                                        encoder,
                                         bounds,
                                         clip,
                                         scale,
@@ -1174,7 +1175,7 @@ impl SceneWgpuPainter {
                 }
                 // Text prepare stays inside the batch window: it is the same
                 // work the per-primitive prepare did, only once per run.
-                self.text.flush_runs(&self.device, &self.queue, encoder);
+                self.text.flush_runs();
                 let batch = batch_started.elapsed();
 
                 let upload_started = Instant::now();
@@ -1194,6 +1195,7 @@ impl SceneWgpuPainter {
                 );
                 self.icons
                     .upload(&self.device, &self.queue, Some(&gpu_work));
+                self.text.upload(&self.device, &self.queue, Some(&gpu_work));
                 self.backdrop
                     .upload(&self.device, &self.queue, dest_physical, Some(&gpu_work));
                 let gpu_upload = upload_started.elapsed();
@@ -1385,6 +1387,7 @@ impl SceneWgpuPainter {
                 max_group_depth,
                 group_slots: group_slots_uniforms,
                 glyph_then_quad,
+                text_placement_epoch: self.text.placement_epoch(),
             });
         }
         Ok(())
