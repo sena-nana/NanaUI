@@ -1022,6 +1022,14 @@ caret x / 行顶 / 宽高）。`max_lines`、`max_height_px`、省略号作用�
 查询（`caret_rect`、`hit_test`、`selection_rects`、`line_bounds`、`vertical`、`visual_move`）只读保留的
 layout，从不 shape 或 layout。
 
+`sync` 先比一遍字节：段落已经排出这份文本（且 style / 约束 / epoch 未变）就原样返回，段落连同它们的
+layout 一个不动、`revisions` 保留，`GeometrySync::unchanged` 置位。**想缓存任何从几何派生出来的东西，
+只能凭这个标记**——`paragraphs_laid_out == 0` 不代表几何没动：删掉让首段为空的那个换行会把一个段落
+合并掉、其后每个偏移平移，却没有任何段落被重排。引擎宿主的编辑器测量缓存就是这么钉住的。
+
+增量 sync 与「只见过当前文本」的一份几何逐项等价（`incremental_syncs_land_where_syncing_from_scratch_does`
+走完一串编辑，比对段落 start / top / 行数、尺寸、每个 caret 与一片命中网格）。
+
 ### 计数器
 
 `TextWorkCounters` 新增：
