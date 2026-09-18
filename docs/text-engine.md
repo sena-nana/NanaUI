@@ -1476,10 +1476,28 @@ text_prepare_nodes_considered / skipped / culled
   | 8 | 3.04 → 2.33 ms | 3.67 → 2.87 ms | 3.16 → 2.34 ms |
   | 16 | 3.71 → **2.64** ms | 4.53 → **3.55** ms | 5.05 → **3.44** ms |
 
-  还剩的大头是每个节点一次 784 字节的 `ExtractedNode` 克隆（`rebuild_node_primitives`
-  借不出它，因为后面要 `&mut self` 去插图元）和 `BTreeMap` 的进出。要再降得把节点
-  换成 `Arc<ExtractedNode>` 或者把插入收口成一次批量提交，那是 `UiScene` 的存储改动，
-  不在这一期。
+- **场景里的节点改成 `Arc<ExtractedNode>`**。`rebuild_node_primitives` 借不出那个
+  节点——后面要 `&mut self` 去插图元——所以它一直是整份克隆，而 `ExtractedNode` 有
+  784 字节。容器改一次样式要重建每个后代，那就是每帧近一兆的 memmove。存成 `Arc`
+  之后那份克隆是一次引用计数加一；插入那一侧多的是一次分配，但一帧只插改动过的那
+  几个节点，重建的却是整棵子树。`flush p50`（各跑五轮取最小，前后交错跑）：
+
+  | 用例 | 前 | 后 |
+  | --- | --- | --- |
+  | 一千标签 color，扁 | 1.616 ms | 1.568 ms |
+  | 一千标签 opacity，扁 | 1.737 ms | 1.706 ms |
+  | 一千标签 transform，扁 | 1.868 ms | 1.812 ms |
+  | 一千标签 opacity，十六层 | 3.124 ms | 3.031 ms |
+  | 一千标签 transform，十六层 | 2.904 ms | 2.790 ms |
+  | 一万标签 opacity，扁 | 29.222 ms | **26.843 ms** |
+
+  节点越多省得越多，因为省掉的是按字节算的那一项。渲染出来的 557 张画廊帧逐字节不变
+  ——这一条只动存储。
+
+  还剩的大头在 `BTreeMap` 的进出：一次容器样式改动里，`remove_node_primitives` 和
+  `insert_primitive` 各把整棵子树的图元搬进搬出一遍，`sort_primitives` 再排一遍。
+  采样里这三项已经是 `apply_delta` 中最大的几块。要再降得把插入收口成一次批量提交，
+  那是 `UiScene` 图元存储的改动，不在这一期。
 
 ### 怎么跑，怎么判
 
