@@ -136,6 +136,7 @@ fn main() {
     // whatever else is running.
     let mut only_labels: Vec<usize> = Vec::new();
     let mut only_workload: Vec<String> = Vec::new();
+    let mut frame_override: Option<usize> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -146,6 +147,13 @@ fn main() {
                     std::process::exit(2);
                 };
                 only_labels.push(value);
+            }
+            "--frames" => {
+                let Some(value) = args.next().and_then(|raw| raw.parse().ok()) else {
+                    eprintln!("--frames needs a count");
+                    std::process::exit(2);
+                };
+                frame_override = Some(value);
             }
             "--workload" => {
                 let Some(value) = args.next() else {
@@ -186,7 +194,8 @@ fn main() {
                 &[RATE_GRID[0]]
             };
             for frames in rates {
-                cells.push(run(&device, &queue, workload, labels, *frames));
+                let frames = frame_override.unwrap_or(*frames);
+                cells.push(run(&device, &queue, workload, labels, frames));
             }
         }
     }

@@ -59,7 +59,7 @@ use self::raster_cache::GlyphRasterCache;
 use self::upload::GlyphUploadQueue;
 
 use super::clip::{self, LogicalRect};
-use super::color::{pack_linear, to_rgba8};
+use super::color::{linear_from_srgb8, to_rgba8};
 use crate::PhysicalRect;
 use crate::nana_text::{
     RTL_ISOLATE_PREFIX, RTL_ISOLATE_SUFFIX, cosmic_wrap, ellipsize_end, measured_text_overflows,
@@ -813,16 +813,6 @@ impl TextPipeline {
         // resolved with: a fade must not be a reason to reshape rich text or
         // to rebuild a single instance.
         let default_color = color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let attrs = shape_attrs(
-            family,
-            weight,
-            letter_spacing,
-            size,
-            &opentype.features,
-            &opentype.variations,
-            opentype.kerning,
-            italic,
-        );
         // Match NanaTextShaper's measurement policy, including ASCII. Basic
         // shaping changes advances and can wrap/truncate text that fits the
         // Runtime content box (notably multiline chart tooltips).
@@ -837,7 +827,13 @@ impl TextPipeline {
             TextHorizontalAlignment::End if rtl => None,
             TextHorizontalAlignment::End => Some(Align::Right),
         };
-        let painted = presentation_spans(content, spans, default_color);
+        // A label with no spans is the overwhelming majority, and splitting it
+        // would allocate a one-element list per node per frame to say so.
+        let painted = if spans.is_empty() {
+            Vec::new()
+        } else {
+            presentation_spans(content, spans, default_color)
+        };
         let rich = painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color);
         // Width, height and requested ellipsis uniquely determine the result;
         // cache lookup before shaping avoids repeating the overflow probe.
@@ -892,6 +888,19 @@ impl TextPipeline {
                 opentype.word_break,
                 opentype.line_break,
             ));
+            // Built here rather than above the cache lookup: a hit never
+            // shapes, and the family name, the feature list and the variation
+            // axes are a per-node allocation to assemble.
+            let attrs = shape_attrs(
+                family,
+                weight,
+                letter_spacing,
+                size,
+                &opentype.features,
+                &opentype.variations,
+                opentype.kerning,
+                italic,
+            );
             buffer.set_ellipsize(cosmic_text::Ellipsize::None);
             if rich {
                 let mut rich_text = painted
@@ -1749,12 +1758,12 @@ fn entry_needs_repair(entries: &EntryStore, id: u32, epoch: u64) -> bool {
 /// when it stopped carrying its own.
 fn run_color(color: [f32; 4]) -> [f32; 4] {
     let [r, g, b, a] = to_rgba8(color);
-    pack_linear([
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
+    [
+        linear_from_srgb8(r),
+        linear_from_srgb8(g),
+        linear_from_srgb8(b),
         f32::from(a) / 255.0,
-    ])
+    ]
 }
 
 /// The axis-aligned box `ink` covers once its node's homography is applied.
