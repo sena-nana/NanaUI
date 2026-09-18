@@ -69,6 +69,54 @@ impl StableNodeId {
     }
 }
 
+/// Hashing for [`StableNodeId`] keys.
+///
+/// The default hasher is SipHash — a keyed MAC, which is the right default for
+/// a map whose keys come off the wire and a poor one for a counter nobody
+/// outside the process can choose. Scene paint asks node-keyed maps several
+/// times per primitive per frame; a sampling profile of a transform animation
+/// put SipHash alone at a tenth of the painter's time.
+///
+/// The mixing step is rustc's: rotate, xor the word in, multiply by an odd
+/// constant. Ids are a dense counter, so the work is spreading them, not
+/// hiding them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NodeIdHasher(u64);
+
+impl NodeIdHasher {
+    const SEED: u64 = 0x517c_c1b7_2722_0a95;
+
+    fn add(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(Self::SEED);
+    }
+}
+
+impl std::hash::Hasher for NodeIdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.add(u64::from(*byte));
+        }
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.add(value);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.add(value as u64);
+    }
+}
+
+/// [`HashMap`] keyed by node, hashed by [`NodeIdHasher`].
+pub type NodeMap<V> = HashMap<StableNodeId, V, std::hash::BuildHasherDefault<NodeIdHasher>>;
+
+/// [`HashSet`] of nodes, hashed by [`NodeIdHasher`].
+pub type NodeSet = HashSet<StableNodeId, std::hash::BuildHasherDefault<NodeIdHasher>>;
+
 /// Deepest retained tree the frame pipeline accepts.
 ///
 /// Style resolution walks ancestors, layout and hit-test walk descendants, and

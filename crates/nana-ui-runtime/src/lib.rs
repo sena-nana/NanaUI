@@ -336,7 +336,8 @@ pub use view_components::{
 };
 pub use workspace::{Workspace, WorkspaceRegionSlot, WorkspaceResizeHandle};
 pub use world::{
-    CommitReport, DocumentId, NodeKind, NodeSnapshot, StableNodeId, UiWorld, UiWorldError,
+    CommitReport, DocumentId, NodeIdHasher, NodeKind, NodeMap, NodeSet, NodeSnapshot, StableNodeId,
+    UiWorld, UiWorldError,
 };
 pub use xy_pad::{
     XYPad, XYPadAdjustment, XYPadAxisLock, XYPadDragState, XYPadEvent, XYPadValue, xy_pad_height,

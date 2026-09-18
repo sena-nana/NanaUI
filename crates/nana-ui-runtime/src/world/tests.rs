@@ -6647,6 +6647,43 @@ fn sibling_reorder_does_not_recompute_unchanged_descendant_styles() {
 }
 
 #[test]
+fn node_ids_spread_across_the_bits_a_table_indexes_with() {
+    use std::hash::{Hash, Hasher};
+
+    // A hash table takes the low bits of the hash for the bucket and the top
+    // seven for the control byte it compares first. Node ids are a dense
+    // counter, so a hasher that passed them through would give every id in a
+    // document the same control byte and make the first comparison useless.
+    const IDS: u64 = 1 << 14;
+    let mut buckets = [0usize; 1 << 10];
+    let mut tags = [0usize; 128];
+    for value in 1..=IDS {
+        let mut hasher = NodeIdHasher::default();
+        node(value).hash(&mut hasher);
+        let hash = hasher.finish();
+        buckets[(hash & 0x3ff) as usize] += 1;
+        tags[(hash >> 57) as usize] += 1;
+    }
+    // An odd multiplier permutes the low bits, so a dense range lands one per
+    // bucket exactly.
+    assert!(
+        buckets
+            .iter()
+            .all(|count| *count == IDS as usize / buckets.len()),
+        "the low bits must be a permutation of a dense range"
+    );
+    let ideal = IDS as usize / tags.len();
+    let (low, high) = (
+        *tags.iter().min().expect("tags"),
+        *tags.iter().max().expect("tags"),
+    );
+    assert!(
+        low >= ideal / 2 && high <= ideal * 2,
+        "the control byte must vary too, got {low}..={high} against {ideal}"
+    );
+}
+
+#[test]
 fn turning_a_container_moves_its_subtree_without_re_extracting_it() {
     let mut world = UiWorld::new();
     let mut queue = MutationQueue::new();
