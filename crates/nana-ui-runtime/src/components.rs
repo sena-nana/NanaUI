@@ -1809,6 +1809,18 @@ pub trait TextShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics;
 
+    /// Whether this node's [`Self::shape`] is answered from a layout the host
+    /// already holds for it.
+    ///
+    /// A content-addressed cache in front of such a node is pure overhead: it
+    /// would copy and hash the whole text to find a measurement that is one
+    /// read away, on every frame that touches the node -- and an editor's text
+    /// is the longest text in the document. Hosts that retain nothing keep
+    /// `false` and stay cached.
+    fn retains_measurement(&self, _id: StableNodeId) -> bool {
+        false
+    }
+
     /// Generation of the font set [`Self::shape`] measures against. A change
     /// makes every metric measured under the old one stale, so text resolved
     /// before it is resolved again. A host whose fonts never change keeps 0.

@@ -49,6 +49,10 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         self.inner.font_generation()
     }
 
+    fn retains_measurement(&self, id: StableNodeId) -> bool {
+        self.inner.retains_measurement(id)
+    }
+
     fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
         self.inner.text_engine()
     }
@@ -156,6 +160,13 @@ impl<S: TextShaper> TextShaper for CountingShaper<'_, S> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
+        // A node the host measures from a retained layout: keying the cache
+        // would copy and hash the whole text to find what the host answers
+        // with one read. Editors are exactly that, and their text is the
+        // longest in the document.
+        if self.inner.retains_measurement(id) {
+            return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
+        }
         let key = layout_cache_key(text, style, constraints, self.font_generation);
         self.keys += 1;
         self.key_bytes += text.value.len();
@@ -204,6 +215,10 @@ impl TextShaper for PreparedCountingShaper<'_> {
         self.inner.font_generation()
     }
 
+    fn retains_measurement(&self, id: StableNodeId) -> bool {
+        self.inner.retains_measurement(id)
+    }
+
     fn text_engine(&self) -> Option<nana_text::SharedTextEngine> {
         self.inner.text_engine()
     }
@@ -219,6 +234,11 @@ impl TextShaper for PreparedCountingShaper<'_> {
         style: &ComputedStyle,
         constraints: crate::TextShapeConstraints,
     ) -> TextMetrics {
+        // See [`CountingShaper::shape`]: no cache in front of a retained
+        // measurement.
+        if self.inner.retains_measurement(id) {
+            return inner_shape_cached(self.inner, id, text, style, constraints, self.glyphs);
+        }
         let key = layout_cache_key(text, style, constraints, self.font_generation);
         *self.keys += 1;
         *self.key_bytes += text.value.len();

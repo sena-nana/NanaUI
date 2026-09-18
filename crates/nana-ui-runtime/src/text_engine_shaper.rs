@@ -264,6 +264,13 @@ impl TextShaper for NanaTextEngineShaper {
         self.measure(id, text, style, constraints)
     }
 
+    /// An editor with geometry is measured by summing its paragraphs, so the
+    /// Runtime's layout cache in front of it would hash the whole text to
+    /// find what one read already answers.
+    fn retains_measurement(&self, id: StableNodeId) -> bool {
+        self.editors.iter().any(|entry| entry.id == id)
+    }
+
     /// Probes of one text snapshot sync each editor's geometry once, not once
     /// per probe.
     fn with_text_probes<R>(
@@ -440,6 +447,10 @@ impl TextShaper for PreparedEngineShaper<'_> {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         self.host.measure(id, text, style, constraints)
+    }
+
+    fn retains_measurement(&self, id: StableNodeId) -> bool {
+        self.host.retains_measurement(id)
     }
 
     fn font_generation(&self) -> u64 {

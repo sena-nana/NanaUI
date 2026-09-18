@@ -503,3 +503,50 @@ fn a_click_past_a_wrapped_cjk_line_end_keeps_the_caret_after_that_line() {
     );
     assert_eq!(fixture.layouts_created(), layouts, "clicks lay nothing out");
 }
+
+/// The Runtime's layout cache is content addressed: keying it copies the whole
+/// text into the key and hashes it. An editor is measured by summing the
+/// paragraphs it already holds, so no frame of it may touch that cache --
+/// otherwise every caret move on a large document pays a hash of the document.
+#[test]
+fn an_editors_frames_never_key_the_runtime_layout_cache() {
+    let mut fixture = Fixture::new(&paragraphs(30));
+    let document = fixture.document;
+    let cache = |fixture: &Fixture| {
+        let counters = fixture.runtime.context().last_work_counters();
+        (
+            counters.text_layout_cache_hits,
+            counters.text_layout_cache_misses,
+        )
+    };
+    // The mount is exempt: the first measurement happens before the node has
+    // any geometry to be measured from (the measure pass never creates it --
+    // it would be under the layout pass's constraints, not the probes').
+    assert_eq!(cache(&fixture).0, 0, "nothing is answered from the cache");
+
+    // A caret move: no text work is owed at all.
+    let Fixture {
+        runtime, shaper, ..
+    } = &mut fixture;
+    assert!(
+        runtime
+            .context_mut()
+            .move_focused_text_caret(document, TextCaretIntent::Up, false, Some(shaper))
+            .unwrap()
+    );
+    fixture.flush();
+    assert_eq!(cache(&fixture), (0, 0), "a caret move");
+
+    // An edit: the paragraph it changed is laid out again, still without the
+    // Runtime cache in front of the editor.
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .replace_focused_text(document, "!")
+            .unwrap()
+    );
+    let work = fixture.flush();
+    assert_eq!(work.editable_mutations, 1);
+    assert_eq!(cache(&fixture), (0, 0), "an edit");
+}
