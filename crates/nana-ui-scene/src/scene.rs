@@ -473,6 +473,9 @@ pub struct UiScene {
     /// instance and the attribute epoch. See
     /// [`UiScene::compositor_paint_opacity`].
     pub(super) layer_factor_cache: std::sync::Mutex<LayerFactorCache>,
+    /// What the primitive-rebuild pass would otherwise recompute for every
+    /// node it touches. See [`RebuildScratch`].
+    rebuild_scratch: std::sync::Mutex<RebuildScratch>,
     nodes: HashMap<StableNodeId, ExtractedNode>,
     node_order: HashMap<StableNodeId, usize>,
     primitives: BTreeMap<PrimitiveId, ScenePrimitive>,
@@ -498,6 +501,7 @@ impl Default for UiScene {
             draw_attributes: std::sync::Mutex::new(HashMap::new()),
             opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
             layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
+            rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
             nodes: HashMap::new(),
             node_order: HashMap::new(),
             primitives: BTreeMap::new(),
@@ -526,6 +530,7 @@ impl Clone for UiScene {
             // new instance, so carrying them over would only be work.
             opacity_group_cache: std::sync::Mutex::new(HashMap::new()),
             layer_factor_cache: std::sync::Mutex::new(HashMap::new()),
+            rebuild_scratch: std::sync::Mutex::new(RebuildScratch::default()),
             nodes: self.nodes.clone(),
             node_order: self.node_order.clone(),
             primitives: self.primitives.clone(),
@@ -820,12 +825,20 @@ impl UiScene {
                 }
             }
             rebuild.retain(|id| rebuilding.remove(id));
+            // `self.nodes` is final by now and nothing below moves it, which
+            // is the whole precondition for reusing what a parent projects.
+            if let Ok(mut scratch) = self.rebuild_scratch.lock() {
+                scratch.begin();
+            }
             for &id in &rebuild {
                 previous_structure
                     .entry(id)
                     .or_insert_with(|| self.node_structure(id));
                 rebuilt_primitives += self.rebuild_node_primitives(id);
                 self.invalidate_compositor_cache(id);
+            }
+            if let Ok(mut scratch) = self.rebuild_scratch.lock() {
+                scratch.end();
             }
             // Rebuilt nodes re-enter `ordered` at their own key, so a reorder is
             // only needed when keys the delta did not touch also moved.
@@ -1015,11 +1028,42 @@ impl UiScene {
         self.project_ancestor_state(node, true)
     }
 
-    fn project_ancestor_state(
+    fn project_ancestor_state(&self, node: &ExtractedNode, visual: bool) -> AncestorState {
+        // What the answer depends on, beyond the chain itself: whether this
+        // node breaks out of it, and whether the caller wants the presented
+        // values or the logical ones.
+        let fixed = node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed;
+        let key = node.parent.map(|parent| (parent, fixed, visual));
+        if let Some(key) = key
+            && let Ok(cache) = self.rebuild_scratch.lock()
+            && cache.active
+            && let Some((held, state)) = cache.ancestor_state.as_ref()
+            && *held == key
+        {
+            return state.clone();
+        }
+        let (state, node_dependent) = self.compute_ancestor_state(node, visual, fixed);
+        if let Some(key) = key
+            && !node_dependent
+            && let Ok(mut cache) = self.rebuild_scratch.lock()
+            && cache.active
+        {
+            cache.ancestor_state = Some((key, state.clone()));
+        }
+        state
+    }
+
+    /// The second half of the answer is whether it read anything about `node`
+    /// that its siblings do not share — a modal frame above it reads this
+    /// node's focus and whether it is in the body, and a workspace resize
+    /// handle drops its parent's overflow clip. Neither is cacheable by parent.
+    fn compute_ancestor_state(
         &self,
         node: &ExtractedNode,
         visual: bool,
-    ) -> (AffineTransform, f32, Arc<[ClipRegion]>, bool) {
+        fixed: bool,
+    ) -> (AncestorState, bool) {
+        let mut node_dependent = is_workspace_resize_handle(node);
         let mut ancestors = node
             .parent
             .map(|parent| {
@@ -1033,17 +1077,16 @@ impl UiScene {
         // transformed ancestor. Keep structural opacity, but begin geometry at
         // the nearest fixed boundary instead of inheriting its outer scroll,
         // transform and clip chain.
-        let geometry_start =
-            if node.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
-                ancestors.len()
-            } else {
-                ancestors
-                    .iter()
-                    .rposition(|ancestor| {
-                        ancestor.source_style.layout.position == nana_ui_core::PositionSpec::Fixed
-                    })
-                    .unwrap_or(0)
-            };
+        let geometry_start = if fixed {
+            ancestors.len()
+        } else {
+            ancestors
+                .iter()
+                .rposition(|ancestor| {
+                    ancestor.source_style.layout.position == nana_ui_core::PositionSpec::Fixed
+                })
+                .unwrap_or(0)
+        };
         let mut transform = AffineTransform::IDENTITY;
         let mut opacity = 1.0;
         let mut clips = Vec::new();
@@ -1101,6 +1144,7 @@ impl UiScene {
             if let Some(ComponentGeometry::ModalFrame { surface, body, .. }) =
                 ancestor.component_geometry.as_deref()
             {
+                node_dependent = true;
                 let focus_inset = if node.focused { 3.0 } else { 0.0 };
                 clips.push(ClipRegion {
                     bounds: SceneRect {
@@ -1149,7 +1193,10 @@ impl UiScene {
                 -ancestor.scroll_offset.y,
             ]));
         }
-        (transform, opacity, clips.into(), blocks_3d)
+        (
+            (transform, opacity, clips.into(), blocks_3d),
+            node_dependent,
+        )
     }
 
     fn remove_node_primitives(&mut self, id: StableNodeId) {
@@ -1159,10 +1206,73 @@ impl UiScene {
             .collect::<Vec<_>>();
         for slot in slots {
             if let Some(primitive) = self.primitives.remove(&slot) {
-                self.ordered
-                    .remove(&order_key(&self.nodes, &self.node_order, &primitive));
+                let key = self.scene_order_key(&primitive);
+                self.ordered.remove(&key);
             }
         }
+    }
+
+    /// The paint-order key, reusing the group prefix while the rebuild pass
+    /// holds one: every primitive of a node shares it, and a node is removed
+    /// and re-inserted in the same pass.
+    fn scene_order_key(&self, primitive: &ScenePrimitive) -> SceneOrderKey {
+        if let Ok(mut scratch) = self.rebuild_scratch.lock()
+            && scratch.active
+        {
+            if let Some((node, prefix)) = scratch.group_prefix.as_ref()
+                && *node == primitive.node
+            {
+                return order_key_from_prefix(&self.nodes, prefix, primitive);
+            }
+            let prefix = self.group_prefix_of(&mut scratch, primitive.node);
+            let key = order_key_from_prefix(&self.nodes, &prefix, primitive);
+            scratch.group_prefix = Some((primitive.node, prefix));
+            return key;
+        }
+        order_key(&self.nodes, &self.node_order, primitive)
+    }
+
+    /// A node's paint-order prefix: what it inherits from the chain above it,
+    /// plus its own entry when it opens a stacking group.
+    ///
+    /// The inherited half is what siblings share, so it is the half worth
+    /// remembering. A node that opens no group of its own **shares** that
+    /// `Arc` rather than copying it.
+    fn group_prefix_of(&self, scratch: &mut RebuildScratch, node: StableNodeId) -> GroupPrefix {
+        let Some(candidate) = self.nodes.get(&node) else {
+            return Arc::from(Vec::new());
+        };
+        // A viewport-fixed node starts its own chain: a triggered menu must not
+        // stay inside the isolation group of whatever opened it.
+        let inherited =
+            if candidate.source_style.layout.position == nana_ui_core::PositionSpec::Fixed {
+                Arc::from(Vec::new())
+            } else {
+                match candidate.parent {
+                    Some(parent) => {
+                        if let Some((held, prefix)) = scratch.inherited_prefix.as_ref()
+                            && *held == parent
+                        {
+                            Arc::clone(prefix)
+                        } else {
+                            let prefix: Arc<[(i32, usize)]> =
+                                group_prefix(&self.nodes, &self.node_order, parent).into();
+                            scratch.inherited_prefix = Some((parent, Arc::clone(&prefix)));
+                            prefix
+                        }
+                    }
+                    None => Arc::from(Vec::new()),
+                }
+            };
+        if !is_stacking_group(&self.nodes, candidate) {
+            return inherited;
+        }
+        let mut prefix = inherited.to_vec();
+        prefix.push((
+            candidate.z_index,
+            self.node_order.get(&node).copied().unwrap_or(0),
+        ));
+        Arc::from(prefix)
     }
 
     fn primitives_for_node(&self, node: StableNodeId) -> impl Iterator<Item = &ScenePrimitive> {
@@ -1188,10 +1298,10 @@ impl UiScene {
     }
 
     fn insert_primitive(&mut self, primitive: ScenePrimitive) {
-        let key = order_key(&self.nodes, &self.node_order, &primitive);
+        let key = self.scene_order_key(&primitive);
         if let Some(previous) = self.primitives.insert(primitive.id, primitive) {
-            self.ordered
-                .remove(&order_key(&self.nodes, &self.node_order, &previous));
+            let previous = self.scene_order_key(&previous);
+            self.ordered.remove(&previous);
         }
         self.ordered.insert(key);
     }
@@ -1420,6 +1530,51 @@ type OpacityGroupCache = HashMap<StableNodeId, (u64, Arc<[OpacityGroup]>)>;
 /// Ancestor layer factors, stamped with the scene instance and the attribute
 /// epoch.
 pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
+
+/// What a node inherits from the chain above it.
+type AncestorState = (AffineTransform, f32, Arc<[ClipRegion]>, bool);
+
+/// One `(z-index, document order)` per stacking group above a node, outermost
+/// first.
+type GroupPrefix = Arc<[(i32, usize)]>;
+
+/// Two answers the primitive-rebuild pass keeps asking for: what a node
+/// inherits from the chain above it, and where that chain puts it in paint
+/// order. A container style change rebuilds every descendant, and a node owns
+/// several primitives, so both are asked many times for the same parent.
+///
+/// One entry each, not maps: the pass walks the subtree in order, so the next
+/// question almost always has the same answer as the last, and comparing two
+/// words beats hashing. A miss costs exactly what this used to cost every time.
+///
+/// Deliberately not stamped and not always on. It is filled only while
+/// `apply_delta` rebuilds primitives — where `self.nodes` and `self.node_order`
+/// are already final and cannot move under it — and emptied on the way out.
+#[derive(Default, Debug)]
+struct RebuildScratch {
+    active: bool,
+    ancestor_state: Option<((StableNodeId, bool, bool), AncestorState)>,
+    group_prefix: Option<(StableNodeId, GroupPrefix)>,
+    /// The same, for the chain *above* a node: siblings share it, so the pass
+    /// pays the walk once per container instead of once per node.
+    inherited_prefix: Option<(StableNodeId, GroupPrefix)>,
+}
+
+impl RebuildScratch {
+    fn begin(&mut self) {
+        self.active = true;
+        self.ancestor_state = None;
+        self.group_prefix = None;
+        self.inherited_prefix = None;
+    }
+
+    fn end(&mut self) {
+        self.active = false;
+        self.ancestor_state = None;
+        self.group_prefix = None;
+        self.inherited_prefix = None;
+    }
+}
 
 /// The list every node that is not itself a group shares with its parent.
 fn empty_opacity_groups() -> Arc<[OpacityGroup]> {

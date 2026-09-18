@@ -7834,3 +7834,97 @@ fn viewport_fixed_draws_and_descendants_escape_outer_geometry_in_full_and_scroll
     );
     check(&scene, 104.0);
 }
+
+#[test]
+fn a_rebuilt_subtree_lands_in_the_order_a_full_sort_would_give_it() {
+    // The rebuild pass reuses what it just computed for the node before, both
+    // for what a node inherits and for where the chain puts it in paint order.
+    // Two sibling containers that each open a stacking group at a different z
+    // are what catches a reuse that crossed between them: their children
+    // inherit different prefixes, and nothing else in the scene would notice.
+    let stacked = |z: i32| {
+        Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Relative,
+            z_index: Some(z),
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..nana_ui_core::LayoutStyle::default()
+        })
+    };
+    let mut scene = UiScene::new();
+    let mut nodes = vec![node(1, None, &[2, 3])];
+    for (container, z) in [(2u64, 5i32), (3, 1)] {
+        let children: Vec<u64> = (container * 10..container * 10 + 6).collect();
+        let mut parent = node(container, Some(1), &children);
+        parent.z_index = z;
+        parent.source_style.layout = stacked(z);
+        nodes.push(parent);
+        for (index, child) in children.iter().enumerate() {
+            let mut leaf = node(*child, Some(container), &[]);
+            leaf.z_index = (index as i32 % 3) - 1;
+            leaf.source_style.layout = stacked(leaf.z_index);
+            nodes.push(leaf);
+        }
+    }
+    scene.apply_delta(nodes.clone(), []);
+    let incremental = scene.ordered.clone();
+    scene.sort_primitives();
+    assert_eq!(
+        incremental, scene.ordered,
+        "the keys the rebuild pass wrote must be the keys a full sort writes"
+    );
+
+    // And again after a style change on the root, which rebuilds both
+    // subtrees through the same reuse, one container straight after the other.
+    let mut moved = node(1, None, &[2, 3]);
+    moved.source_style.layout = Arc::new(nana_ui_core::LayoutStyle {
+        transform: Some(nana_ui_core::PaintTransform {
+            e: 12.0,
+            ..nana_ui_core::PaintTransform::default()
+        }),
+        ..nana_ui_core::LayoutStyle::default()
+    });
+    scene.apply_delta([moved], []);
+    let incremental = scene.ordered.clone();
+    scene.sort_primitives();
+    assert_eq!(
+        incremental, scene.ordered,
+        "a container style change rebuilds the subtree and must not reorder it"
+    );
+}
+
+#[test]
+fn the_rebuild_scratch_does_not_hand_one_parents_prefix_to_another() {
+    // The scratch holds one inherited prefix at a time, on the bet that the
+    // next node has the same parent. When it does not, the bet has to be
+    // dropped: two containers that open stacking groups at different z put
+    // their children in different places.
+    let stacked = |z: i32| {
+        Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Relative,
+            z_index: Some(z),
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..nana_ui_core::LayoutStyle::default()
+        })
+    };
+    let mut scene = UiScene::new();
+    let mut nodes = vec![node(1, None, &[2, 3])];
+    for (container, z, leaf) in [(2u64, 5i32, 20u64), (3, 1, 30)] {
+        let mut parent = node(container, Some(1), &[leaf]);
+        parent.z_index = z;
+        parent.source_style.layout = stacked(z);
+        nodes.push(parent);
+        nodes.push(node(leaf, Some(container), &[]));
+    }
+    scene.apply_delta(nodes, []);
+    let mut scratch = RebuildScratch::default();
+    scratch.begin();
+    let under_two = scene.group_prefix_of(&mut scratch, id(20));
+    let under_three = scene.group_prefix_of(&mut scratch, id(30));
+    assert_ne!(
+        under_two, under_three,
+        "children of two different stacking containers cannot share a prefix"
+    );
+    assert_eq!(under_two.len(), 1);
+    assert_eq!(under_two[0].0, 5, "the z of the container above it");
+    assert_eq!(under_three[0].0, 1);
+}
