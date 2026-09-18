@@ -97,22 +97,24 @@ impl UiScene {
                 .insert(id.node, attributes.clone());
             attributes
         };
-        let mut clips = attributes.parent_clips.to_vec();
-        clips.extend(
-            primitive
-                .clips
-                .iter()
-                .skip(parent_clip_count)
-                .cloned()
-                .map(|mut clip| {
+        // Most primitives are cut only by what they inherit, and that list is
+        // already the one the ancestor walk produced.
+        let clips = if primitive.clips.len() == parent_clip_count {
+            Arc::clone(&attributes.parent_clips)
+        } else {
+            let mut clips = attributes.parent_clips.to_vec();
+            clips.extend(primitive.clips.iter().skip(parent_clip_count).cloned().map(
+                |mut clip| {
                     clip.transform = attributes.delta.then(clip.transform);
                     clip
-                }),
-        );
+                },
+            ));
+            clips.into()
+        };
         Some(SceneDraw {
             primitive,
             transform: attributes.delta.then(primitive.transform),
-            clips: clips.into(),
+            clips,
             paint_opacity,
         })
     }

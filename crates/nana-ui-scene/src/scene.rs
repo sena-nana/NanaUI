@@ -1064,21 +1064,41 @@ impl UiScene {
         let key = node.parent.map(|parent| (parent, fixed, visual));
         if let Some(key) = key
             && let Ok(cache) = self.rebuild_scratch.lock()
-            && cache.active
-            && let Some((held, state)) = cache.ancestor_state.as_ref()
-            && *held == key
         {
-            return state.clone();
+            if cache.active {
+                if let Some((held, state)) = cache.ancestor_state.as_ref()
+                    && *held == key
+                {
+                    return state.clone();
+                }
+            } else if let Some((held, stamp, state)) = cache.drawn_ancestor_state.as_ref()
+                && *held == key
+                && *stamp == self.draw_stamp()
+            {
+                return state.clone();
+            }
         }
         let (state, node_dependent) = self.compute_ancestor_state(node, visual, fixed);
         if let Some(key) = key
             && !node_dependent
             && let Ok(mut cache) = self.rebuild_scratch.lock()
-            && cache.active
         {
-            cache.ancestor_state = Some((key, state.clone()));
+            if cache.active {
+                cache.ancestor_state = Some((key, state.clone()));
+            } else {
+                cache.drawn_ancestor_state = Some((key, self.draw_stamp(), state.clone()));
+            }
         }
         state
+    }
+
+    /// What a remembered draw-time answer stays valid for.
+    ///
+    /// `attribute_epoch` moves whenever what a node inherits changes, and
+    /// `instance` whenever the scene's nodes do — a leaf leaving does not touch
+    /// the epoch but can stop its parent being an opacity group.
+    fn draw_stamp(&self) -> DrawStamp {
+        (self.instance, self.attribute_epoch)
     }
 
     /// The second half of the answer is whether it read anything about `node`
@@ -1674,6 +1694,15 @@ pub(super) type LayerFactorCache = HashMap<StableNodeId, ((u64, u64), f32)>;
 /// used to be most of a megabyte of memmove per frame.
 pub(super) type SceneNodes = HashMap<StableNodeId, Arc<ExtractedNode>>;
 
+/// Which chain an [`AncestorState`] was read for: the parent it starts at,
+/// whether the node breaks out of it, and whether the caller wanted the
+/// presented values or the logical ones.
+type AncestorStateKey = (StableNodeId, bool, bool);
+
+/// What a remembered draw-time answer is stamped with. See
+/// [`UiScene::draw_stamp`].
+type DrawStamp = (u64, u64);
+
 /// What a node inherits from the chain above it.
 type AncestorState = (AffineTransform, f32, Arc<[ClipRegion]>, bool);
 
@@ -1696,7 +1725,12 @@ type GroupPrefix = Arc<[(i32, usize)]>;
 #[derive(Default, Debug)]
 struct RebuildScratch {
     active: bool,
-    ancestor_state: Option<((StableNodeId, bool, bool), AncestorState)>,
+    ancestor_state: Option<(AncestorStateKey, AncestorState)>,
+    /// The same answer for the draw pass, which has no bracket to reset it:
+    /// siblings ask for it one after another while the painter walks paint
+    /// order, so one entry carries a whole container. Stamped, because nothing
+    /// clears it. See [`UiScene::draw_stamp`].
+    drawn_ancestor_state: Option<(AncestorStateKey, DrawStamp, AncestorState)>,
     /// The paint-order stack of the node being rebuilt, shared by all of its
     /// primitives.
     order_stack: Option<(StableNodeId, GroupPrefix)>,
