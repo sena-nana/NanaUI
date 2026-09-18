@@ -73,6 +73,15 @@ impl TextHistory {
     /// session, bounded so a long-lived editor cannot grow without limit.
     const CAPACITY: usize = 200;
 
+    /// Text bytes the journal of one editor may hold, across every step.
+    ///
+    /// [`Self::CAPACITY`] alone bounds the journal only for documents of a
+    /// hand-written size: a step stores the value before AND after, so 200
+    /// steps of a 300 KB document would be 120 MB per editor. Deep undo is
+    /// worth memory, but not that much of it -- past this the oldest steps go,
+    /// which is what a step-count overflow does too.
+    const CAPACITY_BYTES: usize = 8 * 1024 * 1024;
+
     fn record(&mut self, before: TextInputState, after: TextInputState, origin: TextEditOrigin) {
         if origin == TextEditOrigin::History {
             return;
@@ -97,10 +106,21 @@ impl TextHistory {
             after,
             origin,
         });
-        if self.steps.len() > Self::CAPACITY {
+        while self.steps.len() > Self::CAPACITY
+            || (self.steps.len() > 1 && self.bytes() > Self::CAPACITY_BYTES)
+        {
             self.steps.remove(0);
         }
         self.cursor = self.steps.len();
+    }
+
+    /// Text bytes the steps hold. Both ends of every step: undo restores the
+    /// `before`, redo the `after`.
+    fn bytes(&self) -> usize {
+        self.steps
+            .iter()
+            .map(|step| step.before.value.len() + step.after.value.len())
+            .sum()
     }
 
     /// Ends the current merge run, so the next edit starts a new step even if
@@ -694,6 +714,51 @@ mod tests {
 
     fn record(history: &mut TextHistory, from: &str, to: &str, origin: TextEditOrigin) {
         history.record(state(from), state(to), origin);
+    }
+
+    /// The step count alone bounds the journal only for small documents: a
+    /// step holds the value before AND after, so a deep journal of a large
+    /// document would be hundreds of megabytes. Past the byte budget the
+    /// oldest steps go -- and the newest edit stays undoable, however large.
+    #[test]
+    fn a_large_document_journal_stays_inside_its_byte_budget() {
+        let big = "x".repeat(512 * 1024);
+        let mut history = TextHistory::default();
+        for step in 0..40 {
+            // Each step is its own (Structural never merges), and each end is
+            // half a megabyte.
+            record(
+                &mut history,
+                &format!("{big}{step}"),
+                &format!("{big}{step}!"),
+                TextEditOrigin::Structural,
+            );
+            assert!(
+                history.bytes() <= TextHistory::CAPACITY_BYTES + 2 * big.len(),
+                "step {step}: {} bytes",
+                history.bytes()
+            );
+        }
+        assert!(history.steps.len() < 40, "old steps went");
+        assert!(history.can_undo(), "the newest edit is still undoable");
+        assert_eq!(
+            history.undo().map(|state| state.value.len()),
+            Some(big.len() + 2),
+            "and it undoes to the value that edit started from"
+        );
+
+        // One step bigger than the whole budget is still kept: an editor with
+        // no undo at all would be worse than one over budget.
+        let huge = "y".repeat(TextHistory::CAPACITY_BYTES * 2);
+        let mut history = TextHistory::default();
+        record(
+            &mut history,
+            &huge,
+            &format!("{huge}!"),
+            TextEditOrigin::Paste,
+        );
+        assert_eq!(history.steps.len(), 1);
+        assert!(history.can_undo());
     }
 
     #[test]
