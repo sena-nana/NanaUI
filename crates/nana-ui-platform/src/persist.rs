@@ -519,16 +519,26 @@ mod tests {
     use nana_ui_core::PersistentStore;
     use std::collections::BTreeMap;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// A directory no other test in this run can be handed.
+    ///
+    /// The timestamp alone is not enough: `SystemTime::now` is not
+    /// nanosecond-resolution on every platform, so two tests starting in the
+    /// same tick got the same directory and one would then read the other's
+    /// deliberately corrupted file. The counter is what makes it unique; the
+    /// timestamp only keeps two *runs* apart.
     fn unique_dir() -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "nana-file-store-{}-{}",
+            "nana-file-store-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
