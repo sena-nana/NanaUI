@@ -1096,6 +1096,12 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
   于是是**两次**按键：一次落在行尾（`Upstream`），一次落到下一行行首（`Downstream`）。逻辑步进
   会跳过行尾那个位置，直接越过一个字符。
 
+探针只在**画出来的就是值本身**时问：secure 字段画的是圆点、空字段画的是占位符，
+这两种按字素步进（一列相同圆点里「左」本来也只有这个意思），否则等于拿没被绘制的那份
+布局回答，还会把值——密码也在内——排版进宿主保留的几何与按文本做键的 shape cache。
+组字期间一次 caret 移动都不会发生（`focused_text_editor` 在组字时返回 None），而组字
+**结束**留下的空 preedit 不算组字。
+
 `nana-text` 的 `EditSession` 在 Left/Right 且选区非空时会塌缩到选区的**视觉边缘**；Runtime 这条
 路仍是「从 focus 起步一格」（`moved_selection`）。两边的这条差别留在 IME 后端接 `EditSession`
 那一步一起收，不在本次改。Word/Line 意图按定义是逻辑的，垂直移动走自己的几何路径。

@@ -664,3 +664,59 @@ fn more_editors_than_the_geometry_cache_holds_still_lay_nothing_out() {
     assert_eq!(work.paragraphs_relayout_from_edit, 0, "{work:?}");
     assert_eq!(layouts(), before, "the engine laid nothing out");
 }
+
+/// Visual order resolves on the DISPLAY text, which for a collapsed code fold
+/// contains a summary the value does not: the same rule as the logical path
+/// has to hold on the geometry path too -- one press crosses the whole summary
+/// (there is no value offset inside it to stop at) and the next one advances
+/// by a character.
+#[test]
+fn a_right_arrow_crosses_a_collapsed_fold_summary_on_the_geometry_path() {
+    let document = DocumentId::new(DOCUMENT).unwrap();
+    let mut runtime = RuntimeDocument::new(document);
+    let value = "fn a() {\n    x();\n    y();\n}\nfn b() {}";
+    let fold = nana_ui_runtime::TextCodeFold::new(7, 28);
+    let area = runtime
+        .context_mut()
+        .build(document, |ui| {
+            ui.child("editor", TextArea::new(value).code_folds(Arc::from([fold])))
+        })
+        .unwrap();
+    let node = area.stable_id();
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    let mut queue = nana_ui_runtime::MutationQueue::new();
+    queue.set_text_input_fold_collapsed(node, Arc::from([fold]));
+    runtime.context_mut().commit_mutations(queue).unwrap();
+    assert!(runtime.context_mut().focus_node(document, node).unwrap());
+    for _ in 0..4 {
+        runtime.flush(viewport(), &mut shaper).unwrap();
+    }
+
+    // The end of the fold's first line (value 8; the summary ` …3` occupies
+    // display 8..13).
+    runtime
+        .context_mut()
+        .select_focused_text_range(document, 8, 8)
+        .unwrap();
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    let focus = |runtime: &RuntimeDocument| {
+        runtime
+            .context()
+            .world()
+            .text_input(node)
+            .expect("state")
+            .selection
+            .focus
+    };
+
+    for expected in [28, 29] {
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, TextCaretIntent::Right, false, Some(&mut shaper))
+                .unwrap()
+        );
+        runtime.flush(viewport(), &mut shaper).unwrap();
+        assert_eq!(focus(&runtime), expected, "one press per position");
+    }
+}
