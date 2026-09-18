@@ -484,6 +484,12 @@ impl TextPipeline {
         self.live_runs = 0;
         self.flushed = 0;
         self.segments.clear();
+        // What the GPU holds is last frame's array, so it becomes the
+        // comparison baseline by swapping rather than by copying: a frame of
+        // ten thousand glyphs would otherwise memcpy a quarter of a megabyte
+        // just to remember what it had already written.
+        std::mem::swap(&mut self.instances, &mut self.uploaded_instances);
+        std::mem::swap(&mut self.vertices, &mut self.uploaded_vertices);
         self.instances.clear();
         self.vertices.clear();
         self.frame_gpu_allocations = 0;
@@ -1062,12 +1068,18 @@ impl TextPipeline {
     ) {
         self.uploads.flush(queue, &self.atlas, work);
         // Bind groups are created here, where the atlas is still `&mut`, so
-        // `draw` only has to look one up.
+        // `draw` only has to look one up. Nearly every frame's segments name
+        // the same pair, so the pair is only looked up when it changes.
         let Self {
             atlas, segments, ..
         } = self;
+        let mut last = None;
         for segment in segments.iter() {
-            atlas.bind_group(device, segment.mask_page, segment.color_page);
+            let pair = (segment.mask_page, segment.color_page);
+            if last != Some(pair) {
+                last = Some(pair);
+                atlas.bind_group(device, pair.0, pair.1);
+            }
         }
         self.gpu.upload(
             device,
@@ -1079,8 +1091,6 @@ impl TextPipeline {
             &self.uploaded_vertices,
             work,
         );
-        self.uploaded_instances.clone_from(&self.instances);
-        self.uploaded_vertices.clone_from(&self.vertices);
     }
 
     pub(super) fn draw(
@@ -2023,6 +2033,43 @@ mod tests {
             "every glyph of the second window must hit the shared atlas"
         );
         assert_eq!(shared.glyph_atlas_pages, first.glyph_atlas_pages);
+    }
+
+    #[test]
+    fn closing_one_window_leaves_the_others_glyphs_placed() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut first = None;
+        let mut second = None;
+
+        pipeline.swap_target(&mut first, &device);
+        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
+        pipeline.swap_target(&mut first, &device);
+
+        pipeline.swap_target(&mut second, &device);
+        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
+        let shared = pipeline.glyph_counters();
+        pipeline.swap_target(&mut second, &device);
+
+        // The first window closes. Its instance buffers go with it; the glyphs
+        // it faulted into the shared atlas must not.
+        drop(first);
+
+        pipeline.swap_target(&mut second, &device);
+        prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
+        let after = pipeline.glyph_counters();
+        assert_eq!(
+            after.glyph_rasterized, shared.glyph_rasterized,
+            "closing a window must not cost the surviving one a re-rasterization"
+        );
+        assert_eq!(
+            after.glyph_upload_regions, shared.glyph_upload_regions,
+            "nor a re-upload"
+        );
+        assert_eq!(
+            after.glyph_atlas_evict, 0,
+            "nor drop anything from the shared atlas"
+        );
     }
 
     #[test]
