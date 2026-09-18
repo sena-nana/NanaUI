@@ -1569,10 +1569,31 @@ text_prepare_nodes_considered / skipped / culled
 
   一帧总账：一千标签 1.64 → 0.93 ms，一万标签 28.96 → 17.21 ms。
 
-  还剩的大头在 batch 那一侧的重推路本身：`draw_attributes` 是按节点记的，一万个节点
-  就是一万次 `Mutex` 加锁和哈希插入。数学上同一个被改祖先下面所有后代的 delta 是同一
-  个（`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记一份就够——但那要先证明「下面那段链没
-  动」，不在这一期。
+- **动了的子树自己刷新可见性索引**。采样说变换动画里 paint 的 48% 花在
+  `VisibilityIndex::new` 上：祖先的几何一变，索引就被整个丢掉，下一次查询从头建一遍
+  ——文档里每个图元重算一次投影包围盒，每个节点重新哈希一遍，每条父链重新走一遍去
+  重建子树区间。可是祖先的变换改的是子树落在哪里，不是子树里有哪些图元。
+
+  现在按 `inherited_roots` 刷新：`descendants` 记着每个节点子树占的操作区间，
+  `refresh_range` 走进那些区间把叶子重算、往上重新求并，代价 O(区间 + log n)。下行
+  时要把滚动留下的懒平移推下去，否则它会叠到刚算好的叶子上（`moving_one_subtree_...`
+  就是钉这一条的，故障注入能打红）。
+
+  为此基准加了一个 `transform-panel`：转一个装八个标签的面板，其余上万个图元不动
+  ——真实 shell 的动画是这个形状，而 `transform` 转的是整个文档，是最坏情况。
+  一帧总账（flush + batch）：
+
+  | 用例 | 前 | 后 |
+  | --- | --- | --- |
+  | transform-panel，一千标签 | 0.512 ms | 0.312 ms |
+  | transform-panel，一万标签 | 9.933 ms | **5.698 ms** |
+  | transform，一万标签（最坏） | 19.733 ms | 17.224 ms |
+
+  还剩的大头在逐图元的那几次查表：`draw_primitive` 每个图元要查一次 `projections`、
+  再在 `Mutex<HashMap>` 里查一次 `draw_attributes`，而这些按 `StableNodeId` 索引的
+  表用的是默认的 SipHash——采样里光哈希本身就占 paint 的 9.7%。再往下，同一个被改
+  祖先下面所有后代的 delta 数学上是同一个（`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记
+  一份就够，但那要先证明「下面那段链没动」，不在这一期。
 
 ### 怎么跑，怎么判
 
