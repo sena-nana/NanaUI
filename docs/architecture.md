@@ -36,7 +36,7 @@ Vue + JS L1/L2（可选宿主）
                          retained layout 句柄（TextLayoutStore）。
                          Runtime 的保留文本节点经它解析（NanaTextEngineShaper），
                          产品文本仍走 nana-ui/nana_text.rs（cosmic-text）与
-                         scene_paint/text.rs（cryoglyph）。见 [文本引擎](text-engine.md)
+                         scene_paint/text/（NanaRenderer::text）。见 [文本引擎](text-engine.md)
 
 图标目录（可选，独立构建，不在 workspace members）
     nana-icons-tabler    Tabler outline 全量 `Icon` 常量（生成物，见

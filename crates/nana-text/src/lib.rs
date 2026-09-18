@@ -15,9 +15,9 @@
 //!
 //! [`NativeTextEngine`] ties the three together behind [`TextEngine`]. Since
 //! Phase 4 (#95) the UiWorld's retained text nodes can resolve through it and
-//! keep their layouts behind [`TextLayoutStore`] handles. The product painter
-//! is still `nana-ui`'s cryoglyph, fed by its cosmic-text shaper; drawing
-//! retained layouts is #97.
+//! keep their layouts behind [`TextLayoutStore`] handles. Since Phase 6 (#97)
+//! the painter is `nana-ui`'s own `NanaRenderer::text`, but it is still fed by
+//! that crate's cosmic-text shaper; drawing these retained layouts is #99.
 //!
 //! # Boundaries
 //!
@@ -27,8 +27,8 @@
 //!   temporary and is deleted along with that dependency once a native engine
 //!   lands.
 //! - **The product painter does not use this crate yet.** Product text is still
-//!   measured by `nana-ui`'s cosmic-text shaper and drawn by cryoglyph; the
-//!   Runtime only resolves through an engine for hosts that draw layouts.
+//!   measured by `nana-ui`'s cosmic-text shaper; the Runtime only resolves
+//!   through an engine for hosts that draw layouts.
 //! - **Typography vocabulary is borrowed, not re-declared.** `TextStyle` and
 //!   `TextConstraints` are built from `nana_ui_core`'s backend-neutral
 //!   typography types so the eventual UiWorld adapter is a field-for-field move

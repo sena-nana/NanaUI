@@ -1,7 +1,8 @@
 # 文本引擎骨架（nana-text）
 
-给**改 NanaUI 文本的人**。写应用不需要看这篇：产品文本仍由 cosmic-text 测量、cryoglyph 绘制，
-`nana-text` 目前只经 Runtime 的保留文本节点接入，绘制切换属于 #97。
+给**改 NanaUI 文本的人**。写应用不需要看这篇：产品文本仍由 cosmic-text 测量，
+**绘制已经是 NanaUI 自己的** `NanaRenderer::text`（#97），`nana-text` 目前经 Runtime 的
+保留文本节点接入。
 
 Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 是其中的 Phase 0：
 先把内部合同、reference backend 和 correctness corpus 固定下来，让后续每一阶段都能对着
@@ -12,6 +13,8 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 见「Layout」一节。#95 是 Phase 4：UiWorld 保留文本节点、分级 dirty graph 与 retained
 `TextLayout`，见「UiWorld 保留文本节点」一节。#96 是 Phase 5：Editable 路径——可编辑存储、
 caret / selection、hit-test、IME composition 与按段落失效的编辑器几何，见「Editable 路径」一节。
+#97 是 Phase 6：`NanaRenderer::text`——renderer 自有的 glyph IR、栅格化边界、raster cache、
+GPU atlas、上传队列与 text pipeline，cryoglyph 由此退出产品路径，见「NanaRenderer::text」一节。
 
 ## 这是什么
 
@@ -30,8 +33,8 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 `compare` 是唯一的结构化 diff。Phase 0 比「参照引擎 vs golden」；后续阶段原生引擎接上
 **同一个函数**，比「原生 vs golden」和「原生 vs 参照」。不换实现，不重写断言。
 
-产品文本仍然走 `crates/nana-ui/src/nana_text.rs`（cosmic-text 后端）与
-`crates/nana-ui/src/scene_paint/text.rs`（cryoglyph 绘制）。本阶段一行都没动它们。
+产品文本的**测量**仍走 `crates/nana-ui/src/nana_text.rs`（cosmic-text 后端）；**绘制**从 #97 起
+走 `crates/nana-ui/src/scene_paint/text/`（NanaUI 原生）。
 
 ## nana-text 自己拥有什么，什么留在成熟 crate 上
 
@@ -54,7 +57,9 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 | 字体注册、代际、`FontId` 签发、face 匹配、fallback 策略与候选、覆盖率缓存、变体坐标解析 | **nana-text**（`font` 模块） | 缓存失效与「为什么用了这个字体」的权威；不能交给第三方 query |
 | 系统字体目录扫描、name / OS/2 元数据读取 | **成熟 crate**（fontdb，仅 `font/discovery.rs`） | 不用它的 query 和 fallback |
 | 轴、命名实例、彩色表、cmap 读取 | **成熟 crate**（skrifa，仅 `font/face.rs`） | 与 Phase 2 的 harfrust 0.12 同一条 read-fonts 线 |
-| 字形栅格化、图集、GPU instance | 现有 cryoglyph 路径 | #89 非目标；由 Epic #88 的后续阶段接手 |
+| glyph IR、raster cache、atlas 策略与生命周期、上传、text pipeline | **NanaRenderer::text**（`nana-ui` 的 `scene_paint/text/`） | #97：renderer 侧的合同，见下节；不属于 `nana-text`，因为它是 device 状态 |
+| 字形轮廓栅格化 | **成熟 crate**（swash，只在 `scene_paint/text/raster.rs` 后面） | #97 非目标明确写了不重写 TrueType 栅格器 |
+| 矩形打包 | **成熟 crate**（etagere，只在 `scene_paint/text/atlas.rs` 后面） | 同上；Nana 拥有的是 atlas 策略，不是打包算法 |
 
 `nana-text` 只许 import 这些 `nana_ui_core` 项：`DirSpec`、`FontFeatureSetting`、
 `FontKerningSpec`、`FontVariationSetting`、`LineBreakSpec`、`LineHeightSpec`、
@@ -698,7 +703,7 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
   而不是它的拷贝。
 
 Runtime 通过 `NanaTextEngineShaper` 持有它（见「UiWorld 保留文本节点」）；产品宿主
-`NanaTextShaper` 仍走 cosmic-text + cryoglyph。
+`NanaTextShaper` 仍用 cosmic-text 测量，绘制走 `NanaRenderer::text`。
 
 ### 与 cosmic 参照对账
 
@@ -916,7 +921,7 @@ transform + opacity 稳态动画不动 revision、padding 动画重排、高度�
 
 | 项 | 状态 |
 | --- | --- |
-| 产品绘制 retained layout | #97：cryoglyph 的 `TextArea` 只接受 cosmic `Buffer` 的 `LayoutRunIter`，不能喂外部 glyph run；`SceneWgpuPainter` 仍自行 cosmic 塑形，产品宿主因此不返回引擎 |
+| 产品绘制 retained layout | #97 拆掉了 cryoglyph 这道墙（renderer 现在消费自有的 `NanaGlyphRun`），但 `SceneWgpuPainter` 仍自行 cosmic 塑形，喂 `TextLayout` 属于 #99 |
 | Editable 文本 | 见 Phase 5（#96）：presentation 仍每趟重测、不打戳，引擎宿主的探针改由段落几何回答 |
 | font-size / 字体轴动画 | Runtime 尚无 CPU 写回路径；一旦写回计算样式，会按 `SHAPE_STYLE` 分类 |
 
@@ -1146,6 +1151,119 @@ Issue #96 的「IME 单一语义后端」目前只兑现了一半，而且是有
 | IME 语义后端换 `EditSession` | 规则已全部委托，存储没换；三个前提见上一节 |
 | 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
+## NanaRenderer::text（Phase 6，#97）
+
+绘制这一半从 cryoglyph 换成了 NanaUI 自己的子系统。目录是
+`crates/nana-ui/src/scene_paint/text/`：
+
+```text
+已塑形的段落
+        │  resolve
+        ▼
+NanaGlyphRun / PlacedGlyph              glyph.rs
+        │  GlyphRasterKey
+        ▼
+GlyphRasterCache ── GlyphRasterizer     raster_cache.rs / raster.rs
+        │  GlyphImage
+        ▼
+GlyphAtlasManager ── GlyphUploadQueue   atlas.rs / upload.rs
+        │  GlyphAtlasEntryId
+        ▼
+TextPipeline                            pipeline.rs / mod.rs
+        ▼
+      WGPU
+```
+
+resolve 以下的每一层都不知道段落是谁排的。今天是本 crate 的 cosmic-text shaper，#99 换成
+`nana-text` 引擎时只改 `resolve_runs` 和 rasterizer 的 face 来源，往下一行不用动。
+
+### 三条生命周期，刻意不一样
+
+| | 归属 | 键 | 谁能复用 |
+| --- | --- | --- | --- |
+| 已塑形段落 | 一个 painter 的 CPU 状态 | 文本 + 样式 + 盒子 + 字体代际 | 同一 painter 的每一帧 |
+| glyph 位图 | 一个 painter 的 CPU 状态 | face 实例 + 尺寸 + 亚像素桶 + 合成 + 字体代际 | 该 painter 的每个 target |
+| atlas 落位 | **device** 状态 | 同上，经代际句柄访问 | 同一 device 的每个窗口 |
+
+**颜色、节点不透明度、场景变换都不在栅格键里**。同一个字两种颜色共用一张位图，一条动画
+标签不会每帧重栅格化。
+
+### 句柄，不是坐标
+
+`GlyphAtlasEntryId { index, generation }`。instance 是在这一帧全部落位都定下来之后，
+从句柄回读矩形才建出来的——所以 atlas 可以在同一帧里搬动（compact）或淘汰某个字形，
+而这一帧已经记下它的 run 只会丢掉那个字形，绝不会采样到现在占着那块矩形的另一个字。
+槽位回收时 generation 自增，旧句柄被拒绝并计入 `atlas_stale_handle_rejects`。
+
+跨帧保留的 draw command（`PreparedBatch`）另有一道闸：`text_placement_epoch`
+（淘汰数 + 搬动数）变了就重建，因为那批 instance 里烤着的矩形已经不是那个字形的了。
+
+### 两条管线，一张 atlas
+
+- **Axis**：平移下的像素对齐文字。每字一个 24 字节 instance、四个顶点，由这一批本来就带的
+  scissor 裁剪，Nearest 采样。shell 里的字几乎全走这条。
+- **Affine**：旋转 / 缩放 / 圆角裁剪下的文字。每字六个顶点，带与 `Quad` 同一份 homography
+  和 fragment clip，Linear 采样。
+
+两条共用同一个 atlas bind group，所以一条旋转标签换进来的页，正立的标签直接命中。
+一个 segment 固定一对（mask 页, color 页）；页变了就**断开**而不是重排，run 内的字序
+因此始终是文档序。
+
+### atlas 策略
+
+页 1024²（mask 1 MiB / color 4 MiB），总预算 48 MiB。每个字形四周留 1 texel 的透明
+gutter，并且**真的上传那圈 0**——一块被淘汰后重用的矩形还留着上一个字的像素，旋转的四边形
+会采到自己矩形外半个 texel。
+
+两张 1×1 的占位页只为把 bind group 填满：一个从不画 emoji 的 shell 因此不会为 color 页
+付 4 MiB。放不下时依次尝试：开新页 → 重排（`compact`，把活着的字形按高度重新打包，
+`atlas_relocations`）→ 淘汰最冷的四分之一（`glyph_atlas_evict`）。**这一帧用过的字形不会被
+淘汰**，所以正在画的东西不会被从底下抽走。
+
+重排要求每个活字形的位图都还在 raster cache 里，否则整个重排被拒绝、atlas 原样不动——
+搬完却补不回像素会把这一帧正在画的字变成空白。
+
+### 只传新增区域
+
+新字形 = 栅格化 → 分配矩形 → 入队一个上传区域 → 在用它绘制之前提交。每帧重传整张 atlas
+是被禁止的，`glyph_upload_regions` / `glyph_upload_bytes` 就是这条的证据。
+
+in-flight 安全性来自 `wgpu::Queue::write_texture` 本身：它在调用时就把字节拷进 queue 自己的
+staging，并把传输排在下一次提交之前。手写 ring 需要 painter 看不到的 fence——painter 既不
+拥有 submit 也不拥有 surface。
+
+排队的位图是 `Arc<GlyphImage>`，这同时是生命周期合同：raster cache 可以在上传真正发生前
+淘汰产出它的那一条，队列不会指向已释放的字节。
+
+### 计数器
+
+`SceneWgpuPainter::text_glyph_counters()`：resolve 请求、栅格化次数、raster cache
+命中 / 未命中 / 淘汰 / 字节、atlas 命中 / 未命中 / 淘汰 / 页数 / 字节 / 占用千分比、
+上传区域与字节、搬动次数、过期句柄拒绝数、pipeline draw 数。
+
+### 与 cryoglyph 的像素差
+
+改绘制那一天，component-gallery 的 561 张快照里 **551 张逐字节不变**，1 张是本来就抖动的
+`gallery-sidebar-collapsed-dark`（自转的 Spinner，见 `pending-snapshot-bless.md`），
+剩下 9 张 `motion-*` 变了，且是**变好**：
+
+旧的 affine 路径把 mask 存成「RGB=255 + A=覆盖率」的 RGBA 图，着色器又做
+`sampled.rgb * color.rgb`，于是字形外缘的抗锯齿被乘了两遍覆盖率。新路径 mask 页是
+R8Unorm，覆盖率只作用在 alpha 上，旋转文字的边缘因此不再被压暗（最大 36/255）。
+
+栅格尺寸按 f32 位精确入键，没有分桶：1/64 px 的分桶会把 15.6px 的标题挪到 15.59375，
+抗锯齿边最多动 11/255——这一阶段没有理由改渲染。键空间由 raster cache 的字节预算和 LRU
+兜底，而上面那层已塑形段落本来就按同一个精确尺寸做键。
+
+### 这一阶段没做的
+
+| 项 | 状态 |
+| --- | --- |
+| 逻辑 `TextLayout` 与 raster scale 解耦 | 塑形仍在物理 px 上做（hinting 要求如此），所以 DPI 变化会重塑形一次。renderer 这一侧已经只把 scale 放进栅格键；真正的解耦要等 #99 把 `nana-text` 的逻辑 layout 接上来 |
+| 持久 GPU instance / 零 prepare | #98。今天仍是每帧重建 instance，只是重建不再触碰栅格化、atlas 或上传 |
+| SDF / MSDF / LCD | #97 非目标。`GlyphRenderMode` 与 `AtlasPageKind` 是留好的扩展点 |
+| 跨 Device 共享 CPU 位图 | 一个 painter 一个 raster cache。同 Device 多窗口共享（`swap_target` 只换 per-target 缓冲），换 Device 会重栅格化一次 |
+
 ## #33 迁移基准
 
 `nana-dirty-frame-benchmark --shape layout --position head` 的 2k / 4k / 8k 三格是 Issue #33 的
@@ -1335,7 +1453,7 @@ caret 不再跳位。
 
 | 项 | 状态 | 说明 |
 | --- | --- | --- |
-| 分数 DPI | 覆盖 layout，**不覆盖栅格** | `TextScale` 表达到字号缩放，这已是 layout 能表达的全部。glyph 原点的物理像素对齐在 `scene_paint/text.rs`，完全在 IR 之外。别把 `TX-D01` 读成子像素定位保证。 |
+| 分数 DPI | 覆盖 layout，**不覆盖栅格** | `TextScale` 表达到字号缩放，这已是 layout 能表达的全部。glyph 原点的物理像素对齐与亚像素分桶在 `scene_paint/text/`，完全在 IR 之外。别把 `TX-D01` 读成子像素定位保证。 |
 | ellipsis | 记录 overflow，**不插入省略号字形** | cosmic 0.19 的 `Buffer` 没有 ellipsis，产品路径自己替换。`TX-W05` 断言的是 `TRUNCATED_LINES` + `ELLIPSIZED` 与截断后的行数。Phase 3 的原生引擎真的会塑形并放置 `…`，见「Layout」。 |
 | IME preedit | span 应用是真的，composition 状态在 source 上 | `TextLayout` 只承载几何；`CompositionSegment` 留在 `TextSource` / `TextSpan`。`TX-E01` 断言 preedit span 确实产生了自己的 run，以及 composition 在 source 上可设可清。 |
 | cluster 内部的 caret | 按字节比例插值 | 一个 glyph 可以覆盖多个源字节（连字，或多字节字符）。`caret_geometry` 先把渲染同一 cluster 的所有 cell 并成一个视觉范围——组合记号是零 advance 且与基字同 cluster，RTL 下 HarfBuzz 还会把它排在基字**前面**——再在该范围内按字节比例插值。所以 `of\|fice` 的 caret 落在 `ffi` 连字的三分之一处而不是整个连字之后，阿拉伯语带记号的 cluster 也不会塌到零宽记号上（见 `TX-B01` 的八个 caret 探针，x 随字节偏移严格递减）。落在字素内部的字节偏移本就不是合法 caret 位置，IR 没有源文本可以吸附，插值只保证单调、可区分。 |

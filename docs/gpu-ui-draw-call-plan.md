@@ -213,7 +213,7 @@ painter 侧不为空包围盒的文字生成 `DrawCommand::Text`（顺带省掉 
 
 ### 实际改的文件
 
-- `crates/nana-ui/src/scene_paint/text.rs`：run 可见性判据；`runs` / `flushed`
+- `crates/nana-ui/src/scene_paint/text.rs`（#97 后是 `text/`）：run 可见性判据；`runs` / `flushed`
   状态；`merge_runs`；`flush_runs`；`ShapeCache::at_capacity` 与 flush-before-evict；
   `frame_texts` 换成 `prev_frame_runs`。
 - `crates/nana-ui/src/scene_paint/mod.rs`：`push_text_run`；建完 display list 后

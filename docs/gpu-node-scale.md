@@ -240,7 +240,7 @@ dest 尺寸去 `set_viewport`，那本来就是错的；实例化之后它还会
 
 ## 已落地：屏外文字不再进 display list
 
-`crates/nana-ui/src/scene_paint/text.rs` 的 `prepare_cryoglyph` 在建 area 之前
+`crates/nana-ui/src/scene_paint/text.rs`（#97 后是 `text/`） 的 `prepare_cryoglyph` 在建 area 之前
 先跑一遍 cryoglyph 自己的 run 可见性判据（`TextRenderer::prepare` 会按
 `TextArea::bounds` 的 Y 轴整段丢弃 layout run）。没有任何一条 run 落在带内的文字
 直接返回 `None`：不建 renderer、不建顶点缓冲、不进 display list。
