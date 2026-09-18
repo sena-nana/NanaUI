@@ -29,6 +29,7 @@ def envelope(
     metrics: Mapping[str, Any] | None = None,
     work_counters: Mapping[str, Any] | None = None,
     plug_in: str | None = None,
+    sections: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -67,6 +68,11 @@ def envelope(
         payload["work_counters"] = measured
     if plug_in:
         payload["plug_in"] = plug_in
+    # Anything a runner measures that the invariants name has to be in the
+    # payload *here*: attaching it to the returned report instead leaves every
+    # invariant that reads it not-evaluable, which is a gate that cannot fail.
+    for key, value in (sections or {}).items():
+        payload[key] = value
     evaluated = evaluate_invariants(scenario, payload)
     if evaluated:
         payload["invariants"] = evaluated

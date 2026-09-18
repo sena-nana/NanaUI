@@ -1022,6 +1022,20 @@ def _extract_nana_gpu_scene(
     ]
     if payload.get("adapter"):
         notes.append(f"Adapter: {payload['adapter']}.")
+    # Per sampled frame, and only when the scenario kept the batch moving: a
+    # frame the painter answered from its prepared batch redid nothing by
+    # construction, and reading that as "the text path redid nothing" would be
+    # a gate that cannot fail.
+    text = payload.get("text_counters")
+    text_counters: dict[str, Any] = {}
+    if isinstance(text, dict) and params_text_ticker(scenario):
+        text_counters["text_counters"] = {
+            key: value for key, value in text.items() if isinstance(value, (int, float))
+        }
+        notes.append(
+            "text_counters are per sampled frame: what one frame asked the "
+            "retained-text path to resolve, rebuild and upload again."
+        )
     report = envelope(
         runner="nana",
         status="ok",
@@ -1033,23 +1047,11 @@ def _extract_nana_gpu_scene(
         mapping_notes=notes,
         metrics=metrics,
         work_counters=work,
+        sections=text_counters,
     )
     report["frame_stages"] = {
         name: {"status": "ran"} for name in GPU_HOST_STAGES
     }
-    # Per sampled frame, and only when the scenario kept the batch moving:
-    # a frame the painter answered from its prepared batch redid nothing by
-    # construction, and reading that as "the text path redid nothing" would be
-    # a gate that cannot fail.
-    text = payload.get("text_counters")
-    if isinstance(text, dict) and params_text_ticker(scenario):
-        report["text_counters"] = {
-            key: value for key, value in text.items() if isinstance(value, (int, float))
-        }
-        notes.append(
-            "text_counters are per sampled frame: what one frame asked the "
-            "retained-text path to resolve, rebuild and upload again."
-        )
     return report
 
 

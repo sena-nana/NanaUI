@@ -98,6 +98,25 @@ def _self_test_retained_text(root: Path) -> list[str]:
             errors.append(
                 f"{scenario_id} invariants must pass on a retained frame: {failed}"
             )
+        # The runner writes what `extract_nana` returns, so the counters have to
+        # be in the payload the invariants were evaluated against — not stapled
+        # to the report afterwards. Otherwise every text gate reads
+        # `not-evaluable` on a real run, which is a gate that cannot fail.
+        attached = quiet.get("invariants") or []
+        text_rows = [
+            row for row in attached if str(row.get("path", "")).startswith("text_counters.")
+        ]
+        if len(text_rows) != len(rows):
+            errors.append(
+                f"{scenario_id} must evaluate its text invariants in the report "
+                f"it returns, got {len(text_rows)} of {len(rows)}"
+            )
+        blind_rows = [row for row in text_rows if row.get("status") == "not-evaluable"]
+        if blind_rows:
+            errors.append(
+                f"{scenario_id} attached text invariants must be evaluated, got "
+                f"{[row.get('name') for row in blind_rows]}"
+            )
 
         # Every budget has to be load-bearing on its own: a gate that only
         # fails when several counters blow at once is a gate with spare
