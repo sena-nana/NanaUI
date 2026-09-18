@@ -1523,14 +1523,35 @@ text_prepare_nodes_considered / skipped / culled
   | 一万标签 opacity，扁 | 23.664 ms | **18.720 ms** |
   | 一万标签 transform，扁 | 27.532 ms | 23.178 ms |
 
-  还剩的大头不在场景的存储里，在「谁需要重建」这个判断上：一个容器改一次样式，
-  运行时会把它下面每个后代都重新抽取一遍（`updated_nodes` 在一百个标签的 opacity
-  用例里是 102，而 `mutate-1pct` 只有 1–3），`apply_delta` 又因为
-  `old.source_style.layout != node.source_style.layout` 把整棵子树排进重建队列。
-  可是容器一旦是 opacity group，它的不透明度就不进后代图元
-  （`compute_ancestor_state` 里 `if !is_opacity_group(ancestor)` 才乘），也就是说
-  那一百个后代重建出来的图元逐字节相同。要拿下这一条得同时动运行时的抽取和
-  `inherited_changed` 的判断，不在这一期。
+- **淡入淡出不再重新抽取整棵子树**。容器改一次不透明度，运行时原来把整棵子树标成
+  `STYLE | RENDER`（`inherited_paint_changed` 把 opacity 和继承的颜色算作一类），
+  一百个标签的用例里 `render_extraction` 是 102 个节点。可是容器只要有后代可继承
+  就是 opacity group，那一份不透明度在合成那层应用一次，不会落到后代图元上
+  （`compute_ancestor_state` 里 `if !is_opacity_group(ancestor)` 才乘）——那一百个
+  后代重新抽取、重新建出来的图元逐字节相同。
+
+  `ComputedStyle::opacity` 在整个工作区里只有三处读它（它自己的 `Default`、算它的
+  `resolve_style`、把它归成 `TextWork::COMPOSITOR` 的文本脏位分类），渲染那一侧一
+  处也没有。所以不透明度现在只标 `STYLE`：后代照样解析出新的累积值，但不再抽取。
+
+  这一步之前先补了场景层的一个隐患：祖先的不透明度是后代**烘进图元**的唯一一样
+  东西（变换和裁剪绘制时会重推），过去全靠运行时把子树标脏兜着。现在场景自己用
+  `inherited_opacity`（是 group 就是 1.0）判断这个数变没变，变了就重建保留期后代。
+  顺带把 `attribute_epoch` 的那一格也让开：推它是为了让后代重推变换和裁剪，一次
+  不改变 group 身份的淡入淡出什么几何都没动。
+
+  | 用例 | flush 前 | flush 后 | batch 前 | batch 后 |
+  | --- | --- | --- | --- | --- |
+  | 一千标签 opacity，扁 | 1.212 ms | 0.117 ms | 0.474 ms | 0.314 ms |
+  | 一千标签 opacity，十六层 | 1.914 ms | **0.124 ms** | 0.854 ms | **0.312 ms** |
+  | 一万标签 opacity，扁 | 20.861 ms | 3.907 ms | 9.449 ms | 6.126 ms |
+
+  还剩的大头是同一个形状的下一条：变换也一样 `mark_subtree(... | RENDER)`
+  （`mutation.rs` 里 `transform_changed` 那支），而后代的变换和裁剪本来就是绘制时
+  按 `projections` / `draw_attributes` 重推的——`inherited_changed` 推 `attribute_epoch`
+  就是为了这个。一万标签 transform 的 `flush p50` 还有 26 ms 花在这上面。要动它得
+  先确认那条重推的路和重建出来的结果完全等价（投影/奇异变换那批已经由
+  `unadjustable_projections` 单独排进重建），不在这一期。
 
 ### 怎么跑，怎么判
 
