@@ -1024,14 +1024,39 @@ impl TextPipeline {
                 segments: 0..0,
             });
         }
-        let entry = match self.target.entries.lookup(entry_key) {
-            Some(id)
-                if self
-                    .target
+        let epoch = self.placement_epoch();
+        let reusable = self
+            .target
+            .entries
+            .lookup(entry_key)
+            .filter(|id| {
+                self.target
                     .entries
-                    .get(id)
-                    .is_some_and(|entry| entry.valid(hash, phase, self.font_generation)) =>
-            {
+                    .get(*id)
+                    .is_some_and(|entry| entry.valid(hash, phase, self.font_generation))
+            })
+            .filter(|id| {
+                // The atlas moved since this entry read its rectangles. Repair
+                // them through the handles it kept — no shaping, no
+                // rasterizing, no atlas traffic. Repairing here rather than at
+                // flush is what lets a handle the atlas has reissued be
+                // *resolved* again in the same frame instead of drawing a
+                // paragraph with holes in it for one frame.
+                let Self { atlas, target, .. } = self;
+                let stale = target
+                    .entries
+                    .get(*id)
+                    .is_some_and(|entry| entry.atlas_epoch != epoch);
+                if !stale {
+                    return true;
+                }
+                target.instance_patches += 1;
+                target.entries.repair(*id, epoch, |handle| {
+                    atlas.entry(handle).map(|entry| (entry.origin, entry.size))
+                })
+            });
+        let entry = match reusable {
+            Some(id) => {
                 // The paragraph, its sub-pixel phase and the face set are all
                 // the ones these instances were resolved from. Nothing below
                 // this line reads a glyph.
@@ -1039,7 +1064,7 @@ impl TextPipeline {
                 self.target.nodes_skipped += 1;
                 id
             }
-            _ => self.build_entry(device, entry_key, hash, phase, default_color)?,
+            None => self.build_entry(device, entry_key, hash, phase, default_color)?,
         };
         let frame = self.target.frame;
         if let Some(entry) = self.target.entries.get_mut(entry) {
@@ -3118,6 +3143,68 @@ mod tests {
             short_top.2 < long_top.2,
             "a block rebuilt shorter must not keep painting the letters it \
              dropped: long={long_top:?} short={short_top:?}"
+        );
+    }
+
+    #[test]
+    fn an_eviction_recovers_the_entry_it_hit_without_reshaping_anything() {
+        let (device, queue) = test_device();
+        // One page that either paragraph fits in with room to spare and the
+        // two together do not, so each one's entry keeps losing its placements
+        // to the other.
+        let mut pipeline = TextPipeline::with_atlas_limits(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            GlyphAtlasLimits {
+                page_edge: 80,
+                byte_budget: 80 * 80 + 8,
+            },
+        );
+        const LOWER: &str = "abcdefghijklmnopqrstuvwxy";
+        const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXY";
+        let first = EntryKey {
+            node: 1,
+            slot: 0,
+            pass: 0,
+        };
+        let second = EntryKey {
+            node: 2,
+            slot: 0,
+            pass: 0,
+        };
+        let fresh = paint_labels(&device, &queue, &mut pipeline, &[(LOWER, first, 0.0)]);
+        let fresh_ink = ink_aabb(&fresh, 256, 64).expect("the first paragraph paints");
+        paint_labels(&device, &queue, &mut pipeline, &[(UPPER, second, 0.0)]);
+        let warm = pipeline.glyph_counters();
+        let (_, warm_misses, _) = pipeline.shape_cache_stats();
+        let mut recovered = Vec::new();
+        for _ in 0..4 {
+            recovered = paint_labels(&device, &queue, &mut pipeline, &[(LOWER, first, 0.0)]);
+            paint_labels(&device, &queue, &mut pipeline, &[(UPPER, second, 0.0)]);
+        }
+        let after = pipeline.glyph_counters();
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert!(
+            after.glyph_atlas_evict > warm.glyph_atlas_evict,
+            "the two paragraphs must really be evicting each other"
+        );
+        assert!(
+            after.atlas_stale_handle_rejects > warm.atlas_stale_handle_rejects,
+            "and the entry must really be meeting handles the eviction reissued"
+        );
+        assert_eq!(
+            ink_aabb(&recovered, 256, 64),
+            Some(fresh_ink),
+            "the paragraph comes back whole: a rejected handle costs its glyphs, \
+             never the wrong ones"
+        );
+        assert_eq!(
+            misses, warm_misses,
+            "an eviction costs an entry its glyphs, never its shaped paragraph"
+        );
+        assert!(
+            after.text_instance_rebuilds > warm.text_instance_rebuilds,
+            "the entry the eviction hit is resolved again, and only that one"
         );
     }
 
