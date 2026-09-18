@@ -13,6 +13,7 @@ thread_local! {
     static KEY_BUILDS: Cell<usize> = const { Cell::new(0) };
     static CACHE_LOOKUPS: Cell<usize> = const { Cell::new(0) };
     static SKIPPED_UNCHANGED: Cell<usize> = const { Cell::new(0) };
+    static BRACKET_RESCANS: Cell<usize> = const { Cell::new(0) };
     static CLONE_NS: Cell<u64> = const { Cell::new(0) };
     static KEY_NS: Cell<u64> = const { Cell::new(0) };
     static LOOKUP_NS: Cell<u64> = const { Cell::new(0) };
@@ -30,6 +31,9 @@ pub struct TextShapePassStats {
     pub key_builds: usize,
     pub cache_lookups: usize,
     pub skipped_unchanged: usize,
+    /// Whole-document bracket stack scans. An edit that touches no bracket
+    /// character must not need one (`world::text::bracket_color_spans_cached`).
+    pub bracket_rescans: usize,
     pub clone_ns: u64,
     pub key_ns: u64,
     pub lookup_ns: u64,
@@ -44,6 +48,7 @@ pub fn reset() {
     KEY_BUILDS.with(|cell| cell.set(0));
     CACHE_LOOKUPS.with(|cell| cell.set(0));
     SKIPPED_UNCHANGED.with(|cell| cell.set(0));
+    BRACKET_RESCANS.with(|cell| cell.set(0));
     CLONE_NS.with(|cell| cell.set(0));
     KEY_NS.with(|cell| cell.set(0));
     LOOKUP_NS.with(|cell| cell.set(0));
@@ -59,6 +64,7 @@ pub fn snapshot() -> TextShapePassStats {
         key_builds: KEY_BUILDS.with(Cell::get),
         cache_lookups: CACHE_LOOKUPS.with(Cell::get),
         skipped_unchanged: SKIPPED_UNCHANGED.with(Cell::get),
+        bracket_rescans: BRACKET_RESCANS.with(Cell::get),
         clone_ns: CLONE_NS.with(Cell::get),
         key_ns: KEY_NS.with(Cell::get),
         lookup_ns: LOOKUP_NS.with(Cell::get),
@@ -89,6 +95,10 @@ pub(crate) fn note_lookup() {
 
 pub(crate) fn note_skipped_unchanged() {
     SKIPPED_UNCHANGED.with(|cell| cell.set(cell.get().saturating_add(1)));
+}
+
+pub(crate) fn note_bracket_rescan() {
+    BRACKET_RESCANS.with(|cell| cell.set(cell.get().saturating_add(1)));
 }
 
 #[inline]

@@ -1233,7 +1233,7 @@ profile（`/usr/bin/sample`，8,000 行）定位到的按帧 O(文档) 项，按
 
 | 项 | 8,000 行上的量级 | 性质 |
 | --- | ---: | --- |
-| `bracket_pair_colorization` 整文档栈扫描 | ~0.37 ms / 编辑帧 | 缓存按**整值相等**判命中，编辑后整篇重扫 + 整值克隆 |
+| ~~`bracket_pair_colorization` 整文档栈扫描~~ **已修** | ~0.37 ms / 编辑帧 | 缓存按**整值相等**判命中，编辑后整篇重扫 + 整值克隆。着色只是括号字符序列的函数，所以改动区间里没有括号时只平移偏移；`text_shape_stats::bracket_rescans` 钉住这一点。minimap 行长表还是老样子（默认关闭） |
 | ~~`TextLayoutKey` 的整文本 SipHash~~ **已修** | ~0.19 ms × 每帧 4 次 shape | Runtime 侧 layout cache 把整文本拷进 key 再哈希；编辑器的测量权威是保留几何，这层缓存对它是纯开销。现在 `TextShaper::retains_measurement` 让保留测量的节点直接跳过这层缓存 |
 | `EditorGeometry::sync` 的段落表重建 | ~0.12 ms / 编辑帧 | 头部编辑要平移其后每个段落的 `start`（欠的，但每帧不止一次） |
 | a11y / scene primitive / extraction 的整值克隆 | 每帧 3～5 次 | `String` 克隆，可以是 `Arc<str>` |

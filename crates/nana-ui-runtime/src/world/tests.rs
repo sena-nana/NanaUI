@@ -4204,6 +4204,94 @@ fn bracket_pair_colors_cycle_by_nesting_depth_and_dim_unmatched() {
     }
 }
 
+/// Bracket colouring is a function of the bracket characters alone. An edit
+/// that touches none of them therefore cannot change the pairing -- only where
+/// the brackets after it sit -- so it must not rescan the document: that scan
+/// is O(document) and typing is the most frequent thing an editor does.
+#[test]
+fn an_edit_without_a_bracket_shifts_the_colour_spans_instead_of_rescanning() {
+    let value = "fn main() {\n    let pair = [1, (2)];\n}\n";
+    let mut world = UiWorld::default();
+    options_editor_world(
+        &mut world,
+        value,
+        crate::TextSelection::caret(0),
+        Arc::from([]),
+        crate::TextEditorRenderOptions::default(),
+        false,
+    );
+    let mut shaper = FunctionalShaper::default();
+    world.shape_text(&[node(1)], &mut shaper).unwrap();
+
+    // Every edited value's answer must equal what a full scan of it says. A
+    // world that has never seen the value takes the full-scan path.
+    let full_scan = |value: &str| {
+        let mut fresh = UiWorld::default();
+        options_editor_world(
+            &mut fresh,
+            value,
+            crate::TextSelection::caret(0),
+            Arc::from([]),
+            crate::TextEditorRenderOptions::default(),
+            false,
+        );
+        fresh
+            .shape_text(&[node(1)], &mut FunctionalShaper::default())
+            .unwrap();
+        fresh
+            .text_input_presentation(node(1))
+            .expect("presentation")
+            .bracket_color_spans
+            .clone()
+    };
+    let spans = |world: &UiWorld| {
+        world
+            .text_input_presentation(node(1))
+            .expect("presentation")
+            .bracket_color_spans
+            .clone()
+    };
+    let edit = |world: &mut UiWorld, shaper: &mut FunctionalShaper, value: &str| {
+        let mut queue = MutationQueue::new();
+        queue.set_text_input(
+            node(1),
+            Some(crate::TextInputState {
+                value: value.into(),
+                selection: crate::TextSelection::caret(0),
+                additional_selections: Vec::new(),
+            }),
+        );
+        world.commit(queue).unwrap();
+        crate::text_shape_stats::reset();
+        world.shape_text(&[node(1)], shaper).unwrap();
+        crate::text_shape_stats::snapshot().bracket_rescans
+    };
+
+    // Insert before the brackets, delete after them, and replace a run of the
+    // same length: none of the three touches a bracket character.
+    for edited in [
+        "fn main2() {\n    let pair = [1, (2)];\n}\n",
+        "fn main2() {\n    let x = [1, (2)];\n}\n",
+        "fn MAIN2() {\n    let x = [1, (2)];\n}\n",
+    ] {
+        let rescans = edit(&mut world, &mut shaper, edited);
+        assert_eq!(rescans, 0, "{edited:?} holds no new bracket");
+        assert_eq!(spans(&world), full_scan(edited), "{edited:?}");
+    }
+
+    // Typing a bracket changes the pairing, so this one does rescan -- and the
+    // rescan is what makes the nesting right again.
+    let with_bracket = "fn MAIN2(()) {\n    let x = [1, (2)];\n}\n";
+    let rescans = edit(&mut world, &mut shaper, with_bracket);
+    assert_eq!(rescans, 1, "a new bracket needs the stack scan");
+    assert_eq!(spans(&world), full_scan(with_bracket));
+
+    // And deleting one, from a state that came out of a shift.
+    let without = "fn MAIN2(() {\n    let x = [1, (2)];\n}\n";
+    assert_eq!(edit(&mut world, &mut shaper, without), 1);
+    assert_eq!(spans(&world), full_scan(without));
+}
+
 #[test]
 fn bracket_pair_colors_follow_text_edits_and_option_off_disables() {
     let mut world = UiWorld::default();

@@ -2376,18 +2376,12 @@ fn record_editable_change(
         return;
     };
     let previous_value = previous.value.as_str();
-    if previous_value != next.value {
-        let (old, new) = (previous_value.as_bytes(), next.value.as_bytes());
-        let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(new[prefix..].iter().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
+    if let Some((start, previous_end, next_end)) =
+        crate::text_editing::changed_byte_range(previous_value, &next.value)
+    {
         work.editable_mutations += 1;
-        work.editable_bytes_deleted += old.len() - prefix - suffix;
-        work.editable_bytes_inserted += new.len() - prefix - suffix;
+        work.editable_bytes_deleted += previous_end - start;
+        work.editable_bytes_inserted += next_end - start;
         return;
     }
     if previous.selection != next.selection

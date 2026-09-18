@@ -3243,15 +3243,36 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    /// 括号配对着色的单条缓存：值未变（纯光标/选区同步）时复用上一次
-    /// O(n) 单趟栈扫描结果，避免每趟 shape 全文档重扫。
+    /// 括号配对着色的单条缓存。着色只是括号字符序列的函数，所以有两级复用：
+    /// 值未变（纯光标/选区同步）直接复用上一次的表；**改动区间里前后都没有
+    /// 括号字符**时（打字、删字的绝大多数情况）也不重扫——括号序列没变，
+    /// 只需把改动点之后的偏移整体平移。剩下的情况（真的敲了括号）才走
+    /// O(文档) 单趟栈扫描。
+    ///
+    /// 平移是 O(括号数)；重扫是 O(文档)，在 310 KB 文档上是 ~0.37 ms，
+    /// 以前每次编辑都要付一次。
     pub(super) fn bracket_color_spans_cached(&self, value: &str) -> Arc<[(usize, usize, usize)]> {
         let mut cache = self.bracket_color_spans_cache.borrow_mut();
-        if let Some((cached_value, cached_spans)) = cache.as_ref()
-            && cached_value == value
-        {
-            return Arc::clone(cached_spans);
+        if let Some((cached_value, cached_spans)) = cache.as_mut() {
+            match crate::text_editing::changed_byte_range(cached_value, value) {
+                None => return Arc::clone(cached_spans),
+                Some((start, previous_end, next_end))
+                    if !crate::text_editing::contains_bracket(
+                        &cached_value[start..previous_end],
+                    ) && !crate::text_editing::contains_bracket(&value[start..next_end]) =>
+                {
+                    let spans = shifted_bracket_spans(cached_spans, previous_end, next_end);
+                    // The cached text follows the same splice, so the next
+                    // edit still diffs against what the spans describe.
+                    cached_value.replace_range(start..previous_end, &value[start..next_end]);
+                    *cached_spans = Arc::clone(&spans);
+                    return spans;
+                }
+                Some(_) => {}
+            }
         }
+        #[cfg(any(test, feature = "benchmark"))]
+        crate::text_shape_stats::note_bracket_rescan();
         let (pairs, unmatched) = crate::text_editing::bracket_pair_colorization(value);
         let mut spans = Vec::with_capacity(pairs.len() + unmatched.len());
         spans.extend(pairs);
@@ -3267,6 +3288,32 @@ impl UiWorld {
         *cache = Some((value.to_owned(), Arc::clone(&spans)));
         spans
     }
+}
+
+/// `spans` with every offset at or after `previous_end` moved to where the
+/// edit put it. Spans before the edit are untouched, and no span can lie
+/// inside it: the caller only takes this path when the changed bytes hold no
+/// bracket.
+fn shifted_bracket_spans(
+    spans: &[(usize, usize, usize)],
+    previous_end: usize,
+    next_end: usize,
+) -> Arc<[(usize, usize, usize)]> {
+    if previous_end == next_end {
+        return Arc::from(spans);
+    }
+    let delta = next_end as isize - previous_end as isize;
+    let shift = |offset: usize| {
+        if offset >= previous_end {
+            (offset as isize + delta) as usize
+        } else {
+            offset
+        }
+    };
+    spans
+        .iter()
+        .map(|&(start, end, depth)| (shift(start), shift(end), depth))
+        .collect()
 }
 
 impl UiWorld {

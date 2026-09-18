@@ -1409,6 +1409,38 @@ pub fn matching_bracket_pair(value: &str, caret: usize) -> Option<(usize, usize)
     None
 }
 
+/// The byte range `previous` and `next` differ in, as
+/// `(start, previous_end, next_end)`: the bytes before `start`, and the bytes
+/// after the two ends, are identical. `None` when the two are the same text.
+///
+/// These are byte offsets, not character boundaries -- a change inside one
+/// character reports the bytes that differ. Callers that need boundaries snap
+/// them themselves; callers that only ask about ASCII (a bracket, a line feed)
+/// can use them directly, since an ASCII byte never appears inside a
+/// multi-byte sequence.
+pub fn changed_byte_range(previous: &str, next: &str) -> Option<(usize, usize, usize)> {
+    let (old, new) = (previous.as_bytes(), next.as_bytes());
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    if prefix == old.len() && prefix == new.len() {
+        return None;
+    }
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    Some((prefix, old.len() - suffix, new.len() - suffix))
+}
+
+/// Whether `text` contains a bracket character
+/// [`bracket_pair_colorization`] pairs. The brackets are ASCII, so a byte scan
+/// answers it for any text.
+pub fn contains_bracket(text: &str) -> bool {
+    text.bytes()
+        .any(|byte| matches!(byte, b'(' | b'[' | b'{' | b')' | b']' | b'}'))
+}
+
 /// 括号配对着色的单趟栈扫描结果：配对成功的括号字符字节区间
 /// `(start, end, depth)`（只含括号字符本身，内部文本不受影响；depth 为
 /// 嵌套深度，0 起）与未配对括号的字节区间列表。
