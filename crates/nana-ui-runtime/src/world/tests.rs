@@ -6658,7 +6658,7 @@ fn node_ids_spread_across_the_bits_a_table_indexes_with() {
     let mut buckets = [0usize; 1 << 10];
     let mut tags = [0usize; 128];
     for value in 1..=IDS {
-        let mut hasher = NodeIdHasher::default();
+        let mut hasher = IdHasher::default();
         node(value).hash(&mut hasher);
         let hash = hasher.finish();
         buckets[(hash & 0x3ff) as usize] += 1;

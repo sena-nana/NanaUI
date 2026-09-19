@@ -69,21 +69,22 @@ impl StableNodeId {
     }
 }
 
-/// Hashing for [`StableNodeId`] keys.
+/// Hashing for keys that are already integers: node ids, slot numbers, a hash
+/// something else computed.
 ///
 /// The default hasher is SipHash — a keyed MAC, which is the right default for
 /// a map whose keys come off the wire and a poor one for a counter nobody
-/// outside the process can choose. Scene paint asks node-keyed maps several
-/// times per primitive per frame; a sampling profile of a transform animation
-/// put SipHash alone at a tenth of the painter's time.
+/// outside the process can choose. Scene paint asks such maps several times per
+/// primitive per frame; a sampling profile of a transform animation put SipHash
+/// alone at a tenth of the painter's time.
 ///
 /// The mixing step is rustc's: rotate, xor the word in, multiply by an odd
 /// constant. Ids are a dense counter, so the work is spreading them, not
 /// hiding them.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct NodeIdHasher(u64);
+pub struct IdHasher(u64);
 
-impl NodeIdHasher {
+impl IdHasher {
     const SEED: u64 = 0x517c_c1b7_2722_0a95;
 
     fn add(&mut self, value: u64) {
@@ -91,7 +92,7 @@ impl NodeIdHasher {
     }
 }
 
-impl std::hash::Hasher for NodeIdHasher {
+impl std::hash::Hasher for IdHasher {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -106,16 +107,23 @@ impl std::hash::Hasher for NodeIdHasher {
         self.add(value);
     }
 
+    fn write_u32(&mut self, value: u32) {
+        self.add(u64::from(value));
+    }
+
     fn write_usize(&mut self, value: usize) {
         self.add(value as u64);
     }
 }
 
-/// [`HashMap`] keyed by node, hashed by [`NodeIdHasher`].
-pub type NodeMap<V> = HashMap<StableNodeId, V, std::hash::BuildHasherDefault<NodeIdHasher>>;
+/// What a map or set keyed by integers hashes with. See [`IdHasher`].
+pub type BuildIdHasher = std::hash::BuildHasherDefault<IdHasher>;
 
-/// [`HashSet`] of nodes, hashed by [`NodeIdHasher`].
-pub type NodeSet = HashSet<StableNodeId, std::hash::BuildHasherDefault<NodeIdHasher>>;
+/// [`HashMap`] keyed by node, hashed by [`IdHasher`].
+pub type NodeMap<V> = HashMap<StableNodeId, V, BuildIdHasher>;
+
+/// [`HashSet`] of nodes, hashed by [`IdHasher`].
+pub type NodeSet = HashSet<StableNodeId, BuildIdHasher>;
 
 /// Deepest retained tree the frame pipeline accepts.
 ///

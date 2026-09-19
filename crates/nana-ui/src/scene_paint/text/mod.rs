@@ -154,7 +154,9 @@ struct ShapeEntry {
 /// between two different texts reshapes instead of painting the wrong glyphs.
 #[derive(Default)]
 struct ShapeCache {
-    entries: HashMap<u64, ShapeEntry>,
+    /// Keyed by the shape hash, hashed by [`nana_ui_runtime::IdHasher`]:
+    /// running SipHash over a word that is already a hash is work for nothing.
+    entries: HashMap<u64, ShapeEntry, nana_ui_runtime::BuildIdHasher>,
     order: VecDeque<u64>,
     frame: u64,
     hits: usize,

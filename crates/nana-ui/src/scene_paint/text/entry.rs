@@ -142,7 +142,10 @@ pub(super) fn capacity_for(glyphs: u32) -> u32 {
 #[derive(Default)]
 pub(super) struct EntryStore {
     entries: Vec<Option<TextGpuEntry>>,
-    index: HashMap<EntryKey, u32>,
+    /// Hashed by [`nana_ui_runtime::IdHasher`]: the key is three integers a
+    /// steady frame looks up once per paragraph, and SipHash over them was a
+    /// measurable share of the painter.
+    index: HashMap<EntryKey, u32, nana_ui_runtime::BuildIdHasher>,
     vacant: Vec<u32>,
     instances: Vec<GlyphInstance>,
     handles: Vec<GlyphAtlasEntryId>,
