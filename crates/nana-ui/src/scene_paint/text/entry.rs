@@ -65,6 +65,14 @@ pub(super) struct TextGpuEntry {
     pub phase: [u32; 2],
     /// Font-set generation the face ids were issued under.
     pub font_generation: u64,
+    /// The scene rebuild that wrote the primitive these glyphs were resolved
+    /// from, and the device scale they were shaped at. Together with
+    /// `font_generation` they are the cheap half of `layout`: if none of them
+    /// moved, the paragraph and its box are the ones this entry already holds,
+    /// so the shape key does not have to be assembled and hashed to find that
+    /// out. `u64::MAX` is "no primitive said", which never matches.
+    pub revision: u64,
+    pub scale_bits: u32,
     /// Atlas placement epoch the rectangles were read at.
     pub atlas_epoch: u64,
     /// Start of this entry's block in the store.
@@ -270,6 +278,8 @@ impl EntryStore {
                     layout: 0,
                     phase: [0; 2],
                     font_generation: 0,
+                    revision: u64::MAX,
+                    scale_bits: 0,
                     atlas_epoch: 0,
                     block,
                     capacity,

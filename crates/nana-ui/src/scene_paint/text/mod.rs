@@ -79,6 +79,13 @@ const EVICT_PROBES: usize = 64;
 /// Frames between retirement sweeps, and how long an entry survives without
 /// being drawn. A tab switch that flips back and forth must not pay for
 /// either direction.
+/// What a caller passes when it cannot say whether the primitive changed.
+///
+/// Such a frame assembles the shape key and hashes the paragraph, which is
+/// what every frame used to do. It never matches a retained entry, including
+/// one built by another untracked call.
+pub(super) const UNTRACKED_REVISION: u64 = u64::MAX;
+
 const RETIRE_INTERVAL: u64 = 64;
 const RETIRE_AFTER_FRAMES: u64 = 240;
 
@@ -167,6 +174,26 @@ impl ShapeCache {
             _ => {
                 self.misses += 1;
                 None
+            }
+        }
+    }
+
+    /// Whether the cache still holds `hash`, counted and aged as a hit.
+    ///
+    /// The caller that uses this already knows the paragraph is the one it
+    /// resolved from — the primitive has not been rewritten since — so the key
+    /// comparison would only re-derive an answer it has.
+    fn holds(&mut self, hash: u64) -> bool {
+        let frame = self.frame;
+        match self.entries.get_mut(&hash) {
+            Some(entry) => {
+                entry.last_used = frame;
+                self.hits += 1;
+                true
+            }
+            None => {
+                self.misses += 1;
+                false
             }
         }
     }
@@ -788,6 +815,7 @@ impl TextPipeline {
         opacity: f32,
         paint_offset: [f32; 2],
         entry_key: EntryKey,
+        revision: u64,
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
@@ -827,111 +855,141 @@ impl TextPipeline {
             TextHorizontalAlignment::End if rtl => None,
             TextHorizontalAlignment::End => Some(Align::Right),
         };
-        // A label with no spans is the overwhelming majority, and splitting it
-        // would allocate a one-element list per node per frame to say so.
-        let painted = if spans.is_empty() {
-            Vec::new()
-        } else {
-            presentation_spans(content, spans, default_color)
-        };
-        let rich = painted.len() > 1 || painted.first().is_some_and(|span| span.1 != default_color);
-        // Width, height and requested ellipsis uniquely determine the result;
-        // cache lookup before shaping avoids repeating the overflow probe.
-        let key = ShapeKeyRef {
-            content,
-            family,
-            weight,
-            font_size_bits: physical_size.to_bits(),
-            line_height_bits: physical_line_height.to_bits(),
-            wrap,
-            wrap_break,
-            italic,
-            ellipsis,
-            max_lines,
-            shaping: match shaping {
-                Shaping::Basic => 0,
-                Shaping::Advanced => 1,
-            },
-            letter_spacing_bits: letter_spacing.to_bits(),
-            word_break: opentype_disc(opentype.word_break),
-            line_break: opentype_line_disc(opentype.line_break),
-            kerning: opentype_kern_disc(opentype.kerning),
-            features: &opentype.features,
-            variations: &opentype.variations,
-            width_bits: physical_width.to_bits(),
-            height_bits: physical_height.to_bits(),
-            align: match horizontal {
-                TextHorizontalAlignment::Start => 0,
-                TextHorizontalAlignment::Center => 1,
-                TextHorizontalAlignment::End => 2,
-            },
-            direction: if opentype.direction.is_rtl() { 1 } else { 0 },
-            writing_mode: match opentype.writing_mode {
-                nana_ui_core::WritingModeSpec::HorizontalTb => 0,
-                nana_ui_core::WritingModeSpec::VerticalRl => 1,
-                nana_ui_core::WritingModeSpec::VerticalLr => 2,
-            },
-            spans: rich.then_some(painted.as_slice()),
-            font_features,
-        };
-        let hash = key.hash64();
-        if self.shape_cache.get(hash, &key).is_none() {
-            let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
-            let mut buffer = Buffer::new(
-                &mut fonts,
-                Metrics::new(physical_size, physical_line_height),
-            );
-            buffer.set_size(Some(physical_width), Some(physical_height));
-            buffer.set_wrap(cosmic_wrap(
-                wrap,
-                wrap_break,
-                opentype.word_break,
-                opentype.line_break,
-            ));
-            // Built here rather than above the cache lookup: a hit never
-            // shapes, and the family name, the feature list and the variation
-            // axes are a per-node allocation to assemble.
-            let attrs = shape_attrs(
-                family,
-                weight,
-                letter_spacing,
-                size,
-                &opentype.features,
-                &opentype.variations,
-                opentype.kerning,
-                italic,
-            );
-            buffer.set_ellipsize(cosmic_text::Ellipsize::None);
-            if rich {
-                let mut rich_text = painted
-                    .iter()
-                    .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
-                    .collect::<Vec<_>>();
-                if opentype.direction.is_rtl() {
-                    rich_text.insert(0, (RTL_ISOLATE_PREFIX, attrs.clone()));
-                    rich_text.push((RTL_ISOLATE_SUFFIX, attrs.clone()));
-                }
-                buffer.set_rich_text(rich_text, &attrs, shaping, align);
-            } else {
-                let shaped = wrap_for_css_direction(content, opentype.direction);
-                buffer.set_text(&shaped, &attrs, shaping, align);
-            }
-            buffer.shape_until_scroll(&mut fonts, false);
-            if ellipsis
-                && measured_text_overflows(
-                    &buffer,
+        // Nothing the shape key is made of can have changed: the scene has not
+        // rewritten this primitive since these glyphs were resolved, and
+        // neither the device scale nor the font set has moved. Assembling the
+        // key and hashing the paragraph would only prove that again, once per
+        // label per frame.
+        //
+        // Rich text is left out: its key carries the painted spans, which are
+        // built against a colour the caller may override without the scene
+        // having touched the primitive.
+        let retained = spans
+            .is_empty()
+            .then(|| self.target.entries.lookup(entry_key))
+            .flatten()
+            .and_then(|id| Some((id, self.target.entries.get(id)?)))
+            .filter(|(_, entry)| {
+                !entry.damaged
+                    && revision != UNTRACKED_REVISION
+                    && entry.revision == revision
+                    && entry.scale_bits == scale.to_bits()
+                    && entry.font_generation == self.font_generation
+            })
+            .map(|(id, entry)| (id, entry.layout))
+            .filter(|(_, hash)| self.shape_cache.holds(*hash));
+        let hash = match retained {
+            Some((_, hash)) => hash,
+            None => {
+                // A label with no spans is the overwhelming majority, and splitting it
+                // would allocate a one-element list per node per frame to say so.
+                let painted = if spans.is_empty() {
+                    Vec::new()
+                } else {
+                    presentation_spans(content, spans, default_color)
+                };
+                let rich = painted.len() > 1
+                    || painted.first().is_some_and(|span| span.1 != default_color);
+                // Width, height and requested ellipsis uniquely determine the result;
+                // cache lookup before shaping avoids repeating the overflow probe.
+                let key = ShapeKeyRef {
+                    content,
+                    family,
+                    weight,
+                    font_size_bits: physical_size.to_bits(),
+                    line_height_bits: physical_line_height.to_bits(),
                     wrap,
-                    Some(physical_width),
-                    Some(physical_height),
+                    wrap_break,
+                    italic,
+                    ellipsis,
                     max_lines,
-                )
-            {
-                buffer.set_ellipsize(ellipsize_end(max_lines, Some(physical_height)));
-                buffer.shape_until_scroll(&mut fonts, false);
+                    shaping: match shaping {
+                        Shaping::Basic => 0,
+                        Shaping::Advanced => 1,
+                    },
+                    letter_spacing_bits: letter_spacing.to_bits(),
+                    word_break: opentype_disc(opentype.word_break),
+                    line_break: opentype_line_disc(opentype.line_break),
+                    kerning: opentype_kern_disc(opentype.kerning),
+                    features: &opentype.features,
+                    variations: &opentype.variations,
+                    width_bits: physical_width.to_bits(),
+                    height_bits: physical_height.to_bits(),
+                    align: match horizontal {
+                        TextHorizontalAlignment::Start => 0,
+                        TextHorizontalAlignment::Center => 1,
+                        TextHorizontalAlignment::End => 2,
+                    },
+                    direction: if opentype.direction.is_rtl() { 1 } else { 0 },
+                    writing_mode: match opentype.writing_mode {
+                        nana_ui_core::WritingModeSpec::HorizontalTb => 0,
+                        nana_ui_core::WritingModeSpec::VerticalRl => 1,
+                        nana_ui_core::WritingModeSpec::VerticalLr => 2,
+                    },
+                    spans: rich.then_some(painted.as_slice()),
+                    font_features,
+                };
+                let hash = key.hash64();
+                if self.shape_cache.get(hash, &key).is_none() {
+                    let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
+                    let mut buffer = Buffer::new(
+                        &mut fonts,
+                        Metrics::new(physical_size, physical_line_height),
+                    );
+                    buffer.set_size(Some(physical_width), Some(physical_height));
+                    buffer.set_wrap(cosmic_wrap(
+                        wrap,
+                        wrap_break,
+                        opentype.word_break,
+                        opentype.line_break,
+                    ));
+                    // Built here rather than above the cache lookup: a hit never
+                    // shapes, and the family name, the feature list and the variation
+                    // axes are a per-node allocation to assemble.
+                    let attrs = shape_attrs(
+                        family,
+                        weight,
+                        letter_spacing,
+                        size,
+                        &opentype.features,
+                        &opentype.variations,
+                        opentype.kerning,
+                        italic,
+                    );
+                    buffer.set_ellipsize(cosmic_text::Ellipsize::None);
+                    if rich {
+                        let mut rich_text = painted
+                            .iter()
+                            .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
+                            .collect::<Vec<_>>();
+                        if opentype.direction.is_rtl() {
+                            rich_text.insert(0, (RTL_ISOLATE_PREFIX, attrs.clone()));
+                            rich_text.push((RTL_ISOLATE_SUFFIX, attrs.clone()));
+                        }
+                        buffer.set_rich_text(rich_text, &attrs, shaping, align);
+                    } else {
+                        let shaped = wrap_for_css_direction(content, opentype.direction);
+                        buffer.set_text(&shaped, &attrs, shaping, align);
+                    }
+                    buffer.shape_until_scroll(&mut fonts, false);
+                    if ellipsis
+                        && measured_text_overflows(
+                            &buffer,
+                            wrap,
+                            Some(physical_width),
+                            Some(physical_height),
+                            max_lines,
+                        )
+                    {
+                        buffer.set_ellipsize(ellipsize_end(max_lines, Some(physical_height)));
+                        buffer.shape_until_scroll(&mut fonts, false);
+                    }
+                    drop(fonts);
+                    self.shape_cache.insert(hash, key.to_owned_key(), buffer);
+                }
+                hash
             }
-            drop(fonts);
-            self.shape_cache.insert(hash, key.to_owned_key(), buffer);
-        }
+        };
         let (measured_width, laid_out_height) = {
             let buffer = self.shape_cache.buffer(hash).expect("shaped above");
             measure(buffer)
@@ -1034,10 +1092,9 @@ impl TextPipeline {
             });
         }
         let epoch = self.placement_epoch();
-        let reusable = self
-            .target
-            .entries
-            .lookup(entry_key)
+        let reusable = retained
+            .map(|(id, _)| id)
+            .or_else(|| self.target.entries.lookup(entry_key))
             .filter(|id| {
                 self.target
                     .entries
@@ -1073,7 +1130,15 @@ impl TextPipeline {
                 self.target.nodes_skipped += 1;
                 id
             }
-            None => self.build_entry(device, entry_key, hash, phase, default_color)?,
+            None => self.build_entry(
+                device,
+                entry_key,
+                hash,
+                phase,
+                default_color,
+                revision,
+                scale.to_bits(),
+            )?,
         };
         let frame = self.target.frame;
         if let Some(entry) = self.target.entries.get_mut(entry) {
@@ -1138,6 +1203,7 @@ impl TextPipeline {
     /// Everything it stores is in the renderer's own terms: an instance per
     /// glyph in the run's own space, and the atlas handle it was read from so
     /// a later relocation can be repaired instead of re-resolved.
+    #[allow(clippy::too_many_arguments)]
     fn build_entry(
         &mut self,
         device: &wgpu::Device,
@@ -1145,6 +1211,8 @@ impl TextPipeline {
         hash: u64,
         phase: [u32; 2],
         default_color: [f32; 4],
+        revision: u64,
+        scale_bits: u32,
     ) -> Option<u32> {
         let origin = [f32::from_bits(phase[0]), f32::from_bits(phase[1])];
         let Self {
@@ -1275,6 +1343,8 @@ impl TextPipeline {
         entry.layout = hash;
         entry.phase = phase;
         entry.font_generation = fonts;
+        entry.revision = revision;
+        entry.scale_bits = scale_bits;
         entry.atlas_epoch = epoch;
         entry.segments = segments;
         entry.run = NO_RUN;
@@ -1853,6 +1923,7 @@ mod tests {
                             slot: 0,
                             pass: 0,
                         },
+                        UNTRACKED_REVISION,
                     )
                     .expect("label must prepare");
                 let entry = pipeline
@@ -1945,6 +2016,7 @@ mod tests {
                     slot: 0,
                     pass: 0,
                 },
+                UNTRACKED_REVISION,
             )
             .expect("rtl latin must prepare");
         let buffer = pipeline
@@ -2218,6 +2290,7 @@ mod tests {
                     slot: 0,
                     pass: 0,
                 },
+                UNTRACKED_REVISION,
             )
             .expect("label must prepare");
         pipeline.flush_runs();
@@ -2511,6 +2584,7 @@ mod tests {
                 label.opacity,
                 [0.0; 2],
                 label.key,
+                UNTRACKED_REVISION,
             );
         }
         pipeline.flush_runs();
@@ -3022,6 +3096,7 @@ mod tests {
                     slot: 0,
                     pass: 0,
                 },
+                UNTRACKED_REVISION,
             );
             pipeline.flush_runs();
             pipeline.upload(&device, &queue, None);
@@ -3478,6 +3553,7 @@ mod tests {
                 1.0,
                 [0.0; 2],
                 *key,
+                UNTRACKED_REVISION,
             );
             let Some(prepared) = prepared else {
                 continue;
@@ -3590,6 +3666,7 @@ mod tests {
                     slot: 0,
                     pass: 0,
                 },
+                UNTRACKED_REVISION,
             )
             .expect("text must prepare");
         // Placements are handles until the run is flushed; nothing is on the
@@ -3693,6 +3770,7 @@ mod tests {
                     slot: 0,
                     pass: 0,
                 },
+                UNTRACKED_REVISION,
             )
             .expect("block text must prepare");
         pipeline.flush_runs();

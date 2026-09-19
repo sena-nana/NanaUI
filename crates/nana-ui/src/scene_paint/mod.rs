@@ -827,6 +827,7 @@ impl SceneWgpuPainter {
                                         opacity,
                                         extra_offset,
                                         text::EntryKey { node, slot, pass },
+                                        primitive.revision,
                                     );
                                     pass += 1;
                                     if let Some(prepared) = prepared {
