@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "theme-density",
+  "kind": "Theme",
+  "params": {
+    "workload": "density",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "density_reaches_layout",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "gte",
+      "value": 1,
+      "status": "required",
+      "note": "A control-metrics change is Layout work. A zero here would mean the metrics change never reached layout, not that it was cheap."
+    },
+    {
+      "name": "density_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Control metrics are not typography: changing them must not reshape text."
+    }
+  ],
+  "notes": "Issue #101 §4 density / control-metrics change on a 1k-control fixture."
+}

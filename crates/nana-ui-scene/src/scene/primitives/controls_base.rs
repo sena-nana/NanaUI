@@ -456,7 +456,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     background: Some([1.0, 1.0, 1.0, 1.0]),
                     border_color: None,
                     border_width: 0.0,
-                    corner_radius: corner_radii(UI_METRICS.radius_md),
+                    corner_radius: corner_radii(node.chrome_radii.md),
                 },
             ));
             if !dark.is_empty() {
@@ -520,7 +520,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(menu.background),
                         border_color: Some(menu.border),
                         border_width: 1.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_md),
+                        corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(menu.elevation),
                         surface: QuadSurfacePaint::default(),
                     },
@@ -570,7 +570,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                 background: Some(background),
                                 border_color: None,
                                 border_width: 0.0,
-                                corner_radius: corner_radii(UI_METRICS.radius_sm),
+                                corner_radius: corner_radii(node.chrome_radii.sm),
                             },
                         ));
                     }
@@ -610,7 +610,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             background: Some(background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: corner_radii(UI_METRICS.radius_sm),
+                            corner_radius: corner_radii(node.chrome_radii.sm),
                         },
                     ));
                 }
@@ -706,7 +706,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     background: Some(*background),
                     border_color: None,
                     border_width: 0.0,
-                    corner_radius: corner_radii(UI_METRICS.radius_md),
+                    corner_radius: corner_radii(node.chrome_radii.md),
                     shadow: Some(*elevation),
                     surface: QuadSurfacePaint::default(),
                 },
@@ -740,7 +740,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     background: Some(*input_background),
                     border_color: Some(*input_border),
                     border_width: 1.0,
-                    corner_radius: corner_radii(UI_METRICS.radius_sm),
+                    corner_radius: corner_radii(node.chrome_radii.sm),
                 },
             ));
             let mut input_text = component_text_primitive(
@@ -791,7 +791,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             background: Some(background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: corner_radii(UI_METRICS.radius_sm),
+                            corner_radius: corner_radii(node.chrome_radii.sm),
                         },
                     ));
                 }
@@ -860,7 +860,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(*background),
                         border_color: None,
                         border_width: 0.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_sm),
+                        corner_radius: corner_radii(node.chrome_radii.sm),
                     },
                 ));
             }
@@ -895,7 +895,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         .map(|color| [color[0], color[1], color[2], 0.12])),
                     border_color: None,
                     border_width: 0.0,
-                    corner_radius: corner_radii(UI_METRICS.radius_sm),
+                    corner_radius: corner_radii(node.chrome_radii.sm),
                 },
             ));
             emit(component_text_primitive(

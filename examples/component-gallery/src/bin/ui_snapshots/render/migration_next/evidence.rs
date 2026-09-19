@@ -175,8 +175,9 @@ pub(super) fn write_evidence(
     let mut segmented_geometry_ok = true;
     let mut segmented_accessibility_ok = true;
     if fixture.component == Component::SegmentedControl {
-        let expected_option_height =
-            (segmented_control_size(fixture.state).height() - 6.0).max(0.0);
+        let expected_option_height = (segmented_control_size(fixture.state).height_in(UI_METRICS)
+            - nana_ui_core::space::SM)
+            .max(0.0);
         segmented_accessibility_ok = accessibility
             .is_some_and(|node| node.role == nana_ui::runtime::AccessibilityRole::RadioGroup);
         let control = Entity::<RuntimeSegmentedControl>::from_stable_id(runtime.target);
@@ -317,8 +318,8 @@ pub(super) fn write_evidence(
             indicator, label, ..
         }) if fixture.component == Component::StatusBadge => {
             label.content.as_ref() == status_badge_label(fixture.state)
-                && (label.font_size - 11.0).abs() < 0.01
-                && label.font_weight == Some(500)
+                && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                && label.font_weight == Some(nana_ui::theme::type_scale::MEDIUM)
                 && label.bounds.x - (indicator.x + indicator.width) >= 4.9
                 && primitive(0).is_some_and(|primitive| {
                     matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
@@ -328,9 +329,9 @@ pub(super) fn write_evidence(
                         &primitive.kind,
                         ScenePrimitiveKind::Text {
                             size,
-                            weight: Some(500),
+                            weight: Some(nana_ui::theme::type_scale::MEDIUM),
                             ..
-                        } if (*size - 11.0).abs() < 0.01
+                        } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
                     )
                 })
                 && primitive(3).is_some_and(|primitive| {
@@ -348,7 +349,7 @@ pub(super) fn write_evidence(
             indicator, label, ..
         }) if fixture.component == Component::ValidationMessage => {
             label.content.as_ref() == validation_message(fixture.state)
-                && (label.font_size - 11.0).abs() < 0.01
+                && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
                 && label.font_weight.is_none()
                 && label.bounds.x - (indicator.x + indicator.width) >= 4.9
                 && primitive(2).is_some_and(|primitive| {
@@ -358,7 +359,7 @@ pub(super) fn write_evidence(
                             size,
                             weight: None,
                             ..
-                        } if (*size - 11.0).abs() < 0.01
+                        } if (*size - nana_ui::theme::type_scale::HINT).abs() < 0.01
                     )
                 })
                 && primitive(3).is_some_and(|primitive| {
@@ -444,21 +445,25 @@ pub(super) fn write_evidence(
             value,
             action,
         }) if fixture.component == Component::LabeledValue => {
-            let expected_weight = if fixture.state == "strong" { 600 } else { 500 };
+            let expected_weight = if fixture.state == "strong" {
+                nana_ui::theme::type_scale::SEMIBOLD
+            } else {
+                nana_ui::theme::type_scale::MEDIUM
+            };
             label.content.as_ref() == "Revision"
                 && value.content.as_ref() == "42"
-                && (label.font_size - 11.0).abs() < 0.01
-                && (value.font_size - 12.0).abs() < 0.01
+                && (label.font_size - nana_ui::theme::type_scale::HINT).abs() < 0.01
+                && (value.font_size - nana_ui::theme::type_scale::META).abs() < 0.01
                 && value.font_weight == Some(expected_weight)
                 && label.bounds.x + label.bounds.width <= value.bounds.x + 0.01
                 && label.bounds.y < value.bounds.y + value.bounds.height
                 && value.bounds.y < label.bounds.y + label.bounds.height
                 && (action.is_some() == (fixture.state == "action"))
                 && primitive(2).is_some_and(|primitive| {
-                    matches!(primitive.kind, ScenePrimitiveKind::Text { size, .. } if (size - 11.0).abs() < 0.01)
+                    matches!(primitive.kind, ScenePrimitiveKind::Text { size, .. } if (size - nana_ui::theme::type_scale::HINT).abs() < 0.01)
                 })
                 && primitive(3).is_some_and(|primitive| {
-                    matches!(primitive.kind, ScenePrimitiveKind::Text { size, weight: Some(weight), .. } if (size - 12.0).abs() < 0.01 && weight == expected_weight)
+                    matches!(primitive.kind, ScenePrimitiveKind::Text { size, weight: Some(weight), .. } if (size - nana_ui::theme::type_scale::META).abs() < 0.01 && weight == expected_weight)
                 })
         }
         _ => !matches!(
@@ -643,27 +648,30 @@ pub(super) fn write_evidence(
         }
         Component::Text => bounds.width > 0.0 && bounds.height >= 32.0,
         Component::Button => {
-            let expected = button_control_size(fixture.state).height();
+            let expected = button_control_size(fixture.state).height_in(UI_METRICS);
             (bounds.height - expected).abs() < 0.01
         }
         Component::TextInput => {
             (bounds.width - 380.0).abs() < 0.01
-                && (bounds.height - text_input_control_size(fixture.state).height()).abs() < 0.01
+                && (bounds.height - text_input_control_size(fixture.state).height_in(UI_METRICS))
+                    .abs()
+                    < 0.01
         }
         Component::Textarea | Component::HostedTextarea => {
             (bounds.width - 380.0).abs() < 0.01 && (bounds.height - 96.0).abs() < 0.01
         }
         Component::SegmentedControl => {
-            (bounds.height - segmented_control_size(fixture.state).height()).abs() < 0.01
+            (bounds.height - segmented_control_size(fixture.state).height_in(UI_METRICS)).abs()
+                < 0.01
         }
-        Component::Checkbox => bounds.height >= ControlSize::Medium.height(),
+        Component::Checkbox => bounds.height >= ControlSize::Medium.height_in(UI_METRICS),
         Component::Thumbnail if fixture.state == "wide" => {
-            let height = ControlSize::Small.height();
+            let height = ControlSize::Small.height_in(UI_METRICS);
             let width = height * 16.0 / 9.0;
             (bounds.height - height).abs() < 0.01 && (bounds.width - width).abs() < 0.01
         }
         Component::Thumbnail => {
-            let extent = ControlSize::Small.height();
+            let extent = ControlSize::Small.height_in(UI_METRICS);
             (bounds.width - extent).abs() < 0.01 && (bounds.height - extent).abs() < 0.01
         }
         Component::Avatar => {

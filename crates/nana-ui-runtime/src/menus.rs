@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AnchoredMenuPlacement, ControlSize, Icon, LengthSpec, LineHeightSpec, PositionSpec,
-    SemanticColorRole, SemanticPalette, UI_METRICS, icon_y_on_text_glyph_center,
+    SemanticColorRole, SemanticPalette, ThemeMetrics, icon_y_on_text_glyph_center,
 };
 
 use crate::popover::{menu_surface_style, project_anchored_menu};
@@ -14,11 +14,11 @@ use crate::{
     StableNodeId, StandardVisual, TextContent, TextInputState, TextVerticalAlignment, UiWorld,
 };
 
-const MENU_WIDTH: f32 = 200.0;
+const MENU_WIDTH: f32 = crate::popover::ACTION_MENU_WIDTH;
 const MENU_PADDING: f32 = crate::popover::MENU_SURFACE_PADDING;
 use crate::popover::MENU_MIN_WIDTH;
-const MENU_MIN_HEIGHT: f32 = 32.0;
-const ICON_GAP: f32 = 8.0;
+const MENU_MIN_HEIGHT: f32 = nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
+const ICON_GAP: f32 = nana_ui_core::space::MD;
 
 /// Selectable row shared by action menus and context menus.
 #[derive(Debug, Clone, PartialEq)]
@@ -480,7 +480,11 @@ impl ContextMenu {
     }
 
     fn apply_anchor(&mut self) {
-        let height = context_menu_height(self.visible_items().len(), self.searchable);
+        let height = context_menu_height(
+            self.visible_items().len(),
+            self.searchable,
+            nana_ui_core::UI_METRICS,
+        );
         let (x, y) = match self.viewport {
             Some(viewport) => resolve_anchored_origin(
                 self.anchor_x,
@@ -556,6 +560,10 @@ impl crate::ComponentView for ContextMenu {
         }
     }
 
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let open = world.project_menu_presence(id, self.open, mutations);
         let rows: Arc<[SelectOptionData]> = self
@@ -596,7 +604,29 @@ impl crate::ComponentView for ContextMenu {
             mutations.set_text_input(id, None);
         }
         let mut style = self.style.clone();
-        Arc::make_mut(&mut style.layout).hidden = !open;
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.hidden = !open;
+            let height = context_menu_height(
+                self.visible_items().len(),
+                self.searchable,
+                world.theme_metrics(),
+            );
+            layout.height = Some(LengthSpec::Px(height));
+            let (x, y) = match self.viewport {
+                Some(viewport) => resolve_anchored_origin(
+                    self.anchor_x,
+                    self.anchor_y,
+                    self.width,
+                    height,
+                    viewport,
+                    AnchoredMenuPlacement::BottomStart,
+                ),
+                None => (self.anchor_x, self.anchor_y),
+            };
+            layout.offset_left = Some(LengthSpec::Px(x));
+            layout.offset_top = Some(LengthSpec::Px(y));
+        }
         project_common(
             id,
             world,
@@ -618,7 +648,7 @@ impl crate::ComponentView for ContextMenu {
 }
 
 /// Hint text renders at a fixed compact size regardless of control size.
-const HINT_TEXT_SIZE: f32 = 11.0;
+const HINT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 
 /// Rough text advance estimate: ASCII glyphs are narrow, every other script
 /// gets a full em. Mirrors `world.rs`'s classifier so hint regions can size
@@ -646,8 +676,9 @@ pub(crate) fn action_menu_item_geometry(
     size: ControlSize,
     style: &ComputedStyle,
     palette: &SemanticPalette,
+    metrics: ThemeMetrics,
 ) -> ComponentGeometry {
-    let pad = size.padding_x();
+    let pad = size.padding_x_in(metrics);
     let icon_color = if disabled {
         palette.faint.as_rgba_array()
     } else if danger {
@@ -655,7 +686,7 @@ pub(crate) fn action_menu_item_geometry(
     } else {
         palette.muted.as_rgba_array()
     };
-    let (cursor, icon) = menu_option_icon(bounds, icon, size, icon_color);
+    let (cursor, icon) = menu_option_icon(bounds, icon, size, icon_color, metrics);
     let hint_width = hint
         .map(|hint| estimated_text_width(hint, HINT_TEXT_SIZE))
         .unwrap_or(0.0);
@@ -719,15 +750,23 @@ pub fn resolve_anchored_origin(
     origin
 }
 
-const SEARCH_FIELD_HEIGHT: f32 = 28.0;
-const SEARCH_FIELD_GAP: f32 = 4.0;
+const SEARCH_FIELD_GAP: f32 = nana_ui_core::space::XS;
 
-fn context_menu_height(item_count: usize, searchable: bool) -> f32 {
+fn search_field_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    ControlSize::Small.height_in(metrics)
+}
+
+fn context_menu_height(
+    item_count: usize,
+    searchable: bool,
+    metrics: nana_ui_core::ThemeMetrics,
+) -> f32 {
     let count = item_count.max(1) as f32;
-    let item = ControlSize::Small.height();
-    let list = MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0);
+    let item = ControlSize::Small.height_in(metrics);
+    let list =
+        MENU_PADDING * 2.0 + count * item + (count - 1.0).max(0.0) * crate::popover::MENU_ITEM_GAP;
     if searchable {
-        list + SEARCH_FIELD_HEIGHT + SEARCH_FIELD_GAP
+        list + search_field_height(metrics) + SEARCH_FIELD_GAP
     } else {
         list
     }
@@ -739,14 +778,16 @@ pub(crate) fn context_menu_geometry(
     rows: &[SelectOptionData],
     highlighted: Option<usize>,
     palette: &SemanticPalette,
+    metrics: ThemeMetrics,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
     let searchable = query.is_some();
+    let search_height = search_field_height(metrics);
     let search_field = searchable.then(|| LayoutBox {
         x: bounds.x + MENU_PADDING,
         y: bounds.y + MENU_PADDING,
         width: (bounds.width - MENU_PADDING * 2.0).max(0.0),
-        height: SEARCH_FIELD_HEIGHT,
+        height: search_height,
     });
     let search = search_field.map(|field| {
         let empty = query.is_none_or(|query| query.trim().is_empty());
@@ -767,17 +808,17 @@ pub(crate) fn context_menu_geometry(
         }
     });
     let list_top = if searchable {
-        bounds.y + MENU_PADDING + SEARCH_FIELD_HEIGHT + SEARCH_FIELD_GAP
+        bounds.y + MENU_PADDING + search_height + SEARCH_FIELD_GAP
     } else {
         bounds.y + MENU_PADDING
     };
-    let item_height = ControlSize::Small.height();
+    let item_height = ControlSize::Small.height_in(metrics);
     let size = ControlSize::Small;
     let options = rows
         .iter()
         .enumerate()
         .map(|(index, option)| {
-            let y = list_top + index as f32 * (item_height + 1.0);
+            let y = list_top + index as f32 * (item_height + crate::popover::MENU_ITEM_GAP);
             let selected = highlighted == Some(index);
             let row = LayoutBox {
                 x: bounds.x + MENU_PADDING,
@@ -790,8 +831,8 @@ pub(crate) fn context_menu_geometry(
             } else {
                 palette.muted.as_rgba_array()
             };
-            let (label_x, icon) = menu_option_icon(row, option.icon, size, icon_color);
-            let label_right = row.x + row.width - size.padding_x();
+            let (label_x, icon) = menu_option_icon(row, option.icon, size, icon_color, metrics);
+            let label_right = row.x + row.width - size.padding_x_in(metrics);
             crate::SelectOptionGeometry {
                 bounds: row,
                 label: ComponentTextRegion {
@@ -858,9 +899,10 @@ fn menu_option_icon(
     icon: Option<Icon>,
     size: ControlSize,
     color: [f32; 4],
+    metrics: ThemeMetrics,
 ) -> (f32, Option<(Icon, LayoutBox, [f32; 4])>) {
     let icon_size = size.icon_size();
-    let mut cursor = row.x + size.padding_x();
+    let mut cursor = row.x + size.padding_x_in(metrics);
     let icon = icon.map(|icon| {
         let bounds = LayoutBox {
             x: cursor,
@@ -906,14 +948,13 @@ fn item_style(size: ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Fill),
-            height: Some(LengthSpec::Px(size.height())),
-            padding_left: Some(LengthSpec::Px(size.padding_x())),
-            padding_right: Some(LengthSpec::Px(size.padding_x())),
             font_size: Some(size.text_size()),
             line_height: Some(LineHeightSpec::Absolute(size.line_height())),
-            border_radius: Some(UI_METRICS.radius_sm),
             ..nana_ui_core::LayoutStyle::default()
         }),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
+        control_height: Some(nana_ui_core::ControlHeight::Exact(size)),
+        control_padding_x: Some(size.into()),
         foreground: Some(SemanticColorRole::Text),
         interaction: InteractionStyle {
             hovered: SemanticPaint {
@@ -1105,7 +1146,7 @@ mod tests {
         let Some(LengthSpec::Px(searchable_height)) = menu.style.layout.height else {
             panic!("searchable menu height");
         };
-        assert!(searchable_height > context_menu_height(1, false));
+        assert!(searchable_height > context_menu_height(1, false, nana_ui_core::UI_METRICS));
     }
 
     #[test]
@@ -1160,6 +1201,7 @@ mod tests {
             &rows,
             None,
             &palette,
+            nana_ui_core::UI_METRICS,
         ) else {
             panic!("context menu geometry");
         };
@@ -1292,6 +1334,7 @@ mod tests {
             ControlSize::Medium,
             &style,
             &palette,
+            nana_ui_core::UI_METRICS,
         ) {
             ComponentGeometry::ActionMenuItem { label, hint, .. } => {
                 (label, hint.expect("hint region"))
@@ -1307,7 +1350,10 @@ mod tests {
             // End edge stays pinned to the trailing padding edge.
             let hint_end = hint.bounds.x + hint.bounds.width;
             assert!(
-                (hint_end - (bounds.x + bounds.width - ControlSize::Medium.padding_x())).abs()
+                (hint_end
+                    - (bounds.x + bounds.width
+                        - ControlSize::Medium.padding_x_in(nana_ui_core::UI_METRICS)))
+                .abs()
                     < 0.5
             );
             // The label region ends before the hint region begins.

@@ -1,0 +1,17 @@
+component: tooltip
+mode: light
+state: open
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: delay
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: edge
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff

@@ -209,13 +209,11 @@ impl ComponentView for SegmentedControl {
         }
     }
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        let mut style = self.style.clone();
-        Arc::make_mut(&mut style.layout).border_radius = Some(world.theme_metrics().radius_md);
         project_common(
             id,
             world,
             mutations,
-            &style,
+            &self.style,
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -335,53 +333,51 @@ pub(crate) fn selection_chrome_style(
         } else {
             LengthSpec::Shrink
         }),
-        height: Some(if vertical {
-            LengthSpec::Shrink
+        height: if vertical {
+            Some(LengthSpec::Shrink)
         } else {
-            LengthSpec::Px(size.height())
-        }),
+            None
+        },
         align_items: if vertical {
             AlignSpec::Stretch
         } else {
             AlignSpec::Center
         },
         border_width: Some(border_width),
-        border_radius: Some(if matches!(chrome, SelectionChrome::Segmented) {
-            10.0
-        } else {
-            0.0
-        }),
         ..LayoutStyle::default()
     };
     NodeStyle {
         layout: Arc::new(layout),
         background,
         border,
+        control_height: (!vertical).then_some(nana_ui_core::ControlHeight::Exact(size)),
+        radius: matches!(chrome, SelectionChrome::Segmented)
+            .then_some(nana_ui_core::RadiusTier::Md),
         ..NodeStyle::default()
-    }
-}
-
-fn option_height(size: ControlSize, chrome: SelectionChrome) -> f32 {
-    match chrome {
-        SelectionChrome::Segmented => (size.height() - 6.0).max(0.0),
-        SelectionChrome::Tabs | SelectionChrome::Radio => size.height(),
     }
 }
 
 fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool) -> NodeStyle {
     let radio = matches!(chrome, SelectionChrome::Radio);
     let (padding_left, padding_right) = if radio {
-        (size.radio_lead(), nana_ui_core::RADIO_ROW_INSET)
+        (
+            Some(LengthSpec::Px(size.radio_lead())),
+            Some(LengthSpec::Px(nana_ui_core::RADIO_ROW_INSET)),
+        )
     } else {
-        let padding = size.padding_x() + 2.0;
-        (padding, padding)
+        // Segmented / Tabs inset is `padding_x_in + 2`, spent at project against
+        // the installed metrics so a density change can move it.
+        (None, None)
     };
     let layout = LayoutStyle {
-        height: Some(LengthSpec::Px(option_height(size, chrome))),
-        padding_left: Some(LengthSpec::Px(padding_left)),
-        padding_right: Some(LengthSpec::Px(padding_right)),
+        padding_left,
+        padding_right,
         font_size: Some(size.text_size()),
-        font_weight: Some(if radio { 400 } else { 500 }),
+        font_weight: Some(if radio {
+            nana_ui_core::type_scale::REGULAR
+        } else {
+            nana_ui_core::type_scale::MEDIUM
+        }),
         line_height: Some(LineHeightSpec::Absolute(size.line_height())),
         white_space_nowrap: true,
         align_self: Some(if radio {
@@ -394,11 +390,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
         } else {
             JustifySpec::Center
         },
-        border_radius: Some(match chrome {
-            SelectionChrome::Segmented => 7.0,
-            SelectionChrome::Tabs => 6.0,
-            SelectionChrome::Radio => 6.0,
-        }),
+        border_radius: None,
         flex_grow: fill.then_some(1.0),
         flex_shrink: fill.then_some(1.0),
         width: fill.then_some(LengthSpec::Fill),
@@ -461,6 +453,8 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
             TextHorizontalAlignment::Center
         },
         text_vertical_alignment: TextVerticalAlignment::Center,
+        control_height: (!matches!(chrome, SelectionChrome::Segmented))
+            .then_some(nana_ui_core::ControlHeight::Exact(size)),
         ..NodeStyle::default()
     }
 }
@@ -475,6 +469,11 @@ impl ComponentView for SegmentedOption {
             },
         }
     }
+
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         if world.text(id) != Some(self.label.as_ref()) {
             mutations.set_text(
@@ -497,18 +496,34 @@ impl ComponentView for SegmentedOption {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
+        let metrics = world.theme_metrics();
         let radius = match self.chrome {
-            SelectionChrome::Segmented => (world.theme_metrics().radius_md - 3.0).max(0.0),
-            SelectionChrome::Tabs | SelectionChrome::Radio => world.theme_metrics().radius_sm,
+            SelectionChrome::Segmented => (metrics.radius_md - nana_ui_core::space::XXS).max(0.0),
+            SelectionChrome::Tabs | SelectionChrome::Radio => metrics.radius_sm,
         };
-        Arc::make_mut(&mut effective_style.layout).border_radius = Some(radius);
+        {
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.border_radius = Some(radius);
+            if matches!(self.chrome, SelectionChrome::Segmented) {
+                layout.height = Some(LengthSpec::Px(
+                    (self.size.height_in(metrics) - nana_ui_core::space::SM).max(0.0),
+                ));
+            }
+        }
         if self.icon.is_some() {
             let layout = Arc::make_mut(&mut effective_style.layout);
             let lead = match self.chrome {
                 SelectionChrome::Radio => self.size.radio_lead(),
-                _ => self.size.padding_x() + 2.0,
+                _ => self.size.padding_x_in(world.theme_metrics()) + nana_ui_core::space::XXS,
             };
-            layout.padding_left = Some(LengthSpec::Px(lead + self.size.icon_size() + 5.0));
+            layout.padding_left = Some(LengthSpec::Px(
+                lead + self.size.icon_size() + nana_ui_core::space::XS,
+            ));
+        } else if !matches!(self.chrome, SelectionChrome::Radio) {
+            let pad = self.size.padding_x_in(world.theme_metrics()) + nana_ui_core::space::XXS;
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            layout.padding_left = Some(LengthSpec::Px(pad));
+            layout.padding_right = Some(LengthSpec::Px(pad));
         }
         project_common(
             id,
@@ -577,24 +592,22 @@ mod tests {
     fn segmented_sizes_preserve_concentric_layout_and_semantic_states() {
         for size in [ControlSize::Small, ControlSize::Medium, ControlSize::Large] {
             let option = SegmentedOption::new("Preview").size(size);
-            assert_eq!(
-                option.style.layout.height,
-                Some(LengthSpec::Px(size.height() - 6.0))
-            );
+            assert!(option.style.layout.height.is_none());
             assert_eq!(option.style.layout.font_size, Some(size.text_size()));
             assert!(option.style.layout.white_space_nowrap);
-            assert_eq!(option.style.layout.border_radius, Some(7.0));
+            assert!(option.style.layout.border_radius.is_none());
             assert_eq!(
                 option.style.interaction.selected.background,
                 Some(SemanticColorRole::Selected)
             );
             let control = SegmentedControl::new().size(size);
             assert_eq!(
-                control.style.layout.height,
-                Some(LengthSpec::Px(size.height()))
+                control.style.control_height,
+                Some(nana_ui_core::ControlHeight::Exact(size))
             );
+            assert_eq!(control.style.radius, Some(nana_ui_core::RadiusTier::Md));
             assert_eq!(control.style.layout.border_width, Some(1.0));
-            assert_eq!(control.style.layout.border_radius, Some(10.0));
+            assert!(control.style.layout.border_radius.is_none());
             assert_eq!(control.style.layout.width, Some(LengthSpec::Shrink));
         }
     }
@@ -614,8 +627,8 @@ mod tests {
             false,
         );
         assert_eq!(
-            option.style.layout.height,
-            Some(LengthSpec::Px(ControlSize::Small.height()))
+            option.style.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(ControlSize::Small))
         );
         assert_eq!(option.node_kind(), NodeKind::Element { tag: "tab".into() });
     }
@@ -674,8 +687,8 @@ mod tests {
                 Some(LengthSpec::Px(size.radio_lead()))
             );
             assert_eq!(
-                option.style.layout.height,
-                Some(LengthSpec::Px(size.height()))
+                option.style.control_height,
+                Some(nana_ui_core::ControlHeight::Exact(size))
             );
             assert_eq!(option.style.layout.justify_content, JustifySpec::Start);
             // Selection reads from the ring, so the row is never filled.

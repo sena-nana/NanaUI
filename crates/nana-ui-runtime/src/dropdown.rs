@@ -332,18 +332,23 @@ impl Dropdown {
             border: Some(nana_ui_core::SemanticColorRole::Border),
             ..SemanticPaint::default()
         };
-        let layout = Arc::make_mut(&mut style.layout);
-        if layout.width.is_none() {
-            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        let has_explicit_height = style.layout.height.is_some();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            if layout.width.is_none() {
+                layout.width = Some(nana_ui_core::LengthSpec::Fill);
+            }
+            layout.border_width = Some(if self.invalid && self.opened {
+                2.0
+            } else {
+                1.0
+            });
         }
-        if layout.height.is_none() {
-            layout.height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        if has_explicit_height {
+            style.control_height = None;
+        } else if style.control_height.is_none() {
+            style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         }
-        layout.border_width = Some(if self.invalid && self.opened {
-            2.0
-        } else {
-            1.0
-        });
         style
     }
 }
@@ -557,7 +562,7 @@ mod tests {
         assert_ne!(
             layout.height,
             Some(nana_ui_core::LengthSpec::Px(
-                nana_ui_core::ControlSize::Medium.height()
+                nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
             ))
         );
     }

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, OverflowSpec, PaintTransform, SemanticColorRole};
+use nana_ui_core::{ControlSize, OverflowSpec, PaintTransform, SemanticColorRole, ThemeMetrics};
 
 use crate::overlay_surfaces::modal_root_style;
 use crate::view_components::project_common;
@@ -15,13 +15,14 @@ pub const ZOOM_STEP: f32 = 1.12;
 pub const ZOOM_MIN: f32 = 1.0;
 pub const ZOOM_MAX: f32 = 6.0;
 
-const SURFACE_PAD_TOP: f32 = 54.0;
-const SURFACE_PAD_RIGHT: f32 = 54.0;
-const SURFACE_PAD_BOTTOM: f32 = 24.0;
-const SURFACE_PAD_LEFT: f32 = 54.0;
-const CLOSE_INSET: f32 = 14.0;
-const METADATA_GAP: f32 = 10.0;
-const METADATA_HEIGHT: f32 = 16.0;
+pub(crate) const SURFACE_PAD: f32 = nana_ui_core::space::PAGE * 2.0 + nana_ui_core::space::SM;
+const SURFACE_PAD_TOP: f32 = SURFACE_PAD;
+const SURFACE_PAD_RIGHT: f32 = SURFACE_PAD;
+const SURFACE_PAD_BOTTOM: f32 = nana_ui_core::space::PAGE;
+const SURFACE_PAD_LEFT: f32 = SURFACE_PAD;
+const CLOSE_INSET: f32 = nana_ui_core::space::XXL;
+const METADATA_GAP: f32 = nana_ui_core::space::LG;
+const METADATA_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
 const COVERAGE: f32 = 0.75;
 
 /// Close, outside (scrim), and surface interaction are distinct.
@@ -199,11 +200,11 @@ impl ImageViewer {
         self
     }
 
-    pub fn close_size() -> f32 {
-        ControlSize::Small.height()
+    pub fn close_size(metrics: ThemeMetrics) -> f32 {
+        ControlSize::Small.height_in(metrics)
     }
 
-    pub fn geometry(&self, bounds: LayoutBox) -> ImageViewerGeometry {
+    pub fn geometry(&self, bounds: LayoutBox, metrics: ThemeMetrics) -> ImageViewerGeometry {
         let surface = inset(
             bounds,
             SURFACE_PAD_LEFT,
@@ -232,7 +233,7 @@ impl ImageViewer {
             scrim: bounds,
             surface,
             stage,
-            close: close_box(surface),
+            close: close_box(surface, metrics),
             name,
             metadata,
             content: transform_about(fitted, stage, zoom, offset),
@@ -459,9 +460,10 @@ impl crate::AppContext {
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(None);
         };
+        let metrics = self.world().theme_metrics();
         let id = viewer.stable_id();
         self.update_component(viewer, |viewer, cx| {
-            let event = viewer.pointer_down(&viewer.geometry(bounds), pointer_id, x, y);
+            let event = viewer.pointer_down(&viewer.geometry(bounds, metrics), pointer_id, x, y);
             if viewer.dragging.is_some() {
                 cx.mutations().capture_pointer(pointer_id, id);
             }
@@ -501,8 +503,9 @@ impl crate::AppContext {
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
+        let metrics = self.world().theme_metrics();
         self.update_component(viewer, |viewer, _| {
-            viewer.pointer_move(&viewer.geometry(bounds), pointer_id, x, y)
+            viewer.pointer_move(&viewer.geometry(bounds, metrics), pointer_id, x, y)
         })
     }
 
@@ -543,8 +546,9 @@ impl crate::AppContext {
         let Some(bounds) = self.world().layout_box(viewer.stable_id()) else {
             return Ok(false);
         };
+        let metrics = self.world().theme_metrics();
         self.update_component(viewer, |viewer, _| {
-            viewer.wheel(&viewer.geometry(bounds), x, y, delta_y)
+            viewer.wheel(&viewer.geometry(bounds, metrics), x, y, delta_y)
         })
     }
 }
@@ -567,8 +571,8 @@ fn inset(bounds: LayoutBox, left: f32, top: f32, right: f32, bottom: f32) -> Lay
     }
 }
 
-fn close_box(surface: LayoutBox) -> LayoutBox {
-    let size = ImageViewer::close_size();
+fn close_box(surface: LayoutBox, metrics: ThemeMetrics) -> LayoutBox {
+    let size = ImageViewer::close_size(metrics);
     LayoutBox {
         x: surface.x + surface.width - CLOSE_INSET - size,
         y: surface.y + CLOSE_INSET,
@@ -709,7 +713,7 @@ mod tests {
     #[test]
     fn wheel_zoom_around_a_point_changes_zoom_and_offset() {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
-        let geometry = viewer.geometry(bounds());
+        let geometry = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         let (x, y) = stage_point(&geometry, 0.75, 0.5);
         assert!(viewer.wheel(&geometry, x, y, 1.0));
         assert!((viewer.zoom - ZOOM_STEP).abs() < 1e-6);
@@ -717,14 +721,20 @@ mod tests {
         let cx = geometry.stage.x + geometry.stage.width * 0.5;
         assert!((viewer.offset.x - (x - cx) * factor).abs() < 1e-5);
         assert!(viewer.offset.y.abs() < 1e-5);
-        assert!(viewer.geometry(bounds()).content.width > geometry.stage.width);
+        assert!(
+            viewer
+                .geometry(bounds(), nana_ui_core::UI_METRICS)
+                .content
+                .width
+                > geometry.stage.width
+        );
     }
 
     #[test]
     fn pan_updates_offset() {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
         viewer.zoom = 2.0;
-        let geometry = viewer.geometry(bounds());
+        let geometry = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         let (x, y) = stage_point(&geometry, 0.5, 0.5);
         assert_eq!(
             viewer.pointer_down(&geometry, 1, x, y),
@@ -742,7 +752,7 @@ mod tests {
         let mut viewer = ImageViewer::new(ImageViewerContent::None)
             .name("preview")
             .metadata("1600 × 900");
-        let geometry = viewer.geometry(bounds());
+        let geometry = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         let close = (
             geometry.close.x + geometry.close.width * 0.5,
             geometry.close.y + geometry.close.height * 0.5,
@@ -766,7 +776,7 @@ mod tests {
     #[test]
     fn zoom_clamps_to_min_max() {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
-        let geometry = viewer.geometry(bounds());
+        let geometry = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         let (x, y) = stage_point(&geometry, 0.2, 0.3);
         for _ in 0..64 {
             viewer.wheel(&geometry, x, y, 1.0);
@@ -805,7 +815,7 @@ mod tests {
         let mut viewer = ImageViewer::new(ImageViewerContent::None);
         viewer.zoom = 2.0;
         viewer.offset = ImageViewerOffset::new(10.0, -4.0);
-        let stage = viewer.geometry(bounds()).stage;
+        let stage = viewer.geometry(bounds(), nana_ui_core::UI_METRICS).stage;
         let content = viewer.transformed_bounds(stage, stage);
         assert!((content.width - stage.width * 2.0).abs() < 1e-5);
         assert!((content.height - stage.height * 2.0).abs() < 1e-5);
@@ -877,6 +887,43 @@ mod tests {
     }
 
     #[test]
+    fn an_installed_compact_height_reaches_the_close_control() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let viewer = context
+            .create_component(document, ImageViewer::new(ImageViewerContent::None))
+            .unwrap();
+        context
+            .layout_document(document, crate::LayoutViewport::new(400.0, 300.0))
+            .unwrap();
+        let close_size =
+            |context: &AppContext| match context.world().extract_nodes(&[viewer.stable_id()])[0]
+                .component_geometry
+                .as_deref()
+            {
+                Some(crate::ComponentGeometry::ImageViewer { close, .. }) => {
+                    (close.width, close.height)
+                }
+                other => panic!("image viewer geometry, got {other:?}"),
+            };
+        let default = nana_ui_core::UI_METRICS.compact_control_height;
+        assert_eq!(close_size(&context), (default, default));
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.compact_control_height = 36.0;
+        assert!(
+            context
+                .set_style_tokens(
+                    nana_ui_core::ThemeMode::Dark,
+                    metrics,
+                    nana_ui_core::SemanticPalette::dark(),
+                    nana_ui_core::SemanticPalette::dark().surface,
+                )
+                .unwrap()
+        );
+        assert_eq!(close_size(&context), (36.0, 36.0));
+    }
+
+    #[test]
     fn overlay_host_can_activate_the_viewer() {
         let mut context = AppContext::new();
         let document = DocumentId::new(1).unwrap();
@@ -921,7 +968,10 @@ mod tests {
             .unwrap();
         let geometry = context
             .read(viewer, |view| {
-                view.geometry(context.world().layout_box(viewer.stable_id()).unwrap())
+                view.geometry(
+                    context.world().layout_box(viewer.stable_id()).unwrap(),
+                    context.world().theme_metrics(),
+                )
             })
             .unwrap();
         let close = context
@@ -953,14 +1003,14 @@ mod tests {
     fn intrinsic_images_keep_small_size_and_contain_large_aspect_ratios() {
         let small = ImageViewer::default()
             .intrinsic_size(72, 40)
-            .geometry(bounds());
+            .geometry(bounds(), nana_ui_core::UI_METRICS);
         assert_eq!((small.content.width, small.content.height), (72.0, 40.0));
         assert!((small.content.x + 36.0 - small.stage.x - small.stage.width * 0.5).abs() < 0.001);
         assert!((small.content.y + 20.0 - small.stage.y - small.stage.height * 0.5).abs() < 0.001);
         for (width, height) in [(4000, 1000), (1000, 4000)] {
             let geometry = ImageViewer::default()
                 .intrinsic_size(width, height)
-                .geometry(bounds());
+                .geometry(bounds(), nana_ui_core::UI_METRICS);
             assert!(geometry.content.width <= geometry.stage.width + 0.001);
             assert!(geometry.content.height <= geometry.stage.height + 0.001);
             assert!(
@@ -980,7 +1030,7 @@ mod tests {
         let mut viewer = ImageViewer::default().intrinsic_size(72, 40);
         viewer.zoom = 2.0;
         viewer.offset = ImageViewerOffset::new(1000.0, -1000.0);
-        let geometry = viewer.geometry(bounds());
+        let geometry = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         assert_eq!(
             (geometry.content.width, geometry.content.height),
             (144.0, 80.0)
@@ -994,14 +1044,14 @@ mod tests {
         viewer.pointer_move(&geometry, 4, x + 1000.0, y - 1000.0);
         assert_eq!(viewer.offset, ImageViewerOffset::ZERO);
         viewer.intrinsic_size = Some((4000, 1000));
-        let large = viewer.geometry(bounds());
+        let large = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         viewer.pointer_down(&large, 5, x, y);
         viewer.pointer_move(&large, 5, x + 10000.0, y + 10000.0);
-        let moved = viewer.geometry(bounds());
+        let moved = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         assert!(viewer.offset.x > 0.0);
         assert!(moved.content.x <= moved.stage.x + moved.stage.width * (1.0 - COVERAGE) + 0.001);
         viewer.zoom = 1.0;
-        let reset = viewer.geometry(bounds());
+        let reset = viewer.geometry(bounds(), nana_ui_core::UI_METRICS);
         assert!(
             (reset.content.x + reset.content.width * 0.5 - reset.stage.x - reset.stage.width * 0.5)
                 .abs()

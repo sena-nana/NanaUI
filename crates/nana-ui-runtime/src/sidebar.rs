@@ -19,33 +19,33 @@ const FRAME_PADDING_TOP: f32 = nana_ui_core::space::LG;
 const FRAME_PADDING_RIGHT: f32 = nana_ui_core::space::MD;
 const FRAME_PADDING_BOTTOM: f32 = nana_ui_core::space::LG;
 const FRAME_PADDING_LEFT: f32 = nana_ui_core::space::XL;
-const FRAME_GAP: f32 = 14.0;
-const ROW_PADDING_LEFT: f32 = 8.0;
-const ROW_PADDING_RIGHT: f32 = 8.0;
+const FRAME_GAP: f32 = nana_ui_core::space::XXL;
+const ROW_PADDING_LEFT: f32 = nana_ui_core::space::MD;
+const ROW_PADDING_RIGHT: f32 = nana_ui_core::space::MD;
 const ROW_ICON_SIZE: f32 = ControlSize::Small.icon_size();
-const ROW_TREE_FIRST_DEPTH_INSET: f32 = 30.0;
+const ROW_TREE_FIRST_DEPTH_INSET: f32 = nana_ui_core::space::PAGE + nana_ui_core::space::SM;
 use crate::popover::TREE_DEPTH_STEP as ROW_TREE_DEPTH_STEP;
 const SECTION_ANIMATION_DURATION: Duration = nana_ui_core::motion::SIDEBAR_COLLAPSE;
-const SECTION_HEADER_GAP: f32 = 5.0;
-const SECTION_HEADER_TITLE_SIZE: f32 = 11.0;
-const SECTION_HEADER_TITLE_WEIGHT: u16 = 700;
-const SECTION_DISCLOSURE_SIZE: f32 = 12.0;
-const SECTION_TOOL_EDGE: f32 = 20.0;
-/// Trailing sidebar tools share one glyph column: whatever a tool's own edge,
-/// its box centers on this inset from the frame content edge, so the padded
-/// section header rows and the unpadded top bar align their glyphs.
-const TOOL_COLUMN_CENTER_INSET: f32 = ROW_PADDING_RIGHT + UI_METRICS.icon_button_size / 2.0;
-/// Trailing inset that lands an inline tool's glyph on the shared column
-/// behind a row padded by `ROW_PADDING_RIGHT`.
-const TOOL_COLUMN_TRAILING_MARGIN: f32 =
-    TOOL_COLUMN_CENTER_INSET - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0;
-const SECTION_COUNT_SIZE: f32 = 11.0;
-const SECTION_BODY_GAP: f32 = 1.0;
-const SECTION_EMPTY_HEIGHT: f32 = 30.0;
-const SECTION_EMPTY_PADDING_Y: f32 = 6.0;
-const SECTION_EMPTY_PADDING_X: f32 = 8.0;
-const SECTION_EMPTY_FONT_SIZE: f32 = 12.0;
-const FOOTER_GAP: f32 = 2.0;
+const SECTION_HEADER_GAP: f32 = nana_ui_core::space::XS;
+const SECTION_HEADER_TITLE_SIZE: f32 = nana_ui_core::type_scale::HINT;
+const SECTION_HEADER_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::BOLD;
+const SECTION_DISCLOSURE_SIZE: f32 = nana_ui_core::type_scale::META;
+const SECTION_TOOL_EDGE: f32 = nana_ui_core::space::PAGE_TIGHT;
+const SECTION_COUNT_SIZE: f32 = nana_ui_core::type_scale::HINT;
+const SECTION_BODY_GAP: f32 = nana_ui_core::space::XXS;
+const SECTION_EMPTY_HEIGHT: f32 = nana_ui_core::space::PAGE + nana_ui_core::space::SM;
+const SECTION_EMPTY_PADDING_Y: f32 = nana_ui_core::space::SM;
+const SECTION_EMPTY_PADDING_X: f32 = nana_ui_core::space::MD;
+
+fn tool_column_center_inset(metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    ROW_PADDING_RIGHT + metrics.icon_button_size / 2.0
+}
+
+fn tool_column_trailing_margin(metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    tool_column_center_inset(metrics) - ROW_PADDING_RIGHT - SECTION_TOOL_EDGE / 2.0
+}
+const SECTION_EMPTY_FONT_SIZE: f32 = nana_ui_core::type_scale::META;
+const FOOTER_GAP: f32 = nana_ui_core::space::XXS;
 
 /// Visual selection contract for a navigation row. This is not a generic list item.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -76,18 +76,29 @@ pub fn sidebar_row_depth_inset(depth: u16) -> f32 {
 /// Standard trailing tool for the sidebar top bar; drops into an unpadded
 /// `Stack::bar` and lands on the shared tool column by itself.
 pub fn sidebar_top_bar_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
-    sidebar_tool_button(
-        icon,
-        label,
-        UI_METRICS.icon_button_size,
-        TOOL_COLUMN_CENTER_INSET - UI_METRICS.icon_button_size / 2.0,
-    )
+    let label: Arc<str> = label.into();
+    let mut button = IconButton::new(icon, Arc::clone(&label))
+        .kind(ButtonKind::Text)
+        .with_tooltip(label);
+    {
+        let layout = Arc::make_mut(&mut button.style.layout);
+        layout.padding_left = Some(LengthSpec::Px(0.0));
+        layout.padding_right = Some(LengthSpec::Px(0.0));
+        layout.margin_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
+    }
+    button.style.control_padding_x = None;
+    button
 }
 
 /// Inline small tool for section headers, sized to the header row; the header
 /// carries it on the shared tool column by itself.
 pub fn sidebar_section_tool_button(icon: Icon, label: impl Into<Arc<str>>) -> IconButton {
-    sidebar_tool_button(icon, label, SECTION_TOOL_EDGE, TOOL_COLUMN_TRAILING_MARGIN)
+    sidebar_tool_button(
+        icon,
+        label,
+        SECTION_TOOL_EDGE,
+        tool_column_trailing_margin(UI_METRICS),
+    )
 }
 
 /// Inline small tools for data rows; drop into the row tools host, which lands
@@ -107,16 +118,20 @@ fn sidebar_tool_button(
         .kind(ButtonKind::Text)
         .size(ControlSize::Small)
         .with_tooltip(label);
-    let layout = Arc::make_mut(&mut button.style.layout);
-    let edge = LengthSpec::Px(edge);
-    layout.min_width = Some(edge);
-    layout.min_height = Some(edge);
-    layout.width = Some(edge);
-    layout.height = Some(edge);
-    layout.padding_left = Some(LengthSpec::Px(0.0));
-    layout.padding_right = Some(LengthSpec::Px(0.0));
-    layout.border_radius = Some(UI_METRICS.radius_sm);
-    layout.margin_right = Some(LengthSpec::Px(trailing_margin));
+    {
+        let layout = Arc::make_mut(&mut button.style.layout);
+        let edge = LengthSpec::Px(edge);
+        layout.min_width = Some(edge);
+        layout.min_height = Some(edge);
+        layout.width = Some(edge);
+        layout.height = Some(edge);
+        layout.padding_left = Some(LengthSpec::Px(0.0));
+        layout.padding_right = Some(LengthSpec::Px(0.0));
+        layout.margin_right = Some(LengthSpec::Px(trailing_margin));
+    }
+    button.style.square = None;
+    button.style.control_padding_x = None;
+    button.style.radius = Some(nana_ui_core::RadiusTier::Sm);
     button
 }
 
@@ -354,7 +369,7 @@ impl SidebarRow {
             tools: None,
             depth: 0,
             size: ControlSize::Small,
-            gap: 6.0,
+            gap: nana_ui_core::space::SM,
             state: SidebarRowState::Idle,
             tone: SidebarRowTone::Default,
             disclosure: None,
@@ -435,8 +450,6 @@ impl SidebarRow {
         };
         layout.width = Some(LengthSpec::Fill);
         layout.gap = Some(LengthSpec::Px(self.gap));
-        layout.min_height = Some(LengthSpec::Px(self.size.height()));
-        layout.height = Some(LengthSpec::Px(self.size.height()));
         layout.padding_left = Some(LengthSpec::Px(sidebar_row_depth_inset(self.depth)));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
         layout.font_size = Some(self.size.text_size());
@@ -446,7 +459,12 @@ impl SidebarRow {
         } else {
             500
         });
-        layout.border_radius = Some(layout.border_radius.unwrap_or(UI_METRICS.radius_sm));
+        // Only the default: an author who set an explicit px radius keeps it.
+        let unset_radius = layout.border_radius.is_none();
+        if unset_radius {
+            style.radius = Some(nana_ui_core::RadiusTier::Sm);
+        }
+        style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         // Default rows share Text; the Selected plate marks the current route.
         style.foreground = Some(match (self.tone, self.state) {
             (SidebarRowTone::Warning, _) => SemanticColorRole::Warning,
@@ -539,7 +557,9 @@ impl SidebarRow {
         // The tools slot lands its trailing tool on the shared glyph column
         // behind the row's trailing padding; tools themselves stay margin-free
         // so a cluster keeps the host gap between its buttons.
-        let column_margin = Some(LengthSpec::Px(TOOL_COLUMN_TRAILING_MARGIN));
+        let column_margin = Some(LengthSpec::Px(tool_column_trailing_margin(
+            world.theme_metrics(),
+        )));
         if layout.margin_right != column_margin {
             layout.margin_right = column_margin;
             changed = true;
@@ -559,6 +579,10 @@ impl ComponentView for SidebarRow {
         NodeKind::Element {
             tag: "sidebar-row".into(),
         }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -852,18 +876,16 @@ impl SidebarSection {
     }
 
     fn header_style(&self) -> NodeStyle {
-        let row_height = self.size.height();
         let mut style = NodeStyle::default();
         style.foreground = Some(SemanticColorRole::Faint);
         style.background =
             (self.header_hovered && self.toggleable()).then_some(SemanticColorRole::Hover);
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
+        style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         let layout = Arc::make_mut(&mut style.layout);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(row_height));
-        layout.min_height = Some(LengthSpec::Px(row_height));
         layout.gap = Some(LengthSpec::Px(SECTION_HEADER_GAP));
         layout.padding_left = Some(LengthSpec::Px(ROW_PADDING_LEFT));
         layout.padding_right = Some(LengthSpec::Px(ROW_PADDING_RIGHT));
@@ -874,7 +896,7 @@ impl SidebarSection {
         layout.text_overflow_ellipsis = true;
         layout.flex_grow = Some(0.0);
         layout.flex_shrink = Some(0.0);
-        layout.border_radius = Some(UI_METRICS.radius_sm);
+        style.radius = Some(nana_ui_core::RadiusTier::Sm);
         style
     }
 
@@ -884,7 +906,11 @@ impl SidebarSection {
         layout.direction = Some(FlexDirection::Column);
         layout.width = Some(LengthSpec::Fill);
         layout.align_items = AlignSpec::Stretch;
-        layout.border_radius = Some(layout.border_radius.unwrap_or(UI_METRICS.radius_sm));
+        // Only the default: an author who set an explicit px radius keeps it.
+        let unset_radius = layout.border_radius.is_none();
+        if unset_radius {
+            style.radius = Some(nana_ui_core::RadiusTier::Sm);
+        }
         style.foreground = Some(SemanticColorRole::Faint);
         style.interaction = if self.toggleable() {
             InteractionStyle {
@@ -1061,7 +1087,7 @@ impl SidebarSection {
             if index > 0 {
                 total += SECTION_BODY_GAP;
             }
-            total += child_block_height(world, *id, self.size.height());
+            total += child_block_height(world, *id, self.size.height_in(world.theme_metrics()));
         }
         total
     }
@@ -1352,7 +1378,6 @@ impl SidebarFooterButton {
 }
 
 fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
-    let extent = size.height();
     let mut style = NodeStyle::default();
     style.foreground = Some(if selected {
         SemanticColorRole::Text
@@ -1396,18 +1421,19 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
         },
         ..InteractionStyle::default()
     };
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.width = Some(LengthSpec::Px(extent));
-    layout.height = Some(LengthSpec::Px(extent));
-    layout.min_width = Some(LengthSpec::Px(extent));
-    layout.min_height = Some(LengthSpec::Px(extent));
-    layout.flex_grow = Some(0.0);
-    layout.flex_shrink = Some(0.0);
-    layout.padding_left = Some(LengthSpec::Px(0.0));
-    layout.padding_right = Some(LengthSpec::Px(0.0));
-    layout.padding_top = Some(LengthSpec::Px(0.0));
-    layout.padding_bottom = Some(LengthSpec::Px(0.0));
-    layout.border_radius = Some(UI_METRICS.radius_sm);
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.aspect_ratio = Some(1.0);
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(0.0);
+        layout.padding_left = Some(LengthSpec::Px(0.0));
+        layout.padding_right = Some(LengthSpec::Px(0.0));
+        layout.padding_top = Some(LengthSpec::Px(0.0));
+        layout.padding_bottom = Some(LengthSpec::Px(0.0));
+    }
+    style.radius = Some(nana_ui_core::RadiusTier::Sm);
+    style.square = Some(nana_ui_core::SquareSize::Control(size));
+    style.control_height = Some(nana_ui_core::ControlHeight::Exact(size));
     style
 }
 
@@ -1990,7 +2016,7 @@ mod tests {
         assert_eq!(tools_layout.width, Some(LengthSpec::Shrink));
         assert_eq!(
             tools_layout.margin_right,
-            Some(LengthSpec::Px(TOOL_COLUMN_TRAILING_MARGIN))
+            Some(LengthSpec::Px(tool_column_trailing_margin(UI_METRICS)))
         );
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 80.0))
@@ -2068,7 +2094,9 @@ mod tests {
         );
         let trailing_center = menu_box.x + menu_box.width / 2.0;
         assert!(
-            (trailing_center - (row_box.x + row_box.width - TOOL_COLUMN_CENTER_INSET)).abs() <= 0.5,
+            (trailing_center - (row_box.x + row_box.width - tool_column_center_inset(UI_METRICS)))
+                .abs()
+                <= 0.5,
             "trailing cluster tool lands on the shared glyph column"
         );
 
@@ -2082,8 +2110,9 @@ mod tests {
         let single_box = context.world().layout_box(single.stable_id()).unwrap();
         let single_center = single_box.x + single_box.width / 2.0;
         assert!(
-            (single_center - (lone_row_box.x + lone_row_box.width - TOOL_COLUMN_CENTER_INSET))
-                .abs()
+            (single_center
+                - (lone_row_box.x + lone_row_box.width - tool_column_center_inset(UI_METRICS)))
+            .abs()
                 <= 0.5,
             "a single row tool still lands on the shared glyph column"
         );
@@ -2202,7 +2231,7 @@ mod tests {
             .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
             .unwrap();
         let gallery_body = context.world().layout_box(body.stable_id()).unwrap();
-        let row_height = ControlSize::Small.height();
+        let row_height = ControlSize::Small.height_in(UI_METRICS);
         assert!(gallery_body.height >= row_height * 2.0);
         context
             .read(body, |list| {
@@ -2721,12 +2750,23 @@ mod tests {
             Some(SemanticColorRole::Text)
         );
         assert_eq!(
-            selected_style.layout.width,
-            Some(LengthSpec::Px(ControlSize::Small.height()))
+            selected_style.square,
+            Some(nana_ui_core::SquareSize::Control(ControlSize::Small))
         );
         assert_eq!(
-            selected_style.layout.height,
-            Some(LengthSpec::Px(ControlSize::Small.height()))
+            selected_style.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(ControlSize::Small))
+        );
+        let extracted = &context.world().extract_nodes(&[selected_id])[0]
+            .source_style
+            .layout;
+        assert_eq!(
+            extracted.width,
+            Some(LengthSpec::Px(ControlSize::Small.height_in(UI_METRICS)))
+        );
+        assert_eq!(
+            extracted.height,
+            Some(LengthSpec::Px(ControlSize::Small.height_in(UI_METRICS)))
         );
         assert_eq!(selected_style.interaction.focused.border, None);
 

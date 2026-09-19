@@ -109,9 +109,19 @@ impl StatusBadge {
         style.border = None;
         let layout = Arc::make_mut(&mut style.layout);
         let (horizontal, vertical, indicator, gap) = if self.compact {
-            (7.0, 3.0, 6.0, 5.0)
+            (
+                nana_ui_core::space::SM,
+                nana_ui_core::space::XXS,
+                nana_ui_core::space::SM,
+                nana_ui_core::space::XS,
+            )
         } else {
-            (8.0, 4.0, 8.0, 6.0)
+            (
+                nana_ui_core::space::MD,
+                nana_ui_core::space::XS,
+                nana_ui_core::space::MD,
+                nana_ui_core::space::SM,
+            )
         };
         layout.padding_left = Some(LengthSpec::Px(horizontal + indicator + gap));
         layout.padding_right = Some(LengthSpec::Px(horizontal));
@@ -119,8 +129,12 @@ impl StatusBadge {
         layout.padding_bottom = Some(LengthSpec::Px(vertical));
         layout.border_width = Some(0.0);
         layout.border_radius = Some(999.0);
-        layout.font_size = Some(if self.compact { 11.0 } else { 12.0 });
-        layout.font_weight = Some(500);
+        layout.font_size = Some(if self.compact {
+            nana_ui_core::type_scale::HINT
+        } else {
+            nana_ui_core::type_scale::META
+        });
+        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         style
     }
 }
@@ -194,10 +208,22 @@ impl ValidationMessage {
             nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
         });
         let layout = Arc::make_mut(&mut style.layout);
-        let indicator = if self.compact { 12.0 } else { 14.0 };
-        let gap = if self.compact { 5.0 } else { 6.0 };
+        let indicator = if self.compact {
+            nana_ui_core::space::XL
+        } else {
+            nana_ui_core::space::XXL
+        };
+        let gap = if self.compact {
+            nana_ui_core::space::XS
+        } else {
+            nana_ui_core::space::SM
+        };
         layout.padding_left = Some(LengthSpec::Px(indicator + gap));
-        layout.font_size = Some(if self.compact { 11.0 } else { 12.0 });
+        layout.font_size = Some(if self.compact {
+            nana_ui_core::type_scale::HINT
+        } else {
+            nana_ui_core::type_scale::META
+        });
         layout.font_weight = None;
         style
     }
@@ -464,13 +490,13 @@ impl ComponentView for LabeledValue {
     }
 }
 
-const PROGRESS_GIRTH: f32 = 6.0;
-const PROGRESS_LABEL_SIZE: f32 = 12.0;
-const PROGRESS_GAP: f32 = 6.0;
-const PROGRESS_CANCEL_SIZE: f32 = 24.0;
-const SPINNER_DEFAULT_SIZE: f32 = 14.0;
-const SPINNER_LABEL_SIZE: f32 = 12.0;
-const SPINNER_GAP: f32 = 6.0;
+const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
+const PROGRESS_LABEL_SIZE: f32 = nana_ui_core::type_scale::META;
+const PROGRESS_GAP: f32 = nana_ui_core::space::SM;
+const PROGRESS_CANCEL_SIZE: f32 = nana_ui_core::space::PAGE;
+const SPINNER_DEFAULT_SIZE: f32 = nana_ui_core::space::XXL;
+const SPINNER_LABEL_SIZE: f32 = nana_ui_core::type_scale::META;
+const SPINNER_GAP: f32 = nana_ui_core::space::SM;
 
 fn sanitize_progress_max(max: f64) -> f64 {
     if max.is_finite() && max > 0.0 {
@@ -597,7 +623,7 @@ impl Progress {
         layout.border_width = Some(0.0);
         if self.label.is_some() {
             layout.font_size = Some(PROGRESS_LABEL_SIZE);
-            layout.font_weight = Some(500);
+            layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         }
         style
     }
@@ -877,7 +903,7 @@ mod tests {
         );
         assert_eq!(
             context.world().node_style(id).unwrap().layout.font_size,
-            Some(12.0)
+            Some(nana_ui_core::type_scale::META)
         );
         assert_eq!(
             context.world().accessibility(id).unwrap().label.as_deref(),
@@ -894,8 +920,8 @@ mod tests {
             panic!("status badge geometry")
         };
         assert!(indicator.width > 0.0);
-        assert_eq!(label.font_size, 12.0);
-        assert_eq!(label.font_weight, Some(500));
+        assert_eq!(label.font_size, nana_ui_core::type_scale::META);
+        assert_eq!(label.font_weight, Some(nana_ui_core::type_scale::MEDIUM));
         assert_eq!(background[..3], foreground[..3]);
         assert!(background[3] < foreground[3]);
         let dark_foreground = foreground;
@@ -946,7 +972,7 @@ mod tests {
             panic!("validation geometry")
         };
         assert!(indicator.width > 0.0);
-        assert_eq!(label.font_size, 11.0);
+        assert_eq!(label.font_size, nana_ui_core::type_scale::HINT);
         assert_eq!(label.color, Some(foreground));
         assert_eq!(label.font_weight, None);
         assert_eq!(
@@ -1601,9 +1627,9 @@ mod tests {
         else {
             panic!("labeled value geometry")
         };
-        assert_eq!(label.font_size, 11.0);
-        assert_eq!(value.font_size, 12.0);
-        assert_eq!(value.font_weight, Some(500));
+        assert_eq!(label.font_size, nana_ui_core::type_scale::HINT);
+        assert_eq!(value.font_size, nana_ui_core::type_scale::META);
+        assert_eq!(value.font_weight, Some(nana_ui_core::type_scale::MEDIUM));
         assert_ne!(label.color, value.color);
         assert!(
             label.bounds.x + label.bounds.width <= value.bounds.x + 0.01,

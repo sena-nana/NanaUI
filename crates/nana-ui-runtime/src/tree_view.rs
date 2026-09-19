@@ -12,10 +12,10 @@ use crate::{
     LayoutBox, MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
 };
 
-const ROW_GAP: f32 = 1.0;
+const ROW_GAP: f32 = nana_ui_core::space::XXS;
 use crate::popover::TREE_DEPTH_STEP as DEPTH_STEP;
-const DISCLOSURE_SIZE: f32 = 16.0;
-const ICON_SIZE: f32 = 12.0;
+const DISCLOSURE_SIZE: f32 = nana_ui_core::type_scale::LINE;
+const ICON_SIZE: f32 = nana_ui_core::type_scale::META;
 
 /// Visible-row tree. Hidden collapsed children are not projected.
 #[derive(Debug, Clone, PartialEq)]
@@ -95,15 +95,19 @@ impl TreeView {
         Some(event)
     }
 
-    fn intrinsic_height(&self) -> f32 {
+    fn intrinsic_height(&self, metrics: nana_ui_core::ThemeMetrics) -> f32 {
         let count = self.visible_rows().len().max(1) as f32;
-        count * self.size.height() + (count - 1.0) * ROW_GAP
+        count * self.size.height_in(metrics) + (count - 1.0) * ROW_GAP
     }
 }
 
 impl ComponentView for TreeView {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element { tag: "tree".into() }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -124,7 +128,7 @@ impl ComponentView for TreeView {
         // the row stack; otherwise it eats the last row. A caller that sets its
         // own height (a tree inside a fixed viewport) keeps it.
         let padding = layout.resolved_padding();
-        let content = self.intrinsic_height() + padding.top + padding.bottom;
+        let content = self.intrinsic_height(world.theme_metrics()) + padding.top + padding.bottom;
         if layout.height.is_none() {
             layout.height = Some(LengthSpec::Px(content));
         }
@@ -214,8 +218,9 @@ pub(crate) fn tree_view_geometry(
     rows: &[TreeRowData],
     size: ControlSize,
     palette: &nana_ui_core::SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
 ) -> crate::ComponentGeometry {
-    let row_height = size.height();
+    let row_height = size.height_in(metrics);
     let geometry = rows
         .iter()
         .enumerate()

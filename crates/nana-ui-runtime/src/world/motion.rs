@@ -297,6 +297,10 @@ impl UiWorld {
         if !changed {
             return false;
         }
+        // The authored layout just moved in place; the resolved copy layout
+        // reads has to follow. A node with no design intent keeps sharing the
+        // same `Arc`, so an animation that touches no tier costs nothing.
+        self.refresh_resolved_layout(sample.target);
         if sample.property != crate::AnimatableProperty::Margin {
             // Written straight onto the authored style, not through
             // `SetStyle`: the content box, and whether its height is definite,

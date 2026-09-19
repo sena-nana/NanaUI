@@ -1,0 +1,7 @@
+component: qr-code
+mode: light
+state: encoded
+  target: 20.00,20.00 224.00x224.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad #2/0 30.00,30.00 203.00x203.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad-batch #2/1 58.00,58.00 147.00x147.00 opacity=1.00 count=222 bg=#000000ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none

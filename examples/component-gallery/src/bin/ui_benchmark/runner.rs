@@ -9,8 +9,8 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     NanaTextShaper, RegionId, RegionRole, RegionState, RuntimeInputAdapter, ScenePaintViewport,
-    SceneWgpuPainter, SettingsTabId, ThemeMode, ThemeModeExt, WorkspaceAction, WorkspaceLayout,
-    WorkspaceModel, WorkspaceMutation,
+    SceneWgpuPainter, SettingsTabId, ThemeMode, WorkspaceAction, WorkspaceLayout, WorkspaceModel,
+    WorkspaceMutation,
 };
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
@@ -320,7 +320,7 @@ fn paint_scene(
     layout_diff_ms: f64,
     event_update_ms: f64,
 ) -> Sample {
-    let background = ThemeMode::Dark.colors().background;
+    let background = ThemeMode::Dark.palette().background;
     let mut encoder = render
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {

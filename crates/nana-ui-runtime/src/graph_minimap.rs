@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     GraphModel, GraphPoint, GraphRect, GraphSize, GraphViewport, OverflowSpec, SemanticColorRole,
-    UI_METRICS,
 };
 
 use crate::view_components::project_common;
@@ -227,13 +226,14 @@ impl GraphMinimap {
             style.border = Some(SemanticColorRole::Border);
         }
         if layout.border_width.is_none() {
-            layout.border_width = Some(1.0);
+            layout.border_width = Some(nana_ui_core::HAIRLINE);
         }
-        if layout.border_radius.is_none() {
-            layout.border_radius = Some(UI_METRICS.radius_sm);
-        }
+        let unset_radius = layout.border_radius.is_none();
         if self.disabled {
             style.foreground = Some(SemanticColorRole::Faint);
+        }
+        if unset_radius {
+            style.radius = Some(nana_ui_core::RadiusTier::Sm);
         }
         style
     }
@@ -401,10 +401,10 @@ fn minimap_style() -> NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             overflow_x: OverflowSpec::Hidden,
             overflow_y: OverflowSpec::Hidden,
-            border_width: Some(1.0),
-            border_radius: Some(UI_METRICS.radius_sm),
+            border_width: Some(nana_ui_core::HAIRLINE),
             ..nana_ui_core::LayoutStyle::default()
         }),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
         background: Some(SemanticColorRole::Subtle),
         border: Some(SemanticColorRole::Border),
         ..NodeStyle::default()

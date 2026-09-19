@@ -1,0 +1,15 @@
+component: thumbnail
+mode: light
+state: empty
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#f7f8faff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+state: ready
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  custom #2/1 20.00,20.00 28.00x28.00 opacity=1.00
+state: wide
+  target: 20.00,20.00 49.78x28.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 49.78x28.00 opacity=1.00 bg=#f7f8faff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none

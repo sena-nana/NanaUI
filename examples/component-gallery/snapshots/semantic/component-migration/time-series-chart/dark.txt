@@ -1,0 +1,8 @@
+component: time-series-chart
+mode: dark
+state: series
+  target: 20.00,20.00 380.00x148.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad-batch #2/10 28.00,30.00 364.00x129.00 opacity=1.00 count=4 bg=#2323238c border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad-batch #2/11 28.00,30.44 364.00x127.56 opacity=1.00 count=183 bg=#7bb9f029 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  stroke #2/12 20.00,20.00 380.00x148.00 opacity=1.00 points=4 width=2.00 color=#4991d7ff cap=Round

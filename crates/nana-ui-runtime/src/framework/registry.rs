@@ -188,6 +188,11 @@ impl AppContext {
                 context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
             });
         }
+        if C::wants_metrics_reproject() {
+            self.metrics_reproject_views.insert(id, |context, id| {
+                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+            });
+        }
         if C::wants_hover_tracking() {
             self.component_lifecycle.hover_cards.entry(id).or_default();
         }

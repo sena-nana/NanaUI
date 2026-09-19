@@ -79,6 +79,20 @@ pub(crate) struct NodeRecord {
     pub hierarchy: Hierarchy,
     pub mount: MountState,
     pub style: NodeStyle,
+    /// [`Self::style`]'s layout with the node's design intent already applied
+    /// (radius tier → `border_radius`), resolved against the installed
+    /// `ThemeMetrics`.
+    ///
+    /// Resolved on write — when the style is set and when a theme install
+    /// changes the metrics — rather than on every read. `LayoutStyle` is 4.8 KB,
+    /// so resolving it inside extraction meant an `Arc::make_mut` copy per
+    /// control per frame; a palette switch over 1k controls cost three times
+    /// what it should. Resolving on write pays that once per change and hands
+    /// every reader an `Arc` it can clone.
+    ///
+    /// [`Self::style`] stays exactly as authored, because that is what
+    /// projection diffs against.
+    pub resolved_layout: Arc<nana_ui_core::LayoutStyle>,
     pub resolved: ResolvedStyle,
     pub text: TextContent,
     pub text_metrics: TextMetrics,
@@ -98,6 +112,7 @@ impl NodeRecord {
             hierarchy: Hierarchy::default(),
             mount: MountState::default(),
             style: NodeStyle::default(),
+            resolved_layout: NodeStyle::default().layout,
             resolved: ResolvedStyle::interned_default(),
             text: TextContent::default(),
             text_metrics: TextMetrics::default(),

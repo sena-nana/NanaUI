@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "theme-static-idle",
+  "kind": "Theme",
+  "params": {
+    "workload": "idle",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "theme_idle_resolves_nothing",
+      "path": "work_counters.style_nodes_considered",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #100 §15: a settled frame must not walk or re-resolve style. Missing stays not-evaluable."
+    },
+    {
+      "name": "theme_idle_reads_no_token",
+      "path": "work_counters.theme_reads",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A frame that resolves nothing must not ask the token authority anything either."
+    },
+    {
+      "name": "theme_idle_schedules_no_style",
+      "path": "work_counters.style_processed",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: the frame scheduled no STYLE work to begin with."
+    }
+  ],
+  "notes": "Issue #101 §4 static idle. Work counters are the gate; elapsed_ms is a host observation."
+}

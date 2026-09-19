@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, CardKind, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole,
-    UI_METRICS,
 };
 
 use crate::view_components::project_common;
@@ -12,7 +11,7 @@ use crate::{
     UiWorld,
 };
 
-const SUPPORT_SIZE: f32 = 11.0;
+const SUPPORT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 
 /// Line box a [`FormField`] reserves for its label at `size`.
 ///
@@ -24,11 +23,24 @@ pub(crate) fn form_field_label_line(size: ControlSize) -> f32 {
 }
 
 pub(crate) fn form_field_density(size: ControlSize) -> (f32, f32, SemanticColorRole, u16) {
-    match size {
-        ControlSize::Small => (11.0, 2.0, SemanticColorRole::Muted, 400),
-        ControlSize::Medium => (12.0, 5.0, SemanticColorRole::Text, 500),
-        ControlSize::Large => (13.0, 6.0, SemanticColorRole::Text, 500),
-    }
+    let (gap, role, weight) = match size {
+        ControlSize::Small => (
+            nana_ui_core::space::XXS,
+            SemanticColorRole::Muted,
+            nana_ui_core::type_scale::REGULAR,
+        ),
+        ControlSize::Medium => (
+            nana_ui_core::space::XS,
+            SemanticColorRole::Text,
+            nana_ui_core::type_scale::MEDIUM,
+        ),
+        ControlSize::Large => (
+            nana_ui_core::space::SM,
+            SemanticColorRole::Text,
+            nana_ui_core::type_scale::MEDIUM,
+        ),
+    };
+    (size.caption_size(), gap, role, weight)
 }
 
 /// Label/hint/error wrapper. The control is an application-owned child.
@@ -194,7 +206,7 @@ impl InteractiveCard {
         self
     }
 
-    fn effective_style(&self, border_radius: f32) -> NodeStyle {
+    fn effective_style(&self) -> NodeStyle {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = Some(if self.selected {
@@ -241,17 +253,20 @@ impl InteractiveCard {
             },
             ..InteractionStyle::default()
         };
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.direction = Some(FlexDirection::Column);
-        layout.align_items = AlignSpec::Center;
-        layout.justify_content = JustifySpec::Center;
-        layout.padding_left = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-        layout.padding_right = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-        layout.padding_top = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
-        layout.padding_bottom = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
-        layout.border_radius = Some(border_radius);
-        layout.border_width = Some(if self.selected { 1.0 } else { 0.0 });
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.direction = Some(FlexDirection::Column);
+            layout.align_items = AlignSpec::Center;
+            layout.justify_content = JustifySpec::Center;
+            layout.border_width = Some(if self.selected {
+                nana_ui_core::HAIRLINE
+            } else {
+                0.0
+            });
+        }
+        style.surface_padding = Some(nana_ui_core::SurfacePadding::Panel);
+        style.radius = Some(nana_ui_core::RadiusTier::Md);
         style
     }
 }
@@ -287,7 +302,7 @@ impl ComponentView for InteractiveCard {
             id,
             world,
             mutations,
-            &self.effective_style(world.theme_metrics().radius_md),
+            &self.effective_style(),
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
@@ -379,14 +394,14 @@ mod tests {
         assert_eq!(layout.direction, Some(FlexDirection::Column));
         assert_eq!(layout.gap, Some(LengthSpec::Px(0.0)));
         assert_eq!(layout.border_width, Some(0.0));
-        assert_eq!(layout.font_size, Some(12.0));
-        assert_eq!(layout.font_weight, Some(500));
+        assert_eq!(layout.font_size, Some(nana_ui_core::type_scale::META));
+        assert_eq!(layout.font_weight, Some(nana_ui_core::type_scale::MEDIUM));
         // The reserve is the declared line box for this label size plus the
         // density gap, not a guessed leading factor.
         assert_eq!(
             layout.padding_top,
             Some(LengthSpec::Px(
-                form_field_label_line(ControlSize::Medium) + 5.0
+                form_field_label_line(ControlSize::Medium) + nana_ui_core::space::XS
             ))
         );
         assert_eq!(form_field_label_line(ControlSize::Medium), 16.0);
@@ -419,19 +434,22 @@ mod tests {
             .unwrap();
         let style = context.world().node_style(small.stable_id()).unwrap();
         assert_eq!(style.foreground, Some(SemanticColorRole::Muted));
-        assert_eq!(style.layout.font_size, Some(11.0));
-        assert_eq!(style.layout.font_weight, Some(400));
+        assert_eq!(style.layout.font_size, Some(nana_ui_core::type_scale::HINT));
+        assert_eq!(
+            style.layout.font_weight,
+            Some(nana_ui_core::type_scale::REGULAR)
+        );
         assert_eq!(
             style.layout.padding_top,
             Some(LengthSpec::Px(
-                form_field_label_line(ControlSize::Small) + 2.0
+                form_field_label_line(ControlSize::Small) + nana_ui_core::space::XXS
             ))
         );
         // Support text reserves the line box for its own size, not the label's.
         let support_line = ControlSize::nearest_text(SUPPORT_SIZE).line_height();
         assert_eq!(
             style.layout.padding_bottom,
-            Some(LengthSpec::Px(support_line + 2.0))
+            Some(LengthSpec::Px(support_line + nana_ui_core::space::XXS))
         );
     }
 
@@ -453,7 +471,7 @@ mod tests {
         ));
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Selected));
-        assert_eq!(style.layout.border_width, Some(1.0));
+        assert_eq!(style.layout.border_width, Some(nana_ui_core::HAIRLINE));
         assert_eq!(
             context.world().interaction(id),
             Some(InteractionState {

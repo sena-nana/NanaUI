@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use nana_ui_core::UI_METRICS;
 use nana_ui_core::{ControlSize, FlexDirection, LengthSpec, reorder_changes_position};
 
 use crate::view_components::project_common;
@@ -14,10 +16,10 @@ use crate::{
     MutationQueue, NodeKind, NodeStyle, StableNodeId, StandardVisual, UiWorld,
 };
 
-const DRAG_THRESHOLD: f32 = 4.0;
-const DEFAULT_SPACING: f32 = 1.0;
-const INSERT_INSET: f32 = 4.0;
-const INSERT_THICKNESS: f32 = 2.0;
+const DRAG_THRESHOLD: f32 = nana_ui_core::space::XS;
+const DEFAULT_SPACING: f32 = nana_ui_core::space::XXS;
+const INSERT_INSET: f32 = nana_ui_core::space::XS;
+const INSERT_THICKNESS: f32 = nana_ui_core::space::XXS;
 
 /// Placement resolved for a tree drop target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -230,8 +232,12 @@ impl ReorderList {
     }
 
     /// Uniform row rectangles stacked from the top of `bounds`.
-    pub fn row_bounds(&self, bounds: LayoutBox) -> Vec<LayoutBox> {
-        let height = self.size.height();
+    pub fn row_bounds(
+        &self,
+        bounds: LayoutBox,
+        metrics: nana_ui_core::ThemeMetrics,
+    ) -> Vec<LayoutBox> {
+        let height = self.size.height_in(metrics);
         let spacing = self.spacing.max(0.0);
         self.items
             .iter()
@@ -250,8 +256,9 @@ impl ReorderList {
         &mut self,
         pointer: ReorderListPointer,
         bounds: LayoutBox,
+        metrics: nana_ui_core::ThemeMetrics,
     ) -> Option<ReorderListEvent> {
-        let rows = self.row_bounds(bounds);
+        let rows = self.row_bounds(bounds, metrics);
         self.apply_pointer_with_rows(pointer, &rows, &[])
     }
 
@@ -289,13 +296,17 @@ impl ReorderList {
     }
 
     /// Insert-line (or inside highlight) for the active drop.
-    pub fn insert_line(&self, bounds: LayoutBox) -> Option<LayoutBox> {
+    pub fn insert_line(
+        &self,
+        bounds: LayoutBox,
+        metrics: nana_ui_core::ThemeMetrics,
+    ) -> Option<LayoutBox> {
         let drag = self.drag.as_ref().filter(|drag| drag.moved)?;
         let source = self.item_index(&drag.source)?;
         if !self.items.get(source).is_some_and(ReorderItem::is_source) {
             return None;
         }
-        let rows = self.row_bounds(bounds);
+        let rows = self.row_bounds(bounds, metrics);
         let drop_targets = self.drop_target_flags();
         if self.tree_drop {
             let (target, position) =
@@ -412,9 +423,9 @@ impl ReorderList {
             .map(|item| Arc::clone(&item.label))
     }
 
-    fn intrinsic_height(&self) -> f32 {
+    fn intrinsic_height(&self, metrics: nana_ui_core::ThemeMetrics) -> f32 {
         let count = self.items.len().max(1) as f32;
-        count * self.size.height() + (count - 1.0) * self.spacing.max(0.0)
+        count * self.size.height_in(metrics) + (count - 1.0) * self.spacing.max(0.0)
     }
 }
 
@@ -432,6 +443,10 @@ impl ComponentView for ReorderList {
     }
 
     fn wants_child_reproject() -> bool {
+        true
+    }
+
+    fn wants_metrics_reproject() -> bool {
         true
     }
 
@@ -469,7 +484,8 @@ impl ComponentView for ReorderList {
             // Border-box: declared padding is added to the self-drawn row
             // stack instead of clipping its last row.
             let padding = layout.resolved_padding();
-            let content = self.intrinsic_height() + padding.top + padding.bottom;
+            let content =
+                self.intrinsic_height(world.theme_metrics()) + padding.top + padding.bottom;
             if layout.height.is_none() {
                 layout.height = Some(LengthSpec::Px(content));
             }
@@ -613,9 +629,10 @@ impl crate::AppContext {
             .map(|node| node.children.clone())
             .unwrap_or_default();
         if children.is_empty() {
+            let metrics = self.world().theme_metrics();
             return self
                 .read(crate::Entity::<ReorderList>::from_stable_id(id), |list| {
-                    list.row_bounds(bounds)
+                    list.row_bounds(bounds, metrics)
                 })
                 .unwrap_or_default();
         }
@@ -805,12 +822,12 @@ mod tests {
             x: 0.0,
             y: 0.0,
             width: 180.0,
-            height: 86.0,
+            height: 3.0 * ControlSize::Small.height_in(UI_METRICS) + 2.0 * DEFAULT_SPACING,
         }
     }
 
     fn apply(list: &mut ReorderList, pointer: ReorderListPointer) -> Option<ReorderListEvent> {
-        list.apply_pointer(pointer, bounds())
+        list.apply_pointer(pointer, bounds(), UI_METRICS)
     }
 
     #[test]
@@ -825,7 +842,7 @@ mod tests {
             apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 45.0 }),
             None
         );
-        assert!(list.insert_line(bounds()).is_none());
+        assert!(list.insert_line(bounds(), UI_METRICS).is_none());
         assert_eq!(
             apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 45.0 }),
             Some(ReorderListEvent::Select(Arc::from("b")))
@@ -840,7 +857,7 @@ mod tests {
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 80.0 });
         assert_eq!(
-            list.insert_line(bounds()),
+            list.insert_line(bounds(), UI_METRICS),
             Some(LayoutBox {
                 x: 4.0,
                 y: 88.0,
@@ -889,7 +906,7 @@ mod tests {
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 42.0 });
         assert_eq!(
-            list.insert_line(bounds()),
+            list.insert_line(bounds(), UI_METRICS),
             Some(LayoutBox {
                 x: 3.0,
                 y: 31.0,
@@ -914,7 +931,7 @@ mod tests {
         let mut list = sample().tree_drop(true);
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 90.0 });
-        assert!(list.insert_line(bounds()).is_none());
+        assert!(list.insert_line(bounds(), UI_METRICS).is_none());
         assert_eq!(
             apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 90.0 }),
             None
@@ -965,7 +982,7 @@ mod tests {
     #[test]
     fn reserved_tool_boxes_do_not_begin_a_drag() {
         let mut list = sample();
-        let rows = list.row_bounds(bounds());
+        let rows = list.row_bounds(bounds(), UI_METRICS);
         let exclude = [LayoutBox {
             x: 120.0,
             y: 0.0,
@@ -998,13 +1015,13 @@ mod tests {
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 80.0 });
         assert!(list.is_dragging());
-        assert!(list.insert_line(bounds()).is_some());
+        assert!(list.insert_line(bounds(), UI_METRICS).is_some());
         assert_eq!(
             apply(&mut list, ReorderListPointer::Cancel),
             Some(ReorderListEvent::Cancelled)
         );
         assert!(!list.is_dragging());
-        assert!(list.insert_line(bounds()).is_none());
+        assert!(list.insert_line(bounds(), UI_METRICS).is_none());
         assert_eq!(list.cancel(), None);
         assert_eq!(
             apply(&mut list, ReorderListPointer::Up { x: 40.0, y: 80.0 }),
@@ -1039,7 +1056,55 @@ mod tests {
         );
         let style = context.world().node_style(id).expect("projected style");
         assert_eq!(style.layout.width, Some(LengthSpec::Fill));
-        assert_eq!(style.layout.height, Some(LengthSpec::Px(86.0)));
+        assert_eq!(
+            style.layout.height,
+            Some(LengthSpec::Px(
+                3.0 * ControlSize::Small.height_in(UI_METRICS) + 2.0 * DEFAULT_SPACING
+            ))
+        );
+    }
+
+    #[test]
+    fn an_installed_compact_height_reaches_self_drawn_reorder_hit_rows() {
+        let mut context = AppContext::new();
+        let list = context.create_component(document(), sample()).unwrap();
+        context
+            .layout_document(document(), crate::LayoutViewport::new(180.0, 200.0))
+            .unwrap();
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.compact_control_height = 40.0;
+        assert!(
+            context
+                .set_style_tokens(
+                    nana_ui_core::ThemeMode::Dark,
+                    metrics,
+                    nana_ui_core::SemanticPalette::dark(),
+                    nana_ui_core::SemanticPalette::dark().surface,
+                )
+                .unwrap()
+        );
+        let bounds = context.world().layout_box(list.stable_id()).unwrap();
+        // Compile-time Small rows are 28px; at y=35 that is row "b". Installed
+        // 40px rows put the same point on row "a".
+        let x = bounds.x + 40.0;
+        let y = bounds.y + 35.0;
+        assert!(
+            context
+                .begin_reorder_list_pointer(document(), 1, list.stable_id(), x, y)
+                .unwrap()
+        );
+        assert!(
+            context
+                .end_reorder_list_pointer(document(), 1, x, y, false)
+                .unwrap()
+        );
+        assert_eq!(
+            context
+                .read(list, |list| list.selected_value().map(Arc::clone))
+                .unwrap()
+                .as_deref(),
+            Some("a")
+        );
     }
 
     #[test]

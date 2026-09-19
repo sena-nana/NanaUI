@@ -1,0 +1,17 @@
+component: hosted-textarea
+mode: light
+state: rust
+  target: 20.00,20.00 380.00x96.00
+  a11y: role=TextInput disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x96.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 31.00,31.00 358.00x75.40 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Relative(1.45) tracking=0.00 italic=false underline=false line_through=false spans=10 shadow=false
+state: placeholder
+  target: 20.00,20.00 380.00x96.00
+  a11y: role=TextInput disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x96.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 31.00,31.00 358.00x74.00 opacity=1.00 color=#9ca3afff size=13.00 weight=inherit line_height=Relative(1.45) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: disabled
+  target: 20.00,20.00 380.00x96.00
+  a11y: role=TextInput disabled=true checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x96.00 opacity=1.00 bg=#f7f8faff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 31.00,31.00 358.00x75.40 opacity=1.00 color=#9ca3afff size=13.00 weight=inherit line_height=Relative(1.45) tracking=0.00 italic=false underline=false line_through=false spans=10 shadow=false

@@ -85,13 +85,15 @@ impl TimeSeriesChart {
     pub(crate) fn stacked_plot(bounds: LayoutBox) -> LayoutBox {
         let width = bounds.width.max(0.0);
         let height = bounds.height.max(0.0);
-        let left = 48.0_f32.min(width);
-        let top = 12.0_f32.min(height);
+        let left = (nana_ui_core::space::PAGE * 2.0).min(width);
+        let top = nana_ui_core::space::XL.min(height);
+        let right = nana_ui_core::space::XL;
+        let bottom = nana_ui_core::space::PAGE * 2.0 + nana_ui_core::space::SM;
         LayoutBox {
             x: bounds.x + left,
             y: bounds.y + top,
-            width: (width - left - 12.0).max(0.0),
-            height: (height - top - 54.0).max(0.0),
+            width: (width - left - right).max(0.0),
+            height: (height - top - bottom).max(0.0),
         }
     }
 }

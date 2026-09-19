@@ -5,7 +5,7 @@ use std::time::Duration;
 use nana_ui_core::{
     AlignSpec, FlexDirection, LengthSpec, OverflowSpec, PaddingSpec, PositionSpec,
     RESIZE_HANDLE_SIZE, RegionId, RegionPlacement, RegionRole, RegionScope, RegionState,
-    SemanticColorRole, UI_METRICS, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
+    SemanticColorRole, WorkspaceLayout, WorkspaceModel, WorkspaceMutation,
 };
 
 use crate::view_components::{List, project_common};
@@ -15,8 +15,8 @@ use crate::{
     TextContent, UiWorld,
 };
 
-const REGION_SEPARATOR_PX: f32 = 1.0;
-const HANDLE_HIT_SLOP: f32 = 6.0;
+const REGION_SEPARATOR_PX: f32 = nana_ui_core::HAIRLINE;
+const HANDLE_HIT_SLOP: f32 = nana_ui_core::space::SM;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct RegionEdges {
@@ -749,95 +749,88 @@ fn region_style(
     } else {
         SemanticColorRole::Surface
     });
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.overflow_x = OverflowSpec::Hidden;
-    layout.overflow_y = OverflowSpec::Hidden;
-    layout.align_items = AlignSpec::Stretch;
-    if overlay {
-        layout.position = PositionSpec::Absolute;
-        layout.z_index = Some(1);
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
-        match state.placement_value() {
-            RegionPlacement::Start | RegionPlacement::Primary => {
-                layout.offset_left = Some(LengthSpec::Px(0.0));
-                layout.offset_top = Some(LengthSpec::Px(0.0));
-                layout.offset_bottom = Some(LengthSpec::Px(0.0));
-                layout.width = Some(track);
-                layout.height = Some(LengthSpec::Fill);
-            }
-            RegionPlacement::End => {
-                layout.offset_right = Some(LengthSpec::Px(0.0));
-                layout.offset_top = Some(LengthSpec::Px(0.0));
-                layout.offset_bottom = Some(LengthSpec::Px(0.0));
-                layout.width = Some(track);
-                layout.height = Some(LengthSpec::Fill);
-            }
-            RegionPlacement::Top => {
-                layout.offset_top = Some(LengthSpec::Px(0.0));
-                layout.offset_left = Some(LengthSpec::Px(0.0));
-                layout.offset_right = Some(LengthSpec::Px(0.0));
-                layout.width = Some(LengthSpec::Fill);
-                layout.height = Some(track);
-            }
-            RegionPlacement::Bottom => {
-                layout.offset_bottom = Some(LengthSpec::Px(0.0));
-                layout.offset_left = Some(LengthSpec::Px(0.0));
-                layout.offset_right = Some(LengthSpec::Px(0.0));
-                layout.width = Some(LengthSpec::Fill);
-                layout.height = Some(track);
-            }
-        }
-    } else {
-        layout.position = PositionSpec::Relative;
-        if fill {
-            layout.flex_grow = Some(f32::from(state.fill_priority_value()));
-            layout.flex_shrink = Some(1.0);
-            layout.allow_shrink = true;
-        } else {
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.overflow_x = OverflowSpec::Hidden;
+        layout.overflow_y = OverflowSpec::Hidden;
+        layout.align_items = AlignSpec::Stretch;
+        if overlay {
+            layout.position = PositionSpec::Absolute;
+            layout.z_index = Some(1);
             layout.flex_grow = Some(0.0);
             layout.flex_shrink = Some(0.0);
-        }
-        // 尺寸约束只为展开态的交互钳制服务：过渡中的区域必须能缩到 0，
-        // 否则 min_size 会把收起动画整个钳死在最小宽度上。
-        let min_size = if transitioning {
-            0.0
+            match state.placement_value() {
+                RegionPlacement::Start | RegionPlacement::Primary => {
+                    layout.offset_left = Some(LengthSpec::Px(0.0));
+                    layout.offset_top = Some(LengthSpec::Px(0.0));
+                    layout.offset_bottom = Some(LengthSpec::Px(0.0));
+                    layout.width = Some(track);
+                    layout.height = Some(LengthSpec::Fill);
+                }
+                RegionPlacement::End => {
+                    layout.offset_right = Some(LengthSpec::Px(0.0));
+                    layout.offset_top = Some(LengthSpec::Px(0.0));
+                    layout.offset_bottom = Some(LengthSpec::Px(0.0));
+                    layout.width = Some(track);
+                    layout.height = Some(LengthSpec::Fill);
+                }
+                RegionPlacement::Top => {
+                    layout.offset_top = Some(LengthSpec::Px(0.0));
+                    layout.offset_left = Some(LengthSpec::Px(0.0));
+                    layout.offset_right = Some(LengthSpec::Px(0.0));
+                    layout.width = Some(LengthSpec::Fill);
+                    layout.height = Some(track);
+                }
+                RegionPlacement::Bottom => {
+                    layout.offset_bottom = Some(LengthSpec::Px(0.0));
+                    layout.offset_left = Some(LengthSpec::Px(0.0));
+                    layout.offset_right = Some(LengthSpec::Px(0.0));
+                    layout.width = Some(LengthSpec::Fill);
+                    layout.height = Some(track);
+                }
+            }
         } else {
-            state.min_size_value()
-        };
-        if horizontal {
-            layout.width = Some(track);
-            layout.height = Some(LengthSpec::Fill);
-            layout.min_width = Some(LengthSpec::Px(min_size));
-            layout.max_width = Some(LengthSpec::Px(state.max_size_value()));
-        } else {
-            layout.width = Some(LengthSpec::Fill);
-            layout.height = Some(track);
-            layout.min_height = Some(LengthSpec::Px(min_size));
-            layout.max_height = Some(LengthSpec::Px(state.max_size_value()));
+            layout.position = PositionSpec::Relative;
+            if fill {
+                layout.flex_grow = Some(f32::from(state.fill_priority_value()));
+                layout.flex_shrink = Some(1.0);
+                layout.allow_shrink = true;
+            } else {
+                layout.flex_grow = Some(0.0);
+                layout.flex_shrink = Some(0.0);
+            }
+            // 尺寸约束只为展开态的交互钳制服务：过渡中的区域必须能缩到 0，
+            // 否则 min_size 会把收起动画整个钳死在最小宽度上。
+            let min_size = if transitioning {
+                0.0
+            } else {
+                state.min_size_value()
+            };
+            if horizontal {
+                layout.width = Some(track);
+                layout.height = Some(LengthSpec::Fill);
+                layout.min_width = Some(LengthSpec::Px(min_size));
+                layout.max_width = Some(LengthSpec::Px(state.max_size_value()));
+            } else {
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(track);
+                layout.min_height = Some(LengthSpec::Px(min_size));
+                layout.max_height = Some(LengthSpec::Px(state.max_size_value()));
+            }
         }
-    }
-    if state.role() == RegionRole::Inspector {
-        layout.direction = Some(FlexDirection::Column);
-        layout.padding_left = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
+        if state.role() == RegionRole::Inspector {
+            layout.direction = Some(FlexDirection::Column);
+            layout.padding_left = Some(LengthSpec::Px(REGION_SEPARATOR_PX));
+        }
     }
     if state.role() == RegionRole::Primary {
-        layout.border_radius = Some(primary_radius(workspace_corners, edges));
+        let rounded_start = !edges.start;
+        let rounded_end = !edges.end;
+        if workspace_corners && (rounded_start || rounded_end) {
+            style.radius = Some(nana_ui_core::RadiusTier::Lg);
+        }
     }
     style
-}
-
-fn primary_radius(workspace_corners: bool, edges: RegionEdges) -> f32 {
-    if !workspace_corners {
-        return 0.0;
-    }
-    let rounded_start = !edges.start;
-    let rounded_end = !edges.end;
-    if rounded_start || rounded_end {
-        UI_METRICS.radius_lg
-    } else {
-        0.0
-    }
 }
 
 fn default_handle_style(highlighted: bool) -> NodeStyle {

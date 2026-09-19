@@ -58,15 +58,27 @@ pub enum Outcome {
     Unchanged,
     Missing,
     Unreadable(String),
-    SizeChanged { baseline: Size<u32> },
+    SizeChanged {
+        baseline: Size<u32>,
+    },
     Changed(PixelDiff),
+    /// A semantic baseline whose text differs. Carries the first differing
+    /// line so the report names *what* moved, not just that something did.
+    TextChanged {
+        line: usize,
+        total: usize,
+    },
 }
 
 impl Outcome {
     pub fn is_failure(&self) -> bool {
         matches!(
             self,
-            Self::Missing | Self::Unreadable(_) | Self::SizeChanged { .. } | Self::Changed(_)
+            Self::Missing
+                | Self::Unreadable(_)
+                | Self::SizeChanged { .. }
+                | Self::Changed(_)
+                | Self::TextChanged { .. }
         )
     }
 
@@ -80,6 +92,7 @@ impl Outcome {
             Self::Unreadable(_) => "UNREADABLE",
             Self::SizeChanged { .. } => "RESIZED",
             Self::Changed(_) => "CHANGED",
+            Self::TextChanged { .. } => "CHANGED",
         }
     }
 
@@ -107,6 +120,9 @@ impl Outcome {
                     diff.changed_ratio * 100.0,
                     diff.max_channel_delta
                 )
+            }
+            Self::TextChanged { line, total } => {
+                format!("first difference at line {line} of {total}")
             }
             _ => String::new(),
         }
@@ -224,6 +240,61 @@ impl Recorder {
         Ok(())
     }
 
+    /// Record a **semantic** baseline: the theme-resolved description of a
+    /// fixture rather than its pixels.
+    ///
+    /// It goes through the same bless/verify gate as [`Self::record`], so
+    /// there is one way to change a baseline. It is adapter-independent by
+    /// construction — nothing here is rasterised — which is what lets it be
+    /// checked on a machine that has no pixel baseline for its own GPU.
+    pub fn record_text(&mut self, key: &str, text: &str) -> Result<(), Box<dyn Error>> {
+        write::text(&self.options.output.join(key), text)?;
+        self.seen.insert(key.to_owned());
+
+        let baseline_path = self.baseline_dir.join(key);
+        // A checkout that materialised the baseline with CRLF must still
+        // compare equal: the baseline is the text, not the line-ending policy.
+        let baseline = std::fs::read_to_string(&baseline_path)
+            .ok()
+            .map(|body| body.replace("\r\n", "\n"));
+        let outcome = if self.options.mode.blesses(key) {
+            match baseline.as_deref() {
+                Some(existing) if existing == text => Outcome::Unchanged,
+                Some(_) => {
+                    write::text(&baseline_path, text)?;
+                    Outcome::Updated
+                }
+                None => {
+                    write::text(&baseline_path, text)?;
+                    Outcome::Recorded
+                }
+            }
+        } else {
+            match baseline.as_deref() {
+                None => Outcome::Missing,
+                Some(existing) if existing == text => Outcome::Matched,
+                Some(existing) => {
+                    write::text(
+                        &self.options.output.join(sibling_key(key, "baseline.txt")),
+                        existing,
+                    )?;
+                    Outcome::TextChanged {
+                        line: first_difference(existing, text),
+                        total: text.lines().count(),
+                    }
+                }
+            }
+        };
+
+        self.entries.push(Entry {
+            key: key.to_owned(),
+            outcome,
+            size: Size::new(0, 0),
+            flat: false,
+        });
+        Ok(())
+    }
+
     fn compare(
         &self,
         key: &str,
@@ -281,7 +352,7 @@ impl Recorder {
     /// checking any more — and are deleted when blessing.
     fn stale(&self) -> Vec<String> {
         let mut stale = Vec::new();
-        collect_pngs(&self.baseline_dir, &self.baseline_dir, &mut stale);
+        collect_baselines(&self.baseline_dir, &self.baseline_dir, &mut stale);
         stale.retain(|key| !self.seen.contains(key));
         stale.sort();
         stale
@@ -463,18 +534,35 @@ fn load_baseline(path: &Path) -> Loaded {
 }
 
 fn sibling_key(key: &str, suffix: &str) -> String {
-    format!("{}.{suffix}", key.strip_suffix(".png").unwrap_or(key))
+    let stem = key
+        .strip_suffix(".png")
+        .or_else(|| key.strip_suffix(".txt"))
+        .unwrap_or(key);
+    format!("{stem}.{suffix}")
 }
 
-fn collect_pngs(root: &Path, directory: &Path, found: &mut Vec<String>) {
+/// 1-based line where `baseline` and `next` first disagree, or the line past
+/// the shorter of the two when one is a prefix of the other.
+fn first_difference(baseline: &str, next: &str) -> usize {
+    for (index, (left, right)) in baseline.lines().zip(next.lines()).enumerate() {
+        if left != right {
+            return index + 1;
+        }
+    }
+    baseline.lines().count().min(next.lines().count()) + 1
+}
+
+fn collect_baselines(root: &Path, directory: &Path, found: &mut Vec<String>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_pngs(root, &path, found);
-        } else if path.extension().is_some_and(|extension| extension == "png")
+            collect_baselines(root, &path, found);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension == "png" || extension == "txt")
             && let Ok(relative) = path.strip_prefix(root)
             && let Some(key) = relative.to_str()
         {

@@ -40,7 +40,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(color),
                         border_color: None,
                         border_width: 0.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_xs),
+                        corner_radius: corner_radii(node.chrome_radii.xs),
                     },
                 ));
             }
@@ -75,7 +75,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: None,
                         border_color: Some(hover.ring_color),
                         border_width: 1.5,
-                        corner_radius: corner_radii(UI_METRICS.radius_xs + 1.0),
+                        corner_radius: corner_radii(node.chrome_radii.xs + 1.0),
                     },
                 ));
                 emit(visual_quad(

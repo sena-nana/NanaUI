@@ -1,0 +1,6 @@
+component: skeleton
+mode: light
+state: block
+  target: 20.00,20.00 380.00x16.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x16.00 opacity=1.00 bg=#f7f8faff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none

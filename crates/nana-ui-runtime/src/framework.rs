@@ -879,6 +879,9 @@ pub struct AppContext {
     /// stamped. The stored function reprojects through the typed
     /// `update_component` pipeline.
     child_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    /// Opt-in reproject when installed metrics change, registered from
+    /// [`ComponentView::wants_metrics_reproject`].
+    metrics_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
@@ -1166,6 +1169,7 @@ impl AppContext {
             world,
             views: HashMap::new(),
             child_reproject_views: HashMap::new(),
+            metrics_reproject_views: HashMap::new(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             event_handlers: HashMap::new(),
@@ -1401,6 +1405,17 @@ impl AppContext {
     /// the queue and are consumed by the same drain; nodes whose view is
     /// temporarily absent (mid-update or not yet installed by a build) wait
     /// for the next commit instead.
+    fn reproject_metrics_views(&mut self) -> Result<(), FrameworkError> {
+        let ids: Vec<_> = self.metrics_reproject_views.keys().copied().collect();
+        for id in ids {
+            let Some(reproject) = self.metrics_reproject_views.get(&id).copied() else {
+                continue;
+            };
+            reproject(self, id)?;
+        }
+        Ok(())
+    }
+
     fn drain_child_reprojects(&mut self) -> Result<(), FrameworkError> {
         if self.draining_child_reprojects {
             return Ok(());
@@ -1474,9 +1489,13 @@ impl AppContext {
         if self.world.style_model() == next {
             return Ok(false);
         }
+        let metrics_changed = self.world.theme_metrics() != metrics;
         let mut queue = MutationQueue::new();
         queue.set_style_tokens(mode, metrics, palette, titlebar);
         self.world.commit(queue)?;
+        if metrics_changed {
+            self.reproject_metrics_views()?;
+        }
         Ok(true)
     }
 
@@ -2618,6 +2637,8 @@ impl AppContext {
             .chart_tooltips
             .retain(|owner, tooltip| !removed.contains(owner) && !removed.contains(tooltip));
         self.child_reproject_views
+            .retain(|id, _| !removed.contains(id));
+        self.metrics_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects
             .retain(|id| !removed.contains(id));

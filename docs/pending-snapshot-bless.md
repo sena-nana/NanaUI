@@ -99,6 +99,32 @@ hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMo
 改完之后 `button`/`list-item` 的 `hover` 与 `pointer-activation` 变成字节相同——这是对的，
 指针激活结束时指针仍停在控件上。
 
+### Issue #101 状态矩阵补齐（58 张，全部是新键）
+
+- `component-migration/checkbox/{dark,light}/{selected-hover,selected-pressed}.png`
+- `component-migration/chip/{dark,light}/{hover,pressed}.png`
+- `component-migration/dropdown/{dark,light}/{hover,focused,disabled}.png`
+- `component-migration/icon-button/{dark,light}/{selected-hover,selected-pressed}.png`
+- `component-migration/interactive-card/{dark,light}/{hover,pressed,disabled,selected-hover,selected-pressed}.png`
+- `component-migration/search-dropdown/{dark,light}/{hover,focused,disabled}.png`
+- `component-migration/settings-collapsible-card/{dark,light}/{hover,pressed}.png`
+- `component-migration/sidebar-row/{dark,light}/{hover,pressed,focused,disabled,selected-hover,selected-pressed}.png`
+- `component-migration/sidebar-section/{dark,light}/{focused}.png`
+- `component-migration/textarea/{dark,light}/{hover}.png`
+- `component-migration/xy-pad/{dark,light}/{hover,focused}.png`
+
+这 29 个 fixture × light/dark 是 #101 §3 查出的缺口：组件自己在
+`InteractionStyle` 里声明了这些状态的 paint，但从来没有 fixture 捕获过。它们**没有
+旧基线**，每次跑都报 MISSING，不是「像素变了」而是「以前根本没拍过」，所以按前缀
+`--bless` 即可，不需要逐张比对 side-by-side。
+
+语义基线（`snapshots/semantic/`，与 adapter 无关）已经在本轮录好并验过，可以先看它
+确认每个状态解析出的颜色/边框是不是预期的，再在录制机上补像素。
+
+三对 fixture 在语义基线里**逐字节相同**，这是组件的真实声明而不是 fixture 没生效：
+`dropdown`、`search-dropdown`、`xy-pad` 的 `hovered` 与 `focused` 都指向
+`BorderStrong`，悬停与聚焦在视觉上分不开。录完像素后这三对也会是同一张图。
+
 ## 不在此列
 
 `gallery-sidebar-collapsed-dark.png` **在干净工作树上就已经失败**，且自身抖动，抖动来自

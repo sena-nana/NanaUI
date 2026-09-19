@@ -349,6 +349,164 @@ impl FrameStage {
     }
 }
 
+/// Work counts for one theme / style resolution pass (Issue #101 §4).
+///
+/// Not [`WorkCounters`]: those are the per-frame dirty-system totals, and
+/// `style_processed` there is only "how many nodes the drain scheduled".
+/// The Theme baseline needs the inside of that pass — how many of the
+/// scheduled nodes really produced a new `ComputedStyle`, how many were
+/// answered by the value/epoch fast path, how often the pass read the token
+/// authority, and what the pass cost the stages downstream of it.
+///
+/// Field convention follows [`WorkCounters`]: a plain `usize` is a number the
+/// owning pass always knows. There is no optional field here — the style pass
+/// either ran (and knows all of these) or did not run at all.
+///
+/// Invariant: `style_nodes_considered == style_nodes_resolved +
+/// style_nodes_skipped`. A node reached through a parent chain counts once for
+/// the pass, not once per descendant that pulled it in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ThemeWorkCounters {
+    /// Nodes the pass evaluated, including the ones it then skipped.
+    pub style_nodes_considered: usize,
+    /// Of those, the ones that published a new resolved style.
+    pub style_nodes_resolved: usize,
+    /// Of those, the ones whose resolved value and theme generation both
+    /// matched what the node already held, so nothing was published.
+    pub style_nodes_skipped: usize,
+    /// Reads the pass made against the token authority
+    /// ([`crate::StyleModelRef`]). A palette mix counts once — it is one
+    /// question asked of the theme, not one per role it blends.
+    pub theme_reads: usize,
+    /// Heap events the style path itself caused: one per published resolved
+    /// style, one per theme-install invalidation list. Its own observation,
+    /// not a slice of `WorkCounters::allocations` — that field watches drain
+    /// lists, layout inputs and text temporaries, and folding per-node style
+    /// publications into it would move every existing #8 allocation number.
+    pub style_allocations: usize,
+    /// Payload bytes of those events.
+    pub style_allocated_bytes: usize,
+    /// `LayoutStyle` copies made to hold a node's resolved design intent
+    /// beside the layout it authored. Counted apart from `style_allocations`
+    /// because it is a different event with a different cause, an order of
+    /// magnitude larger, and invisible to every allocator counter — it
+    /// happens under `Arc::make_mut`, which reuses a unique allocation and
+    /// clones a shared one without telling anyone. A theme change that only
+    /// moves colour must leave this at 0.
+    pub layout_copies: usize,
+    /// Payload bytes of those copies.
+    pub layout_copied_bytes: usize,
+    /// Nodes the theme/style authority invalidated for layout. A palette-only
+    /// theme change must leave this at 0.
+    pub layout_nodes_from_style: usize,
+    /// Nodes whose text shaping or line constraints a resolved-style change
+    /// invalidated. Text whose *color* changed is paint, not text, and is not
+    /// counted here — otherwise a palette switch would read as reshaping.
+    pub text_nodes_from_style: usize,
+    /// Nodes the theme/style authority invalidated for paint/extract.
+    pub paint_nodes_from_style: usize,
+}
+
+impl ThemeWorkCounters {
+    /// Record one evaluated node that published a new resolved style.
+    pub fn record_resolved(&mut self) {
+        self.style_nodes_considered = self.style_nodes_considered.saturating_add(1);
+        self.style_nodes_resolved = self.style_nodes_resolved.saturating_add(1);
+    }
+
+    /// Record one evaluated node the value/generation fast path answered.
+    pub fn record_skipped(&mut self) {
+        self.style_nodes_considered = self.style_nodes_considered.saturating_add(1);
+        self.style_nodes_skipped = self.style_nodes_skipped.saturating_add(1);
+    }
+
+    /// Record reads against the token authority.
+    pub fn record_theme_reads(&mut self, reads: usize) {
+        self.theme_reads = self.theme_reads.saturating_add(reads);
+    }
+
+    /// Record a heap event the style path caused. A zero event is not an
+    /// allocation, matching [`WorkCounters::record_hot_path_allocation`].
+    pub fn record_allocation(&mut self, count: usize, bytes: usize) {
+        if count == 0 && bytes == 0 {
+            return;
+        }
+        self.style_allocations = self.style_allocations.saturating_add(count);
+        self.style_allocated_bytes = self.style_allocated_bytes.saturating_add(bytes);
+    }
+
+    /// Record a `LayoutStyle` copied to resolve design intent.
+    pub fn record_layout_copy(&mut self, count: usize, bytes: usize) {
+        if count == 0 && bytes == 0 {
+            return;
+        }
+        self.layout_copies = self.layout_copies.saturating_add(count);
+        self.layout_copied_bytes = self.layout_copied_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_layout_invalidation(&mut self, nodes: usize) {
+        self.layout_nodes_from_style = self.layout_nodes_from_style.saturating_add(nodes);
+    }
+
+    pub fn record_text_invalidation(&mut self, nodes: usize) {
+        self.text_nodes_from_style = self.text_nodes_from_style.saturating_add(nodes);
+    }
+
+    pub fn record_paint_invalidation(&mut self, nodes: usize) {
+        self.paint_nodes_from_style = self.paint_nodes_from_style.saturating_add(nodes);
+    }
+
+    /// Fold another pass into this snapshot.
+    pub fn accumulate(&mut self, other: Self) {
+        self.style_nodes_considered = self
+            .style_nodes_considered
+            .saturating_add(other.style_nodes_considered);
+        self.style_nodes_resolved = self
+            .style_nodes_resolved
+            .saturating_add(other.style_nodes_resolved);
+        self.style_nodes_skipped = self
+            .style_nodes_skipped
+            .saturating_add(other.style_nodes_skipped);
+        self.theme_reads = self.theme_reads.saturating_add(other.theme_reads);
+        self.style_allocations = self
+            .style_allocations
+            .saturating_add(other.style_allocations);
+        self.style_allocated_bytes = self
+            .style_allocated_bytes
+            .saturating_add(other.style_allocated_bytes);
+        self.layout_copies = self.layout_copies.saturating_add(other.layout_copies);
+        self.layout_copied_bytes = self
+            .layout_copied_bytes
+            .saturating_add(other.layout_copied_bytes);
+        self.layout_nodes_from_style = self
+            .layout_nodes_from_style
+            .saturating_add(other.layout_nodes_from_style);
+        self.text_nodes_from_style = self
+            .text_nodes_from_style
+            .saturating_add(other.text_nodes_from_style);
+        self.paint_nodes_from_style = self
+            .paint_nodes_from_style
+            .saturating_add(other.paint_nodes_from_style);
+    }
+
+    /// An idle steady frame resolved no style and asked the theme nothing.
+    /// Issue #100 §15: a retained frame must not re-walk or re-resolve.
+    pub fn is_idle(self) -> bool {
+        self.style_nodes_considered == 0 && self.theme_reads == 0
+    }
+
+    /// A palette-only theme change is paint work: no layout, no reshape, and
+    /// no box touched. `layout_copies` is part of the question because moving
+    /// colour must not send the style path through `LayoutStyle` at all — a
+    /// resolver that rebuilt every box on a palette switch would still report
+    /// zero layout *invalidations* while doing the work.
+    pub fn is_paint_only(self) -> bool {
+        self.layout_nodes_from_style == 0
+            && self.text_nodes_from_style == 0
+            && self.layout_copies == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +659,51 @@ mod tests {
         assert_eq!(recorded.draw_batches, Some(1));
         assert_eq!(recorded.batch_rebuilds, Some(1));
         assert_eq!(recorded.gpu_buffer_reallocations, Some(0));
+    }
+
+    #[test]
+    fn theme_pass_splits_considered_into_resolved_and_skipped() {
+        let mut counters = ThemeWorkCounters::default();
+        assert!(counters.is_idle());
+        counters.record_resolved();
+        counters.record_resolved();
+        counters.record_skipped();
+        counters.record_theme_reads(6);
+        assert_eq!(counters.style_nodes_considered, 3);
+        assert_eq!(counters.style_nodes_resolved, 2);
+        assert_eq!(counters.style_nodes_skipped, 1);
+        assert_eq!(
+            counters.style_nodes_considered,
+            counters.style_nodes_resolved + counters.style_nodes_skipped
+        );
+        assert_eq!(counters.theme_reads, 6);
+        assert!(!counters.is_idle());
+    }
+
+    #[test]
+    fn theme_pass_allocation_ignores_a_zero_event_and_folds_downstream_classes() {
+        let mut counters = ThemeWorkCounters::default();
+        counters.record_allocation(0, 0);
+        assert_eq!(counters.style_allocations, 0);
+        counters.record_allocation(1, 48);
+        counters.record_allocation(2, 16);
+        assert_eq!(counters.style_allocations, 3);
+        assert_eq!(counters.style_allocated_bytes, 64);
+
+        // A palette-only change is paint work; layout and reshape stay at 0.
+        counters.record_paint_invalidation(120);
+        assert!(counters.is_paint_only());
+        counters.record_layout_invalidation(4);
+        counters.record_text_invalidation(2);
+        assert!(!counters.is_paint_only());
+
+        let mut total = ThemeWorkCounters::default();
+        total.accumulate(counters);
+        total.accumulate(counters);
+        assert_eq!(total.style_allocations, 6);
+        assert_eq!(total.style_allocated_bytes, 128);
+        assert_eq!(total.paint_nodes_from_style, 240);
+        assert_eq!(total.layout_nodes_from_style, 8);
+        assert_eq!(total.text_nodes_from_style, 4);
     }
 }

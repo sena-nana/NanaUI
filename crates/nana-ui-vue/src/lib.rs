@@ -433,8 +433,7 @@ pub fn theme_tokens_from_appearance(
     appearance: &nana_ui::AppearanceSettings,
     transparent_surface: bool,
 ) -> nana_ui::ThemeTokens {
-    use nana_ui::ThemeModeExt;
-    nana_ui::ThemeTokens::new(theme.colors(), appearance.metrics())
+    nana_ui::ThemeTokens::new(theme.palette(), appearance.metrics())
         .with_workspace_corners(appearance.workspace_corners_enabled())
         .with_backdrop(
             transparent_surface,

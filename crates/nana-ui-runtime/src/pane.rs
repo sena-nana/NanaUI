@@ -12,9 +12,14 @@ use crate::{
     NodeKind, NodeStyle, StableNodeId, TextContent, UiWorld,
 };
 
-const CHROME_HEIGHT: f32 = 34.0;
-const CHROME_PADDING_X: f32 = 8.0;
-const ACTION_TEXT_SIZE: f32 = 10.0;
+const fn chrome_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    ControlSize::Medium.height_in(metrics) + nana_ui_core::space::XXS
+}
+
+#[cfg(test)]
+const CHROME_HEIGHT: f32 = chrome_height(nana_ui_core::UI_METRICS);
+const CHROME_PADDING_X: f32 = nana_ui_core::space::MD;
+const ACTION_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 const PANE_TREE_RATIO_MIN: f32 = 0.05;
 const PANE_TREE_RATIO_MAX: f32 = 0.95;
 
@@ -137,17 +142,18 @@ impl PaneChrome {
         style
     }
 
-    fn header_style(&self) -> NodeStyle {
+    fn header_style(&self, metrics: nana_ui_core::ThemeMetrics) -> NodeStyle {
         let mut style = NodeStyle::default();
         style.background = Some(self.header_background());
         let layout = Arc::make_mut(&mut style.layout);
+        let height = chrome_height(metrics);
         layout.direction = Some(FlexDirection::Row);
         layout.align_items = AlignSpec::Center;
         layout.justify_content = JustifySpec::Start;
         layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(CHROME_HEIGHT));
-        layout.min_height = Some(LengthSpec::Px(CHROME_HEIGHT));
-        layout.max_height = Some(LengthSpec::Px(CHROME_HEIGHT));
+        layout.height = Some(LengthSpec::Px(height));
+        layout.min_height = Some(LengthSpec::Px(height));
+        layout.max_height = Some(LengthSpec::Px(height));
         layout.padding_top = Some(LengthSpec::Px(0.0));
         layout.padding_bottom = Some(LengthSpec::Px(0.0));
         layout.padding_left = Some(LengthSpec::Px(CHROME_PADDING_X));
@@ -179,7 +185,7 @@ impl PaneChrome {
             id,
             world,
             mutations,
-            &self.header_style(),
+            &self.header_style(world.theme_metrics()),
             InteractionState {
                 pointer_events: false,
                 focusable: false,
@@ -210,7 +216,7 @@ impl PaneChrome {
         layout.padding_left = Some(LengthSpec::Px(0.0));
         layout.padding_right = Some(LengthSpec::Px(0.0));
         if layout.font_size.is_none() {
-            layout.font_size = Some(12.0);
+            layout.font_size = Some(nana_ui_core::type_scale::META);
         }
         if world.node_style(id) != Some(&style) {
             mutations.set_style(id, style);
@@ -265,6 +271,10 @@ impl ComponentView for PaneChrome {
         NodeKind::Element {
             tag: "pane-chrome".into(),
         }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -333,8 +343,8 @@ fn project_chrome_action(
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
     layout.height = Some(LengthSpec::Fill);
-    layout.padding_left = Some(LengthSpec::Px(4.0));
-    layout.padding_right = Some(LengthSpec::Px(4.0));
+    layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::XS));
+    layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::XS));
     project_common(
         id,
         world,

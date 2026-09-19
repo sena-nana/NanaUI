@@ -27,7 +27,8 @@ use std::{
 
 use nana_ui_core::{
     ControlSize, LayoutStyle, LengthSpec, PointerEventsSpec, PositionSpec, SemanticColorRole,
-    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode, icon_y_on_text_glyph_center,
+    SemanticPalette, StyleModelRef, SwitchControlPosition, ThemeMode, ThemeWorkCounters,
+    icon_y_on_text_glyph_center,
 };
 
 #[cfg(feature = "calendar")]
@@ -476,6 +477,21 @@ pub struct UiWorld {
     /// Nodes style resolution turned visible since the last scheduled text
     /// pass, which re-resolves them alongside its own work.
     text_shown: Vec<StableNodeId>,
+    /// Theme/style work (Issue #101) of the last style pass or theme install,
+    /// or of the last frame that ran one.
+    theme_work: ThemeWorkCounters,
+    /// Theme/style work of the frame being accumulated.
+    theme_frame_work: ThemeWorkCounters,
+    /// Token-authority reads recorded from the `&self` palette paths. Folded
+    /// into `theme_work` by the pass that made them. Counted in its own
+    /// `Cell` rather than through a pending `ThemeWorkCounters`: this is the
+    /// hottest observation on the style path — once per role a resolve reads
+    /// — and a whole-struct read-modify-write per read is measurable.
+    pending_theme_reads: Cell<usize>,
+    /// `LayoutStyle` copies recorded from the style-write paths, folded on
+    /// the same boundary. Separate from the reads because a write is rare
+    /// and the two are never observed together.
+    pending_layout_copies: Cell<usize>,
     /// Live Confirm modal frames. Extract, a11y, and hit-test skip ancestor
     /// confirm walks when this is zero.
     confirm_modals: usize,
@@ -605,6 +621,10 @@ impl UiWorld {
             text_frame_work: nana_text::TextWorkCounters::default(),
             pending_edit_work: nana_text::TextWorkCounters::default(),
             text_shown: Vec::new(),
+            theme_work: ThemeWorkCounters::default(),
+            theme_frame_work: ThemeWorkCounters::default(),
+            pending_theme_reads: Cell::new(0),
+            pending_layout_copies: Cell::new(0),
             confirm_modals: 0,
             clip_visuals: 0,
             z_index_nodes: 0,
@@ -694,8 +714,10 @@ impl UiWorld {
     /// previous snapshot in place until a non-empty pass runs.
     pub fn begin_frame_counters(&mut self) {
         self.commit_pending_hot_allocs();
+        self.commit_pending_theme_work();
         self.frame_counters = WorkCounters::default();
         self.text_frame_work = nana_text::TextWorkCounters::default();
+        self.theme_frame_work = ThemeWorkCounters::default();
         self.frame_extracted_nodes = 0;
         self.frame_extracted_spans = 0;
         self.accumulating_frame = true;
@@ -747,6 +769,86 @@ impl UiWorld {
     /// cloned, hashed and looked up to get there.
     pub fn last_text_work_counters(&self) -> nana_text::TextWorkCounters {
         self.text_work
+    }
+
+    /// Theme/style work (Issue #101 §4) of the last style pass or theme
+    /// install, or of every pass of the last frame
+    /// [`Self::begin_frame_counters`] accumulated that ran one: nodes
+    /// considered, resolved and skipped, token reads, and what the pass cost
+    /// Layout, Text and Paint.
+    ///
+    /// An idle frame leaves the previous snapshot in place, like
+    /// [`Self::last_work_counters`].
+    ///
+    /// One theme change is more than one event — the install marks the world,
+    /// the drain schedules it, the style pass resolves it — so measure it
+    /// inside [`Self::begin_frame_counters`] / [`Self::end_frame_counters`].
+    /// Outside that accumulator each event replaces the last, exactly as
+    /// [`Self::last_text_work_counters`] does.
+    pub fn last_theme_work_counters(&self) -> ThemeWorkCounters {
+        let mut counters = self.theme_work;
+        counters.accumulate(self.pending_theme_work());
+        counters
+    }
+
+    /// The theme/style work observed since the last fold, as counters.
+    fn pending_theme_work(&self) -> ThemeWorkCounters {
+        let mut pending = ThemeWorkCounters::default();
+        pending.record_theme_reads(self.pending_theme_reads.get());
+        pending.record_layout_copy(
+            self.pending_layout_copies.get(),
+            self.pending_layout_copies
+                .get()
+                .saturating_mul(size_of::<nana_ui_core::LayoutStyle>()),
+        );
+        pending
+    }
+
+    /// Take that work, leaving nothing behind for the next window.
+    fn take_pending_theme_work(&self) -> ThemeWorkCounters {
+        let pending = self.pending_theme_work();
+        self.pending_theme_reads.set(0);
+        self.pending_layout_copies.set(0);
+        pending
+    }
+
+    /// Observe one read of the token authority from a `&self` palette path.
+    fn record_theme_read(&self) {
+        self.pending_theme_reads
+            .set(self.pending_theme_reads.get().saturating_add(1));
+    }
+
+    /// Observe the `LayoutStyle` a style write had to copy to hold the
+    /// resolved value beside the authored intent. It is the largest heap
+    /// event on the style path and would otherwise go unwatched: it happens
+    /// under `Arc::make_mut`, which no allocator counter sees.
+    fn record_resolved_layout_copy(&self) {
+        self.pending_layout_copies
+            .set(self.pending_layout_copies.get().saturating_add(1));
+    }
+
+    /// Close the pending work onto the window it was observed in, so an event
+    /// from before [`Self::begin_frame_counters`] is not charged to the frame
+    /// that follows it.
+    fn commit_pending_theme_work(&mut self) {
+        let pending = self.take_pending_theme_work();
+        if pending == ThemeWorkCounters::default() {
+            return;
+        }
+        self.theme_work.accumulate(pending);
+        if self.accumulating_frame {
+            self.theme_frame_work.accumulate(pending);
+        }
+    }
+
+    fn record_theme_work(&mut self, mut work: ThemeWorkCounters) {
+        work.accumulate(self.take_pending_theme_work());
+        if self.accumulating_frame {
+            self.theme_frame_work.accumulate(work);
+            self.theme_work = self.theme_frame_work;
+        } else {
+            self.theme_work = work;
+        }
     }
 
     fn record_text_work(&mut self, mut work: nana_text::TextWorkCounters) {
@@ -1415,9 +1517,12 @@ impl UiWorld {
     pub(crate) fn used_layout_padding(&self, id: StableNodeId) -> nana_ui_core::PaddingSpec {
         let record = self.record(id);
         record.layout_padding.unwrap_or_else(|| {
+            // Intent (radius / control height / padding) lives on
+            // `resolved_layout`. Falling back to the authored box would
+            // report 0 for every control that named its inset instead of
+            // spending the token.
             record
-                .style
-                .layout
+                .resolved_layout
                 .resolved_padding_against(Some(record.layout.width))
         })
     }
@@ -1458,7 +1563,7 @@ impl UiWorld {
     }
 
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
-        let mut style = Arc::clone(&self.record(id).style.layout);
+        let mut style = Arc::clone(&self.record(id).resolved_layout);
         if style.omits_box()
             || !self.presence_live(id)
             || !self.overlay_branch_active(id)

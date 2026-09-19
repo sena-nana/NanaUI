@@ -44,6 +44,19 @@
     "compositor-retarget",
     "compositor-churn"
   ],
+  "nana_theme_ids": [
+    "theme-static-idle",
+    "theme-controls-1",
+    "theme-controls-100",
+    "theme-controls-1k",
+    "theme-controls-10k",
+    "theme-hover-one",
+    "theme-focus-one",
+    "theme-palette-switch",
+    "theme-accent-only",
+    "theme-density",
+    "theme-head-style-mutation"
+  ],
   "issue12": {
     "same_scenario_ids": [
       "static-tree-100",
@@ -84,7 +97,7 @@
         "text_len": 32,
         "item_extent_px": 20
       },
-      "note": "Required by #8 \u00a73.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
+      "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
       "id": "virtual-tree-1m",
@@ -96,7 +109,7 @@
         "text_len": 32,
         "item_extent_px": 20
       },
-      "note": "Required by #8 \u00a73.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M tree row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
+      "note": "Required by #8 §3.4. Scenario JSON and Nana mapping exist; nana-framework-benchmark skips the 1M tree row unless NANA_PERF_SCALE=large. Not in harness_ids so default --all is not exit 2."
     },
     {
       "id": "gpu-scene-ui-live2d",
@@ -104,7 +117,7 @@
       "params": {
         "composition": "UiLive2d"
       },
-      "note": "Required by #8 \u00a73.8."
+      "note": "Required by #8 §3.8."
     },
     {
       "id": "gpu-scene-ui-live2d-effect",
@@ -112,7 +125,7 @@
       "params": {
         "composition": "UiLive2dEffect"
       },
-      "note": "Required by #8 \u00a73.8. Required by #8 / not implemented as a shared Scenario runner."
+      "note": "Required by #8 §3.8. Required by #8 / not implemented as a shared Scenario runner."
     }
   ]
 }

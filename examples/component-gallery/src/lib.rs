@@ -29,7 +29,7 @@ use nana_ui::settings::{
     AppearanceSettings, BackdropTarget, SettingsModel, SettingsState, SettingsTab, SettingsTabId,
     WindowMaterialMode,
 };
-use nana_ui::theme::{ThemeMode, ThemeModeExt, ThemeTokens};
+use nana_ui::theme::{ThemeMode, ThemeTokens};
 use nana_ui::window_chrome::{WindowChromeEvent, WindowChromeState};
 use nana_ui::workspace::{WorkspaceAction, WorkspaceController};
 use nana_ui::{
@@ -460,7 +460,7 @@ impl GalleryState {
     }
 
     fn theme_tokens(&self) -> ThemeTokens {
-        ThemeTokens::new(self.theme.colors(), self.appearance.metrics())
+        ThemeTokens::new(self.theme.palette(), self.appearance.metrics())
             .with_workspace_corners(self.appearance.workspace_corners_enabled())
             .with_backdrop(
                 self.material_outcome.is_native(),
@@ -476,8 +476,8 @@ impl GalleryState {
     pub fn backdrop_region_alphas(&self) -> (f32, f32, f32) {
         let tokens = self.theme_tokens();
         (
-            tokens.colors.surface.a,
-            tokens.colors.background.a,
+            tokens.palette.surface.a,
+            tokens.palette.background.a,
             tokens.titlebar.a,
         )
     }

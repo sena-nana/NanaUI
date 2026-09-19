@@ -11,7 +11,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use nana_ui_core::{AlignSpec, FlexDirection, LengthSpec, OverflowSpec, UI_METRICS};
+#[cfg(test)]
+use nana_ui_core::UI_METRICS;
+use nana_ui_core::{AlignSpec, FlexDirection, LengthSpec, OverflowSpec};
 
 use crate::view_components::project_common;
 use crate::{
@@ -26,7 +28,7 @@ use crate::{
 const PANE_GUTTER: f32 = nana_ui_core::space::XL;
 
 /// Vertical distance between the pinned rows and the body.
-const PANE_GAP: f32 = 6.0;
+const PANE_GAP: f32 = nana_ui_core::space::SM;
 
 /// Header and tabs above a flexible body, sharing the cards' content line.
 ///
@@ -185,30 +187,33 @@ enum SlotKind {
 
 fn slot_style(kind: SlotKind, hidden: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.overflow_x = OverflowSpec::Hidden;
-    layout.overflow_y = OverflowSpec::Hidden;
-    match kind {
-        SlotKind::Header => {
-            layout.width = Some(LengthSpec::Fill);
-            layout.flex_shrink = Some(0.0);
+    {
+        let layout = Arc::make_mut(&mut style.layout);
+        layout.overflow_x = OverflowSpec::Hidden;
+        layout.overflow_y = OverflowSpec::Hidden;
+        match kind {
+            SlotKind::Header => {
+                layout.width = Some(LengthSpec::Fill);
+                layout.flex_shrink = Some(0.0);
+            }
+            SlotKind::Tabs => {
+                layout.width = Some(LengthSpec::Fill);
+                layout.flex_shrink = Some(0.0);
+            }
+            SlotKind::Body => {
+                layout.width = Some(LengthSpec::Fill);
+                layout.height = Some(LengthSpec::Fill);
+                layout.flex_grow = Some(1.0);
+                layout.flex_shrink = Some(1.0);
+                layout.min_width = Some(LengthSpec::Px(0.0));
+                layout.min_height = Some(LengthSpec::Px(0.0));
+            }
         }
-        SlotKind::Tabs => {
-            layout.width = Some(LengthSpec::Fill);
-            layout.flex_shrink = Some(0.0);
-            layout.padding_left = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-            layout.padding_right = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-        }
-        SlotKind::Body => {
-            layout.width = Some(LengthSpec::Fill);
-            layout.height = Some(LengthSpec::Fill);
-            layout.flex_grow = Some(1.0);
-            layout.flex_shrink = Some(1.0);
-            layout.min_width = Some(LengthSpec::Px(0.0));
-            layout.min_height = Some(LengthSpec::Px(0.0));
-        }
+        layout.hidden = hidden;
     }
-    layout.hidden = hidden;
+    if matches!(kind, SlotKind::Tabs) {
+        style.surface_padding = Some(nana_ui_core::SurfacePadding::PanelX);
+    }
     style
 }
 
@@ -455,7 +460,9 @@ mod tests {
         assert_eq!(root_layout.gap, Some(LengthSpec::Px(PANE_GAP)));
 
         // The tabs shell is what puts tab chrome on the card content line.
-        let tabs_layout = &context.world().node_style(tabs_slot).unwrap().layout;
+        let tabs_layout = &context.world().extract_nodes(&[tabs_slot])[0]
+            .source_style
+            .layout;
         assert_eq!(
             tabs_layout.padding_left,
             Some(LengthSpec::Px(UI_METRICS.panel_padding_x))

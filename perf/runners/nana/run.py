@@ -5,6 +5,7 @@ Does not reimplement Runtime. Invokes:
 
 - nana-runtime-benchmark (StaticTree complete-binary-heap via tree_mutations, Mutation including remaining §3.2 kinds, Hover, catalog_animation)
 - nana-scene-benchmark --compositor (Issue #87 compositor-only work counters; 1/100/1k/10k, retarget, churn)
+- nana-theme-benchmark (Issue #101 §4 theme/style work counters; idle, control scale, hover, focus, palette, accent, density, head scope)
 - nana-framework-benchmark (VirtualList, VirtualTree, Table / text-table, Ime, DockWorkspace, Overlay, TextEditor)
 - nana-scene-benchmark (optional StaticTree scene rows)
 - nana-gpu-scene-benchmark (gpu-scene-ui from perf/scenarios/gpu-scene-ui.json; UiOnly UI + HostTexture)
@@ -55,6 +56,12 @@ GPU_SCENE_BIN = {
     "features": "gpu",
     "key": "gpu",
 }
+THEME_BIN = {
+    "package": "nana-ui-runtime",
+    "binary": "nana-theme-benchmark",
+    "features": "benchmark",
+    "key": "theme",
+}
 
 
 def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
@@ -73,6 +80,8 @@ def _needed_bins(scenario: dict[str, Any]) -> list[dict[str, str]]:
         if scenario.get("params", {}).get("composition") == "UiOnly":
             return [GPU_SCENE_BIN]
         return []
+    if kind == "Theme":
+        return [THEME_BIN]
     return []
 
 
@@ -243,6 +252,8 @@ def _extra_args(scenario: dict[str, Any], spec: dict[str, str], repo_root: Path)
 
 
 def _guess_report_key(payload: dict[str, Any]) -> str:
+    if payload.get("catalog_theme") is not None:
+        return "theme"
     if payload.get("catalog_compositor") is not None:
         return "scene_compositor"
     if payload.get("gpu_work") is not None or payload.get("composition") in {

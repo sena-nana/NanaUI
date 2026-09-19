@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ButtonKind, ControlSize, FlexDirection, Icon, LengthSpec, SemanticColorRole,
-    UI_METRICS,
+    AlignSpec, ButtonKind, ControlHeight, ControlPadding, ControlSize, FlexDirection, Icon,
+    LengthSpec, SemanticColorRole,
 };
 
 use crate::view_components::{Activate, IconButton, project_common};
@@ -106,19 +106,20 @@ impl Chip {
         });
         style.interaction.disabled.foreground = Some(SemanticColorRole::Faint);
         style.interaction.disabled.background = Some(SemanticColorRole::Subtle);
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.direction = Some(FlexDirection::Row);
-        layout.align_items = AlignSpec::Center;
-        layout.gap = Some(LengthSpec::Px(4.0));
-        layout.padding_left = Some(LengthSpec::Px(UI_METRICS.compact_control_padding_x));
-        layout.padding_right = layout.padding_left;
-        layout.min_height = Some(LengthSpec::Px(UI_METRICS.compact_control_height));
-        layout.border_width = Some(1.0);
-        layout.border_radius = Some(999.0);
-        layout.font_size = Some(self.size.text_size());
-        layout.font_weight = Some(500);
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.direction = Some(FlexDirection::Row);
+            layout.align_items = AlignSpec::Center;
+            layout.gap = Some(LengthSpec::Px(nana_ui_core::space::XS));
+            layout.border_width = Some(nana_ui_core::HAIRLINE);
+            layout.border_radius = Some(999.0);
+            layout.font_size = Some(self.size.text_size());
+            layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
+            layout.flex_grow = Some(0.0);
+            layout.flex_shrink = Some(0.0);
+        }
+        style.control_padding_x = Some(ControlPadding::Compact);
+        style.control_height = Some(ControlHeight::Min(ControlSize::Small));
         style
     }
 }
@@ -138,7 +139,7 @@ impl ComponentView for Chip {
         let visual = StandardVisual::Button {
             icon: None,
             icon_size: self.size.icon_size(),
-            icon_gap: 6.0,
+            icon_gap: nana_ui_core::space::SM,
             label: Arc::clone(&self.label),
             kind: self.kind(),
             size: self.size,

@@ -745,9 +745,9 @@ fn snapshot_theme_tokens_honor_backdrop_and_titlebar_follow() {
     bridge.apply_document_appearance(&dataset, &style);
     let snap = bridge.snapshot();
     let tokens = theme_tokens_from_snapshot(&snap, true);
-    assert!((tokens.colors.surface.a - 0.5).abs() < f32::EPSILON);
+    assert!((tokens.palette.surface.a - 0.5).abs() < f32::EPSILON);
     assert!((tokens.titlebar.a - 1.0).abs() < f32::EPSILON);
-    assert!((tokens.colors.background.a - 1.0).abs() < f32::EPSILON);
+    assert!((tokens.palette.background.a - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]

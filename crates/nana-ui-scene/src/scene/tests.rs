@@ -1,3 +1,4 @@
+use nana_ui_core::{UI_METRICS, type_scale};
 #[cfg(all(feature = "charts", feature = "rich-text"))]
 use nana_ui_runtime::TimeSeriesChart;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
 
 fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
     ExtractedNode {
+        chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: id(value),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: parent.map(id),
@@ -567,7 +569,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -830,6 +832,83 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
                 .kind
         ),
         Some(nana_ui_core::Icon::Search)
+    );
+}
+
+/// Issue #101 F1: framework chrome follows the installed theme.
+///
+/// A menu surface's corner radius is painted by the Scene for a node that
+/// never authored one, so it used to come from the `UI_METRICS` constant and
+/// a themed radius could not reach it. The resolved steps now ride on the
+/// extracted node, and this is the assertion that the Scene paints the value
+/// it was given rather than a constant it looked up.
+#[test]
+fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
+    let surface = LayoutBox {
+        x: 8.0,
+        y: 12.0,
+        width: 200.0,
+        height: 72.0,
+    };
+    let menu_with = |md: f32| {
+        let mut menu = node(3, None, &[]);
+        menu.layout = surface;
+        menu.chrome_radii = nana_ui_core::ChromeRadii {
+            md,
+            ..nana_ui_core::ChromeRadii::default()
+        };
+        menu.standard_visual = Some(StandardVisual::MenuSurface {
+            trigger_image: None,
+            open: true,
+            kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
+            trigger: None,
+            trigger_icon: None,
+            gap: 0.0,
+            overlay: None,
+            query: None,
+            rows: Arc::from([]),
+            highlighted: None,
+        });
+        menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+            trigger_image: None,
+            trigger_surface: None,
+            trigger: None,
+            trigger_icon: None,
+            surface,
+            search: None,
+            search_field: None,
+            options: Vec::new(),
+            elevation: ComponentElevation {
+                color: [0.0, 0.0, 0.0, 0.55],
+                offset_x: 0.0,
+                offset_y: 4.0,
+                blur_radius: 18.0,
+                spread_radius: 0.0,
+                inset: false,
+            },
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.2, 0.2, 0.2, 1.0],
+        }));
+        let mut scene = UiScene::new();
+        scene.apply_delta([menu], []);
+        match scene
+            .primitive(PrimitiveId {
+                node: id(3),
+                slot: 0,
+            })
+            .expect("menu surface quad")
+            .kind
+        {
+            ScenePrimitiveKind::Quad { corner_radius, .. } => corner_radius,
+            ref other => panic!("menu surface is a quad, got {other:?}"),
+        }
+    };
+
+    assert_eq!(menu_with(UI_METRICS.radius_md), [UI_METRICS.radius_md; 4]);
+    assert_eq!(
+        menu_with(3.0),
+        [3.0; 4],
+        "the Scene must paint the resolved radius it was handed"
     );
 }
 
@@ -1882,7 +1961,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
             },
         ],
         line_labels_color: [0.6, 0.6, 0.6, 1.0],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -1950,7 +2029,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
             },
             content: Arc::from(format!("error {index}")),
             color: Some([1.0; 4]),
-            font_size: 11.0,
+            font_size: type_scale::HINT,
             font_weight: None,
         })
         .collect();
@@ -2175,7 +2254,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2306,7 +2385,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2420,7 +2499,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
@@ -2661,7 +2740,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2780,7 +2859,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2878,7 +2957,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
             },
         ],
         line_labels_color: [0.5, 0.5, 0.5, 1.0],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry {
             gutters: vec![nana_ui_runtime::TextFoldGutter {
                 bounds: LayoutBox {
@@ -3197,7 +3276,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry {
             gutters,
             markers: Vec::new(),
@@ -3349,7 +3428,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3495,7 +3574,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3631,7 +3710,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         ],
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3803,7 +3882,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3921,7 +4000,7 @@ fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -4155,7 +4234,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
             .unwrap()
             .kind,
         ScenePrimitiveKind::Text {
-            size: 11.0,
+            size: type_scale::HINT,
             weight: None,
             ..
         }
@@ -7271,7 +7350,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
@@ -7445,7 +7524,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
@@ -7609,7 +7688,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
             number: 1,
         }],
         line_labels_color: [0.5; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,

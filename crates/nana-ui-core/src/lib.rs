@@ -139,7 +139,10 @@ pub use tab_drag::{
     TabDragGroup, TabDragLease, TabDragRect, TabDragSurface, TabDropIndicator, TabStripPaint,
     drop_before_index, reorder_changes_position, tab_at,
 };
-pub use theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space, type_scale};
+pub use theme::{
+    ChromeRadii, ControlHeight, ControlPadding, HAIRLINE, RadiusTier, SquareSize, SurfacePadding,
+    ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space, type_scale,
+};
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};
 pub use url_jail::{
@@ -158,7 +161,7 @@ pub use virtual_table::{
     VirtualTableLayout, VirtualTableMaterialization, VirtualTableMaterializer, VirtualTableWindow,
 };
 pub use virtual_tree::{VirtualTreeLayout, VirtualTreeRow, VirtualTreeWindow};
-pub use work::{FrameStage, GpuWorkObservation, WorkCounters};
+pub use work::{FrameStage, GpuWorkObservation, ThemeWorkCounters, WorkCounters};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };

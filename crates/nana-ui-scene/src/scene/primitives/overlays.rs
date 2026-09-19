@@ -33,7 +33,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 scene_rect(*scrim),
                 VisualQuadStyle::solid([0.0, 0.0, 0.0, 0.45]),
             ));
-            let radius = UI_METRICS.radius_md;
+            let radius = node.chrome_radii.md;
             let docked = match node.standard_visual.as_ref() {
                 Some(StandardVisual::ModalFrame {
                     kind: nana_ui_runtime::ModalSurfaceKind::Drawer(side),
@@ -258,7 +258,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 let radius = if trigger_image.is_some() {
                     chrome.bounds.width.min(chrome.bounds.height) * 0.5
                 } else {
-                    UI_METRICS.radius_sm
+                    node.chrome_radii.sm
                 };
                 emit(ScenePrimitive {
                     id: PrimitiveId { node: id, slot: 1 },
@@ -322,7 +322,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(*background),
                         border_color: Some(*border),
                         border_width: 1.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_md),
+                        corner_radius: corner_radii(node.chrome_radii.md),
                         shadow: Some(*elevation),
                         surface: QuadSurfacePaint::default(),
                     },
@@ -344,7 +344,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(*background),
                         border_color: Some(*border),
                         border_width: 1.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_sm),
+                        corner_radius: corner_radii(node.chrome_radii.sm),
                     },
                 ));
             }
@@ -379,7 +379,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                             background: Some(background),
                             border_color: None,
                             border_width: 0.0,
-                            corner_radius: corner_radii(UI_METRICS.radius_sm),
+                            corner_radius: corner_radii(node.chrome_radii.sm),
                         },
                     ));
                 }

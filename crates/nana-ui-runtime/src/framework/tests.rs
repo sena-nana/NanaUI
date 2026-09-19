@@ -783,15 +783,25 @@ fn loading_button_owns_size_semantics_animation_and_activation_gate() {
 
     assert!(!context.activate_button(button).unwrap());
     assert_eq!(context.next_animation_deadline(), Some(Duration::ZERO));
+    // The authored style names the step; the number is produced against the
+    // installed metrics (Issue #101 F1).
     assert_eq!(
         context
             .world()
             .node_style(button.stable_id())
             .unwrap()
+            .control_height,
+        Some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Large
+        ))
+    );
+    assert_eq!(
+        context.world().extract_nodes(&[button.stable_id()])[0]
+            .source_style
             .layout
             .min_height,
         Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::ControlSize::Large.height()
+            nana_ui_core::ControlSize::Large.height_in(nana_ui_core::UI_METRICS)
         ))
     );
     let accessibility = context.world().accessibility(button.stable_id()).unwrap();
@@ -860,15 +870,25 @@ fn text_input_owns_editability_privacy_size_and_busy_semantics() {
     assert!(!node.editable);
     assert!(node.invalid);
     assert_eq!(node.value, None);
+    // The authored style names the step; the number is produced against the
+    // installed metrics (Issue #101 F1).
     assert_eq!(
         context
             .world()
             .node_style(input.stable_id())
             .unwrap()
+            .control_height,
+        Some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Large
+        ))
+    );
+    assert_eq!(
+        context.world().extract_nodes(&[input.stable_id()])[0]
+            .source_style
             .layout
             .min_height,
         Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::ControlSize::Large.height()
+            nana_ui_core::ControlSize::Large.height_in(nana_ui_core::UI_METRICS)
         ))
     );
 
@@ -984,10 +1004,8 @@ fn card_icon_button_and_list_item_keep_visual_and_semantic_content_distinct() {
     assert_eq!(icon_node.role, crate::AccessibilityRole::Button);
     assert_eq!(icon_node.label.as_deref(), Some("Add source"));
     assert_eq!(
-        context
-            .world()
-            .node_style(icon.stable_id())
-            .unwrap()
+        context.world().extract_nodes(&[icon.stable_id()])[0]
+            .source_style
             .layout
             .min_width,
         Some(nana_ui_core::LengthSpec::Px(
@@ -1270,14 +1288,12 @@ fn native_toggle_and_slider_state_share_events_visuals_and_accessibility() {
         })
     );
     assert_eq!(
-        context
-            .world()
-            .node_style(checkbox.stable_id())
-            .unwrap()
+        context.world().extract_nodes(&[checkbox.stable_id()])[0]
+            .source_style
             .layout
             .min_height,
         Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::ControlSize::Medium.height()
+            nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
         ))
     );
     assert_eq!(
@@ -1368,14 +1384,12 @@ fn an_indeterminate_checkbox_reads_mixed_and_paints_as_engaged() {
         })
     );
     assert_eq!(
-        context
-            .world()
-            .node_style(mixed.stable_id())
-            .unwrap()
+        context.world().extract_nodes(&[mixed.stable_id()])[0]
+            .source_style
             .layout
             .min_height,
         Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::ControlSize::Large.height()
+            nana_ui_core::ControlSize::Large.height_in(nana_ui_core::UI_METRICS)
         ))
     );
     let accessibility = context.world().project_accessibility(document);
@@ -2093,10 +2107,8 @@ fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
     );
     let radius = context.world().theme_metrics().radius_md;
     assert_eq!(
-        context
-            .world()
-            .node_style(control.stable_id())
-            .unwrap()
+        context.world().extract_nodes(&[control.stable_id()])[0]
+            .source_style
             .layout
             .border_radius,
         Some(radius)
@@ -2108,7 +2120,7 @@ fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
             .unwrap()
             .layout
             .border_radius,
-        Some((radius - 3.0).max(0.0))
+        Some((radius - nana_ui_core::space::XXS).max(0.0))
     );
 
     context.focus_node(document, before.stable_id()).unwrap();
@@ -2252,9 +2264,13 @@ fn segmented_intrinsic_width_is_stable_across_viewports_sizes_icons_and_empty_gr
         let narrow = context.world().layout_box(control.stable_id()).unwrap();
         let icon_bounds = context.world().layout_box(icon.stable_id()).unwrap();
         let plain_bounds = context.world().layout_box(plain.stable_id()).unwrap();
-        assert_eq!(narrow.height, size.height());
+        assert_eq!(narrow.height, size.height_in(nana_ui_core::UI_METRICS));
         assert!(icon_bounds.width > plain_bounds.width);
-        assert!((narrow.width - (icon_bounds.width + plain_bounds.width + 8.0)).abs() < 0.01);
+        assert!(
+            (narrow.width - (icon_bounds.width + plain_bounds.width + nana_ui_core::space::MD))
+                .abs()
+                < 0.01
+        );
 
         context
             .layout_document(document, crate::LayoutViewport::new(640.0, 100.0))
@@ -2275,7 +2291,10 @@ fn segmented_intrinsic_width_is_stable_across_viewports_sizes_icons_and_empty_gr
         .unwrap();
     let empty = context.world().layout_box(empty.stable_id()).unwrap();
     assert_eq!(empty.width, 6.0);
-    assert_eq!(empty.height, nana_ui_core::ControlSize::Medium.height());
+    assert_eq!(
+        empty.height,
+        nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+    );
 }
 
 #[test]
@@ -3107,6 +3126,828 @@ fn resident_scrollbars_draw_a_track_without_hover() {
     assert!(
         (bar.track.x + bar.track.width - 200.0).abs() < 0.01,
         "bar hugs the right edge"
+    );
+}
+
+/// Issue #101 F1: a control's **height** follows the installed theme.
+///
+/// This is the one a density setting actually moves. `ControlSize` was always
+/// the intent, but `ControlSize::height()` resolved it against the
+/// compile-time constant, so the control had fixed its height before any
+/// theme existed. The step now lives on the node and resolves against the
+/// installed metrics.
+#[test]
+fn an_installed_control_height_reaches_a_control_that_named_its_size() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let medium = context
+        .create_component(document, crate::Button::new("Run"))
+        .unwrap();
+    let small = context
+        .create_component(
+            document,
+            crate::Button::new("Run").size(nana_ui_core::ControlSize::Small),
+        )
+        .unwrap();
+
+    let height_of = |context: &AppContext, entity: Entity<crate::Button>| {
+        context.world().extract_nodes(&[entity.stable_id()])[0]
+            .source_style
+            .layout
+            .min_height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        height_of(&context, medium),
+        Some(px(nana_ui_core::UI_METRICS.control_height))
+    );
+    assert_eq!(
+        height_of(&context, small),
+        Some(px(nana_ui_core::UI_METRICS.compact_control_height)),
+        "the size step has to survive: a Small button is not a Medium one"
+    );
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_height = 44.0;
+    metrics.compact_control_height = 36.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(height_of(&context, medium), Some(px(44.0)));
+    assert_eq!(
+        height_of(&context, small),
+        Some(px(36.0)),
+        "each step resolves against its own installed metric"
+    );
+}
+
+/// Issue #101 F1: a control's **horizontal inset** follows the installed theme.
+///
+/// Same shape as height: `ControlPadding` names the step, construction no
+/// longer spends `UI_METRICS.control_padding_x` / `field_padding_x` /
+/// `list_item_padding_x`. A density setting has to be able to move all three.
+#[test]
+fn an_installed_control_padding_reaches_a_control_that_named_its_inset() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(document, crate::Button::new("Run"))
+        .unwrap();
+    let field = context
+        .create_component(document, crate::TextInput::new("name"))
+        .unwrap();
+    let row = context
+        .create_component(document, crate::ListItem::new("row"))
+        .unwrap();
+
+    let pad_of = |context: &AppContext, id| {
+        context.world().extract_nodes(&[id])[0]
+            .source_style
+            .layout
+            .padding_left
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        pad_of(&context, button.stable_id()),
+        Some(px(nana_ui_core::UI_METRICS.control_padding_x))
+    );
+    assert_eq!(
+        pad_of(&context, field.stable_id()),
+        Some(px(nana_ui_core::UI_METRICS.field_padding_x))
+    );
+    assert_eq!(
+        pad_of(&context, row.stable_id()),
+        Some(px(nana_ui_core::UI_METRICS.list_item_padding_x))
+    );
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_padding_x = 20.0;
+    metrics.field_padding_x = 18.0;
+    metrics.list_item_padding_x = 14.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(pad_of(&context, button.stable_id()), Some(px(20.0)));
+    assert_eq!(
+        pad_of(&context, field.stable_id()),
+        Some(px(18.0)),
+        "a text field is not a medium button with different padding"
+    );
+    assert_eq!(
+        pad_of(&context, row.stable_id()),
+        Some(px(14.0)),
+        "a list row keeps its own inset step under a density change"
+    );
+}
+
+#[test]
+fn an_installed_roomy_padding_is_no_longer_a_spacing_constant() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            crate::Button::new("Run").size(nana_ui_core::ControlSize::Large),
+        )
+        .unwrap();
+    let pad_of = |context: &AppContext| {
+        context.world().extract_nodes(&[button.stable_id()])[0]
+            .source_style
+            .layout
+            .padding_left
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        pad_of(&context),
+        Some(px(nana_ui_core::UI_METRICS.large_control_padding_x))
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.large_control_padding_x = 22.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(pad_of(&context), Some(px(22.0)));
+}
+
+#[test]
+fn an_installed_panel_padding_reaches_a_card_that_named_the_surface() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let card = context
+        .create_component(document, crate::Card::new())
+        .unwrap();
+    let pad_of = |context: &AppContext| {
+        let layout = &context.world().extract_nodes(&[card.stable_id()])[0]
+            .source_style
+            .layout;
+        (layout.padding_left, layout.padding_top)
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        pad_of(&context),
+        (
+            Some(px(nana_ui_core::UI_METRICS.panel_padding_x)),
+            Some(px(nana_ui_core::UI_METRICS.panel_padding_y)),
+        )
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.panel_padding_x = 24.0;
+    metrics.panel_padding_y = 20.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(pad_of(&context), (Some(px(24.0)), Some(px(20.0))));
+}
+
+#[test]
+fn an_installed_icon_button_size_reaches_the_square() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Settings"),
+        )
+        .unwrap();
+    let extent_of = |context: &AppContext| {
+        let layout = &context.world().extract_nodes(&[button.stable_id()])[0]
+            .source_style
+            .layout;
+        (layout.min_width, layout.min_height)
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = nana_ui_core::UI_METRICS.icon_button_size;
+    assert_eq!(extent_of(&context), (Some(px(default)), Some(px(default))));
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.icon_button_size = 36.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(extent_of(&context), (Some(px(36.0)), Some(px(36.0))));
+}
+
+#[test]
+fn an_installed_field_padding_reaches_a_textarea_block_inset() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let area = context
+        .create_component(document, crate::TextArea::new("notes"))
+        .unwrap();
+    let pad_of = |context: &AppContext| {
+        context.world().extract_nodes(&[area.stable_id()])[0]
+            .source_style
+            .layout
+            .padding_top
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        pad_of(&context),
+        Some(px(nana_ui_core::UI_METRICS.field_padding_x))
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.field_padding_x = 18.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(pad_of(&context), Some(px(18.0)));
+}
+
+#[test]
+fn an_installed_control_height_reaches_a_sidebar_row() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(document, crate::SidebarRow::new("舞台"))
+        .unwrap();
+    let height_of = |context: &AppContext| {
+        context.world().extract_nodes(&[row.stable_id()])[0]
+            .source_style
+            .layout
+            .height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    // Sidebar rows default to Small; Medium is `control_height`.
+    assert_eq!(
+        height_of(&context),
+        Some(px(nana_ui_core::UI_METRICS.compact_control_height))
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.compact_control_height = 36.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(height_of(&context), Some(px(36.0)));
+}
+
+#[test]
+fn an_installed_control_height_reaches_a_segmented_control() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let control = context
+        .create_component(document, crate::SegmentedControl::new())
+        .unwrap();
+    let height_of = |context: &AppContext| {
+        context.world().extract_nodes(&[control.stable_id()])[0]
+            .source_style
+            .layout
+            .height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        height_of(&context),
+        Some(px(nana_ui_core::UI_METRICS.control_height))
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_height = 44.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(height_of(&context), Some(px(44.0)));
+}
+
+#[test]
+fn an_installed_control_height_reaches_a_segmented_option() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let option = context
+        .create_component(document, crate::SegmentedOption::new("Preview"))
+        .unwrap();
+    let height_of = |context: &AppContext| {
+        context.world().extract_nodes(&[option.stable_id()])[0]
+            .source_style
+            .layout
+            .height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    assert_eq!(
+        height_of(&context),
+        Some(px((nana_ui_core::UI_METRICS.control_height
+            - nana_ui_core::space::SM)
+            .max(0.0),))
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_height = 44.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        height_of(&context),
+        Some(px((44.0 - nana_ui_core::space::SM).max(0.0)))
+    );
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_dismissible_toast() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let toast = context
+        .create_component(
+            document,
+            crate::Toast::new("Copied", crate::ToastTone::Info).dismissible(true),
+        )
+        .unwrap();
+    let min_height_of = |context: &AppContext| {
+        context.world().extract_nodes(&[toast.stable_id()])[0]
+            .source_style
+            .layout
+            .min_height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = crate::toast::PAD_Y * 2.0 + nana_ui_core::UI_METRICS.compact_control_height;
+    assert_eq!(min_height_of(&context), Some(px(default)));
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.compact_control_height = 40.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        min_height_of(&context),
+        Some(px(crate::toast::PAD_Y * 2.0 + 40.0))
+    );
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_context_menu_search_field() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let menu = context
+        .create_component(
+            document,
+            crate::ContextMenu::new(24.0, 36.0)
+                .items([crate::ContextMenuItem::new("open", "Open")])
+                .searchable(true),
+        )
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(400.0, 400.0))
+        .unwrap();
+    let search_height =
+        |context: &AppContext| match context.world().extract_nodes(&[menu.stable_id()])[0]
+            .component_geometry
+            .as_deref()
+        {
+            Some(crate::ComponentGeometry::MenuSurface { search, .. }) => {
+                search.as_ref().map(|region| region.bounds.height)
+            }
+            other => panic!("menu geometry, got {other:?}"),
+        };
+    assert_eq!(
+        search_height(&context),
+        Some(nana_ui_core::UI_METRICS.compact_control_height)
+    );
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.compact_control_height = 40.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(search_height(&context), Some(40.0));
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_tree_view() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let tree = context
+        .create_component(
+            document,
+            crate::TreeView::new([nana_ui_core::TreeNode::leaf(
+                std::sync::Arc::from("readme"),
+                "README.md",
+            )]),
+        )
+        .unwrap();
+    let height_of = |context: &AppContext| {
+        context.world().extract_nodes(&[tree.stable_id()])[0]
+            .source_style
+            .layout
+            .height
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = nana_ui_core::UI_METRICS.compact_control_height;
+    assert_eq!(height_of(&context), Some(px(default)));
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.compact_control_height = 40.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(height_of(&context), Some(px(40.0)));
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_sidebar_footer_button() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            crate::SidebarFooterButton::new("设置", nana_ui_core::Icon::Settings),
+        )
+        .unwrap();
+    let extent_of = |context: &AppContext| {
+        let layout = &context.world().extract_nodes(&[button.stable_id()])[0]
+            .source_style
+            .layout;
+        (
+            layout.width,
+            layout.height,
+            layout.min_width,
+            layout.min_height,
+        )
+    };
+    let install = |context: &mut AppContext, compact: f32| {
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.compact_control_height = compact;
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = nana_ui_core::UI_METRICS.compact_control_height;
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default))
+        )
+    );
+    assert!(install(&mut context, 36.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0))
+        )
+    );
+    // A spent `width: 28` would survive this shrink and the square would not.
+    assert!(install(&mut context, 20.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0))
+        )
+    );
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_settings_disclosure() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let summary = context
+        .create_component(document, crate::Text::new("高级"))
+        .unwrap();
+    let details = context
+        .create_component(document, crate::Text::new("明细"))
+        .unwrap();
+    let card = context
+        .create_component(
+            document,
+            crate::SettingsCollapsibleCard::new(false)
+                .summary(summary.stable_id())
+                .details(details.stable_id()),
+        )
+        .unwrap();
+    assert!(context.assemble_settings_collapsible_card(card).unwrap());
+    let disclosure = context
+        .read(card, |card| card.disclosure)
+        .unwrap()
+        .expect("disclosure");
+    let extent_of = |context: &AppContext| {
+        let layout = &context.world().extract_nodes(&[disclosure])[0]
+            .source_style
+            .layout;
+        (
+            layout.width,
+            layout.height,
+            layout.min_width,
+            layout.min_height,
+        )
+    };
+    let install = |context: &mut AppContext, compact: f32| {
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.compact_control_height = compact;
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = nana_ui_core::UI_METRICS.compact_control_height;
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default))
+        )
+    );
+    assert!(install(&mut context, 36.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0))
+        )
+    );
+    assert!(install(&mut context, 20.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0))
+        )
+    );
+}
+
+#[test]
+fn an_installed_compact_height_reaches_a_thumbnail() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let thumb = context
+        .create_component(document, crate::Thumbnail::empty())
+        .unwrap();
+    let extent_of = |context: &AppContext| {
+        let layout = &context.world().extract_nodes(&[thumb.stable_id()])[0]
+            .source_style
+            .layout;
+        (
+            layout.width,
+            layout.height,
+            layout.min_width,
+            layout.min_height,
+            layout.border_radius,
+        )
+    };
+    let install = |context: &mut AppContext, compact: f32, radius: f32| {
+        let mut metrics = nana_ui_core::UI_METRICS;
+        metrics.compact_control_height = compact;
+        metrics.radius_xs = radius;
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    };
+    let px = nana_ui_core::LengthSpec::Px;
+    let default = nana_ui_core::UI_METRICS.compact_control_height;
+    let radius = nana_ui_core::UI_METRICS.radius_xs;
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default)),
+            Some(px(default)),
+            Some(radius)
+        )
+    );
+    assert!(install(&mut context, 36.0, 8.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(px(36.0)),
+            Some(8.0)
+        )
+    );
+    // A spent `width: 28` would survive this shrink and the 1:1 box would not.
+    assert!(install(&mut context, 20.0, 8.0));
+    assert_eq!(
+        extent_of(&context),
+        (
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(px(20.0)),
+            Some(8.0)
+        )
+    );
+    context
+        .layout_document(document, crate::LayoutViewport::new(240.0, 80.0))
+        .unwrap();
+    let bounds = context.world().layout_box(thumb.stable_id()).unwrap();
+    assert_eq!((bounds.width, bounds.height), (20.0, 20.0));
+}
+
+/// Issue #101 F1: a control's corner radius follows the **installed** theme.
+///
+/// The Appearance radius setting produces a `ThemeMetrics`; before this the
+/// control had already turned `radius_sm` into a number at construction time,
+/// so installing that theme moved nothing. The control now names the tier and
+/// extraction resolves it, the same way the palette is resolved.
+#[test]
+fn an_installed_radius_reaches_a_control_that_named_the_tier() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(document, crate::Button::new("Run build"))
+        .unwrap();
+
+    let radius_of = |context: &AppContext| {
+        context.world().extract_nodes(&[button.stable_id()])[0]
+            .source_style
+            .layout
+            .border_radius
+    };
+    assert_eq!(
+        radius_of(&context),
+        Some(nana_ui_core::UI_METRICS.radius_sm)
+    );
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.radius_sm = 2.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        radius_of(&context),
+        Some(2.0),
+        "a named radius tier must resolve against the installed metrics"
+    );
+
+    // The same install also has to reach the chrome the Scene paints for a
+    // node that authored no radius of its own (menu surfaces, modal frames,
+    // palette rows). Those steps ride on the extracted node.
+    let chrome = context.world().extract_nodes(&[button.stable_id()])[0].chrome_radii;
+    assert_eq!(chrome.sm, 2.0);
+    assert_eq!(chrome.md, nana_ui_core::UI_METRICS.radius_md);
+
+    // The escape hatch stays an escape hatch: an explicit px radius is a
+    // one-off local intent and must not be recaptured by the theme.
+    let pinned = context
+        .create_component(
+            document,
+            crate::Button::new("Pinned").style(crate::NodeStyle::default().radius_px(11.0)),
+        )
+        .unwrap();
+    assert_eq!(
+        context.world().extract_nodes(&[pinned.stable_id()])[0]
+            .source_style
+            .layout
+            .border_radius,
+        Some(11.0)
+    );
+}
+
+/// Issue #101 F1/F10: the scrollbar follows the **installed** theme.
+///
+/// Its geometry used to come only from the `SCROLLBAR_METRICS` constant, so a
+/// theme or density change could not move it. `ThemeMetrics` now owns the
+/// scrollbar metrics, and this is the assertion that says the installed value
+/// is the one that arrives.
+#[test]
+fn a_thicker_scrollbar_in_the_installed_theme_reaches_the_bar() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let scroll = overflowing_scroll_view(
+        &mut context,
+        document,
+        nana_ui_core::ScrollbarVisibility::Always,
+    );
+    let default_width = vertical_bar(&context, scroll)
+        .expect("resident bars need no hover")
+        .track
+        .width;
+    assert!((default_width - nana_ui_core::SCROLLBAR_METRICS.thickness).abs() < 0.01);
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.scrollbar.thickness = nana_ui_core::SCROLLBAR_METRICS.thickness * 2.0;
+    metrics.scrollbar.thumb_thickness = nana_ui_core::SCROLLBAR_METRICS.thumb_thickness * 2.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap(),
+        "the metrics changed, so installing them is not a no-op"
+    );
+
+    let widened = vertical_bar(&context, scroll)
+        .expect("the bar survives a theme install")
+        .track
+        .width;
+    assert!(
+        (widened - default_width * 2.0).abs() < 0.01,
+        "installed scrollbar thickness must reach the bar: {default_width} -> {widened}"
     );
 }
 

@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LayoutStyle, LengthSpec,
-    PointerEventsSpec, PopoverPlacement, PositionSpec, SemanticColorRole, UI_METRICS, space,
+    PointerEventsSpec, PopoverPlacement, PositionSpec, SemanticColorRole, space,
 };
 
 use crate::component_registry::{RegisterableComponent, SemanticSpec};
@@ -41,7 +41,7 @@ const BAR_MAX_WIDTH: f32 = 820.0;
 const BAR_MARGIN: f32 = space::XL;
 const BAR_Z_INDEX: i32 = 30;
 const BACKPLATE_OPACITY: f32 = 0.88;
-const VOLUME_POPOVER_WIDTH: f32 = 240.0;
+const VOLUME_POPOVER_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
 
 /// Built-in transport action. Scene extras keep their own events.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -496,7 +496,7 @@ impl AppContext {
                 document,
                 Stack::column(space::MD)
                     .hittable()
-                    .radius(UI_METRICS.radius_md)
+                    .radius(nana_ui_core::RadiusTier::Md)
                     .with_layout(|layout| {
                         layout.position = PositionSpec::Relative;
                         layout.width = Some(LengthSpec::Fill);
@@ -511,7 +511,7 @@ impl AppContext {
                 document,
                 Stack::column(0.0)
                     .surface(SemanticColorRole::Surface)
-                    .radius(UI_METRICS.radius_md)
+                    .radius(nana_ui_core::RadiusTier::Md)
                     .with_layout(|layout| {
                         layout.position = PositionSpec::Absolute;
                         layout.offset_left = Some(LengthSpec::Px(0.0));
@@ -1046,6 +1046,7 @@ impl std::fmt::Display for Clock {
 mod tests {
     use super::*;
     use crate::DocumentId;
+    use nana_ui_core::UI_METRICS;
     use std::sync::{Arc as StdArc, Mutex};
 
     fn document() -> DocumentId {

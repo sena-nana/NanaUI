@@ -1,0 +1,17 @@
+component: graph-canvas
+mode: dark
+state: nodes
+  target: 20.00,20.00 380.00x140.00
+  a11y: role=Generic disabled=false checked=None selected=Some(false) mixed=false
+  text #2/25769803776 44.00,98.00 80.00x14.00 opacity=1.00 color=#a3a3a3ff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/25769803777 208.00,98.00 80.00x14.00 opacity=1.00 color=#a3a3a3ff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/10 20.00,20.00 380.00x140.00 opacity=1.00 bg=#181818ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad-batch #2/11 20.00,20.00 380.00x140.00 opacity=1.00 count=22 bg=#232323b8 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/8589934592 36.00,56.00 96.00x48.00 opacity=1.00 bg=#202020ff border=#2a2a2aff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/8589934593 200.00,56.00 96.00x48.00 opacity=1.00 bg=#202020ff border=#2a2a2aff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/17179869184 46.00,56.00 76.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/17179869185 210.00,56.00 76.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/21474836480 128.00,101.00 8.00x8.00 opacity=1.00 bg=#181818ff border=#7bb9f0ff border_width=1.60 radius=999.00/999.00/999.00/999.00 shadow=none
+  quad #2/21474836481 196.00,101.00 8.00x8.00 opacity=1.00 bg=#181818ff border=#a3a3a3ff border_width=1.60 radius=999.00/999.00/999.00/999.00 shadow=none
+  stroke #2/4294967296 20.00,20.00 380.00x140.00 opacity=1.00 points=2 width=1.60 color=#3a3a3aff cap=Round
+  quad-batch #2/12884901888 36.00,84.00 260.00x1.00 opacity=1.00 count=2 bg=#232323ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none

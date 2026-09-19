@@ -121,17 +121,17 @@ fn bar_style(chrome: bool, below_content: bool) -> NodeStyle {
     if chrome {
         style.background = Some(SemanticColorRole::Surface);
         style.border = Some(SemanticColorRole::BorderSoft);
-        layout.border_width = Some(1.0);
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
         // Only the edge that meets the content is drawn.
         if below_content {
-            layout.border_top_width = Some(1.0);
+            layout.border_top_width = Some(nana_ui_core::HAIRLINE);
             layout.border_right_width = Some(0.0);
             layout.border_bottom_width = Some(0.0);
             layout.border_left_width = Some(0.0);
         } else {
             layout.border_top_width = Some(0.0);
             layout.border_right_width = Some(0.0);
-            layout.border_bottom_width = Some(1.0);
+            layout.border_bottom_width = Some(nana_ui_core::HAIRLINE);
             layout.border_left_width = Some(0.0);
         }
     }
@@ -240,11 +240,17 @@ mod tests {
     #[test]
     fn the_hairline_sits_on_the_edge_that_meets_the_content() {
         let toolbar = Toolbar::new();
-        assert_eq!(toolbar.style.layout.border_bottom_width, Some(1.0));
+        assert_eq!(
+            toolbar.style.layout.border_bottom_width,
+            Some(nana_ui_core::HAIRLINE)
+        );
         assert_eq!(toolbar.style.layout.border_top_width, Some(0.0));
 
         let status = StatusBar::new();
-        assert_eq!(status.style.layout.border_top_width, Some(1.0));
+        assert_eq!(
+            status.style.layout.border_top_width,
+            Some(nana_ui_core::HAIRLINE)
+        );
         assert_eq!(status.style.layout.border_bottom_width, Some(0.0));
 
         // Nested in a surface that already draws them, a bar takes no chrome.

@@ -280,11 +280,11 @@ impl<T> fmt::Debug for CalendarHeatmapOptions<T> {
 impl<T> Default for CalendarHeatmapOptions<T> {
     fn default() -> Self {
         Self {
-            cell_size: 11.0,
-            cell_gap: 3.0,
-            cell_radius: 2.0,
-            label_width: 42.0,
-            month_label_height: 14.0,
+            cell_size: CalendarHeatmap::<()>::CELL_SIZE,
+            cell_gap: CalendarHeatmap::<()>::CELL_GAP,
+            cell_radius: CalendarHeatmap::<()>::CELL_RADIUS,
+            label_width: CalendarHeatmap::<()>::LABEL_WIDTH,
+            month_label_height: CalendarHeatmap::<()>::MONTH_LABEL_HEIGHT,
             week_starts_on: 1,
             weekday_labels: vec![
                 (1, "周一".to_owned()),
@@ -300,9 +300,10 @@ impl<T> Default for CalendarHeatmapOptions<T> {
 
 impl<T> CalendarHeatmapOptions<T> {
     pub fn cell_metrics(mut self, size: f32, gap: f32, radius: f32) -> Self {
-        self.cell_size = finite_positive(size, 11.0);
-        self.cell_gap = finite_non_negative(gap, 3.0);
-        self.cell_radius = finite_non_negative(radius, 2.0).min(self.cell_size / 2.0);
+        self.cell_size = finite_positive(size, CalendarHeatmap::<()>::CELL_SIZE);
+        self.cell_gap = finite_non_negative(gap, CalendarHeatmap::<()>::CELL_GAP);
+        self.cell_radius = finite_non_negative(radius, CalendarHeatmap::<()>::CELL_RADIUS)
+            .min(self.cell_size / 2.0);
         self
     }
 
@@ -348,12 +349,17 @@ pub fn build_calendar_heatmap_model<T: Clone>(
     data: &[CalendarHeatmapDatum<T>],
     mut options: CalendarHeatmapOptions<T>,
 ) -> CalendarHeatmapModel<T> {
-    options.cell_size = finite_positive(options.cell_size, 11.0);
-    options.cell_gap = finite_non_negative(options.cell_gap, 3.0);
+    options.cell_size = finite_positive(options.cell_size, CalendarHeatmap::<()>::CELL_SIZE);
+    options.cell_gap = finite_non_negative(options.cell_gap, CalendarHeatmap::<()>::CELL_GAP);
     options.cell_radius =
-        finite_non_negative(options.cell_radius, 2.0).min(options.cell_size / 2.0);
-    options.label_width = finite_non_negative(options.label_width, 42.0);
-    options.month_label_height = finite_non_negative(options.month_label_height, 14.0);
+        finite_non_negative(options.cell_radius, CalendarHeatmap::<()>::CELL_RADIUS)
+            .min(options.cell_size / 2.0);
+    options.label_width =
+        finite_non_negative(options.label_width, CalendarHeatmap::<()>::LABEL_WIDTH);
+    options.month_label_height = finite_non_negative(
+        options.month_label_height,
+        CalendarHeatmap::<()>::MONTH_LABEL_HEIGHT,
+    );
 
     let mut dated: Vec<_> = data
         .iter()
@@ -469,6 +475,12 @@ impl<T> Default for CalendarHeatmap<T> {
 }
 
 impl<T> CalendarHeatmap<T> {
+    pub const CELL_SIZE: f32 = 11.0;
+    pub const CELL_GAP: f32 = 3.0;
+    pub const CELL_RADIUS: f32 = nana_ui_core::space::XXS;
+    pub const LABEL_WIDTH: f32 = 42.0;
+    pub const MONTH_LABEL_HEIGHT: f32 = nana_ui_core::type_scale::SECTION;
+
     pub fn new(data: impl IntoIterator<Item = CalendarHeatmapDatum<T>>) -> Self {
         Self {
             data: data.into_iter().collect(),

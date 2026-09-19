@@ -75,11 +75,14 @@ jobs:
           lifecycle embedded-window-lifecycle
           lifecycle embedded-window-lifecycle --probe-device-loss
           lifecycle embedded-window-lifecycle --probe-host-stop
-      # The Gallery snapshot gate itself cannot run here: it compares exactly
-      # against a baseline recorded by one GPU adapter, and no hosted runner
-      # matches a committed adapter key. These tests cover the parts that are
+      # The Gallery *pixel* gate cannot run here: it compares exactly against a
+      # baseline recorded by one GPU adapter, and no hosted runner matches a
+      # committed adapter key. These tests cover the parts that are
       # adapter-independent -- the baseline store's verify/bless/stale logic,
-      # and that every compiled component still has a snapshot fixture.
+      # that every compiled component still has a snapshot fixture, and the
+      # Issue #101 semantic baseline: the same light/dark state matrix as
+      # resolved style rather than pixels, which needs no adapter and would
+      # otherwise be checked nowhere.
       - name: Run Gallery snapshot-gate tests
         run: cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
       # `nana-ui-dev` refuses to compile without `debug_assertions`, which

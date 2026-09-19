@@ -1,0 +1,30 @@
+component: xy-pad
+mode: light
+state: rest
+  target: 20.00,20.00 380.00x48.00
+  a11y: role=Slider disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#f7f8faff border=#e3e5e8ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/1 20.00,43.50 380.00x1.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/2 209.50,20.00 1.00x48.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/3 149.00,30.40 8.00x8.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+state: invalid
+  target: 20.00,20.00 380.00x48.00
+  a11y: role=Slider disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#f7f8faff border=#c93c3cff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/1 20.00,43.50 380.00x1.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/2 209.50,20.00 1.00x48.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/3 149.00,30.40 8.00x8.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+state: hover
+  target: 20.00,20.00 380.00x48.00
+  a11y: role=Slider disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#f7f8faff border=#cbcfd5ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/1 20.00,43.50 380.00x1.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/2 209.50,20.00 1.00x48.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/3 149.00,30.40 8.00x8.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none
+state: focused
+  target: 20.00,20.00 380.00x48.00
+  a11y: role=Slider disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#f7f8faff border=#cbcfd5ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/1 20.00,43.50 380.00x1.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/2 209.50,20.00 1.00x48.00 opacity=1.00 bg=#e3e5e8ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/3 149.00,30.40 8.00x8.00 opacity=1.00 bg=#4991d7ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none

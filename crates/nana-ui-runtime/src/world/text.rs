@@ -469,11 +469,19 @@ pub(super) fn shape_empty_state_text(
         return EmptyStateTextPresentation::default();
     };
     let mut title_style = inherited.clone();
-    title_style.font_size = if *compact { 12.0 } else { 13.0 };
-    title_style.font_weight = Some(600);
+    title_style.font_size = if *compact {
+        nana_ui_core::type_scale::META
+    } else {
+        nana_ui_core::type_scale::BODY
+    };
+    title_style.font_weight = Some(nana_ui_core::type_scale::SEMIBOLD);
     title_style.line_height = None;
     let mut message_style = inherited.clone();
-    message_style.font_size = if *compact { 11.0 } else { 12.0 };
+    message_style.font_size = if *compact {
+        nana_ui_core::type_scale::HINT
+    } else {
+        nana_ui_core::type_scale::META
+    };
     message_style.font_weight = None;
     message_style.line_height = None;
     let constraints = crate::TextShapeConstraints {
@@ -527,11 +535,11 @@ pub(super) fn shape_modal_text(
         ..Default::default()
     };
     let mut title_style = inherited.clone();
-    title_style.font_size = 14.0;
-    title_style.font_weight = Some(600);
+    title_style.font_size = nana_ui_core::type_scale::SECTION;
+    title_style.font_weight = Some(nana_ui_core::type_scale::SEMIBOLD);
     title_style.line_height = None;
     let mut description_style = inherited.clone();
-    description_style.font_size = 12.0;
+    description_style.font_size = nana_ui_core::type_scale::META;
     description_style.font_weight = None;
     description_style.line_height = None;
     let mut body_style = inherited.clone();
@@ -599,22 +607,22 @@ pub(super) fn progress_geometry(
         height: cancel_size,
     });
     let label_width = cancel
-        .map(|cancel| (cancel.x - bounds.x - 8.0).max(0.0))
+        .map(|cancel| (cancel.x - bounds.x - nana_ui_core::space::MD).max(0.0))
         .unwrap_or(bounds.width);
     let label_region = label.map(|label| crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: bounds.x,
-            y: bounds.y + (heading - 12.0).max(0.0) / 2.0,
+            y: bounds.y + (heading - nana_ui_core::type_scale::META).max(0.0) / 2.0,
             width: label_width,
-            height: 12.0_f32.min(bounds.height),
+            height: nana_ui_core::type_scale::META.min(bounds.height),
         },
         content: Arc::clone(label),
         color: Some(style.color.unwrap_or(default_label_color)),
-        font_size: 12.0,
-        font_weight: Some(500),
+        font_size: nana_ui_core::type_scale::META,
+        font_weight: Some(nana_ui_core::type_scale::MEDIUM),
     });
     let track = if heading > 0.0 {
-        let track_y = bounds.y + heading + 6.0;
+        let track_y = bounds.y + heading + nana_ui_core::space::SM;
         LayoutBox {
             x: bounds.x,
             y: track_y,
@@ -660,10 +668,10 @@ pub(super) fn form_field_geometry(
     } else {
         SemanticColorRole::Muted
     };
-    let support_height = 12.0_f32.min(bounds.height);
+    let support_height = nana_ui_core::type_scale::META.min(bounds.height);
     let support_y = (bounds.y + bounds.height - support_height).max(bounds.y);
     let (indicator, support_x) = if error.is_some() {
-        let slot = 12.0;
+        let slot = nana_ui_core::space::XL;
         let diameter = slot * 10.0 / 24.0;
         (
             Some((
@@ -675,7 +683,7 @@ pub(super) fn form_field_geometry(
                 },
                 palette.get(support_role).as_rgba_array(),
             )),
-            bounds.x + slot + 5.0,
+            bounds.x + slot + nana_ui_core::space::XS,
         )
     } else {
         (None, bounds.x)
@@ -702,7 +710,7 @@ pub(super) fn form_field_geometry(
             },
             content: Arc::clone(message),
             color: Some(palette.get(support_role).as_rgba_array()),
-            font_size: 11.0,
+            font_size: nana_ui_core::type_scale::HINT,
             font_weight: None,
         }),
         indicator,
@@ -3552,7 +3560,7 @@ impl UiWorld {
         let mut style = self.record(id).style.clone();
         if style.layout.padding_top != Some(padding_top) {
             Arc::make_mut(&mut style.layout).padding_top = Some(padding_top);
-            self.record_mut(id).style = style;
+            self.write_node_style(id, style);
             self.mark(id, DirtyMask::LAYOUT | DirtyMask::RENDER);
             if let Some(parent) = self.node(id).and_then(|node| node.parent) {
                 self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);

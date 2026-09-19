@@ -102,6 +102,21 @@ pub(super) fn button_kind(state: &str) -> nana_ui::ButtonKind {
     }
 }
 
+/// `SidebarRowState` for a fixture state.
+///
+/// The row has no separate `selected` flag: `Active` *is* selected and
+/// `Disabled` *is* disabled, so the state matrix has to go through here rather
+/// than through builder booleans.
+pub(super) fn sidebar_row_state(state: &str) -> nana_ui::runtime::SidebarRowState {
+    match state {
+        "active" | "selected-hover" | "selected-pressed" => {
+            nana_ui::runtime::SidebarRowState::Active
+        }
+        "disabled" => nana_ui::runtime::SidebarRowState::Disabled,
+        _ => nana_ui::runtime::SidebarRowState::Idle,
+    }
+}
+
 pub(super) fn card_kind(state: &str) -> CardKind {
     match state {
         "outlined" => CardKind::Outlined,

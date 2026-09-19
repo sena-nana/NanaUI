@@ -35,10 +35,10 @@ use crate::{
 
 pub const GRAPH_CANVAS_RENDERER: &str = "graph-canvas";
 
-const DEFAULT_GRID_SPACING: f32 = 24.0;
-const KEYBOARD_PAN_STEP: f32 = 32.0;
+const DEFAULT_GRID_SPACING: f32 = nana_ui_core::space::PAGE;
+const KEYBOARD_PAN_STEP: f32 = nana_ui_core::UI_METRICS.control_height;
 const KEYBOARD_ZOOM_FACTOR: f32 = 1.2;
-const FIT_PADDING: f32 = 36.0;
+const FIT_PADDING: f32 = nana_ui_core::UI_METRICS.selection_height;
 const DEFAULT_CANVAS_ID: &str = "graph-canvas";
 const DEFAULT_LABEL: &str = "Graph canvas";
 const GRAPH_NODE_CONTENT_TAG: &str = "graph-node-content";
@@ -137,10 +137,13 @@ pub struct GraphCanvasHit {
     pub selection: Option<GraphSelection>,
 }
 
-const PORT_RADIUS: f32 = 4.0;
-const PORT_RADIUS_ACTIVE: f32 = 5.0;
-const PORT_GRAB_RADIUS: f32 = 12.0;
-const PAN_THRESHOLD: f32 = 4.0;
+pub(crate) const PORT_RADIUS: f32 = nana_ui_core::space::XS;
+pub(crate) const PORT_RADIUS_ACTIVE: f32 = PORT_RADIUS + nana_ui_core::HAIRLINE;
+pub(crate) const PORT_GRAB_RADIUS: f32 = nana_ui_core::space::XL;
+pub(crate) const PAN_THRESHOLD: f32 = nana_ui_core::space::XS;
+pub(crate) const NODE_TITLE_SIZE_MIN: f32 = 9.0;
+pub(crate) const PORT_LABEL_SIZE: f32 = 9.5;
+pub(crate) const PORT_LABEL_WIDTH: f32 = 80.0;
 
 /// View-space node rectangle for Scene quads.
 #[derive(Debug, Clone, PartialEq)]

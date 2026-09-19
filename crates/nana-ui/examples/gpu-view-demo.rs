@@ -6,7 +6,7 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate,
-    ThemeMode, ThemeModeExt, WindowDescriptor, run_runtime,
+    ThemeMode, WindowDescriptor, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -28,7 +28,7 @@ struct GpuViewDemo {
 
 impl GpuViewDemo {
     fn palette(theme: ThemeMode, accent_strong: bool) -> GpuViewPalette {
-        let colors = theme.colors();
+        let colors = theme.palette();
         let accent = if accent_strong {
             colors.accent_strong
         } else {

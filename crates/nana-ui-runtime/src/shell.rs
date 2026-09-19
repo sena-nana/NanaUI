@@ -15,17 +15,17 @@ use crate::{
     TextVerticalAlignment, UiWorld, Workspace, WorkspaceRegionSlot,
 };
 
-const SLOT_PADDING: f32 = 6.0;
-const CENTER_PADDING_X: f32 = 14.0;
+const SLOT_PADDING: f32 = nana_ui_core::space::SM;
+const CENTER_PADDING_X: f32 = nana_ui_core::space::XXL;
 const DEFAULT_CENTER_WIDTH: f32 = 168.0;
 /// Extra gap after the native traffic-light exclusion so leading chrome
 /// (sidebar toggle) cannot sit on the caption buttons.
-const NATIVE_LEADING_CLEARANCE: f32 = 8.0;
+const NATIVE_LEADING_CLEARANCE: f32 = nana_ui_core::space::MD;
 /// Width of the native window-button placeholder: the macOS traffic-light
 /// cluster centered with equal margins.
 const NATIVE_WINDOW_CONTROLS_WIDTH: f32 = 78.0;
-const TITLE_FONT_SIZE: f32 = 13.0;
-const TITLE_FONT_WEIGHT: u16 = 600;
+const TITLE_FONT_SIZE: f32 = nana_ui_core::type_scale::BODY;
+const TITLE_FONT_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 const OVERLAY_Z_INDEX: i32 = 1;
 const STATUS_OVERLAY_Z_INDEX: i32 = 2;
 

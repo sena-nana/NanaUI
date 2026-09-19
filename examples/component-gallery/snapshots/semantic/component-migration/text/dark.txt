@@ -1,0 +1,22 @@
+component: text
+mode: dark
+state: normal
+  target: 20.00,20.00 380.00x32.00
+  a11y: role=Text disabled=false checked=None selected=None mixed=false
+  text #2/2 20.00,20.00 380.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: wrap
+  target: 20.00,20.00 180.00x44.00
+  a11y: role=Text disabled=false checked=None selected=None mixed=false
+  text #2/2 20.00,20.00 180.00x44.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: ellipsis
+  target: 20.00,20.00 180.00x32.00
+  a11y: role=Text disabled=false checked=None selected=None mixed=false
+  text #2/2 20.00,20.00 180.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: centered
+  target: 20.00,20.00 380.00x32.00
+  a11y: role=Text disabled=false checked=None selected=None mixed=false
+  text #2/2 20.00,20.00 380.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: muted
+  target: 20.00,20.00 380.00x32.00
+  a11y: role=Text disabled=false checked=None selected=None mixed=false
+  text #2/2 20.00,20.00 380.00x32.00 opacity=1.00 color=#a3a3a3ff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

@@ -37,7 +37,9 @@ fn image_viewer_texture_is_above_backdrop_and_below_controls_with_stage_clipping
             .unwrap();
         let geometry = runtime
             .context()
-            .read(viewer, |viewer| viewer.geometry(bounds))
+            .read(viewer, |viewer| {
+                viewer.geometry(bounds, nana_ui_core::UI_METRICS)
+            })
             .unwrap();
         let primitives = runtime
             .scene()

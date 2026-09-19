@@ -9,8 +9,9 @@ pub(in crate::world) fn reorder_list_geometry(
     spacing: f32,
     insert: Option<LayoutBox>,
     palette: &SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
 ) -> crate::ComponentGeometry {
-    let height = size.height();
+    let height = size.height_in(metrics);
     let spacing = spacing.max(0.0);
     let pad = 8.0;
     let rows = rows

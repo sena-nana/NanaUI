@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    DialogClosePolicy, DialogSize, DrawerSide, LayoutStyle, LengthSpec, PositionSpec,
+    ControlSize, DialogClosePolicy, DialogSize, DrawerSide, LayoutStyle, LengthSpec, PositionSpec,
+    UI_METRICS,
 };
 
 use crate::{
@@ -357,24 +358,24 @@ pub(crate) fn modal_root_style() -> NodeStyle {
 }
 
 pub(crate) const DRAWER_WIDTH: f32 = 360.0;
-pub(crate) const MODAL_PAD_X: f32 = 16.0;
+pub(crate) const MODAL_PAD_X: f32 = nana_ui_core::space::XXXL;
 /// Dialog overlay top inset. Compact scrims clamp this so the card stays inside.
 pub(crate) const MODAL_SCRIM_TOP_INSET: f32 = 90.0;
-pub(crate) const MODAL_HEADER_PAD_TOP: f32 = 14.0;
-pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = 8.0;
-pub(crate) const DRAWER_HEADER_PAD_Y: f32 = 14.0;
-pub(crate) const MODAL_BODY_PAD_TOP: f32 = 8.0;
-pub(crate) const MODAL_BODY_PAD_BOTTOM_WITH_FOOTER: f32 = 10.0;
-pub(crate) const MODAL_BODY_PAD_BOTTOM_NO_FOOTER: f32 = 16.0;
-pub(crate) const MODAL_FOOTER_PAD_BOTTOM: f32 = 14.0;
-pub(crate) const DRAWER_FOOTER_PAD_Y: f32 = 12.0;
-pub(crate) const MODAL_TITLE_DESC_GAP: f32 = 4.0;
-pub(crate) const MODAL_CLOSE_SIZE: f32 = 28.0;
-pub(crate) const MODAL_CLOSE_GAP: f32 = 12.0;
-pub(crate) const DRAWER_CLOSE_GAP: f32 = 10.0;
-pub(crate) const MODAL_ACTION_GAP: f32 = 8.0;
-pub(crate) const MODAL_ACTION_HEIGHT: f32 = 32.0;
-pub(crate) const MODAL_BODY_TEXT_SIZE: f32 = 13.0;
+pub(crate) const MODAL_HEADER_PAD_TOP: f32 = nana_ui_core::space::XXL;
+pub(crate) const MODAL_HEADER_PAD_BOTTOM: f32 = nana_ui_core::space::MD;
+pub(crate) const DRAWER_HEADER_PAD_Y: f32 = nana_ui_core::space::XXL;
+pub(crate) const MODAL_BODY_PAD_TOP: f32 = nana_ui_core::space::MD;
+pub(crate) const MODAL_BODY_PAD_BOTTOM_WITH_FOOTER: f32 = nana_ui_core::space::LG;
+pub(crate) const MODAL_BODY_PAD_BOTTOM_NO_FOOTER: f32 = nana_ui_core::space::XXXL;
+pub(crate) const MODAL_FOOTER_PAD_BOTTOM: f32 = nana_ui_core::space::XXL;
+pub(crate) const DRAWER_FOOTER_PAD_Y: f32 = nana_ui_core::space::XL;
+pub(crate) const MODAL_TITLE_DESC_GAP: f32 = nana_ui_core::space::XS;
+pub(crate) const MODAL_CLOSE_SIZE: f32 = ControlSize::Small.height_in(UI_METRICS);
+pub(crate) const MODAL_CLOSE_GAP: f32 = nana_ui_core::space::XL;
+pub(crate) const DRAWER_CLOSE_GAP: f32 = nana_ui_core::space::LG;
+pub(crate) const MODAL_ACTION_GAP: f32 = nana_ui_core::space::MD;
+pub(crate) const MODAL_ACTION_HEIGHT: f32 = ControlSize::Medium.height_in(UI_METRICS);
+pub(crate) const MODAL_BODY_TEXT_SIZE: f32 = nana_ui_core::type_scale::BODY;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ModalChrome {

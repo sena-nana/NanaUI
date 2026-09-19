@@ -8018,6 +8018,275 @@ fn hit_test_walks_z_order_and_skips_clipped_subtrees() {
     assert!(overlap.contains(&node(5)));
 }
 
+/// Issue #101 §4 baseline: a palette-only theme switch is paint work. It
+/// invalidates every live node for paint, but it must not reach Layout or
+/// reshape text.
+///
+/// It also pins where the palette is re-read today. `SetTheme` schedules
+/// RENDER without STYLE, so no style pass runs and the new colours are
+/// resolved inside **extract** instead — the renderer-side theme read Issue
+/// #100 §6 removes. The baseline records that as it is rather than asserting
+/// the target shape.
+#[test]
+fn palette_only_theme_switch_is_paint_work_and_never_layout_or_reshape() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.set_style(
+        node(1),
+        NodeStyle {
+            background: Some(SemanticColorRole::Accent),
+            ..NodeStyle::default()
+        },
+    );
+    queue.create(node(2), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    world.begin_frame_counters();
+    let mut theme = MutationQueue::new();
+    theme.set_theme(ThemeMode::Light);
+    world.commit(theme).unwrap();
+    let work = world.take_system_work();
+    assert!(
+        work.style.is_empty(),
+        "SetTheme schedules RENDER, not STYLE"
+    );
+    assert!(work.layout.is_empty());
+    world.resolve_styles(&work.style).unwrap();
+    let counters = world.last_theme_work_counters();
+    assert_eq!(
+        counters.paint_nodes_from_style, 2,
+        "both live nodes repaint"
+    );
+    assert_eq!(counters.layout_nodes_from_style, 0);
+    assert_eq!(counters.text_nodes_from_style, 0, "colour is not a reshape");
+    assert!(counters.is_paint_only());
+    assert_eq!(
+        counters.style_nodes_considered, 0,
+        "no style pass ran for this switch"
+    );
+
+    let extracted = world.extract_nodes(&work.render_extraction);
+    world.end_frame_counters();
+    assert_eq!(
+        extracted[0].style.background,
+        Some(
+            nana_ui_core::SemanticPalette::light()
+                .accent
+                .as_rgba_array()
+        )
+    );
+    assert!(
+        world.last_theme_work_counters().theme_reads > 0,
+        "the palette is re-read, and today extract is where"
+    );
+}
+
+/// The same switch with different metrics is Layout work as well. The two
+/// classes are separate counters so a later dependency-scoped resolver can be
+/// held to "palette-only stayed paint-only".
+#[test]
+fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.control_height += 4.0;
+    world.begin_frame_counters();
+    let mut tokens = MutationQueue::new();
+    tokens.set_style_tokens(
+        ThemeMode::Dark,
+        metrics,
+        nana_ui_core::SemanticPalette::dark(),
+        nana_ui_core::SemanticPalette::dark().surface,
+    );
+    world.commit(tokens).unwrap();
+    world.end_frame_counters();
+
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.layout_nodes_from_style, 1);
+    assert_eq!(counters.paint_nodes_from_style, 1);
+    assert!(!counters.is_paint_only());
+}
+
+/// Issue #100 §15: a retained frame that changed nothing must not walk or
+/// re-read the theme. `considered` counts nodes the pass evaluated, and it
+/// splits exactly into resolved plus skipped.
+#[test]
+fn style_pass_splits_into_resolved_and_skipped_and_an_idle_pass_does_neither() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=3 {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+
+    world.begin_frame_counters();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+    let first = world.last_theme_work_counters();
+    assert_eq!(first.style_nodes_considered, 3);
+    assert_eq!(first.style_nodes_resolved, 3);
+    assert_eq!(first.style_nodes_skipped, 0);
+    assert!(first.style_allocations > 0);
+
+    // Resolving the same ids again answers every one from the value/epoch
+    // fast path; nothing is published a second time.
+    world.begin_frame_counters();
+    world.resolve_styles(&[node(1), node(2), node(3)]).unwrap();
+    world.end_frame_counters();
+    let second = world.last_theme_work_counters();
+    assert_eq!(second.style_nodes_considered, 3);
+    assert_eq!(second.style_nodes_resolved, 0);
+    assert_eq!(second.style_nodes_skipped, 3);
+    assert_eq!(second.style_allocations, 0);
+
+    // An empty pass is the steady frame: no walk, no token read.
+    world.begin_frame_counters();
+    world.resolve_styles(&[]).unwrap();
+    world.end_frame_counters();
+    assert!(world.last_theme_work_counters().is_idle());
+}
+
+/// A node pulled in only as a parent is counted once for the pass, not once
+/// per descendant that needed it.
+#[test]
+fn parent_chain_nodes_are_counted_once_per_style_pass() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    for id in 1..=4 {
+        queue.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+    }
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    queue.insert(node(2), node(4), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    world.begin_frame_counters();
+    // Both leaves walk up through the same two ancestors.
+    world.resolve_styles(&[node(3), node(4)]).unwrap();
+    world.end_frame_counters();
+    let counters = world.last_theme_work_counters();
+    assert_eq!(counters.style_nodes_considered, 4);
+    assert_eq!(
+        counters.style_nodes_considered,
+        counters.style_nodes_resolved + counters.style_nodes_skipped
+    );
+}
+
+/// Resolving design intent copies a `LayoutStyle`, which is by far the
+/// largest heap event on the style path. It happens under `Arc::make_mut`,
+/// so no allocator counter sees it — the style counters have to say it
+/// themselves, or a baseline recorded from them understates the write path.
+#[test]
+fn resolving_layout_intent_reports_the_layout_it_had_to_copy() {
+    fn allocated(style: NodeStyle) -> (usize, usize) {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+
+        let mut styled = MutationQueue::new();
+        styled.set_style(node(1), style);
+        world.begin_frame_counters();
+        world.commit(styled).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.end_frame_counters();
+        let counters = world.last_theme_work_counters();
+        (counters.layout_copies, counters.layout_copied_bytes)
+    }
+
+    let plain = NodeStyle::default();
+    let with_intent = NodeStyle {
+        control_height: Some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Large,
+        )),
+        ..NodeStyle::default()
+    };
+    assert_eq!(
+        allocated(plain),
+        (0, 0),
+        "a node with no design intent shares the layout it authored"
+    );
+    assert_eq!(
+        allocated(with_intent),
+        (1, size_of::<LayoutStyle>()),
+        "a node with intent copies one layout, and reports its real size"
+    );
+}
+
+/// A font-size change is Text work; the counter separates it from the paint
+/// classes so "palette switch does not reshape" stays a real assertion.
+#[test]
+fn a_shaping_style_change_counts_as_text_invalidation() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Text);
+    queue.set_text(
+        node(1),
+        TextContent {
+            value: "hello".into(),
+        },
+    );
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let mut resize = MutationQueue::new();
+    resize.set_style(
+        node(1),
+        NodeStyle {
+            layout: LayoutStyle {
+                font_size: Some(21.0),
+                ..LayoutStyle::default()
+            }
+            .into(),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(resize).unwrap();
+    world.begin_frame_counters();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    world.end_frame_counters();
+    assert_eq!(world.last_theme_work_counters().text_nodes_from_style, 1);
+}
+
 #[test]
 fn set_theme_marks_render_not_style_when_only_palette_roles_change() {
     let mut world = UiWorld::new();
@@ -9312,8 +9581,8 @@ fn new_standard_visuals_derive_scene_geometry() {
                 x: 0.0,
                 y: 24.0,
             }]),
-            cell_size: 11.0,
-            cell_radius: 2.0,
+            cell_size: crate::CalendarHeatmap::<()>::CELL_SIZE,
+            cell_radius: crate::CalendarHeatmap::<()>::CELL_RADIUS,
             max_level: 4,
             active: Some(1),
             active_title: Some(Arc::from("2026-06-03: 8")),

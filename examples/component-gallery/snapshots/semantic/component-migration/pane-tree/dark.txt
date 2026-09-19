@@ -1,0 +1,7 @@
+component: pane-tree
+mode: dark
+state: nested
+  target: 20.00,20.00 440.00x200.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 28.00,28.00 19.96x184.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #3/2 63.96,28.00 28.74x184.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

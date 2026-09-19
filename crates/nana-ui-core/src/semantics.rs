@@ -3,7 +3,7 @@
 //! Shared by L2 Vue props and L3 Rust builders. L1 maps known classes/roles here
 //! via `nana-ui-vue::widget_map`; it does not invent ThemeTokens from paint CSS.
 
-use crate::theme::{ThemeMetrics, UI_BASE_TEXT_SIZE, UI_METRICS};
+use crate::theme::{ThemeMetrics, UI_METRICS, space, type_scale};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ControlSize {
@@ -14,10 +14,6 @@ pub enum ControlSize {
 }
 
 impl ControlSize {
-    pub const fn height(self) -> f32 {
-        self.height_in(UI_METRICS)
-    }
-
     pub const fn height_in(self, metrics: ThemeMetrics) -> f32 {
         match self {
             Self::Small => metrics.small_control_height(),
@@ -28,8 +24,8 @@ impl ControlSize {
 
     pub const fn line_height(self) -> f32 {
         match self {
-            Self::Small | Self::Medium => 16.0,
-            Self::Large => 18.0,
+            Self::Small | Self::Medium => crate::type_scale::LINE,
+            Self::Large => crate::type_scale::LINE_TALL,
         }
     }
 
@@ -46,9 +42,12 @@ impl ControlSize {
         if !height.is_finite() {
             return Self::Medium;
         }
-        if height <= (Self::Small.height() + Self::Medium.height()) / 2.0 {
+        if height <= (Self::Small.height_in(UI_METRICS) + Self::Medium.height_in(UI_METRICS)) / 2.0
+        {
             Self::Small
-        } else if height <= (Self::Medium.height() + Self::Large.height()) / 2.0 {
+        } else if height
+            <= (Self::Medium.height_in(UI_METRICS) + Self::Large.height_in(UI_METRICS)) / 2.0
+        {
             Self::Medium
         } else {
             Self::Large
@@ -75,22 +74,31 @@ impl ControlSize {
 
     /// Horizontal inset for a control at this size.
     ///
-    /// All three read from [`UI_METRICS`]; `Small` used to be a bare `8.0`
+    /// Reads the installed metrics; `Small` used to be a bare `8.0`
     /// beside a `compact_control_padding_x` of `7.0`, which is how a `Button`
     /// and a `Chip` standing next to each other ended up 1px apart.
-    pub const fn padding_x(self) -> f32 {
+    pub const fn padding_x_in(self, metrics: ThemeMetrics) -> f32 {
         match self {
-            Self::Small => UI_METRICS.compact_control_padding_x,
-            Self::Medium => UI_METRICS.control_padding_x,
-            Self::Large => crate::theme::space::XXL,
+            Self::Small => metrics.small_control_padding_x(),
+            Self::Medium => metrics.medium_control_padding_x(),
+            Self::Large => metrics.large_control_padding_x(),
         }
     }
 
     pub const fn text_size(self) -> f32 {
         match self {
-            Self::Small => UI_BASE_TEXT_SIZE - 1.0,
-            Self::Medium => UI_BASE_TEXT_SIZE,
-            Self::Large => UI_BASE_TEXT_SIZE + 1.0,
+            Self::Small => crate::type_scale::META,
+            Self::Medium => crate::type_scale::BODY,
+            Self::Large => crate::type_scale::SECTION,
+        }
+    }
+
+    /// One type-scale step below [`Self::text_size`].
+    pub const fn caption_size(self) -> f32 {
+        match self {
+            Self::Small => crate::type_scale::HINT,
+            Self::Medium => crate::type_scale::META,
+            Self::Large => crate::type_scale::BODY,
         }
     }
 
@@ -101,18 +109,17 @@ impl ControlSize {
     /// Square extent of a checkbox box or radio ring.
     pub const fn indicator_size(self) -> f32 {
         match self {
-            Self::Small => 14.0,
-            Self::Medium => 16.0,
-            Self::Large => 18.0,
+            Self::Small => crate::space::XXL,
+            Self::Medium => crate::type_scale::LINE,
+            Self::Large => crate::type_scale::LINE_TALL,
         }
     }
 
     /// Gap between an indicator and its label.
     pub const fn indicator_gap(self) -> f32 {
         match self {
-            Self::Small => 6.0,
-            Self::Medium => 8.0,
-            Self::Large => 8.0,
+            Self::Small => crate::space::SM,
+            Self::Medium | Self::Large => crate::space::MD,
         }
     }
 
@@ -124,7 +131,7 @@ impl ControlSize {
 }
 
 /// Left inset of a radio ring inside its row, so hover chrome is not flush.
-pub const RADIO_ROW_INSET: f32 = 4.0;
+pub const RADIO_ROW_INSET: f32 = space::XS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -181,10 +188,10 @@ pub struct TooltipConfig {
 }
 
 impl TooltipConfig {
-    pub const PADDING_X: f32 = 7.0;
-    pub const PADDING_Y: f32 = 4.0;
-    pub const RADIUS: f32 = 4.0;
-    pub const FONT_SIZE: f32 = 11.0;
+    pub const PADDING_X: f32 = space::SM;
+    pub const PADDING_Y: f32 = space::XS;
+    pub const RADIUS: f32 = space::XS;
+    pub const FONT_SIZE: f32 = type_scale::HINT;
 }
 
 impl Default for TooltipConfig {
@@ -192,8 +199,8 @@ impl Default for TooltipConfig {
         Self {
             placement: TooltipPlacement::FollowCursor,
             delay_ms: 350,
-            gap: 6.0,
-            viewport_padding: 4.0,
+            gap: space::SM,
+            viewport_padding: space::XS,
             max_width: 280.0,
         }
     }

@@ -520,7 +520,9 @@ fn vue_flush_keeps_layout_work_so_text_input_gets_a_hittable_box() {
 
     let laid_out = doc.layout_box(input).expect("runtime layout box");
     assert!(
-        laid_out.width > 0.0 && laid_out.height >= nana_ui_core::ControlSize::Medium.height(),
+        laid_out.width > 0.0
+            && laid_out.height
+                >= nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS),
         "Vue flush must run RuntimeLayoutEngine so TextInput is hittable, got {laid_out:?}"
     );
     let engine_height = laid_out.height;
@@ -2675,9 +2677,9 @@ fn highlighted_textarea_binds_language_and_restores_input() {
         doc.runtime
             .node_style(area_id)
             .and_then(|style| style.layout.height),
-        Some(nana_ui_core::LengthSpec::Px(
-            120.0_f32.max(nana_ui_core::ControlSize::Medium.height()),
-        ))
+        Some(nana_ui_core::LengthSpec::Px(120.0_f32.max(
+            nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+        ),))
     );
 }
 
@@ -3630,7 +3632,10 @@ fn calendar_options_object_projects_heatmap_metrics() {
     else {
         panic!("options calendar must project a heatmap");
     };
-    assert_eq!(default_size, 11.0);
+    assert_eq!(
+        default_size,
+        nana_ui_runtime::CalendarHeatmap::<()>::CELL_SIZE
+    );
     assert_eq!(sized, 18.0);
     let default_y = default_cells
         .iter()
@@ -6873,33 +6878,35 @@ fn spacing_card_class_does_not_override_runtime_defaults_or_partial_css() {
     let card = doc.create_element("nana-card");
     doc.insert(card, doc.mount_root(), None);
     let mut bridge = crate::MessageBridge::new();
+    let x = nana_ui_core::space::XXXL;
+    let y = nana_ui_core::space::XXL;
     for (css, expected) in [
         (
             "",
             PaddingSpec {
-                left: 16.0,
-                right: 16.0,
-                top: 14.0,
-                bottom: 14.0,
+                left: x,
+                right: x,
+                top: y,
+                bottom: y,
             },
         ),
         (
             "padding-top:0",
             PaddingSpec {
-                left: 16.0,
-                right: 16.0,
+                left: x,
+                right: x,
                 top: 0.0,
-                bottom: 14.0,
+                bottom: y,
             },
         ),
         ("padding:0", PaddingSpec::uniform(0.0)),
         (
             "",
             PaddingSpec {
-                left: 16.0,
-                right: 16.0,
-                top: 14.0,
-                bottom: 14.0,
+                left: x,
+                right: x,
+                top: y,
+                bottom: y,
             },
         ),
     ] {
@@ -6912,8 +6919,8 @@ fn spacing_card_class_does_not_override_runtime_defaults_or_partial_css() {
         let layout = &doc
             .context()
             .world()
-            .node_style(StableNodeId::try_from(card).unwrap())
-            .unwrap()
+            .extract_nodes(&[StableNodeId::try_from(card).unwrap()])[0]
+            .source_style
             .layout;
         assert_eq!(layout.resolved_padding(), expected);
         assert_ne!(layout.padding, Some(LengthSpec::Px(12.0)));

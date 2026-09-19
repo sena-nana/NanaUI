@@ -21,6 +21,30 @@ So a baseline is only valid for the adapter that recorded it. Running on an
 adapter with no baseline is a failure, not a silent pass: the suite tells you
 the key it looked for.
 
+## The semantic tree
+
+`snapshots/semantic/` is the same state matrix recorded as **resolved style**
+rather than pixels: per component and mode, every fixture's layout box,
+accessibility state and scene primitives, with the background, border, radius,
+shadow, text colour, size and weight the theme resolved to.
+
+It is deliberately not keyed by adapter. Nothing in it is rasterised, so there
+is only one correct answer on every machine — which is the point: a reviewer
+whose GPU has no PNG baseline can still tell whether light/dark and the
+hover / pressed / focused / disabled / selected / checked / invalid states
+still resolve to the values the design system intends. It is also what makes a
+token change readable: the diff names the roles that moved instead of counting
+pixels.
+
+```bash
+cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
+cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic --bless
+```
+
+It does not replace the pixel suite. A semantic snapshot cannot see a
+rasteriser bug, and the pixel suite cannot say *why* a colour moved. Issue #101
+keeps both.
+
 ## Recording a baseline
 
 Recording is always explicit. There is no fallback that writes a baseline from

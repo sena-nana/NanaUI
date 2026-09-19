@@ -11,6 +11,7 @@ pub(in crate::world) fn image_viewer_geometry(
     offset_x: f32,
     offset_y: f32,
     palette: &SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
 ) -> crate::ComponentGeometry {
     let mut viewer = crate::ImageViewer::new(crate::ImageViewerContent::None);
     viewer.intrinsic_size = intrinsic_size;
@@ -22,7 +23,7 @@ pub(in crate::world) fn image_viewer_geometry(
     }
     viewer.zoom = zoom;
     viewer.offset = crate::ImageViewerOffset::new(offset_x, offset_y);
-    let geometry = viewer.geometry(bounds);
+    let geometry = viewer.geometry(bounds, metrics);
     let mut scrim = palette.background.as_rgba_array();
     scrim[3] = 0.94;
     let mut stage = palette.background.as_rgba_array();
@@ -38,15 +39,15 @@ pub(in crate::world) fn image_viewer_geometry(
                 bounds: region,
                 content: Arc::clone(text),
                 color: Some(palette.text.as_rgba_array()),
-                font_size: 12.0,
-                font_weight: Some(600),
+                font_size: nana_ui_core::type_scale::META,
+                font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
             }),
         metadata: metadata.zip(geometry.metadata).map(|(text, region)| {
             crate::ComponentTextRegion {
                 bounds: region,
                 content: Arc::clone(text),
                 color: Some(palette.muted.as_rgba_array()),
-                font_size: 11.0,
+                font_size: nana_ui_core::type_scale::HINT,
                 font_weight: None,
             }
         }),

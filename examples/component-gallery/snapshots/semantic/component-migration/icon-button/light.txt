@@ -1,0 +1,57 @@
+component: icon-button
+mode: light
+state: normal
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: hover
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#ebedf0ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#1a1a1fff
+state: pressed
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#dfe2e7ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#1a1a1fff
+state: focused
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: selected
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#4991d71a border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#00559fff
+state: disabled
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=true checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#9ca3afff
+state: keyboard-activation
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: tooltip-delay
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: tooltip-edge
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#5a616eff
+state: selected-hover
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#4991d733 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#00559fff
+state: selected-pressed
+  target: 20.00,20.00 28.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#4991d73b border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#00559fff

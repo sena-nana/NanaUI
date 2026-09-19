@@ -1,0 +1,5 @@
+component: overlay-host
+mode: light
+state: stacked
+  target: 20.00,20.00 0.00x0.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false

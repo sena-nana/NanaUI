@@ -361,7 +361,8 @@ impl UiWorld {
                 let disabled = accessibility.is_some_and(|state| state.disabled);
                 let steppers = steppers
                     .then(|| {
-                        let band = (size.height() / 2.0).min(content.height / 2.0);
+                        let band = (size.height_in(self.style_model.metrics) / 2.0)
+                            .min(content.height / 2.0);
                         let width = size.indicator_size();
                         if band <= 0.0 || width <= 0.0 || content.width <= width {
                             return None;
@@ -1017,7 +1018,7 @@ impl UiWorld {
                     folds: fold_geometry,
                     git_marks: git_geometry,
                     line_labels_color: self.style_model.palette.faint.as_rgba_array(),
-                    line_labels_font_size: (size.text_size() - 1.0).max(10.0),
+                    line_labels_font_size: size.caption_size(),
                     text: crate::ComponentTextRegion {
                         bounds: LayoutBox {
                             x: content.x - scroll_x,
@@ -1296,9 +1297,11 @@ impl UiWorld {
                 let metrics = self.scroll_metrics(id)?;
                 let offset = self.scroll_offset(id).unwrap_or_default();
                 let skin = source.layout.paint.scrollbar;
-                let chrome = skin
-                    .map(|skin| skin.metrics(nana_ui_core::SCROLLBAR_METRICS))
-                    .unwrap_or(nana_ui_core::SCROLLBAR_METRICS);
+                // The installed theme, not the constant: this is the one
+                // scrollbar metric read the runtime makes, so a density change
+                // has to arrive here or it never reaches a scrollbar.
+                let base = self.style_model.metrics.scrollbar;
+                let chrome = skin.map(|skin| skin.metrics(base)).unwrap_or(base);
                 let palette = &self.style_model.palette;
                 let track_background = skin.and_then(|skin| skin.track_color).or_else(|| {
                     matches!(visibility, nana_ui_core::ScrollbarVisibility::Always)
@@ -1638,9 +1641,19 @@ impl UiWorld {
                 compact,
             } => {
                 let (horizontal, indicator_slot, gap, text_size) = if *compact {
-                    (7.0, 6.0, 5.0, 11.0)
+                    (
+                        nana_ui_core::space::SM,
+                        nana_ui_core::space::SM,
+                        nana_ui_core::space::XS,
+                        nana_ui_core::type_scale::HINT,
+                    )
                 } else {
-                    (8.0, 8.0, 6.0, 12.0)
+                    (
+                        nana_ui_core::space::MD,
+                        nana_ui_core::space::MD,
+                        nana_ui_core::space::SM,
+                        nana_ui_core::type_scale::META,
+                    )
                 };
                 let diameter = indicator_slot * 10.0 / 24.0;
                 let foreground = self
@@ -1668,7 +1681,7 @@ impl UiWorld {
                         content: Arc::clone(label),
                         color: Some(foreground),
                         font_size: text_size,
-                        font_weight: Some(500),
+                        font_weight: Some(nana_ui_core::type_scale::MEDIUM),
                     },
                     background,
                     foreground,
@@ -1680,9 +1693,17 @@ impl UiWorld {
                 compact,
             } => {
                 let (indicator_slot, gap, text_size) = if *compact {
-                    (12.0, 5.0, 11.0)
+                    (
+                        nana_ui_core::space::XL,
+                        nana_ui_core::space::XS,
+                        nana_ui_core::type_scale::HINT,
+                    )
                 } else {
-                    (14.0, 6.0, 12.0)
+                    (
+                        nana_ui_core::space::XXL,
+                        nana_ui_core::space::SM,
+                        nana_ui_core::type_scale::META,
+                    )
                 };
                 let diameter = indicator_slot * 10.0 / 24.0;
                 let foreground = self
@@ -1723,9 +1744,21 @@ impl UiWorld {
                 action,
             } => {
                 let (horizontal, vertical, title_size, message_size, spacing) = if *compact {
-                    (6.0, 8.0, 12.0, 11.0, 2.0)
+                    (
+                        nana_ui_core::space::SM,
+                        nana_ui_core::space::MD,
+                        nana_ui_core::type_scale::META,
+                        nana_ui_core::type_scale::HINT,
+                        nana_ui_core::space::XXS,
+                    )
                 } else {
-                    (16.0, 24.0, 13.0, 12.0, 6.0)
+                    (
+                        nana_ui_core::space::XXXL,
+                        nana_ui_core::space::PAGE,
+                        nana_ui_core::type_scale::BODY,
+                        nana_ui_core::type_scale::META,
+                        nana_ui_core::space::SM,
+                    )
                 };
                 let width = (bounds.width - horizontal * 2.0).max(0.0);
                 let presentation = self.nodes.empty_state_text(id).copied().unwrap_or_default();
@@ -1808,15 +1841,19 @@ impl UiWorld {
                 compact,
                 action,
             } => {
-                let gap = if *compact { 4.0 } else { 8.0 };
+                let gap = if *compact {
+                    nana_ui_core::space::XS
+                } else {
+                    nana_ui_core::space::MD
+                };
                 let right = action
                     .and_then(|action| self.layout_box(action))
                     .map_or(bounds.x + bounds.width, |action| {
                         (action.x - gap).max(bounds.x)
                     });
                 let available = (right - bounds.x).max(0.0);
-                let label_size = 11.0_f32;
-                let value_size = 12.0_f32;
+                let label_size = nana_ui_core::type_scale::HINT;
+                let value_size = nana_ui_core::type_scale::META;
                 let label_height = (label_size * 1.2).min(bounds.height.max(label_size));
                 let value_height = (value_size * 1.2).min(bounds.height.max(value_size));
                 // 属性名按自身文本估宽保底,不再压缩到字号常数;两侧都放得下时各取自然宽度。
@@ -1880,7 +1917,7 @@ impl UiWorld {
                 let base_padding = if *indicator {
                     size.radio_lead()
                 } else {
-                    size.padding_x() + 2.0
+                    size.padding_x_in(self.style_model.metrics) + nana_ui_core::space::XXS
                 };
                 let ring = indicator.then(|| {
                     let extent = size.indicator_size().min(bounds.height);
@@ -2035,8 +2072,8 @@ impl UiWorld {
                 let copy_right =
                     bounds.x + bounds.width - pad_x - if *dismissible { dismiss } else { 0.0 };
                 let copy_width = (copy_right - copy_x).max(0.0);
-                let title_height = 12.0;
-                let desc_height = 11.0;
+                let title_height = nana_ui_core::type_scale::META;
+                let desc_height = nana_ui_core::type_scale::HINT;
                 let has_desc = description.is_some();
                 let title_y = if has_desc {
                     bounds.y + pad_y
@@ -2059,20 +2096,20 @@ impl UiWorld {
                         },
                         content: Arc::clone(title),
                         color: Some(self.style_model.palette.text.as_rgba_array()),
-                        font_size: 12.0,
-                        font_weight: Some(600),
+                        font_size: nana_ui_core::type_scale::META,
+                        font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
                     },
                     description: description.as_ref().map(|description| {
                         crate::ComponentTextRegion {
                             bounds: LayoutBox {
                                 x: copy_x,
-                                y: title_y + title_height + 2.0,
+                                y: title_y + title_height + nana_ui_core::space::XXS,
                                 width: copy_width,
                                 height: desc_height,
                             },
                             content: Arc::clone(description),
                             color: Some(self.style_model.palette.muted.as_rgba_array()),
-                            font_size: 11.0,
+                            font_size: nana_ui_core::type_scale::HINT,
                             font_weight: None,
                         }
                     }),
@@ -2086,7 +2123,7 @@ impl UiWorld {
             }
             StandardVisual::XYPad { nx, ny, .. } => {
                 let pad = bounds;
-                let thumb = 8.0;
+                let thumb = nana_ui_core::space::MD;
                 let nx = nx.clamp(0.0, 1.0);
                 let ny = ny.clamp(0.0, 1.0);
                 Some(crate::ComponentGeometry::XYPad {
@@ -2140,6 +2177,7 @@ impl UiWorld {
                 style,
                 &source,
                 &self.style_model.palette,
+                self.style_model.metrics,
                 self.document_viewport_of(id),
                 *checkable,
             )),
@@ -2155,6 +2193,7 @@ impl UiWorld {
                 rows,
                 *highlighted,
                 &self.style_model.palette,
+                self.style_model.metrics,
             )),
             StandardVisual::MenuSurface {
                 trigger,
@@ -2177,6 +2216,7 @@ impl UiWorld {
                     trigger_image.as_ref(),
                     style,
                     &self.style_model.palette,
+                    self.style_model.metrics,
                     surface,
                 ))
             }
@@ -2198,12 +2238,14 @@ impl UiWorld {
                 *size,
                 style,
                 &self.style_model.palette,
+                self.style_model.metrics,
             )),
             StandardVisual::TreeView { rows, size } => Some(crate::tree_view::tree_view_geometry(
                 bounds,
                 rows,
                 *size,
                 &self.style_model.palette,
+                self.style_model.metrics,
             )),
             StandardVisual::CommandPalette {
                 title,
@@ -2219,6 +2261,7 @@ impl UiWorld {
                 empty.as_ref(),
                 rows,
                 &self.style_model.palette,
+                self.style_model.metrics,
             )),
             StandardVisual::QrCode { modules, width } => {
                 let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
@@ -2356,6 +2399,7 @@ impl UiWorld {
                     *spacing,
                     *insert,
                     &self.style_model.palette,
+                    self.style_model.metrics,
                 ))
             }
             #[cfg(feature = "rich-text")]
@@ -2459,6 +2503,7 @@ impl UiWorld {
                 *offset_x,
                 *offset_y,
                 &self.style_model.palette,
+                self.style_model.metrics,
             )),
             StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(
                 content,

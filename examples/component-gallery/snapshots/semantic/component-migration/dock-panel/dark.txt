@@ -1,0 +1,8 @@
+component: dock-panel
+mode: dark
+state: bordered
+  target: 20.00,20.00 240.00x53.60
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #5/0 20.00,20.00 240.00x53.60 opacity=1.00 bg=#202020ff border=#232323ff border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #2/2 31.00,31.00 57.12x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #3/2 31.00,50.60 43.52x12.00 opacity=1.00 color=#a3a3a3ff size=10.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

@@ -1,0 +1,8 @@
+component: pane-chrome
+mode: dark
+state: active
+  target: 20.00,20.00 380.00x140.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #3/2 20.00,20.00 50.24x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #5/2 20.00,35.60 26.00x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 20.00,51.20 380.00x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

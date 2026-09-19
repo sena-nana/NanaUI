@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole, UI_METRICS,
+    AlignSpec, ControlSize, FlexDirection, JustifySpec, LengthSpec, SemanticColorRole,
 };
 
 use crate::view_components::{
@@ -17,7 +17,7 @@ use crate::{
     StableNodeId, TextContent, UiWorld, XYPad, XYPadEvent, XYPadValue,
 };
 
-const SWATCH_SIZE: f32 = 22.0;
+const SWATCH_SIZE: f32 = nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
 
 /// Default accessible name. Applications localize it with
 /// [`ColorField::label`].
@@ -138,13 +138,15 @@ impl ColorField {
         if self.invalid {
             style.border = Some(SemanticColorRole::Danger);
         }
-        let layout = std::sync::Arc::make_mut(&mut style.layout);
-        layout.direction = Some(FlexDirection::Row);
-        layout.align_items = AlignSpec::Center;
-        layout.justify_content = JustifySpec::Start;
-        layout.gap = Some(LengthSpec::Px(6.0));
-        layout.width = Some(LengthSpec::Fill);
-        layout.min_height = Some(LengthSpec::Px(self.size.height()));
+        {
+            let layout = std::sync::Arc::make_mut(&mut style.layout);
+            layout.direction = Some(FlexDirection::Row);
+            layout.align_items = AlignSpec::Center;
+            layout.justify_content = JustifySpec::Start;
+            layout.gap = Some(LengthSpec::Px(6.0));
+            layout.width = Some(LengthSpec::Fill);
+        }
+        style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         style
     }
 }
@@ -371,12 +373,14 @@ fn field_style(size: ControlSize) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.background = Some(SemanticColorRole::Subtle);
     style.border = Some(SemanticColorRole::Border);
-    let layout = std::sync::Arc::make_mut(&mut style.layout);
-    layout.padding_left = Some(LengthSpec::Px(6.0));
-    layout.padding_right = Some(LengthSpec::Px(6.0));
-    layout.border_width = Some(1.0);
-    layout.border_radius = Some(UI_METRICS.radius_sm);
-    layout.min_height = Some(LengthSpec::Px(size.height()));
+    {
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.padding_left = Some(LengthSpec::Px(nana_ui_core::space::SM));
+        layout.padding_right = Some(LengthSpec::Px(nana_ui_core::space::SM));
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
+    }
+    style.radius = Some(nana_ui_core::RadiusTier::Sm);
+    style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
     style
 }
 
@@ -389,9 +393,9 @@ fn swatch_button(value: [f32; 4]) -> Button {
     layout.min_height = Some(LengthSpec::Px(SWATCH_SIZE));
     layout.flex_grow = Some(0.0);
     layout.flex_shrink = Some(0.0);
-    layout.border_radius = Some(UI_METRICS.radius_sm);
-    layout.border_width = Some(1.0);
+    layout.border_width = Some(nana_ui_core::HAIRLINE);
     layout.background = Some(sanitize_rgba(value));
+    button.style.radius = Some(nana_ui_core::RadiusTier::Sm);
     button.style.border = Some(SemanticColorRole::Border);
     button
 }

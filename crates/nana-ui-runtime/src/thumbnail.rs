@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use nana_ui_core::{
-    AlignSpec, ContentFit, ControlSize, LengthSpec, OverflowSpec, PointerEventsSpec, PositionSpec,
-    SemanticColorRole, ThemeMetrics, UI_METRICS, space,
+    AlignSpec, ContentFit, ControlHeight, ControlSize, LengthSpec, OverflowSpec, PointerEventsSpec,
+    PositionSpec, RadiusTier, SemanticColorRole, SquareSize, ThemeMetrics, space,
 };
 
 use crate::gpu_slots::pack_gpu_revision;
@@ -24,7 +24,7 @@ use crate::{
 pub const DEFAULT_ASPECT: f32 = 1.0;
 
 /// Loading glyph: twice the compact [`crate::Spinner`] (14 → 28). Scene clamps to the box.
-const SPINNER_SIZE: f32 = 28.0;
+const SPINNER_SIZE: f32 = nana_ui_core::UI_METRICS.icon_button_size;
 
 /// Presentation of a [`Thumbnail`] box. All four states keep the same size.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -124,7 +124,7 @@ impl Thumbnail {
     pub fn badge() -> Stack {
         Stack::row(0.0)
             .surface(SemanticColorRole::Background)
-            .radius(UI_METRICS.radius_sm)
+            .radius(nana_ui_core::RadiusTier::Sm)
             .with_layout(|layout| {
                 layout.position = PositionSpec::Absolute;
                 layout.offset_right = Some(LengthSpec::Px(space::SM));
@@ -184,9 +184,7 @@ impl Thumbnail {
         )
     }
 
-    fn effective_style(&self, world: &UiWorld) -> NodeStyle {
-        let metrics = world.theme_metrics();
-        let (width, height) = self.box_extent(metrics);
+    fn effective_style(&self, _world: &UiWorld) -> NodeStyle {
         let mut style = self.style.clone();
         style.background = match self.state {
             ThumbnailState::Ready => None,
@@ -194,25 +192,32 @@ impl Thumbnail {
         };
         style.border = None;
         style.foreground = Some(SemanticColorRole::Muted);
-        let layout = Arc::make_mut(&mut style.layout);
-        if layout.width.is_none() {
-            layout.width = Some(LengthSpec::Px(width));
-            layout.min_width.get_or_insert(LengthSpec::Px(width));
-            layout.max_width.get_or_insert(LengthSpec::Px(width));
+        let unset_width = style.layout.width.is_none();
+        let unset_height = style.layout.height.is_none();
+        let unset_radius = style.layout.border_radius.is_none();
+        let aspect = sanitize_aspect(self.aspect);
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            if unset_width {
+                layout.aspect_ratio = Some(aspect);
+            }
+            layout.flex_grow.get_or_insert(0.0);
+            layout.flex_shrink.get_or_insert(0.0);
+            layout.border_width = Some(0.0);
+            layout.overflow_x = OverflowSpec::Hidden;
+            layout.overflow_y = OverflowSpec::Hidden;
+            if !layout.position.establishes_containing_block() {
+                layout.position = PositionSpec::Relative;
+            }
         }
-        if layout.height.is_none() {
-            layout.height = Some(LengthSpec::Px(height));
-            layout.min_height.get_or_insert(LengthSpec::Px(height));
-            layout.max_height.get_or_insert(LengthSpec::Px(height));
+        if unset_radius {
+            style.radius = Some(RadiusTier::Xs);
         }
-        layout.flex_grow.get_or_insert(0.0);
-        layout.flex_shrink.get_or_insert(0.0);
-        layout.border_width = Some(0.0);
-        layout.border_radius.get_or_insert(metrics.radius_xs);
-        layout.overflow_x = OverflowSpec::Hidden;
-        layout.overflow_y = OverflowSpec::Hidden;
-        if !layout.position.establishes_containing_block() {
-            layout.position = PositionSpec::Relative;
+        if unset_height {
+            style.control_height = Some(ControlHeight::Exact(self.size));
+        }
+        if unset_width && aspect == DEFAULT_ASPECT {
+            style.square = Some(SquareSize::Control(self.size));
         }
         style
     }
@@ -302,7 +307,7 @@ mod tests {
 
     #[test]
     fn box_is_control_height_by_host_aspect() {
-        let square = ControlSize::Small.height();
+        let square = ControlSize::Small.height_in(UI_METRICS);
         assert_eq!(Thumbnail::empty().box_extent(UI_METRICS), (square, square));
         let wide = Thumbnail::empty().aspect(16.0 / 9.0).box_extent(UI_METRICS);
         assert_eq!(wide.1, square);
@@ -328,6 +333,15 @@ mod tests {
             let bounds = context.world().layout_box(entity.stable_id()).unwrap();
             assert_eq!((bounds.width, bounds.height), expected);
         }
+        let wide = context
+            .create_component(document(), Thumbnail::empty().aspect(16.0 / 9.0))
+            .unwrap();
+        context
+            .layout_document(document(), LayoutViewport::new(240.0, 80.0))
+            .unwrap();
+        let bounds = context.world().layout_box(wide.stable_id()).unwrap();
+        assert_eq!(bounds.height, square);
+        assert!((bounds.width - square * 16.0 / 9.0).abs() < 0.01);
     }
 
     #[test]
@@ -451,8 +465,8 @@ mod tests {
             .layout_document(document(), LayoutViewport::new(240.0, 80.0))
             .unwrap();
         let thumb = context.world().layout_box(leading.stable_id()).unwrap();
-        assert_eq!(thumb.width, ControlSize::Small.height());
-        assert_eq!(thumb.height, ControlSize::Small.height());
+        assert_eq!(thumb.width, ControlSize::Small.height_in(UI_METRICS));
+        assert_eq!(thumb.height, ControlSize::Small.height_in(UI_METRICS));
         assert_eq!(
             context.world().node(item.stable_id()).unwrap().children,
             vec![leading.stable_id()]

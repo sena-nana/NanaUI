@@ -1,0 +1,18 @@
+component: drawer
+mode: dark
+state: right
+  target: 0.00,0.00 420.00x240.00
+  a11y: role=Dialog disabled=false checked=None selected=None mixed=false
+  quad #4/10 0.00,0.00 420.00x240.00 opacity=1.00 bg=#00000073 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #4/11 60.00,0.00 370.00x240.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=ComponentElevation { color: [0.0, 0.0, 0.0, 0.45], offset_x: 0.0, offset_y: 14.0, blur_radius: 30.0, spread_radius: 0.0, inset: false }
+  text #4/12 76.00,19.60 290.00x16.80 opacity=1.00 color=#ddddddff size=14.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #3/0 376.00,14.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #3/3 383.50,21.50 13.00x13.00 opacity=1.00 icon=Icon("x") color=#a3a3a3ff
+state: left
+  target: 0.00,0.00 420.00x240.00
+  a11y: role=Dialog disabled=false checked=None selected=None mixed=false
+  quad #4/10 0.00,0.00 420.00x240.00 opacity=1.00 bg=#00000073 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #4/11 -10.00,0.00 370.00x240.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=ComponentElevation { color: [0.0, 0.0, 0.0, 0.45], offset_x: 0.0, offset_y: 14.0, blur_radius: 30.0, spread_radius: 0.0, inset: false }
+  text #4/12 16.00,19.60 290.00x16.80 opacity=1.00 color=#ddddddff size=14.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #3/0 316.00,14.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #3/3 323.50,21.50 13.00x13.00 opacity=1.00 icon=Icon("x") color=#a3a3a3ff

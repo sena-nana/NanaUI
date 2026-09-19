@@ -48,3 +48,8 @@ required-features = ["benchmark"]
 name = "nana-framework-benchmark"
 path = "src/bin/nana-framework-benchmark.rs"
 required-features = ["benchmark"]
+
+[[bin]]
+name = "nana-theme-benchmark"
+path = "src/bin/nana-theme-benchmark.rs"
+required-features = ["benchmark"]

@@ -1,0 +1,7 @@
+component: level-meter
+mode: dark
+state: success
+  target: 20.00,20.00 380.00x4.00
+  a11y: role=ProgressIndicator disabled=false checked=None selected=None mixed=false
+  quad #2/3 20.00,20.00 380.00x4.00 opacity=1.00 bg=#181818ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
+  quad #2/4 20.00,20.00 247.00x4.00 opacity=1.00 bg=#3fb950ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none

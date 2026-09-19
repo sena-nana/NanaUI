@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "theme-controls-100",
+  "kind": "Theme",
+  "params": {
+    "workload": "controls",
+    "controls": 100
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "theme_first_resolve_tracks_the_document",
+      "path": "work_counters.style_nodes_considered",
+      "op": "lte",
+      "value": 101,
+      "status": "required",
+      "note": "Resolving a document from nothing costs one pass over it, not more. The bound is the retained node count (controls plus their column), so a resolver that walked a parent chain per node would exceed it."
+    },
+    {
+      "name": "theme_first_resolve_publishes_each_node_once",
+      "path": "work_counters.style_allocations",
+      "op": "lte",
+      "value": 101,
+      "status": "required",
+      "note": "One published resolved style per node at most. A node that inherits its parent's result verbatim shares that allocation instead."
+    }
+  ],
+  "notes": "Issue #101 §4 control scale (100). First style pass over a fresh document."
+}

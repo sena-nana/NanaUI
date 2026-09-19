@@ -1,0 +1,7 @@
+component: native-markdown
+mode: light
+state: blocks
+  target: 20.00,20.00 380.00x49.00
+  a11y: role=Document disabled=false checked=None selected=None mixed=false
+  text #2/1025 20.00,20.00 61.20x27.54 opacity=1.00 color=#1a1a1fff size=20.40 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/1029 20.00,53.00 66.68x17.55 opacity=1.00 color=#1a1a1fff size=13.00 weight=400 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
