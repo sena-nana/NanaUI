@@ -497,6 +497,12 @@ pub struct UiScene {
     /// Bumped once per node rebuild and stamped onto every primitive that
     /// rebuild writes. See `rebuild_node_primitives`.
     build: u64,
+    /// Whether this delta added, dropped or re-bound a primitive — the changes
+    /// a compiled frame plan and the culling index are built on. The scene
+    /// knows it as it happens: this is the pass that adds and drops them.
+    /// Asking afterwards meant snapshotting every touched node's primitive
+    /// list and diffing it, which is a range scan and an allocation per node.
+    structure_changed: bool,
     compositor: CompositorRegistry,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
@@ -524,6 +530,7 @@ impl Default for UiScene {
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
             build: next_primitive_revision(),
+            structure_changed: false,
             compositor: CompositorRegistry::default(),
             instance: next_scene_instance(),
         }
@@ -554,6 +561,7 @@ impl Clone for UiScene {
             primitives: self.primitives.clone(),
             ordered: self.ordered.clone(),
             build: self.build,
+            structure_changed: self.structure_changed,
             compositor: self.compositor.clone(),
             instance: next_scene_instance(),
         }
@@ -571,9 +579,6 @@ fn next_scene_instance() -> u64 {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
-
-// Structural identity includes custom renderer/resource bindings, not content versions.
-type PrimitiveStructure = (PrimitiveId, Option<(Arc<str>, Arc<str>)>);
 
 impl UiScene {
     pub fn new() -> Self {
@@ -706,7 +711,7 @@ impl UiScene {
         removals: impl IntoIterator<Item = StableNodeId>,
     ) -> SceneDelta {
         let mut delta = SceneDelta::default();
-        let mut previous_structure = HashMap::new();
+        self.structure_changed = false;
         let mut removed_nodes = 0;
         let mut changed = Vec::new();
         let mut hierarchy_changed = false;
@@ -740,7 +745,6 @@ impl UiScene {
         let mut stacking_changed = false;
         let mut inherited_geometry_changed = !inherited_roots.is_empty();
         for node in extracted {
-            previous_structure.insert(node.id, self.node_structure(node.id));
             let previous = self.nodes.get(&node.id);
             let inherited_changed = previous.map_or(!node.children.is_empty(), |old| {
                 old.parent != node.parent
@@ -866,9 +870,6 @@ impl UiScene {
                 scratch.begin();
             }
             for &id in &rebuild {
-                previous_structure
-                    .entry(id)
-                    .or_insert_with(|| self.node_structure(id));
                 rebuilt_primitives += self.rebuild_node_primitives(id);
                 self.invalidate_compositor_cache(id);
             }
@@ -880,13 +881,7 @@ impl UiScene {
             if order_rebuilt || stacking_changed {
                 self.sort_primitives();
             }
-            if order_rebuilt
-                || stacking_changed
-                || removed_nodes != 0
-                || previous_structure
-                    .iter()
-                    .any(|(id, before)| *before != self.node_structure(*id))
-            {
+            if order_rebuilt || stacking_changed || removed_nodes != 0 || self.structure_changed {
                 self.frame_plan.take();
                 self.visibility.take();
             }
@@ -918,26 +913,12 @@ impl UiScene {
         delta
     }
 
-    fn node_structure(&self, node: StableNodeId) -> Vec<PrimitiveStructure> {
-        self.primitives
-            .range(
-                PrimitiveId { node, slot: 0 }..=PrimitiveId {
-                    node,
-                    slot: u64::MAX,
-                },
-            )
-            .map(|(id, held)| {
-                (
-                    *id,
-                    match &held.primitive.kind {
-                        ScenePrimitiveKind::Custom { node, .. } => {
-                            Some((node.renderer.clone(), node.resource.clone()))
-                        }
-                        _ => None,
-                    },
-                )
-            })
-            .collect()
+    /// What a frame plan reads out of a primitive beyond its identity.
+    fn custom_binding(kind: &ScenePrimitiveKind) -> Option<(&Arc<str>, &Arc<str>)> {
+        match kind {
+            ScenePrimitiveKind::Custom { node, .. } => Some((&node.renderer, &node.resource)),
+            _ => None,
+        }
     }
 
     pub fn primitive(&self, id: PrimitiveId) -> Option<&ScenePrimitive> {
@@ -1296,6 +1277,7 @@ impl UiScene {
         for slot in slots {
             if let Some(held) = self.primitives.remove(&slot) {
                 self.ordered.remove(&held.key);
+                self.structure_changed = true;
             }
         }
     }
@@ -1405,6 +1387,11 @@ impl UiScene {
             // place. Re-entering `ordered` at a key it already holds is the
             // work this avoids.
             let moved = held.key != key;
+            // A frame plan names custom nodes by renderer and resource, so one
+            // slot swapping which it draws is a structural change even though
+            // the slot itself stays.
+            self.structure_changed |=
+                Self::custom_binding(&held.primitive.kind) != Self::custom_binding(&primitive.kind);
             let previous = std::mem::replace(&mut held.key, key.clone());
             held.primitive = primitive;
             held.build = build;
@@ -1414,6 +1401,7 @@ impl UiScene {
             }
             return;
         }
+        self.structure_changed = true;
         self.primitives.insert(
             primitive.id,
             RetainedPrimitive {

@@ -173,6 +173,19 @@ fn frame_plan_survives_paint_changes_but_tracks_structure_and_resource_conflicts
     first.custom_render.as_mut().unwrap().revision = 2;
     scene.apply_delta([first.clone()], []);
     assert!(Arc::ptr_eq(&with_texture, &scene.frame_plan().unwrap()));
+    // The same slot, drawn by a different renderer against a different
+    // resource: the plan names custom nodes by those two, so it has to be
+    // compiled again even though nothing was added or dropped.
+    first.custom_render = Some(CustomRenderNode::new("nana.gpu-view", "camera", 1));
+    scene.apply_delta([first.clone()], []);
+    let rebound = scene.frame_plan().unwrap();
+    assert!(
+        !Arc::ptr_eq(&with_texture, &rebound),
+        "rebinding a custom node must recompile the plan"
+    );
+    first.custom_render = Some(CustomRenderNode::new("nana.host-texture", "preview", 2));
+    scene.apply_delta([first.clone()], []);
+    assert!(!Arc::ptr_eq(&rebound, &scene.frame_plan().unwrap()));
     let mut second = node(2, None, &[]);
     second.custom_render = first.custom_render.clone();
     scene.apply_delta([second], []);
@@ -8449,6 +8462,15 @@ fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
         vec![0, 2],
         "a label paints its quad and its text"
     );
+    // Compile the frame plan before the change, so the change has something
+    // stale to leave behind.
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 200.0,
+    };
+    assert_eq!(scene.visible_operations(viewport).unwrap().len(), 2);
 
     scene.apply_delta([plain], []);
     assert_eq!(
@@ -8460,5 +8482,13 @@ fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
         scene.primitive_count(),
         1,
         "nor may it stay in the scene unpainted"
+    );
+    // The compiled frame plan is a list of primitives to draw. A dropped one
+    // has to leave it too, or the painter keeps asking for a primitive the
+    // scene no longer has.
+    assert_eq!(
+        scene.visible_operations(viewport).unwrap().len(),
+        1,
+        "the frame plan must be recompiled without it"
     );
 }
