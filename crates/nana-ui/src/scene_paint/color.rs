@@ -146,13 +146,50 @@ pub(super) fn orthographic_scaled(width: u32, height: u32, scale: f32) -> [f32; 
 mod tests {
     use super::*;
 
+    /// How many representable `f32` steps apart two values are.
+    fn ulps_apart(a: f32, b: f32) -> u32 {
+        a.to_bits().abs_diff(b.to_bits())
+    }
+
+    /// The sRGB transfer function in `f64`, whose error lands far below
+    /// anything an `f32` can represent, so it stands in for the exact curve.
+    fn curve(value: u8) -> f32 {
+        let u = f64::from(value) / 255.0;
+        let linear = if u < 0.04045 {
+            u / 12.92
+        } else {
+            ((u + 0.055) / 1.055).powf(2.4)
+        };
+        linear as f32
+    }
+
+    /// The table and `linear_component` both approximate the same curve, and
+    /// each is pinned to the curve rather than to the other.
+    ///
+    /// Not bitwise, because `powf` is neither correctly rounded nor
+    /// reproducible across libm implementations: two approximations of this
+    /// curve disagree in the last bits by construction. At sRGB 71 the exact
+    /// value rounds to `0x3d810b65`, an `f32` `powf` was observed returning
+    /// `0x3d810b67`, and the table holds `0x3d810b68` — comparing bits pins the
+    /// suite to whichever libm generated the table. The budget covers the
+    /// table's own drift from the curve (up to 6 steps, worst at sRGB 134) and
+    /// is still orders of magnitude tighter than a wrong entry.
     #[test]
     fn the_table_is_the_curve_it_replaces() {
+        const BUDGET: u32 = 8;
         for value in 0..=255u8 {
-            assert_eq!(
-                linear_from_srgb8(value),
-                linear_component(f32::from(value) / 255.0),
-                "sRGB {value} must linearize to the same bits as the curve"
+            let exact = curve(value);
+            let table = linear_from_srgb8(value);
+            assert!(
+                ulps_apart(table, exact) <= BUDGET,
+                "sRGB {value}: table {table:?} is {} steps from the curve {exact:?}",
+                ulps_apart(table, exact)
+            );
+            let curved = linear_component(f32::from(value) / 255.0);
+            assert!(
+                ulps_apart(curved, exact) <= BUDGET,
+                "sRGB {value}: linear_component {curved:?} is {} steps from the curve {exact:?}",
+                ulps_apart(curved, exact)
             );
         }
     }

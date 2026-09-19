@@ -486,6 +486,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &settings,
             parent.as_deref(),
             &scene_desktop(event_loop, settings.constrain_to_work_area),
+            super::composed_surface(self.surface_mode),
         )?;
         let window: Arc<dyn winit::window::Window> = Arc::from(
             event_loop
@@ -504,6 +505,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &settings,
             self.program.window_material_mode_for(id),
             self.program.appearance_backdrop_opacity_for(id),
+            super::composed_surface(self.surface_mode),
+            true,
         );
         let surface = self
             .graphics
@@ -513,7 +516,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     settings.transparent,
                     self.program.window_material_mode_for(id),
                 ),
-                Program::surface_mode(),
+                self.surface_mode,
             )
             .map_err(|error| error.to_string())?;
         let material = material_for_surface_alpha(
@@ -766,6 +769,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 &host.settings,
                 desired.material,
                 desired.opacity,
+                super::composed_surface(self.surface_mode),
+                true,
             );
             self.graphics.apply_surface_alpha_mode(
                 &mut host.surface,
@@ -1271,6 +1276,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .unwrap_or(&self.settings)
     }
 
+    /// Surface effect actually in force: the material last applied, or the
+    /// descriptor before anything has been applied. A request that fell back to
+    /// solid is not it — the window still presents the surface the caller asked
+    /// for, and `host.material` would report the fallback.
+    pub(super) fn window_surface_material(&self, id: WindowId) -> crate::MaterialEffect {
+        let Some(host) = self.window_contexts.get(&id) else {
+            return crate::MaterialEffect::Solid;
+        };
+        let requested = host
+            .applied_appearance
+            .map_or(crate::MaterialEffect::Solid, |appearance| {
+                appearance.material
+            });
+        window_surface_effect(host.settings.transparent, requested)
+    }
+
     pub(super) fn mutate_native_style<R>(
         &self,
         id: WindowId,
@@ -1288,7 +1309,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         let window = host.surface.window();
-        apply_client_chrome_after_create(window.as_ref(), &host.settings);
+        apply_client_chrome_after_create(
+            window.as_ref(),
+            &host.settings,
+            self.window_surface_material(id),
+            super::composed_surface(self.surface_mode),
+            true,
+        );
         // `prepare_client_chrome` centers the buttons the way a window
         // without a laid-out placeholder wants them.
         place_native_controls(host);

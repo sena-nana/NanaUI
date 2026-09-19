@@ -29,15 +29,64 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 ### Windows 客户端绘制标题栏契约
 
-Windows 上有两条互斥的 chrome 路径，由 `WindowDescriptor::system_caption` 与 `transparent` 决定，实现见 `windows_scene_chrome`：
+Windows 上的 chrome 由两组输入决定，读的时候要连着读：**descriptor 决定 HWND 怎么建，实时材质决定 DWM 画什么**。
 
-| 设置 | 系统边框 | 阴影 / 圆角 | `WS_EX_NOREDIRECTIONBITMAP` |
+`WindowDescriptor::transparent` 是终身合同而不是当前状态：`window_surface_effect` 对它为真的窗口无条件返回 `Transparent`，材质再也切不回实色。想给用户留「实色背景」开关的宿主必须让它保持 `false`，由 `RuntimeProgram::window_material_mode_for` 报实时材质，chrome 跟着实时材质走（`client_chrome`）。
+
+#### 创建时（只看 descriptor，实现见 `windows_scene_chrome`）
+
+| 设置 | winit `decorations` | `WS_EX_NOREDIRECTIONBITMAP` | 初始圆角 |
 | --- | --- | --- | --- |
-| `system_caption: true` | 开（系统标题栏与缩放） | 系统默认 | 仅透明窗口打开 |
-| `system_caption: false` 且不透明 | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 圆角（Windows 11 DWM 阴影）；不用 winit `undecorated_shadow`（会把客户区顶边内缩 1px，标题栏盖不住） | 关 |
-| `system_caption: false` 且 `transparent: true` | 关 | 无圆角、无 DWM 描边（`DoNotRound` + `DWMWA_COLOR_NONE`），避免透明叠加层留下 HWND 矩形轮廓 | 开 |
+| `system_caption: true` | 开（系统标题栏与缩放） | 仅合成路径开 | 系统默认 |
+| `system_caption: false` 且 `transparent: false` | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 仅合成路径开 | 圆角 |
+| `system_caption: false` 且 `transparent: true` | 关 | 仅合成路径开 | 不圆角 |
 
-不透明自绘窗关掉 decorations 且不用 `undecorated_shadow`：winit 用 `WM_NCCALCSIZE` 把客户区铺到窗口外沿，创建后不再清 `WS_CAPTION`（`SetWindowPos(SWP_FRAMECHANGED)` 会在 `can_create_surfaces` 里卡住 UI 线程）。透明自绘窗仍清 caption，避免 DWM 合成留下系统边框。winit 的 `WindowFlags::apply_diff` 会把 `WS_CAPTION | WS_BORDER | WS_SYSMENU` 写回 `GWL_STYLE`；透明无框窗必须在任何会改原生窗口样式的 winit 调用之后再次剥离，否则 Windows 11 会画出系统边框和三大键。自定义标题栏按钮宽高均为 `WINDOW_CONTROL_WIDTH`，在高 `TITLE_BAR_HEIGHT` 的 controls 槽内垂直居中，按钮组两侧保留 `WINDOW_CONTROL_PADDING`。
+`undecorated_shadow` 恒为 `false`：winit 那条路会把客户区顶边内缩 1px，标题栏盖不住。
+
+### 呈现路径：普通窗口 vs DirectComposition
+
+窗口的 alpha 从哪来，取决于 surface 谈成了什么，而这由**呈现路径**决定，不由材质决定。实测三种组合：
+
+| 路径 | 后端 | 协商到的 alpha mode | 透明从哪来 |
+| --- | --- | --- | --- |
+| HWND swapchain | Vulkan | `PreMultiplied` | swapchain 自带 |
+| HWND swapchain | DX12 | **`Opaque`** | 只能靠 `DwmExtendFrameIntoClientArea` 那张玻璃 |
+| DirectComposition visual | DX12 | `PreMultiplied` | swapchain 自带 |
+
+DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.rs`），所以**普通路径上的窗口透明其实隐式依赖 Vulkan**。要在任何后端上都拿到确定可用的透明，应用 override `RuntimeProgram::surface_mode()` 返回 `HostedSurfaceMode::WindowsComposition`。
+
+这个选择是**全进程、一次性**的：合成路径会把后端收窄到 DX12（`new_with_surface_mode`），而 instance 为所有窗口共享。`surface_mode()` 本身就是静态方法，与此一致。
+
+`resolve_surface_mode` 在**创建第一个窗口之前**把有效模式解析出来，因为 `WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它，`apply_diff` 会整体覆写 `GWL_EXSTYLE`，事后设不住。独立进程用一个 DX12-only 的临时 instance 枚举适配器来判定（无 surface，`WGPU_BACKEND` 仍然优先）；嵌入式宿主没有收窄余地，只有宿主本来就是 DX12 时才可能走合成。判定失败即降级到普通路径并上报 `MaterialFallback`，不是启动失败。
+
+`WS_EX_NOREDIRECTIONBITMAP` 归呈现路径、不归材质：DirectComposition 把 visual 画在重定向位图**之上**，合成窗口必须没有那张位图，否则底下的不透明表面会透出来；普通路径的窗口则一律保留它——它的 swapchain 很可能正在往里呈现。实测 NRB + HWND + `Opaque` 这个组合在创建、稳态出帧、`ResizeBuffers`、零尺寸往返四项上都正常，所以保留它不是妥协。
+
+玻璃（`DwmExtendFrameIntoClientArea(-1)`）无条件铺：对自带 alpha 的窗口多余，对借 DWM alpha 的窗口必需，而 `nana-window` 那一层看不出窗口属于哪种。
+
+窗口以隐藏状态创建，显示前实时材质已经应用过，所以用户看不到创建时这一份配置——除了 frame 样式位，见下。
+
+#### 运行时（看实时 `MaterialEffect`，实现见 `client_chrome` / `apply_window_shape`）
+
+| 实时材质 | frame 样式位 | 圆角 | `DWMWA_BORDER_COLOR` |
+| --- | --- | --- | --- |
+| `Solid` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` |
+| `Mica` / `Acrylic` / `Vibrancy` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` |
+| `Transparent` | **剥掉** `WS_CAPTION \| WS_THICKFRAME \| WS_SYSMENU` | `DWMWCP_DONOTROUND` | `COLOR_NONE` |
+| `system_caption: true` | 宿主一概不碰 | | |
+
+`DWMWA_WINDOW_CORNER_PREFERENCE` 管圆角裁剪，`DWMWA_BORDER_COLOR` 管那 1px 强调色描边。阴影和 DWM 自绘三大键来自 frame 样式位：winit 的无边框窗口仍带着 `WS_CAPTION | WS_THICKFRAME | WS_SYSMENU`，DWM 按这些位在客户区下面画非客户区，透明客户区就把它们透出来。剥掉这些位就够了；`DWMWA_NCRENDERING_POLICY` 在第一轮验收里根本没生效过（当时主窗还没走合成路径，非客户区渲染是开着的），而阴影已经没了。判据是「材质是不是 `Transparent`」而不是 `wants_transparent_surface()`：Mica 和 Acrylic 也让后者为真，但它们的背景**就是** DWM 的非客户区渲染，圆角和描边要留着。
+
+#### winit 会把 frame 样式位写回来
+
+winit 的无边框窗口并不去掉 frame 样式位。`to_window_styles()` 对非 POPUP 顶层窗口无条件写 `WS_CAPTION | WS_SYSMENU | WS_BORDER`，再按 resizable 等加 `WS_SIZEBOX | WS_MAXIMIZEBOX | WS_MINIMIZEBOX`（`MARKER_DECORATIONS` 只对 `WS_CHILD` 剥 caption），靠 `WM_NCCALCSIZE` 把客户区铺满窗口矩形。DWM 因此一直在为这个 HWND 渲染非客户区，画在客户区**下面**：不透明客户区盖住了它，透明客户区把它透出来——这就是透明窗上冒出系统三大键和投影的来源。
+
+`apply_diff` 在任何 `WindowFlags` 变化时整体覆写 `GWL_STYLE`，**包括在它自己的 WndProc 里**（`WM_DPICHANGED` 且尺寸变化时），那条路径宿主看不见。所以剥样式位不能靠每次宿主调用之后重放，只能挡在消息上：`install_style_guard` 挂一个 `WM_STYLECHANGING` 子类，把 mask 里的位从 `styleNew` 抹掉。不透明窗口用空 mask 让它变成透传，不必卸载；子类随 HWND 销毁。
+
+`arm_frameless_guard` 只装守卫、不写样式，因而不发任何窗口消息，`can_create_surfaces` 里可以调。显示窗口本身就是一次 `apply_diff`：它重写整条样式（被守卫抹掉 frame 位）并紧接着发自己的 `SetWindowPos(SWP_FRAMECHANGED)`，所以窗口从第一帧起就没有 frame，宿主不必在 surface 回调里自己发帧变更。`client_chrome` 的 `allow_caption_change` 只决定「现在能不能直接写样式」，不决定要不要剥。
+
+剥掉 frame 样式位换掉了这些系统能力：Aero Snap（Win+方向键、拖到屏幕边缘分屏）、Windows 11 最大化按钮的 Snap Layouts 悬停菜单、Alt+Space 系统菜单、系统最大化/最小化动画。自绘的 8px 缩放（`LiveFrameResize`）、自绘拖窗（`LiveFrameMove` / `WM_NCLBUTTONDOWN`）和自绘三大键都不依赖它们。`WS_SYSMENU` 是 mask 里最先该摘掉的一位，如果任务栏的最小化或 Aero Peek 出问题。
+
+自定义标题栏按钮宽高均为 `WINDOW_CONTROL_WIDTH`，在高 `TITLE_BAR_HEIGHT` 的 controls 槽内垂直居中，按钮组两侧保留 `WINDOW_CONTROL_PADDING`。
 
 命中顺序（逻辑像素，已含当前 `scale_factor`）：
 

@@ -3,10 +3,7 @@ use window_vibrancy::{apply_acrylic, apply_mica, clear_acrylic, clear_mica};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows_sys::Win32::UI::Controls::MARGINS;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_NOREDIRECTIONBITMAP,
-};
+use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW};
 
 use crate::{Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome};
 
@@ -17,7 +14,7 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
     fallback: FallbackColor,
 ) -> MaterialOutcome {
     clear(window);
-    if should_clear_no_redirection_bitmap(requested) {
+    if should_reset_extended_frame(requested) {
         apply_solid(window);
     }
     match requested {
@@ -56,8 +53,16 @@ pub(crate) fn clear<W: HasWindowHandle + ?Sized>(window: &W) {
     let _ = clear_acrylic(window);
 }
 
-const fn should_clear_no_redirection_bitmap(requested: MaterialEffect) -> bool {
-    matches!(requested, MaterialEffect::Solid)
+/// Which requests leave an opaque client, so the extended frame an earlier
+/// material put on the window has to be undone first.
+///
+/// `Vibrancy` belongs here because Windows has no such effect: the request ends
+/// as a solid outcome, and a window that reports solid must not keep the frame
+/// a previous `Transparent` or `Mica` extended across it. Mica and Acrylic undo
+/// their own state on the branch where they fail; `Vibrancy` never had a branch
+/// that could.
+const fn should_reset_extended_frame(requested: MaterialEffect) -> bool {
+    matches!(requested, MaterialEffect::Solid | MaterialEffect::Vibrancy)
 }
 
 pub(crate) fn set_application_icon_png(_png: &[u8]) {}
@@ -73,19 +78,30 @@ fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
         return;
     };
     extend_frame(hwnd, 0);
-    set_no_redirection_bitmap(hwnd, false);
 }
 
 fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
     prepare_composed_client(window);
 }
 
+/// Extends the frame across the whole client, so DWM reads the alpha of a
+/// client that presents through the redirection bitmap.
+///
+/// `WS_EX_NOREDIRECTIONBITMAP` is deliberately left alone. winit derives that
+/// bit from a creation flag and `apply_diff` rewrites the whole ex-style, so a
+/// bit set behind winit's back is gone again at the next `set_visible` or
+/// `set_maximized`. Setting it bought a `SetWindowPos(SWP_FRAMECHANGED)` and a
+/// spell where the window had no redirection bitmap for a swapchain that may
+/// still have been presenting into one. Measured on a Vulkan surface that
+/// negotiated `PreMultiplied`: the bit reads clear right through window
+/// creation and the client is transparent anyway, because the swapchain carries
+/// the alpha itself. A window that does need the bit gets it from
+/// `WindowDescriptor::transparent` at creation, which is where it lasts.
 fn prepare_composed_client<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
     extend_frame(hwnd, -1);
-    set_no_redirection_bitmap(hwnd, true);
 }
 
 fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
@@ -112,47 +128,21 @@ fn extend_frame(hwnd: HWND, margin: i32) {
     }
 }
 
-fn set_no_redirection_bitmap(hwnd: HWND, enabled: bool) {
-    unsafe {
-        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let bit = WS_EX_NOREDIRECTIONBITMAP as isize;
-        let next = if enabled {
-            current | bit
-        } else {
-            current & !bit
-        };
-        if next == current {
-            return;
-        }
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::should_clear_no_redirection_bitmap;
+    use super::should_reset_extended_frame;
     use crate::MaterialEffect;
 
+    /// A window whose request ends opaque must not be left composed by the
+    /// material it is replacing. Windows has no Vibrancy, so that request is
+    /// one of them however it reads.
     #[test]
-    fn only_solid_clears_no_redirection_bitmap() {
-        assert!(should_clear_no_redirection_bitmap(MaterialEffect::Solid));
-        assert!(!should_clear_no_redirection_bitmap(
-            MaterialEffect::Transparent
-        ));
-        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Mica));
-        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Acrylic));
-        assert!(!should_clear_no_redirection_bitmap(
-            MaterialEffect::Vibrancy
-        ));
+    fn a_request_that_ends_opaque_undoes_the_composed_client() {
+        assert!(should_reset_extended_frame(MaterialEffect::Solid));
+        assert!(should_reset_extended_frame(MaterialEffect::Vibrancy));
+        assert!(!should_reset_extended_frame(MaterialEffect::Transparent));
+        assert!(!should_reset_extended_frame(MaterialEffect::Mica));
+        assert!(!should_reset_extended_frame(MaterialEffect::Acrylic));
     }
 }
 

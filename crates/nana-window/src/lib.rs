@@ -19,15 +19,16 @@ pub use chrome::FrameResizeEdge;
 pub use chrome::LiveFrameMove;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameResize;
+pub use chrome::arm_frameless_guard;
 pub use chrome::drag_custom_title_bar;
 pub use chrome::native_live_resize_active;
 pub use chrome::place_native_window_controls;
 pub use chrome::prepare_client_chrome;
 pub use chrome::prepare_custom_title_bar;
 pub use chrome::resize_custom_frame;
+pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
 pub use chrome::set_present_transaction;
-pub use chrome::suppress_system_caption;
 pub use file_dialog::{
     FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,
     FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,
