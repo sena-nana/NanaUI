@@ -445,6 +445,10 @@ impl HostTextureBinding {
 #[derive(Debug, Clone, Default)]
 pub struct HostTextureRegistry {
     bindings: Arc<RwLock<HashMap<String, RegisteredHostTextureBinding>>>,
+    /// 每个 slot 最后一次实际画到的设备像素尺寸。与 `bindings` 分开放:
+    /// 画家每帧写这里,而 `bindings` 在同一段时间里正被读,合用一把锁
+    /// 会互相挡。
+    painted: Arc<RwLock<HashMap<String, [u32; 2]>>>,
     revision: Arc<AtomicU64>,
     observers: Arc<TextureObservers>,
 }
@@ -537,6 +541,34 @@ impl TextureSlot {
 }
 
 impl HostTextureRegistry {
+    /// 这个 slot **最后一次**被画到的设备像素尺寸,还没画过时为 `None`。
+    ///
+    /// 它是**画完之后**的事实:`fitted` 之后的目标矩形、节点自己的变换、
+    /// 以及当时的缩放因子都已经算进去了。消费方要按播放区真实像素准备
+    /// 内容(放大、超分、重新解码)时读它,比自己从布局盒加 `ContentFit`
+    /// 反推准确——反推拿到的是**上一帧的布局**,窗口改尺寸时会差一帧,
+    /// 而且不包含节点的变换。
+    ///
+    /// 尺寸为 0 的一边表示那一帧它没有可见面积。节点从树上摘掉而 slot
+    /// 没有 [`Self::remove`] 时,这里留着的是它最后一次可见时的尺寸——
+    /// 记录只在绘制和 `remove` 时变,没有「这一帧没画」这个事件。
+    pub fn painted_extent(&self, slot: &str) -> Option<[u32; 2]> {
+        self.painted.read().ok()?.get(slot).copied()
+    }
+
+    /// 画家每帧登记一次。同一个 slot 在一帧里被画多次时,最后一次为准。
+    pub(crate) fn note_painted(&self, slot: &str, extent: [u32; 2]) {
+        let Ok(mut painted) = self.painted.write() else {
+            return;
+        };
+        match painted.get_mut(slot) {
+            Some(current) => *current = extent,
+            None => {
+                painted.insert(slot.to_string(), extent);
+            }
+        }
+    }
+
     pub fn slot(&self, name: impl Into<Arc<str>>) -> TextureSlot {
         TextureSlot {
             registry: self.clone(),
@@ -615,6 +647,11 @@ impl HostTextureRegistry {
     }
 
     pub fn remove(&self, slot: &str) -> Option<HostTextureBinding> {
+        // 连同上一帧的绘制尺寸一起丢掉:slot 被重新登记时,在它第一次被画
+        // 之前读到旧尺寸比读到 `None` 更难排查。
+        if let Ok(mut painted) = self.painted.write() {
+            painted.remove(slot);
+        }
         let removed = self
             .bindings
             .write()

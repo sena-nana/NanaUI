@@ -2590,6 +2590,67 @@ fn letter_spacing_changes_painted_pixels() {
 }
 
 #[test]
+fn painted_extent_reports_the_fitted_device_pixels_not_the_layout_box() {
+    // 消费方按「这张宿主纹理实际被画到多少设备像素」准备内容(超分、
+    // 重新解码)。布局盒不是这个数:`ContentFit` 会把 64x32 的源按比例
+    // 放进 64x64 的盒子里,缩放因子还要再乘一遍。
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let preview = context
+        .create_component(document, GpuTextureView::new("layer").contain())
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, preview.stable_id(), 0.0, 0.0, 64.0, 64.0);
+    context.commit_mutations(layout).unwrap();
+    let scene = commit_scene(&mut context);
+    let view = solid_texture_view(&device, &queue, format, 64, 32, wgpu::Color::GREEN);
+    let registry = register_host_texture("layer", &view, 64, 32);
+    assert_eq!(
+        registry.painted_extent("layer"),
+        None,
+        "还没画过就没有绘制尺寸可报"
+    );
+    let (_target, target_view) = test_copy_target(&device, format, 128, 128);
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [128, 128],
+        scale_factor: 2.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui host texture painted extent"),
+    });
+    painter
+        .paint(
+            &scene,
+            &mut encoder,
+            &target_view,
+            viewport,
+            Some(&registry),
+            None,
+        )
+        .unwrap();
+    queue.submit(std::iter::once(encoder.finish()));
+    assert_eq!(
+        registry.painted_extent("layer"),
+        Some([128, 64]),
+        "64x32 的源 contain 进 64x64 的盒子是 64x32 逻辑像素,2 倍缩放后是 128x64"
+    );
+    registry.remove("layer");
+    assert_eq!(
+        registry.painted_extent("layer"),
+        None,
+        "slot 被移除后不该留下上一帧的绘制尺寸"
+    );
+}
+
+#[test]
 fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;

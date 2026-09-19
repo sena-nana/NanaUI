@@ -10,6 +10,9 @@ pub(super) struct HostTexturePipeline {
 pub(super) struct PreparedHostTexture {
     primitive: GpuTexturePrimitive,
     clip: PhysicalRect,
+    /// 这一帧这张宿主纹理实际覆盖的设备像素范围(变换后 AABB × 缩放)。
+    /// 消费方据此知道该按多少像素准备内容,不必从布局盒自己反推。
+    pub(super) painted: [u32; 2],
 }
 
 impl HostTexturePipeline {
@@ -111,6 +114,10 @@ impl HostTexturePipeline {
             gpu_work,
         );
         let world = clip::transformed_aabb_projective(bounds, affine, persp);
+        let painted = [
+            physical_extent(world.width, scale_factor),
+            physical_extent(world.height, scale_factor),
+        ];
         let clip = physical_scissor(world, scale_factor, physical_size)
             .map(|world| intersect_physical(world, clip))
             .unwrap_or(PhysicalRect {
@@ -119,7 +126,11 @@ impl HostTexturePipeline {
                 width: 0,
                 height: 0,
             });
-        PreparedHostTexture { primitive, clip }
+        PreparedHostTexture {
+            primitive,
+            clip,
+            painted,
+        }
     }
 
     pub(super) fn draw(
@@ -137,6 +148,16 @@ impl HostTexturePipeline {
     pub(super) fn trim(&mut self) {
         self.pipeline.trim();
     }
+}
+
+/// 逻辑长度换成设备像素。非有限值与负值当作 0——没画到就是没画到,
+/// 让消费方拿到一个「无」而不是一个巨大的假尺寸。
+fn physical_extent(logical: f32, scale_factor: f32) -> u32 {
+    let pixels = logical * scale_factor;
+    if !pixels.is_finite() || pixels <= 0.0 {
+        return 0;
+    }
+    pixels.round() as u32
 }
 
 impl HostTexturePipeline {
