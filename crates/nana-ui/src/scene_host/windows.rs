@@ -516,6 +516,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 Program::surface_mode(),
             )
             .map_err(|error| error.to_string())?;
+        let material = material_for_surface_alpha(
+            material,
+            surface.alpha_mode(),
+            self.graphics.adapter_info().backend,
+        );
         let format = surface.format();
         let _ = self.painter_mut(format);
         #[cfg(not(target_os = "android"))]
@@ -766,7 +771,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 &mut host.surface,
                 window_wants_transparent_surface(host.settings.transparent, desired.material),
             )?;
-            Ok(outcome)
+            Ok(material_for_surface_alpha(
+                outcome,
+                host.surface.alpha_mode(),
+                self.graphics.adapter_info().backend,
+            ))
         })?;
         if let Some(outcome) = outcome {
             host.material = outcome;

@@ -38,7 +38,7 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialOutcome,
+    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialFallback, MaterialOutcome,
     apply_hosted_system_material, clear_system_material, prepare_client_chrome,
     resize_custom_frame, suppress_system_caption,
 };
@@ -617,6 +617,11 @@ fn initialize<Program: RuntimeProgram>(
             window_wants_transparent_surface(settings.transparent, last_material_mode),
         )
         .map_err(|error| error.to_string())?;
+    material = material_for_surface_alpha(
+        material,
+        surface.alpha_mode(),
+        graphics.adapter_info().backend,
+    );
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -1027,6 +1032,31 @@ fn window_wants_transparent_surface(
     appearance: crate::MaterialEffect,
 ) -> bool {
     window_surface_effect(settings_transparent, appearance).wants_transparent_surface()
+}
+
+/// Demote a transparent effect the surface cannot present.
+///
+/// Transparent effects clear to a zero alpha (see [`scene_clear_color`]), which
+/// an `Opaque` surface shows as solid black instead of the desktop behind it.
+/// Windows DX12 advertises `Opaque` for every HWND surface, so the request is
+/// unsatisfiable there. Reporting the fallback restores the opaque clear colour
+/// and lets the program and its logs see that transparency is unavailable.
+///
+/// `Gl` is excluded: wgpu-hal hardcodes `Opaque` for every GLES surface and
+/// never reads the configured mode back, leaving alpha to the EGL/WGL config,
+/// so its alpha mode says nothing about whether the window composites.
+fn material_for_surface_alpha(
+    material: MaterialOutcome,
+    alpha_mode: wgpu::CompositeAlphaMode,
+    backend: wgpu::Backend,
+) -> MaterialOutcome {
+    if material.wants_transparent_surface()
+        && alpha_mode == wgpu::CompositeAlphaMode::Opaque
+        && backend != wgpu::Backend::Gl
+    {
+        return MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable);
+    }
+    material
 }
 
 fn apply_scene_material(
@@ -2626,17 +2656,18 @@ mod tests {
         Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
         PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
         held_mouse_button, ime_apply, input_pointer_hit, invalidate_program_host_textures,
-        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
-        platform_input_modifiers, platform_window_event, remove_image_target_index,
-        replace_image_target_index, resolved_scene_ime_request, route_window_command,
-        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, suppress_caption_after_create, surface_image_keys,
-        tablet_pointer_id, window_cursor_override, window_level, window_surface_effect,
+        material_for_surface_alpha, mouse_button_code, mouse_button_mask, platform_ime_event,
+        platform_input_key, platform_input_modifiers, platform_window_event,
+        remove_image_target_index, replace_image_target_index, resolved_scene_ime_request,
+        route_window_command, scene_clear_color, scene_runtime_input_update,
+        scene_window_attributes, screen_position, should_deliver_program_ime,
+        suppress_caption_after_create, surface_image_keys, tablet_pointer_id,
+        window_cursor_override, window_level, window_surface_effect,
         window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::{
-        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
-        RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
+        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialFallback,
+        MaterialOutcome, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
@@ -2999,6 +3030,46 @@ mod tests {
             ),
             [0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn an_opaque_surface_reports_the_transparent_request_as_a_fallback() {
+        use wgpu::Backend::{Dx12, Gl, Metal, Vulkan};
+        use wgpu::CompositeAlphaMode::{Opaque, PostMultiplied, PreMultiplied};
+        let demoted = MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable);
+        // Windows DX12 only ever advertises Opaque for an HWND surface, where
+        // the transparent clear color shows as solid black. The request has to
+        // come back as a reported fallback rather than silently look honoured.
+        assert!(scene_clear_color(ThemeMode::Dark, demoted)[3] > 0.0);
+        for requested in [
+            MaterialOutcome::transparent(),
+            MaterialOutcome::native(MaterialEffect::Mica),
+            MaterialOutcome::native(MaterialEffect::Acrylic),
+        ] {
+            for backend in [Dx12, Vulkan, Metal] {
+                assert_eq!(
+                    material_for_surface_alpha(requested, Opaque, backend),
+                    demoted,
+                    "{backend:?} honours the configured alpha mode"
+                );
+                for alpha in [PreMultiplied, PostMultiplied] {
+                    assert_eq!(
+                        material_for_surface_alpha(requested, alpha, backend),
+                        requested
+                    );
+                }
+            }
+            // GLES hardcodes Opaque and never reads the configured mode back,
+            // so it says nothing about whether the window composites.
+            assert_eq!(material_for_surface_alpha(requested, Opaque, Gl), requested);
+        }
+        // An opaque request is already honoured by an opaque surface.
+        for chosen in [
+            MaterialOutcome::chosen_solid(),
+            MaterialOutcome::solid(MaterialFallback::PlatformDoesNotProvideNativeMaterial),
+        ] {
+            assert_eq!(material_for_surface_alpha(chosen, Opaque, Dx12), chosen);
+        }
     }
 
     #[test]
