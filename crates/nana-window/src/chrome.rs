@@ -271,6 +271,132 @@ impl LiveFrameResize {
     }
 }
 
+/// Captures a window origin so later pointer moves translate the frame
+/// without a nested OS move loop.
+///
+/// This is [`LiveFrameResize`]'s counterpart for position, and the reason it
+/// exists beside [`drag_custom_title_bar`]: that one hands the gesture to the
+/// platform, which only understands a held primary button. AppKit ignores a
+/// window drag whose current event is not a left press or drag, and Win32
+/// enters the caption move loop, which keeps following the cursor until a
+/// primary release arrives — a gesture held with any other button would
+/// either do nothing or never let go. Nothing here reads the platform's
+/// current event or fakes a caption press; it samples the cursor, so any
+/// button drives it and the host decides when it ends.
+///
+/// Mouse capture is the caller's: winit takes it on every button press and
+/// drops it on the matching release, so a gesture that leaves the window
+/// keeps reporting moves without this type touching capture at all.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy)]
+pub struct LiveFrameMove {
+    origin_x: f64,
+    origin_y: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl LiveFrameMove {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
+        let window = appkit_window(window)?;
+        let origin = window.frame().origin;
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        Some(Self {
+            origin_x: origin.x,
+            origin_y: origin.y,
+            mouse_x: mouse.x,
+            mouse_y: mouse.y,
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        // Screen points and the frame origin share their axes on AppKit, so
+        // the cursor delta is the origin delta.
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        self.set_origin(
+            window,
+            self.origin_x + (mouse.x - self.mouse_x),
+            self.origin_y + (mouse.y - self.mouse_y),
+        )
+    }
+
+    /// Puts the window back where the gesture started.
+    pub fn cancel<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        self.set_origin(window, self.origin_x, self.origin_y)
+    }
+
+    fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
+        let Some(window) = appkit_window(window) else {
+            return false;
+        };
+        window.setFrameOrigin(objc2_foundation::NSPoint::new(x, y));
+        true
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl LiveFrameMove {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
+        let hwnd = win32_hwnd(window)?;
+        let mut rect = windows_sys::Win32::Foundation::RECT::default();
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        unsafe {
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) == 0 {
+                return None;
+            }
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) == 0 {
+                return None;
+            }
+        }
+        Some(Self {
+            origin_x: f64::from(rect.left),
+            origin_y: f64::from(rect.top),
+            mouse_x: f64::from(mouse.x),
+            mouse_y: f64::from(mouse.y),
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        // Cursor and window rect are both screen pixels, so the cursor delta
+        // is the origin delta.
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) } == 0 {
+            return false;
+        }
+        self.set_origin(
+            window,
+            self.origin_x + (f64::from(mouse.x) - self.mouse_x),
+            self.origin_y + (f64::from(mouse.y) - self.mouse_y),
+        )
+    }
+
+    /// Puts the window back where the gesture started.
+    pub fn cancel<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        self.set_origin(window, self.origin_x, self.origin_y)
+    }
+
+    fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
+        let Some(hwnd) = win32_hwnd(window) else {
+            return false;
+        };
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x as i32,
+                y as i32,
+                0,
+                0,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+            );
+        }
+        true
+    }
+}
+
 /// Centers macOS traffic lights inside a custom titlebar `titlebar_height`
 /// logical points tall: the system keeps them centered in the standard
 /// titlebar strip, which reads high inside NanaUI's taller bar. The

@@ -37,8 +37,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         // Presence is window state, reported even while a modal child or Forward
-        // passthrough keeps the pointer itself from reaching widgets.
+        // passthrough keeps the pointer itself from reaching widgets. A window
+        // the host is moving is the exception: the pointer holds it, so every
+        // crossing of its own former bounds is the window leaving the pointer,
+        // not the pointer leaving the window.
         if let Some(signal) = presence::presence_signal(&event, self.geometry_of(id).physical_size)
+            .filter(|_| !self.frame_move_active(id))
         {
             self.observe_pointer_presence(event_loop, id, signal);
             if event_loop.exiting() || !self.window_contexts.contains_key(&id) {
@@ -85,7 +89,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         if let Some(input) = self.normalized_input(id, &event) {
-            if self.consume_frame_resize(event_loop, id, &input) {
+            if self.consume_frame_move(event_loop, id, &input)
+                || self.consume_frame_resize(event_loop, id, &input)
+            {
                 if pointer_left {
                     self.reset_window_cursor(id);
                 }
@@ -154,6 +160,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     self.input_mut(id).clear_pointers();
                     #[cfg(any(target_os = "macos", target_os = "windows"))]
                     self.end_live_frame_resize(id);
+                    // Ending a window move tells the document its gesture is
+                    // over, so it runs last: that dispatch may close `id`.
+                    #[cfg(any(target_os = "macos", target_os = "windows"))]
+                    self.end_live_frame_move(event_loop, id);
+                    if !self.window_contexts.contains_key(&id) {
+                        return;
+                    }
                 }
                 self.forward_window_event(event_loop, id, &event);
                 self.apply_ime_request(id);

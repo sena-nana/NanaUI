@@ -168,12 +168,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 apply_application_icon(&nana_app_icon::resolved_application_icon(None));
             }
             RoutedWindowCommand::Drag(id) => {
-                if let Some(window) = self.window(id).cloned()
-                    && drag_scene_window(window.as_ref()).is_ok()
-                {
-                    self.begin_native_drag_presence(id);
-                    self.dispatch_pointer_cancel(event_loop, id);
-                }
+                let _ = self.begin_window_move(event_loop, id);
             }
         }
     }
@@ -649,6 +644,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         {
             live.end(window.as_ref());
         }
+        // A window that goes away takes its move with it; the gesture has no
+        // document left to tell.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if self
+            .live_frame_move
+            .is_some_and(|(session, _, _)| session == id)
+        {
+            self.live_frame_move = None;
+        }
         // Cleared before `Closed` runs, so a window that callback reopens with the
         // same identity is not treated as closing.
         self.closing_windows.remove(&id);
@@ -955,6 +959,156 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             if visible {
                 window.set_cursor(icon.into());
             }
+        }
+    }
+    /// Starts a window move for `WindowCommand::Drag`, the one signal any
+    /// trigger uses to say "move this window with the gesture in flight".
+    ///
+    /// A gesture held with the primary button keeps the platform's own move:
+    /// that is the only path with edge snapping, and on macOS with Spaces.
+    /// Any other button is followed by the host instead, because the platform
+    /// drag assumes a primary press — AppKit ignores a drag whose current
+    /// event is not one, and Win32 opens a caption move loop that only a
+    /// primary release closes, leaving the window stuck to the cursor.
+    pub(super) fn begin_window_move(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+    ) -> Result<(), winit::error::RequestError> {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(button) = held_mouse_button(self.input_of(id).buttons)
+            && button != PRIMARY_MOUSE_BUTTON
+        {
+            // A gesture the host declines — a fullscreen window has nowhere to
+            // move to — reports that, rather than falling back to the platform,
+            // which would take a press it cannot end for a caption drag.
+            return if self.start_frame_move(id, button) {
+                Ok(())
+            } else {
+                Err(winit::error::RequestError::Ignored)
+            };
+        }
+        let Some(window) = self.window(id).cloned() else {
+            return Ok(());
+        };
+        drag_scene_window(window.as_ref())?;
+        self.begin_native_drag_presence(id);
+        self.dispatch_pointer_cancel(event_loop, id);
+        Ok(())
+    }
+
+    /// Captures the window origin so the pointer drives it from here on, and
+    /// answers whether the host took the gesture.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn start_frame_move(&mut self, id: WindowId, button: i16) -> bool {
+        let Some(window) = self.window(id).cloned() else {
+            return false;
+        };
+        // A fullscreen window has nowhere to move to. A maximized one leaves
+        // that state first, exactly as the system move loop does, and anchors
+        // on the restored frame.
+        if window.fullscreen().is_some() {
+            return false;
+        }
+        if window.is_maximized() {
+            window.set_maximized(false);
+        }
+        let Some(live) = nana_window::LiveFrameMove::begin(window.as_ref()) else {
+            return false;
+        };
+        self.live_frame_move = Some((id, button, live));
+        true
+    }
+
+    /// Drives a running window move, and reports whether it took the event.
+    ///
+    /// Events are taken before the document sees them, so the gesture that
+    /// moves the window does not also hover, press or drag anything in it.
+    pub(super) fn consume_frame_move(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        id: WindowId,
+        input: &InputEvent,
+    ) -> bool {
+        // The host-driven window move exists only on macOS and Windows; the
+        // rest of this function never touches the event loop.
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = (event_loop, id, input);
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some((session, owner, live)) = self.live_frame_move
+            && session == id
+        {
+            match input {
+                InputEvent::Pointer { phase, button, .. } => {
+                    match frame_move_step(*phase, *button, owner) {
+                        FrameMoveStep::Follow => {
+                            if let Some(window) = self.window(id) {
+                                let _ = live.update(window.as_ref());
+                            }
+                            // Unlike a resize, a move leaves the drawable
+                            // alone — the compositor carries the frame that is
+                            // already there — so the window follows the
+                            // pointer without a repaint. Only the recorded
+                            // geometry has to keep up, for the persisted frame
+                            // and for screen coordinates.
+                            self.sync_geometry(id);
+                        }
+                        FrameMoveStep::Finish => self.end_live_frame_move(event_loop, id),
+                        FrameMoveStep::Hold => {}
+                    }
+                    return true;
+                }
+                // The pointer is holding the window, so a wheel that reaches
+                // the document would zoom or scroll whatever is under it in
+                // the middle of repositioning the window.
+                InputEvent::Wheel { .. } => return true,
+                // Escape puts the window back, the same way the system move
+                // loop answers it.
+                InputEvent::Keyboard {
+                    pressed: true, key, ..
+                } if key == "Escape" => {
+                    if let Some(window) = self.window(id) {
+                        let _ = live.cancel(window.as_ref());
+                    }
+                    self.sync_geometry(id);
+                    self.end_live_frame_move(event_loop, id);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Ends the window move for `id` if one is running.
+    ///
+    /// The gesture kept its own events while the window followed it, so the
+    /// document is told it ended — otherwise a press it never saw released
+    /// would stay held.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pub(super) fn end_live_frame_move(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
+        if self
+            .live_frame_move
+            .take_if(|(session, _, _)| *session == id)
+            .is_some()
+        {
+            self.dispatch_pointer_cancel(event_loop, id);
+            self.request_redraw(id);
+        }
+    }
+
+    /// Whether a host-driven window move owns `id`'s pointer right now.
+    pub(super) fn frame_move_active(&self, id: WindowId) -> bool {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            self.live_frame_move
+                .as_ref()
+                .is_some_and(|(session, _, _)| *session == id)
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            let _ = id;
+            false
         }
     }
     pub(super) fn consume_frame_resize(
@@ -1533,9 +1687,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
             Control::Command(WindowCommand::Drag(_)) => {
-                drag_scene_window(window.as_ref()).map_err(window_request_error)?;
-                self.begin_native_drag_presence(id);
-                self.dispatch_pointer_cancel(event_loop, id);
+                self.begin_window_move(event_loop, id)
+                    .map_err(window_request_error)?;
             }
             Control::Command(WindowCommand::SetMousePassthrough { enabled, .. }) => {
                 self.set_mouse_passthrough_mode(

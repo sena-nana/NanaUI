@@ -230,6 +230,9 @@ struct WindowManager<Program: RuntimeProgram> {
     store: SharedStore,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
+    /// Window, the button code whose release ends the gesture, and the session.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    live_frame_move: Option<(WindowId, i16, nana_window::LiveFrameMove)>,
     #[cfg(target_os = "macos")]
     present_transaction_pinned: HashSet<WindowId>,
 }
@@ -702,6 +705,8 @@ fn initialize<Program: RuntimeProgram>(
         store,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        live_frame_move: None,
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
     };
@@ -1934,6 +1939,66 @@ fn mouse_button_mask(button: i16) -> u16 {
     }
 }
 
+/// W3C code of the primary mouse button, the one every platform's own window
+/// drag assumes is held.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+const PRIMARY_MOUSE_BUTTON: i16 = 0;
+
+/// The button a held-button gesture belongs to, primary first.
+///
+/// `buttons` is the hosted mask ([`mouse_button_mask`]), so a gesture holding
+/// several buttons reports the primary one while it is down; that is the one
+/// whose platform behavior a window drag should follow.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+fn held_mouse_button(buttons: u16) -> Option<i16> {
+    [PRIMARY_MOUSE_BUTTON, 1, 2, 3, 4]
+        .into_iter()
+        .find(|&button| buttons & mouse_button_mask(button) != 0)
+}
+
+/// What a pointer event does to a running host-driven window move.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameMoveStep {
+    /// Follow the pointer; the gesture continues.
+    Follow,
+    /// The gesture is over; drop the session.
+    Finish,
+    /// Swallow the event; the gesture continues.
+    Hold,
+}
+
+/// Decides a running window move from one pointer event, given the `owner`
+/// button whose release ends it.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+fn frame_move_step(phase: PointerPhase, button: i16, owner: i16) -> FrameMoveStep {
+    match phase {
+        PointerPhase::Move => FrameMoveStep::Follow,
+        // The pinned winit win32 proc synthesizes `PointerLeft` from a
+        // client-rect bounds check even while the gesture holds capture, so a
+        // drag crossing the window edge arrives here as `Cancel`. Ending on it
+        // would drop the window the moment it leaves its own former bounds.
+        PointerPhase::Cancel => FrameMoveStep::Hold,
+        PointerPhase::Up if button == owner => FrameMoveStep::Finish,
+        // A fresh primary press stands in for a release the platform never
+        // delivered, and matches the system move loop, which any click ends.
+        PointerPhase::Down if button == PRIMARY_MOUSE_BUTTON => FrameMoveStep::Finish,
+        _ => FrameMoveStep::Hold,
+    }
+}
+
 fn screen_position(space: Option<ScreenSpace>, client: (f32, f32)) -> (f32, f32) {
     space.map_or(client, |space| {
         (
@@ -2558,8 +2623,9 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        Desktop, DisplayBounds, ForwardPointerAction, ImeApply, InputTracker, RoutedWindowCommand,
-        desktop_position, ime_apply, input_pointer_hit, invalidate_program_host_textures,
+        Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
+        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
+        held_mouse_button, ime_apply, input_pointer_hit, invalidate_program_host_textures,
         mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
         platform_input_modifiers, platform_window_event, remove_image_target_index,
         replace_image_target_index, resolved_scene_ime_request, route_window_command,
@@ -3070,6 +3136,47 @@ mod tests {
         assert_eq!(mouse_button_mask(0), 1);
         assert_eq!(mouse_button_mask(1), 4);
         assert_eq!(mouse_button_mask(2), 2);
+    }
+
+    #[test]
+    fn a_window_move_follows_its_own_button_and_survives_a_synthetic_cancel() {
+        const MIDDLE: i16 = 1;
+        // A middle-button gesture owns the move: the window follows, and the
+        // left release of an unrelated click does not drop it.
+        assert_eq!(
+            frame_move_step(PointerPhase::Move, -1, MIDDLE),
+            FrameMoveStep::Follow
+        );
+        assert_eq!(
+            frame_move_step(PointerPhase::Up, PRIMARY_MOUSE_BUTTON, MIDDLE),
+            FrameMoveStep::Hold
+        );
+        assert_eq!(
+            frame_move_step(PointerPhase::Up, MIDDLE, MIDDLE),
+            FrameMoveStep::Finish
+        );
+        // Win32 reports a drag crossing the window bounds as a cancel while
+        // the gesture still holds the pointer; the move must outlive it.
+        assert_eq!(
+            frame_move_step(PointerPhase::Cancel, -1, MIDDLE),
+            FrameMoveStep::Hold
+        );
+        // A primary press stands in for a release that never arrived.
+        assert_eq!(
+            frame_move_step(PointerPhase::Down, PRIMARY_MOUSE_BUTTON, MIDDLE),
+            FrameMoveStep::Finish
+        );
+    }
+
+    #[test]
+    fn a_held_gesture_reports_its_primary_button_first() {
+        assert_eq!(held_mouse_button(0), None);
+        assert_eq!(held_mouse_button(mouse_button_mask(1)), Some(1));
+        assert_eq!(held_mouse_button(mouse_button_mask(2)), Some(2));
+        assert_eq!(
+            held_mouse_button(mouse_button_mask(PRIMARY_MOUSE_BUTTON) | mouse_button_mask(1)),
+            Some(PRIMARY_MOUSE_BUTTON)
+        );
     }
 
     #[test]
