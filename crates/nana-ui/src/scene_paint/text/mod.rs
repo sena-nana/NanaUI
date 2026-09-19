@@ -86,6 +86,10 @@ const EVICT_PROBES: usize = 64;
 /// one built by another untracked call.
 pub(super) const UNTRACKED_REVISION: u64 = u64::MAX;
 
+/// What a presentation row is derived from: the paint transform, its
+/// perspective, the fragment clip and the device scale.
+type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32);
+
 const RETIRE_INTERVAL: u64 = 64;
 const RETIRE_AFTER_FRAMES: u64 = 240;
 
@@ -546,6 +550,9 @@ pub(super) struct TextPipelineTarget {
     presentations: Vec<TextPresentationGpu>,
     uploaded_presentations: Vec<TextPresentationGpu>,
     presentation_index: HashMap<[u32; 40], u32>,
+    /// The presentation the label before this one asked for, by the values it
+    /// was derived from. See [`TextPipeline::presentation_index`].
+    last_presentation: Option<(PresentationInputs, u32)>,
     /// Where each entry's block sits in this target's instance buffer. The
     /// bytes come straight from the entry that owns the block; only the
     /// offsets live here.
@@ -581,6 +588,7 @@ impl TextPipelineTarget {
             presentations: Vec::new(),
             uploaded_presentations: Vec::new(),
             presentation_index: HashMap::new(),
+            last_presentation: None,
             arena: InstanceArena::default(),
             writes: Vec::new(),
             staging: Vec::new(),
@@ -683,6 +691,7 @@ impl TextPipeline {
         );
         target.presentations.clear();
         target.presentation_index.clear();
+        target.last_presentation = None;
         target.writes.clear();
         target.staging.clear();
         target.frame_gpu_allocations = 0;
@@ -876,10 +885,10 @@ impl TextPipeline {
                     && entry.scale_bits == scale.to_bits()
                     && entry.font_generation == self.font_generation
             })
-            .map(|(id, entry)| (id, entry.layout))
-            .filter(|(_, hash)| self.shape_cache.holds(*hash));
+            .map(|(id, entry)| (id, entry.layout, entry.measured))
+            .filter(|(_, hash, _)| self.shape_cache.holds(*hash));
         let hash = match retained {
-            Some((_, hash)) => hash,
+            Some((_, hash, _)) => hash,
             None => {
                 // A label with no spans is the overwhelming majority, and splitting it
                 // would allocate a one-element list per node per frame to say so.
@@ -990,9 +999,15 @@ impl TextPipeline {
                 hash
             }
         };
-        let (measured_width, laid_out_height) = {
-            let buffer = self.shape_cache.buffer(hash).expect("shaped above");
-            measure(buffer)
+        // The widest line and the laid-out height are the shape's, and the
+        // shape is the one this entry was built from, so a steady frame does
+        // not walk its layout runs again to find that out.
+        let (measured_width, laid_out_height) = match retained {
+            Some((_, _, measured)) => (measured[0], measured[1]),
+            None => {
+                let buffer = self.shape_cache.buffer(hash).expect("shaped above");
+                measure(buffer)
+            }
         };
         let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
         aligned[0] += paint_offset[0];
@@ -1093,7 +1108,7 @@ impl TextPipeline {
         }
         let epoch = self.placement_epoch();
         let reusable = retained
-            .map(|(id, _)| id)
+            .map(|(id, _, _)| id)
             .or_else(|| self.target.entries.lookup(entry_key))
             .filter(|id| {
                 self.target
@@ -1143,6 +1158,7 @@ impl TextPipeline {
         let frame = self.target.frame;
         if let Some(entry) = self.target.entries.get_mut(entry) {
             entry.last_used = frame;
+            entry.measured = [measured_width, laid_out_height];
         }
         // After the entry, so a paragraph that resolves to nothing does not
         // leave a row in the table nobody names.
@@ -1173,6 +1189,17 @@ impl TextPipeline {
         fragment_clip: clip::FragmentClip,
         scale: f32,
     ) -> u32 {
+        // A shell's labels nearly all share one transform and one clip. Ask
+        // that question of the four values the row is derived from, not of the
+        // row: building it is a clip inversion and a hundred and sixty bytes,
+        // and hashing it is forty words, to find out they are the ones the
+        // label before this one already had.
+        let inputs = (affine, persp, fragment_clip, scale.to_bits());
+        if let Some((held, index)) = self.target.last_presentation
+            && held == inputs
+        {
+            return index;
+        }
         let row = TextPresentationGpu::new(
             affine,
             persp,
@@ -1180,19 +1207,22 @@ impl TextPipeline {
             scale,
         );
         let bits = row.to_bits();
-        // A shell's labels nearly all share one transform and one clip, so the
-        // last row answers before the map is consulted at all.
         if let Some(last) = self.target.presentations.last()
             && *last == row
         {
-            return (self.target.presentations.len() - 1) as u32;
+            let index = (self.target.presentations.len() - 1) as u32;
+            self.target.last_presentation = Some((inputs, index));
+            return index;
         }
         if let Some(index) = self.target.presentation_index.get(&bits) {
-            return *index;
+            let index = *index;
+            self.target.last_presentation = Some((inputs, index));
+            return index;
         }
         let index = self.target.presentations.len() as u32;
         self.target.presentations.push(row);
         self.target.presentation_index.insert(bits, index);
+        self.target.last_presentation = Some((inputs, index));
         index
     }
 

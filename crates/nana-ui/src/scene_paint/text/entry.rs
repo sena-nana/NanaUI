@@ -73,6 +73,11 @@ pub(super) struct TextGpuEntry {
     /// out. `u64::MAX` is "no primitive said", which never matches.
     pub revision: u64,
     pub scale_bits: u32,
+    /// What the shaped paragraph measured: the widest line and the height the
+    /// lines laid out to, in physical pixels. A pure function of the shape,
+    /// which `revision` already pins, so a steady frame reads it here instead
+    /// of walking the layout runs again.
+    pub measured: [f32; 2],
     /// Atlas placement epoch the rectangles were read at.
     pub atlas_epoch: u64,
     /// Start of this entry's block in the store.
@@ -280,6 +285,7 @@ impl EntryStore {
                     font_generation: 0,
                     revision: u64::MAX,
                     scale_bits: 0,
+                    measured: [0.0; 2],
                     atlas_epoch: 0,
                     block,
                     capacity,
