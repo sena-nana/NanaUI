@@ -1625,6 +1625,25 @@ text_prepare_nodes_considered / skipped / culled
   `text_counters` 挂在报告上的时机在不变量算完之后，五条全是 `not-evaluable`。现在
   五条全 ok，其中 `text_instance_rebuilds=1`。
 
+- **稳态帧上又刮掉两层**。段落的宽高（`measure` 要走一遍 layout run）记在 entry 上，
+  因为那是形状的宽高而形状已经由 `revision` 钉住；presentation 行的「和上一行一样」
+  改成先比那四个来源值，而不是先造出一百六十字节的行再哈希成四十个字。一帧总账：
+  static 一万标签 -4.7%，transform-panel -12.3%，mutate-1pct -6.7%。
+
+  画笔自己那两张热表（`EntryStore::index`、塑形缓存）也换成 `IdHasher`——采样里
+  painter 的 SipHash 有 206/213 出自 `prepare`，而塑形缓存的键本来就是一个哈希。
+  三个用例一致 -5%，九轮里每轮都在 0.94–0.97。
+
+  **两条量完之后撤回的**，记在这里免得下次再试一遍：
+
+  - 把 `FragmentClip` 的 `PartialEq` 改成只比 `polygon_count` 以内的顶点。采样把
+    `FragmentClip::eq` 排到 paint 的 11%，改完十一轮配对的比值中位数是 ±0.4%——
+    那十六个浮点本来就是零且被向量化了。符号级自用时间在这个粒度上会骗人。
+  - 「一个 run 的输入都没变就还是上一帧那个 run」：把 ink、原点、flags 和剔除结论
+    一起记在 entry 上。七个失效输入里故障注入证明六个是承重的，而量出来只有 1–2%
+    （第一版把整个 `FragmentClip` 放进键里，反而慢 3–4%）。一个这么精细的缓存换
+    一两个点，不值。
+
   还剩的：整数哈希那一换在 `nana-ui-runtime` 里还没做（`store.rs` 23 处、
   `framework.rs` 18 处、`layout_engine.rs` 16 处……），那一侧的哈希在采样里是 paint
   之外的另一半。再往下，同一个被改祖先下面所有后代的 delta 数学上是同一个
