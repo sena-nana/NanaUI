@@ -74,8 +74,18 @@ impl UiScene {
             let extracted = self.nodes.get(&node)?;
             let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(extracted);
             let current = parent.then(self.resolved_local_transform(extracted, blocks_3d));
-            let delta = inverse(base_transform)
-                .map_or(AffineTransform::IDENTITY, |inverse| current.then(inverse));
+            // A node that did not move owes no rebasing, and saying so exactly
+            // is the point: `inverse` divides by the determinant, so for
+            // anything but a translation the round trip lands an ulp off the
+            // identity. Applied to every retained bound and clip below, that
+            // drift moves them — an epoch bump on its own, which a colour
+            // change on a parent is enough to cause, must not.
+            let delta = if current == base_transform {
+                AffineTransform::IDENTITY
+            } else {
+                inverse(base_transform)
+                    .map_or(AffineTransform::IDENTITY, |inverse| current.then(inverse))
+            };
             let attributes = DrawAttributes {
                 epoch: self.attribute_epoch,
                 delta,

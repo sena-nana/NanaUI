@@ -8584,3 +8584,91 @@ fn a_scrolled_virtualised_list_small_enough_to_audit_answers_like_a_fresh_build(
     // Around the scrolled-to window, where culling decisions actually differ.
     assert_answers_match_a_fresh_build(&scene, &fresh, -20.0, 140.0);
 }
+
+/// Bumping `attribute_epoch` re-bases every node that was not re-extracted,
+/// and re-basing goes through `inverse`, which divides by the determinant. For
+/// a rotation that round trip does not land back on the identity, so a node
+/// that did not move would drift by an ulp — enough to cull a primitive a
+/// pixel early, and enough for a self clip to stop matching its own bound.
+///
+/// A colour change on a parent is enough to bump the epoch, so the invariant
+/// is worth stating directly: it must not move a descendant at all.
+#[test]
+fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
+    let angle = 0.5f32;
+    let rotation = nana_ui_core::PaintTransform {
+        a: angle.cos(),
+        b: angle.sin(),
+        c: -angle.sin(),
+        d: angle.cos(),
+        ..nana_ui_core::PaintTransform::default()
+    };
+    let container = |background: [f32; 4]| {
+        let mut node = node(2, Some(1), &[3]);
+        node.layout = LayoutBox {
+            x: 7.0,
+            y: 11.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform: Some(rotation),
+                background: Some(background),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let mut leaf = node(3, Some(2), &[]);
+    leaf.layout = LayoutBox {
+        x: 13.0,
+        y: 17.0,
+        width: 40.0,
+        height: 30.0,
+    };
+    leaf.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [node(1, None, &[2]), container([0.0, 0.0, 1.0, 1.0]), leaf],
+        [],
+    );
+    let _ = scene.visible_operations(SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 1000.0,
+    });
+    let descendant = scene
+        .primitives()
+        .find(|primitive| primitive.node == id(3))
+        .expect("leaf primitive")
+        .id;
+    let before = scene.draw_primitive(descendant).expect("draw").transform;
+    let before_bounds = scene.draw_node_bounds(id(3)).expect("bounds");
+
+    // Only the colour differs. It bumps the epoch without moving anything.
+    scene.apply_delta([container([0.0, 1.0, 0.0, 1.0])], []);
+
+    assert!(
+        scene.visibility.get().is_some(),
+        "the delta rebuilt the index, so nothing here tested the retained one"
+    );
+    assert_eq!(
+        scene.draw_primitive(descendant).expect("draw").transform,
+        before,
+        "a colour change on the parent moved a descendant's draw transform"
+    );
+    assert_eq!(
+        scene.draw_node_bounds(id(3)).expect("bounds"),
+        before_bounds,
+        "a colour change on the parent moved a descendant's bounds"
+    );
+}
