@@ -3,7 +3,9 @@ use window_vibrancy::{apply_acrylic, apply_mica, clear_acrylic, clear_mica};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows_sys::Win32::UI::Controls::MARGINS;
-use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, GetWindowLongPtrW};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GWL_EXSTYLE, GetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
+};
 
 use crate::{Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome};
 
@@ -81,22 +83,39 @@ fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
 }
 
 fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
-    prepare_composed_client(window);
+    let Some(hwnd) = hwnd(window) else {
+        return;
+    };
+    extend_frame(hwnd, transparent_frame_margin(has_redirection_bitmap(hwnd)));
+}
+
+/// Whether DWM still has a redirection bitmap for this HWND.
+///
+/// `WS_EX_NOREDIRECTIONBITMAP` is a creation flag: winit derives it from
+/// `NO_BACK_BUFFER` and `apply_diff` rewrites the whole ex-style, so the bit
+/// is only durable when it was set at create. DirectComposition windows are
+/// created that way; a plain HWND swapchain keeps the bitmap.
+fn has_redirection_bitmap(hwnd: HWND) -> bool {
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    ex_style & WS_EX_NOREDIRECTIONBITMAP as isize == 0
+}
+
+/// Glass margin for a transparent client.
+///
+/// `-1` extends the DWM frame across the client so a redirected swapchain's
+/// alpha is visible — that is how a DX12 HWND surface, which only ever
+/// advertises `Opaque`, becomes transparent. `0` leaves the frame off: a
+/// window without a redirection bitmap presents through a DirectComposition
+/// visual that already negotiated premultiplied alpha, and keeping a previous
+/// Mica/Acrylic extension would make DWM keep blending a surface that is not
+/// there.
+const fn transparent_frame_margin(has_redirection_bitmap: bool) -> i32 {
+    if has_redirection_bitmap { -1 } else { 0 }
 }
 
 /// Extends the frame across the whole client, so DWM reads the alpha of a
-/// client that presents through the redirection bitmap.
-///
-/// `WS_EX_NOREDIRECTIONBITMAP` is deliberately left alone. winit derives that
-/// bit from a creation flag and `apply_diff` rewrites the whole ex-style, so a
-/// bit set behind winit's back is gone again at the next `set_visible` or
-/// `set_maximized`. Setting it bought a `SetWindowPos(SWP_FRAMECHANGED)` and a
-/// spell where the window had no redirection bitmap for a swapchain that may
-/// still have been presenting into one. Measured on a Vulkan surface that
-/// negotiated `PreMultiplied`: the bit reads clear right through window
-/// creation and the client is transparent anyway, because the swapchain carries
-/// the alpha itself. A window that does need the bit gets it from
-/// `WindowDescriptor::transparent` at creation, which is where it lasts.
+/// client that presents through the redirection bitmap. Mica and Acrylic *are*
+/// that frame; Transparent uses [`transparent_frame_margin`] instead.
 fn prepare_composed_client<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
@@ -130,7 +149,7 @@ fn extend_frame(hwnd: HWND, margin: i32) {
 
 #[cfg(test)]
 mod tests {
-    use super::should_reset_extended_frame;
+    use super::{should_reset_extended_frame, transparent_frame_margin};
     use crate::MaterialEffect;
 
     /// A window whose request ends opaque must not be left composed by the
@@ -143,6 +162,14 @@ mod tests {
         assert!(!should_reset_extended_frame(MaterialEffect::Transparent));
         assert!(!should_reset_extended_frame(MaterialEffect::Mica));
         assert!(!should_reset_extended_frame(MaterialEffect::Acrylic));
+    }
+
+    /// A redirected client borrows DWM alpha; a DirectComposition visual
+    /// already has it, and must not keep a leftover extended frame.
+    #[test]
+    fn transparent_glass_follows_the_redirection_bitmap() {
+        assert_eq!(transparent_frame_margin(true), -1);
+        assert_eq!(transparent_frame_margin(false), 0);
     }
 }
 

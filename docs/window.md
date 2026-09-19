@@ -61,7 +61,7 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 
 `WS_EX_NOREDIRECTIONBITMAP` 归呈现路径、不归材质：DirectComposition 把 visual 画在重定向位图**之上**，合成窗口必须没有那张位图，否则底下的不透明表面会透出来；普通路径的窗口则一律保留它——它的 swapchain 很可能正在往里呈现。实测 NRB + HWND + `Opaque` 这个组合在创建、稳态出帧、`ResizeBuffers`、零尺寸往返四项上都正常，所以保留它不是妥协。
 
-玻璃（`DwmExtendFrameIntoClientArea(-1)`）无条件铺：对自带 alpha 的窗口多余，对借 DWM alpha 的窗口必需，而 `nana-window` 那一层看不出窗口属于哪种。
+玻璃（`DwmExtendFrameIntoClientArea`）只铺给**还有重定向位图**的透明窗：DX12 的 HWND swapchain 只谈得到 `Opaque`，逐像素 alpha 全靠这张玻璃。合成窗创建时就带 `WS_EX_NOREDIRECTIONBITMAP`，像素来自已经谈成 `PreMultiplied` 的 DirectComposition visual，再铺玻璃只会让 DWM 去混合一张不存在的表面；从 Mica / Acrylic 切过来时还要把先前铺上的玻璃收回（margin `0`）。材质层读 HWND 上那个创建时的 ex-style 位，不另开一条 API。Mica / Acrylic 本身就是 DWM 的 frame，仍无条件 `ExtendFrame(-1)`。
 
 窗口以隐藏状态创建，显示前实时材质已经应用过，所以用户看不到创建时这一份配置——除了 frame 样式位，见下。
 
