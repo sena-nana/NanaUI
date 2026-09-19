@@ -261,6 +261,9 @@ impl VisibilityIndex {
     }
     fn push(&mut self, at: usize) {
         let offset = std::mem::replace(&mut self.shifts[at], [0.0, 0.0]);
+        if offset == [0.0, 0.0] {
+            return;
+        }
         self.shift(at * 2, offset);
         self.shift(at * 2 + 1, offset);
     }
@@ -335,7 +338,13 @@ impl VisibilityIndex {
             self.shifts[at] = [0.0, 0.0];
             return;
         }
-        self.push(at);
+        if start >= range.start && end <= range.end {
+            // Everything under here is about to be recomputed from the scene,
+            // so a translation still owed to it has nothing left to translate.
+            self.shifts[at] = [0.0, 0.0];
+        } else {
+            self.push(at);
+        }
         let mid = (start + end) / 2;
         self.refresh_range(scene, plan, at * 2, start, mid, range);
         self.refresh_range(scene, plan, at * 2 + 1, mid, end, range);
