@@ -342,37 +342,37 @@ impl VisibilityIndex {
         self.bounds[at] = union(self.bounds[at * 2], self.bounds[at * 2 + 1]);
     }
 
-    fn set_bound(
-        &mut self,
-        at: usize,
-        start: usize,
-        end: usize,
-        index: usize,
-        bounds: Option<SceneRect>,
-    ) {
-        if end - start == 1 {
-            self.bounds[at] = bounds;
-            self.shifts[at] = [0.0, 0.0];
+    /// Recompute the bounds of the primitives `changed` owns.
+    ///
+    /// By the runs they occupy rather than one at a time: a node's primitives
+    /// are consecutive in paint order and so are the nodes of a subtree, so a
+    /// delta that rebuilt a whole column is a handful of runs. One descent per
+    /// run against one per primitive is the difference between O(n) and
+    /// O(n log n) on the frame where everything changed.
+    pub(super) fn update(&mut self, scene: &UiScene, changed: &[StableNodeId]) {
+        let mut offsets = changed
+            .iter()
+            .filter_map(|node| self.nodes.get(node))
+            .flat_map(|slots| slots.iter().map(|(offset, _)| *offset))
+            .collect::<Vec<_>>();
+        if offsets.is_empty() {
             return;
         }
-        self.push(at);
-        let mid = (start + end) / 2;
-        if index < mid {
-            self.set_bound(at * 2, start, mid, index, bounds);
-        } else {
-            self.set_bound(at * 2 + 1, mid, end, index, bounds);
-        }
-        self.bounds[at] = union(self.bounds[at * 2], self.bounds[at * 2 + 1]);
-    }
-    pub(super) fn update(&mut self, scene: &UiScene, changed: &[StableNodeId]) {
-        for node in changed {
-            let Some(slots) = self.nodes.get(node).cloned() else {
+        offsets.sort_unstable();
+        let plan = Arc::clone(&self.plan);
+        let mut run = offsets[0]..offsets[0] + 1;
+        for offset in offsets.into_iter().skip(1) {
+            if offset == run.end {
+                run.end += 1;
                 continue;
-            };
-            for (offset, id) in slots {
-                self.set_bound(1, 0, self.leaf, offset, primitive_bounds(scene, id));
             }
+            if offset == run.end - 1 {
+                continue;
+            }
+            self.refresh_range(scene, &plan, 1, 0, self.leaf, &run);
+            run = offset..offset + 1;
         }
+        self.refresh_range(scene, &plan, 1, 0, self.leaf, &run);
     }
     fn visit(
         &self,
