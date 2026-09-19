@@ -10,6 +10,10 @@ pub(super) struct VisibilityIndex {
     shifts: Vec<[f32; 2]>,
     descendants: HashMap<StableNodeId, Vec<std::ops::Range<usize>>>,
     nodes: HashMap<StableNodeId, NodeSlots>,
+    /// Set once the scroll fast path has moved bounds by an offset instead of
+    /// re-deriving them, for [`UiScene::audit_retained_projection`].
+    #[cfg(debug_assertions)]
+    translated: bool,
 }
 
 /// Where one node's primitives sit in the operation list.
@@ -252,6 +256,8 @@ impl VisibilityIndex {
             shifts: vec![[0.0, 0.0]; leaf * 2],
             descendants: HashMap::new(),
             nodes: HashMap::new(),
+            #[cfg(debug_assertions)]
+            translated: false,
         };
         for (offset, operation) in index.plan.operations.iter().enumerate() {
             let id = match operation {
@@ -300,6 +306,11 @@ impl VisibilityIndex {
         // Every internal bound below is re-derived from the leaves, so nothing
         // is left owing a scroll offset.
         self.shifts.fill([0.0, 0.0]);
+        // Re-derived, so no longer a translation of an older build.
+        #[cfg(debug_assertions)]
+        {
+            self.translated = false;
+        }
         let plan = Arc::clone(&self.plan);
         for (offset, operation) in plan.operations.iter().enumerate() {
             let id = match operation {
@@ -349,6 +360,10 @@ impl VisibilityIndex {
     }
     pub(super) fn translate_subtree(&mut self, root: StableNodeId, offset: [f32; 2]) {
         if let Some(ranges) = self.descendants.get(&root).cloned() {
+            #[cfg(debug_assertions)]
+            {
+                self.translated = true;
+            }
             for range in ranges {
                 self.translate_range(1, 0, self.leaf, &range, offset);
             }
@@ -392,40 +407,136 @@ impl VisibilityIndex {
             }
         }
     }
-    /// Bitwise equality of everything a query reads, for the retained-projection
-    /// audit. Bounds are produced by the same arithmetic on both sides, so an
-    /// index that is still valid compares equal to the ground truth exactly;
-    /// anything looser would not catch a bound that drifted by an ulp and then
-    /// culled a primitive a pixel early.
+    /// Whether the scroll fast path has shifted this index since it was last
+    /// derived from the scene.
     #[cfg(debug_assertions)]
-    pub(super) fn matches(&self, other: &Self) -> bool {
-        fn rect_bits(bounds: &[Option<SceneRect>]) -> Vec<Option<[u32; 4]>> {
-            bounds
-                .iter()
-                .map(|rect| {
-                    rect.map(|rect| {
-                        [
-                            rect.x.to_bits(),
-                            rect.y.to_bits(),
-                            rect.width.to_bits(),
-                            rect.height.to_bits(),
-                        ]
-                    })
-                })
-                .collect()
+    pub(super) fn translated(&self) -> bool {
+        self.translated
+    }
+
+    /// The first thing a query reads that this index and the ground truth
+    /// disagree on, or `None` when they are bitwise equal.
+    ///
+    /// Comparison is bitwise for the retained-projection audit: bounds are
+    /// produced by the same arithmetic on both sides, so an index that is
+    /// still valid compares equal exactly, and anything looser would not catch
+    /// a bound that drifted by an ulp and then culled a primitive a pixel
+    /// early.
+    ///
+    /// It reports *what* differs rather than *that* something does, because
+    /// the two failures this catches call for opposite fixes and read the same
+    /// in decimal: a bound off by an ulp is an arithmetic path that wants
+    /// sharing, a bound left over from before a mutation is a delta that
+    /// skipped a refresh. So name the half, the operation and node that own
+    /// the slot, and both values with their bits.
+    #[cfg(debug_assertions)]
+    pub(super) fn mismatch(&self, other: &Self) -> Option<String> {
+        fn rect_bits(rect: &Option<SceneRect>) -> Option<[u32; 4]> {
+            rect.map(|rect| {
+                [
+                    rect.x.to_bits(),
+                    rect.y.to_bits(),
+                    rect.width.to_bits(),
+                    rect.height.to_bits(),
+                ]
+            })
         }
-        fn shift_bits(shifts: &[[f32; 2]]) -> Vec<[u32; 2]> {
-            shifts
-                .iter()
-                .map(|shift| [shift[0].to_bits(), shift[1].to_bits()])
-                .collect()
+        if self.leaf != other.leaf {
+            let (retained, fresh) = (self.leaf, other.leaf);
+            return Some(format!("leaf {retained} vs fresh {fresh}"));
         }
-        self.leaf == other.leaf
-            && self.plan.operations == other.plan.operations
-            && rect_bits(&self.bounds) == rect_bits(&other.bounds)
-            && shift_bits(&self.shifts) == shift_bits(&other.shifts)
-            && self.nodes == other.nodes
-            && self.descendants == other.descendants
+        if self.plan.operations != other.plan.operations {
+            let (retained, fresh) = (self.plan.operations.len(), other.plan.operations.len());
+            return Some(format!(
+                "plan.operations: {retained} retained vs {fresh} fresh"
+            ));
+        }
+        if self.bounds.len() != other.bounds.len() {
+            let (retained, fresh) = (self.bounds.len(), other.bounds.len());
+            return Some(format!("bounds length {retained} vs fresh {fresh}"));
+        }
+        for (at, (retained, fresh)) in self.bounds.iter().zip(&other.bounds).enumerate() {
+            let (retained_bits, fresh_bits) = (rect_bits(retained), rect_bits(fresh));
+            if retained_bits == fresh_bits {
+                continue;
+            }
+            let origin = self.slot_origin(at);
+            return Some(format!(
+                "bounds[{at}] {origin}: retained {retained:?} {retained_bits:?} vs fresh {fresh:?} {fresh_bits:?}"
+            ));
+        }
+        if self.shifts.len() != other.shifts.len() {
+            let (retained, fresh) = (self.shifts.len(), other.shifts.len());
+            return Some(format!("shifts length {retained} vs fresh {fresh}"));
+        }
+        for (at, (retained, fresh)) in self.shifts.iter().zip(&other.shifts).enumerate() {
+            if (*retained).map(f32::to_bits) == (*fresh).map(f32::to_bits) {
+                continue;
+            }
+            let origin = self.slot_origin(at);
+            return Some(format!(
+                "shifts[{at}] {origin}: retained {retained:?} vs fresh {fresh:?}"
+            ));
+        }
+        for (node, retained) in &self.nodes {
+            let fresh = other.nodes.get(node);
+            if fresh != Some(retained) {
+                return Some(format!(
+                    "nodes[{node:?}]: retained {retained:?} vs fresh {fresh:?}"
+                ));
+            }
+        }
+        if let Some(node) = other
+            .nodes
+            .keys()
+            .find(|node| !self.nodes.contains_key(node))
+        {
+            let fresh = other.nodes.get(node);
+            return Some(format!(
+                "nodes[{node:?}]: only in the fresh build, {fresh:?}"
+            ));
+        }
+        for (node, retained) in &self.descendants {
+            let fresh = other.descendants.get(node);
+            if fresh != Some(retained) {
+                return Some(format!(
+                    "descendants[{node:?}]: retained {retained:?} vs fresh {fresh:?}"
+                ));
+            }
+        }
+        if let Some(node) = other
+            .descendants
+            .keys()
+            .find(|node| !self.descendants.contains_key(node))
+        {
+            let fresh = other.descendants.get(node);
+            return Some(format!(
+                "descendants[{node:?}]: only in the fresh build, {fresh:?}"
+            ));
+        }
+        None
+    }
+
+    /// Which operation, primitive and node a bounds or shift slot belongs to.
+    #[cfg(debug_assertions)]
+    fn slot_origin(&self, at: usize) -> String {
+        let Some(offset) = at.checked_sub(self.leaf) else {
+            let (left, right) = (at * 2, at * 2 + 1);
+            return format!("(internal, union of slots {left} and {right})");
+        };
+        let Some(operation) = self.plan.operations.get(offset) else {
+            let total = self.plan.operations.len();
+            return format!("(padding leaf, past all {total} operations)");
+        };
+        match operation {
+            RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id) => {
+                let node = id.node;
+                format!("(operation {offset} {operation:?} on node {node:?})")
+            }
+            RenderOperation::PrepareExternal(_) => {
+                format!("(operation {offset} {operation:?})")
+            }
+        }
     }
 
     fn visit(

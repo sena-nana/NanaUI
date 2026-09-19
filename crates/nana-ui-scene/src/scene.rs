@@ -709,9 +709,6 @@ impl UiScene {
         extracted: impl IntoIterator<Item = ExtractedNode>,
         removals: impl IntoIterator<Item = StableNodeId>,
     ) -> SceneDelta {
-        // Set once the visibility index has been shifted rather than
-        // re-derived; see `audit_retained_projection`.
-        let mut audited_translation = false;
         let mut delta = SceneDelta::default();
         let mut previous_structure = HashMap::new();
         let mut removed_nodes = 0;
@@ -911,7 +908,6 @@ impl UiScene {
                     // not from a new one.
                     visibility.refresh_bounds(self);
                 } else {
-                    audited_translation |= !scroll_translations.is_empty();
                     for (root, offset) in scroll_translations {
                         visibility.translate_subtree(root, offset);
                     }
@@ -922,7 +918,7 @@ impl UiScene {
             self.instance = next_scene_instance();
         }
         #[cfg(debug_assertions)]
-        self.audit_retained_projection(audited_translation);
+        self.audit_retained_projection();
         // The counter is what lets `opacity_groups` answer without touching the
         // node map, so a path that edits it without maintaining the counter
         // would drop isolation groups from paint and show nothing else. There
@@ -963,12 +959,16 @@ impl UiScene {
     /// whole existing suite a test of the invalidation rules, at O(scene) per
     /// delta, which is why it is bounded to the trees unit tests build.
     ///
-    /// `translated` skips the visibility half: the scroll fast path shifts
-    /// retained bounds by an offset instead of re-deriving them from layout,
-    /// so the two agree to a float ulp rather than exactly. Order and plan are
-    /// still checked.
+    /// An index the scroll fast path has shifted skips the visibility half:
+    /// it holds bounds moved by an offset instead of re-derived from layout,
+    /// and shifts it has not pushed down to its leaves yet, so it answers a
+    /// query the same as a fresh build without matching one bit for bit.
+    ///
+    /// That is a property of the index, and it lasts until something
+    /// re-derives the bounds — not of the delta that did the shifting, which
+    /// is why the index carries the flag. Order and plan are still checked.
     #[cfg(debug_assertions)]
-    fn audit_retained_projection(&self, translated: bool) {
+    fn audit_retained_projection(&self) {
         if self.nodes.len() > RETAINED_AUDIT_LIMIT {
             return;
         }
@@ -1009,14 +1009,14 @@ impl UiScene {
             // A plan that no longer compiles is reported by `frame_plan`, not here.
             Err(_) => return,
         }
-        if translated {
-            return;
-        }
         if let Some(visibility) = self.visibility.get() {
-            assert!(
-                visibility.matches(&VisibilityIndex::new(self, Arc::clone(plan))),
-                "retained visibility index disagrees with a fresh build"
-            );
+            if visibility.translated() {
+                return;
+            }
+            let fresh = VisibilityIndex::new(self, Arc::clone(plan));
+            if let Some(mismatch) = visibility.mismatch(&fresh) {
+                panic!("retained visibility index disagrees with a fresh build: {mismatch}");
+            }
         }
     }
 
