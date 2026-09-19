@@ -530,6 +530,14 @@ impl UiScene {
         node: &ExtractedNode,
         block_3d: bool,
     ) -> AffineTransform {
+        // A closed 3D context refuses this node's transform, and a layer does
+        // not reopen it. `layer_snapshot` cannot see the rule — it is handed
+        // one node, and the answer is about the ancestors above it — so the
+        // refusal is made here too, or promoting a layer (an opacity fade is
+        // enough) hands back the projection the ancestor walk denied.
+        if block_3d && node.source_style.layout.transform_3d.is_some() {
+            return AffineTransform::IDENTITY;
+        }
         if self.compositor.is_active(node.id) {
             return self
                 .compositor
@@ -658,7 +666,19 @@ impl UiScene {
     /// only the node's own layer so the painter can strip that overlay without
     /// double-applying ancestor presentation. Opacity walks ancestors.
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
-        let transform = self.gpu_motion_id_for(node, 0);
+        let mut transform = self.gpu_motion_id_for(node, 0);
+        // The shader evaluates the overlay in the node's own place, so it owes
+        // the same refusal [`Self::resolved_local_transform`] makes, or the
+        // GPU hands back what the CPU gave up. The ancestor walk sits behind
+        // two reads false for every node without both a `matrix3d` and an
+        // overlay of its own.
+        if transform != 0
+            && let Some(extracted) = self.nodes.get(&node)
+            && extracted.source_style.layout.transform_3d.is_some()
+            && self.draw_ancestor_state(extracted).3
+        {
+            transform = 0;
+        }
         let mut opacity = self.gpu_motion_id_for(node, 1);
         if opacity == 0
             && let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent)
@@ -2056,6 +2076,104 @@ mod tests {
         assert!(
             !translated(&scene),
             "a demote left the retained bounds alone"
+        );
+    }
+
+    /// `perspective` / `preserve-3d` on an ancestor fails the descendant's
+    /// `matrix3d` closed — the engine refuses the projection rather than
+    /// approximating it. A compositor layer must not be a way back in: the
+    /// snapshot behind it is built from one node, with no view of the
+    /// ancestors the rule is about, and a fade alone is enough to promote one.
+    #[test]
+    fn a_layer_does_not_reopen_a_closed_3d_context() {
+        use nana_ui_core::{LayoutStyle, PaintMat4};
+        let mut parent = node(1, None, &[2]);
+        parent.source_style.layout = Arc::new(LayoutStyle {
+            css_perspective: Some(800.0),
+            ..LayoutStyle::default()
+        });
+        let mut child = node(2, Some(1), &[]);
+        child.source_style.layout = Arc::new(LayoutStyle {
+            transform_3d: Some(
+                PaintMat4::perspective(800.0)
+                    .unwrap()
+                    .then(PaintMat4::rotate_y(30_f32.to_radians())),
+            ),
+            ..LayoutStyle::default()
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let primitive = scene.primitives().find(|p| p.node == id(2)).unwrap().id;
+        let closed = scene.draw_primitive(primitive).unwrap().transform;
+        assert_eq!(
+            closed,
+            AffineTransform::IDENTITY,
+            "the closed context was meant to refuse the 3D transform outright"
+        );
+
+        // An opacity overlay, which carries no transform of its own.
+        let mut store = PresentationStore::new();
+        store.insert(
+            opacity_track(11, 2, 0, 400, 0.0, 1.0),
+            MotionValue::Scalar(1.0),
+        );
+        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        assert!(
+            scene.compositor_layer(id(2)).is_some(),
+            "the fade did not promote a layer"
+        );
+        assert_eq!(
+            scene.draw_primitive(primitive).unwrap().transform,
+            closed,
+            "a promoted layer reopened a closed 3D context"
+        );
+
+        // And one that does carry a transform: refused on the CPU and on the
+        // GPU, which applies the overlay in the node's place off these ids
+        // alone and would otherwise put the projection back a frame later.
+        let sliding = slide_down(12, 2, 400.0);
+        let mut descriptors = MotionDescriptorStore::new();
+        descriptors.bind(&sliding).expect("descriptor slot");
+        store.insert(sliding, MotionValue::Transform(PaintTransform::default()));
+        let moving = LAYER_PROMOTE_HOLD + Duration::from_millis(64);
+        scene.apply_presentation(&store, moving, Some(&descriptors));
+        let draw = scene.draw_primitive(primitive).expect("draw");
+        assert!(
+            draw.kind.evaluates_compositor_motion_on_gpu(),
+            "this node was meant to be one the shader evaluates"
+        );
+        assert_eq!(
+            draw.transform, closed,
+            "a presented transform reopened a closed 3D context"
+        );
+        let encode = scene.compositor_paint_encode(
+            draw.node,
+            &draw.kind,
+            draw.transform,
+            draw.paint_opacity,
+        );
+        assert_eq!(
+            encode.motion_ids.0, 0,
+            "the shader was handed a transform the closed context refused"
+        );
+        assert_eq!(encode.transform, closed);
+
+        // A sibling with no `matrix3d` of its own is refused nothing: the rule
+        // is about this node's own 3D transform, not about the ancestor.
+        let mut plain = node(3, Some(1), &[]);
+        plain.source_style.layout = Arc::new(LayoutStyle::default());
+        scene.apply_delta([plain], []);
+        let sliding_plain = slide_down(13, 3, 400.0);
+        descriptors.bind(&sliding_plain).expect("descriptor slot");
+        store.insert(
+            sliding_plain,
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, moving, Some(&descriptors));
+        assert_ne!(
+            scene.compositor_gpu_motion_ids(id(3)).0,
+            0,
+            "an ordinary node lost its GPU transform to the 3D rule"
         );
     }
 }

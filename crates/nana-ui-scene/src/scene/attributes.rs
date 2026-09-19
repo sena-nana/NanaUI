@@ -421,4 +421,79 @@ mod tests {
             fresh.draw_primitive(primitive).unwrap().transform
         );
     }
+
+    /// `perspective` / `preserve-3d` fail a descendant's `matrix3d` closed
+    /// rather than approximate a real 3D context, and that refusal has to be
+    /// the same answer wherever it is asked. A node the rule takes a transform
+    /// away from must not go on handing that transform to its own children, or
+    /// it paints flat around a rotated inside.
+    #[test]
+    fn a_refused_3d_transform_is_not_handed_to_its_children() {
+        let built = |closed: bool| {
+            let mut root = node(1, None, &[2]);
+            if closed {
+                Arc::make_mut(&mut root.source_style.layout).css_perspective = Some(800.0);
+            }
+            let mut middle = node(2, Some(1), &[3]);
+            Arc::make_mut(&mut middle.source_style.layout).transform_3d = Some(
+                nana_ui_core::PaintMat4::perspective(800.0)
+                    .unwrap()
+                    .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
+            );
+            let leaf = node(3, Some(2), &[]);
+            let mut scene = UiScene::new();
+            scene.apply_delta([root, middle, leaf], []);
+            scene
+        };
+        let projected = |scene: &UiScene, node: StableNodeId| {
+            let id = scene
+                .primitives()
+                .find(|primitive| primitive.node == node)
+                .expect("a painted node")
+                .id;
+            scene.draw_primitive(id).expect("draw").transform
+        };
+
+        // Open context: the middle node rotates and its child rotates with it.
+        let scene = built(false);
+        let middle = projected(&scene, id(2));
+        assert_ne!(
+            middle,
+            AffineTransform::IDENTITY,
+            "an open context was meant to allow the 3D transform"
+        );
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "an open context did not hand the 3D transform down"
+        );
+
+        // Closed: refused for the middle node, and refused below it too.
+        let mut scene = built(true);
+        let middle = projected(&scene, id(2));
+        assert_eq!(
+            middle,
+            AffineTransform::IDENTITY,
+            "the closed context did not refuse the 3D transform"
+        );
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "a refused 3D transform was still handed to the child"
+        );
+
+        // The same answer on the way back through a bumped attribute epoch,
+        // which re-derives the leaf's projection from the *presented* walk
+        // instead of reading the one baked into its primitive. The two have to
+        // refuse the same transform or the delta between them moves the leaf.
+        let mut recoloured = node(1, None, &[2]);
+        Arc::make_mut(&mut recoloured.source_style.layout).css_perspective = Some(800.0);
+        Arc::make_mut(&mut recoloured.source_style.layout).background = Some([1.0, 0.0, 0.0, 1.0]);
+        scene.apply_delta([recoloured], []);
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "re-deriving the leaf's projection reopened the closed context"
+        );
+    }
 }

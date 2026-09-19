@@ -511,3 +511,84 @@ fn flip_animate_size_uses_layout_class_not_scale() {
         other => panic!("expected FLIP translate overlay, got {other:?}"),
     }
 }
+
+/// `perspective` on the parent fails the child's `matrix3d` closed, and paint
+/// refuses it. The pointer has to refuse it too: an overlay is sampled on the
+/// way to a node's local transform, and taking it before the refusal would
+/// leave a click landing where the node is not drawn.
+#[test]
+fn a_closed_3d_context_refuses_a_presented_transform_for_the_pointer_too() {
+    let sampled = |overlay: bool| {
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(
+            node(1),
+            document(1),
+            NodeKind::Element {
+                tag: "stage".into(),
+            },
+        );
+        queue.create(
+            node(2),
+            document(1),
+            NodeKind::Element { tag: "card".into() },
+        );
+        queue.insert(node(1), node(2), None);
+        queue.write_layout(node(1), box_at(0.0, 0.0, 80.0, 40.0));
+        queue.write_layout(node(2), box_at(0.0, 0.0, 40.0, 40.0));
+        queue.set_style(
+            node(1),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    css_perspective: Some(800.0),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            node(2),
+            NodeStyle {
+                layout: Arc::new(LayoutStyle {
+                    transform_3d: Some(
+                        nana_ui_core::PaintMat4::perspective(800.0)
+                            .unwrap()
+                            .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
+                    ),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        if overlay {
+            queue.start_animation(transform_overlay(
+                1,
+                node(2),
+                PaintTransform::default(),
+                PaintTransform {
+                    e: 40.0,
+                    ..PaintTransform::default()
+                },
+            ));
+        }
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::from_millis(50));
+        world.rebuild_hit_test(document(1));
+        world
+            .presentation_input_bounds(node(2))
+            .expect("input bounds")
+    };
+
+    // No overlay: the closed context already refuses the node's own 3D
+    // transform, so its input box is its plain layout box.
+    let refused = sampled(false);
+    assert_eq!(refused, box_at(0.0, 0.0, 40.0, 40.0));
+
+    // With one: still refused. A node the rule has flattened must not be
+    // moved by an overlay the pointer samples and paint does not.
+    assert_eq!(
+        sampled(true),
+        refused,
+        "a presented transform reopened a closed 3D context for the pointer"
+    );
+}

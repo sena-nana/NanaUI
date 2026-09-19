@@ -1245,10 +1245,16 @@ impl UiScene {
                 continue;
             }
             let layout = ancestor.layout;
+            // `blocks_3d` is what the ancestors *above* this one closed, the
+            // same question asked of the queried node below — an ancestor's
+            // own `perspective` opens a context for its children, not against
+            // itself, so it folds in afterwards. Reading it keeps a refusal
+            // whole: a node whose `matrix3d` this rule takes away must not go
+            // on handing it down, or it paints flat with a rotated inside.
             let local = if visual {
-                self.resolved_local_transform(ancestor, false)
+                self.resolved_local_transform(ancestor, blocks_3d)
             } else {
-                node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false)
+                node_scene_transform(ancestor.source_style.layout.as_ref(), layout, blocks_3d)
             };
             transform = transform.then(local);
             if ancestor.source_style.layout.fails_closed_3d_context() {
