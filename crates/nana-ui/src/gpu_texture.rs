@@ -445,8 +445,9 @@ impl HostTextureBinding {
 #[derive(Debug, Clone, Default)]
 pub struct HostTextureRegistry {
     bindings: Arc<RwLock<HashMap<String, RegisteredHostTextureBinding>>>,
-    /// 每个 slot 上一帧实际画到的设备像素尺寸。与 `bindings` 分开放:画家
-    /// 每帧写这里,而 `bindings` 在同一段时间里正被读,合用一把锁会互相挡。
+    /// 每个 slot 最后一次实际画到的设备像素尺寸。与 `bindings` 分开放:
+    /// 画家每帧写这里,而 `bindings` 在同一段时间里正被读,合用一把锁
+    /// 会互相挡。
     painted: Arc<RwLock<HashMap<String, [u32; 2]>>>,
     revision: Arc<AtomicU64>,
     observers: Arc<TextureObservers>,
@@ -540,7 +541,7 @@ impl TextureSlot {
 }
 
 impl HostTextureRegistry {
-    /// 这个 slot 上一帧真正被画到的设备像素尺寸,还没画过时为 `None`。
+    /// 这个 slot **最后一次**被画到的设备像素尺寸,还没画过时为 `None`。
     ///
     /// 它是**画完之后**的事实:`fitted` 之后的目标矩形、节点自己的变换、
     /// 以及当时的缩放因子都已经算进去了。消费方要按播放区真实像素准备
@@ -548,7 +549,9 @@ impl HostTextureRegistry {
     /// 反推准确——反推拿到的是**上一帧的布局**,窗口改尺寸时会差一帧,
     /// 而且不包含节点的变换。
     ///
-    /// 尺寸为 0 的一边表示这一帧它没有可见面积。
+    /// 尺寸为 0 的一边表示那一帧它没有可见面积。节点从树上摘掉而 slot
+    /// 没有 [`Self::remove`] 时,这里留着的是它最后一次可见时的尺寸——
+    /// 记录只在绘制和 `remove` 时变,没有「这一帧没画」这个事件。
     pub fn painted_extent(&self, slot: &str) -> Option<[u32; 2]> {
         self.painted.read().ok()?.get(slot).copied()
     }
