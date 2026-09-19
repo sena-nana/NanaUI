@@ -1603,9 +1603,31 @@ text_prepare_nodes_considered / skipped / culled
   color 一千标签 -14.0%，九轮里大多数轮次都在 1.0 以下。采样给出的上限是 9.7%，两者
   量级一致。
 
-  还剩的：同样的换法在 `nana-ui-runtime` 里还没做（`store.rs` 23 处、`framework.rs`
-  18 处、`layout_engine.rs` 16 处……），那一侧的哈希在采样里是 paint 之外的另一半。
-  再往下，同一个被改祖先下面所有后代的 delta 数学上是同一个
+- **没变过的段落不再每帧重造一次 shape key**。一万个在屏标签的稳态帧里，采样说最大的
+  一格是 `TextPipeline::prepare`（自用时间 2315，整帧约七千）：每个标签每帧都要把
+  `ShapeKeyRef` 的二十来个字段装起来、连同整个字符串哈希一遍，再拿它去塑形缓存里比一
+  次，比出来的结论永远是「和上一帧一样」。
+
+  现在场景在 `SceneDraw` 上多给一个 `revision`——写这个图元的那次重建。它没变，加上
+  设备缩放和字体集都没动，shape key 就不可能变，直接用 entry 记着的那个哈希。富文本
+  不走这条（它的 key 带着按颜色切的 span，而调用方可以覆盖那个颜色）。
+
+  `revision` 从**进程内**全局计数器取。按每场景计数是不行的：画笔按 (node, slot, pass)
+  认 entry，里面没有一样东西说这是哪个场景的。按场景计数那一版所有测试都是绿的，是
+  557 张画廊帧里的 258 张把它抓出来的。
+
+  一帧总账（九轮配对取比值中位数）：static 一万标签 -11.4%，mutate-1pct -9.4%，
+  transform-panel -6.2%。
+
+  顺带修了两件事。一是 `transform-panel` 的面板当时用 `Fill` 尺寸，把其余 9992 个标签
+  挤出了视口（`text_prepare_nodes_culled` 9999.9 / 10001），那量的是一份没人画的文档；
+  修好之后 9998 个被自己的 entry 答掉。二是 #8 的文本门禁在真机上从来没被判定过——
+  `text_counters` 挂在报告上的时机在不变量算完之后，五条全是 `not-evaluable`。现在
+  五条全 ok，其中 `text_instance_rebuilds=1`。
+
+  还剩的：整数哈希那一换在 `nana-ui-runtime` 里还没做（`store.rs` 23 处、
+  `framework.rs` 18 处、`layout_engine.rs` 16 处……），那一侧的哈希在采样里是 paint
+  之外的另一半。再往下，同一个被改祖先下面所有后代的 delta 数学上是同一个
   （`A_new ∘ L ∘ L⁻¹ ∘ A_old⁻¹`），按祖先记一份就够，但那要先证明「下面那段链没动」。
 
 ### 怎么跑，怎么判
