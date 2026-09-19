@@ -16,6 +16,12 @@ pub struct SceneDraw<'a> {
     pub clips: Arc<[ClipRegion]>,
     /// Logical primitive opacity with compositor layer factors applied.
     pub paint_opacity: f32,
+    /// The rebuild that last wrote this primitive. Unchanged between two
+    /// frames means the scene handed back the one it already had, so
+    /// everything the primitive is made of — its text, its box, its style —
+    /// is the same. A painter that keeps its own resolved copy can answer
+    /// from it instead of deriving the question again.
+    pub revision: u64,
 }
 impl std::ops::Deref for SceneDraw<'_> {
     type Target = ScenePrimitive;
@@ -52,7 +58,7 @@ impl UiScene {
     }
 
     pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
-        let primitive = self.primitive(id)?;
+        let (primitive, revision) = self.primitive_at(id)?;
         let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
         let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&id.node)
         else {
@@ -61,6 +67,7 @@ impl UiScene {
                 transform: primitive.transform,
                 clips: Arc::clone(&primitive.clips),
                 paint_opacity,
+                revision,
             });
         };
         if epoch == self.attribute_epoch {
@@ -69,6 +76,7 @@ impl UiScene {
                 transform: primitive.transform,
                 clips: Arc::clone(&primitive.clips),
                 paint_opacity,
+                revision,
             });
         }
         let cached = self
@@ -116,6 +124,7 @@ impl UiScene {
             transform: attributes.delta.then(primitive.transform),
             clips,
             paint_opacity,
+            revision,
         })
     }
 }

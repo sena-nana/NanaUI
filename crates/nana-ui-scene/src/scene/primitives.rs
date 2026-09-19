@@ -43,7 +43,7 @@ impl UiScene {
     /// putting it in again. Each write stamps the slot with this rebuild, so
     /// the slots the node no longer has are the ones left unstamped.
     pub(super) fn rebuild_node_primitives(&mut self, id: StableNodeId) -> usize {
-        self.build = self.build.wrapping_add(1);
+        self.build = next_primitive_revision();
         let build = self.build;
         self.build_node_primitives(id);
         self.retire_node_primitives(id, |held| held.build != build);

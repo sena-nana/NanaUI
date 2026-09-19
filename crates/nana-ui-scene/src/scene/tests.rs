@@ -1387,6 +1387,119 @@ fn fading_a_group_that_stays_a_group_leaves_paint_order_alone() {
 }
 
 #[test]
+fn two_scenes_never_hand_out_the_same_revision() {
+    // A painter serving several documents keys its resolved copies on
+    // (node, slot) and the revision, and nothing in there says which scene the
+    // primitive came from. Two scenes counting from zero would have it answer
+    // one document's question with the other's glyphs.
+    let labelled = |value: u64, text: &str| {
+        let mut node = node(value, None, &[]);
+        node.text = Some(TextContent { value: text.into() });
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let revisions = |scene: &UiScene| {
+        scene
+            .primitives()
+            .map(|primitive| {
+                scene
+                    .draw_primitive(primitive.id)
+                    .expect("primitive draws")
+                    .revision
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut first = UiScene::new();
+    first.apply_delta([labelled(1, "one")], []);
+    let mut second = UiScene::new();
+    second.apply_delta([labelled(1, "two")], []);
+    let (first, second) = (revisions(&first), revisions(&second));
+    assert!(!first.is_empty() && !second.is_empty(), "both scenes paint");
+    for revision in &first {
+        assert!(
+            !second.contains(revision),
+            "revision {revision} names a primitive in two different scenes"
+        );
+    }
+}
+
+#[test]
+fn a_rewritten_primitive_gets_a_new_revision_and_an_untouched_one_keeps_its() {
+    // A painter that keeps its own resolved copy of a primitive — shaped
+    // glyphs, say — keys it on this number. If it ever stayed put across a
+    // rewrite, that painter would go on drawing the old thing.
+    let labelled = |value: u64, text: &str| {
+        let mut node = node(value, Some(1), &[]);
+        node.text = Some(TextContent { value: text.into() });
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [
+            node(1, None, &[2, 3]),
+            labelled(2, "one"),
+            labelled(3, "two"),
+        ],
+        [],
+    );
+    let revisions = |scene: &UiScene| {
+        scene
+            .primitives()
+            .map(|primitive| {
+                (
+                    primitive.id,
+                    scene
+                        .draw_primitive(primitive.id)
+                        .expect("primitive draws")
+                        .revision,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = revisions(&scene);
+
+    // Same text, new extraction: the node is rebuilt, so its primitives are
+    // written again and say so.
+    scene.apply_delta([labelled(2, "one")], []);
+    let after = revisions(&scene);
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "the same primitives have to be there"
+    );
+    for ((id, before), (also_id, after)) in before.iter().zip(after.iter()) {
+        assert_eq!(id, also_id, "same primitive, same place in order");
+        if id.node == self::id(2) {
+            assert_ne!(*before, *after, "{id:?}: a rewritten primitive moved on");
+        } else {
+            assert_eq!(*before, *after, "{id:?}: nobody touched this one");
+        }
+    }
+
+    // And a text change, which is the one that matters.
+    let changed = revisions(&scene);
+    scene.apply_delta([labelled(2, "three")], []);
+    for ((id, before), (_, after)) in changed.iter().zip(revisions(&scene).iter()) {
+        if id.node == self::id(2) {
+            assert_ne!(*before, *after, "{id:?}: new text, new revision");
+        }
+    }
+}
+
+#[test]
 fn moving_one_subtree_leaves_the_culling_index_right_for_both() {
     // Two sibling panels of four rows each. One scrolls — which the index
     // answers by leaving a shift pending on the nodes covering that range —

@@ -523,7 +523,7 @@ impl Default for UiScene {
             node_order: NodeMap::default(),
             primitives: BTreeMap::new(),
             ordered: BTreeSet::new(),
-            build: 0,
+            build: next_primitive_revision(),
             compositor: CompositorRegistry::default(),
             instance: next_scene_instance(),
         }
@@ -558,6 +558,13 @@ impl Clone for UiScene {
             instance: next_scene_instance(),
         }
     }
+}
+
+/// Identity for one write of a primitive, unique across every scene in the
+/// process. See [`UiScene::build`].
+pub(super) fn next_primitive_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn next_scene_instance() -> u64 {
@@ -937,15 +944,28 @@ impl UiScene {
         self.primitives.get(&id).map(|held| &held.primitive)
     }
 
+    /// The primitive and the rebuild that last wrote it. See
+    /// [`SceneDraw::revision`].
+    fn primitive_at(&self, id: PrimitiveId) -> Option<(&ScenePrimitive, u64)> {
+        self.primitives
+            .get(&id)
+            .map(|held| (&held.primitive, held.build))
+    }
+
     /// Rewrite one primitive kind and bump instance identity.
     ///
     /// Painter tests use this to probe stroke variants without a second
     /// Runtime extraction ABI.
     pub fn replace_primitive_kind(&mut self, id: PrimitiveId, kind: ScenePrimitiveKind) -> bool {
+        self.build = next_primitive_revision();
+        let build = self.build;
         let Some(held) = self.primitives.get_mut(&id) else {
             return false;
         };
         held.primitive.kind = kind;
+        // Anyone keeping a resolved copy of this primitive keys it on the
+        // rebuild that wrote it, and this is a write.
+        held.build = build;
         self.frame_plan.take();
         self.visibility.take();
         self.instance = next_scene_instance();
