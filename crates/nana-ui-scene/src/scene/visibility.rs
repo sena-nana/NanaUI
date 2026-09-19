@@ -417,18 +417,16 @@ impl VisibilityIndex {
     /// The first thing a query reads that this index and the ground truth
     /// disagree on, or `None` when they are bitwise equal.
     ///
-    /// Comparison is bitwise for the retained-projection audit: bounds are
-    /// produced by the same arithmetic on both sides, so an index that is
-    /// still valid compares equal exactly, and anything looser would not catch
-    /// a bound that drifted by an ulp and then culled a primitive a pixel
-    /// early.
+    /// Bitwise, because bounds are produced by the same arithmetic on both
+    /// sides: an index that is still valid compares equal exactly, and
+    /// anything looser would miss a bound that drifted by an ulp and then
+    /// culled a primitive a pixel early.
     ///
-    /// It reports *what* differs rather than *that* something does, because
-    /// the two failures this catches call for opposite fixes and read the same
-    /// in decimal: a bound off by an ulp is an arithmetic path that wants
-    /// sharing, a bound left over from before a mutation is a delta that
-    /// skipped a refresh. So name the half, the operation and node that own
-    /// the slot, and both values with their bits.
+    /// It names *what* differs rather than *that* something does. The two
+    /// failures it catches read the same in decimal and call for opposite
+    /// fixes: a bound off by an ulp is an arithmetic path that wants sharing,
+    /// a bound left over from before a mutation is a delta that skipped a
+    /// refresh.
     #[cfg(debug_assertions)]
     pub(super) fn mismatch(&self, other: &Self) -> Option<String> {
         fn rect_bits(rect: &Option<SceneRect>) -> Option<[u32; 4]> {
@@ -441,80 +439,41 @@ impl VisibilityIndex {
                 ]
             })
         }
-        if self.leaf != other.leaf {
-            let (retained, fresh) = (self.leaf, other.leaf);
-            return Some(format!("leaf {retained} vs fresh {fresh}"));
+        fn first_difference<V: std::fmt::Debug + PartialEq>(
+            what: &str,
+            retained: &HashMap<StableNodeId, V>,
+            fresh: &HashMap<StableNodeId, V>,
+        ) -> Option<String> {
+            let node = retained
+                .keys()
+                .chain(fresh.keys())
+                .find(|node| retained.get(node) != fresh.get(node))?;
+            let (retained, fresh) = (retained.get(node), fresh.get(node));
+            Some(format!(
+                "{what}[{node:?}]: retained {retained:?} vs fresh {fresh:?}"
+            ))
         }
-        if self.plan.operations != other.plan.operations {
-            let (retained, fresh) = (self.plan.operations.len(), other.plan.operations.len());
-            return Some(format!(
-                "plan.operations: {retained} retained vs {fresh} fresh"
-            ));
-        }
-        if self.bounds.len() != other.bounds.len() {
-            let (retained, fresh) = (self.bounds.len(), other.bounds.len());
-            return Some(format!("bounds length {retained} vs fresh {fresh}"));
-        }
+        // The audit builds the other index from the plan this one holds, so
+        // `leaf`, `plan` and both vector lengths agree by construction.
         for (at, (retained, fresh)) in self.bounds.iter().zip(&other.bounds).enumerate() {
             let (retained_bits, fresh_bits) = (rect_bits(retained), rect_bits(fresh));
-            if retained_bits == fresh_bits {
-                continue;
+            if retained_bits != fresh_bits {
+                let origin = self.slot_origin(at);
+                return Some(format!(
+                    "bounds[{at}] {origin}: retained {retained:?} {retained_bits:?} vs fresh {fresh:?} {fresh_bits:?}"
+                ));
             }
-            let origin = self.slot_origin(at);
-            return Some(format!(
-                "bounds[{at}] {origin}: retained {retained:?} {retained_bits:?} vs fresh {fresh:?} {fresh_bits:?}"
-            ));
-        }
-        if self.shifts.len() != other.shifts.len() {
-            let (retained, fresh) = (self.shifts.len(), other.shifts.len());
-            return Some(format!("shifts length {retained} vs fresh {fresh}"));
         }
         for (at, (retained, fresh)) in self.shifts.iter().zip(&other.shifts).enumerate() {
-            if (*retained).map(f32::to_bits) == (*fresh).map(f32::to_bits) {
-                continue;
-            }
-            let origin = self.slot_origin(at);
-            return Some(format!(
-                "shifts[{at}] {origin}: retained {retained:?} vs fresh {fresh:?}"
-            ));
-        }
-        for (node, retained) in &self.nodes {
-            let fresh = other.nodes.get(node);
-            if fresh != Some(retained) {
+            if (*retained).map(f32::to_bits) != (*fresh).map(f32::to_bits) {
+                let origin = self.slot_origin(at);
                 return Some(format!(
-                    "nodes[{node:?}]: retained {retained:?} vs fresh {fresh:?}"
+                    "shifts[{at}] {origin}: retained {retained:?} vs fresh {fresh:?}"
                 ));
             }
         }
-        if let Some(node) = other
-            .nodes
-            .keys()
-            .find(|node| !self.nodes.contains_key(node))
-        {
-            let fresh = other.nodes.get(node);
-            return Some(format!(
-                "nodes[{node:?}]: only in the fresh build, {fresh:?}"
-            ));
-        }
-        for (node, retained) in &self.descendants {
-            let fresh = other.descendants.get(node);
-            if fresh != Some(retained) {
-                return Some(format!(
-                    "descendants[{node:?}]: retained {retained:?} vs fresh {fresh:?}"
-                ));
-            }
-        }
-        if let Some(node) = other
-            .descendants
-            .keys()
-            .find(|node| !self.descendants.contains_key(node))
-        {
-            let fresh = other.descendants.get(node);
-            return Some(format!(
-                "descendants[{node:?}]: only in the fresh build, {fresh:?}"
-            ));
-        }
-        None
+        first_difference("nodes", &self.nodes, &other.nodes)
+            .or_else(|| first_difference("descendants", &self.descendants, &other.descendants))
     }
 
     /// Which operation, primitive and node a bounds or shift slot belongs to.

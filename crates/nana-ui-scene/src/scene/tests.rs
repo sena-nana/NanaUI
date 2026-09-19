@@ -8388,13 +8388,77 @@ fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
     );
 }
 
-/// Slice the scene into thin viewports and require the retained index to
-/// answer every one of them exactly like a scene built from the same final
-/// nodes. Thin slices are the point: a viewport covering everything returns
-/// all operations whatever the bounds say.
-fn assert_answers_match_a_fresh_build(scene: &UiScene, fresh: &UiScene, from: f32, to: f32) {
-    let mut top = from;
-    while top < to {
+/// Scroll a list, then apply an ordinary delta, and require the retained
+/// index to answer every thin viewport exactly like a scene built from the
+/// same final nodes.
+///
+/// The scroll fast path shifts retained bounds by an offset and leaves the
+/// shift to be pushed down later, so the index stops matching a fresh build
+/// bit for bit. That is a property of the index and lasts until something
+/// re-derives it — the delta that did the shifting is long over by the time
+/// the next one keeps the same index. Both halves are checked: the audit
+/// inside `apply_delta` must not read a later delta as proof the index went
+/// stale, and the index must still answer correctly.
+fn a_scrolled_list_answers_like_a_fresh_build(rows: u64, scroll: f32, probe_to: f32) {
+    let row = |value: u64| {
+        let mut child = node(value, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: (value - 2) as f32 * 20.0,
+            width: 100.0,
+            height: 18.0,
+        };
+        style_mut(&mut child).background = Some([1.0, 0.0, 0.0, 1.0]);
+        child
+    };
+    let all_nodes = |scroll: f32| {
+        let mut scroller = node(1, None, &(2..2 + rows).collect::<Vec<_>>());
+        scroller.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        scroller.scroll_offset.y = scroll;
+        let mut all = vec![scroller];
+        all.extend((2..2 + rows).map(row));
+        all
+    };
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 100.0,
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(all_nodes(0.0), []);
+    // Only a query builds the index; without it nothing here is retained.
+    let _ = scene.visible_operations(viewport);
+    let plan = scene.frame_plan().expect("plan");
+
+    let scrolled = scene.apply_delta([all_nodes(scroll).remove(0)], []);
+    assert_eq!(
+        scrolled.rebuilt_primitives, 0,
+        "the scroll rebuilt primitives instead of taking the fast path"
+    );
+    assert!(
+        Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "the scroll rebuilt the frame plan"
+    );
+    // An ordinary frame after the scroll, which is what a running app does
+    // every frame. The audit runs on this one.
+    scene.apply_delta([row(2)], []);
+    assert!(
+        scene.visibility.get().is_some(),
+        "the delta rebuilt the index, so nothing here tested the retained one"
+    );
+
+    let mut fresh = UiScene::new();
+    fresh.apply_delta(all_nodes(scroll), []);
+    // Thin slices are the point: a viewport covering everything returns every
+    // operation whatever the bounds say.
+    let mut top = -20.0f32;
+    while top < probe_to {
         let probe = SceneRect {
             x: 0.0,
             y: top,
@@ -8410,111 +8474,19 @@ fn assert_answers_match_a_fresh_build(scene: &UiScene, fresh: &UiScene, from: f3
     }
 }
 
-/// The scroll fast path shifts retained bounds by an offset and leaves the
-/// shift to be pushed down later, so the index stops matching a fresh build
-/// bit for bit. That is a property of the index and lasts until something
-/// re-derives it — the delta that did the shifting is long over by the time
-/// the next one keeps the same index.
-///
-/// Both halves matter, so both are checked here: the audit inside
-/// `apply_delta` must not read a later delta as proof the index went stale,
-/// and the index must still answer every viewport like a fresh build.
+/// Two leaves, so the one push the later delta performs reaches both and the
+/// only thing left over is a shift on a leaf, where nothing reads it.
 #[test]
-fn an_index_shifted_by_a_scroll_still_answers_like_a_fresh_build() {
-    let mut scroller = node(1, None, &[2, 3]);
-    scroller.layout = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 100.0,
-    };
-    let mut first = node(2, Some(1), &[]);
-    first.layout = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 40.0,
-    };
-    style_mut(&mut first).background = Some([1.0, 0.0, 0.0, 1.0]);
-    let mut second = node(3, Some(1), &[]);
-    second.layout = LayoutBox {
-        x: 0.0,
-        y: 40.0,
-        width: 100.0,
-        height: 40.0,
-    };
-    style_mut(&mut second).background = Some([0.0, 1.0, 0.0, 1.0]);
-    let mut scene = UiScene::new();
-    scene.apply_delta([scroller.clone(), first.clone(), second.clone()], []);
-    // Only a query builds the index. Without this there is nothing retained
-    // for the rest of the test to be about.
-    let _ = scene.visible_operations(SceneRect {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 100.0,
-    });
-    scroller.scroll_offset.y = 30.0;
-    scene.apply_delta([scroller.clone()], []);
-    // Re-extracting a node that did not change is what the running app does
-    // every frame. It keeps the index, so the audit runs on it.
-    scene.apply_delta([first.clone()], []);
-    assert!(
-        scene.visibility.get().is_some(),
-        "the delta rebuilt the index, so nothing here tested the retained one"
-    );
-    let mut fresh = UiScene::new();
-    fresh.apply_delta([scroller, first, second], []);
-    assert_answers_match_a_fresh_build(&scene, &fresh, -20.0, 120.0);
+fn a_scroll_pushed_down_to_every_leaf_answers_like_a_fresh_build() {
+    a_scrolled_list_answers_like_a_fresh_build(2, 30.0, 120.0);
 }
 
-/// The same shape with enough leaves that pushing down one path does not
-/// reach them all: the half the later delta never descends into still holds
+/// Four leaves, so the half the later delta never descends into still holds
 /// bounds from before the scroll, and only the shift recorded above them
 /// makes a query come out right.
 #[test]
-fn an_index_with_an_unpushed_half_still_answers_like_a_fresh_build() {
-    let mut scroller = node(1, None, &[2, 3, 4, 5]);
-    scroller.layout = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 200.0,
-    };
-    let mut children = Vec::new();
-    for (index, value) in [2u64, 3, 4, 5].into_iter().enumerate() {
-        let mut child = node(value, Some(1), &[]);
-        child.layout = LayoutBox {
-            x: 0.0,
-            y: index as f32 * 40.0,
-            width: 100.0,
-            height: 40.0,
-        };
-        style_mut(&mut child).background = Some([1.0, 0.0, 0.0, 1.0]);
-        children.push(child);
-    }
-    let mut scene = UiScene::new();
-    let mut initial = vec![scroller.clone()];
-    initial.extend(children.iter().cloned());
-    scene.apply_delta(initial, []);
-    let _ = scene.visible_operations(SceneRect {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 200.0,
-    });
-    scroller.scroll_offset.y = 30.0;
-    scene.apply_delta([scroller.clone()], []);
-    scene.apply_delta([children[0].clone()], []);
-    assert!(
-        scene.visibility.get().is_some(),
-        "the delta rebuilt the index, so nothing here tested the retained one"
-    );
-    let mut fresh = UiScene::new();
-    let mut final_nodes = vec![scroller];
-    final_nodes.extend(children);
-    fresh.apply_delta(final_nodes, []);
-    assert_answers_match_a_fresh_build(&scene, &fresh, -20.0, 220.0);
+fn a_scroll_left_unpushed_in_one_half_answers_like_a_fresh_build() {
+    a_scrolled_list_answers_like_a_fresh_build(4, 30.0, 120.0);
 }
 
 /// The virtualised shape the big scrolling tests cover, sized to stay under
@@ -8522,67 +8494,11 @@ fn an_index_with_an_unpushed_half_still_answers_like_a_fresh_build() {
 ///
 /// Those tests build ten thousand nodes, and that is how a scrolled index
 /// disagreeing with a fresh build stayed unnoticed: past the limit the audit
-/// returns on its first line, so the only two tests exercising the scroll fast
-/// path were the two it could not see.
+/// returns on its first line, so the only two tests exercising the scroll
+/// fast path were the two it could not see.
 #[test]
 fn a_scrolled_virtualised_list_small_enough_to_audit_answers_like_a_fresh_build() {
-    const ROWS: u64 = 200;
-    let mut scroller = node(1, None, &(2..2 + ROWS).collect::<Vec<_>>());
-    scroller.layout = LayoutBox {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 100.0,
-    };
-    let row = |value: u64| {
-        let mut child = node(value, Some(1), &[]);
-        child.layout = LayoutBox {
-            x: 0.0,
-            y: (value - 2) as f32 * 20.0,
-            width: 100.0,
-            height: 18.0,
-        };
-        style_mut(&mut child).background = Some([1.0, 0.0, 0.0, 1.0]);
-        child
-    };
-    let mut scene = UiScene::new();
-    let mut initial = vec![scroller.clone()];
-    initial.extend((2..2 + ROWS).map(row));
-    scene.apply_delta(initial, []);
-    let viewport = SceneRect {
-        x: 0.0,
-        y: 0.0,
-        width: 100.0,
-        height: 100.0,
-    };
-    let before = scene.visible_operations(viewport).expect("index");
-    assert!(
-        before.len() <= 7,
-        "the index is not culling, so a stale bound would not show up here"
-    );
-    let plan = scene.frame_plan().expect("plan");
-    scroller.scroll_offset.y = 1_000.0;
-    let scrolled = scene.apply_delta([scroller.clone()], []);
-    assert_eq!(
-        scrolled.rebuilt_primitives, 0,
-        "the scroll rebuilt primitives instead of taking the fast path"
-    );
-    assert!(
-        Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
-        "the scroll rebuilt the frame plan"
-    );
-    // An ordinary frame after the scroll. The audit runs on this one.
-    scene.apply_delta([row(2)], []);
-    assert!(
-        scene.visibility.get().is_some(),
-        "the delta rebuilt the index, so nothing here tested the retained one"
-    );
-    let mut fresh = UiScene::new();
-    let mut final_nodes = vec![scroller];
-    final_nodes.extend((2..2 + ROWS).map(row));
-    fresh.apply_delta(final_nodes, []);
-    // Around the scrolled-to window, where culling decisions actually differ.
-    assert_answers_match_a_fresh_build(&scene, &fresh, -20.0, 140.0);
+    a_scrolled_list_answers_like_a_fresh_build(200, 1_000.0, 140.0);
 }
 
 /// Bumping `attribute_epoch` re-bases every node that was not re-extracted,
