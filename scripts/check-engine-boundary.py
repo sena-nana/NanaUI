@@ -7,11 +7,11 @@ Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
 nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
 or native GPU implementation crates).
 
-No workspace member may reach cosmic-text, cryoglyph or glyphon through a
-normal dependency edge (Issue #99): `nana-text` and `NanaRenderer::text` are the
-only text authorities in the product. A *dev* edge is still allowed on purpose
-— the cosmic reference engine lives in `crates/nana-text/tests/reference/` and
-is what the migration goldens are compared against.
+The text engines NanaUI replaced -- cosmic-text, cryoglyph, glyphon -- must not
+appear in the dependency graph at all, on any edge, not even a dev one
+(Issue #99). The migration is over: the cosmic reference engine and its goldens'
+re-recording path were deleted with it, so nothing is left that may legitimately
+reach one.
 
 nana-text (Issue #89) additionally must not name cosmic-text or cryoglyph
 anywhere under src/, and may borrow only the typography vocabulary from
@@ -41,8 +41,9 @@ BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 # engine it replaced even in a type position — the dependency graph alone cannot
 # say that, because the reference engine is a legitimate dev dependency.
 TEXT_NEUTRAL_PACKAGES = {"nana-text"}
-# Issue #99. The replaced text engines, forbidden on every workspace member's
-# normal dependency edges. They may only be reached from tests.
+# Issue #99. The replaced text engines. Forbidden on every workspace member's
+# normal dependency edges *and* absent from `Cargo.lock` entirely -- a dev edge
+# would mean the reference engine came back.
 LEGACY_TEXT_PACKAGES = {"cosmic-text", "cryoglyph", "glyphon"}
 # Migration-only crates. Nothing in the product may depend on one. These are
 # Cargo *package* names, which are not always the lib target name: the crate in
@@ -270,6 +271,15 @@ def main() -> int:
         )
 
     lock_text = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
+    # The dependency-graph walk below only sees normal edges, so a dev edge to a
+    # replaced text engine would pass it. Nothing may reach one any more, and a
+    # lockfile entry is the cheapest way to say so.
+    for legacy in sorted(LEGACY_TEXT_PACKAGES):
+        if re.search(rf'^name = "{re.escape(legacy)}"$', lock_text, re.MULTILINE):
+            failures.append(
+                f"Cargo.lock still contains {legacy}; the replaced text engines are gone, "
+                "including from dev dependencies"
+            )
     for marker in ICED_WINIT_MARKERS:
         if marker in lock_text:
             failures.append(
@@ -315,7 +325,7 @@ def main() -> int:
     text_sources = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
     print(
         f"Engine boundary: OK (Iced/GPUI trees removed; the pinned upstream winit; "
-        f"backend-neutral: {neutral}; no product edge to {legacy_text}; "
+        f"backend-neutral: {neutral}; no edge at all to {legacy_text}; "
         f"sources free of them: {text_sources})"
     )
     return 0

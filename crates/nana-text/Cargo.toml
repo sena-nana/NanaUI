@@ -33,15 +33,10 @@ icu_properties = "2.3"
 harfrust = "0.12"
 unicode-bidi = "0.3.18"
 # Issue #92: UAX #14 line break opportunities (`layout/breaks.rs`), named from
-# that file only. Same version the cosmic reference engine pulls in, so the
-# migration does not carry two copies of the break tables.
+# that file only.
 unicode-linebreak = "0.1.5"
 
-# Migration-only. The cosmic reference engine lives under `tests/reference/`,
-# never under `src/`, so cosmic-text can never reach a product dependency edge.
-# Deleting `tests/reference/` and this table is the whole removal.
 [dev-dependencies]
-cosmic-text.workspace = true
 nana-ui-core = { workspace = true, features = ["bundled-fonts"] }
 # Tests read outlines back to prove resolved axis coordinates reach the face.
 skrifa = "0.44"

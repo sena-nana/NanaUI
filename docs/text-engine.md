@@ -16,7 +16,7 @@ caret / selection、hit-test、IME composition 与按段落失效的编辑器几
 #97 是 Phase 6：`NanaRenderer::text`——renderer 自有的 glyph IR、栅格化边界、raster cache、
 GPU atlas、上传队列与 text pipeline，cryoglyph 由此退出产品路径，见「NanaRenderer::text」一节。
 #99 是 Phase 8：全路径 cutover——Runtime 的 `NanaTextShaper` 与画笔都改问同一个进程级
-`nana-text` 引擎，Canvas2D 同样换掉，`cargo tree --edges normal` 里再无 cosmic-text，见
+`nana-text` 引擎，Canvas2D 同样换掉，`Cargo.lock` 里再无 cosmic-text（连 dev 边也没有），见
 「cutover 之后的产品路径」一节。
 
 ## 这是什么
@@ -24,17 +24,18 @@ GPU atlas、上传队列与 text pipeline，cryoglyph 由此退出产品路径�
 ```text
 corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
         │
-        ├── tests/reference/     cosmic-text 参照引擎（临时，仅 dev 依赖）
-        │        ↓
-        │   Nana IR TextLayout
-        │        ↓
-        └── corpus/golden/TX-*.layout.json   签入的基线
-                 ↓
-        parity::compare(expected, actual, &tol) -> Vec<LayoutDelta>
+        ↓  nana-text（shaping + layout）
+   Nana IR TextLayout
+        │
+        ↓  parity::compare(golden, actual, &tol) -> Vec<LayoutDelta>
+corpus/golden/TX-*.layout.json  签入的基线(Phase 0 由 cosmic 参照引擎录下)
 ```
 
-`compare` 是唯一的结构化 diff。Phase 0 比「参照引擎 vs golden」；后续阶段原生引擎接上
-**同一个函数**，比「原生 vs golden」和「原生 vs 参照」。不换实现，不重写断言。
+`compare` 是唯一的结构化 diff。Phase 0 比「参照引擎 vs golden」；原生引擎接上**同一个
+函数**比「原生 vs golden」。**参照引擎已随 cosmic-text 一起删除**（见「参照引擎去哪了」），
+golden 留下来，现在由 `shaping_matches_the_cosmic_reference_goldens.rs` 与
+`layout_matches_the_cosmic_reference_goldens.rs` 两个用例拿原生引擎对着它们跑——文件名里的
+「cosmic reference」说的是**这批 golden 的出处**，不是还在跑的引擎。
 
 产品文本的**测量**走 `crates/nana-ui/src/nana_text.rs`（它现在只是
 `NanaTextEngineShaper` 的壳），**绘制**走 `crates/nana-ui/src/scene_paint/text/`；两边问的是
@@ -50,7 +51,7 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 | 稳定代际 ID 与失效规则（`FontId` / `ShapeRunId` / `TextLayoutId` / `TextRevision` / `FontGeneration`） | **nana-text** | 缓存正确性的权威 |
 | 命中测试 / caret / 选区矩形 | **nana-text** | 纯函数，跑在 IR 之上；写不出来就说明 IR 缺字段 |
 | 行布局编排（断行策略、行盒合并、对齐、省略号、layout cache） | **nana-text** | 产品语义与缓存合同，必须与 `TextConstraints` 同一套词汇 |
-| 结构化 diff 与容差 | **nana-text** | 迁移验收合同，必须比 cosmic 活得久 |
+| 结构化 diff 与容差 | **nana-text** | 迁移验收合同，必须比 cosmic 活得久——它做到了：参照引擎删了，golden 和 `compare` 还在 |
 | 排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature） | **nana-ui-core** | 已是后端中立令牌；重造一套只会在 UiWorld 接缝上长出一个有损转换器 |
 | OpenType 表解析、字形轮廓、变体插值 | **成熟 crate**（skrifa / ttf-parser） | #89 非目标明确写了不重实现 |
 | 复杂文字整形（GSUB/GPOS、Arabic joining、印度系重排） | **成熟 crate**（harfrust，仅 `shaping/opentype.rs`） | 同上 |
@@ -120,21 +121,18 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 `corpus_is_wellformed.rs` 会红。`parity::CATEGORIES` 列出 #89 要求的每个类别，并断言每个类别
 至少有一条 passing 用例——一个悄悄丢掉最后一条用例的需求，看起来和一个通过的需求一模一样。
 
-重新录制：
+**重新录制的路子随参照引擎一起没了。** 原来的 `NANA_TEXT_BLESS=1 cargo test -p nana-text
+--test text_parity_corpus` 是拿 cosmic 重录 golden，那正是必须停掉的事。golden 因此是**冻结的
+Phase 0 证据**：它记的是被替换的引擎当时的答案，原生引擎每次 CI 都对着它跑。
 
-```bash
-NANA_TEXT_BLESS=1 cargo test -p nana-text --test text_parity_corpus
-```
-
-bless 只记录，不判定：它写完 golden 就返回，不做比较。重新 bless 必须是一次**可见、可评审的
-diff**，永远不自动发生。这些 golden 是 hermetic 字体库下的纯 Rust 度量值，跨机器确定，和
-[像素快照](../examples/component-gallery/snapshots/README.md)不同，本机可以放心 bless。
+要重新录制，得先决定新基线代表什么（「原生引擎现在的输出」不再是「迁移前后一致」的证据），
+那是一次有意的设计决定，不是一个环境变量。`parity::write_golden` 还在，没有接到任何引擎上。
 
 ### 确定性靠 hermetic 字体库
 
 产品路径用的是进程级、从系统字体播种的 `FontSystem`。照它录的 golden 只在一台机器上成立。
-参照引擎因此从不碰它：每个用例新建一个空 `fontdb::Database`，只按用例声明的顺序装载它声明的
-fixture，locale 固定 `en-US`。face id 因而确定，fallback 链就是用例的字体列表，缺字用例也白送
+对账因此从不碰它：`tests/support/corpus.rs` 给每个用例装一套 hermetic 字体集，只按用例声明的
+顺序装载它声明的 fixture。face id 因而确定，fallback 链就是用例的字体列表，缺字用例也白送
 （只装 `nana-test-vf` 时，除 `A` 外一切都是 `.notdef`）。
 
 ### 字体 fixture
@@ -218,11 +216,10 @@ layout_cache_hits/misses Option<usize>  同上
 glyphs_resolved         Option<usize>   解析出 glyph id 的数量
 ```
 
-Phase 0 没有产品生产者，这是设计如此。防止它们变成摆设的是**对账**：
-`reference_engine_counters_agree_with_the_layout_it_produced.rs` 断言
-`counters.glyphs_resolved == Some(layout.glyph_count())`，也就是拿计数器和它声称描述的产物比。
-抓的正是「计数器说谎」这一种失效模式，也是整个 #8 计数器文化存在的理由。golden 里也记了
-counters，所以计数变化是一次可评审的 diff。
+Phase 0 没有产品生产者，这是设计如此。当时防止它们变成摆设的是参照引擎的对账用例
+（`counters.glyphs_resolved == Some(layout.glyph_count())`，拿计数器和它声称描述的产物比）；
+那个用例随参照引擎一起删了。golden 里仍然记着 counters，所以计数变化依然是一次可评审的 diff，
+而产品侧的口径由 UiWorld 文本 pass 的计数器守着（见「UiWorld 保留文本节点」）。
 
 折进 `WorkCounters` 是 UiWorld 接缝上的一个函数，那才是正确时机；现在加五个没有生产者的字段，
 等于为零信号拓宽一个 CI 正在裁判的合同。Phase 4 起它们由 UiWorld 的文本 pass 生产，并加了解释
@@ -233,12 +230,13 @@ counters，所以计数变化是一次可评审的 diff。
 `scripts/check-engine-boundary.py` 多了三条规则，都带自测
 （`scripts/tests/test_engine_boundary.py`，现在真的在 CI 里跑了）：
 
-1. **产品图**：**任何**工作区成员都不得有**非 dev** 边通向 `cosmic-text` / `cryoglyph` /
-   `glyphon`（#99 把这条从只管 `nana-text` 扩到了全工作区）。
-   dev 边是本阶段有意留的。
+1. **依赖图与 lockfile**：任何工作区成员都不得有**非 dev** 边通向 `cosmic-text` /
+   `cryoglyph` / `glyphon`，并且 `Cargo.lock` 里**一条记录都不许有**。后半条是必要的：
+   依赖图的遍历只看非 dev 边，dev 边会从它底下溜过去，而现在连 dev 边也不该存在了。
 2. **源码**（承重的一条）：`crates/nana-text/src/**` 里不得出现 `cosmic_text` / `cryoglyph` /
-   `glyphon` 标识符。这就是「核心 API 不出现 cosmic 类型」的机械含义——依赖图本身说不了这句话，
-   因为参照引擎是一条合法的 dev 依赖。注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
+   `glyphon` 标识符。这条在参照引擎还活着时是唯一能说「核心 API 不出现 cosmic 类型」的机械
+   手段（依赖图说不了，因为那时它是一条合法的 dev 依赖）；现在它守的是不许有人把它请回来。
+   注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
 3. **allowlist**：`crates/nana-text/src/**` 引用 `nana_ui_core::` 时，只许命中上面那张表里的项。
 4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`，`skrifa` 只许出现在
    `src/font/face.rs`，`icu_properties` 只许出现在 `src/font/unicode.rs`，`read_fonts` /
@@ -248,10 +246,19 @@ counters，所以计数变化是一次可评审的 diff。
    `harfrust`，就是因为模块名本身也会被这条规则扫到。#92 同理：`unicode_linebreak` 只许出现在
    `src/layout/breaks.rs`。
 
-参照引擎放在 `crates/nana-text/tests/reference/`，**不是** `src/` 下的 `#[cfg(test)] mod`：
-后者对 `tests/*.rs` 不可见，corpus harness 就用不上它。原生引擎落地后，删
-`tests/reference/` 和 `Cargo.toml` 里的 `[dev-dependencies] cosmic-text` 两处即可，`src/` 完全
-不用动。
+### 参照引擎去哪了
+
+参照引擎曾经放在 `crates/nana-text/tests/reference/`（**不是** `src/` 下的
+`#[cfg(test)] mod`：后者对 `tests/*.rs` 不可见，corpus harness 就用不上它），正是为了让它能被
+一次删掉而不动 `src/` 一行。原生引擎落地、产品路径切完之后就删了：
+
+- `tests/reference/`（cosmic 驱动的参照实现）
+- `tests/text_parity_corpus.rs`（参照 vs golden，以及 `NANA_TEXT_BLESS` 重录路径）
+- `tests/reference_engine_counters_agree_with_the_layout_it_produced.rs`
+- `crates/nana-text/Cargo.toml` 的 `[dev-dependencies] cosmic-text` 与工作区那条 fork pin
+
+`src/` 一行未动——这正是当初把它放进 `tests/` 的原因。留下的是 golden 和两个拿**原生**引擎
+对着 golden 跑的用例，覆盖面没变：全部 26 条用例、同一个 `compare_golden`、同一批容差。
 
 ## 字体层（Phase 1，#90）
 
@@ -457,7 +464,7 @@ text_bytes_unshaped                         字体系统没有任何 face 时未
 
 没有折进 `TextWorkCounters`：那里的 shape cache 口径要等 UiWorld 接缝真有 pass 时再填。
 
-### 与 cosmic 参照对账
+### 与 cosmic golden 对账
 
 `tests/shaping_matches_the_cosmic_reference_goldens.rs` 用同一组 hermetic 字体、同一条
 fallback 链，把全部 26 条语料按**逻辑簇**逐字段对 golden：glyph 数、glyph id、`cluster_end`、
@@ -718,7 +725,7 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 Runtime 通过 `NanaTextEngineShaper` 持有它（见「UiWorld 保留文本节点」）；从 #99 起产品宿主
 `NanaTextShaper` **就是**它的壳，绘制走 `NanaRenderer::text`，两边问同一个引擎。
 
-### 与 cosmic 参照对账
+### 与 cosmic golden 对账
 
 `tests/layout_matches_the_cosmic_reference_goldens.rs` 用**同一个** `compare_golden`、同一批 golden、
 同一组容差，把 26 条语料的原生 layout 与 Phase 0 录下的参照 layout 逐字段比，
@@ -1989,11 +1996,11 @@ python3 scripts/build-text-corpus-fonts.py --check   # 需要 fonttools
 cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
 ```
 
-证明参照引擎没有进入产品依赖：
+证明它一条边都没有（dev 边也没有，所以不用 `--edges normal` 绕开）：
 
 ```bash
-# 注意 --edges normal：默认的 cargo tree 会把 dev 边也列出来，而参照引擎正是一条 dev 边。
-cargo tree -p nana-text --locked --edges normal | grep -ci cosmic   # 0
+grep -c '^name = "cosmic-text"$' Cargo.lock   # 0
+python3 scripts/check-engine-boundary.py      # CI 每次跑
 ```
 
 Phase 4 起 `nana-ui-runtime` 依赖 `nana-text`（保留文本节点与句柄）；#99 起 `nana-ui` 的测量与

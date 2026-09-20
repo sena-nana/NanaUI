@@ -12,12 +12,13 @@ NanaUI 自己的代码是 **MIT 或 Apache-2.0**（见 [LICENSE-MIT](../LICENSE-
   许可证**：MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode-3.0 / 0BSD / CC0 /
   BSL-1.0 / CDLA-Permissive-2.0 及其组合。没有 copyleft-only 的边（两处
   `MIT OR Apache-2.0 OR LGPL-2.1-or-later` 都可以取宽松的那一支）。
-- `cryoglyph` **已经不在 `Cargo.lock` 里**——不是「只剩 dev 依赖」，是一条边都没有。
-- `cosmic-text` 只剩 `nana-text` 的一条 **dev** 边（参照引擎，见下）。
+- `cryoglyph` 与 `cosmic-text` **都已不在 `Cargo.lock` 里**——不是「只剩 dev 依赖」，
+  是一条边都没有。参照引擎已随之删除（见下）。
 - 从被替换的引擎**照抄过一段代码**：`SubpixelBin::split`。已就地署名，见「照抄了什么」。
 
-机器守着前两条的是 `scripts/check-engine-boundary.py`（CI 每次跑）：任何工作区成员
-都不得有非 dev 边通向 `cosmic-text` / `cryoglyph` / `glyphon`。
+机器守着这几条的是 `scripts/check-engine-boundary.py`（CI 每次跑）：任何工作区成员都不得有
+非 dev 边通向 `cosmic-text` / `cryoglyph` / `glyphon`，**并且 `Cargo.lock` 里一条记录都不许有**
+——后半条是必要的，因为依赖图的遍历只看非 dev 边，dev 边会从它底下溜过去。
 
 ## 文本栈依赖谁的代码
 
@@ -66,16 +67,19 @@ per-instance content type）照 #97 的定位属于「迁移期的设计参考�
 
 ### `cosmic-text`（shaping / layout）
 
-只剩 `crates/nana-text` 的一条 **dev** 依赖：参照引擎住在
-`crates/nana-text/tests/reference/`，`src/` 下一个 `cosmic_text` 标识符都没有
-（同样由脚本机器守住）。它的作用是把原生引擎的输出与 Phase 0 录下的 golden 逐字段
-比对，属于 #89 定义的迁移验收合同。删掉它 = 删 `tests/reference/` 和
-`Cargo.toml` 里那张 `[dev-dependencies]` 表，两处。
+**已完全移除**，dev 依赖也没了。参照引擎（`crates/nana-text/tests/reference/`）、
+拿它对 golden 的 `text_parity_corpus.rs`（含 `NANA_TEXT_BLESS` 重录路径）与
+`reference_engine_counters_*.rs` 一并删除；`src/` 一行未动——当初把它放进 `tests/`
+就是为了这一刻。
 
-fork 是 `https://github.com/sena-nana/cosmic-text.git`，pin 在
+留下来的是 **golden**：`crates/nana-text/corpus/golden/TX-*.layout.json` 是 Phase 0
+由参照引擎录下的答案，现在由两个拿**原生**引擎对着它们跑的用例守着，覆盖面没变。
+golden 因此是冻结的迁移证据，重录需要先决定新基线代表什么。
+
+fork 曾是 `https://github.com/sena-nana/cosmic-text.git`，pin 在
 `061c738ebc28789963f61e82b313717ac67ffd66`（上游 0.19.0 加字体变体轴）。
 上游 `https://github.com/pop-os/cosmic-text`，Copyright (c) 2022 System76，
-MIT OR Apache-2.0。
+MIT OR Apache-2.0。它的一段代码仍在本仓库里，见「照抄了什么」。
 
 ## 照抄了什么
 
@@ -100,7 +104,7 @@ MIT OR Apache-2.0。
 ## 怎么重跑这份审计
 
 ```bash
-# 没有非 dev 边通向被替换的引擎（CI 也跑这一条）
+# 被替换的引擎一条边都没有,包括 dev（CI 也跑这一条）
 python3 scripts/check-engine-boundary.py
 
 # release 依赖图里的许可证分布
