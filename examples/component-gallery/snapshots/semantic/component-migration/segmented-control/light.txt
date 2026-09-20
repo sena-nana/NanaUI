@@ -3,7 +3,7 @@ mode: light
 state: small
   target: 20.00,20.00 172.11x28.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 172.11x28.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 172.11x28.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 49.48x22.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 33.00,23.00 29.48x22.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 74.48,23.00 46.64x22.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -13,7 +13,7 @@ state: small
 state: medium-icon
   target: 20.00,20.00 197.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 197.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 197.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 60.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 53.00,23.00 30.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   icon #3/3 35.00,29.50 13.00x13.00 opacity=1.00 icon=Icon("file") color=#1a1a1fff
@@ -24,7 +24,7 @@ state: medium-icon
 state: large
   target: 20.00,20.00 225.13x36.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 225.13x36.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 225.13x36.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 66.40x30.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 39.00,23.00 34.40x30.00 opacity=1.00 color=#1a1a1fff size=14.00 weight=500 line_height=Absolute(18.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 91.40,23.00 63.08x30.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -34,7 +34,7 @@ state: large
 state: hover
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -44,7 +44,7 @@ state: hover
 state: pressed
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -54,7 +54,7 @@ state: pressed
 state: selected-hover
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e8e8e8ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -64,7 +64,7 @@ state: selected-hover
 state: selected-pressed
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#dfdfdfff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -74,7 +74,7 @@ state: selected-pressed
 state: focused
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -84,7 +84,7 @@ state: focused
 state: disabled-selected
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -94,11 +94,11 @@ state: disabled-selected
 state: empty
   target: 20.00,20.00 6.00x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 6.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 6.00x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
 state: all-disabled
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -108,7 +108,7 @@ state: all-disabled
 state: pointer-request
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -118,7 +118,7 @@ state: pointer-request
 state: pointer-cancel
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -128,7 +128,7 @@ state: pointer-cancel
 state: selected-repeat-request
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e8e8e8ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -138,7 +138,7 @@ state: selected-repeat-request
 state: arrow-skip-wrap
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -148,7 +148,7 @@ state: arrow-skip-wrap
 state: home-end
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -158,7 +158,7 @@ state: home-end
 state: space-enter-repeat
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -168,7 +168,7 @@ state: space-enter-repeat
 state: no-selection
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -178,7 +178,7 @@ state: no-selection
 state: dynamic-disable
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -188,7 +188,7 @@ state: dynamic-disable
 state: controlled-commit
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -198,7 +198,7 @@ state: controlled-commit
 state: a11y-radio
   target: 20.00,20.00 192.62x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 192.62x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #4/0 80.94,23.00 52.86x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
@@ -208,7 +208,7 @@ state: a11y-radio
 state: atomic-reconcile
   target: 20.00,20.00 137.76x32.00
   a11y: role=RadioGroup disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 137.76x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/0 20.00,20.00 137.76x32.00 opacity=1.00 bg=#ffffffff border=#e3e5e8ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=none
   quad #3/0 23.00,23.00 55.94x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #3/2 35.00,23.00 31.94x26.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #5/0 80.94,23.00 73.82x26.00 opacity=1.00 bg=#e2e2e2ff border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none

@@ -3725,15 +3725,35 @@ impl LayoutStyle {
     }
 
     /// Stroke widths for the existing rounded-box path (`none` / unsupported → 0).
+    ///
+    /// A side with no colour paints nothing, which is CSS's rule and the right
+    /// one *for a colour authored in CSS*. An L3 component names its border as
+    /// a [`SemanticColorRole`](crate::SemanticColorRole) instead, so the colour
+    /// is resolved onto the computed style and never reaches this struct — see
+    /// [`Self::paint_border_edges_with`].
     pub fn paint_border_edges(&self) -> PaddingSpec {
+        self.paint_border_edges_with(None)
+    }
+
+    /// Stroke widths, with `fallback` standing in for a side that has no colour
+    /// of its own on this struct.
+    ///
+    /// The caller passes the colour it is actually going to stroke with. Width
+    /// and colour have to come from one decision: taking the width from the
+    /// CSS-only view while taking the colour from the resolved semantic style
+    /// is how an `Outlined` card asked for a 1px border, supplied a colour, and
+    /// painted neither — `border_width: Some(1.0)` on the layout,
+    /// `border_color: None` on the layout, and the role's colour sitting on the
+    /// computed style where this function could not see it.
+    pub fn paint_border_edges_with(&self, fallback: Option<[f32; 4]>) -> PaddingSpec {
         let layout = self.resolved_border_edges();
         let styles = self.resolved_border_styles();
         let colors = self.resolved_border_edge_colors();
         PaddingSpec {
-            top: paint_border_width(layout.top, styles[0], colors[0]),
-            right: paint_border_width(layout.right, styles[1], colors[1]),
-            bottom: paint_border_width(layout.bottom, styles[2], colors[2]),
-            left: paint_border_width(layout.left, styles[3], colors[3]),
+            top: paint_border_width(layout.top, styles[0], colors[0].or(fallback)),
+            right: paint_border_width(layout.right, styles[1], colors[1].or(fallback)),
+            bottom: paint_border_width(layout.bottom, styles[2], colors[2].or(fallback)),
+            left: paint_border_width(layout.left, styles[3], colors[3].or(fallback)),
         }
     }
 
@@ -6005,5 +6025,50 @@ mod tests {
         assert_ne!(outset, inset);
         assert!(inset.inset);
         assert!(!outset.inset);
+    }
+
+    /// A border whose colour is not on the `LayoutStyle` still strokes, as long
+    /// as the caller says what colour it will stroke with.
+    ///
+    /// This is the `Outlined` card: `border_width: Some(1.0)` on the layout, no
+    /// `border_color` on the layout (the component named a
+    /// `SemanticColorRole`, which resolves onto the computed style), and a
+    /// painted width of zero. Width and colour were coming from two different
+    /// decisions.
+    #[test]
+    fn a_border_coloured_outside_the_layout_still_strokes_when_the_caller_names_it() {
+        let style = LayoutStyle {
+            border_width: Some(1.0),
+            ..LayoutStyle::default()
+        };
+        assert_eq!(style.border_color, None);
+        assert!(
+            style.paint_border_edges().is_zero(),
+            "with no colour anywhere there is nothing to stroke"
+        );
+
+        let semantic = [0.16, 0.16, 0.16, 1.0];
+        let edges = style.paint_border_edges_with(Some(semantic));
+        assert_eq!(edges.top, 1.0);
+        assert_eq!(edges.left, 1.0);
+
+        // A colour on the layout keeps winning, and the fallback does not
+        // resurrect a side the author switched off.
+        let none_style = LayoutStyle {
+            border_width: Some(1.0),
+            border_style: Some(BorderStyle::None),
+            ..LayoutStyle::default()
+        };
+        assert!(
+            none_style.paint_border_edges_with(Some(semantic)).is_zero(),
+            "`border-style: none` still means no stroke"
+        );
+
+        // Zero width stays zero: the fallback supplies a colour, never a width.
+        let flat = LayoutStyle {
+            border_width: Some(0.0),
+            ..LayoutStyle::default()
+        };
+        assert!(flat.paint_border_edges_with(Some(semantic)).is_zero());
     }
 }

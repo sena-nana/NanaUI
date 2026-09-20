@@ -3,6 +3,6 @@ mode: dark
 state: normal
   target: 20.00,20.00 380.00x100.00
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x100.00 opacity=1.00 bg=#1c1c1cff border=#2a2a2aff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x100.00 opacity=1.00 bg=#1c1c1cff border=#2a2a2aff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   quad-batch #2/10 20.00,34.92 380.00x70.15 opacity=1.00 count=2 bg=#a3a3a3ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/11 20.00,20.00 268.92x100.00 opacity=1.00 bg=#7bb9f029 border=#7bb9f0ff border_width=1.50 radius=0.00/0.00/0.00/0.00 shadow=none

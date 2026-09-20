@@ -108,54 +108,63 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 Both are the fixture's own contract check, not the pixel comparison, and
 neither affects the exit code.
 
-### `machine_verdict: fail` — 58 fixtures
+### `machine_verdict: fail` — 34 fixtures
 
-Each fixture's `*.evidence.txt` now carries a `runtime_failed:` line naming the
+Each fixture's `*.evidence.txt` carries a `runtime_failed:` line naming the
 clause that failed. Before that it printed only `fail`, and finding out which
 of ~22 conjuncts had tripped meant opening `evidence.rs` beside it — which is
 why this sat at 66 for weeks without moving.
 
-| clause | count | what it means |
+| clause | count | where |
 | --- | ---: | --- |
-| `hit_ok` | 24 | the fixture's hit-test expectation does not match what the tree does |
-| `geometry_ok, hit_ok` | 12 | `sidebar-section` / `sidebar-frame` |
+| `geometry_ok` | 12 | `sidebar-section`, `sidebar-frame` |
 | `segmented_contract_ok` | 8 | segmented activation contract |
 | `textarea_geometry_ok` | 6 | `textarea/{focused,invalid-focused,scroll}` |
 | `tooltip_state` | 4 | `icon-button/{tooltip-delay,tooltip-edge}` |
 | `segmented_geometry_ok` | 2 | `segmented-control/focused` |
+| `action_applied` | 2 | |
 
-The `hit_ok` group splits into two kinds, and telling them apart is the next
-step for anyone picking this up:
+The 32 that are gone were all `hit_ok`, and all one harness flaw. The contract
+was split passive / interactive; what actually decides the hit result is **leaf
+/ container**, and the old split failed in both directions at once:
 
-- **Probably the harness.** Four components were passive displays missing from
-  the passive list (`QrCode`, `TimeSeriesChart`, `KeyCaptureLayer`,
-  `KeymapLayer`); they are in it now, which is where 66 − 58 went.
-- **Probably the product, and worth a look.** `tabs/{selected,focused}` and
-  `sidebar-footer/actions` report `hit=None` — a tab strip and a footer full of
-  buttons should be clickable. `card/*` (18 fixtures) reports the opposite: the
-  harness says a plain `Card` must not be the hit target — that is what
-  `InteractiveCard` is for — but the card *is* hit, so it swallows pointer
-  events. Both are product questions; neither was decided here.
+- it demanded a `Card` never be the hit target — but a card must keep
+  `pointer_events`, or the buttons inside it stop being clickable;
+- it demanded a `Tabs` strip *be* the hit target — but the strip's centre lands
+  in the gap between two tabs and hits nothing.
 
-### 4 snapshots paint nothing but the clear colour (`FLAT`)
+A leaf decoration can promise it is never the target. A container can only
+promise the pointer did not escape its subtree: the centre of a container
+legitimately resolves to itself, to a descendant, or — over a gap it does not
+paint — to nothing. `hit_ok` now says that.
 
-They agree with any baseline recorded from them and prove nothing. Root cause
-for each, so the fix is a decision and not an investigation:
+### 2 snapshots paint nothing but the clear colour (`FLAT`)
 
-- `segmented-control/{dark,light}/empty` — the track *does* paint: a 6×32
-  rounded quad. It is invisible because its background is the palette's
-  `background`, which is also the page behind it, and because the track's
-  border renders at `border_width=0.00` even though `selection_chrome_style`
-  sets `1.0`. The semantic tree already records the box and `role=RadioGroup`,
-  so the pixel key adds nothing today. Worth checking why the 1px track border
-  never reaches the quad — that is a visual defect in its own right, not only
-  here.
-- `overlay-host/{dark,light}/stacked` — the node is `0.00x0.00` with no scene
-  primitives at all. An `OverlayHost` shows only the overlay its
-  `OverlayHostState.active` names, and the fixture adopts one child without
-  ever making it active, so the state called "stacked" stacks nothing.
+`overlay-host/{dark,light}/stacked`: the node is `0.00x0.00` with no scene
+primitives at all. An `OverlayHost` shows only the overlay its
+`OverlayHostState.active` names, and the fixture adopts one child without ever
+making it active, so the state called "stacked" stacks nothing.
 
-## Adding an adapter## Adding an adapter
+`segmented-control/{dark,light}/empty` used to be here too. It is not any more:
+its track asked for a 1px border and painted none, so the whole fixture came
+out the colour of the page behind it. See below.
+
+### The border that never painted
+
+`LayoutStyle::paint_border_edges` zeroes any side whose colour is absent — CSS's
+rule, and the right one for a colour written in CSS. But an L3 component names
+its border as a `SemanticColorRole`, so the colour resolves onto the *computed*
+style and never reaches the `LayoutStyle`. The scene then took the width from
+that CSS-only view and the colour from the semantic one: an `Outlined` card
+supplied `border_width: Some(1.0)`, supplied a colour, and painted neither.
+
+168 primitives across 15 component families were affected. The fix is
+`paint_border_edges_with(colour)` — the caller passes the colour it is actually
+going to stroke with, so width and colour come from one decision. Pinned by
+`a_border_coloured_outside_the_layout_still_strokes_when_the_caller_names_it`,
+which also checks that `border-style: none` and a zero width stay zero.
+
+## Adding an adapter## Adding an adapter## Adding an adapter
 
 Run `--bless` on that machine and commit the new directory. Adapters are
 independent; adding one does not affect the others. A software rasteriser

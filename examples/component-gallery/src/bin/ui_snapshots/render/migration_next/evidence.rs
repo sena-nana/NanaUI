@@ -493,6 +493,27 @@ pub(super) fn write_evidence(
         .and_then(|host| host.active);
     let expects_hit =
         !matches!(fixture.state, "disabled" | "loading") && fixture.component != Component::Text;
+    // What a fixture may claim about hit-testing depends on whether the
+    // component is a **leaf** or a **container**, not on whether it is
+    // "passive". The original split was passive/interactive, and it failed in
+    // both directions at once: it demanded that a `Card` never be the hit
+    // target (a card must keep `pointer_events`, or the buttons inside it stop
+    // being clickable), and it demanded that a `Tabs` strip *be* the hit target
+    // (its centre lands in the gap between two tabs, which hits nothing).
+    //
+    // A leaf decoration can promise it is never the target. A container can
+    // only promise the pointer did not escape its subtree — the centre of a
+    // container legitimately resolves to itself, to a descendant, or, over a
+    // gap it does not paint, to nothing.
+    let is_descendant = |mut id: nana_ui::runtime::StableNodeId| loop {
+        if id == runtime.target {
+            return true;
+        }
+        match world.node(id).and_then(|node| node.parent) {
+            Some(parent) => id = parent,
+            None => return false,
+        }
+    };
     let hit_ok = if fixture.component == Component::SegmentedControl {
         if matches!(fixture.state, "empty" | "all-disabled") {
             hit.is_none()
@@ -510,27 +531,32 @@ pub(super) fn write_evidence(
                     })
             })
         }
-    } else if fixture.component == Component::Chip {
-        if expects_hit {
-            hit == Some(runtime.target)
-                || hit.is_some_and(|id| {
-                    world.node(id).and_then(|node| node.parent) == Some(runtime.target)
-                })
-        } else {
-            hit != Some(runtime.target)
-        }
     } else if matches!(
         fixture.component,
-        Component::Card
-            | Component::Text
-            | Component::StatusBadge
-            | Component::ValidationMessage
-            | Component::EmptyState
-            | Component::LabeledValue
+        // Leaf decorations: nothing inside them to reach, so being the hit
+        // target would mean they are swallowing a pointer nobody aimed at them.
+        Component::Text
             | Component::Progress
             | Component::Spinner
             | Component::Skeleton
             | Component::LevelMeter
+            | Component::GpuTextureView
+            | Component::Thumbnail
+            | Component::Avatar
+            | Component::QrCode
+            | Component::TimeSeriesChart
+            | Component::KeyCaptureLayer
+            | Component::KeymapLayer
+    ) {
+        hit != Some(runtime.target)
+    } else if matches!(
+        fixture.component,
+        // Containers: chrome and surfaces that hold other things.
+        Component::Card
+            | Component::StatusBadge
+            | Component::ValidationMessage
+            | Component::EmptyState
+            | Component::LabeledValue
             | Component::FormField
             | Component::Workspace
             | Component::Dock
@@ -543,20 +569,20 @@ pub(super) fn write_evidence(
             | Component::SettingsSidebar
             | Component::SettingsPage
             | Component::AppTitleBar
-            | Component::GpuTextureView
-            | Component::Thumbnail
-            | Component::Avatar
-            // Passive like the rest of this list, and omitted from it only by
-            // oversight: a QR code and a time-series chart are pictures, and
-            // the two keyboard layers are invisible. All four report
-            // `hit=None`, so the `expects_hit` fallback below was demanding a
-            // hit target from components that correctly have none.
-            | Component::QrCode
-            | Component::TimeSeriesChart
-            | Component::KeyCaptureLayer
-            | Component::KeymapLayer
+            | Component::Tabs
+            | Component::Toast
+            | Component::SidebarFrame
+            | Component::SidebarFooter
+            | Component::SidebarSection
+            | Component::OverlayHost
     ) {
-        hit != Some(runtime.target)
+        hit.is_none_or(is_descendant)
+    } else if fixture.component == Component::Chip {
+        if expects_hit {
+            hit.is_some_and(is_descendant)
+        } else {
+            hit != Some(runtime.target)
+        }
     } else if expects_hit {
         hit == Some(runtime.target)
     } else {

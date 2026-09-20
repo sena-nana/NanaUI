@@ -20,12 +20,12 @@ state: hover
 state: pressed
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfe2e7ff border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfe2e7ff border=#4991d7ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: focused
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#4991d7ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: selected
   target: 20.00,20.00 380.00x28.00
@@ -35,12 +35,12 @@ state: selected
 state: selected-hover
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(true) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#e8e8e8ff border=#cbcfd5ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#e8e8e8ff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: selected-pressed
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(true) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfdfdfff border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfdfdfff border=#4991d7ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: disabled
   target: 20.00,20.00 380.00x28.00
@@ -70,10 +70,10 @@ state: auto-height
 state: pointer-activation
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#ebedf0ff border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#ebedf0ff border=#4991d7ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: keyboard-activation
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#4991d7ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

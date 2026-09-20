@@ -204,10 +204,17 @@ impl UiScene {
                         if matches!(node.standard_visual, Some(StandardVisual::Switch { .. })) {
                             (node.style.background, None, 0.0)
                         } else {
-                            let edges = style.paint_border_edges();
+                            // Resolve the colour first, then ask for the
+                            // widths *that colour* strokes. Asking in the other
+                            // order took the width from a CSS-only view that
+                            // cannot see a `SemanticColorRole`, so a component
+                            // that named its border got the colour and a width
+                            // of zero.
+                            let color = style.resolved_border_color().or(surface_border_color);
+                            let edges = style.paint_border_edges_with(color);
                             (
                                 node.style.background,
-                                style.resolved_border_color().or(surface_border_color),
+                                color,
                                 edges.top.max(edges.right).max(edges.bottom).max(edges.left),
                             )
                         }
