@@ -19,7 +19,7 @@ use std::sync::{Arc, OnceLock};
 use nana_ui_core::{
     BackgroundImage, BorderImageSpec, ClipPath, ColorFilter, ControlSize, DirSpec, DrawerSide,
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, Icon, LineBreakSpec, LineHeightSpec,
-    MixBlendMode, SwitchControlPosition, UI_METRICS, WordBreakSpec, WritingModeSpec,
+    MixBlendMode, SwitchControlPosition, WordBreakSpec, WritingModeSpec,
     icon_y_on_text_glyph_center,
 };
 use nana_ui_runtime::{
@@ -504,6 +504,12 @@ pub struct UiScene {
     /// list and diffing it, which is a range scan and an allocation per node.
     structure_changed: bool,
     compositor: CompositorRegistry,
+    /// Nodes that [`may_be_dest_group`] admits. Paint asks
+    /// [`UiScene::opacity_groups`] once per primitive, and even the memoized
+    /// walk behind it has to read a cold `ExtractedNode` and its style for the
+    /// queried node itself; a zero here proves no walk can find a group, so no
+    /// frame of a scene without isolation pays for it at all.
+    dest_group_candidates: usize,
     /// Identity that changes on node-changing mutation and on Clone.
     /// In-place [`UiScene::apply_delta`] that updates or removes nodes also
     /// gets a fresh value, because product flush mutates a unique `Arc` in
@@ -532,6 +538,7 @@ impl Default for UiScene {
             build: next_primitive_revision(),
             structure_changed: false,
             compositor: CompositorRegistry::default(),
+            dest_group_candidates: 0,
             instance: next_scene_instance(),
         }
     }
@@ -563,6 +570,7 @@ impl Clone for UiScene {
             build: self.build,
             structure_changed: self.structure_changed,
             compositor: self.compositor.clone(),
+            dest_group_candidates: self.dest_group_candidates,
             instance: next_scene_instance(),
         }
     }
@@ -640,6 +648,9 @@ impl UiScene {
     /// The stamp is the scene instance, which `apply_delta` moves whenever a
     /// node, a style or a parent changed — the only three things this reads.
     pub fn opacity_groups(&self, node: StableNodeId) -> Arc<[OpacityGroup]> {
+        if self.dest_group_candidates == 0 {
+            return empty_opacity_groups();
+        }
         let Some(candidate) = self.nodes.get(&node) else {
             return empty_opacity_groups();
         };
@@ -718,6 +729,7 @@ impl UiScene {
         let mut inherited_roots = HashSet::new();
         for id in removals {
             if let Some(old) = self.nodes.remove(&id) {
+                self.dest_group_candidates -= usize::from(may_be_dest_group(&old));
                 delta.removed.push(id);
                 self.projections.remove(&id);
                 self.unadjustable_projections.remove(&id);
@@ -757,7 +769,8 @@ impl UiScene {
                 // clip or transform changes. Refresh their inherited projection
                 // without rebuilding invertible retained geometry.
                 self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
-                inherited_geometry_changed = true;
+                inherited_geometry_changed |=
+                    previous.is_none_or(|old| inherited_transform_changed(old, &node));
                 inherited_roots.insert(node.id);
             }
             if previous.is_none() {
@@ -827,7 +840,11 @@ impl UiScene {
             // has and retires the ones it does not. Dropping them here would
             // only mean taking each one out of `ordered` and putting it back.
             self.retain_compositor_requests(&node);
-            self.nodes.insert(node.id, Arc::new(node));
+            let candidate = may_be_dest_group(&node);
+            let replaced = self.nodes.insert(node.id, Arc::new(node));
+            self.dest_group_candidates -=
+                usize::from(replaced.as_deref().is_some_and(may_be_dest_group));
+            self.dest_group_candidates += usize::from(candidate);
             updated_nodes += 1;
         }
         let order_rebuilt = (updated_nodes != 0 || removed_nodes != 0)
@@ -890,9 +907,13 @@ impl UiScene {
                     visibility.translate_subtree(root, offset);
                 }
                 if inherited_geometry_changed {
-                    // Every projected bound under these roots moved. Which
-                    // primitives are under them did not, and that is the half
-                    // rebuilding the index would pay for again.
+                    // An ancestor's projection moved, and its retained
+                    // descendants are not in `rebuild`, so their bounds have to
+                    // be re-derived — but only under the roots that moved, and
+                    // from the plan this index already holds rather than a new
+                    // one. Which primitives sit under those roots did not
+                    // change, and that is the half rebuilding would pay for
+                    // again.
                     for &root in &inherited_roots {
                         visibility.refresh_subtree(self, root);
                     }
@@ -902,6 +923,26 @@ impl UiScene {
             }
             self.instance = next_scene_instance();
         }
+        #[cfg(debug_assertions)]
+        self.audit_retained_projection();
+        // The counter is what lets `opacity_groups` answer without touching the
+        // node map, so a path that edits it without maintaining the counter
+        // would drop isolation groups from paint and show nothing else. There
+        // are two such paths today; this catches a third being added.
+        // Rescanning is linear in the scene, so it is bounded to the small
+        // trees unit tests build — a new mutation site will be reached by one
+        // of those long before it is reached by a scene big enough for the
+        // bound to matter.
+        debug_assert!(
+            self.nodes.len() > RETAINED_AUDIT_LIMIT
+                || self.dest_group_candidates
+                    == self
+                        .nodes
+                        .iter()
+                        .filter(|(_, node)| may_be_dest_group(node))
+                        .count(),
+            "dest_group_candidates drifted from the node map"
+        );
         delta.order_changed = order_rebuilt || stacking_changed;
         delta.stats = SceneDeltaStats {
             updated_nodes,
@@ -911,6 +952,78 @@ impl UiScene {
             primitive_count: self.primitives.len(),
         };
         delta
+    }
+
+    /// Assert that whatever [`Self::apply_delta`] chose to keep still equals
+    /// what recomputing it would produce.
+    ///
+    /// Retaining the paint order, the frame plan or the visibility index is a
+    /// judgement about which style changes can move them, and getting that
+    /// wrong paints the right pixels in the wrong order — the kind of bug no
+    /// still-frame snapshot catches, because the frame it is wrong on is the
+    /// one *after* a mutation. Running the check inside every delta makes the
+    /// whole existing suite a test of the invalidation rules, at O(scene) per
+    /// delta, which is why it is bounded to the trees unit tests build.
+    ///
+    /// An index the scroll fast path has shifted skips the visibility half:
+    /// it holds bounds moved by an offset instead of re-derived from layout,
+    /// and shifts it has not pushed down to its leaves yet, so it answers a
+    /// query the same as a fresh build without matching one bit for bit.
+    ///
+    /// That is a property of the index, and it lasts until something
+    /// re-derives the bounds — not of the delta that did the shifting, which
+    /// is why the index carries the flag. Order and plan are still checked.
+    #[cfg(debug_assertions)]
+    fn audit_retained_projection(&self) {
+        if self.nodes.len() > RETAINED_AUDIT_LIMIT {
+            return;
+        }
+        let mut stacks: HashMap<StableNodeId, GroupPrefix> = HashMap::new();
+        let fresh: BTreeSet<SceneOrderKey> = self
+            .primitives
+            .values()
+            .map(|held| {
+                let primitive = &held.primitive;
+                let stack = stacks.entry(primitive.node).or_insert_with(|| {
+                    let prefix: GroupPrefix =
+                        group_prefix(&self.nodes, &self.node_order, primitive.node).into();
+                    order_stack(&self.nodes, &prefix, primitive)
+                });
+                SceneOrderKey::at(Arc::clone(stack), primitive)
+            })
+            .collect();
+        assert!(
+            self.ordered == fresh,
+            "retained paint order disagrees with a fresh sort"
+        );
+        assert!(
+            self.primitives
+                .values()
+                .all(|held| self.ordered.contains(&held.key)),
+            "a retained primitive is filed under a key the order does not hold"
+        );
+        let Some(plan) = self.frame_plan.get() else {
+            return;
+        };
+        match self.build_frame_plan() {
+            Ok(fresh) => assert!(
+                plan.operations == fresh.operations
+                    && plan.preparations == fresh.preparations
+                    && plan.custom_nodes == fresh.custom_nodes,
+                "retained frame plan disagrees with a fresh build"
+            ),
+            // A plan that no longer compiles is reported by `frame_plan`, not here.
+            Err(_) => return,
+        }
+        if let Some(visibility) = self.visibility.get() {
+            if visibility.translated() {
+                return;
+            }
+            let fresh = VisibilityIndex::new(self, Arc::clone(plan));
+            if let Some(mismatch) = visibility.mismatch(&fresh) {
+                panic!("retained visibility index disagrees with a fresh build: {mismatch}");
+            }
+        }
     }
 
     /// What a frame plan reads out of a primitive beyond its identity.
@@ -1157,10 +1270,16 @@ impl UiScene {
                 continue;
             }
             let layout = ancestor.layout;
+            // `blocks_3d` is what the ancestors *above* this one closed, the
+            // same question asked of the queried node below — an ancestor's
+            // own `perspective` opens a context for its children, not against
+            // itself, so it folds in afterwards. Reading it keeps a refusal
+            // whole: a node whose `matrix3d` this rule takes away must not go
+            // on handing it down, or it paints flat with a rotated inside.
             let local = if visual {
-                self.resolved_local_transform(ancestor, false)
+                self.resolved_local_transform(ancestor, blocks_3d)
             } else {
-                node_scene_transform(ancestor.source_style.layout.as_ref(), layout, false)
+                node_scene_transform(ancestor.source_style.layout.as_ref(), layout, blocks_3d)
             };
             transform = transform.then(local);
             if ancestor.source_style.layout.fails_closed_3d_context() {
@@ -1469,6 +1588,32 @@ fn local_opacity(node: &ExtractedNode) -> f32 {
         .clamp(0.0, 1.0)
 }
 
+/// Whether re-extracting this node can move a *retained descendant's* projected
+/// transform, which is the only way one node's change reaches another node's
+/// visibility bound.
+///
+/// `project_ancestor_state` builds that transform from each ancestor's
+/// `position` (where the chain starts), its local scene transform, and whether
+/// it closes a 3D context — and nothing else. Everything else a style carries
+/// still bumps `attribute_epoch`, because the *clip* chain paint reads is wider
+/// than this; it just does not move a bound, so it must not cost a pass over
+/// every primitive in the scene. A fade is the case that matters: it rewrites
+/// one node's style every frame and moves nothing.
+fn inherited_transform_changed(old: &ExtractedNode, node: &ExtractedNode) -> bool {
+    if old.parent != node.parent
+        || old.layout != node.layout
+        || old.source_style.layout.position != node.source_style.layout.position
+        || old.source_style.layout.fails_closed_3d_context()
+            != node.source_style.layout.fails_closed_3d_context()
+    {
+        return true;
+    }
+    [false, true].into_iter().any(|blocks_3d| {
+        node_scene_transform(old.source_style.layout.as_ref(), old.layout, blocks_3d)
+            != node_scene_transform(node.source_style.layout.as_ref(), node.layout, blocks_3d)
+    })
+}
+
 fn is_workspace_resize_handle(node: &ExtractedNode) -> bool {
     matches!(
         node.kind.as_ref(),
@@ -1545,20 +1690,53 @@ struct PaintOrderFacts {
 }
 
 fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
-    let opacity = local_opacity(node);
     let paint = &node.source_style.layout.paint;
     PaintOrderFacts {
         z_index: node.z_index,
-        translucent: opacity > 0.0 && opacity < 1.0,
+        translucent: is_translucent(node),
         filter: paint.filter.filter(|filter| !filter.is_identity()),
         mix_blend: paint.mix_blend,
         stacking_context: node.source_style.layout.creates_paint_stacking_context(),
     }
 }
 
-fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+/// Scene size up to which `apply_delta` re-derives what it retained under
+/// `debug_assertions` — [`UiScene::dest_group_candidates`] and, in
+/// [`UiScene::audit_retained_projection`], the paint order, the frame plan and
+/// the visibility index. Unit-test scenes are a handful of nodes; product
+/// scenes are thousands, and auditing those on every delta would slow debug
+/// builds without testing anything the small scenes do not.
+const RETAINED_AUDIT_LIMIT: usize = 512;
+
+/// The only thing [`is_opacity_group`] — and so every descendant's paint-order
+/// key — asks of a node's opacity. Keep the readings together: a group test
+/// that started caring about the value itself would need `stacking_changed` and
+/// [`may_be_dest_group`] to care again too.
+fn is_translucent(node: &ExtractedNode) -> bool {
     let opacity = local_opacity(node);
-    let translucent = opacity > 0.0 && opacity < 1.0 && has_extracted_child(nodes, node);
+    opacity > 0.0 && opacity < 1.0
+}
+
+/// Node-local necessary condition for [`is_opacity_group`].
+///
+/// Every disjunct there needs one of these to hold, and none of them can be
+/// turned on by a *different* node, so a scene where no node passes this has no
+/// opacity group whatever its shape. [`UiScene::dest_group_candidates`] counts
+/// these as nodes are inserted and removed, which is why this must stay a
+/// superset: a term added to [`is_opacity_group`] needs its own term here.
+fn may_be_dest_group(node: &ExtractedNode) -> bool {
+    is_translucent(node)
+        || node
+            .source_style
+            .layout
+            .paint
+            .filter
+            .is_some_and(|filter| !filter.is_identity())
+        || !node.source_style.layout.paint.mix_blend.is_normal()
+}
+
+fn is_opacity_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+    let translucent = is_translucent(node) && has_extracted_child(nodes, node);
     translucent
         || dest_filter_applies(nodes, node)
         || !node.source_style.layout.paint.mix_blend.is_normal()

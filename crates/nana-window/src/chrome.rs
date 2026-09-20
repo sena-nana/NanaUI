@@ -3,13 +3,32 @@ use raw_window_handle::HasWindowHandle;
 /// Win32 `WS_CAPTION` (`WS_BORDER | WS_DLGFRAME`).
 #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
 const WS_CAPTION: isize = 0x00C0_0000;
+/// Win32 `WS_THICKFRAME`, spelled `WS_SIZEBOX` by winit.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const WS_THICKFRAME: isize = 0x0004_0000;
+/// Win32 `WS_SYSMENU`.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const WS_SYSMENU: isize = 0x0008_0000;
+
+/// Style bits a transparent client-chrome window must not carry.
+///
+/// DWM renders a caption and a drop shadow for any HWND it considers framed,
+/// underneath the client area. winit's undecorated window keeps every one of
+/// these bits and only extends the client over them through `WM_NCCALCSIZE`,
+/// so an opaque client hides that rendering and a transparent one shows it
+/// through. `WS_SYSMENU` is in the mask because it is what puts buttons in the
+/// caption DWM draws; it is the first bit to take back out if the taskbar's
+/// own minimize or Aero Peek turn out to need it.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const FRAMELESS_STYLES: isize = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU;
 
 /// Prepares native titlebar dragging and client-chrome window shape for a
 /// custom titlebar `titlebar_height` logical points tall.
 ///
-/// Opaque frameless windows pass `rounded_corners: true` so Windows 11 keeps a
-/// DWM round clip and shadow. Transparent overlays pass `false` so DWM does
-/// not stroke or round-clip the HWND rectangle.
+/// `rounded_corners` follows the surface actually in use, not how the window
+/// was created: an opaque client takes the Windows 11 round clip and the system
+/// stroke paired with it, a transparent one neither, so DWM leaves no outline
+/// around an HWND rectangle its surface no longer fills.
 pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
     window: &W,
     titlebar_height: f64,
@@ -24,24 +43,71 @@ pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
     prepared
 }
 
-/// Clears the Win32 caption frame so a transparent client-chrome window is not
-/// left with `WS_CAPTION`. Opaque frameless windows keep winit's caption bit
-/// and extend the client through `WM_NCCALCSIZE`. Other platforms no-op.
-pub fn suppress_system_caption<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+/// Sets the Win32 frame styles on a client-chrome window.
+///
+/// An opaque frameless window keeps them and extends the client through
+/// `WM_NCCALCSIZE`, so DWM still rounds it and hangs a shadow on it. A
+/// transparent one drops them: DWM must not render a frame an HWND's own
+/// surface would then show through. A window whose material flips at runtime
+/// needs both directions. Other platforms no-op.
+///
+/// `resizable` only reaches the restoring direction. winit derives
+/// `WS_THICKFRAME` from its own resizable flag, so handing it back to a window
+/// that never had it would grow a system resize border.
+pub fn set_frameless_styles<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    frameless: bool,
+    resizable: bool,
+) -> bool {
     #[cfg(target_os = "windows")]
     {
-        clear_caption_style(window)
+        set_frameless_style(window, frameless, resizable)
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = window;
+        let _ = (window, frameless, resizable);
+        true
+    }
+}
+
+/// Says what the frame styles should be without writing them.
+///
+/// Sends no window message, so a host still inside `can_create_surfaces` can
+/// call it: the strip lands on whatever winit writes next, and showing the
+/// window is itself such a write — `apply_diff` rewrites the whole style and
+/// sends its own `SetWindowPos(SWP_FRAMECHANGED)` straight after. So the window
+/// is never presented with a frame, without the host sending a frame change of
+/// its own from inside a surface callback. Other platforms no-op.
+pub fn arm_frameless_guard<W: HasWindowHandle + ?Sized>(window: &W, frameless: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let Some(hwnd) = chrome_hwnd(window) else {
+            return false;
+        };
+        install_style_guard(hwnd, frameless_mask(frameless))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, frameless);
         true
     }
 }
 
 #[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
-fn client_chrome_style_without_caption(current: isize) -> isize {
-    current & !WS_CAPTION
+const fn client_chrome_style(current: isize, frameless: bool, resizable: bool) -> isize {
+    if frameless {
+        current & !FRAMELESS_STYLES
+    } else if resizable {
+        current | FRAMELESS_STYLES
+    } else {
+        current | WS_CAPTION | WS_SYSMENU
+    }
+}
+
+/// The bits a `WM_STYLECHANGING` guard leaves out of the style being written.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const fn guarded_style(style_new: isize, mask: isize) -> isize {
+    style_new & !mask
 }
 
 /// Prepares native titlebar dragging for NanaUI's custom titlebar regions.
@@ -268,6 +334,132 @@ impl LiveFrameResize {
         unsafe {
             windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture();
         }
+    }
+}
+
+/// Captures a window origin so later pointer moves translate the frame
+/// without a nested OS move loop.
+///
+/// This is [`LiveFrameResize`]'s counterpart for position, and the reason it
+/// exists beside [`drag_custom_title_bar`]: that one hands the gesture to the
+/// platform, which only understands a held primary button. AppKit ignores a
+/// window drag whose current event is not a left press or drag, and Win32
+/// enters the caption move loop, which keeps following the cursor until a
+/// primary release arrives — a gesture held with any other button would
+/// either do nothing or never let go. Nothing here reads the platform's
+/// current event or fakes a caption press; it samples the cursor, so any
+/// button drives it and the host decides when it ends.
+///
+/// Mouse capture is the caller's: winit takes it on every button press and
+/// drops it on the matching release, so a gesture that leaves the window
+/// keeps reporting moves without this type touching capture at all.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[derive(Debug, Clone, Copy)]
+pub struct LiveFrameMove {
+    origin_x: f64,
+    origin_y: f64,
+    mouse_x: f64,
+    mouse_y: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl LiveFrameMove {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
+        let window = appkit_window(window)?;
+        let origin = window.frame().origin;
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        Some(Self {
+            origin_x: origin.x,
+            origin_y: origin.y,
+            mouse_x: mouse.x,
+            mouse_y: mouse.y,
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        // Screen points and the frame origin share their axes on AppKit, so
+        // the cursor delta is the origin delta.
+        let mouse = objc2_app_kit::NSEvent::mouseLocation();
+        self.set_origin(
+            window,
+            self.origin_x + (mouse.x - self.mouse_x),
+            self.origin_y + (mouse.y - self.mouse_y),
+        )
+    }
+
+    /// Puts the window back where the gesture started.
+    pub fn cancel<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        self.set_origin(window, self.origin_x, self.origin_y)
+    }
+
+    fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
+        let Some(window) = appkit_window(window) else {
+            return false;
+        };
+        window.setFrameOrigin(objc2_foundation::NSPoint::new(x, y));
+        true
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl LiveFrameMove {
+    pub fn begin<W: HasWindowHandle + ?Sized>(window: &W) -> Option<Self> {
+        let hwnd = win32_hwnd(window)?;
+        let mut rect = windows_sys::Win32::Foundation::RECT::default();
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        unsafe {
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut rect) == 0 {
+                return None;
+            }
+            if windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) == 0 {
+                return None;
+            }
+        }
+        Some(Self {
+            origin_x: f64::from(rect.left),
+            origin_y: f64::from(rect.top),
+            mouse_x: f64::from(mouse.x),
+            mouse_y: f64::from(mouse.y),
+        })
+    }
+
+    pub fn update<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        // Cursor and window rect are both screen pixels, so the cursor delta
+        // is the origin delta.
+        let mut mouse = windows_sys::Win32::Foundation::POINT::default();
+        if unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut mouse) } == 0 {
+            return false;
+        }
+        self.set_origin(
+            window,
+            self.origin_x + (f64::from(mouse.x) - self.mouse_x),
+            self.origin_y + (f64::from(mouse.y) - self.mouse_y),
+        )
+    }
+
+    /// Puts the window back where the gesture started.
+    pub fn cancel<W: HasWindowHandle + ?Sized>(&self, window: &W) -> bool {
+        self.set_origin(window, self.origin_x, self.origin_y)
+    }
+
+    fn set_origin<W: HasWindowHandle + ?Sized>(&self, window: &W, x: f64, y: f64) -> bool {
+        let Some(hwnd) = win32_hwnd(window) else {
+            return false;
+        };
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x as i32,
+                y as i32,
+                0,
+                0,
+                windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOSIZE
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOZORDER
+                    | windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
+            );
+        }
+        true
     }
 }
 
@@ -715,6 +907,8 @@ fn drag<W: HasWindowHandle + ?Sized>(_window: &W) -> bool {
 const DWMWA_BORDER_COLOR: u32 = 34;
 #[cfg(target_os = "windows")]
 const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+#[cfg(target_os = "windows")]
+const DWMWA_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
 
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 const fn dwm_corner_preference(rounded_corners: bool) -> i32 {
@@ -730,6 +924,28 @@ const fn dwm_corner_preference(rounded_corners: bool) -> i32 {
     #[cfg(not(target_os = "windows"))]
     {
         if rounded_corners { 1 } else { 0 }
+    }
+}
+
+/// Rounded windows take the system stroke Windows 11 pairs with the round
+/// clip; square ones take none, so DWM leaves the HWND rectangle unpainted.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const fn dwm_border_color(rounded_corners: bool) -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        if rounded_corners {
+            DWMWA_COLOR_DEFAULT
+        } else {
+            DWMWA_COLOR_NONE
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if rounded_corners {
+            0xFFFF_FFFF
+        } else {
+            0xFFFF_FFFE
+        }
     }
 }
 
@@ -757,10 +973,9 @@ fn apply_window_shape<W: HasWindowHandle + ?Sized>(window: &W, rounded_corners: 
             std::mem::size_of_val(&preference) as u32,
         )
     } >= 0;
-    if rounded_corners {
-        return corner_ok;
-    }
-    let color = DWMWA_COLOR_NONE;
+    // Both branches write the attribute: a window that flips material at
+    // runtime would otherwise keep whichever stroke it was last given.
+    let color = dwm_border_color(rounded_corners);
     let border_ok = unsafe {
         DwmSetWindowAttribute(
             hwnd,
@@ -772,25 +987,50 @@ fn apply_window_shape<W: HasWindowHandle + ?Sized>(window: &W, rounded_corners: 
     corner_ok && border_ok
 }
 
+/// Subclass identity for the `WM_STYLECHANGING` guard.
 #[cfg(target_os = "windows")]
-fn clear_caption_style<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
+const STYLE_GUARD_SUBCLASS_ID: usize = 0x4E_41_53_47;
+
+/// The bits the guard takes out of every style written to this window.
+#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+const fn frameless_mask(frameless: bool) -> isize {
+    if frameless { FRAMELESS_STYLES } else { 0 }
+}
+
+#[cfg(target_os = "windows")]
+fn chrome_hwnd<W: HasWindowHandle + ?Sized>(
+    window: &W,
+) -> Option<windows_sys::Win32::Foundation::HWND> {
     use raw_window_handle::RawWindowHandle;
     use windows_sys::Win32::Foundation::HWND;
+
+    let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    Some(handle.hwnd.get() as HWND)
+}
+
+#[cfg(target_os = "windows")]
+fn set_frameless_style<W: HasWindowHandle + ?Sized>(
+    window: &W,
+    frameless: bool,
+    resizable: bool,
+) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_STYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
         SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
     };
 
-    let Ok(handle) = window.window_handle() else {
+    let Some(hwnd) = chrome_hwnd(window) else {
         return false;
     };
-    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
-        return false;
-    };
-    let hwnd = handle.hwnd.get() as HWND;
+    // Arm the guard before writing the style, so the bits cannot return in the
+    // gap: winit rewrites the whole style from its own flags, and does it from
+    // inside its WndProc too, where no host call wraps it.
+    let guarded = install_style_guard(hwnd, frameless_mask(frameless));
     unsafe {
         let current = GetWindowLongPtrW(hwnd, GWL_STYLE);
-        let next = client_chrome_style_without_caption(current);
+        let next = client_chrome_style(current, frameless, resizable);
         if next != current {
             SetWindowLongPtrW(hwnd, GWL_STYLE, next);
             SetWindowPos(
@@ -804,20 +1044,69 @@ fn clear_caption_style<W: HasWindowHandle + ?Sized>(window: &W) -> bool {
             );
         }
     }
-    true
+    guarded
+}
+
+/// Masks `mask` out of every `GWL_STYLE` write this window receives.
+///
+/// winit derives the whole style from its own `WindowFlags` and writes it back
+/// on every change — including from its WndProc on `WM_DPICHANGED`, a path the
+/// host never sees. Re-applying the strip after each host call cannot cover
+/// that one, so the strip belongs on the message instead.
+#[cfg(target_os = "windows")]
+fn install_style_guard(hwnd: windows_sys::Win32::Foundation::HWND, mask: isize) -> bool {
+    use windows_sys::Win32::UI::Shell::SetWindowSubclass;
+
+    // `SetWindowSubclass` is idempotent for a given (window, proc, id) triple
+    // and replaces the reference data in place, so re-arming with a new mask
+    // swaps the mask rather than stacking a second subclass. `mask == 0` makes
+    // the callback a pass-through, which is what an opaque window wants; the
+    // subclass itself dies with the HWND.
+    // SAFETY: `hwnd` belongs to the live window this call was handed.
+    unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(style_guard_proc),
+            STYLE_GUARD_SUBCLASS_ID,
+            mask as usize,
+        ) != 0
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn style_guard_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    _id: usize,
+    mask: usize,
+) -> isize {
+    use windows_sys::Win32::UI::Shell::DefSubclassProc;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE, STYLESTRUCT, WM_STYLECHANGING};
+
+    if message == WM_STYLECHANGING && wparam == GWL_STYLE as usize && mask != 0 && lparam != 0 {
+        // SAFETY: `WM_STYLECHANGING` passes a `STYLESTRUCT` the handler is
+        // expected to edit in place, and the sender owns it for the call.
+        let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
+        style.styleNew = guarded_style(style.styleNew as isize, mask as isize) as u32;
+        return 0;
+    }
+    // SAFETY: forwarding the message this callback was given, unchanged.
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        FrameResizeEdge, WS_CAPTION, client_chrome_style_without_caption, dwm_corner_preference,
-        hit_test_for_edge, live_frame_after_delta,
+        FRAMELESS_STYLES, FrameResizeEdge, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
+        client_chrome_style, dwm_border_color, dwm_corner_preference, frameless_mask,
+        guarded_style, hit_test_for_edge, live_frame_after_delta,
     };
 
     const WS_BORDER: isize = 0x0080_0000;
     const WS_CLIPSIBLINGS: isize = 0x0400_0000;
-    const WS_SYSMENU: isize = 0x0008_0000;
-    const WS_THICKFRAME: isize = 0x0004_0000;
+    const WS_MINIMIZEBOX: isize = 0x0002_0000;
     const WS_VISIBLE: isize = 0x1000_0000;
 
     #[test]
@@ -835,16 +1124,60 @@ mod tests {
         }
     }
 
+    /// A window whose material flips at runtime asks for both, so neither
+    /// branch may leave the previous stroke in place.
     #[test]
-    fn client_chrome_style_clears_caption_and_keeps_frame_bits() {
-        let current = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_CLIPSIBLINGS | WS_VISIBLE;
-        let next = client_chrome_style_without_caption(current);
-        assert_eq!(next & WS_CAPTION, 0);
-        assert_eq!(next & WS_BORDER, 0);
-        assert_eq!(next & WS_THICKFRAME, WS_THICKFRAME);
-        assert_eq!(next & WS_SYSMENU, WS_SYSMENU);
-        assert_eq!(next & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
-        assert_eq!(next & WS_VISIBLE, WS_VISIBLE);
+    fn overlay_shape_drops_the_stroke_a_rounded_window_restores() {
+        assert_eq!(dwm_border_color(false), 0xFFFF_FFFE);
+        assert_eq!(dwm_border_color(true), 0xFFFF_FFFF);
+    }
+
+    /// DWM renders the caption buttons and the drop shadow for any HWND that
+    /// still looks framed, so a transparent client has to lose every frame bit
+    /// rather than just the caption.
+    #[test]
+    fn client_chrome_style_strips_every_frame_bit_and_keeps_the_rest() {
+        let current =
+            WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPSIBLINGS | WS_VISIBLE;
+        let frameless = client_chrome_style(current, true, true);
+        assert_eq!(frameless & FRAMELESS_STYLES, 0);
+        assert_eq!(frameless & WS_BORDER, 0);
+        assert_eq!(frameless & WS_MINIMIZEBOX, WS_MINIMIZEBOX);
+        assert_eq!(frameless & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
+        assert_eq!(frameless & WS_VISIBLE, WS_VISIBLE);
+        assert_eq!(client_chrome_style(frameless, false, true), current);
+    }
+
+    /// winit only sets `WS_THICKFRAME` for a resizable window, so restoring it
+    /// unconditionally would grow a system resize border the window never had.
+    #[test]
+    fn restoring_a_fixed_size_window_leaves_the_resize_border_off() {
+        let frameless = WS_MINIMIZEBOX | WS_CLIPSIBLINGS | WS_VISIBLE;
+        let restored = client_chrome_style(frameless, false, false);
+        assert_eq!(restored & WS_CAPTION, WS_CAPTION);
+        assert_eq!(restored & WS_SYSMENU, WS_SYSMENU);
+        assert_eq!(restored & WS_THICKFRAME, 0);
+    }
+
+    /// An opaque window arms the guard with an empty mask rather than removing
+    /// the subclass, so the mask has to be able to say "take nothing".
+    #[test]
+    fn the_mask_is_empty_for_a_window_that_keeps_its_frame() {
+        assert_eq!(frameless_mask(true), FRAMELESS_STYLES);
+        assert_eq!(frameless_mask(false), 0);
+    }
+
+    /// The guard runs on every `GWL_STYLE` write the window receives, winit's
+    /// included, so it must take out the frame bits and nothing else.
+    #[test]
+    fn style_guard_masks_the_frame_bits_and_passes_the_rest_through() {
+        let winit_style =
+            WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPSIBLINGS | WS_VISIBLE;
+        let guarded = guarded_style(winit_style, FRAMELESS_STYLES);
+        assert_eq!(guarded, WS_MINIMIZEBOX | WS_CLIPSIBLINGS | WS_VISIBLE);
+        // An opaque window arms the guard with an empty mask instead of
+        // removing the subclass, so that case has to stay a pass-through.
+        assert_eq!(guarded_style(winit_style, 0), winit_style);
     }
 
     #[test]

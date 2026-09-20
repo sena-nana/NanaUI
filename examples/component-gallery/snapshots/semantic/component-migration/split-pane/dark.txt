@@ -1,0 +1,8 @@
+component: split-pane
+mode: dark
+state: horizontal
+  target: 20.00,20.00 440.00x160.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 28.00,28.00 26.36x144.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #4/0 65.36,20.00 2.00x160.00 opacity=1.00 bg=#2a2a2aff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #3/2 78.36,28.00 45.10x144.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

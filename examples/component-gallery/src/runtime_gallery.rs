@@ -18,6 +18,7 @@ use nana_ui::runtime::{
     TerminalScreen, TerminalView, TextArea, TextChanged, TextInput, Thumbnail, Toast,
     ToggleChanged, TreeNode, TreeView, TreeViewEvent, ValidationMessage, View, XYPad, XYPadEvent,
 };
+use nana_ui::theme::type_scale;
 use nana_ui::{
     ButtonKind, CardKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
     RuntimeInputAdapter, StatusTone, ToastTone, ValidationIntent, WorkspaceAction, WorkspaceModel,
@@ -314,14 +315,14 @@ impl GalleryRuntime {
             let context_label = ui.parked(hugging_text(
                 section_label(state.section),
                 SemanticColorRole::Muted,
-                11.0,
-                400,
+                type_scale::HINT,
+                type_scale::REGULAR,
             ));
             let title_center = ui.detached(hugging_text(
                 "NanaUI Gallery",
                 SemanticColorRole::Text,
-                13.0,
-                600,
+                type_scale::BODY,
+                type_scale::SEMIBOLD,
             ));
             let title_trailing = ui.detached(HostStack::row(6.0));
             ui.nest(title_trailing, |ui| {
@@ -471,8 +472,8 @@ impl GalleryRuntime {
             *label = hugging_text(
                 section_label(state.section),
                 SemanticColorRole::Muted,
-                11.0,
-                400,
+                type_scale::HINT,
+                type_scale::REGULAR,
             );
         });
         for (index, row) in self.sidebar_rows.iter().copied().enumerate() {
@@ -500,10 +501,15 @@ impl GalleryRuntime {
                 Some(link) => styled_text(
                     format!("已选择链接：{link}"),
                     SemanticColorRole::Accent,
-                    11.0,
-                    400,
+                    type_scale::HINT,
+                    type_scale::REGULAR,
                 ),
-                None => styled_text("", SemanticColorRole::Muted, 11.0, 400),
+                None => styled_text(
+                    "",
+                    SemanticColorRole::Muted,
+                    type_scale::HINT,
+                    type_scale::REGULAR,
+                ),
             };
         });
         let _ = context.update_component(self.drop_hint, |label, _| {
@@ -522,8 +528,8 @@ impl GalleryRuntime {
             *label = hugging_text(
                 graph_selection_label(state),
                 SemanticColorRole::Muted,
-                11.0,
-                400,
+                type_scale::HINT,
+                type_scale::REGULAR,
             );
         });
         sync_workspace(context, &self.workspace, state);
@@ -1120,8 +1126,18 @@ impl DockWindowRuntime {
                     .find(|(panel, _, _)| *panel == id.as_ref())
                     .map(|(_, title, hint)| (*title, *hint))
                     .unwrap_or(("Panel", ""));
-                let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 12.0, 400));
-                let detail = ui.parked(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
+                let heading = ui.parked(styled_text(
+                    title,
+                    SemanticColorRole::Text,
+                    type_scale::META,
+                    type_scale::REGULAR,
+                ));
+                let detail = ui.parked(styled_text(
+                    hint,
+                    SemanticColorRole::Muted,
+                    type_scale::HINT,
+                    type_scale::REGULAR,
+                ));
                 let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
                 ui.nest(panel, |ui| {
                     ui.adopt(heading);
@@ -1428,8 +1444,8 @@ fn mount_controls(
         let xy_label = ui.parked(styled_text(
             format!("X {:.2} · Y {:.2}", state.xy_pad.x, state.xy_pad.y),
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
 
         let mut list_items = Vec::new();
@@ -1467,7 +1483,12 @@ fn mount_controls(
             list_trails.push(trailing);
         }
 
-        let buttons_title = ui.parked(styled_text("三档操作", SemanticColorRole::Muted, 12.0, 400));
+        let buttons_title = ui.parked(styled_text(
+            "三档操作",
+            SemanticColorRole::Muted,
+            type_scale::META,
+            type_scale::REGULAR,
+        ));
         let buttons = panel(ui, 6.0, Some(LengthSpec::Px(170.0)), 1.0);
         let button_row = ui.parked(HostStack::leading_row(6.0));
         ui.nest(button_row, |ui| {
@@ -1514,7 +1535,12 @@ fn mount_controls(
         });
 
         let toggles = panel(ui, 8.0, Some(LengthSpec::Px(170.0)), 1.0);
-        let toggle_title = ui.parked(styled_text("选择控件", SemanticColorRole::Muted, 12.0, 400));
+        let toggle_title = ui.parked(styled_text(
+            "选择控件",
+            SemanticColorRole::Muted,
+            type_scale::META,
+            type_scale::REGULAR,
+        ));
         let toggle_row =
             ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
         append_flex_child(ui, toggle_row, range);
@@ -1543,7 +1569,12 @@ fn mount_controls(
         });
 
         let xy = filling_panel(ui, 8.0);
-        let xy_title = ui.parked(styled_text("二维参数", SemanticColorRole::Muted, 12.0, 400));
+        let xy_title = ui.parked(styled_text(
+            "二维参数",
+            SemanticColorRole::Muted,
+            type_scale::META,
+            type_scale::REGULAR,
+        ));
         ui.nest(xy, |ui| {
             ui.adopt(xy_title);
             ui.adopt(xy_pad);
@@ -1551,7 +1582,12 @@ fn mount_controls(
         });
 
         let list_panel = filling_panel(ui, 8.0);
-        let list_title = ui.parked(styled_text("列表", SemanticColorRole::Muted, 12.0, 400));
+        let list_title = ui.parked(styled_text(
+            "列表",
+            SemanticColorRole::Muted,
+            type_scale::META,
+            type_scale::REGULAR,
+        ));
         let thumb_row = ui.parked(HostStack::leading_row(8.0));
         ui.nest(thumb_row, |ui| {
             for thumb in [
@@ -1742,7 +1778,12 @@ fn mount_surfaces(
             let mut card_view = Card::new().kind(kind).height(96.0).title(title);
             apply_equal_fill(std::sync::Arc::make_mut(&mut card_view.style.layout), 96.0);
             let card = ui.detached(card_view);
-            let hint = ui.parked(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            let hint = ui.parked(styled_text(
+                detail,
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            ));
             ui.nest(card, |ui| ui.adopt(hint));
             overview[index] = Some(card);
         }
@@ -1763,8 +1804,18 @@ fn mount_surfaces(
                         style
                     }),
             );
-            let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 13.0, 400));
-            let hint = ui.parked(styled_text(detail, SemanticColorRole::Muted, 11.0, 400));
+            let heading = ui.parked(styled_text(
+                title,
+                SemanticColorRole::Text,
+                type_scale::BODY,
+                type_scale::REGULAR,
+            ));
+            let hint = ui.parked(styled_text(
+                detail,
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            ));
             ui.nest(card, |ui| {
                 ui.adopt(heading);
                 ui.adopt(hint);
@@ -1806,32 +1857,32 @@ fn mount_surfaces(
                 "空窗格"
             },
             SemanticColorRole::Text,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_empty = ui.detached(hugging_text(
             "Item 已关闭",
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_editor = ui.detached(hugging_text(
             "编辑器内容",
             SemanticColorRole::Text,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_left = ui.detached(hugging_text(
             "左侧编辑器",
             SemanticColorRole::Text,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_right = ui.detached(hugging_text(
             "右侧编辑器",
             SemanticColorRole::Text,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_tree = ui.parked(PaneTree::new(pane_tree_node(
             state,
@@ -1889,14 +1940,24 @@ fn mount_surfaces(
             "当前卡片",
             format!("{}", state.selected_surface_card),
         ));
-        let heading = ui.parked(styled_text("表面层级", SemanticColorRole::Text, 14.0, 400));
+        let heading = ui.parked(styled_text(
+            "表面层级",
+            SemanticColorRole::Text,
+            type_scale::SECTION,
+            type_scale::REGULAR,
+        ));
         let hint = ui.parked(styled_text(
             "基础、抬升与选中状态",
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
-        let tab_label = ui.parked(hugging_text("表面状态", SemanticColorRole::Text, 12.0, 400));
+        let tab_label = ui.parked(hugging_text(
+            "表面状态",
+            SemanticColorRole::Text,
+            type_scale::META,
+            type_scale::REGULAR,
+        ));
         let tab_spacer = ui.parked(HostStack::spacer());
         let tab_bar =
             ui.parked(HostStack::fill_row(8.0).align(nana_ui::runtime::AlignSpec::Center));
@@ -1907,21 +1968,31 @@ fn mount_surfaces(
         });
         let tab_row = panel(ui, 8.0, None, 0.0);
         ui.nest(tab_row, |ui| ui.adopt(tab_bar));
-        let tree_heading = ui.parked(styled_text("层级树", SemanticColorRole::Text, 14.0, 400));
+        let tree_heading = ui.parked(styled_text(
+            "层级树",
+            SemanticColorRole::Text,
+            type_scale::SECTION,
+            type_scale::REGULAR,
+        ));
         let tree_hint = ui.parked(styled_text(
             "稳定节点 ID 驱动展开与选择",
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let tree_panel = panel(ui, 8.0, None, 0.0);
         ui.nest(tree_panel, |ui| ui.adopt(tree));
-        let pane_heading = ui.parked(styled_text("Pane 组合", SemanticColorRole::Text, 14.0, 400));
+        let pane_heading = ui.parked(styled_text(
+            "Pane 组合",
+            SemanticColorRole::Text,
+            type_scale::SECTION,
+            type_scale::REGULAR,
+        ));
         let pane_hint = ui.parked(styled_text(
             "动作只在具备真实 handler 时出现",
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let pane_panel = panel(ui, 0.0, Some(LengthSpec::Px(140.0)), 0.0);
         ui.nest(pane_panel, |ui| ui.adopt(pane));
@@ -2077,7 +2148,12 @@ fn mount_feedback(
             10.0,
             400,
         ));
-        let heading = ui.parked(styled_text("反馈", SemanticColorRole::Text, 14.0, 400));
+        let heading = ui.parked(styled_text(
+            "反馈",
+            SemanticColorRole::Text,
+            type_scale::SECTION,
+            type_scale::REGULAR,
+        ));
         let progress_label = ui.parked(styled_text(
             if state.loading {
                 "处理中"
@@ -2191,8 +2267,8 @@ fn mount_rich_text(
                     .as_ref()
                     .map_or(String::new(), |link| format!("已选择链接：{link}")),
                 SemanticColorRole::Accent,
-                11.0,
-                400,
+                type_scale::HINT,
+                type_scale::REGULAR,
             ));
             let editor_title = ui.parked(styled_text(
                 "代码编辑器",
@@ -2272,7 +2348,12 @@ fn mount_rich_text(
 
 fn gallery_drop_hint(state: &GalleryState) -> nana_ui::runtime::Text {
     if state.dropped_paths.is_empty() {
-        return styled_text("把文件拖到这里", SemanticColorRole::Muted, 12.0, 400);
+        return styled_text(
+            "把文件拖到这里",
+            SemanticColorRole::Muted,
+            type_scale::META,
+            type_scale::REGULAR,
+        );
     }
     let names = state
         .dropped_paths
@@ -2318,12 +2399,17 @@ fn mount_graph(
     pending: &Arc<Mutex<Vec<GalleryMessage>>>,
 ) -> Result<GraphMount, FrameworkError> {
     context.build_detached(document_id, |ui| {
-        let title = ui.parked(hugging_text("节点图", SemanticColorRole::Text, 14.0, 400));
+        let title = ui.parked(hugging_text(
+            "节点图",
+            SemanticColorRole::Text,
+            type_scale::SECTION,
+            type_scale::REGULAR,
+        ));
         let selection = ui.parked(hugging_text(
             graph_selection_label(state),
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let reset = ui.parked(
             Button::new("重置视图")
@@ -2399,8 +2485,18 @@ fn mount_workspace(
     let mut contents = std::collections::HashMap::new();
     let tree = context.build_detached(document_id, |ui| {
         for (id, title, hint) in DOCK_PANELS {
-            let heading = ui.parked(styled_text(title, SemanticColorRole::Text, 12.0, 400));
-            let detail = ui.parked(styled_text(hint, SemanticColorRole::Muted, 10.0, 400));
+            let heading = ui.parked(styled_text(
+                title,
+                SemanticColorRole::Text,
+                type_scale::META,
+                type_scale::REGULAR,
+            ));
+            let detail = ui.parked(styled_text(
+                hint,
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            ));
             let panel = ui.detached(HostStack::fill_column(5.0).padding(10.0));
             ui.nest(panel, |ui| {
                 ui.adopt(heading);
@@ -2452,8 +2548,8 @@ fn mount_workspace(
         let popup_hint = ui.parked(styled_text(
             "快速创建并管理项目",
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         ));
         let popup_body = ui.parked(HostStack::column(4.0).padding(12.0).grow(0.0).shrink(0.0));
         ui.nest(popup_body, |ui| {
@@ -2742,8 +2838,8 @@ fn sync_controls(
         *label = styled_text(
             format!("X {:.2} · Y {:.2}", state.xy_pad.x, state.xy_pad.y),
             SemanticColorRole::Muted,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         );
     });
     for (index, item) in tree.list_items.iter().copied().enumerate() {
@@ -2807,8 +2903,8 @@ fn sync_surfaces(
                 "空窗格"
             },
             SemanticColorRole::Text,
-            11.0,
-            400,
+            type_scale::HINT,
+            type_scale::REGULAR,
         );
     });
     let _ = context.update_component(tree.pane_tree, |pane, _| {
@@ -2897,7 +2993,12 @@ fn sync_feedback(
         );
     });
     let _ = context.update_component(tree.action_status, |label, _| {
-        *label = styled_text(action_status(state), SemanticColorRole::Muted, 10.0, 400);
+        *label = styled_text(
+            action_status(state),
+            SemanticColorRole::Muted,
+            type_scale::HINT,
+            type_scale::REGULAR,
+        );
     });
 }
 
@@ -2987,7 +3088,12 @@ fn fill_range_field(mut field: nana_ui::runtime::RangeField) -> nana_ui::runtime
 }
 
 fn workspace_status_text(value: impl Into<String>) -> nana_ui::runtime::Text {
-    let mut text = hugging_text(value, SemanticColorRole::Muted, 12.0, 400);
+    let mut text = hugging_text(
+        value,
+        SemanticColorRole::Muted,
+        type_scale::META,
+        type_scale::REGULAR,
+    );
     let layout = std::sync::Arc::make_mut(&mut text.style.layout);
     layout.white_space_nowrap = true;
     layout.flex_grow = Some(1.0);
@@ -3067,7 +3173,7 @@ fn list_trailing_text(disabled: bool) -> nana_ui::runtime::Text {
     list_slot_text(
         if disabled { "不可用" } else { "" },
         SemanticColorRole::Muted,
-        11.0,
+        type_scale::HINT,
         400,
         false,
     )
@@ -3235,7 +3341,7 @@ fn editor_status_text(state: &GalleryState) -> nana_ui::runtime::Text {
     } else {
         ("说明已锁定", SemanticColorRole::Muted)
     };
-    styled_text(copy, color, 12.0, 400)
+    styled_text(copy, color, type_scale::META, type_scale::REGULAR)
 }
 
 fn gallery_tree(state: &GalleryState) -> TreeView {

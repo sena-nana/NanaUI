@@ -1,0 +1,9 @@
+component: sidebar-footer
+mode: light
+state: actions
+  target: 20.00,20.00 200.00x28.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("settings") color=#1a1a1fff
+  quad #3/0 50.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #3/3 58.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("search") color=#5a616eff

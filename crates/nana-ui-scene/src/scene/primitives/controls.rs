@@ -31,7 +31,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         background: Some(color),
                         border_color: None,
                         border_width: 0.0,
-                        corner_radius: corner_radii(UI_METRICS.radius_sm),
+                        corner_radius: corner_radii(node.chrome_radii.sm),
                     },
                 ));
             }

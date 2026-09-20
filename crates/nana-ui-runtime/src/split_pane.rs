@@ -13,8 +13,11 @@ use crate::{
     TextContent, UiWorld,
 };
 
-pub(crate) const HANDLE_SIZE: f32 = 8.0;
-pub(crate) const INDICATOR_SIZE: f32 = 2.0;
+pub(crate) const HANDLE_SIZE: f32 = nana_ui_core::space::MD;
+pub(crate) const INDICATOR_SIZE: f32 = nana_ui_core::space::XXS;
+pub(crate) const DEFAULT_SIZE: f32 = 240.0;
+pub(crate) const DEFAULT_MIN: f32 = 120.0;
+pub(crate) const DEFAULT_MAX: f32 = 800.0;
 
 /// Two children and an 8px resize handle. Size comes from [`SplitPaneModel`].
 ///
@@ -414,7 +417,7 @@ impl AppContext {
         x: f32,
         y: f32,
     ) -> Option<StableNodeId> {
-        const SLOP: f32 = 6.0;
+        const SLOP: f32 = nana_ui_core::space::SM;
         if let Some(target) = self.pointer_target(document, x, y) {
             if self.is_split_handle(target) {
                 return Some(target);

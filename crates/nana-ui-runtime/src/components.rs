@@ -548,7 +548,7 @@ pub const TEXT_COMPLETION_VISIBLE_ROWS: usize = 8;
 
 /// 补全弹层面板的水平内边距与内容宽度上限（"宽度自适应最长行"的
 /// 上限；超出后先压缩 detail 区域，label/kind 保持完整）。
-pub const TEXT_COMPLETION_PANEL_PAD: f32 = 8.0;
+pub const TEXT_COMPLETION_PANEL_PAD: f32 = nana_ui_core::space::MD;
 pub const TEXT_COMPLETION_MAX_CONTENT_WIDTH: f32 = 344.0;
 
 /// 补全会话的只读快照（宿主查询入口；会话不存在时无值）。
@@ -1574,6 +1574,39 @@ pub struct NodeStyle {
     pub foreground: Option<SemanticColorRole>,
     pub background: Option<SemanticColorRole>,
     pub border: Option<SemanticColorRole>,
+    /// Radius step, resolved against the installed [`nana_ui_core::ThemeMetrics`].
+    ///
+    /// Same shape as [`Self::background`] one field up: the component names
+    /// the design step and the theme decides the number. Writing
+    /// `layout.border_radius = Some(UI_METRICS.radius_sm)` instead spends the
+    /// token at construction time, and no theme installed afterwards can move
+    /// it — which is why the Appearance radius setting could not reach a
+    /// control. When this is set it wins over `layout.border_radius`.
+    pub radius: Option<nana_ui_core::RadiusTier>,
+    /// Control-size step for this node's own box, resolved against the
+    /// installed [`nana_ui_core::ThemeMetrics`]. Sibling of [`Self::radius`].
+    ///
+    /// `ControlSize::height()` resolves against the compile-time constant, so
+    /// a control that called it had already fixed its height before any theme
+    /// was installed. Naming the step here keeps the decision open.
+    pub control_height: Option<nana_ui_core::ControlHeight>,
+    /// Control-size step for this node's horizontal inset, resolved against
+    /// the installed [`nana_ui_core::ThemeMetrics`]. Sibling of
+    /// [`Self::control_height`] on the other axis, and separate from it
+    /// because a node picks the two independently. When set it writes both
+    /// `layout.padding_left` and `layout.padding_right`.
+    pub control_padding_x: Option<nana_ui_core::ControlPadding>,
+    /// Vertical counterpart of [`Self::control_padding_x`]. A multiline field
+    /// names `Field` here so the same token can inset the block axis without
+    /// also changing a single-line field's line box.
+    pub control_padding_y: Option<nana_ui_core::ControlPadding>,
+    /// Panel / card inset. Fills unset padding edges from
+    /// [`nana_ui_core::ThemeMetrics::panel_padding_x`] / `panel_padding_y`.
+    pub surface_padding: Option<nana_ui_core::SurfacePadding>,
+    /// Square min box (`min_width` and `min_height`), resolved against the
+    /// installed metrics. Icon buttons name [`nana_ui_core::SquareSize::IconButton`]
+    /// so a density setting can move them.
+    pub square: Option<nana_ui_core::SquareSize>,
     pub interaction: InteractionStyle,
     pub text_horizontal_alignment: TextHorizontalAlignment,
     pub text_vertical_alignment: TextVerticalAlignment,
@@ -1592,10 +1625,52 @@ impl NodeStyle {
             foreground: None,
             background: None,
             border: None,
+            radius: None,
+            control_height: None,
+            control_padding_x: None,
+            control_padding_y: None,
+            surface_padding: None,
+            square: None,
             interaction: InteractionStyle::default(),
             text_horizontal_alignment: TextHorizontalAlignment::Start,
             text_vertical_alignment: TextVerticalAlignment::Top,
         }
+    }
+
+    /// Name the radius step instead of spending it. See [`Self::radius`].
+    pub fn radius(mut self, tier: nana_ui_core::RadiusTier) -> Self {
+        self.radius = Some(tier);
+        self
+    }
+
+    /// Name the control-height step. See [`Self::control_height`].
+    pub fn control_height(mut self, height: nana_ui_core::ControlHeight) -> Self {
+        self.control_height = Some(height);
+        self
+    }
+
+    /// Name the horizontal-inset step. See [`Self::control_padding_x`].
+    pub fn control_padding_x(mut self, padding: nana_ui_core::ControlPadding) -> Self {
+        self.control_padding_x = Some(padding);
+        self
+    }
+
+    /// Name the vertical-inset step. See [`Self::control_padding_y`].
+    pub fn control_padding_y(mut self, padding: nana_ui_core::ControlPadding) -> Self {
+        self.control_padding_y = Some(padding);
+        self
+    }
+
+    /// Name the panel inset. See [`Self::surface_padding`].
+    pub fn surface_padding(mut self, padding: nana_ui_core::SurfacePadding) -> Self {
+        self.surface_padding = Some(padding);
+        self
+    }
+
+    /// Name the square min box. See [`Self::square`].
+    pub fn square(mut self, size: nana_ui_core::SquareSize) -> Self {
+        self.square = Some(size);
+        self
     }
 
     /// Resolve a background mix from the current theme, before interaction overrides.
@@ -1631,8 +1706,10 @@ impl NodeStyle {
         self
     }
 
-    /// 设置圆角半径（物理 px）。
-    pub fn radius(mut self, radius: f32) -> Self {
+    /// 设置圆角半径（物理 px）——一次性的显式覆盖，**不**跟随主题。
+    ///
+    /// 想跟随主题请用 [`Self::radius`] 说出档位。
+    pub fn radius_px(mut self, radius: f32) -> Self {
         Arc::make_mut(&mut self.layout).border_radius = Some(radius.max(0.0));
         self
     }
@@ -2246,7 +2323,7 @@ pub struct TextStickyLineGeometry {
 }
 
 /// minimap 行条的每行纵向节距（2px 一行，条与条相接）。
-pub(crate) const TEXT_MINIMAP_BAR_PITCH: f32 = 2.0;
+pub(crate) const TEXT_MINIMAP_BAR_PITCH: f32 = nana_ui_core::space::XXS;
 /// minimap 竖条宽度（内容区右缘覆盖条）。
 pub(crate) const TEXT_MINIMAP_STRIP_WIDTH: f32 = 64.0;
 
@@ -3241,6 +3318,15 @@ pub struct ExtractedNode {
     /// dominate `ExtractedNode` and be memcpy'd for every extracted node.
     pub component_geometry: Option<Box<ComponentGeometry>>,
     pub standard_visual_foreground: Option<[f32; 4]>,
+    /// Radius steps resolved against the installed theme, for the framework
+    /// chrome the Scene paints around this node's visual.
+    ///
+    /// Sibling of [`Self::standard_visual_foreground`] one field up, for the
+    /// same reason: a value the theme decided, carried to the renderer so the
+    /// renderer does not go looking for it. Before this the Scene read the
+    /// `UI_METRICS` constant and a themed radius could not reach menu
+    /// surfaces, modal frames or palette rows.
+    pub chrome_radii: nana_ui_core::ChromeRadii,
     pub custom_render: Option<CustomRenderNode>,
     /// File-drop hover overlay resolved from the theme. Scene paints this as a
     /// fill + border on the target box; it is not the node's own background.

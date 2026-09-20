@@ -1,0 +1,32 @@
+component: empty-state
+mode: dark
+state: complete-action
+  target: 20.00,20.00 380.00x154.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #4/2 162.91,72.00 94.19x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #4/3 199.00,44.00 22.00x22.00 opacity=1.00 icon=Icon("folder") color=#5a5a5aff
+  text #4/4 98.33,93.60 223.34x14.40 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 155.46,118.00 109.07x32.00 opacity=1.00 bg=#7bb9f024 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 166.46,119.00 87.07x30.00 opacity=1.00 color=#7bb9f0ff size=13.00 weight=500 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: compact
+  target: 20.00,20.00 380.00x69.60
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 26.00,52.00 105.78x14.40 opacity=1.00 color=#a3a3a3ff size=12.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #2/3 26.00,28.00 22.00x22.00 opacity=1.00 icon=Icon("folder") color=#5a5a5aff
+  text #2/4 26.00,68.40 143.19x13.20 opacity=1.00 color=#a3a3a3ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: title-only
+  target: 20.00,20.00 380.00x63.60
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 157.01,44.00 105.99x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: narrow-cjk
+  target: 20.00,20.00 180.00x140.80
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 54.11,72.00 111.79x15.60 opacity=1.00 color=#ddddddff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #2/3 99.00,44.00 22.00x22.00 opacity=1.00 icon=Icon("folder") color=#5a5a5aff
+  text #2/4 38.00,93.60 144.00x43.20 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: extreme-clip
+  target: 20.00,20.00 52.00x100.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  text #2/2 37.08,72.00 17.85x124.80 opacity=1.00 color=#ddddddff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  icon #2/3 36.00,44.00 20.00x22.00 opacity=1.00 icon=Icon("folder") color=#5a5a5aff
+  text #2/4 36.00,202.80 20.00x374.40 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

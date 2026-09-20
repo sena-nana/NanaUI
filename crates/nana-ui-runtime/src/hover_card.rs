@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     ContentFit, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    SemanticColorRole, UI_METRICS,
+    SemanticColorRole,
 };
 
 use crate::gpu_slots::{HOST_TEXTURE_RENDERER, pack_gpu_revision};
@@ -23,8 +23,8 @@ use crate::{
     TriggeredMenuOverlay, UiWorld,
 };
 
-const HOVER_CARD_WIDTH: f32 = 240.0;
-const HOVER_CARD_GAP: f32 = 6.0;
+pub(crate) const HOVER_CARD_WIDTH: f32 = crate::popover::POPOVER_WIDTH;
+const HOVER_CARD_GAP: f32 = nana_ui_core::space::SM;
 /// Grace period after the pointer leaves both trigger and card.
 pub const DEFAULT_CLOSE_DELAY_MS: u64 = 120;
 
@@ -206,7 +206,7 @@ impl HoverCard {
         style.interaction.pressed.foreground = Some(SemanticColorRole::Text);
         let layout = Arc::make_mut(&mut style.layout);
         apply_trigger_size(layout, size);
-        layout.border_radius = Some(UI_METRICS.radius_sm);
+        style.radius = Some(nana_ui_core::RadiusTier::Sm);
         style
     }
 

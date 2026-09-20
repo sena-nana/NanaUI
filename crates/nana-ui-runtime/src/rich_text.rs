@@ -36,11 +36,11 @@ use crate::{
 
 /// Unit advance used for backend-neutral hit testing. Scene paint owns real
 /// glyph metrics.
-pub const GRAPHEME_ADVANCE: f32 = 8.0;
-pub const LINE_HEIGHT: f32 = 16.0;
-const BLOCK_GAP: f32 = 9.0;
-const LIST_INDENT: f32 = 14.0;
-const QUOTE_INDENT: f32 = 12.0;
+pub const GRAPHEME_ADVANCE: f32 = nana_ui_core::space::MD;
+pub const LINE_HEIGHT: f32 = nana_ui_core::type_scale::LINE;
+pub const BLOCK_GAP: f32 = 9.0;
+const LIST_INDENT: f32 = nana_ui_core::space::XXL;
+const QUOTE_INDENT: f32 = nana_ui_core::space::XL;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MarkdownSpan {

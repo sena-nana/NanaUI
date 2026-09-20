@@ -17,12 +17,15 @@ use crate::{
     TextInputState, UiWorld,
 };
 
-const ROW_HEIGHT: f32 = 40.0;
 const MAX_VISIBLE_ROWS: usize = 12;
-const INPUT_GAP: f32 = 8.0;
-const ROW_PAD_X: f32 = 10.0;
-const SHORTCUT_TEXT_SIZE: f32 = 10.0;
-const SHORTCUT_LABEL_GAP: f32 = 8.0;
+const INPUT_GAP: f32 = nana_ui_core::space::MD;
+const ROW_PAD_X: f32 = nana_ui_core::space::LG;
+const SHORTCUT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
+const SHORTCUT_LABEL_GAP: f32 = nana_ui_core::space::MD;
+
+fn palette_row_height(metrics: nana_ui_core::ThemeMetrics) -> f32 {
+    ControlSize::Large.height_in(metrics) + nana_ui_core::space::XS
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaletteRowData {
@@ -265,33 +268,39 @@ pub(crate) fn command_palette_geometry(
     empty: Option<&Arc<str>>,
     rows: &[PaletteRowData],
     palette: &nana_ui_core::SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
 ) -> crate::ComponentGeometry {
-    let input_height = ControlSize::Medium.height();
+    let input_height = ControlSize::Medium.height_in(metrics);
+    let row_height = palette_row_height(metrics);
     let list_height = if rows.is_empty() {
-        ROW_HEIGHT
+        row_height
     } else {
-        rows.len() as f32 * ROW_HEIGHT
+        rows.len() as f32 * row_height
     };
-    let intrinsic = 48.0 + input_height + INPUT_GAP + list_height + 16.0;
+    let intrinsic = nana_ui_core::space::PAGE * 2.0
+        + input_height
+        + INPUT_GAP
+        + list_height
+        + nana_ui_core::space::XXXL;
     let surface = modal_surface_bounds(
         bounds,
         crate::ModalSurfaceKind::Dialog(DialogSize::Wide),
         Some(intrinsic),
     );
-    let mut y = surface.y + 16.0;
+    let mut y = surface.y + nana_ui_core::space::XXXL;
     let title_region = ComponentTextRegion {
         bounds: LayoutBox {
             x: surface.x + MODAL_PAD_X,
             y,
             width: (surface.width - MODAL_PAD_X * 2.0).max(0.0),
-            height: 22.0,
+            height: nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS,
         },
         content: Arc::clone(title),
         color: Some(palette.text.as_rgba_array()),
-        font_size: 16.0,
-        font_weight: Some(600),
+        font_size: nana_ui_core::type_scale::HEADING,
+        font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
     };
-    y += 28.0;
+    y += ControlSize::Small.height_in(metrics);
     let input = ComponentTextRegion {
         bounds: LayoutBox {
             x: surface.x + MODAL_PAD_X,
@@ -318,11 +327,11 @@ pub(crate) fn command_palette_geometry(
             x: surface.x + MODAL_PAD_X,
             y,
             width: (surface.width - MODAL_PAD_X * 2.0).max(0.0),
-            height: ROW_HEIGHT,
+            height: row_height,
         },
         content: Arc::clone(label),
         color: Some(palette.muted.as_rgba_array()),
-        font_size: 12.0,
+        font_size: nana_ui_core::type_scale::META,
         font_weight: None,
     });
     let rows = rows
@@ -330,19 +339,19 @@ pub(crate) fn command_palette_geometry(
         .enumerate()
         .map(|(index, row)| {
             let bounds = LayoutBox {
-                x: surface.x + 8.0,
-                y: y + index as f32 * ROW_HEIGHT,
-                width: (surface.width - 16.0).max(0.0),
-                height: ROW_HEIGHT,
+                x: surface.x + nana_ui_core::space::MD,
+                y: y + index as f32 * row_height,
+                width: (surface.width - nana_ui_core::space::XXXL).max(0.0),
+                height: row_height,
             };
             let shortcut = row.shortcut.as_ref().map(|shortcut| {
                 let shortcut_width = estimated_text_width(shortcut, SHORTCUT_TEXT_SIZE);
                 ComponentTextRegion {
                     bounds: LayoutBox {
                         x: bounds.x + bounds.width - ROW_PAD_X - shortcut_width,
-                        y: bounds.y + 12.0,
+                        y: bounds.y + nana_ui_core::space::XL,
                         width: shortcut_width,
-                        height: 16.0,
+                        height: nana_ui_core::type_scale::LINE,
                     },
                     content: Arc::clone(shortcut),
                     color: Some(palette.muted.as_rgba_array()),
@@ -359,25 +368,25 @@ pub(crate) fn command_palette_geometry(
             let label = ComponentTextRegion {
                 bounds: LayoutBox {
                     x: bounds.x + ROW_PAD_X,
-                    y: bounds.y + 6.0,
+                    y: bounds.y + nana_ui_core::space::SM,
                     width: (label_right - bounds.x - ROW_PAD_X).max(0.0),
-                    height: 16.0,
+                    height: nana_ui_core::type_scale::LINE,
                 },
                 content: Arc::clone(&row.label),
                 color: Some(palette.text.as_rgba_array()),
-                font_size: 12.0,
-                font_weight: Some(500),
+                font_size: nana_ui_core::type_scale::META,
+                font_weight: Some(nana_ui_core::type_scale::MEDIUM),
             };
             let category = row.category.as_ref().map(|category| ComponentTextRegion {
                 bounds: LayoutBox {
                     x: bounds.x + ROW_PAD_X,
-                    y: bounds.y + 22.0,
+                    y: bounds.y + nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS,
                     width: (bounds.width - ROW_PAD_X * 2.0).max(0.0),
-                    height: 12.0,
+                    height: nana_ui_core::type_scale::META,
                 },
                 content: Arc::clone(category),
                 color: Some(palette.muted.as_rgba_array()),
-                font_size: 10.0,
+                font_size: SHORTCUT_TEXT_SIZE,
                 font_weight: None,
             });
             PaletteRowGeometry {
@@ -404,8 +413,8 @@ pub(crate) fn command_palette_geometry(
         elevation: ComponentElevation {
             color: [0.0, 0.0, 0.0, 0.4],
             offset_x: 0.0,
-            offset_y: 12.0,
-            blur_radius: 24.0,
+            offset_y: nana_ui_core::space::XL,
+            blur_radius: nana_ui_core::space::PAGE,
             spread_radius: 0.0,
             inset: false,
         },
@@ -554,6 +563,7 @@ mod tests {
             None,
             &rows,
             &nana_ui_core::SemanticPalette::dark(),
+            nana_ui_core::UI_METRICS,
         );
         let crate::ComponentGeometry::CommandPalette { rows, .. } = geometry else {
             panic!("command palette geometry");

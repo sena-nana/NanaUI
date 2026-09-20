@@ -1,0 +1,10 @@
+component: donut-chart
+mode: dark
+state: slices
+  target: 20.00,20.00 66.00x66.00
+  a11y: role=Image disabled=false checked=None selected=None mixed=false
+  quad #2/171798691840 20.00,20.00 66.00x66.00 opacity=1.00 bg=none border=#7bb9f0ff border_width=12.54 radius=33.00/33.00/33.00/33.00 shadow=none
+  quad #2/171798691841 20.00,20.00 66.00x66.00 opacity=1.00 bg=none border=#7bb9f0ff border_width=12.54 radius=33.00/33.00/33.00/33.00 shadow=none
+  quad #2/171798691842 20.00,20.00 66.00x66.00 opacity=1.00 bg=none border=#3fb950ff border_width=12.54 radius=33.00/33.00/33.00/33.00 shadow=none
+  quad #2/171798691843 20.00,20.00 66.00x66.00 opacity=1.00 bg=none border=#3fb950ff border_width=12.54 radius=33.00/33.00/33.00/33.00 shadow=none
+  quad #2/171798691844 20.00,20.00 66.00x66.00 opacity=1.00 bg=none border=#d4a85bff border_width=12.54 radius=33.00/33.00/33.00/33.00 shadow=none

@@ -23,6 +23,7 @@ use crate::{
 
 /// 单个文件 tab 的最大宽度:名字超出即省略号截断。
 pub const FILE_TAB_MAX_WIDTH: f32 = 180.0;
+pub const FILE_TAB_DOT_SIZE: f32 = nana_ui_core::space::MD;
 
 /// Host-facing events for one file tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,7 +229,7 @@ fn unsaved_dot() -> Text {
     let mut text = Text::new("●");
     text.style.foreground = Some(SemanticColorRole::Muted);
     let layout = Arc::make_mut(&mut text.style.layout);
-    layout.font_size = Some(8.0);
+    layout.font_size = Some(FILE_TAB_DOT_SIZE);
     text
 }
 

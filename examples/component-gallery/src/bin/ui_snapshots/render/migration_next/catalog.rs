@@ -1174,6 +1174,153 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "titled",
         "title bar is 36px with a centered title",
     ),
+    // Issue #101 §3: states the component's own code declares an
+    // `InteractionStyle` paint for, and that no fixture captured.
+    f(
+        Component::Checkbox,
+        "selected-hover",
+        "checked box under the pointer uses the selected-hover overlay",
+    ),
+    f(
+        Component::Checkbox,
+        "selected-pressed",
+        "checked box held down uses the selected-pressed overlay",
+    ),
+    f(
+        Component::Chip,
+        "hover",
+        "chip hover raises the surface without changing selection",
+    ),
+    f(
+        Component::Chip,
+        "pressed",
+        "chip press uses the active surface",
+    ),
+    f(
+        Component::Dropdown,
+        "hover",
+        "dropdown field hover raises its border",
+    ),
+    f(
+        Component::Dropdown,
+        "focused",
+        "focused dropdown field takes an accent border",
+    ),
+    f(
+        Component::Dropdown,
+        "disabled",
+        "disabled dropdown fades value and handle",
+    ),
+    f(
+        Component::IconButton,
+        "selected-hover",
+        "selected icon button hover uses the accent-soft-hover plate",
+    ),
+    f(
+        Component::IconButton,
+        "selected-pressed",
+        "selected icon button press uses the accent-soft-pressed plate",
+    ),
+    f(
+        Component::InteractiveCard,
+        "hover",
+        "interactive card hover raises the surface",
+    ),
+    f(
+        Component::InteractiveCard,
+        "pressed",
+        "interactive card press uses the active surface",
+    ),
+    f(
+        Component::InteractiveCard,
+        "disabled",
+        "disabled interactive card drops to the subtle surface",
+    ),
+    f(
+        Component::InteractiveCard,
+        "selected-hover",
+        "selected interactive card hover keeps the selected family",
+    ),
+    f(
+        Component::InteractiveCard,
+        "selected-pressed",
+        "selected interactive card press keeps the selected family",
+    ),
+    f(
+        Component::SearchDropdown,
+        "hover",
+        "search dropdown field hover raises its border",
+    ),
+    f(
+        Component::SearchDropdown,
+        "focused",
+        "focused search dropdown field takes an accent border",
+    ),
+    f(
+        Component::SearchDropdown,
+        "disabled",
+        "disabled search dropdown fades the committed query",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "hover",
+        "collapsible card summary hover raises the row",
+    ),
+    f(
+        Component::SettingsCollapsibleCard,
+        "pressed",
+        "collapsible card summary press uses the active surface",
+    ),
+    f(
+        Component::SidebarRow,
+        "hover",
+        "idle sidebar row hover uses the hover surface",
+    ),
+    f(
+        Component::SidebarRow,
+        "pressed",
+        "idle sidebar row press uses the active surface",
+    ),
+    f(
+        Component::SidebarRow,
+        "focused",
+        "focused sidebar row takes an accent border without a plate",
+    ),
+    f(
+        Component::SidebarRow,
+        "disabled",
+        "disabled sidebar row drops to faint text on a subtle surface",
+    ),
+    f(
+        Component::SidebarRow,
+        "selected-hover",
+        "active sidebar row hover uses the selected-hover surface",
+    ),
+    f(
+        Component::SidebarRow,
+        "selected-pressed",
+        "active sidebar row press uses the selected-pressed surface",
+    ),
+    f(
+        Component::SidebarSection,
+        "focused",
+        "focused section header takes an accent border",
+    ),
+    f(
+        Component::Textarea,
+        "hover",
+        "text area hover raises its field border",
+    ),
+    f(
+        Component::XYPad,
+        "hover",
+        "xy pad hover raises its field border",
+    ),
+    f(
+        Component::XYPad,
+        "focused",
+        "focused xy pad takes an accent field border",
+    ),
 ];
 
 const fn f(component: Component, state: &'static str, expected: &'static str) -> Fixture {

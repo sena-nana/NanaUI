@@ -237,7 +237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Stack::column(6.0)
                     .padding_xy(14.0, 10.0)
                     .surface(SemanticColorRole::AccentSoft)
-                    .radius(12.0)
+                    .radius_px(12.0)
                     .width(LengthSpec::FitContent)
                     .with_layout(|layout| {
                         layout.max_width = Some(LengthSpec::Min2(

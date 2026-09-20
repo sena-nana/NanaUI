@@ -284,15 +284,18 @@ impl UiWorld {
         bounds: LayoutBox,
         blocks_3d: bool,
     ) -> ([f32; 6], [f32; 2]) {
+        // The refusal comes first: an overlay is not a way around a closed 3D
+        // context, or the pointer keeps a projection paint gave up and a click
+        // lands where the node is not drawn.
+        if blocks_3d && style.transform_3d.is_some() {
+            return (IDENTITY_AFFINE, [0.0, 0.0]);
+        }
         if let Some(transform) = self.sampled_compositor_transform(id) {
             let [ox, oy] = style.resolved_transform_origin(bounds.width, bounds.height);
             return (
                 transform.around_origin(bounds.x, bounds.y, ox, oy),
                 [0.0, 0.0],
             );
-        }
-        if blocks_3d && style.transform_3d.is_some() {
-            return (IDENTITY_AFFINE, [0.0, 0.0]);
         }
         style
             .world_scene_transform(bounds.x, bounds.y, bounds.width, bounds.height)

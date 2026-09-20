@@ -12,14 +12,14 @@ use crate::{
     MutationQueue, NodeKind, NodeStyle, PanelInsets, StableNodeId, TextContent, UiWorld,
 };
 
-const TITLE_SIZE: f32 = 12.0;
-const TITLE_WEIGHT: u16 = 600;
-const DESCRIPTION_SIZE: f32 = 11.0;
-pub(crate) const COPY_GAP: f32 = 2.0;
-pub(crate) const INDICATOR_SIZE: f32 = 7.0;
-pub(crate) const INDICATOR_GAP: f32 = 8.0;
-pub(crate) const PAD_Y: f32 = 10.0;
-pub(crate) const PAD_X: f32 = 12.0;
+const TITLE_SIZE: f32 = nana_ui_core::type_scale::META;
+const TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
+const DESCRIPTION_SIZE: f32 = nana_ui_core::type_scale::HINT;
+pub(crate) const COPY_GAP: f32 = nana_ui_core::space::XXS;
+pub(crate) const INDICATOR_SIZE: f32 = nana_ui_core::space::SM;
+pub(crate) const INDICATOR_GAP: f32 = nana_ui_core::space::MD;
+pub(crate) const PAD_Y: f32 = nana_ui_core::space::LG;
+pub(crate) const PAD_X: f32 = nana_ui_core::space::XL;
 
 fn sanitize_description(description: Option<&Arc<str>>) -> Option<Arc<str>> {
     description.filter(|value| !value.is_empty()).cloned()
@@ -154,7 +154,7 @@ impl Toast {
         layout.padding_top = Some(LengthSpec::Px(PAD_Y));
         layout.padding_bottom = Some(LengthSpec::Px(PAD_Y));
         layout.min_height = Some(LengthSpec::Px(PAD_Y + content_height + PAD_Y));
-        layout.border_width = Some(1.0);
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
         layout.border_radius = Some(metrics.radius_md);
         layout.font_size = Some(TITLE_SIZE);
         layout.font_weight = Some(TITLE_WEIGHT);
@@ -167,6 +167,10 @@ impl ComponentView for Toast {
         NodeKind::Element {
             tag: "toast".into(),
         }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -267,7 +271,7 @@ mod tests {
         assert_eq!(style.background, Some(SemanticColorRole::Surface));
         assert_eq!(style.border, Some(SemanticColorRole::Border));
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
-        assert_eq!(style.layout.border_width, Some(1.0));
+        assert_eq!(style.layout.border_width, Some(nana_ui_core::HAIRLINE));
         assert_eq!(
             style.layout.border_radius,
             Some(context.world().theme_metrics().radius_md)

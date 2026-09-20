@@ -1097,34 +1097,32 @@ impl SceneWgpuPainter {
                                     })
                                     .unwrap_or((bounds, 0.0));
                                 batching.close_all();
-                                commands.push(DrawCommand::HostTexture(
-                                    self.host_textures.prepare(
-                                        &self.device,
-                                        &self.queue,
-                                        binding,
-                                        primitive.id.node.get(),
-                                        primitive.id.slot,
-                                        LogicalRect::from_xywh(
-                                            dest.x,
-                                            dest.y,
-                                            dest.width,
-                                            dest.height,
-                                        ),
-                                        affine,
-                                        persp,
-                                        scissor,
-                                        opacity,
-                                        corner_radius,
-                                        rounded_clip,
-                                        frag_clip,
-                                        dest_physical,
-                                        scale,
-                                        mask.clone(),
-                                        Some(&gpu_work),
-                                        custom.checkerboard,
-                                        custom.zoom,
-                                    ),
-                                ));
+                                let prepared = self.host_textures.prepare(
+                                    &self.device,
+                                    &self.queue,
+                                    binding,
+                                    primitive.id.node.get(),
+                                    primitive.id.slot,
+                                    LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
+                                    affine,
+                                    persp,
+                                    scissor,
+                                    opacity,
+                                    corner_radius,
+                                    rounded_clip,
+                                    frag_clip,
+                                    dest_physical,
+                                    scale,
+                                    mask.clone(),
+                                    Some(&gpu_work),
+                                    custom.checkerboard,
+                                    custom.zoom,
+                                );
+                                if let Some(registry) = host_textures {
+                                    registry
+                                        .note_painted(custom.resource.as_ref(), prepared.painted);
+                                }
+                                commands.push(DrawCommand::HostTexture(prepared));
                             } else {
                                 let Some(renderer) = gpu_renderers
                                     .and_then(|registry| registry.get(custom.renderer.as_ref()))

@@ -1,0 +1,7 @@
+component: app-title-bar
+mode: dark
+state: titled
+  target: 20.00,20.00 520.00x36.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #2/0 20.00,20.00 520.00x36.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #2/2 20.00,20.00 520.00x36.00 opacity=1.00 color=#ddddddff size=13.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

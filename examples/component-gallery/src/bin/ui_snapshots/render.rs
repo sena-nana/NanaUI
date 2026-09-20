@@ -17,9 +17,9 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, CommandPaletteEvent, ControlSize, Icon, LogicalPoint, LogicalRect, NanaTextShaper,
-    RuntimeInputAdapter, SettingsTabId, ThemeMode, ThemeModeExt, WindowChrome, WorkspaceAction,
+    RuntimeInputAdapter, SettingsTabId, ThemeMode, WindowChrome, WorkspaceAction,
 };
-use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole};
+use nana_ui_core::{LayoutStyle, LengthSpec, SemanticColorRole, type_scale};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 
 use crate::baseline::{Recorder, Report};
@@ -38,6 +38,18 @@ use offscreen::OffscreenSnapshots;
 
 const GALLERY_SIZE: Size<u32> = Size::new(1280, 800);
 const MIGRATION_SIZE: Size<u32> = Size::new(520, 220);
+
+/// Issue #101 §3: the state matrix as resolved style, with no GPU.
+///
+/// Separate from [`generate`] rather than a flag inside it, because the two
+/// answer different questions and only one of them needs an adapter. Keeping
+/// them apart is what lets the semantic baseline be verified anywhere.
+pub fn generate_semantic(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Error>> {
+    for theme in [ThemeMode::Dark, ThemeMode::Light] {
+        migration_next::generate_semantic(&mut recorder, theme)?;
+    }
+    recorder.finish()
+}
 
 pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Error>> {
     let mut snapshots = OffscreenSnapshots::new()?;
@@ -1051,7 +1063,12 @@ fn titlebar_document(
             13.0,
             400,
         ));
-        let trailing = ui.parked(labeled_text("Gallery", SemanticColorRole::Muted, 11.0, 400));
+        let trailing = ui.parked(labeled_text(
+            "Gallery",
+            SemanticColorRole::Muted,
+            type_scale::HINT,
+            type_scale::REGULAR,
+        ));
         let native = !chrome.uses_custom_controls();
         let controls = title_bar_controls(ui, native);
         let title = ui.child(
@@ -1256,7 +1273,7 @@ fn paint_gallery(
     size: Size<u32>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let clear = clear_color(state.theme_mode());
-    let colors = state.theme_mode().colors();
+    let colors = state.theme_mode().palette();
     let gpu = gpu::create_snapshot_gpu(
         &snapshots.device,
         &snapshots.queue,
@@ -1289,7 +1306,7 @@ fn paint_gallery(
 }
 
 fn clear_color(theme: ThemeMode) -> [f32; 4] {
-    let color = theme.colors().background;
+    let color = theme.palette().background;
     [color.r, color.g, color.b, 1.0]
 }
 

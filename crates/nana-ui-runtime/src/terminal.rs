@@ -142,6 +142,10 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
+    pub const CELL_WIDTH: f32 = nana_ui_core::space::MD;
+    pub const CELL_HEIGHT: f32 = nana_ui_core::type_scale::LINE_TALL;
+    pub const FONT_SIZE: f32 = nana_ui_core::type_scale::SECTION;
+
     /// Replaces the node style wholesale.
     ///
     /// Builders that derive layout from other props (such as `size`) overwrite
@@ -170,9 +174,9 @@ impl TerminalView {
         Self {
             screen,
             selection: None,
-            cell_width: 8.0,
-            cell_height: 18.0,
-            font_size: 14.0,
+            cell_width: Self::CELL_WIDTH,
+            cell_height: Self::CELL_HEIGHT,
+            font_size: Self::FONT_SIZE,
             font_family: "Cascadia Mono".to_owned(),
             disabled: false,
             read_only: false,
@@ -435,7 +439,8 @@ impl AppContext {
                 && cursor.position.row < view.screen.rows
                 && cursor.position.column < view.screen.columns
             {
-                let mut style = NodeStyle::default().outline(SemanticColorRole::Text, 1.0);
+                let mut style =
+                    NodeStyle::default().outline(SemanticColorRole::Text, nana_ui_core::HAIRLINE);
                 let layout = Arc::make_mut(&mut style.layout);
                 layout.position = PositionSpec::Absolute;
                 layout.offset_left = Some(LengthSpec::Px(
@@ -444,21 +449,21 @@ impl AppContext {
                 layout.offset_top = Some(LengthSpec::Px(
                     f32::from(cursor.position.row) * view.cell_height
                         + if cursor.shape == TerminalCursorShape::Underline {
-                            view.cell_height - 2.0
+                            view.cell_height - nana_ui_core::space::XXS
                         } else {
                             0.0
                         },
                 ));
                 layout.width = Some(LengthSpec::Px(
                     if cursor.shape == TerminalCursorShape::Bar {
-                        2.0
+                        nana_ui_core::space::XXS
                     } else {
                         view.cell_width
                     },
                 ));
                 layout.height = Some(LengthSpec::Px(
                     if cursor.shape == TerminalCursorShape::Underline {
-                        2.0
+                        nana_ui_core::space::XXS
                     } else {
                         view.cell_height
                     },

@@ -42,10 +42,10 @@ pub struct TimeSeriesPaint {
 
 impl TimeSeriesChart {
     pub const INTRINSIC_HEIGHT: f32 = 148.0;
-    pub const INSET_X: f32 = 8.0;
-    pub const INSET_Y: f32 = 10.0;
+    pub const INSET_X: f32 = nana_ui_core::space::MD;
+    pub const INSET_Y: f32 = nana_ui_core::space::LG;
     pub const GRID_LINE_COUNT: usize = 4;
-    pub const LINE_WIDTH: f32 = 2.0;
+    pub const LINE_WIDTH: f32 = nana_ui_core::space::XXS;
 
     pub fn new(values: impl IntoIterator<Item = f64>) -> Self {
         Self {

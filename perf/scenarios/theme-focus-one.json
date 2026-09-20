@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "theme-focus-one",
+  "kind": "Theme",
+  "params": {
+    "workload": "focus",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "theme_focus_stays_local",
+      "path": "work_counters.style_nodes_considered",
+      "op": "lte",
+      "value": 16,
+      "status": "required",
+      "note": "Focusing one control must not re-resolve the document."
+    },
+    {
+      "name": "theme_focus_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A focus ring is paint, not layout."
+    }
+  ],
+  "notes": "Issue #101 §4 single-node focus on a 1k-control fixture."
+}

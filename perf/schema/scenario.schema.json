@@ -29,7 +29,8 @@
         "DockWorkspace",
         "Overlay",
         "Animation",
-        "GpuScene"
+        "GpuScene",
+        "Theme"
       ]
     },
     "params": {

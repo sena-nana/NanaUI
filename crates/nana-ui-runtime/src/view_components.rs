@@ -9,15 +9,17 @@ use crate::{
     TextInlay, TextInputState, TextMatchSpan, TextSignatureHelp, TextVerticalAlignment, UiWorld,
 };
 
-fn control_layout(horizontal_padding: f32) -> Arc<nana_ui_core::LayoutStyle> {
+fn control_layout() -> Arc<nana_ui_core::LayoutStyle> {
     Arc::new(nana_ui_core::LayoutStyle {
-        padding_left: Some(nana_ui_core::LengthSpec::Px(horizontal_padding)),
-        padding_right: Some(nana_ui_core::LengthSpec::Px(horizontal_padding)),
-        min_height: Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.control_height,
-        )),
-        border_width: Some(1.0),
-        border_radius: Some(6.0),
+        // No `padding_left`/`padding_right` here: the control names its inset
+        // step on its `NodeStyle` (`control_padding_x`), same as the two below.
+        // No `min_height` here either: the control names its size step on its
+        // `NodeStyle`, so the installed metrics decide how tall it is.
+        border_width: Some(nana_ui_core::HAIRLINE),
+        // No `border_radius` here: the tier is named on the `NodeStyle` of
+        // each control that uses this layout, so the installed theme decides
+        // the number. Baking it here is what made the Appearance radius
+        // setting a no-op for controls.
         ..nana_ui_core::LayoutStyle::default()
     })
 }
@@ -99,19 +101,15 @@ fn range_field_style() -> NodeStyle {
 }
 
 fn text_field_style(multiline: bool) -> NodeStyle {
-    let mut layout = (*control_layout(nana_ui_core::UI_METRICS.field_padding_x)).clone();
+    let mut layout = (*control_layout()).clone();
     layout.width = Some(nana_ui_core::LengthSpec::Percent(100.0));
     layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
     layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
     if multiline {
-        layout.padding_top = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.field_padding_x,
-        ));
-        layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.field_padding_x,
-        ));
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Relative(1.45));
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(96.0));
+        layout.min_height = Some(nana_ui_core::LengthSpec::Px(
+            nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS) * 3.0,
+        ));
     } else {
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
             nana_ui_core::ControlSize::Medium.line_height(),
@@ -122,6 +120,12 @@ fn text_field_style(multiline: bool) -> NodeStyle {
         layout: Arc::new(layout),
         background: Some(nana_ui_core::SemanticColorRole::Background),
         border: Some(nana_ui_core::SemanticColorRole::Border),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
+        control_height: (!multiline).then_some(nana_ui_core::ControlHeight::Min(
+            nana_ui_core::ControlSize::Medium,
+        )),
+        control_padding_x: Some(nana_ui_core::ControlPadding::Field),
+        control_padding_y: multiline.then_some(nana_ui_core::ControlPadding::Field),
         interaction: crate::InteractionStyle {
             hovered: SemanticPaint {
                 border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
@@ -248,6 +252,19 @@ pub trait ComponentView: Clone + Send + 'static {
     /// this so the framework can schedule their delayed open and grace close
     /// from pointer movement alone. Defaults to `false`.
     fn wants_hover_tracking() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
+    /// Opt in to one reprojection when installed `ThemeMetrics` change.
+    ///
+    /// Derived geometry that `project` spends from `height_in` / `padding_x_in`
+    /// (a list's `count × row`, a segmented option's `height - 6`) is not a
+    /// named layout intent, so `reresolve_layout_intent` cannot move it.
+    /// Defaults to `false`.
+    fn wants_metrics_reproject() -> bool
     where
         Self: Sized,
     {
@@ -381,11 +398,11 @@ pub struct Button {
 }
 
 /// Font size of a `Card` title.
-pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::UI_BASE_TEXT_SIZE;
+pub(crate) const CARD_TITLE_SIZE: f32 = nana_ui_core::type_scale::BODY;
 /// Font weight of a `Card` title.
-pub(crate) const CARD_TITLE_WEIGHT: u16 = 600;
+pub(crate) const CARD_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 /// Line box the title occupies.
-pub(crate) const CARD_TITLE_LINE: f32 = 18.0;
+pub(crate) const CARD_TITLE_LINE: f32 = nana_ui_core::type_scale::LINE_TALL;
 /// Gap between the title band and the card's content.
 pub(crate) const CARD_TITLE_GAP: f32 = nana_ui_core::space::SM;
 /// Vertical band a titled `Card` adds above its content padding.
@@ -394,18 +411,19 @@ pub(crate) const CARD_TITLE_GAP: f32 = nana_ui_core::space::SM;
 /// title's own row. Both sides must read this one constant.
 pub(crate) const CARD_TITLE_BAND: f32 = CARD_TITLE_LINE + CARD_TITLE_GAP;
 /// Width a loading `Card` reserves for its spinner beside the title.
-pub(crate) const CARD_LOADING_RESERVE: f32 = 22.0;
+pub(crate) const CARD_LOADING_RESERVE: f32 =
+    nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
 
 impl Button {
     pub fn new(label: impl Into<String>) -> Self {
-        let mut layout = (*control_layout(nana_ui_core::UI_METRICS.control_padding_x)).clone();
-        layout.font_weight = Some(500);
+        let mut layout = (*control_layout()).clone();
+        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         layout.white_space_nowrap = true;
         Self {
             label: label.into(),
             icon: None,
             icon_size: None,
-            icon_gap: 6.0,
+            icon_gap: nana_ui_core::space::SM,
             kind: nana_ui_core::ButtonKind::Ghost,
             size: nana_ui_core::ControlSize::Medium,
             disabled: false,
@@ -417,6 +435,14 @@ impl Button {
                 foreground: Some(nana_ui_core::SemanticColorRole::Text),
                 background: None,
                 border: None,
+                radius: Some(nana_ui_core::RadiusTier::Sm),
+                control_height: Some(nana_ui_core::ControlHeight::Min(
+                    nana_ui_core::ControlSize::Medium,
+                )),
+                control_padding_x: Some(nana_ui_core::ControlPadding::Standard),
+                control_padding_y: None,
+                surface_padding: None,
+                square: None,
                 interaction: crate::InteractionStyle {
                     hovered: SemanticPaint {
                         background: Some(nana_ui_core::SemanticColorRole::Hover),
@@ -466,17 +492,24 @@ impl Button {
     /// Replace host-owned outer layout without opting out of Button semantic
     /// paint. Apply [`Self::size`] afterwards when the size contract owns
     /// padding, height and typography.
+    /// Supply the whole box. Design intent that writes into the box
+    /// (`control_height`, `control_padding_x`, `radius`) is dropped: replacing
+    /// the layout used to wipe those defaults when they were baked into it, and
+    /// a caller who hands over a complete box owns its height, inset and corners.
     pub fn layout(mut self, layout: Arc<nana_ui_core::LayoutStyle>) -> Self {
         self.style.layout = layout;
+        self.style.control_height = None;
+        self.style.control_padding_x = None;
+        self.style.radius = None;
         self
     }
 
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
+        // The step, not the pixels: the installed metrics decide the height.
+        self.style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+        self.style.control_padding_x = Some(size.into());
         let layout = Arc::make_mut(&mut self.style.layout);
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
-        layout.padding_right = layout.padding_left;
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
         layout.font_size = Some(size.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
         self
@@ -694,20 +727,14 @@ impl IconButton {
                 },
                 ..crate::InteractionStyle::default()
             },
+            radius: Some(nana_ui_core::RadiusTier::Sm),
+            control_padding_x: Some(nana_ui_core::ControlPadding::Compact),
+            square: Some(nana_ui_core::SquareSize::IconButton),
             text_horizontal_alignment: TextHorizontalAlignment::Center,
             text_vertical_alignment: TextVerticalAlignment::Center,
             ..NodeStyle::default()
         };
-        style.layout = control_layout(nana_ui_core::UI_METRICS.compact_control_padding_x);
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.compact_control_padding_x,
-        ));
-        layout.padding_right = layout.padding_left;
-        layout.min_width = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.icon_button_size,
-        ));
-        layout.min_height = layout.min_width;
+        style.layout = control_layout();
         Self {
             icon,
             label: label.into(),
@@ -727,9 +754,7 @@ impl IconButton {
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
-        let layout = Arc::make_mut(&mut self.style.layout);
-        layout.min_width = Some(nana_ui_core::LengthSpec::Px(size.height()));
-        layout.min_height = layout.min_width;
+        self.style.square = Some(nana_ui_core::SquareSize::Control(size));
         self
     }
     pub fn selected(mut self, selected: bool) -> Self {
@@ -963,9 +988,13 @@ impl Card {
             kind: nana_ui_core::CardKind::Surface,
             loading: false,
             loading_phase: 0.0,
-            // 背景、边框、圆角不在此预填：project 按 kind 提供默认值，
-            // 用户经 `.style(...)` 显式给出的值优先于 kind。
-            style: NodeStyle::default(),
+            // 背景、边框按 kind 在 project 里填；圆角和 panel inset 在节点上
+            // 命名档位，安装的主题决定数值。
+            style: NodeStyle {
+                radius: Some(nana_ui_core::RadiusTier::Md),
+                surface_padding: Some(nana_ui_core::SurfacePadding::Panel),
+                ..NodeStyle::default()
+            },
         }
     }
 
@@ -991,6 +1020,7 @@ impl Card {
 
     pub fn padding_xy(mut self, x: f32, y: f32) -> Self {
         replace_padding_xy(Arc::make_mut(&mut self.style.layout), x, y);
+        self.style.surface_padding = None;
         self
     }
     pub fn height(mut self, height: f32) -> Self {
@@ -1035,21 +1065,6 @@ impl ComponentView for Card {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
-        let layout = Arc::make_mut(&mut effective_style.layout);
-        // Defaults belong to the projection, never the authored declaration.
-        if layout.padding.is_none() {
-            let x = nana_ui_core::LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_x);
-            let y = nana_ui_core::LengthSpec::Px(nana_ui_core::UI_METRICS.panel_padding_y);
-            layout.padding_left.get_or_insert(x);
-            layout.padding_right.get_or_insert(x);
-            layout.padding_top.get_or_insert(y);
-            layout.padding_bottom.get_or_insert(y);
-            if layout.logical_padding.has_logical() {
-                layout.logical_padding.phys_left.get_or_insert(x);
-                layout.logical_padding.phys_right.get_or_insert(x);
-            }
-        }
-
         let (kind_background, kind_border, kind_border_width) = match self.kind {
             nana_ui_core::CardKind::Surface | nana_ui_core::CardKind::Raised => {
                 (Some(nana_ui_core::SemanticColorRole::Surface), None, 0.0)
@@ -1070,21 +1085,32 @@ impl ComponentView for Card {
         if effective_style.border.is_none() {
             effective_style.border = kind_border;
         }
-        if layout.border_width.is_none() {
-            layout.border_width = Some(kind_border_width);
+        if effective_style.radius.is_none() && effective_style.layout.border_radius.is_none() {
+            effective_style.radius = Some(nana_ui_core::RadiusTier::Md);
         }
-        if layout.border_radius.is_none() {
-            layout.border_radius = Some(world.theme_metrics().radius_md);
+        if effective_style.surface_padding.is_none() && effective_style.layout.padding.is_none() {
+            effective_style.surface_padding = Some(nana_ui_core::SurfacePadding::Panel);
         }
-        if self.title.is_some() {
-            let base =
-                layout
+        {
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            if layout.border_width.is_none() {
+                layout.border_width = Some(kind_border_width);
+            }
+            if self.title.is_some() {
+                let y = layout
                     .padding_top
                     .or(layout.padding)
+                    .or_else(|| {
+                        effective_style
+                            .surface_padding
+                            .and_then(|padding| padding.resolve_y(world.theme_metrics()))
+                            .map(nana_ui_core::LengthSpec::Px)
+                    })
                     .unwrap_or(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.panel_padding_y,
+                        world.theme_metrics().panel_padding_y,
                     ));
-            layout.padding_top = Some(add_length_px(base, CARD_TITLE_BAND));
+                layout.padding_top = Some(add_length_px(y, CARD_TITLE_BAND));
+            }
         }
         project_common(
             id,
@@ -1127,13 +1153,10 @@ pub struct ListItemSlots {
 
 impl ListItem {
     pub fn new(label: impl Into<String>) -> Self {
-        let mut layout = (*control_layout(nana_ui_core::UI_METRICS.list_item_padding_x)).clone();
+        let mut layout = (*control_layout()).clone();
         layout.direction = Some(nana_ui_core::FlexDirection::Row);
         layout.align_items = nana_ui_core::AlignSpec::Center;
-        layout.gap = Some(nana_ui_core::LengthSpec::Px(8.0));
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.selection_height,
-        ));
+        layout.gap = Some(nana_ui_core::LengthSpec::Px(nana_ui_core::space::MD));
         layout.font_size = Some(nana_ui_core::ControlSize::Small.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(
             nana_ui_core::ControlSize::Small.line_height(),
@@ -1147,13 +1170,18 @@ impl ListItem {
             selected: false,
             disabled: false,
             slots: ListItemSlots::default(),
-            gap: 8.0,
+            gap: nana_ui_core::space::MD,
             size: nana_ui_core::ControlSize::Small,
             auto_height: false,
             pill_bleed: false,
             style: NodeStyle {
                 layout: Arc::new(layout),
                 background: None,
+                radius: Some(nana_ui_core::RadiusTier::Sm),
+                control_height: Some(nana_ui_core::ControlHeight::Min(
+                    nana_ui_core::ControlSize::Large,
+                )),
+                control_padding_x: Some(nana_ui_core::ControlPadding::ListItem),
                 interaction: crate::InteractionStyle {
                     selected: SemanticPaint {
                         background: Some(nana_ui_core::SemanticColorRole::Selected),
@@ -1224,8 +1252,10 @@ impl ListItem {
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
+        // The step, not the pixels: the installed metrics decide the box.
+        self.style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+        self.style.control_padding_x = Some(size.into());
         let layout = Arc::make_mut(&mut self.style.layout);
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
         layout.font_size = Some(size.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
         self
@@ -1254,8 +1284,16 @@ impl ListItem {
     /// 行内子节点的对齐语义：有 trailing 槽时按钮簇贴行尾（与 SidebarRow
     /// 的行工具同款规则），否则按 start 排。隐藏的槽位子节点不参与 flex 流，
     /// 不影响其余子节点的分布。
+    #[cfg(test)]
     fn effective_style(&self) -> NodeStyle {
+        self.effective_style_in(nana_ui_core::UI_METRICS)
+    }
+
+    fn effective_style_in(&self, metrics: nana_ui_core::ThemeMetrics) -> NodeStyle {
         let mut style = self.style.clone();
+        let inset = style
+            .control_padding_x
+            .map(|padding| padding.resolve(metrics));
         let layout = Arc::make_mut(&mut style.layout);
         layout.justify_content = if self.slots.trailing.is_some() {
             if self.slots.leading.is_some() {
@@ -1267,13 +1305,17 @@ impl ListItem {
             nana_ui_core::JustifySpec::Start
         };
         if self.pill_bleed {
-            // 对称外扩与书写方向无关；非 `Px` padding 视为 0，不外扩。
-            let bleed = |edge: &Option<nana_ui_core::LengthSpec>| match edge {
-                Some(nana_ui_core::LengthSpec::Px(px)) => nana_ui_core::LengthSpec::Px(-px),
-                _ => nana_ui_core::LengthSpec::Px(0.0),
+            // 对称外扩与书写方向无关。Intent 还没写成像素时按安装值算；
+            // 已经写成 `Px` 的显式 padding 仍按它外扩。
+            let bleed = |named: Option<f32>, edge: &Option<nana_ui_core::LengthSpec>| {
+                let px = named.unwrap_or(match edge {
+                    Some(nana_ui_core::LengthSpec::Px(px)) => *px,
+                    _ => 0.0,
+                });
+                nana_ui_core::LengthSpec::Px(-px)
             };
-            layout.margin_left = Some(bleed(&layout.padding_left));
-            layout.margin_right = Some(bleed(&layout.padding_right));
+            layout.margin_left = Some(bleed(inset, &layout.padding_left));
+            layout.margin_right = Some(bleed(inset, &layout.padding_right));
         }
         style
     }
@@ -1322,7 +1364,7 @@ impl ComponentView for ListItem {
             id,
             world,
             mutations,
-            &self.effective_style(),
+            &self.effective_style_in(world.theme_metrics()),
             InteractionState {
                 pointer_events: !self.disabled,
                 focusable: !self.disabled,
@@ -1494,17 +1536,24 @@ impl TextInput {
 
     /// Replace host-owned outer layout while retaining TextInput semantic
     /// paint and interaction states.
+    /// Supply the whole box. Design intent that writes into the box
+    /// (`control_height`, `control_padding_x`, `radius`) is dropped: replacing
+    /// the layout used to wipe those defaults when they were baked into it, and
+    /// a caller who hands over a complete box owns its height, inset and corners.
     pub fn layout(mut self, layout: Arc<nana_ui_core::LayoutStyle>) -> Self {
         self.style.layout = layout;
+        self.style.control_height = None;
+        self.style.control_padding_x = None;
+        self.style.radius = None;
         self
     }
 
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
+        // The step, not the pixels: the installed metrics decide the height.
+        self.style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+        self.style.control_padding_x = Some(size.into());
         let layout = Arc::make_mut(&mut self.style.layout);
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
-        layout.padding_right = layout.padding_left;
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
         layout.font_size = Some(size.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
         self
@@ -1719,10 +1768,9 @@ impl NumberInput {
 
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
+        self.style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+        self.style.control_padding_x = Some(size.into());
         let layout = Arc::make_mut(&mut self.style.layout);
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(size.padding_x()));
-        layout.padding_right = layout.padding_left;
-        layout.min_height = Some(nana_ui_core::LengthSpec::Px(size.height()));
         layout.font_size = Some(size.text_size());
         layout.line_height = Some(nana_ui_core::LineHeightSpec::Absolute(size.line_height()));
         self
@@ -2222,9 +2270,11 @@ impl TextArea {
 
     pub fn height(mut self, height: f32) -> Self {
         if height.is_finite() {
-            Arc::make_mut(&mut self.style.layout).height = Some(nana_ui_core::LengthSpec::Px(
-                height.max(nana_ui_core::ControlSize::Medium.height()),
-            ));
+            // Multiline fields already floor at `min_height: 96`. Clamping to
+            // `Medium.height()` (32) never won and pinned the explicit height
+            // to the compile-time constant.
+            Arc::make_mut(&mut self.style.layout).height =
+                Some(nana_ui_core::LengthSpec::Px(height));
         }
         self
     }
@@ -2264,6 +2314,10 @@ impl ComponentView for TextArea {
         NodeKind::Element {
             tag: "textarea".into(),
         }
+    }
+
+    fn wants_metrics_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -2373,11 +2427,20 @@ impl ComponentView for TextArea {
                 0
             };
             let gutter = 18.0 + digits as f32 * label_size * 0.65 + 4.0;
-            let layout = Arc::make_mut(&mut effective_style.layout);
-            let padding = layout.resolved_padding();
-            layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
-                padding.left.max(gutter).ceil(),
-            ));
+            let named = effective_style
+                .control_padding_x
+                .map(|padding| padding.resolve(world.theme_metrics()))
+                .unwrap_or(0.0);
+            let field_pad = named.max(effective_style.layout.resolved_padding().left);
+            {
+                let layout = Arc::make_mut(&mut effective_style.layout);
+                layout.padding_left =
+                    Some(nana_ui_core::LengthSpec::Px(field_pad.max(gutter).ceil()));
+                layout.padding_right = Some(nana_ui_core::LengthSpec::Px(field_pad));
+            }
+            // The gutter is a spent number on this axis; keep the resolver
+            // from writing Field padding back over it.
+            effective_style.control_padding_x = None;
         }
         if self.invalid && !self.style_override {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
@@ -2626,16 +2689,14 @@ mod hosted_textarea_tests {
             .create_component(document, TextArea::new("source").line_numbers(true))
             .unwrap();
         let padding = |context: &crate::AppContext| {
-            context
-                .world()
-                .node_style(area.stable_id())
-                .unwrap()
+            context.world().extract_nodes(&[area.stable_id()])[0]
+                .source_style
                 .layout
                 .resolved_padding()
                 .left
         };
         let single_line = padding(&context);
-        let plain_padding = TextArea::new("").style.layout.resolved_padding().left;
+        let plain_padding = nana_ui_core::ControlPadding::Field.resolve(nana_ui_core::UI_METRICS);
         assert!(single_line > plain_padding);
         context
             .update_component(area, |area, _| {
@@ -2920,7 +2981,7 @@ fn tooltip_surface_style(max_width: f32) -> NodeStyle {
             padding_bottom: Some(nana_ui_core::LengthSpec::Px(
                 nana_ui_core::TooltipConfig::PADDING_Y,
             )),
-            border_width: Some(1.0),
+            border_width: Some(nana_ui_core::HAIRLINE),
             border_radius: Some(nana_ui_core::TooltipConfig::RADIUS),
             font_size: Some(nana_ui_core::TooltipConfig::FONT_SIZE),
             z_index: Some(1_000),
@@ -2939,10 +3000,8 @@ fn checkbox_style() -> NodeStyle {
 
 fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
     NodeStyle {
-        layout: Arc::new(nana_ui_core::LayoutStyle {
-            min_height: Some(nana_ui_core::LengthSpec::Px(size.height())),
-            ..nana_ui_core::LayoutStyle::default()
-        }),
+        layout: Arc::new(nana_ui_core::LayoutStyle::default()),
+        control_height: Some(nana_ui_core::ControlHeight::Min(size)),
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
         background: Some(nana_ui_core::SemanticColorRole::Background),
         border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
@@ -2991,11 +3050,9 @@ fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
 
 fn switch_style() -> NodeStyle {
     NodeStyle {
-        layout: Arc::new(nana_ui_core::LayoutStyle {
-            border_radius: Some(nana_ui_core::UI_METRICS.radius_sm),
-            ..nana_ui_core::LayoutStyle::default()
-        }),
+        layout: Arc::new(nana_ui_core::LayoutStyle::default()),
         foreground: Some(nana_ui_core::SemanticColorRole::Text),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
         interaction: crate::InteractionStyle {
             hovered: SemanticPaint {
                 background: Some(nana_ui_core::SemanticColorRole::Hover),
@@ -3312,8 +3369,8 @@ impl Switch {
     }
     pub fn size(mut self, size: nana_ui_core::ControlSize) -> Self {
         self.size = size;
-        Arc::make_mut(&mut self.style.layout).min_height =
-            Some(nana_ui_core::LengthSpec::Px(size.height()));
+        self.style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+        self.style.control_padding_x = Some(size.into());
         self
     }
     pub fn loading(mut self, loading: bool) -> Self {
@@ -3375,19 +3432,26 @@ impl ComponentView for Switch {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
-        let layout = Arc::make_mut(&mut effective_style.layout);
-        if layout.width.is_none() {
-            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        {
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            if layout.width.is_none() {
+                layout.width = Some(nana_ui_core::LengthSpec::Fill);
+            }
+            if self.hint.is_some() && layout.height.is_none() {
+                layout.min_height = Some(nana_ui_core::LengthSpec::Px(
+                    self.size.height_in(world.theme_metrics()) + nana_ui_core::space::LG,
+                ));
+            }
         }
-        if layout.height.is_none() {
-            layout.min_height = Some(nana_ui_core::LengthSpec::Px(if self.hint.is_some() {
-                42.0
-            } else {
-                self.size.height()
-            }));
+        if self.hint.is_some() || effective_style.layout.height.is_some() {
+            // The hint row is taller than the size step, and an L2 CSS box is
+            // a spent number; don't let intent write the control height back
+            // over either.
+            effective_style.control_height = None;
+        } else if effective_style.control_height.is_none() {
+            effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         }
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(self.size.padding_x()));
-        layout.padding_right = layout.padding_left;
+        effective_style.control_padding_x = Some(self.size.into());
         if self.invalid {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
         }
@@ -3587,17 +3651,16 @@ impl ComponentView for RangeField {
             );
         }
         let mut effective_style = self.style.clone();
-        let layout = Arc::make_mut(&mut effective_style.layout);
-        if layout.width.is_none() {
-            layout.width = Some(nana_ui_core::LengthSpec::Fill);
+        {
+            let layout = Arc::make_mut(&mut effective_style.layout);
+            if layout.width.is_none() {
+                layout.width = Some(nana_ui_core::LengthSpec::Fill);
+            }
         }
-        if layout.height.is_none() {
-            layout.min_height = Some(nana_ui_core::LengthSpec::Px(self.size.height()));
+        if effective_style.control_height.is_none() && effective_style.layout.height.is_none() {
+            effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         }
-        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(
-            nana_ui_core::UI_METRICS.field_padding_x,
-        ));
-        layout.padding_right = layout.padding_left;
+        effective_style.control_padding_x = Some(nana_ui_core::ControlPadding::Field);
         if self.invalid {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
         }
@@ -4094,9 +4157,15 @@ impl Stack {
         self
     }
 
-    /// 圆角半径（物理 px）。
-    pub fn radius(mut self, radius: f32) -> Self {
-        self.style = self.style.radius(radius);
+    /// 圆角半径（物理 px）——一次性覆盖，不跟随主题。
+    pub fn radius_px(mut self, radius: f32) -> Self {
+        self.style = self.style.radius_px(radius);
+        self
+    }
+
+    /// 圆角档位，跟随安装的 `ThemeMetrics`。
+    pub fn radius(mut self, tier: nana_ui_core::RadiusTier) -> Self {
+        self.style = self.style.radius(tier);
         self
     }
 
@@ -4246,15 +4315,7 @@ impl TableCell {
             column_header: false,
             selected: false,
             style: NodeStyle {
-                layout: Arc::new(nana_ui_core::LayoutStyle {
-                    padding_left: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.list_item_padding_x,
-                    )),
-                    padding_right: Some(nana_ui_core::LengthSpec::Px(
-                        nana_ui_core::UI_METRICS.list_item_padding_x,
-                    )),
-                    ..nana_ui_core::LayoutStyle::default()
-                }),
+                control_padding_x: Some(nana_ui_core::ControlPadding::ListItem),
                 text_vertical_alignment: TextVerticalAlignment::Center,
                 ..NodeStyle::default()
             },
@@ -4436,12 +4497,15 @@ mod tests {
     fn pill_bleed_extends_the_pill_and_keeps_text_inset() {
         // 样式合同：margin 取水平 padding 负值，文本内缩不变；默认不外扩。
         let px = nana_ui_core::LengthSpec::Px;
-        let inset = nana_ui_core::UI_METRICS.list_item_padding_x;
+        let inset = nana_ui_core::ControlPadding::ListItem.resolve(nana_ui_core::UI_METRICS);
         let bled = ListItem::new("行")
             .pill_bleed(true)
             .effective_style()
             .layout;
-        assert_eq!(bled.padding_left, Some(px(inset)));
+        assert_eq!(
+            ListItem::new("行").style.control_padding_x,
+            Some(nana_ui_core::ControlPadding::ListItem)
+        );
         assert_eq!(bled.margin_left, Some(px(-inset)));
         assert_eq!(bled.margin_right, bled.margin_left);
         assert_eq!(
@@ -4549,10 +4613,8 @@ mod spacing_tests {
         let card = context
             .create_component(document, Card::new().style(style))
             .unwrap();
-        let padding = context
-            .world()
-            .node_style(card.stable_id())
-            .unwrap()
+        let padding = context.world().extract_nodes(&[card.stable_id()])[0]
+            .source_style
             .layout
             .resolved_padding();
         assert_eq!(
@@ -4570,10 +4632,8 @@ mod spacing_tests {
             })
             .unwrap();
         assert_eq!(
-            context
-                .world()
-                .node_style(card.stable_id())
-                .unwrap()
+            context.world().extract_nodes(&[card.stable_id()])[0]
+                .source_style
                 .layout
                 .resolved_padding(),
             PaddingSpec {

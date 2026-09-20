@@ -359,9 +359,16 @@ impl RegisterableComponent for Card {
             card = card.title(Arc::<str>::from(spec.label));
         }
         card.style.layout = Arc::clone(spec.layout);
-        let layout = Arc::make_mut(&mut card.style.layout);
-        if layout.border_radius.is_none() {
-            layout.border_radius = Some(nana_ui_core::UI_METRICS.radius_md);
+        if spec.layout.border_radius.is_none() && card.style.radius.is_none() {
+            card.style.radius = Some(nana_ui_core::RadiusTier::Md);
+        }
+        if spec.layout.padding.is_some()
+            || spec.layout.padding_left.is_some()
+            || spec.layout.padding_right.is_some()
+            || spec.layout.padding_top.is_some()
+            || spec.layout.padding_bottom.is_some()
+        {
+            card.style.surface_padding = None;
         }
         card
     }
@@ -1343,9 +1350,9 @@ impl RegisterableComponent for SplitPane {
     fn from_semantic(spec: &SemanticSpec<'_>) -> Self {
         let default_size = attr_f32(spec, &["default-size", "defaultsize", "defaultSize"])
             .or_else(|| attr_f32(spec, &["size"]))
-            .unwrap_or(240.0);
-        let min = attr_f32(spec, &["min"]).unwrap_or(120.0);
-        let max = attr_f32(spec, &["max"]).unwrap_or(800.0);
+            .unwrap_or(crate::split_pane::DEFAULT_SIZE);
+        let min = attr_f32(spec, &["min"]).unwrap_or(crate::split_pane::DEFAULT_MIN);
+        let max = attr_f32(spec, &["max"]).unwrap_or(crate::split_pane::DEFAULT_MAX);
         let mut model =
             SplitPaneModel::new(parse_split_axis(spec.attr("axis")), default_size, min, max);
         if let Some(size) = attr_f32(spec, &["size"])
@@ -3470,10 +3477,8 @@ mod tests {
         assert_eq!(card.style.layout.padding_top, None);
         assert_eq!(card.style.layout.padding_bottom, None);
         assert_eq!(card.style.layout.height, Some(LengthSpec::Em(2.0)));
-        assert_eq!(
-            card.style.layout.border_radius,
-            Some(nana_ui_core::UI_METRICS.radius_md)
-        );
+        assert_eq!(card.style.radius, Some(nana_ui_core::RadiusTier::Md));
+        assert!(card.style.layout.border_radius.is_none());
     }
 
     #[test]
@@ -3530,10 +3535,13 @@ mod tests {
         let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "On");
         let switch = Switch::from_semantic(&spec);
         assert_eq!(
-            switch.style.layout.min_height,
-            Some(LengthSpec::Px(nana_ui_core::ControlSize::Medium.height()))
+            switch.style.control_height,
+            Some(nana_ui_core::ControlHeight::Min(
+                nana_ui_core::ControlSize::Medium
+            ))
         );
         assert!(switch.style.layout.height.is_none());
+        assert!(switch.style.layout.min_height.is_none());
         assert!(switch.style.layout.width.is_none());
     }
 
@@ -3554,9 +3562,12 @@ mod tests {
         let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Agree");
         let checkbox = Checkbox::from_semantic(&spec);
         assert_eq!(
-            checkbox.style.layout.min_height,
-            Some(LengthSpec::Px(nana_ui_core::ControlSize::Medium.height()))
+            checkbox.style.control_height,
+            Some(nana_ui_core::ControlHeight::Min(
+                nana_ui_core::ControlSize::Medium
+            ))
         );
+        assert!(checkbox.style.layout.min_height.is_none());
         assert!(checkbox.style.layout.height.is_none());
         assert!(checkbox.style.layout.width.is_none());
     }
@@ -3578,9 +3589,12 @@ mod tests {
         let spec = spec_with(&type_id, &layout, &[], &[], &[], "", "Pick");
         let select = Select::from_semantic(&spec);
         assert_eq!(
-            select.style.layout.height,
-            Some(LengthSpec::Px(nana_ui_core::ControlSize::Medium.height()))
+            select.style.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(
+                nana_ui_core::ControlSize::Medium
+            ))
         );
+        assert!(select.style.layout.height.is_none());
         assert_eq!(select.style.layout.width, Some(LengthSpec::Fill));
     }
 
@@ -3648,7 +3662,9 @@ mod tests {
         assert_eq!(projected.width, Some(LengthSpec::Px(120.0)));
         assert_ne!(
             projected.height,
-            Some(LengthSpec::Px(nana_ui_core::ControlSize::Medium.height()))
+            Some(LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+            ))
         );
     }
 
@@ -3662,7 +3678,9 @@ mod tests {
         assert_eq!(projected.width, Some(LengthSpec::Px(120.0)));
         assert_ne!(
             projected.height,
-            Some(LengthSpec::Px(nana_ui_core::ControlSize::Medium.height()))
+            Some(LengthSpec::Px(
+                nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+            ))
         );
     }
 

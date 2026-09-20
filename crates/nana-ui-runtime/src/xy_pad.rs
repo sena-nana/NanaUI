@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, UI_METRICS};
+use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole};
 
 use crate::view_components::project_common;
 use crate::{
@@ -242,10 +242,10 @@ impl XYPad {
         }
         layout.height = Some(LengthSpec::Px(xy_pad_height(self.size)));
         if layout.border_width.is_none() {
-            layout.border_width = Some(1.0);
+            layout.border_width = Some(nana_ui_core::HAIRLINE);
         }
         if layout.border_radius.is_none() {
-            layout.border_radius = Some(UI_METRICS.radius_sm);
+            style.radius = Some(nana_ui_core::RadiusTier::Sm);
         }
         if style.background.is_none() {
             style.background = Some(SemanticColorRole::Subtle);
@@ -350,10 +350,10 @@ fn field_style(size: ControlSize) -> NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Fill),
             height: Some(LengthSpec::Px(xy_pad_height(size))),
-            border_width: Some(1.0),
-            border_radius: Some(UI_METRICS.radius_sm),
+            border_width: Some(nana_ui_core::HAIRLINE),
             ..nana_ui_core::LayoutStyle::default()
         }),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
         background: Some(SemanticColorRole::Subtle),
         border: Some(SemanticColorRole::Border),
         interaction: InteractionStyle {

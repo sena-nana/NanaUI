@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, SemanticPalette, UI_METRICS};
+use nana_ui_core::{ControlSize, LengthSpec, SemanticColorRole, SemanticPalette};
 
 use crate::view_components::project_common;
 use crate::{
@@ -10,12 +10,12 @@ use crate::{
     StandardVisual, TextContent, TextVerticalAlignment, UiWorld,
 };
 
-const HANDLE_WIDTH: f32 = 16.0;
+const HANDLE_WIDTH: f32 = nana_ui_core::type_scale::LINE;
 const MENU_GAP: f32 = 0.0;
 const MENU_PAD: f32 = crate::popover::MENU_SURFACE_PADDING;
 use crate::popover::MENU_ITEM_GAP;
 /// Width of the leading check lane in a drop-down menu row.
-const MENU_CHECK_RESERVE: f32 = 16.0;
+const MENU_CHECK_RESERVE: f32 = nana_ui_core::type_scale::LINE;
 
 /// Option identity stays application-owned. Disabled options remain visible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,24 +255,32 @@ impl Select {
             border: Some(SemanticColorRole::Border),
             ..SemanticPaint::default()
         };
-        let layout = Arc::make_mut(&mut style.layout);
-        if layout.width.is_none() {
-            layout.width = Some(LengthSpec::Fill);
+        let has_explicit_height = style.layout.height.is_some();
+        let needs_height = style.control_height.is_none() && !has_explicit_height;
+        let needs_radius = style.layout.border_radius.is_none();
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            if layout.width.is_none() {
+                layout.width = Some(LengthSpec::Fill);
+            }
+            layout.border_width = Some(if self.invalid && self.opened {
+                2.0
+            } else {
+                1.0
+            });
+            layout.white_space_nowrap = true;
         }
-        if layout.height.is_none() {
-            layout.height = Some(LengthSpec::Px(self.size.height()));
+        if needs_radius {
+            style.radius = Some(nana_ui_core::RadiusTier::Sm);
         }
-        layout.border_width = Some(if self.invalid && self.opened {
-            2.0
-        } else {
-            1.0
-        });
-        if layout.border_radius.is_none() {
-            layout.border_radius = Some(UI_METRICS.radius_sm);
+        if has_explicit_height {
+            // A CSS/host box is a spent number; don't let the size step
+            // write over it.
+            style.control_height = None;
+        } else if needs_height {
+            style.control_height = Some(nana_ui_core::ControlHeight::Exact(self.size));
         }
-        layout.padding_left = Some(LengthSpec::Px(self.size.padding_x()));
-        layout.padding_right = Some(LengthSpec::Px(self.size.padding_x()));
-        layout.white_space_nowrap = true;
+        style.control_padding_x = Some(self.size.into());
         style.text_vertical_alignment = TextVerticalAlignment::Center;
         style
     }
@@ -365,6 +373,7 @@ pub(crate) fn select_geometry(
     style: &ComputedStyle,
     source: &NodeStyle,
     palette: &SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
     viewport: Option<crate::LayoutViewport>,
     checkable: bool,
 ) -> ComponentGeometry {
@@ -391,6 +400,7 @@ pub(crate) fn select_geometry(
             options,
             highlighted,
             palette,
+            metrics,
             viewport,
             checkable,
         )
@@ -428,10 +438,11 @@ fn select_menu_geometry(
     options: &[SelectOptionData],
     highlighted: Option<usize>,
     palette: &SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
     viewport: Option<crate::LayoutViewport>,
     checkable: bool,
 ) -> crate::SelectMenuGeometry {
-    let item_height = size.height();
+    let item_height = size.height_in(metrics);
     let count = options.len().max(1) as f32;
     let natural_height =
         MENU_PAD * 2.0 + count * item_height + (count - 1.0).max(0.0) * MENU_ITEM_GAP;
@@ -463,9 +474,10 @@ fn select_menu_geometry(
                 bounds,
                 label: ComponentTextRegion {
                     bounds: LayoutBox {
-                        x: bounds.x + size.padding_x() + check_reserve,
+                        x: bounds.x + size.padding_x_in(metrics) + check_reserve,
                         y: bounds.y,
-                        width: (bounds.width - size.padding_x() * 2.0 - check_reserve).max(0.0),
+                        width: (bounds.width - size.padding_x_in(metrics) * 2.0 - check_reserve)
+                            .max(0.0),
                         height: bounds.height,
                     },
                     content: menu_option_label(option),
@@ -551,24 +563,21 @@ fn resolve_menu_vertical(
 /// `size()` builders use this instead of rebuilding the whole [`NodeStyle`], so
 /// a style the caller supplied keeps its colors, borders and interaction paints.
 pub(crate) fn apply_field_size(style: &mut NodeStyle, size: ControlSize) {
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.height = Some(LengthSpec::Px(size.height()));
-    layout.padding_left = Some(LengthSpec::Px(size.padding_x()));
-    layout.padding_right = Some(LengthSpec::Px(size.padding_x()));
+    style.control_height = Some(nana_ui_core::ControlHeight::Exact(size));
+    style.control_padding_x = Some(size.into());
 }
 
 pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(nana_ui_core::LayoutStyle {
             width: Some(LengthSpec::Fill),
-            height: Some(LengthSpec::Px(size.height())),
-            padding_left: Some(LengthSpec::Px(size.padding_x())),
-            padding_right: Some(LengthSpec::Px(size.padding_x())),
-            border_width: Some(1.0),
-            border_radius: Some(UI_METRICS.radius_sm),
+            border_width: Some(nana_ui_core::HAIRLINE),
             white_space_nowrap: true,
             ..nana_ui_core::LayoutStyle::default()
         }),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
+        control_height: Some(nana_ui_core::ControlHeight::Exact(size)),
+        control_padding_x: Some(size.into()),
         foreground: Some(SemanticColorRole::Text),
         background: Some(SemanticColorRole::Background),
         border: Some(SemanticColorRole::Border),
@@ -701,14 +710,14 @@ mod tests {
         // Caller-owned paint and geometry survive `size()`.
         assert_eq!(select.style.background, Some(SemanticColorRole::Selected));
         assert_eq!(select.style.layout.border_radius, Some(17.0));
-        // Metrics that `ControlSize` owns are refreshed.
+        // Metrics that `ControlSize` owns are refreshed as named steps.
         assert_eq!(
-            select.style.layout.height,
-            Some(LengthSpec::Px(ControlSize::Large.height()))
+            select.style.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(ControlSize::Large))
         );
         assert_eq!(
-            select.style.layout.padding_left,
-            Some(LengthSpec::Px(ControlSize::Large.padding_x()))
+            select.style.control_padding_x,
+            Some(ControlSize::Large.into())
         );
     }
 
@@ -798,7 +807,16 @@ mod tests {
         let style = context.world().node_style(id).unwrap();
         assert_eq!(style.background, Some(SemanticColorRole::Background));
         assert_eq!(style.border, Some(SemanticColorRole::Border));
-        assert_eq!(style.layout.border_radius, Some(UI_METRICS.radius_sm));
+        // The field names the radius step; the number is produced at extract
+        // against the installed metrics (Issue #101 F1).
+        assert_eq!(style.radius, Some(nana_ui_core::RadiusTier::Sm));
+        assert_eq!(
+            context.world().extract_nodes(&[id])[0]
+                .source_style
+                .layout
+                .border_radius,
+            Some(nana_ui_core::UI_METRICS.radius_sm)
+        );
         let visual = match context.world().standard_visual(id) {
             Some(StandardVisual::Select { options, .. }) => options,
             _ => panic!("select visual"),
@@ -871,7 +889,9 @@ mod tests {
         assert_eq!(layout.width, Some(LengthSpec::Px(120.0)));
         assert_ne!(
             layout.height,
-            Some(LengthSpec::Px(ControlSize::Medium.height()))
+            Some(LengthSpec::Px(
+                ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+            ))
         );
     }
 
@@ -879,17 +899,21 @@ mod tests {
     fn select_projects_without_css_keeps_control_size() {
         let mut context = AppContext::new();
         let select = context.create_component(document(), sample()).unwrap();
-        let layout = context
-            .world()
-            .node_style(select.stable_id())
-            .unwrap()
-            .layout
-            .as_ref();
+        let style = context.world().node_style(select.stable_id()).unwrap();
         assert_eq!(
-            layout.height,
-            Some(LengthSpec::Px(ControlSize::Medium.height()))
+            style.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(ControlSize::Medium))
         );
-        assert_eq!(layout.width, Some(LengthSpec::Fill));
+        assert_eq!(style.layout.width, Some(LengthSpec::Fill));
+        assert_eq!(
+            context.world().extract_nodes(&[select.stable_id()])[0]
+                .source_style
+                .layout
+                .height,
+            Some(LengthSpec::Px(
+                ControlSize::Medium.height_in(nana_ui_core::UI_METRICS)
+            ))
+        );
     }
 
     #[test]

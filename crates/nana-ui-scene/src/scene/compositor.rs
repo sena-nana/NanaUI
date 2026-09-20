@@ -316,6 +316,10 @@ impl UiScene {
 
     /// Bind compositor overlays from B's presentation store. Does not rebuild
     /// primitives; only motion timestamp must not invalidate [`CompositorLayer::cache_generation`].
+    ///
+    /// A layer that moves does move the retained visibility index, though, and
+    /// that is re-derived here: no extraction reaches this path, so nothing
+    /// else will.
     pub fn apply_presentation(
         &mut self,
         store: &PresentationStore,
@@ -353,6 +357,7 @@ impl UiScene {
 
         let surface_generation = self.compositor.surface_generation;
         let mut changed = false;
+        let mut moved = false;
 
         for node in candidates {
             let Some(extracted) = self.nodes.get(&node) else {
@@ -360,9 +365,24 @@ impl UiScene {
                 if self.compositor.layers.remove(&node).is_some() {
                     self.compositor.last_demoted = self.compositor.last_demoted.saturating_add(1);
                     changed = true;
+                    moved = true;
                 }
                 continue;
             };
+            // All a layer hands the visibility index: the transform
+            // `resolved_local_transform` presents for this node, and so for
+            // every descendant inheriting its projection. `None` is a node no
+            // layer speaks for, whose transform only an extraction can move —
+            // and none reaches this path. Read either side of the transition
+            // rather than inferred from its arms, which all reach it and can
+            // all leave it be.
+            let presented = |compositor: &CompositorRegistry| {
+                compositor
+                    .layer(node)
+                    .filter(|_| compositor.is_active(node))
+                    .map(|layer| transform_bits(layer.transform))
+            };
+            let before = presented(&self.compositor);
             let snapshot = layer_snapshot(extracted, store, now, descriptors);
             let eligible = snapshot.eligible || self.compositor.requested.contains(&node);
             let previous = self.compositor.phases.get(&node).cloned();
@@ -449,6 +469,7 @@ impl UiScene {
                     self.compositor.phases.remove(&node);
                 }
             }
+            moved |= before != presented(&self.compositor);
         }
 
         let active_nodes: NodeSet = self.compositor.layers.keys().copied().collect();
@@ -464,6 +485,18 @@ impl UiScene {
             self.attribute_epoch = self.attribute_epoch.wrapping_add(1);
             self.compositor.presentation_epoch = self.compositor.presentation_epoch.wrapping_add(1);
         }
+        // A layer that moved moved its retained descendants' projections
+        // with it — what an ancestor transform does in `apply_delta`, except
+        // that nothing here re-extracted, so there is no changed set to
+        // refresh from and the index would keep culling against where the
+        // subtree was when it was last derived. Re-derive from the plan it
+        // already holds; a plan is structural, and no layer is in one.
+        if moved && let Some(mut visibility) = self.visibility.take() {
+            visibility.refresh_bounds(self);
+            let _ = self.visibility.set(visibility);
+        }
+        #[cfg(debug_assertions)]
+        self.audit_retained_projection();
     }
 
     pub(super) fn forget_compositor_node(&mut self, id: StableNodeId) {
@@ -496,6 +529,14 @@ impl UiScene {
         node: &ExtractedNode,
         block_3d: bool,
     ) -> AffineTransform {
+        // A closed 3D context refuses this node's transform, and a layer does
+        // not reopen it. `layer_snapshot` cannot see the rule — it is handed
+        // one node, and the answer is about the ancestors above it — so the
+        // refusal is made here too, or promoting a layer (an opacity fade is
+        // enough) hands back the projection the ancestor walk denied.
+        if block_3d && node.source_style.layout.transform_3d.is_some() {
+            return AffineTransform::IDENTITY;
+        }
         if self.compositor.is_active(node.id) {
             return self
                 .compositor
@@ -624,7 +665,19 @@ impl UiScene {
     /// only the node's own layer so the painter can strip that overlay without
     /// double-applying ancestor presentation. Opacity walks ancestors.
     pub fn compositor_gpu_motion_ids(&self, node: StableNodeId) -> (u32, u32) {
-        let transform = self.gpu_motion_id_for(node, 0);
+        let mut transform = self.gpu_motion_id_for(node, 0);
+        // The shader evaluates the overlay in the node's own place, so it owes
+        // the same refusal [`Self::resolved_local_transform`] makes, or the
+        // GPU hands back what the CPU gave up. The ancestor walk sits behind
+        // two reads false for every node without both a `matrix3d` and an
+        // overlay of its own.
+        if transform != 0
+            && let Some(extracted) = self.nodes.get(&node)
+            && extracted.source_style.layout.transform_3d.is_some()
+            && self.draw_ancestor_state(extracted).3
+        {
+            transform = 0;
+        }
         let mut opacity = self.gpu_motion_id_for(node, 1);
         if opacity == 0
             && let Some(parent) = self.nodes.get(&node).and_then(|node| node.parent)
@@ -760,6 +813,13 @@ fn make_layer(
     }
 }
 
+/// A transform as the bits it is made of: the visibility index is audited
+/// against a fresh build bit for bit, and `==` calls `0.0` and `-0.0` the same
+/// transform though they do not always project a bound to the same bits.
+fn transform_bits(transform: AffineTransform) -> ([u32; 6], [u32; 2]) {
+    (transform.0.map(f32::to_bits), transform.1.map(f32::to_bits))
+}
+
 fn hold_elapsed(now: Duration, since: Duration, hold: Duration) -> bool {
     now.saturating_sub(since) >= hold
 }
@@ -890,6 +950,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
+            chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: parent.map(id),
@@ -1789,6 +1850,330 @@ mod tests {
                 .advance_animations(Duration::from_millis(80))
                 .animation_deadlines_scanned,
             0
+        );
+    }
+
+    /// Three nodes, the middle one carrying a compositor transform animation,
+    /// so the leaf under it is a retained descendant that moves without ever
+    /// being re-extracted.
+    fn animated_subtree(store: &PresentationStore, now: Duration) -> UiScene {
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [
+                node(1, None, &[2]),
+                node(2, Some(1), &[3]),
+                node(3, Some(2), &[]),
+            ],
+            [],
+        );
+        scene.apply_presentation(store, now, None);
+        scene
+    }
+
+    /// Slide `target` down one scene unit per millisecond, so the time a tick
+    /// names is also the y the subtree is at.
+    fn slide_down(track: u64, target: u64, distance: f32) -> MotionTrack {
+        transform_track(
+            track,
+            target,
+            0,
+            distance as u64,
+            PaintTransform::default(),
+            PaintTransform {
+                f: distance,
+                ..PaintTransform::default()
+            },
+        )
+    }
+
+    /// What answers for a viewport band too thin to hold the 80-unit nodes at
+    /// rest, so its contents are only what the animation carried into it.
+    fn band(scene: &UiScene, y: f32) -> Vec<crate::RenderOperation> {
+        let band = crate::SceneRect {
+            x: 0.0,
+            y,
+            width: 100.0,
+            height: 20.0,
+        };
+        scene.visible_operations(band).expect("index")
+    }
+
+    fn everything(scene: &UiScene) -> Vec<crate::RenderOperation> {
+        let all = crate::SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 10_000.0,
+            height: 10_000.0,
+        };
+        scene.visible_operations(all).expect("index")
+    }
+
+    /// Whether the scroll fast path's shift is still the last thing to have
+    /// touched these bounds — false as soon as anything re-derives them.
+    fn translated(scene: &UiScene) -> bool {
+        scene
+            .visibility
+            .get()
+            .expect("the index survives a scroll")
+            .translated()
+    }
+
+    /// A compositor layer moves its own projection and every retained
+    /// descendant's, and nothing around it is re-extracted — so the index gets
+    /// no changed set to refresh from, and no delta to be audited by either.
+    /// It still has to answer where the animation put the subtree: a bound
+    /// left behind culls a subtree that is on screen, one left ahead draws one
+    /// that is not, and a demote drops the whole animation at once.
+    #[test]
+    fn an_animated_layer_culls_its_subtree_where_the_animation_put_it() {
+        let ms = Duration::from_millis;
+        let mut store = PresentationStore::new();
+        store.insert(
+            slide_down(9, 2, 400.0),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+
+        // Derived while the subtree is near the top, then animated down into a
+        // band it was never derived against.
+        let mut scene = animated_subtree(&store, ms(16));
+        let plan = scene.frame_plan().expect("plan");
+        assert_eq!(everything(&scene).len(), 3);
+        assert!(
+            band(&scene, 150.0).is_empty(),
+            "the band was meant to be empty before the animation reaches it"
+        );
+        scene.apply_presentation(&store, ms(116), None);
+        assert!(
+            Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+            "a presentation tick rebuilt the frame plan"
+        );
+
+        let arrived = animated_subtree(&store, ms(116));
+        assert_eq!(
+            band(&arrived, 150.0).len(),
+            2,
+            "the band was meant to hold the animated node and its leaf"
+        );
+        assert_eq!(
+            band(&scene, 150.0),
+            band(&arrived, 150.0),
+            "a retained index culled the subtree where the animation left it"
+        );
+        assert_eq!(everything(&scene), everything(&arrived));
+
+        // An ordinary repaint keeps the index and audits it against a fresh
+        // build; mid-animation the two have to agree bit for bit.
+        let mut repainted = node(3, Some(2), &[]);
+        repainted.style = Arc::new(ComputedStyle {
+            background: Some([0.9, 0.1, 0.1, 1.0]),
+            ..ComputedStyle::default()
+        });
+        scene.apply_delta([repainted], []);
+        assert!(
+            scene.visibility.get().is_some(),
+            "a repaint dropped the visibility index"
+        );
+
+        // Past the band: a bound the animation has left must stop answering.
+        scene.apply_presentation(&store, ms(316), None);
+        assert!(
+            band(&scene, 150.0).is_empty(),
+            "a retained index drew the subtree where the animation no longer is"
+        );
+
+        // A demote drops the presented transform in one step rather than
+        // moving it, and the subtree snaps back to its logical box.
+        scene.apply_presentation(&store, ms(600), None);
+        scene.apply_presentation(&store, ms(600) + LAYER_DEMOTE_HOLD, None);
+        assert!(
+            scene.compositor_layer(id(2)).is_none(),
+            "the layer was meant to demote once the animation ended"
+        );
+        assert_eq!(
+            band(&scene, 0.0).len(),
+            3,
+            "a demoted layer left its subtree's bounds where the animation was"
+        );
+        assert!(band(&scene, 150.0).is_empty());
+    }
+
+    /// The refresh follows what a layer *presents*, not the fact that a layer
+    /// changed at all: an overlay that only fades rewrites its layer every
+    /// frame and moves no bound, and re-deriving the whole scene for it is the
+    /// cost the retained index exists to avoid. Promoting and demoting do
+    /// re-derive — they change *which* transform `resolved_local_transform`
+    /// answers with, and a node under a closed 3D context is where those two
+    /// are not the same projection at all — but hysteresis makes them once per
+    /// animation rather than once per frame.
+    #[test]
+    fn the_bounds_refresh_follows_what_a_layer_presents() {
+        let scrolled = |y: f32| {
+            let mut container = node(1, None, &[2]);
+            container.scroll_offset.y = y;
+            container
+        };
+        // Derive the index and scroll it, so `translated` reads true until
+        // something re-derives it again.
+        let mark = |scene: &mut UiScene, y: f32| {
+            everything(scene);
+            scene.apply_delta([scrolled(y)], []);
+            assert!(translated(scene), "the scroll fast path did not run");
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([scrolled(0.0), node(2, Some(1), &[])], []);
+        // Opacity only: this layer carries the node's own logical transform,
+        // so nothing below is caught by comparing transforms.
+        let mut store = PresentationStore::new();
+        store.insert(
+            opacity_track(4, 1, 0, 400, 0.0, 1.0),
+            MotionValue::Scalar(1.0),
+        );
+
+        mark(&mut scene, 10.0);
+        scene.apply_presentation(&store, Duration::from_millis(16), None);
+        assert!(
+            scene.compositor_layer(id(1)).is_some(),
+            "the fade did not promote a layer"
+        );
+        assert!(
+            !translated(&scene),
+            "a promote left the retained bounds alone"
+        );
+
+        mark(&mut scene, 20.0);
+        for tick in [32, 48, 64] {
+            scene.apply_presentation(&store, Duration::from_millis(tick), None);
+            assert!(
+                translated(&scene),
+                "a steady fade re-derived every bound in the scene"
+            );
+        }
+
+        // The same layer, now moving: that one does owe a re-derivation.
+        store.insert(
+            slide_down(5, 1, 400.0),
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, Duration::from_millis(80), None);
+        assert!(
+            !translated(&scene),
+            "a moving layer left the retained bounds where they were"
+        );
+
+        // And back off the layer, which is a move of its own.
+        mark(&mut scene, 30.0);
+        let gone = Duration::from_millis(500);
+        scene.apply_presentation(&store, gone, None);
+        assert!(
+            translated(&scene),
+            "an ineligible frame is not yet a demote"
+        );
+        scene.apply_presentation(&store, gone + LAYER_DEMOTE_HOLD, None);
+        assert!(
+            scene.compositor_layer(id(1)).is_none(),
+            "the layer did not demote"
+        );
+        assert!(
+            !translated(&scene),
+            "a demote left the retained bounds alone"
+        );
+    }
+
+    /// `perspective` / `preserve-3d` on an ancestor fails the descendant's
+    /// `matrix3d` closed — the engine refuses the projection rather than
+    /// approximating it. A compositor layer must not be a way back in: the
+    /// snapshot behind it is built from one node, with no view of the
+    /// ancestors the rule is about, and a fade alone is enough to promote one.
+    #[test]
+    fn a_layer_does_not_reopen_a_closed_3d_context() {
+        use nana_ui_core::{LayoutStyle, PaintMat4};
+        let mut parent = node(1, None, &[2]);
+        parent.source_style.layout = Arc::new(LayoutStyle {
+            css_perspective: Some(800.0),
+            ..LayoutStyle::default()
+        });
+        let mut child = node(2, Some(1), &[]);
+        child.source_style.layout = Arc::new(LayoutStyle {
+            transform_3d: Some(
+                PaintMat4::perspective(800.0)
+                    .unwrap()
+                    .then(PaintMat4::rotate_y(30_f32.to_radians())),
+            ),
+            ..LayoutStyle::default()
+        });
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let primitive = scene.primitives().find(|p| p.node == id(2)).unwrap().id;
+        let closed = scene.draw_primitive(primitive).unwrap().transform;
+        assert_eq!(
+            closed,
+            AffineTransform::IDENTITY,
+            "the closed context was meant to refuse the 3D transform outright"
+        );
+
+        // An opacity overlay, which carries no transform of its own.
+        let mut store = PresentationStore::new();
+        store.insert(
+            opacity_track(11, 2, 0, 400, 0.0, 1.0),
+            MotionValue::Scalar(1.0),
+        );
+        scene.apply_presentation(&store, LAYER_PROMOTE_HOLD, None);
+        assert!(
+            scene.compositor_layer(id(2)).is_some(),
+            "the fade did not promote a layer"
+        );
+        assert_eq!(
+            scene.draw_primitive(primitive).unwrap().transform,
+            closed,
+            "a promoted layer reopened a closed 3D context"
+        );
+
+        // And one that does carry a transform: refused on the CPU and on the
+        // GPU, which applies the overlay in the node's place off these ids
+        // alone and would otherwise put the projection back a frame later.
+        let sliding = slide_down(12, 2, 400.0);
+        let mut descriptors = MotionDescriptorStore::new();
+        descriptors.bind(&sliding).expect("descriptor slot");
+        store.insert(sliding, MotionValue::Transform(PaintTransform::default()));
+        let moving = LAYER_PROMOTE_HOLD + Duration::from_millis(64);
+        scene.apply_presentation(&store, moving, Some(&descriptors));
+        let draw = scene.draw_primitive(primitive).expect("draw");
+        assert!(
+            draw.kind.evaluates_compositor_motion_on_gpu(),
+            "this node was meant to be one the shader evaluates"
+        );
+        assert_eq!(
+            draw.transform, closed,
+            "a presented transform reopened a closed 3D context"
+        );
+        let encode = scene.compositor_paint_encode(
+            draw.node,
+            &draw.kind,
+            draw.transform,
+            draw.paint_opacity,
+        );
+        assert_eq!(
+            encode.motion_ids.0, 0,
+            "the shader was handed a transform the closed context refused"
+        );
+        assert_eq!(encode.transform, closed);
+
+        // A sibling with no `matrix3d` of its own is refused nothing: the rule
+        // is about this node's own 3D transform, not about the ancestor.
+        let mut plain = node(3, Some(1), &[]);
+        plain.source_style.layout = Arc::new(LayoutStyle::default());
+        scene.apply_delta([plain], []);
+        let sliding_plain = slide_down(13, 3, 400.0);
+        descriptors.bind(&sliding_plain).expect("descriptor slot");
+        store.insert(
+            sliding_plain,
+            MotionValue::Transform(PaintTransform::default()),
+        );
+        scene.apply_presentation(&store, moving, Some(&descriptors));
+        assert_ne!(
+            scene.compositor_gpu_motion_ids(id(3)).0,
+            0,
+            "an ordinary node lost its GPU transform to the 3D rule"
         );
     }
 }

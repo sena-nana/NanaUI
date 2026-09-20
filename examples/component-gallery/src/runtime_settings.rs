@@ -9,6 +9,7 @@ use nana_ui::runtime::{
     SemanticColorRole, SettingsBack, SettingsCollapsibleCard, SettingsPage, SettingsSidebar,
     SettingsTabSelected, StableNodeId, ToggleChanged,
 };
+use nana_ui::theme::type_scale;
 use nana_ui::{
     AppearanceEvent, ButtonKind, ControlSize, Icon, LogicalPoint, NanaTextShaper, RegionId,
     RuntimeInputAdapter, WorkspaceAction, WorkspaceModel,
@@ -113,7 +114,7 @@ impl GallerySettingsRuntime {
             let summary_hint = ui.parked(styled_text(
                 settings_view::WORKSPACE_SETTINGS_HINT,
                 SemanticColorRole::Muted,
-                11.0,
+                type_scale::HINT,
                 400,
             ));
             let summary = ui.detached(HostStack::column(2.0));
@@ -155,8 +156,12 @@ impl GallerySettingsRuntime {
                     .kind(ButtonKind::Text),
             );
             let theme_button = ui.parked(theme_toggle_button(state.theme));
-            let context_label =
-                ui.parked(hugging_text("设置", SemanticColorRole::Muted, 11.0, 400));
+            let context_label = ui.parked(hugging_text(
+                "设置",
+                SemanticColorRole::Muted,
+                type_scale::HINT,
+                type_scale::REGULAR,
+            ));
             let title_center = ui.detached(hugging_text(
                 "NanaUI Gallery",
                 SemanticColorRole::Text,

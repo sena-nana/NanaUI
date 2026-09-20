@@ -1312,7 +1312,7 @@ impl UiWorld {
                         .invalidate_text(*id, crate::text_node::TextDirty::CONSTRAINT);
                     self.mark(*id, DirtyMask::TEXT);
                 }
-                self.record_mut(*id).style = style.clone();
+                self.write_node_style(*id, style.clone());
                 self.sync_node_presence(*id);
 
                 if !style_excluding_transform_and_cursor_eq(&previous, style) {

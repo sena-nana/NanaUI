@@ -1,0 +1,34 @@
+component: sidebar-section
+mode: dark
+state: expanded
+  target: 20.00,20.00 200.00x85.00
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #9/0 20.00,20.00 200.00x85.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #5/0 20.00,20.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("chevron-down") color=#5a5a5aff
+  text #3/2 45.00,28.50 155.51x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 205.51,28.50 6.49x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #7/0 20.00,48.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #7/2 28.00,48.00 184.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #8/0 20.00,77.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #8/2 28.00,77.00 184.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: collapsed
+  target: 20.00,20.00 200.00x28.00
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #9/0 20.00,20.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #5/0 20.00,20.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("chevron-right") color=#5a5a5aff
+  text #3/2 45.00,28.50 155.51x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 205.51,28.50 6.49x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: focused
+  target: 20.00,20.00 200.00x85.00
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #9/0 20.00,20.00 200.00x85.00 opacity=1.00 bg=none border=#7bb9f0ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #5/0 20.00,20.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("chevron-down") color=#5a5a5aff
+  text #3/2 45.00,28.50 155.51x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 205.51,28.50 6.49x11.00 opacity=1.00 color=#5a5a5aff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #7/0 20.00,48.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #7/2 28.00,48.00 184.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #8/0 20.00,77.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #8/2 28.00,77.00 184.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

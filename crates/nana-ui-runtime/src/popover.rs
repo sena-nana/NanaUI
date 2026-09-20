@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+use nana_ui_core::UI_METRICS;
 use nana_ui_core::{
     FlexDirection, Icon, LengthSpec, OverflowSpec, PopoverAlignment, PopoverPlacement,
-    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE, UI_METRICS,
+    PositionSpec, SemanticColorRole, SemanticPalette, UI_BASE_TEXT_SIZE,
 };
 
 use crate::view_components::project_common;
@@ -12,24 +14,24 @@ use crate::{
     NodeStyle, StableNodeId, StandardVisual, TriggeredMenuOverlay, UiWorld,
 };
 
-const POPOVER_WIDTH: f32 = 240.0;
-const POPOVER_PADDING: f32 = 10.0;
-const POPOVER_GAP: f32 = 6.0;
-const ACTION_MENU_WIDTH: f32 = 200.0;
+pub(crate) const POPOVER_WIDTH: f32 = 240.0;
+const POPOVER_PADDING: f32 = nana_ui_core::space::LG;
+const POPOVER_GAP: f32 = nana_ui_core::space::SM;
+pub(crate) const ACTION_MENU_WIDTH: f32 = 200.0;
 /// Inner padding of a menu list surface (action menu, context menu, the
 /// `Select` drop-down). One authority so the three families cannot drift.
 pub(crate) const MENU_SURFACE_PADDING: f32 = nana_ui_core::space::XS;
 const ACTION_MENU_PADDING: f32 = MENU_SURFACE_PADDING;
-const ACTION_MENU_GAP: f32 = 4.0;
+const ACTION_MENU_GAP: f32 = nana_ui_core::space::XS;
 pub(crate) const MENU_MIN_WIDTH: f32 = 120.0;
-pub(crate) const MENU_ITEM_GAP: f32 = 1.0;
+pub(crate) const MENU_ITEM_GAP: f32 = nana_ui_core::space::XXS;
 /// Indentation per tree level, shared by `TreeView` and sidebar tree rows.
 pub(crate) const TREE_DEPTH_STEP: f32 = nana_ui_core::space::XL;
 pub(crate) const MENU_OVERLAY_Z_INDEX: i32 = 1_000;
 /// The trigger is a real button, so it matches the compact control height
 /// rather than hugging its glyphs.
+#[cfg(test)]
 pub(crate) const TRIGGER_HEIGHT: f32 = UI_METRICS.compact_control_height;
-const TRIGGER_PADDING_X: f32 = 10.0;
 /// Icon triggers draw the standard control glyph size, centered in the chrome.
 const TRIGGER_ICON_SIZE: f32 = UI_BASE_TEXT_SIZE;
 
@@ -387,8 +389,8 @@ fn triggered_menu_style(
         // box that stays out of the way.
         return NodeStyle {
             layout: Arc::new(nana_ui_core::LayoutStyle {
-                width: Some(LengthSpec::Px(1.0)),
-                height: Some(LengthSpec::Px(1.0)),
+                width: Some(LengthSpec::Px(nana_ui_core::HAIRLINE)),
+                height: Some(LengthSpec::Px(nana_ui_core::HAIRLINE)),
                 overflow_x: OverflowSpec::Hidden,
                 overflow_y: OverflowSpec::Hidden,
                 ..nana_ui_core::LayoutStyle::default()
@@ -407,10 +409,10 @@ fn triggered_menu_style(
             padding_right: Some(LengthSpec::Px(padding)),
             padding_top: Some(LengthSpec::Px(padding)),
             padding_bottom: Some(LengthSpec::Px(padding)),
-            border_radius: Some(UI_METRICS.radius_md),
             ..nana_ui_core::LayoutStyle::default()
         }),
         foreground: Some(SemanticColorRole::Text),
+        radius: Some(nana_ui_core::RadiusTier::Md),
         ..NodeStyle::default()
     }
 }
@@ -425,17 +427,17 @@ pub(crate) fn trigger_button_style() -> NodeStyle {
             // A button hugs its label. Without this the surrounding stack
             // stretches the trigger and it reads as a field, not a control.
             align_self: Some(nana_ui_core::AlignSpec::Start),
-            height: Some(LengthSpec::Px(TRIGGER_HEIGHT)),
-            min_height: Some(LengthSpec::Px(TRIGGER_HEIGHT)),
-            padding_left: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
-            padding_right: Some(LengthSpec::Px(TRIGGER_PADDING_X)),
-            border_width: Some(1.0),
-            border_radius: Some(UI_METRICS.radius_sm),
+            border_width: Some(nana_ui_core::HAIRLINE),
             ..nana_ui_core::LayoutStyle::default()
         }),
         background: Some(SemanticColorRole::Subtle),
         border: Some(SemanticColorRole::BorderSoft),
         foreground: Some(SemanticColorRole::Text),
+        radius: Some(nana_ui_core::RadiusTier::Sm),
+        control_height: Some(nana_ui_core::ControlHeight::Exact(
+            nana_ui_core::ControlSize::Small,
+        )),
+        control_padding_x: Some(nana_ui_core::ControlPadding::Standard),
         ..NodeStyle::default()
     };
     style.interaction.hovered.background = Some(SemanticColorRole::Hover);
@@ -447,8 +449,9 @@ pub(crate) fn trigger_button_style() -> NodeStyle {
 /// the glyph centers geometrically instead of riding text metrics.
 pub(crate) fn trigger_icon_button_style() -> NodeStyle {
     let mut style = trigger_button_style();
-    let layout = Arc::make_mut(&mut style.layout);
-    layout.min_width = Some(LengthSpec::Px(TRIGGER_HEIGHT));
+    style.square = Some(nana_ui_core::SquareSize::Control(
+        nana_ui_core::ControlSize::Small,
+    ));
     style
 }
 
@@ -459,19 +462,19 @@ pub(crate) fn menu_surface_style(width: f32, padding: f32) -> NodeStyle {
             width: Some(LengthSpec::Px(width)),
             min_width: Some(LengthSpec::Px(MENU_MIN_WIDTH)),
             direction: Some(FlexDirection::Column),
-            gap: Some(LengthSpec::Px(1.0)),
+            gap: Some(LengthSpec::Px(MENU_ITEM_GAP)),
             padding_left: Some(LengthSpec::Px(padding)),
             padding_right: Some(LengthSpec::Px(padding)),
             padding_top: Some(LengthSpec::Px(padding)),
             padding_bottom: Some(LengthSpec::Px(padding)),
-            border_width: Some(1.0),
-            border_radius: Some(UI_METRICS.radius_md),
+            border_width: Some(nana_ui_core::HAIRLINE),
             z_index: Some(MENU_OVERLAY_Z_INDEX),
             ..nana_ui_core::LayoutStyle::default()
         }),
         background: Some(SemanticColorRole::Surface),
         border: Some(SemanticColorRole::BorderSoft),
         foreground: Some(SemanticColorRole::Text),
+        radius: Some(nana_ui_core::RadiusTier::Md),
         ..NodeStyle::default()
     }
 }
@@ -531,6 +534,7 @@ pub(crate) fn menu_surface_geometry(
     trigger_image: Option<&Arc<str>>,
     style: &crate::ComputedStyle,
     palette: &SemanticPalette,
+    metrics: nana_ui_core::ThemeMetrics,
     surface: LayoutBox,
 ) -> ComponentGeometry {
     let is_light = palette.background.as_rgba_array()[0] > 0.5;
@@ -555,13 +559,15 @@ pub(crate) fn menu_surface_geometry(
     ComponentGeometry::MenuSurface {
         trigger: label.map(|value| ComponentTextRegion {
             bounds: LayoutBox {
-                x: trigger_bounds.x + TRIGGER_PADDING_X,
-                width: (trigger_bounds.width - TRIGGER_PADDING_X * 2.0).max(0.0),
+                x: trigger_bounds.x + nana_ui_core::ControlSize::Medium.padding_x_in(metrics),
+                width: (trigger_bounds.width
+                    - nana_ui_core::ControlSize::Medium.padding_x_in(metrics) * 2.0)
+                    .max(0.0),
                 ..trigger_bounds
             },
             content: Arc::clone(value),
             color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
-            font_size: 13.0,
+            font_size: nana_ui_core::type_scale::BODY,
             font_weight: None,
         }),
         trigger_icon: trigger_icon.map(|icon| {
@@ -811,7 +817,19 @@ mod tests {
         ));
         let closed = context.world().node_style(id).unwrap();
         assert!(!closed.layout.hidden);
-        assert_eq!(closed.layout.height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(
+            closed.control_height,
+            Some(nana_ui_core::ControlHeight::Exact(
+                nana_ui_core::ControlSize::Small
+            ))
+        );
+        assert_eq!(
+            context.world().extract_nodes(&[id])[0]
+                .source_style
+                .layout
+                .height,
+            Some(LengthSpec::Px(TRIGGER_HEIGHT))
+        );
         // A closed trigger is a pressable button, not bare text.
         assert_eq!(closed.background, Some(SemanticColorRole::Subtle));
         assert_eq!(closed.border, Some(SemanticColorRole::BorderSoft));
@@ -824,7 +842,13 @@ mod tests {
             })
             .unwrap();
         let open = context.world().node_style(id).unwrap();
-        assert_eq!(open.layout.height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(
+            context.world().extract_nodes(&[id])[0]
+                .source_style
+                .layout
+                .height,
+            Some(LengthSpec::Px(TRIGGER_HEIGHT))
+        );
         assert_eq!(open.background, Some(SemanticColorRole::Subtle));
         assert_eq!(open.layout.position, PositionSpec::Static);
     }
@@ -850,12 +874,9 @@ mod tests {
         // The label stays the accessible name only; the icon trigger measures
         // no text and its hit target is the square trigger box.
         assert!(context.world().text(id).is_none_or(|text| text.is_empty()));
-        let style = context.world().node_style(id).unwrap();
-        assert_eq!(style.layout.min_width, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
-        assert_eq!(
-            style.layout.min_height,
-            Some(LengthSpec::Px(TRIGGER_HEIGHT))
-        );
+        let layout = &context.world().extract_nodes(&[id])[0].source_style.layout;
+        assert_eq!(layout.min_width, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
+        assert_eq!(layout.min_height, Some(LengthSpec::Px(TRIGGER_HEIGHT)));
     }
 
     /// The icon trigger's glyph must center geometrically in the chrome, not

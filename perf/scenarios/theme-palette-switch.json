@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "theme-palette-switch",
+  "kind": "Theme",
+  "params": {
+    "workload": "palette-switch",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "palette_switch_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #100 §7: a palette-only change must not reshape text."
+    },
+    {
+      "name": "palette_switch_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #100 §7: a palette-only change must not run layout."
+    },
+    {
+      "name": "palette_switch_does_not_lay_out_the_frame",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: no LAYOUT was scheduled either."
+    },
+    {
+      "name": "palette_switch_does_not_copy_layout",
+      "path": "work_counters.layout_copies",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A palette-only change must not send the style path through LayoutStyle at all. The invalidation counters above stay at 0 even for a resolver that rebuilt every box, so this is the one that fails when sizing is resolved on the read path instead of the write path."
+    }
+  ],
+  "notes": "Issue #101 §4 palette-only theme change (light<->dark). Phase 0 records the document-wide paint invalidation as it is; narrowing it is Issue #100 §7."
+}

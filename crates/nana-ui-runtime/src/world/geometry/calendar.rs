@@ -42,10 +42,26 @@ pub(in crate::world) fn calendar_heatmap_geometry(
         .collect::<Vec<_>>();
     let mut labels = Vec::with_capacity(month_labels.len() + day_labels.len());
     labels.extend(month_labels.iter().map(|label| {
-        axis_label_region(bounds, &label.text, label.x, label.y, 10.0, true, palette)
+        axis_label_region(
+            bounds,
+            &label.text,
+            label.x,
+            label.y,
+            nana_ui_core::type_scale::HINT,
+            true,
+            palette,
+        )
     }));
     labels.extend(day_labels.iter().map(|label| {
-        axis_label_region(bounds, &label.text, label.x, label.y, 11.0, false, palette)
+        axis_label_region(
+            bounds,
+            &label.text,
+            label.x,
+            label.y,
+            nana_ui_core::type_scale::HINT,
+            false,
+            palette,
+        )
     }));
     let hover = active.and_then(|index| cells.get(index)).map(|cell| {
         calendar_hover_chrome(bounds, cell, cell_size, active_title.unwrap_or(""), palette)
@@ -73,10 +89,10 @@ pub(in crate::world) fn calendar_hover_chrome(
     let tooltip_width = (text_width + pad_x * 2.0).clamp(font_size + pad_x * 2.0, max_width);
     let tooltip_height = font_size + pad_y * 2.0;
     let ring = LayoutBox {
-        x: bounds.x + cell.x - 1.0,
-        y: bounds.y + cell.y - 1.0,
-        width: cell_size + 2.0,
-        height: cell_size + 2.0,
+        x: bounds.x + cell.x - nana_ui_core::HAIRLINE,
+        y: bounds.y + cell.y - nana_ui_core::HAIRLINE,
+        width: cell_size + nana_ui_core::HAIRLINE * 2.0,
+        height: cell_size + nana_ui_core::HAIRLINE * 2.0,
     };
     let tooltip_x = if cell.x > bounds.width / 2.0 {
         (cell.x + cell_size - tooltip_width).max(0.0)
@@ -124,13 +140,13 @@ pub(in crate::world) fn axis_label_region(
     center: bool,
     palette: &SemanticPalette,
 ) -> crate::ComponentTextRegion {
-    let width = estimated_text_width(text, font_size) + 2.0;
+    let width = estimated_text_width(text, font_size) + nana_ui_core::space::XXS;
     crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: bounds.x + x - if center { width * 0.5 } else { 0.0 },
             y: bounds.y + y,
             width,
-            height: font_size + 2.0,
+            height: font_size + nana_ui_core::space::XXS,
         },
         content: Arc::clone(text),
         color: Some(palette.muted.as_rgba_array()),

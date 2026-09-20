@@ -67,6 +67,8 @@ def extract_nana(
         return _extract_nana_catalog_workload(scenario, reports, source_paths)
     if kind == "GpuScene":
         return _extract_nana_gpu_scene(scenario, reports, source_paths)
+    if kind == "Theme":
+        return _extract_nana_theme(scenario, reports, source_paths)
     raise KeyError(f"no Nana mapping for {scenario['id']}")
 
 
@@ -672,6 +674,111 @@ def _extract_nana_compositor(
         metrics={"cpu_frame_ms": percentile_fields(case.get("steady_ms"))},
         work_counters={key: value for key, value in work_counters.items() if value is not None},
     )
+
+
+
+def _extract_nana_theme(
+    scenario: Mapping[str, Any],
+    reports: Mapping[str, Mapping[str, Any]],
+    source_paths: Mapping[str, Path],
+) -> dict[str, Any]:
+    """Issue #101 §4 theme / style baseline row.
+
+    The theme counters and the #8 frame counters both land in `work_counters`:
+    their names do not collide, and keeping them in one object is what lets a
+    scenario cross-check `style_nodes_considered` against the `style_processed`
+    the drain actually scheduled.
+    """
+    payload = reports.get("theme")
+    if payload is None:
+        raise KeyError("nana-theme-benchmark report required (catalog_theme)")
+    catalog = payload.get("catalog_theme")
+    if not isinstance(catalog, Mapping):
+        raise KeyError("nana-theme-benchmark has no catalog_theme")
+    case = _find_theme_case(catalog, scenario["id"])
+    if case.get("status") not in (None, "ok"):
+        raise KeyError(f"catalog_theme status={case.get('status')}")
+    params = scenario["params"]
+    if case.get("workload") != params.get("workload"):
+        raise KeyError(
+            f"catalog_theme workload={case.get('workload')!r} "
+            f"does not match scenario workload={params.get('workload')!r}"
+        )
+    # A row that does not echo the scale it ran is a row nobody can compare
+    # with the next run of itself.
+    if params.get("workload") == "controls" and case.get("controls") != params.get("controls"):
+        raise KeyError(
+            f"catalog_theme controls={case.get('controls')} "
+            f"does not match scenario controls={params.get('controls')}"
+        )
+    work = case.get("work")
+    frame_work = case.get("frame_work")
+    if not isinstance(work, Mapping):
+        raise KeyError("catalog_theme.work missing")
+    if not isinstance(frame_work, Mapping):
+        raise KeyError("catalog_theme.frame_work missing")
+    for key in THEME_WORK_KEYS:
+        if work.get(key) is None:
+            raise KeyError(f"catalog_theme.work.{key} missing")
+    for key in THEME_FRAME_WORK_KEYS:
+        if frame_work.get(key) is None:
+            raise KeyError(f"catalog_theme.frame_work.{key} missing")
+    considered = work["style_nodes_considered"]
+    if considered != work["style_nodes_resolved"] + work["style_nodes_skipped"]:
+        raise KeyError(
+            "catalog_theme.work.style_nodes_considered must equal resolved plus skipped"
+        )
+    notes = [
+        "Mapped onto nana-theme-benchmark catalog_theme.",
+        "Work counters are the Issue #101 §4 gate; elapsed_ms is a host observation.",
+        "Phase 0 baseline: these numbers describe the pipeline as it is, not the Issue #100 target.",
+    ]
+    counters = {key: work[key] for key in THEME_WORK_KEYS}
+    counters.update({key: frame_work[key] for key in THEME_FRAME_WORK_KEYS})
+    return envelope(
+        runner="nana",
+        status="ok",
+        scenario_id=scenario["id"],
+        scenario=scenario,
+        equivalence="same-scenario",
+        source_binary="nana-theme-benchmark",
+        source_report=str(source_paths.get("theme") or ""),
+        mapping_notes=notes,
+        metrics={"cpu_frame_ms": percentile_fields(case.get("elapsed_ms"))},
+        work_counters=counters,
+    )
+
+
+
+THEME_WORK_KEYS = (
+    "style_nodes_considered",
+    "style_nodes_resolved",
+    "style_nodes_skipped",
+    "theme_reads",
+    "style_allocations",
+    "style_allocated_bytes",
+    "layout_copies",
+    "layout_copied_bytes",
+    "layout_nodes_from_style",
+    "text_nodes_from_style",
+    "paint_nodes_from_style",
+)
+
+
+THEME_FRAME_WORK_KEYS = (
+    "entities_total",
+    "style_processed",
+    "text_shaped",
+    "layout_nodes",
+    "render_nodes_changed",
+)
+
+
+def _find_theme_case(catalog: Mapping[str, Any], scenario_id: str) -> Mapping[str, Any]:
+    for row in catalog.get("cases") or []:
+        if isinstance(row, Mapping) and row.get("id") == scenario_id:
+            return row
+    raise KeyError(f"catalog_theme has no case id={scenario_id}")
 
 
 

@@ -8,140 +8,41 @@
 use nana_ui_core::{AppearanceSettings, BackdropTarget};
 
 pub use nana_ui_core::{
-    SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space,
-    type_scale,
+    HAIRLINE, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE,
+    UI_METRICS, space, type_scale,
 };
 
 /// Linear RGBA color used by L3 token adapters. Same layout as [`SemanticColor`].
 pub type Color = SemanticColor;
 
-/// Semantic colors shared by the NanaUI shell.
-///
-/// Adapter view of [`SemanticPalette`]. Prefer constructing via
-/// [`Colors::from_palette`] / [`ThemeModeExt::colors`] so values stay single-sourced.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Colors {
-    pub background: Color,
-    pub surface: Color,
-    pub subtle: Color,
-    pub hover: Color,
-    pub active: Color,
-    pub selected: Color,
-    pub selected_hover: Color,
-    pub selected_pressed: Color,
-    pub border: Color,
-    pub border_soft: Color,
-    pub border_strong: Color,
-    pub text: Color,
-    pub muted: Color,
-    pub faint: Color,
-    pub accent: Color,
-    pub accent_strong: Color,
-    pub accent_soft: Color,
-    pub accent_soft_hover: Color,
-    pub accent_soft_pressed: Color,
-    pub accent_on_soft: Color,
-    pub accent_text: Color,
-    pub success: Color,
-    pub warning: Color,
-    pub danger: Color,
-}
-
-impl Colors {
-    pub fn from_palette(palette: SemanticPalette) -> Self {
-        Self {
-            background: palette.background,
-            surface: palette.surface,
-            subtle: palette.subtle,
-            hover: palette.hover,
-            active: palette.active,
-            selected: palette.selected,
-            selected_hover: palette.selected_hover,
-            selected_pressed: palette.selected_pressed,
-            border: palette.border,
-            border_soft: palette.border_soft,
-            border_strong: palette.border_strong,
-            text: palette.text,
-            muted: palette.muted,
-            faint: palette.faint,
-            accent: palette.accent,
-            accent_strong: palette.accent_strong,
-            accent_soft: palette.accent_soft,
-            accent_soft_hover: palette.accent_soft_hover,
-            accent_soft_pressed: palette.accent_soft_pressed,
-            accent_on_soft: palette.accent_on_soft,
-            accent_text: palette.accent_text,
-            success: palette.success,
-            warning: palette.warning,
-            danger: palette.danger,
-        }
-    }
-
-    pub fn to_palette(self) -> SemanticPalette {
-        SemanticPalette {
-            background: self.background,
-            surface: self.surface,
-            subtle: self.subtle,
-            hover: self.hover,
-            active: self.active,
-            selected: self.selected,
-            selected_hover: self.selected_hover,
-            selected_pressed: self.selected_pressed,
-            border: self.border,
-            border_soft: self.border_soft,
-            border_strong: self.border_strong,
-            text: self.text,
-            muted: self.muted,
-            faint: self.faint,
-            accent: self.accent,
-            accent_strong: self.accent_strong,
-            accent_soft: self.accent_soft,
-            accent_soft_hover: self.accent_soft_hover,
-            accent_soft_pressed: self.accent_soft_pressed,
-            accent_on_soft: self.accent_on_soft,
-            accent_text: self.accent_text,
-            success: self.success,
-            warning: self.warning,
-            danger: self.danger,
-        }
-    }
-}
-
-impl From<SemanticPalette> for Colors {
-    fn from(palette: SemanticPalette) -> Self {
-        Self::from_palette(palette)
-    }
-}
-
-impl From<Colors> for SemanticPalette {
-    fn from(colors: Colors) -> Self {
-        colors.to_palette()
-    }
-}
-
-/// Runtime token bundle: semantic [`Colors`] + [`ThemeMetrics`].
+/// Runtime token bundle: [`SemanticPalette`] + [`ThemeMetrics`] + chrome.
 ///
 /// This is the Style Model Tokens view for the Scene host — not a dump of
 /// arbitrary CSS. L1 maps known theme tiers here; unknown business colors must
 /// not invent formal token fields.
+///
+/// The palette is the one in `nana-ui-core`, not a copy of it. There used to
+/// be a `Colors` struct here with the same 24 fields and a pair of conversions
+/// between the two; one design language does not get two spellings, and a
+/// second spelling is where the two drift apart.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThemeTokens {
-    pub colors: Colors,
+    pub palette: SemanticPalette,
     pub metrics: ThemeMetrics,
     pub workspace_corners_enabled: bool,
     /// Title-bar / chrome strip background.
     ///
-    /// Defaults to [`Colors::surface`], but stays independent so
+    /// Defaults to [`SemanticPalette::surface`], but stays independent so
     /// `titlebar_follows_sidebar=false` can keep the title bar opaque while the
     /// sidebar surface remains translucent.
     pub titlebar: Color,
 }
 
 impl ThemeTokens {
-    pub const fn new(colors: Colors, metrics: ThemeMetrics) -> Self {
+    pub const fn new(palette: SemanticPalette, metrics: ThemeMetrics) -> Self {
         Self {
-            titlebar: colors.surface,
-            colors,
+            titlebar: palette.surface,
+            palette,
             metrics,
             workspace_corners_enabled: true,
         }
@@ -178,7 +79,7 @@ impl ThemeTokens {
         let opacity = AppearanceSettings::clamp_backdrop_opacity(opacity);
         match target {
             BackdropTarget::Sidebar => {
-                self.colors.surface.a = opacity;
+                self.palette.surface.a = opacity;
                 if titlebar_follows_sidebar {
                     self.titlebar.a = opacity;
                 } else {
@@ -186,16 +87,16 @@ impl ThemeTokens {
                 }
             }
             BackdropTarget::Main => {
-                self.colors.background.a = opacity;
+                self.palette.background.a = opacity;
             }
         }
         self
     }
 }
 
-impl From<Colors> for ThemeTokens {
-    fn from(colors: Colors) -> Self {
-        Self::new(colors, UI_METRICS)
+impl From<SemanticPalette> for ThemeTokens {
+    fn from(palette: SemanticPalette) -> Self {
+        Self::new(palette, UI_METRICS)
     }
 }
 
@@ -205,17 +106,14 @@ pub fn install_theme_tokens(
     mode: ThemeMode,
     tokens: ThemeTokens,
 ) -> Result<bool, nana_ui_runtime::FrameworkError> {
-    context.set_style_tokens(
-        mode,
-        tokens.metrics,
-        tokens.colors.to_palette(),
-        tokens.titlebar,
-    )
+    context.set_style_tokens(mode, tokens.metrics, tokens.palette, tokens.titlebar)
 }
 
 /// Token helpers for [`ThemeMode`].
+///
+/// `colors()` is gone: it returned a second palette type with the same fields
+/// as [`SemanticPalette`]. Use [`Self::palette`].
 pub trait ThemeModeExt: Copy {
-    fn colors(self) -> Colors;
     fn tokens(self) -> ThemeTokens;
     fn palette(self) -> SemanticPalette;
 }
@@ -225,12 +123,8 @@ impl ThemeModeExt for ThemeMode {
         ThemeMode::palette(self)
     }
 
-    fn colors(self) -> Colors {
-        Colors::from_palette(self.palette())
-    }
-
     fn tokens(self) -> ThemeTokens {
-        ThemeTokens::new(self.colors(), self.metrics())
+        ThemeTokens::new(self.palette(), self.metrics())
     }
 }
 
@@ -243,18 +137,19 @@ pub use nana_ui_core::fonts::{
 
 #[cfg(test)]
 mod tests {
-    use super::{Colors, ThemeMode, ThemeModeExt, ThemeTokens};
+    use super::{ThemeMode, ThemeModeExt, ThemeTokens};
     use nana_ui_core::{BackdropTarget, SemanticPalette};
 
+    /// One palette type, not two. The adapter used to expose a `Colors` struct
+    /// with the same 24 fields; this asserts the token bundle now carries the
+    /// core palette itself, so there is nothing to keep in sync.
     #[test]
-    fn colors_round_trip_palette() {
-        let palette = SemanticPalette::light();
-        let colors = Colors::from_palette(palette);
-        let back = colors.to_palette();
-        assert_eq!(back.accent.r, palette.accent.r);
+    fn the_token_bundle_carries_the_core_palette_itself() {
+        assert_eq!(ThemeMode::Dark.palette(), SemanticPalette::dark());
+        assert_eq!(ThemeMode::Light.tokens().palette, SemanticPalette::light());
         assert_eq!(
-            ThemeMode::Dark.colors().background,
-            Colors::from_palette(SemanticPalette::dark()).background
+            ThemeTokens::from(SemanticPalette::dark()).palette,
+            SemanticPalette::dark()
         );
     }
 
@@ -262,13 +157,13 @@ mod tests {
     fn titlebar_follows_sidebar_controls_titlebar_alpha() {
         let base = ThemeMode::Light.tokens();
         let follows = base.with_backdrop(true, BackdropTarget::Sidebar, 0.5, true);
-        assert!((follows.colors.surface.a - 0.5).abs() < f32::EPSILON);
+        assert!((follows.palette.surface.a - 0.5).abs() < f32::EPSILON);
         assert!((follows.titlebar.a - 0.5).abs() < f32::EPSILON);
-        assert!((follows.colors.background.a - 1.0).abs() < f32::EPSILON);
+        assert!((follows.palette.background.a - 1.0).abs() < f32::EPSILON);
 
-        let independent = ThemeTokens::new(ThemeMode::Light.colors(), ThemeMode::Light.metrics())
+        let independent = ThemeTokens::new(ThemeMode::Light.palette(), ThemeMode::Light.metrics())
             .with_backdrop(true, BackdropTarget::Sidebar, 0.5, false);
-        assert!((independent.colors.surface.a - 0.5).abs() < f32::EPSILON);
+        assert!((independent.palette.surface.a - 0.5).abs() < f32::EPSILON);
         assert!(
             (independent.titlebar.a - 1.0).abs() < f32::EPSILON,
             "titlebar must stay opaque when follows=false"
@@ -277,17 +172,17 @@ mod tests {
         let main = ThemeMode::Light
             .tokens()
             .with_backdrop(true, BackdropTarget::Main, 0.5, true);
-        assert!((main.colors.background.a - 0.5).abs() < f32::EPSILON);
-        assert!((main.colors.surface.a - 1.0).abs() < f32::EPSILON);
+        assert!((main.palette.background.a - 0.5).abs() < f32::EPSILON);
+        assert!((main.palette.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((main.titlebar.a - 1.0).abs() < f32::EPSILON);
 
         let solid =
             ThemeMode::Light
                 .tokens()
                 .with_backdrop(false, BackdropTarget::Sidebar, 0.5, true);
-        assert!((solid.colors.surface.a - 1.0).abs() < f32::EPSILON);
+        assert!((solid.palette.surface.a - 1.0).abs() < f32::EPSILON);
         assert!((solid.titlebar.a - 1.0).abs() < f32::EPSILON);
-        assert!((solid.colors.background.a - 1.0).abs() < f32::EPSILON);
+        assert!((solid.palette.background.a - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

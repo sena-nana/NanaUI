@@ -1,0 +1,11 @@
+component: image-viewer
+mode: light
+state: open
+  target: 0.00,0.00 420.00x240.00
+  a11y: role=Dialog disabled=false checked=None selected=None mixed=false
+  quad #2/10 0.00,0.00 420.00x240.00 opacity=1.00 bg=#fffffff0 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/11 54.00,54.00 312.00x162.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  quad #2/12 54.00,54.00 312.00x136.00 opacity=1.00 bg=#ffffff57 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #2/14 324.00,68.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/15 54.00,200.00 312.00x16.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/17 324.00,68.00 28.00x28.00 opacity=1.00 color=#1a1a1fff size=15.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

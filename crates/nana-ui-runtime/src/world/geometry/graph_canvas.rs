@@ -37,7 +37,7 @@ pub(in crate::world) fn graph_canvas_geometry(
                     bounds: label_bounds,
                     content: Arc::clone(label),
                     color: Some(palette.muted.as_rgba_array()),
-                    font_size: 10.0,
+                    font_size: nana_ui_core::type_scale::HINT,
                     font_weight: None,
                 });
             }
@@ -87,8 +87,11 @@ pub(in crate::world) fn graph_canvas_geometry(
                 }),
                 content: Arc::clone(&node.label),
                 color: Some(palette.text.as_rgba_array()),
-                font_size: (12.0 * viewport_zoom).clamp(9.0, 13.0),
-                font_weight: Some(500),
+                font_size: (nana_ui_core::type_scale::META * viewport_zoom).clamp(
+                    crate::graph_canvas::NODE_TITLE_SIZE_MIN,
+                    nana_ui_core::type_scale::BODY,
+                ),
+                font_weight: Some(nana_ui_core::type_scale::MEDIUM),
             };
             let fill = if node.selected {
                 palette.selected.as_rgba_array()
@@ -316,33 +319,30 @@ pub(in crate::world) fn port_label_region(
     port: &crate::GraphPortPaint,
     color: [f32; 4],
 ) -> (crate::ComponentTextRegion, crate::TextHorizontalAlignment) {
-    let (x, y, width, height, align) = match port.side {
+    let width = crate::graph_canvas::PORT_LABEL_WIDTH;
+    let (x, y, height, align) = match port.side {
         GraphPortSide::Top => (
-            port.x - 40.0,
-            port.y + 8.0,
-            80.0,
-            12.0,
+            port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
+            port.y + nana_ui_core::space::MD,
+            nana_ui_core::type_scale::META,
             crate::TextHorizontalAlignment::Center,
         ),
         GraphPortSide::Right => (
-            port.x - 88.0,
-            port.y - 7.0,
-            80.0,
-            14.0,
+            port.x - (width + nana_ui_core::space::MD),
+            port.y - nana_ui_core::space::SM,
+            nana_ui_core::type_scale::SECTION,
             crate::TextHorizontalAlignment::End,
         ),
         GraphPortSide::Bottom => (
-            port.x - 40.0,
-            port.y - 20.0,
-            80.0,
-            12.0,
+            port.x - nana_ui_core::space::PAGE_TIGHT * 2.0,
+            port.y - nana_ui_core::space::PAGE_TIGHT,
+            nana_ui_core::type_scale::META,
             crate::TextHorizontalAlignment::Center,
         ),
         GraphPortSide::Left => (
-            port.x + 8.0,
-            port.y - 7.0,
-            80.0,
-            14.0,
+            port.x + nana_ui_core::space::MD,
+            port.y - nana_ui_core::space::SM,
+            nana_ui_core::type_scale::SECTION,
             crate::TextHorizontalAlignment::Start,
         ),
     };
@@ -356,7 +356,7 @@ pub(in crate::world) fn port_label_region(
             },
             content: Arc::clone(&port.label),
             color: Some(color),
-            font_size: 9.5,
+            font_size: crate::graph_canvas::PORT_LABEL_SIZE,
             font_weight: None,
         },
         align,

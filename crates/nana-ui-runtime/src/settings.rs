@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[cfg(test)]
+use nana_ui_core::UI_METRICS;
 use nana_ui_core::{
     AlignSpec, AppearanceEvent, AppearanceSettings, BackdropTarget, ButtonKind, CardKind,
     ControlSize, FlexDirection, FlexWrap, Icon, JustifySpec, LengthSpec, LineHeightSpec,
     OverflowSpec, PaddingSpec, SemanticColorRole, SettingsModel, SettingsState, SettingsTabId,
-    ThemeMode, UI_METRICS, WindowMaterialMode,
+    ThemeMode, WindowMaterialMode,
 };
 
 use crate::view_components::{
@@ -19,13 +21,13 @@ use crate::{
     StableNodeId, StandardVisual, TextContent, UiWorld,
 };
 
-const ROW_PADDING_Y: f32 = 10.0;
-const ROW_GROUP_PADDING_Y: f32 = 4.0;
-const ROW_STACK_GAP: f32 = 6.0;
-const ROW_STACK_GAP_LOOSE: f32 = 10.0;
-const ROW_INLINE_GAP: f32 = 8.0;
-const ROW_INLINE_GAP_LOOSE: f32 = 14.0;
-const ROW_COPY_GAP: f32 = 2.0;
+const ROW_PADDING_Y: f32 = nana_ui_core::space::LG;
+const ROW_GROUP_PADDING_Y: f32 = nana_ui_core::space::XS;
+const ROW_STACK_GAP: f32 = nana_ui_core::space::SM;
+const ROW_STACK_GAP_LOOSE: f32 = nana_ui_core::space::LG;
+const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
+const ROW_INLINE_GAP_LOOSE: f32 = nana_ui_core::space::XXL;
+const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
 
 /// Non-interactive chrome wrapping an application-owned control child.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,10 +184,14 @@ impl SettingsRow {
         } else {
             ROW_PADDING_Y
         }));
-        layout.border_width = Some(if self.divided { 1.0 } else { 0.0 });
-        layout.font_size = Some(13.0);
-        layout.line_height = Some(LineHeightSpec::Absolute(13.0));
-        layout.font_weight = Some(500);
+        layout.border_width = Some(if self.divided {
+            nana_ui_core::HAIRLINE
+        } else {
+            0.0
+        });
+        layout.font_size = Some(nana_ui_core::type_scale::BODY);
+        layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
+        layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
         style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
         style
     }
@@ -265,9 +271,9 @@ fn label_slot_style() -> NodeStyle {
     style.foreground = Some(SemanticColorRole::Text);
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(13.0);
-    layout.line_height = Some(LineHeightSpec::Absolute(13.0));
-    layout.font_weight = Some(500);
+    layout.font_size = Some(nana_ui_core::type_scale::BODY);
+    layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
+    layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
     layout.width = Some(LengthSpec::Fill);
     layout.flex_grow = Some(1.0);
     layout.flex_shrink = Some(1.0);
@@ -281,8 +287,8 @@ fn hint_slot_style(hidden: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Muted);
     let layout = Arc::make_mut(&mut style.layout);
-    layout.font_size = Some(12.0);
-    layout.font_weight = Some(400);
+    layout.font_size = Some(nana_ui_core::type_scale::META);
+    layout.font_weight = Some(nana_ui_core::type_scale::REGULAR);
     layout.width = Some(LengthSpec::Fill);
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
@@ -383,9 +389,9 @@ impl ComponentView for SettingsCard {
     }
 }
 
-const COLLAPSIBLE_HEADER_GAP: f32 = 8.0;
-const COLLAPSIBLE_BODY_GAP: f32 = 12.0;
-const DISCLOSURE_ICON_SIZE: f32 = 16.0;
+const COLLAPSIBLE_HEADER_GAP: f32 = nana_ui_core::space::MD;
+const COLLAPSIBLE_BODY_GAP: f32 = nana_ui_core::space::XL;
+const DISCLOSURE_ICON_SIZE: f32 = nana_ui_core::type_scale::LINE;
 
 /// Controlled collapse. Header is keyboard-activatable; values stay host-owned.
 #[derive(Debug, Clone, PartialEq)]
@@ -449,14 +455,12 @@ impl SettingsCollapsibleCard {
     fn card(&self) -> Card {
         let mut card = Card::new().kind(CardKind::Surface);
         let mut style = card.style.clone();
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Fill);
-        layout.direction = Some(FlexDirection::Column);
-        layout.gap = Some(LengthSpec::Px(COLLAPSIBLE_BODY_GAP));
-        layout.padding_left = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-        layout.padding_right = Some(LengthSpec::Px(UI_METRICS.panel_padding_x));
-        layout.padding_top = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
-        layout.padding_bottom = Some(LengthSpec::Px(UI_METRICS.panel_padding_y));
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.width = Some(LengthSpec::Fill);
+            layout.direction = Some(FlexDirection::Column);
+            layout.gap = Some(LengthSpec::Px(COLLAPSIBLE_BODY_GAP));
+        }
         style.interaction = if self.disabled {
             InteractionStyle {
                 disabled: SemanticPaint {
@@ -643,8 +647,8 @@ impl SettingsCollapsibleDivider {
         style.background = Some(SemanticColorRole::BorderSoft);
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
-        layout.height = Some(LengthSpec::Px(1.0));
-        layout.min_height = Some(LengthSpec::Px(1.0));
+        layout.height = Some(LengthSpec::Px(nana_ui_core::HAIRLINE));
+        layout.min_height = Some(LengthSpec::Px(nana_ui_core::HAIRLINE));
         layout.hidden = self.hidden;
         style
     }
@@ -698,16 +702,16 @@ impl ComponentView for SettingsDisclosure {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
-        let size = ControlSize::Small.height();
         let mut style = NodeStyle::default();
         style.foreground = Some(SemanticColorRole::Muted);
-        let layout = Arc::make_mut(&mut style.layout);
-        layout.width = Some(LengthSpec::Px(size));
-        layout.height = Some(LengthSpec::Px(size));
-        layout.min_width = Some(LengthSpec::Px(size));
-        layout.min_height = Some(LengthSpec::Px(size));
-        layout.flex_grow = Some(0.0);
-        layout.flex_shrink = Some(0.0);
+        style.square = Some(nana_ui_core::SquareSize::Control(ControlSize::Small));
+        style.control_height = Some(nana_ui_core::ControlHeight::Exact(ControlSize::Small));
+        {
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.aspect_ratio = Some(1.0);
+            layout.flex_grow = Some(0.0);
+            layout.flex_shrink = Some(0.0);
+        }
         project_common(
             id,
             world,
@@ -883,18 +887,18 @@ impl ComponentView for AboutSection {
     }
 }
 
-const SETTINGS_SIDEBAR_GAP: f32 = 12.0;
-const SETTINGS_SIDEBAR_TAB_GAP: f32 = 1.0;
+const SETTINGS_SIDEBAR_GAP: f32 = nana_ui_core::space::XL;
+const SETTINGS_SIDEBAR_TAB_GAP: f32 = nana_ui_core::space::XXS;
 const SETTINGS_SIDEBAR_ICON_SIZE: f32 = ControlSize::Small.icon_size();
-const SETTINGS_PAGE_GAP: f32 = 16.0;
+const SETTINGS_PAGE_GAP: f32 = nana_ui_core::space::XXXL;
 /// Tighter than the other three: the page sits under a title row that already
 /// contributes its own leading.
 const SETTINGS_PAGE_PADDING_TOP: f32 = nana_ui_core::space::PAGE_TIGHT;
 const SETTINGS_PAGE_PADDING_RIGHT: f32 = nana_ui_core::space::PAGE;
 const SETTINGS_PAGE_PADDING_BOTTOM: f32 = nana_ui_core::space::PAGE;
 const SETTINGS_PAGE_PADDING_LEFT: f32 = nana_ui_core::space::PAGE;
-const SETTINGS_PAGE_TITLE_SIZE: f32 = 18.0;
-const SETTINGS_PAGE_TITLE_WEIGHT: u16 = 600;
+const SETTINGS_PAGE_TITLE_SIZE: f32 = nana_ui_core::type_scale::TITLE;
+const SETTINGS_PAGE_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 
 /// Host-owned navigation snapshot. Activate emits [`SettingsBack`] / [`SettingsTabSelected`].
 #[derive(Debug, Clone)]
@@ -1775,7 +1779,12 @@ impl AppContext {
                 self,
                 document,
                 &mut assembly.material_status_value,
-                styled_text(status, SemanticColorRole::Muted, 12.0, 400),
+                styled_text(
+                    status,
+                    SemanticColorRole::Muted,
+                    nana_ui_core::type_scale::META,
+                    nana_ui_core::type_scale::REGULAR,
+                ),
             )?;
             Some(mount_settings_row(
                 self,
@@ -2127,15 +2136,27 @@ impl AppContext {
         )?;
         let mut ordered = vec![name_row.stable_id(), version_row.stable_id()];
         if let Some(description) = metadata.description.as_deref() {
-            let mut style = styled_text(description, SemanticColorRole::Muted, 12.0, 400).style;
+            let mut style = styled_text(
+                description,
+                SemanticColorRole::Muted,
+                nana_ui_core::type_scale::META,
+                nana_ui_core::type_scale::REGULAR,
+            )
+            .style;
             let layout = Arc::make_mut(&mut style.layout);
             layout.width = Some(LengthSpec::Fill);
-            layout.padding_top = Some(LengthSpec::Px(8.0));
+            layout.padding_top = Some(LengthSpec::Px(nana_ui_core::space::MD));
             let description = sync_text(
                 self,
                 document,
                 &mut assembly.description,
-                styled_text(description, SemanticColorRole::Muted, 12.0, 400).style(style),
+                styled_text(
+                    description,
+                    SemanticColorRole::Muted,
+                    nana_ui_core::type_scale::META,
+                    nana_ui_core::type_scale::REGULAR,
+                )
+                .style(style),
             )?;
             ordered.push(description.stable_id());
         }
@@ -2597,12 +2618,18 @@ mod tests {
         assert_eq!(row_style.layout.align_items, AlignSpec::Center);
         assert_eq!(context.world().text(label.stable_id()), Some("主题"));
         let label_style = context.world().node_style(label.stable_id()).unwrap();
-        assert_eq!(label_style.layout.font_size, Some(13.0));
+        assert_eq!(
+            label_style.layout.font_size,
+            Some(nana_ui_core::type_scale::BODY)
+        );
         assert_eq!(
             label_style.layout.line_height,
-            Some(LineHeightSpec::Absolute(13.0))
+            Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY))
         );
-        assert_eq!(label_style.layout.font_weight, Some(500));
+        assert_eq!(
+            label_style.layout.font_weight,
+            Some(nana_ui_core::type_scale::MEDIUM)
+        );
         assert_eq!(label_style.foreground, Some(SemanticColorRole::Text));
         assert!(label_style.layout.white_space_nowrap);
         assert!(label_style.layout.text_overflow_ellipsis);
@@ -2613,7 +2640,10 @@ mod tests {
             Some("选择应用配色，立即生效")
         );
         let hint_style = context.world().node_style(hint.stable_id()).unwrap();
-        assert_eq!(hint_style.layout.font_size, Some(12.0));
+        assert_eq!(
+            hint_style.layout.font_size,
+            Some(nana_ui_core::type_scale::META)
+        );
         assert_eq!(hint_style.foreground, Some(SemanticColorRole::Muted));
         assert!(hint_style.layout.white_space_nowrap);
         assert!(hint_style.layout.text_overflow_ellipsis);
@@ -2783,10 +2813,8 @@ mod tests {
             }) if title.is_none()
         ));
         assert_eq!(
-            context
-                .world()
-                .node_style(section.stable_id())
-                .unwrap()
+            context.world().extract_nodes(&[section.stable_id()])[0]
+                .source_style
                 .layout
                 .resolved_padding()
                 .top,
@@ -2867,7 +2895,10 @@ mod tests {
         );
         let theme_hint = hint_slot_of(&context, solid.theme_row.unwrap()).unwrap();
         let theme_hint_style = context.world().node_style(theme_hint).unwrap();
-        assert_eq!(theme_hint_style.layout.font_size, Some(12.0));
+        assert_eq!(
+            theme_hint_style.layout.font_size,
+            Some(nana_ui_core::type_scale::META)
+        );
         assert_eq!(theme_hint_style.foreground, Some(SemanticColorRole::Muted));
         assert_eq!(
             visible_hint_text(&context, solid.workspace_row.unwrap()),
@@ -3078,10 +3109,8 @@ mod tests {
             }) if title.is_none()
         ));
         assert_eq!(
-            context
-                .world()
-                .node_style(section.stable_id())
-                .unwrap()
+            context.world().extract_nodes(&[section.stable_id()])[0]
+                .source_style
                 .layout
                 .resolved_padding()
                 .top,
@@ -3717,10 +3746,8 @@ mod spacing_tests {
             }) if title.is_none()
         ));
         assert_eq!(
-            context
-                .world()
-                .node_style(section.stable_id())
-                .unwrap()
+            context.world().extract_nodes(&[section.stable_id()])[0]
+                .source_style
                 .layout
                 .resolved_padding()
                 .top,

@@ -1,0 +1,17 @@
+component: dock
+mode: dark
+state: split-tabs
+  target: 20.00,20.00 600.00x280.00
+  a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #5/0 20.00,20.00 600.00x280.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #8/0 20.00,20.00 207.20x280.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #10/0 20.00,20.00 101.60x28.00 opacity=1.00 bg=#353535ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #10/2 30.00,20.00 81.60x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #11/0 125.60,20.00 101.60x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #11/2 135.60,20.00 81.60x28.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 28.00,56.00 191.20x236.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #7/0 230.20,20.00 2.00x280.00 opacity=1.00 bg=#3a3a3aff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #12/0 235.20,20.00 384.80x280.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  quad #13/0 235.20,20.00 384.80x28.00 opacity=1.00 bg=#202020ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
+  text #13/2 241.20,20.00 372.80x28.00 opacity=1.00 color=#a3a3a3ff size=11.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 243.20,56.00 368.80x236.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

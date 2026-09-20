@@ -16,6 +16,8 @@ use fixture_values::*;
 #[path = "migration_next/catalog.rs"]
 mod catalog;
 use catalog::*;
+#[path = "migration_next/semantic.rs"]
+mod semantic;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -73,8 +75,8 @@ use nana_ui::{
     GraphEdge, GraphEndpoint, GraphModel, GraphNode, GraphPoint, GraphPort, GraphPortKind,
     GraphPortSide, GraphSize, Icon, NanaTextShaper, RegionId, RegionRole, RegionState,
     RuntimeInputAdapter, SettingsModel, SettingsState, SettingsTab, SettingsTabId, SplitAxis,
-    ThemeMode, ThemeModeExt, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode,
-    WorkspaceLayout, XYPadValue, component_catalog, component_ids,
+    ThemeMode, TooltipConfig, TooltipPlacement, TreeNode, WindowMaterialMode, WorkspaceLayout,
+    XYPadValue, component_catalog, component_ids,
 };
 use nana_ui_core::{
     ContentFit, DialogSize, DrawerSide, LengthSpec, SemanticColorRole, SplitPaneModel, StatusTone,
@@ -286,7 +288,7 @@ pub(super) fn generate_registered(
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
 
-    let colors = theme.colors();
+    let colors = theme.palette();
     let gpu = gpu::create_snapshot_gpu(
         &snapshots.device,
         &snapshots.queue,
@@ -297,6 +299,45 @@ pub(super) fn generate_registered(
         render_fixture(snapshots, recorder, theme, *fixture, &gpu)?;
     }
     Ok(())
+}
+
+/// Issue #101 §3 semantic baseline: the same fixtures, described as what the
+/// theme resolved to instead of as pixels.
+///
+/// One file per component per mode, holding every state in registry order.
+/// Per state would multiply the tree by the state matrix for no gain — the
+/// states of one component are read together, and a reviewer comparing light
+/// with dark wants both columns in one diff.
+pub(super) fn generate_semantic(
+    recorder: &mut Recorder,
+    theme: ThemeMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_fixture_registry().map_err(std::io::Error::other)?;
+
+    let theme_name = match theme {
+        ThemeMode::Dark => "dark",
+        ThemeMode::Light => "light",
+    };
+    // Keyed, not streamed: the registry groups a component's fixtures today,
+    // but nothing enforces that, and a registry reorder must not silently
+    // split one component across two half-written baselines.
+    let mut bodies: std::collections::BTreeMap<&'static str, String> = Default::default();
+    for fixture in FIXTURE_REGISTRY {
+        let runtime = runtime_fixture(theme, *fixture, fixture_size(*fixture))?;
+        let component = fixture.id.as_str();
+        bodies
+            .entry(component)
+            .or_insert_with(|| format!("component: {component}\nmode: {theme_name}\n"))
+            .push_str(&semantic::describe_fixture(*fixture, &runtime));
+    }
+    for (component, body) in bodies {
+        recorder.record_text(&semantic_key(component, theme_name), &body)?;
+    }
+    Ok(())
+}
+
+fn semantic_key(component: &str, theme: &str) -> String {
+    format!("component-migration/{component}/{theme}.txt")
 }
 
 fn validate_fixture_registry() -> Result<(), String> {
@@ -364,7 +405,7 @@ fn render_fixture(
     } else {
         (None, None)
     };
-    let colors = theme.colors();
+    let colors = theme.palette();
     let clear = [
         colors.background.r,
         colors.background.g,
@@ -760,7 +801,11 @@ fn runtime_fixture(
                     "Notifications",
                     matches!(
                         fixture.state,
-                        "on" | "pointer-toggle" | "space-toggle" | "accessibility-toggle"
+                        "on" | "selected-hover"
+                            | "selected-pressed"
+                            | "pointer-toggle"
+                            | "space-toggle"
+                            | "accessibility-toggle"
                     ),
                 )
                 .disabled(fixture.state == "disabled")
@@ -777,7 +822,10 @@ fn runtime_fixture(
                 ..TooltipConfig::default()
             };
             let component = RuntimeIconButton::new(Icon::Add, "Add source")
-                .selected(fixture.state == "selected")
+                .selected(matches!(
+                    fixture.state,
+                    "selected" | "selected-hover" | "selected-pressed"
+                ))
                 .disabled(fixture.state == "disabled")
                 .tooltip("Add source", tooltip);
             document
@@ -1008,7 +1056,15 @@ fn runtime_fixture(
         }
         Component::InteractiveCard => document.context_mut().build(document_id, |ui| {
             let label = ui.parked(RuntimeText::new("Interactive surface"));
-            let card = ui.child("card", RuntimeInteractiveCard::new().selected(true));
+            let card = ui.child(
+                "card",
+                RuntimeInteractiveCard::new()
+                    .selected(matches!(
+                        fixture.state,
+                        "selected" | "selected-hover" | "selected-pressed"
+                    ))
+                    .disabled(fixture.state == "disabled"),
+            );
             ui.nest(card, |ui| ui.adopt(label));
             card.stable_id()
         })?,
@@ -1302,6 +1358,7 @@ fn runtime_fixture(
                 document_id,
                 RuntimeDropdown::single(Some("code"))
                     .placeholder("Choose view")
+                    .disabled(fixture.state == "disabled")
                     .options([
                         RuntimeDropdownOption::new("code", "Code"),
                         RuntimeDropdownOption::new("split", "Split").disabled(true),
@@ -1315,6 +1372,7 @@ fn runtime_fixture(
                 document_id,
                 RuntimeSearchDropdown::new(Some("code"))
                     .placeholder("Search views")
+                    .disabled(fixture.state == "disabled")
                     .options([
                         RuntimeSearchDropdownOption::new("code", "Code"),
                         RuntimeSearchDropdownOption::new("preview", "Preview"),
@@ -1344,7 +1402,7 @@ fn runtime_fixture(
             let row = ui.child(
                 "row",
                 RuntimeSidebarRow::new("工作区")
-                    .state(nana_ui::runtime::SidebarRowState::Active)
+                    .state(sidebar_row_state(fixture.state))
                     .slots(nana_ui::runtime::ListItemSlots {
                         leading: Some(leading.stable_id()),
                         content: None,
@@ -1432,7 +1490,7 @@ fn runtime_fixture(
                 .stable_id()
         }
         Component::GpuView => {
-            let colors = theme.colors();
+            let colors = theme.palette();
             document
                 .context_mut()
                 .create_component(
@@ -1479,8 +1537,17 @@ fn runtime_fixture(
             exercise_segmented_contract(&mut document, viewport, &mut shaper, fixture, segmented)?;
         (contract_ok, true, contract_ok)
     } else {
+        // Name the fixture in the error. A bare `NotPointerInteractive(5)`
+        // from a 500-fixture sweep says nothing about which one asked for a
+        // state its component cannot enter.
         (
-            apply_runtime_state(&mut document, fixture, target)?,
+            apply_runtime_state(&mut document, fixture, target).map_err(|error| {
+                std::io::Error::other(format!(
+                    "fixture {}/{} could not enter its state: {error}",
+                    fixture.id.as_str(),
+                    fixture.state
+                ))
+            })?,
             true,
             true,
         )
@@ -1835,10 +1902,42 @@ fn keyboard_text(text: &str) -> InputEvent {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_fixture_registry;
+    use super::{generate_semantic, validate_fixture_registry};
+    use crate::baseline::{Mode, Options, Recorder};
+    use nana_ui::ThemeMode;
+    use std::path::PathBuf;
 
     #[test]
     fn fixture_registry_covers_compiled_runtime_qualified_components() {
         validate_fixture_registry().expect("snapshot fixture registry must match the catalog");
+    }
+
+    /// The semantic baseline is the half of the Gallery gate that a machine
+    /// without the recording adapter can still run (Issue #101 §3). Running it
+    /// here is what makes that true in practice: the pixel suite is skipped on
+    /// every hosted runner, so without this the state matrix would be checked
+    /// nowhere.
+    #[test]
+    fn the_committed_semantic_baseline_still_describes_what_the_theme_resolves_to() {
+        let output =
+            std::env::temp_dir().join(format!("nana-ui-semantic-verify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&output);
+        let mut recorder = Recorder::new(Options {
+            mode: Mode::Verify,
+            output,
+            baseline_root: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("snapshots"),
+            platform: "semantic".to_owned(),
+            adapter: "none (semantic)".to_owned(),
+        });
+        for theme in [ThemeMode::Dark, ThemeMode::Light] {
+            generate_semantic(&mut recorder, theme).expect("semantic pass runs");
+        }
+        let report = recorder.finish().expect("finish");
+        assert_eq!(
+            report.failures, 0,
+            "semantic baseline disagrees; re-record with `--semantic --bless` only after \
+             reading the diff:\n{}",
+            report.summary
+        );
     }
 }

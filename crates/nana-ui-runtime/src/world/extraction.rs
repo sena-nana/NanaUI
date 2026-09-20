@@ -60,6 +60,7 @@ impl UiWorld {
             kind,
             has_text,
             source_style,
+            resolved_layout,
             hierarchy_parent,
             hierarchy_children,
             layout,
@@ -78,6 +79,7 @@ impl UiWorld {
                 kind,
                 has_text,
                 node.style.clone(),
+                Arc::clone(&node.resolved_layout),
                 node.hierarchy.parent,
                 Arc::clone(&node.hierarchy.children),
                 node.layout,
@@ -223,7 +225,10 @@ impl UiWorld {
             }
         });
         let mut source_style = source_style;
-        source_style.layout = self.motion_layout(id, &source_style.layout);
+        // The node's design intent is already resolved into `resolved_layout`,
+        // on write. Resolving it here instead meant an `Arc::make_mut` copy of
+        // a 4.8 KB `LayoutStyle` per control per frame.
+        source_style.layout = self.motion_layout(id, &resolved_layout);
         // Scene receives the layout-resolved padding; it must not resolve %
         // against the painted node's own width. Authored world style stays intact.
         let padding = self.used_layout_padding(id);
@@ -286,6 +291,7 @@ impl UiWorld {
             standard_visual,
             component_geometry,
             standard_visual_foreground,
+            chrome_radii: self.style_model.metrics.into(),
             custom_render: self.nodes.custom_render(id).cloned(),
             drop_hover: (self.drop_hover.map(|(hover, _)| hover) == Some(id)).then(|| {
                 crate::DropHoverOverlay {

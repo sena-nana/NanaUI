@@ -1224,7 +1224,7 @@ fn packing_main_size(
 
 /// CSS initial `medium` ≈ 16px. Root `rem` and the em base when no ancestor
 /// set `font-size`.
-const ROOT_FONT_PX: f32 = 16.0;
+const ROOT_FONT_PX: f32 = nana_ui_core::type_scale::LINE;
 
 fn fonts_of(style: &LayoutStyle, parent_font_px: f32) -> FontSizeContext {
     FontSizeContext::new(ROOT_FONT_PX, style.font_size.unwrap_or(parent_font_px))

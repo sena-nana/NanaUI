@@ -1,4 +1,4 @@
-use nana_ui::{Colors, ThemeMode, ThemeModeExt};
+use nana_ui::{SemanticPalette, ThemeMode};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Message {
@@ -24,8 +24,8 @@ impl DemoPanel {
         }
     }
 
-    pub fn colors(&self) -> Colors {
-        self.theme.colors()
+    pub fn palette(&self) -> SemanticPalette {
+        self.theme.palette()
     }
 
     pub fn revision(&self) -> u32 {

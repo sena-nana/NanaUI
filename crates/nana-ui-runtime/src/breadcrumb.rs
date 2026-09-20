@@ -106,7 +106,7 @@ impl BreadcrumbSegment {
         });
         if self.tone == BreadcrumbTone::Current {
             let layout = Arc::make_mut(&mut style.layout);
-            layout.font_weight = Some(600);
+            layout.font_weight = Some(nana_ui_core::type_scale::SEMIBOLD);
         }
         style
     }

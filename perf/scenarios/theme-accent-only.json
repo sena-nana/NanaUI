@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "theme-accent-only",
+  "kind": "Theme",
+  "params": {
+    "workload": "accent-only",
+    "controls": 1000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "accent_only_does_not_reshape",
+      "path": "work_counters.text_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #100 §7: a palette-only change must not reshape text."
+    },
+    {
+      "name": "accent_only_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Issue #100 §7: a palette-only change must not run layout."
+    },
+    {
+      "name": "accent_only_does_not_lay_out_the_frame",
+      "path": "work_counters.layout_nodes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Cross-check against the drain: no LAYOUT was scheduled either."
+    },
+    {
+      "name": "accent_only_does_not_copy_layout",
+      "path": "work_counters.layout_copies",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "As for the full palette switch: moving one role must not copy a single box."
+    }
+  ],
+  "notes": "Issue #101 §4 palette-only theme change (one accent role). Phase 0 records the document-wide paint invalidation as it is; narrowing it is Issue #100 §7."
+}

@@ -57,43 +57,41 @@ impl UiScene {
         super::visibility::transform(self.node_bounds(id)?, transform)
     }
 
-    pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
-        let (primitive, revision) = self.primitive_at(id)?;
-        let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
-        let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&id.node)
-        else {
-            return Some(SceneDraw {
-                primitive,
-                transform: primitive.transform,
-                clips: Arc::clone(&primitive.clips),
-                paint_opacity,
-                revision,
-            });
+    /// How a retained primitive's own transform and clips relate to the current
+    /// frame. `None` when the node behind them is gone, which is the one case
+    /// [`Self::draw_primitive`] reports as a missing draw.
+    fn node_projection(&self, node: StableNodeId) -> Option<NodeProjection> {
+        let Some(&(epoch, base_transform, parent_clip_count)) = self.projections.get(&node) else {
+            return Some(NodeProjection::Retained);
         };
         if epoch == self.attribute_epoch {
-            return Some(SceneDraw {
-                primitive,
-                transform: primitive.transform,
-                clips: Arc::clone(&primitive.clips),
-                paint_opacity,
-                revision,
-            });
+            return Some(NodeProjection::Retained);
         }
         let cached = self
             .draw_attributes
             .lock()
             .expect("scene attributes")
-            .get(&id.node)
+            .get(&node)
             .filter(|entry| entry.epoch == self.attribute_epoch)
             .cloned();
         let attributes = if let Some(attributes) = cached {
             attributes
         } else {
-            let node = self.nodes.get(&id.node)?;
-            let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(node);
-            let current = parent.then(self.resolved_local_transform(node, blocks_3d));
-            let delta = inverse(base_transform)
-                .map_or(AffineTransform::IDENTITY, |inverse| current.then(inverse));
+            let extracted = self.nodes.get(&node)?;
+            let (parent, _, parent_clips, blocks_3d) = self.draw_ancestor_state(extracted);
+            let current = parent.then(self.resolved_local_transform(extracted, blocks_3d));
+            // A node that did not move owes no rebasing, and saying so exactly
+            // is the point: `inverse` divides by the determinant, so for
+            // anything but a translation the round trip lands an ulp off the
+            // identity. Applied to every retained bound and clip below, that
+            // drift moves them — an epoch bump on its own, which a colour
+            // change on a parent is enough to cause, must not.
+            let delta = if current == base_transform {
+                AffineTransform::IDENTITY
+            } else {
+                inverse(base_transform)
+                    .map_or(AffineTransform::IDENTITY, |inverse| current.then(inverse))
+            };
             let attributes = DrawAttributes {
                 epoch: self.attribute_epoch,
                 delta,
@@ -102,31 +100,82 @@ impl UiScene {
             self.draw_attributes
                 .lock()
                 .expect("scene attributes")
-                .insert(id.node, attributes.clone());
+                .insert(node, attributes.clone());
             attributes
         };
-        // Most primitives are cut only by what they inherit, and that list is
-        // already the one the ancestor walk produced.
-        let clips = if primitive.clips.len() == parent_clip_count {
-            Arc::clone(&attributes.parent_clips)
-        } else {
-            let mut clips = attributes.parent_clips.to_vec();
-            clips.extend(primitive.clips.iter().skip(parent_clip_count).cloned().map(
-                |mut clip| {
-                    clip.transform = attributes.delta.then(clip.transform);
-                    clip
-                },
-            ));
-            clips.into()
-        };
-        Some(SceneDraw {
-            primitive,
-            transform: attributes.delta.then(primitive.transform),
-            clips,
-            paint_opacity,
-            revision,
+        Some(NodeProjection::Rebased {
+            attributes,
+            parent_clip_count,
         })
     }
+
+    pub fn draw_primitive(&self, id: PrimitiveId) -> Option<SceneDraw<'_>> {
+        let (primitive, revision) = self.primitive_at(id)?;
+        let paint_opacity = self.compositor_paint_opacity(primitive.node, primitive.opacity);
+        match self.node_projection(primitive.node)? {
+            NodeProjection::Retained => Some(SceneDraw {
+                primitive,
+                transform: primitive.transform,
+                clips: Arc::clone(&primitive.clips),
+                paint_opacity,
+                revision,
+            }),
+            NodeProjection::Rebased {
+                attributes,
+                parent_clip_count,
+            } => {
+                // Most primitives are cut only by what they inherit, and that
+                // list is already the one the ancestor walk produced.
+                let clips = if primitive.clips.len() == parent_clip_count {
+                    Arc::clone(&attributes.parent_clips)
+                } else {
+                    let mut clips = attributes.parent_clips.to_vec();
+                    clips.extend(primitive.clips.iter().skip(parent_clip_count).cloned().map(
+                        |mut clip| {
+                            clip.transform = attributes.delta.then(clip.transform);
+                            clip
+                        },
+                    ));
+                    clips.into()
+                };
+                Some(SceneDraw {
+                    primitive,
+                    transform: attributes.delta.then(primitive.transform),
+                    clips,
+                    paint_opacity,
+                    revision,
+                })
+            }
+        }
+    }
+
+    /// [`Self::draw_primitive`]'s transform alone, for a primitive already in
+    /// hand.
+    ///
+    /// The visibility index wants only this. Going through `draw_primitive` for
+    /// it also built the rebased clip list — two allocations per primitive —
+    /// and resolved a compositor paint opacity, and the index reads neither;
+    /// on a frame that rebuilds the index that was the whole scene's worth of
+    /// work thrown away.
+    pub(super) fn draw_transform(&self, primitive: &ScenePrimitive) -> Option<AffineTransform> {
+        Some(match self.node_projection(primitive.node)? {
+            NodeProjection::Retained => primitive.transform,
+            NodeProjection::Rebased { attributes, .. } => {
+                attributes.delta.then(primitive.transform)
+            }
+        })
+    }
+}
+
+enum NodeProjection {
+    /// The retained transform and clips are already current.
+    Retained,
+    /// Rebase them by `attributes.delta`, keeping `parent_clip_count` inherited
+    /// clips from the projection they were retained against.
+    Rebased {
+        attributes: DrawAttributes,
+        parent_clip_count: usize,
+    },
 }
 
 #[cfg(test)]
@@ -142,6 +191,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
+            chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
             parent: parent.map(id),
@@ -385,6 +435,81 @@ mod tests {
         assert_eq!(
             scene.draw_primitive(primitive).unwrap().transform,
             fresh.draw_primitive(primitive).unwrap().transform
+        );
+    }
+
+    /// `perspective` / `preserve-3d` fail a descendant's `matrix3d` closed
+    /// rather than approximate a real 3D context, and that refusal has to be
+    /// the same answer wherever it is asked. A node the rule takes a transform
+    /// away from must not go on handing that transform to its own children, or
+    /// it paints flat around a rotated inside.
+    #[test]
+    fn a_refused_3d_transform_is_not_handed_to_its_children() {
+        let built = |closed: bool| {
+            let mut root = node(1, None, &[2]);
+            if closed {
+                Arc::make_mut(&mut root.source_style.layout).css_perspective = Some(800.0);
+            }
+            let mut middle = node(2, Some(1), &[3]);
+            Arc::make_mut(&mut middle.source_style.layout).transform_3d = Some(
+                nana_ui_core::PaintMat4::perspective(800.0)
+                    .unwrap()
+                    .then(nana_ui_core::PaintMat4::rotate_y(30_f32.to_radians())),
+            );
+            let leaf = node(3, Some(2), &[]);
+            let mut scene = UiScene::new();
+            scene.apply_delta([root, middle, leaf], []);
+            scene
+        };
+        let projected = |scene: &UiScene, node: StableNodeId| {
+            let id = scene
+                .primitives()
+                .find(|primitive| primitive.node == node)
+                .expect("a painted node")
+                .id;
+            scene.draw_primitive(id).expect("draw").transform
+        };
+
+        // Open context: the middle node rotates and its child rotates with it.
+        let scene = built(false);
+        let middle = projected(&scene, id(2));
+        assert_ne!(
+            middle,
+            AffineTransform::IDENTITY,
+            "an open context was meant to allow the 3D transform"
+        );
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "an open context did not hand the 3D transform down"
+        );
+
+        // Closed: refused for the middle node, and refused below it too.
+        let mut scene = built(true);
+        let middle = projected(&scene, id(2));
+        assert_eq!(
+            middle,
+            AffineTransform::IDENTITY,
+            "the closed context did not refuse the 3D transform"
+        );
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "a refused 3D transform was still handed to the child"
+        );
+
+        // The same answer on the way back through a bumped attribute epoch,
+        // which re-derives the leaf's projection from the *presented* walk
+        // instead of reading the one baked into its primitive. The two have to
+        // refuse the same transform or the delta between them moves the leaf.
+        let mut recoloured = node(1, None, &[2]);
+        Arc::make_mut(&mut recoloured.source_style.layout).css_perspective = Some(800.0);
+        Arc::make_mut(&mut recoloured.source_style.layout).background = Some([1.0, 0.0, 0.0, 1.0]);
+        scene.apply_delta([recoloured], []);
+        assert_eq!(
+            projected(&scene, id(3)),
+            middle,
+            "re-deriving the leaf's projection reopened the closed context"
         );
     }
 }

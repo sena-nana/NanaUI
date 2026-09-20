@@ -75,6 +75,58 @@ impl HostedSurfaceTarget {
     }
 }
 
+/// Whether this process can present through DirectComposition.
+///
+/// `new_with_surface_mode` narrows the backends to DX12 for a composition
+/// surface, but it does that once a window already exists — too late to decide
+/// whether that window should have been created without a redirection bitmap,
+/// which is a creation-time flag winit owns and nothing can set durably
+/// afterwards. This answers the question before any window is made, with a
+/// throwaway instance and no surface. `WGPU_BACKEND` still wins: a run pinned
+/// to another backend has no composition available to it.
+#[cfg(target_os = "windows")]
+fn composition_backend_available() -> bool {
+    let backends = wgpu::Backends::from_env().unwrap_or_default() & wgpu::Backends::DX12;
+    if backends.is_empty() {
+        return false;
+    }
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    !pollster::block_on(instance.enumerate_adapters(backends)).is_empty()
+}
+
+/// The surface mode this process will really use, which is the requested one
+/// unless the machine cannot present that way.
+///
+/// It answers only which presentation path is available. What the client's
+/// alpha then turns out to be is a separate question the surface answers once
+/// it negotiates, and `material_for_surface_alpha` reports — the plain path is
+/// not automatically opaque, a Vulkan surface negotiates `PreMultiplied` on it.
+///
+/// `host_backend` is the backend of a GPU context an embedder already built.
+/// There is no narrowing to do there — the device exists — so composition is
+/// only on the table when that context is DX12 already.
+pub fn resolve_surface_mode(
+    requested: HostedSurfaceMode,
+    host_backend: Option<wgpu::Backend>,
+) -> HostedSurfaceMode {
+    #[cfg(target_os = "windows")]
+    if matches!(requested, HostedSurfaceMode::WindowsComposition) {
+        let available = match host_backend {
+            Some(backend) => backend == wgpu::Backend::Dx12,
+            None => composition_backend_available(),
+        };
+        if !available {
+            return HostedSurfaceMode::Window;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = host_backend;
+    requested
+}
+
 fn surface_alpha(
     mode: HostedSurfaceMode,
     modes: &[wgpu::CompositeAlphaMode],
@@ -194,6 +246,9 @@ pub struct HostedGpuSurface {
     format: wgpu::TextureFormat,
     configuration: wgpu::SurfaceConfiguration,
     want_transparent: bool,
+    /// Whether this surface spent its one alpha-mode rebuild. Never cleared:
+    /// `rebind` reads the alpha mode off the incoming surface instead.
+    alpha_recreate_attempted: bool,
     /// Live-resize present mode resolved from this surface's capabilities.
     /// Present-mode support is fixed per surface and adapter, so it is
     /// resolved at surface creation instead of re-queried every live frame.
@@ -303,10 +358,11 @@ impl HostedGpuSurface {
         if self.target.mode() == HostedSurfaceMode::Window
             && alpha_mode_needs_surface_recreate(
                 want_transparent,
-                self.configuration.alpha_mode,
                 &capabilities.alpha_modes,
+                self.alpha_recreate_attempted,
             )
         {
+            self.alpha_recreate_attempted = true;
             return self.recover_with_alpha(instance, adapter, resources, want_transparent);
         }
         let alpha_mode = surface_alpha(
@@ -359,6 +415,9 @@ impl HostedGpuSurface {
             desired_maximum_frame_latency: 1,
         };
         self.needs_recovery = false;
+        // `alpha_recreate_attempted` survives: the alpha mode above already
+        // comes from the incoming surface, and re-granting it would re-arm the
+        // rebuild on every `retry_surfaces` pass.
         self.reconfigure(resources);
         Ok(())
     }
@@ -739,6 +798,9 @@ impl HostedGpuShared {
     pub fn adapter(&self) -> &wgpu::Adapter {
         self.resources.adapter()
     }
+    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        self.resources.adapter_info()
+    }
     pub fn resources(&self) -> HostedGpuResources {
         self.resources.clone()
     }
@@ -890,6 +952,7 @@ fn configure_surface(
         format,
         configuration,
         want_transparent,
+        alpha_recreate_attempted: false,
         live_present_mode: preferred_live_present_mode(&capabilities.present_modes),
     })
 }
@@ -1031,21 +1094,20 @@ fn advertised_transparent_alpha(modes: &[wgpu::CompositeAlphaMode]) -> bool {
     })
 }
 
-/// Recreate when transparency is requested but the live surface still only
-/// advertises Opaque (or nothing). HWND/DWM flags applied after first
+/// Recreate when transparency is requested but the surface advertises no alpha
+/// mode that composites it: HWND/DWM flags applied after the first
 /// `create_surface` need a new DXGI swapchain before Pre/Post/Auto appear.
+///
+/// Spent once per surface. A backend that reports alpha modes from the target
+/// kind rather than from the window never widens the set, so a second rebuild
+/// is pure cost; on Windows DX12, where every HWND surface advertises `Opaque`,
+/// it also fails `CreateSwapChainForHwnd`. The host reports a fallback instead.
 pub(crate) fn alpha_mode_needs_surface_recreate(
     want_transparent: bool,
-    current: wgpu::CompositeAlphaMode,
     advertised: &[wgpu::CompositeAlphaMode],
+    already_attempted: bool,
 ) -> bool {
-    if !want_transparent {
-        return false;
-    }
-    let picked = preferred_alpha_mode(advertised, true);
-    !advertised_transparent_alpha(advertised)
-        || (current == wgpu::CompositeAlphaMode::Opaque
-            && picked == wgpu::CompositeAlphaMode::Opaque)
+    want_transparent && !already_attempted && !advertised_transparent_alpha(advertised)
 }
 
 #[cfg(test)]
@@ -1139,26 +1201,54 @@ mod tests {
         );
     }
 
+    /// A program that asks for composition on a host device that is not DX12
+    /// cannot have it: the device is already built, so there is no narrowing
+    /// left to do, and the caller has to hear that it is getting the plain
+    /// path instead.
     #[test]
-    fn alpha_mode_needs_surface_recreate_when_opaque_only() {
-        assert!(alpha_mode_needs_surface_recreate(
-            true,
-            wgpu::CompositeAlphaMode::Opaque,
-            &[wgpu::CompositeAlphaMode::Opaque],
-        ));
-        assert!(!alpha_mode_needs_surface_recreate(
-            true,
-            wgpu::CompositeAlphaMode::Opaque,
-            &[
-                wgpu::CompositeAlphaMode::Opaque,
-                wgpu::CompositeAlphaMode::PreMultiplied,
-            ],
-        ));
-        assert!(!alpha_mode_needs_surface_recreate(
-            false,
-            wgpu::CompositeAlphaMode::Opaque,
-            &[wgpu::CompositeAlphaMode::Opaque],
-        ));
+    fn an_embedded_host_only_offers_composition_on_dx12() {
+        use super::{HostedSurfaceMode, resolve_surface_mode};
+
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(
+                resolve_surface_mode(
+                    HostedSurfaceMode::WindowsComposition,
+                    Some(wgpu::Backend::Vulkan)
+                ),
+                HostedSurfaceMode::Window
+            );
+            assert_eq!(
+                resolve_surface_mode(
+                    HostedSurfaceMode::WindowsComposition,
+                    Some(wgpu::Backend::Dx12)
+                ),
+                HostedSurfaceMode::WindowsComposition
+            );
+        }
+        // A program that never asked for composition is never redirected.
+        assert_eq!(
+            resolve_surface_mode(HostedSurfaceMode::Window, Some(wgpu::Backend::Vulkan)),
+            HostedSurfaceMode::Window
+        );
+    }
+
+    #[test]
+    fn an_opaque_only_surface_is_rebuilt_for_alpha_at_most_once() {
+        use wgpu::CompositeAlphaMode::{Auto, Opaque, PostMultiplied, PreMultiplied};
+        // Windows DX12 reports an HWND surface's alpha modes from the target
+        // kind, so the rebuilt surface advertises Opaque again. Only the first
+        // attempt can work, and nothing re-grants it.
+        assert!(alpha_mode_needs_surface_recreate(true, &[Opaque], false));
+        assert!(alpha_mode_needs_surface_recreate(true, &[], false));
+        assert!(!alpha_mode_needs_surface_recreate(true, &[Opaque], true));
+        assert!(!alpha_mode_needs_surface_recreate(false, &[Opaque], false));
+        for offered in [PreMultiplied, PostMultiplied, Auto] {
+            assert!(
+                !alpha_mode_needs_surface_recreate(true, &[Opaque, offered], false),
+                "{offered:?} composites alpha, so the surface is already usable"
+            );
+        }
     }
 
     #[test]

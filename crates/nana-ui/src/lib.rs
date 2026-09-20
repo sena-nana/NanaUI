@@ -305,7 +305,7 @@ pub use settings::{
 pub use settings::{hosted_window_material_modes, window_material_effect};
 pub use split_pane::{SplitAxis, SplitPaneAction, SplitPaneController};
 pub use theme::{
-    Color, Colors, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt,
+    Color, HAIRLINE, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, ThemeModeExt,
     ThemeTokens, UI_BASE_TEXT_SIZE, UI_METRICS, install_theme_tokens, space, type_scale,
 };
 #[cfg(feature = "bundled-fonts")]

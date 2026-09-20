@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use nana_ui_core::{
     AlignSpec, ControlSize, FlexDirection, Icon, JustifySpec, LengthSpec, SemanticColorRole,
-    UI_METRICS,
 };
 
 use crate::view_components::{IconButton, TextChanged, TextInput, project_common};
@@ -98,13 +97,15 @@ impl PathField {
         if self.invalid {
             style.border = Some(SemanticColorRole::Danger);
         }
-        let layout = std::sync::Arc::make_mut(&mut style.layout);
-        layout.direction = Some(FlexDirection::Row);
-        layout.align_items = AlignSpec::Center;
-        layout.justify_content = JustifySpec::Start;
-        layout.gap = Some(LengthSpec::Px(4.0));
-        layout.width = Some(LengthSpec::Fill);
-        layout.min_height = Some(LengthSpec::Px(self.size.height()));
+        {
+            let layout = std::sync::Arc::make_mut(&mut style.layout);
+            layout.direction = Some(FlexDirection::Row);
+            layout.align_items = AlignSpec::Center;
+            layout.justify_content = JustifySpec::Start;
+            layout.gap = Some(LengthSpec::Px(4.0));
+            layout.width = Some(LengthSpec::Fill);
+        }
+        style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         style
     }
 }
@@ -237,10 +238,12 @@ fn field_value(field: &PathField) -> &str {
 
 fn field_style(size: ControlSize) -> NodeStyle {
     let mut style = NodeStyle::default();
-    let layout = std::sync::Arc::make_mut(&mut style.layout);
-    layout.width = Some(LengthSpec::Fill);
-    layout.min_height = Some(LengthSpec::Px(size.height()));
-    layout.border_radius = Some(UI_METRICS.radius_sm);
+    {
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.width = Some(LengthSpec::Fill);
+    }
+    style.control_height = Some(nana_ui_core::ControlHeight::Min(size));
+    style.radius = Some(nana_ui_core::RadiusTier::Sm);
     style
 }
 

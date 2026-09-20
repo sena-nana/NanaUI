@@ -21,9 +21,10 @@ use crate::{
     NodeStyle, SemanticPaint, StableNodeId, TextContent, TextVerticalAlignment, UiWorld,
 };
 
-pub(crate) const DOCK_TITLE_BAR_HEIGHT: f32 = 28.0;
+pub(crate) const DOCK_TITLE_BAR_HEIGHT: f32 =
+    ControlSize::Small.height_in(nana_ui_core::UI_METRICS);
 /// Splitter hit-target thickness. Host adapters must not invent a second divider size.
-pub const DOCK_DIVIDER_HIT_SIZE: f32 = 8.0;
+pub const DOCK_DIVIDER_HIT_SIZE: f32 = nana_ui_core::space::MD;
 /// Inclusive lower clamp for a split's first-child share.
 pub const MIN_SPLIT_RATIO: f32 = 0.05;
 /// Inclusive upper clamp for a split's first-child share.
@@ -31,11 +32,11 @@ pub const MAX_SPLIT_RATIO: f32 = 0.95;
 /// One keyboard/nudge step; matches [`MIN_SPLIT_RATIO`] so product and host adapters share a step.
 pub const DOCK_SPLIT_KEYBOARD_STEP: f32 = MIN_SPLIT_RATIO;
 
-const HANDLE_INDICATOR: f32 = 2.0;
-const TITLE_PADDING_X: f32 = 6.0;
-const TITLE_SIZE: f32 = 11.0;
-const TITLE_WEIGHT: u16 = 600;
-const TAB_OVERLAY_THICKNESS: f32 = 4.0;
+const HANDLE_INDICATOR: f32 = nana_ui_core::space::XXS;
+const TITLE_PADDING_X: f32 = nana_ui_core::space::SM;
+const TITLE_SIZE: f32 = nana_ui_core::type_scale::HINT;
+const TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
+const TAB_OVERLAY_THICKNESS: f32 = nana_ui_core::space::XS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2186,7 +2187,7 @@ impl DockPanel {
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
         layout.height = Some(layout.height.unwrap_or(LengthSpec::Shrink));
-        layout.border_width = Some(1.0);
+        layout.border_width = Some(nana_ui_core::HAIRLINE);
         layout.border_radius = Some(0.0);
         let pad = LengthSpec::Px(self.padding);
         layout.padding_left = Some(pad);
@@ -2414,7 +2415,7 @@ impl AppContext {
 
     /// Handle under the pointer, including a few pixels of slop around the 8px bar.
     pub fn dock_handle_near(&self, document: DocumentId, x: f32, y: f32) -> Option<StableNodeId> {
-        const SLOP: f32 = 6.0;
+        const SLOP: f32 = nana_ui_core::space::SM;
         if let Some(target) = self.pointer_target(document, x, y) {
             if let Some(handle) = self.unlocked_dock_handle(target) {
                 return Some(handle);
@@ -4019,7 +4020,7 @@ mod tests {
         assert_eq!(style.background, Some(SemanticColorRole::Surface));
         assert_eq!(style.foreground, Some(SemanticColorRole::Text));
         assert_eq!(style.border, Some(SemanticColorRole::BorderSoft));
-        assert_eq!(style.layout.border_width, Some(1.0));
+        assert_eq!(style.layout.border_width, Some(nana_ui_core::HAIRLINE));
         assert_eq!(style.layout.border_radius, Some(0.0));
         assert_eq!(style.layout.width, Some(LengthSpec::Fill));
         assert_eq!(style.layout.height, Some(LengthSpec::Shrink));

@@ -1,0 +1,7 @@
+component: spinner
+mode: dark
+state: loading
+  target: 20.00,20.00 64.95x14.00
+  a11y: role=ProgressIndicator disabled=false checked=None selected=None mixed=false
+  text #2/2 40.00,20.00 44.95x14.00 opacity=1.00 color=#a3a3a3ff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  spinner #2/3 20.00,20.00 14.00x14.00 opacity=1.00 color=#7bb9f0ff

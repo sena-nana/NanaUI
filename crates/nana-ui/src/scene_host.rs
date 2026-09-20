@@ -38,9 +38,9 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialOutcome,
-    apply_hosted_system_material, clear_system_material, prepare_client_chrome,
-    resize_custom_frame, suppress_system_caption,
+    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialFallback, MaterialOutcome,
+    apply_hosted_system_material, arm_frameless_guard, clear_system_material,
+    prepare_client_chrome, resize_custom_frame, set_frameless_styles,
 };
 use winit::application::ApplicationHandler;
 use winit::cursor::CursorIcon;
@@ -194,6 +194,11 @@ struct WindowManager<Program: RuntimeProgram> {
     // Native children drop before their owning GPU/window resources.
     browsers: HashMap<(WindowId, String), browser::HostedBrowser>,
     graphics: crate::HostedGpuShared,
+    /// Resolved once, before the first window existed. Windows opened later
+    /// have to match it: the backend is already chosen by then, and
+    /// `WS_EX_NOREDIRECTIONBITMAP` is a creation-time flag nothing can set
+    /// durably afterwards.
+    surface_mode: crate::HostedSurfaceMode,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     native_renderers:
         HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
@@ -230,6 +235,9 @@ struct WindowManager<Program: RuntimeProgram> {
     store: SharedStore,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     live_frame_resize: Option<(WindowId, nana_window::LiveFrameResize)>,
+    /// Window, the button code whose release ends the gesture, and the session.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    live_frame_move: Option<(WindowId, i16, nana_window::LiveFrameMove)>,
     #[cfg(target_os = "macos")]
     present_transaction_pinned: HashSet<WindowId>,
 }
@@ -529,12 +537,30 @@ fn initialize<Program: RuntimeProgram>(
     if settings.parent.is_some() {
         return Err("initial window cannot have a parent".into());
     }
+    // Before the window, not after: the window's redirection bitmap is decided
+    // at creation, so the mode it will present in has to be known first.
+    let surface_mode = crate::hosted_context::resolve_surface_mode(
+        Program::surface_mode(),
+        shared_gpu
+            .as_ref()
+            .map(|gpu| gpu.adapter().get_info().backend),
+    );
+    if surface_mode != Program::surface_mode() {
+        // Not a verdict on the material: the plain path still negotiates
+        // `PreMultiplied` on a Vulkan surface. What the client actually gets is
+        // reported once the surface has answered.
+        eprintln!(
+            "nana window surface: DirectComposition unavailable, \
+             presenting through the plain window path instead"
+        );
+    }
     let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
             .create_window(
                 scene_window_attributes(
                     &settings,
                     &scene_desktop(event_loop, settings.constrain_to_work_area),
+                    composed_surface(surface_mode),
                 )
                 .with_visible(false),
             )
@@ -550,15 +576,13 @@ fn initialize<Program: RuntimeProgram>(
         &settings,
         last_material_mode,
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+        composed_surface(surface_mode),
+        false,
     );
     let embedded = shared_gpu.is_some();
     let (graphics, mut surface) = if let Some(graphics) = shared_gpu {
         let surface = graphics
-            .create_surface_with_mode(
-                Arc::clone(&window),
-                settings.transparent,
-                Program::surface_mode(),
-            )
+            .create_surface_with_mode(Arc::clone(&window), settings.transparent, surface_mode)
             .map_err(|error| error.to_string())?;
         (graphics, surface)
     } else {
@@ -566,7 +590,7 @@ fn initialize<Program: RuntimeProgram>(
             Arc::clone(&window),
             wgpu::Features::empty(),
             window_wants_transparent_surface(settings.transparent, last_material_mode),
-            Program::surface_mode(),
+            surface_mode,
         ))
         .map_err(|error| error.to_string())?
         .into_parts()
@@ -607,6 +631,8 @@ fn initialize<Program: RuntimeProgram>(
         &settings,
         last_material_mode,
         program.appearance_backdrop_opacity_for(WindowId::PRIMARY),
+        composed_surface(surface_mode),
+        false,
     );
     graphics
         .apply_surface_alpha_mode(
@@ -614,6 +640,11 @@ fn initialize<Program: RuntimeProgram>(
             window_wants_transparent_surface(settings.transparent, last_material_mode),
         )
         .map_err(|error| error.to_string())?;
+    material = material_for_surface_alpha(
+        material,
+        surface.alpha_mode(),
+        graphics.adapter_info().backend,
+    );
     #[cfg(not(target_os = "android"))]
     let accessibility = {
         Some(HostedAccessibility::new(
@@ -661,6 +692,7 @@ fn initialize<Program: RuntimeProgram>(
     let mut ready = WindowManager {
         program,
         embedded,
+        surface_mode,
         shutting_down: false,
         wake_deadline: None,
         host_work: Arc::clone(&host_work),
@@ -702,6 +734,8 @@ fn initialize<Program: RuntimeProgram>(
         store,
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         live_frame_resize: None,
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        live_frame_move: None,
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
     };
@@ -733,7 +767,13 @@ fn initialize<Program: RuntimeProgram>(
             ready.settings.visible,
             ready.settings.focus_on_show,
         );
-        apply_client_chrome_after_create(window.as_ref(), &ready.settings);
+        apply_client_chrome_after_create(
+            window.as_ref(),
+            &ready.settings,
+            ready.window_surface_material(WindowId::PRIMARY),
+            composed_surface(surface_mode),
+            false,
+        );
         window.request_redraw();
         ready.finish_ready(event_loop, WindowId::PRIMARY);
     }
@@ -1024,6 +1064,31 @@ fn window_wants_transparent_surface(
     window_surface_effect(settings_transparent, appearance).wants_transparent_surface()
 }
 
+/// Demote a transparent effect the surface cannot present.
+///
+/// Transparent effects clear to a zero alpha (see [`scene_clear_color`]), which
+/// an `Opaque` surface shows as solid black instead of the desktop behind it.
+/// Windows DX12 advertises `Opaque` for every HWND surface, so the request is
+/// unsatisfiable there. Reporting the fallback restores the opaque clear colour
+/// and lets the program and its logs see that transparency is unavailable.
+///
+/// `Gl` is excluded: wgpu-hal hardcodes `Opaque` for every GLES surface and
+/// never reads the configured mode back, leaving alpha to the EGL/WGL config,
+/// so its alpha mode says nothing about whether the window composites.
+fn material_for_surface_alpha(
+    material: MaterialOutcome,
+    alpha_mode: wgpu::CompositeAlphaMode,
+    backend: wgpu::Backend,
+) -> MaterialOutcome {
+    if material.wants_transparent_surface()
+        && alpha_mode == wgpu::CompositeAlphaMode::Opaque
+        && backend != wgpu::Backend::Gl
+    {
+        return MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable);
+    }
+    material
+}
+
 fn apply_scene_material(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
@@ -1054,11 +1119,13 @@ fn apply_window_surface(
     settings: &WindowDescriptor,
     appearance: crate::MaterialEffect,
     backdrop_opacity: f32,
+    composed: bool,
+    allow_caption_change: bool,
 ) -> MaterialOutcome {
     let requested = window_surface_effect(settings.transparent, appearance);
     let material = apply_scene_material(window, theme, requested, backdrop_opacity);
     apply_window_transparency(window, requested);
-    apply_client_chrome_after_create(window, settings);
+    apply_client_chrome_after_create(window, settings, requested, composed, allow_caption_change);
     material
 }
 
@@ -1330,6 +1397,7 @@ impl Desktop {
 fn scene_window_attributes(
     settings: &WindowDescriptor,
     desktop: &Desktop,
+    composed: bool,
 ) -> winit::window::WindowAttributes {
     let displays = desktop.displays.as_slice();
     let mut settings = settings.clone();
@@ -1385,7 +1453,7 @@ fn scene_window_attributes(
         attributes = attributes.with_window_icon(Some(icon));
     }
 
-    apply_scene_window_chrome(attributes, &settings)
+    apply_scene_window_chrome(attributes, &settings, composed)
 }
 
 /// Live display bounds in the global logical coordinate space, matching the
@@ -1474,7 +1542,11 @@ struct WindowsSceneChrome {
 }
 
 #[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
-fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsSceneChrome {
+fn windows_scene_chrome(
+    system_caption: bool,
+    transparent: bool,
+    composed: bool,
+) -> WindowsSceneChrome {
     WindowsSceneChrome {
         decorations: system_caption,
         // winit's undecorated-shadow path insets the client by 1px on the top
@@ -1482,38 +1554,105 @@ fn windows_scene_chrome(system_caption: bool, transparent: bool) -> WindowsScene
         // cannot paint. Windows 11 rounded corners already provide a shadow.
         // Transparent overlays skip rounding so DWM does not stroke a rectangle.
         undecorated_shadow: false,
-        no_redirection_bitmap: transparent,
+        // The redirection bitmap belongs to the presentation path, not to the
+        // material: DirectComposition draws its visual over that bitmap, so a
+        // composed window has to be created without one or an opaque surface
+        // shows through underneath. A window on the plain path keeps it — its
+        // swapchain may well be presenting into it.
+        no_redirection_bitmap: composed,
         rounded_corners: !system_caption && !transparent,
     }
 }
 
-/// Opaque frameless windows keep winit's `WS_CAPTION` and extend the client
-/// through `WM_NCCALCSIZE`. Clearing caption after create sends
-/// `SetWindowPos(SWP_FRAMECHANGED)` while the host is still inside
-/// `can_create_surfaces`, which hangs the UI thread. Transparent client
-/// chrome still strips caption so DWM composition is not left with a system
-/// frame.
-fn suppress_caption_after_create(system_caption: bool, transparent: bool) -> bool {
-    !system_caption && transparent
+/// Whether the host presents through a DirectComposition visual rather than an
+/// HWND swapchain. Only that path takes the window's redirection bitmap away.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const fn composed_surface(mode: crate::HostedSurfaceMode) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        matches!(mode, crate::HostedSurfaceMode::WindowsComposition)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = mode;
+        false
+    }
+}
+
+/// Native chrome a client-chrome window must be given to match the surface it
+/// is actually presenting, which is the live material rather than the flag the
+/// descriptor was created with: a host that keeps `transparent: false` so the
+/// user can return to an opaque background still runs transparent most of the
+/// time, and DWM would otherwise go on rounding, stroking and framing an HWND
+/// its surface no longer fills.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
+struct ClientChrome {
+    /// DWM round clip and the system stroke that comes with it.
+    rounded_corners: bool,
+    /// Whether the Win32 frame styles should be stripped.
+    frameless: bool,
+    /// Whether the style may be rewritten now, or only armed so the strip lands
+    /// on the next style winit writes.
+    write_styles: bool,
+}
+
+/// `material` is the effect the surface is actually presenting.
+///
+/// `allow_caption_change` is false while the host is still inside
+/// `can_create_surfaces`, which this crate has long kept free of
+/// `SetWindowPos(SWP_FRAMECHANGED)` on the grounds that it hangs the UI thread.
+/// That attribution has never been re-confirmed, and this path no longer rests
+/// on it: the guard is armed either way, so nothing is deferred. Showing the
+/// window rewrites the whole style through winit and the strip lands on that
+/// write, before the window has been presented once, so writing it earlier
+/// would only add a frame change nobody reads.
+fn client_chrome(
+    settings: &WindowDescriptor,
+    material: crate::MaterialEffect,
+    _composed: bool,
+    allow_caption_change: bool,
+) -> Option<ClientChrome> {
+    if settings.system_caption {
+        return None;
+    }
+    // Only a transparent client leaves the HWND rectangle for DWM to show
+    // through. Mica and Acrylic also report `wants_transparent_surface()`,
+    // but they *are* DWM's non-client rendering, so they keep the round clip
+    // and the stroke. Stripping the frame styles is enough to drop the
+    // shadow; a dedicated non-client rendering policy was measured to have
+    // no effect once those bits are gone.
+    let bare = matches!(material, crate::MaterialEffect::Transparent);
+    Some(ClientChrome {
+        rounded_corners: !bare,
+        frameless: bare,
+        write_styles: allow_caption_change,
+    })
 }
 
 /// Re-apply after any winit call that rewrites native window style.
 fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
     window: &W,
     settings: &WindowDescriptor,
+    material: crate::MaterialEffect,
+    composed: bool,
+    allow_caption_change: bool,
 ) {
-    if settings.system_caption {
+    let Some(chrome) = client_chrome(settings, material, composed, allow_caption_change) else {
         return;
-    }
-    let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT), !settings.transparent);
-    if suppress_caption_after_create(settings.system_caption, settings.transparent) {
-        let _ = suppress_system_caption(window);
-    }
+    };
+    let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT), chrome.rounded_corners);
+    let _ = if chrome.write_styles {
+        set_frameless_styles(window, chrome.frameless, settings.resizable)
+    } else {
+        arm_frameless_guard(window, chrome.frameless)
+    };
 }
 
 fn apply_scene_window_chrome(
     attributes: winit::window::WindowAttributes,
     settings: &WindowDescriptor,
+    composed: bool,
 ) -> winit::window::WindowAttributes {
     #[cfg(target_os = "macos")]
     {
@@ -1533,7 +1672,7 @@ fn apply_scene_window_chrome(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let chrome = windows_scene_chrome(settings.system_caption, settings.transparent);
+        let chrome = windows_scene_chrome(settings.system_caption, settings.transparent, composed);
         let attributes = attributes.with_decorations(chrome.decorations);
         #[cfg(target_os = "windows")]
         let attributes = {
@@ -1560,8 +1699,9 @@ fn scene_aux_window_attributes(
     settings: &WindowDescriptor,
     parent: Option<&dyn winit::window::Window>,
     desktop: &Desktop,
+    composed: bool,
 ) -> Result<winit::window::WindowAttributes, String> {
-    let attributes = scene_window_attributes(settings, desktop).with_visible(false);
+    let attributes = scene_window_attributes(settings, desktop, composed).with_visible(false);
     if settings.modal && parent.is_none() {
         return Err("modal window requires a parent".into());
     }
@@ -1576,7 +1716,8 @@ fn scene_aux_window_attributes(
             return Err("Windows owner is not an HWND".into());
         };
         {
-            let chrome = windows_scene_chrome(settings.system_caption, settings.transparent);
+            let chrome =
+                windows_scene_chrome(settings.system_caption, settings.transparent, composed);
             let mut win = WindowAttributesWindows::default()
                 .with_no_redirection_bitmap(chrome.no_redirection_bitmap)
                 .with_undecorated_shadow(chrome.undecorated_shadow)
@@ -1931,6 +2072,66 @@ fn mouse_button_mask(button: i16) -> u16 {
         3 => 8,
         4 => 16,
         _ => 0,
+    }
+}
+
+/// W3C code of the primary mouse button, the one every platform's own window
+/// drag assumes is held.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+const PRIMARY_MOUSE_BUTTON: i16 = 0;
+
+/// The button a held-button gesture belongs to, primary first.
+///
+/// `buttons` is the hosted mask ([`mouse_button_mask`]), so a gesture holding
+/// several buttons reports the primary one while it is down; that is the one
+/// whose platform behavior a window drag should follow.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+fn held_mouse_button(buttons: u16) -> Option<i16> {
+    [PRIMARY_MOUSE_BUTTON, 1, 2, 3, 4]
+        .into_iter()
+        .find(|&button| buttons & mouse_button_mask(button) != 0)
+}
+
+/// What a pointer event does to a running host-driven window move.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameMoveStep {
+    /// Follow the pointer; the gesture continues.
+    Follow,
+    /// The gesture is over; drop the session.
+    Finish,
+    /// Swallow the event; the gesture continues.
+    Hold,
+}
+
+/// Decides a running window move from one pointer event, given the `owner`
+/// button whose release ends it.
+#[cfg_attr(
+    not(any(test, target_os = "macos", target_os = "windows")),
+    allow(dead_code)
+)]
+fn frame_move_step(phase: PointerPhase, button: i16, owner: i16) -> FrameMoveStep {
+    match phase {
+        PointerPhase::Move => FrameMoveStep::Follow,
+        // The pinned winit win32 proc synthesizes `PointerLeft` from a
+        // client-rect bounds check even while the gesture holds capture, so a
+        // drag crossing the window edge arrives here as `Cancel`. Ending on it
+        // would drop the window the moment it leaves its own former bounds.
+        PointerPhase::Cancel => FrameMoveStep::Hold,
+        PointerPhase::Up if button == owner => FrameMoveStep::Finish,
+        // A fresh primary press stands in for a release the platform never
+        // delivered, and matches the system move loop, which any click ends.
+        PointerPhase::Down if button == PRIMARY_MOUSE_BUTTON => FrameMoveStep::Finish,
+        _ => FrameMoveStep::Hold,
     }
 }
 
@@ -2558,19 +2759,21 @@ mod tests {
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
     use super::{
-        Desktop, DisplayBounds, ForwardPointerAction, ImeApply, InputTracker, RoutedWindowCommand,
-        desktop_position, ime_apply, input_pointer_hit, invalidate_program_host_textures,
-        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
-        platform_input_modifiers, platform_window_event, remove_image_target_index,
-        replace_image_target_index, resolved_scene_ime_request, route_window_command,
-        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, suppress_caption_after_create, surface_image_keys,
-        tablet_pointer_id, window_cursor_override, window_level, window_surface_effect,
-        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
+        Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
+        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, client_chrome, desktop_position,
+        frame_move_step, held_mouse_button, ime_apply, input_pointer_hit,
+        invalidate_program_host_textures, material_for_surface_alpha, mouse_button_code,
+        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
+        platform_window_event, remove_image_target_index, replace_image_target_index,
+        resolved_scene_ime_request, route_window_command, scene_clear_color,
+        scene_runtime_input_update, scene_window_attributes, screen_position,
+        should_deliver_program_ime, surface_image_keys, tablet_pointer_id, window_cursor_override,
+        window_level, window_surface_effect, window_wants_transparent_surface,
+        windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::{
-        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialOutcome,
-        RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
+        HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialFallback,
+        MaterialOutcome, RuntimeProgramUpdate, RuntimeRedraw, ThemeMode,
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
@@ -2765,6 +2968,7 @@ mod tests {
                 size_ratios: Vec::new(),
                 scale: 1.0,
             },
+            false,
         );
 
         assert_eq!(attributes.title, "Scene");
@@ -2782,20 +2986,17 @@ mod tests {
         assert_eq!(window_level(false), winit::window::WindowLevel::Normal);
 
         let transparent_client =
-            windows_scene_chrome(settings.system_caption, settings.transparent);
+            windows_scene_chrome(settings.system_caption, settings.transparent, false);
         assert!(!transparent_client.decorations);
         assert!(!transparent_client.undecorated_shadow);
-        assert!(transparent_client.no_redirection_bitmap);
+        assert!(!transparent_client.no_redirection_bitmap);
         assert!(!transparent_client.rounded_corners);
 
-        let opaque_client = windows_scene_chrome(false, false);
+        let opaque_client = windows_scene_chrome(false, false, false);
         assert!(!opaque_client.decorations);
         assert!(!opaque_client.undecorated_shadow);
         assert!(!opaque_client.no_redirection_bitmap);
         assert!(opaque_client.rounded_corners);
-        assert!(!suppress_caption_after_create(false, false));
-        assert!(suppress_caption_after_create(false, true));
-        assert!(!suppress_caption_after_create(true, true));
 
         settings.system_caption = true;
         let caption = scene_window_attributes(
@@ -2805,15 +3006,83 @@ mod tests {
                 size_ratios: Vec::new(),
                 scale: 1.0,
             },
+            false,
         );
         assert!(caption.decorations);
-        let transparent_caption = windows_scene_chrome(true, true);
+        let transparent_caption = windows_scene_chrome(true, true, false);
         assert!(transparent_caption.decorations);
         assert!(!transparent_caption.undecorated_shadow);
-        assert!(transparent_caption.no_redirection_bitmap);
-        let opaque_caption = windows_scene_chrome(true, false);
+        assert!(!transparent_caption.no_redirection_bitmap);
+        let opaque_caption = windows_scene_chrome(true, false, false);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
+    }
+
+    /// The redirection bitmap belongs to the presentation path, not the
+    /// material. A composed window has to be created without one, because
+    /// DirectComposition draws its visual over that bitmap and an opaque
+    /// surface would show through underneath; a window on the plain path keeps
+    /// it whatever its material, because its swapchain may be presenting into
+    /// it.
+    #[test]
+    fn only_a_composed_window_is_created_without_a_redirection_bitmap() {
+        for system_caption in [false, true] {
+            for transparent in [false, true] {
+                assert!(
+                    !windows_scene_chrome(system_caption, transparent, false).no_redirection_bitmap
+                );
+                assert!(
+                    windows_scene_chrome(system_caption, transparent, true).no_redirection_bitmap
+                );
+            }
+        }
+    }
+
+    /// A host that leaves `transparent: false` so the user can return to an
+    /// opaque background still runs transparent, and its chrome has to follow
+    /// the live surface or DWM keeps stroking and shadowing the HWND.
+    #[test]
+    fn client_chrome_follows_the_live_surface_not_the_descriptor() {
+        let mut settings = WindowDescriptor::new("Scene");
+        assert!(!settings.transparent);
+
+        let transparent = client_chrome(&settings, crate::MaterialEffect::Transparent, false, true)
+            .expect("chrome");
+        assert!(!transparent.rounded_corners);
+        assert!(transparent.frameless);
+
+        let opaque =
+            client_chrome(&settings, crate::MaterialEffect::Solid, false, true).expect("chrome");
+        assert!(opaque.rounded_corners);
+        assert!(!opaque.frameless);
+
+        // Still inside `can_create_surfaces`: the strip is decided and armed,
+        // only the style write waits for winit's own.
+        let creating = client_chrome(&settings, crate::MaterialEffect::Transparent, false, false)
+            .expect("chrome");
+        assert!(!creating.rounded_corners);
+        assert!(creating.frameless);
+        assert!(!creating.write_styles);
+
+        settings.system_caption = true;
+        assert_eq!(
+            client_chrome(&settings, crate::MaterialEffect::Transparent, false, true),
+            None
+        );
+    }
+
+    /// Mica and Acrylic report `wants_transparent_surface()` like a fully
+    /// transparent surface does, but they are painted by DWM: dropping the
+    /// round clip would erase the backdrop the window asked for.
+    #[test]
+    fn a_system_backdrop_keeps_the_round_clip_that_paints_it() {
+        let settings = WindowDescriptor::new("Scene");
+        for material in [crate::MaterialEffect::Mica, crate::MaterialEffect::Acrylic] {
+            assert!(material.wants_transparent_surface());
+            let chrome = client_chrome(&settings, material, false, true).expect("chrome");
+            assert!(chrome.rounded_corners);
+            assert!(!chrome.frameless);
+        }
     }
 
     #[test]
@@ -2843,7 +3112,7 @@ mod tests {
             scale: 1.0,
         };
 
-        let attributes = scene_window_attributes(&settings, &main);
+        let attributes = scene_window_attributes(&settings, &main, false);
         assert_eq!(
             attributes.position,
             Some(desktop_position((1032.0, 40.0), 1.0))
@@ -2860,14 +3129,17 @@ mod tests {
             size_ratios: Vec::new(),
             scale: 1.0,
         };
-        let attributes = scene_window_attributes(&settings, &disconnected);
+        let attributes = scene_window_attributes(&settings, &disconnected, false);
         assert_eq!(
             attributes.position,
             Some(desktop_position((2100.0, 40.0), 1.0))
         );
 
         settings.initial_position = None;
-        assert_eq!(scene_window_attributes(&settings, &main).position, None);
+        assert_eq!(
+            scene_window_attributes(&settings, &main, false).position,
+            None
+        );
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -2904,6 +3176,7 @@ mod tests {
                 size_ratios: vec![1.0, 1.25],
                 scale,
             },
+            false,
         );
         assert_eq!(
             attributes.position,
@@ -2933,6 +3206,46 @@ mod tests {
             ),
             [0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn an_opaque_surface_reports_the_transparent_request_as_a_fallback() {
+        use wgpu::Backend::{Dx12, Gl, Metal, Vulkan};
+        use wgpu::CompositeAlphaMode::{Opaque, PostMultiplied, PreMultiplied};
+        let demoted = MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable);
+        // Windows DX12 only ever advertises Opaque for an HWND surface, where
+        // the transparent clear color shows as solid black. The request has to
+        // come back as a reported fallback rather than silently look honoured.
+        assert!(scene_clear_color(ThemeMode::Dark, demoted)[3] > 0.0);
+        for requested in [
+            MaterialOutcome::transparent(),
+            MaterialOutcome::native(MaterialEffect::Mica),
+            MaterialOutcome::native(MaterialEffect::Acrylic),
+        ] {
+            for backend in [Dx12, Vulkan, Metal] {
+                assert_eq!(
+                    material_for_surface_alpha(requested, Opaque, backend),
+                    demoted,
+                    "{backend:?} honours the configured alpha mode"
+                );
+                for alpha in [PreMultiplied, PostMultiplied] {
+                    assert_eq!(
+                        material_for_surface_alpha(requested, alpha, backend),
+                        requested
+                    );
+                }
+            }
+            // GLES hardcodes Opaque and never reads the configured mode back,
+            // so it says nothing about whether the window composites.
+            assert_eq!(material_for_surface_alpha(requested, Opaque, Gl), requested);
+        }
+        // An opaque request is already honoured by an opaque surface.
+        for chosen in [
+            MaterialOutcome::chosen_solid(),
+            MaterialOutcome::solid(MaterialFallback::PlatformDoesNotProvideNativeMaterial),
+        ] {
+            assert_eq!(material_for_surface_alpha(chosen, Opaque, Dx12), chosen);
+        }
     }
 
     #[test]
@@ -3070,6 +3383,47 @@ mod tests {
         assert_eq!(mouse_button_mask(0), 1);
         assert_eq!(mouse_button_mask(1), 4);
         assert_eq!(mouse_button_mask(2), 2);
+    }
+
+    #[test]
+    fn a_window_move_follows_its_own_button_and_survives_a_synthetic_cancel() {
+        const MIDDLE: i16 = 1;
+        // A middle-button gesture owns the move: the window follows, and the
+        // left release of an unrelated click does not drop it.
+        assert_eq!(
+            frame_move_step(PointerPhase::Move, -1, MIDDLE),
+            FrameMoveStep::Follow
+        );
+        assert_eq!(
+            frame_move_step(PointerPhase::Up, PRIMARY_MOUSE_BUTTON, MIDDLE),
+            FrameMoveStep::Hold
+        );
+        assert_eq!(
+            frame_move_step(PointerPhase::Up, MIDDLE, MIDDLE),
+            FrameMoveStep::Finish
+        );
+        // Win32 reports a drag crossing the window bounds as a cancel while
+        // the gesture still holds the pointer; the move must outlive it.
+        assert_eq!(
+            frame_move_step(PointerPhase::Cancel, -1, MIDDLE),
+            FrameMoveStep::Hold
+        );
+        // A primary press stands in for a release that never arrived.
+        assert_eq!(
+            frame_move_step(PointerPhase::Down, PRIMARY_MOUSE_BUTTON, MIDDLE),
+            FrameMoveStep::Finish
+        );
+    }
+
+    #[test]
+    fn a_held_gesture_reports_its_primary_button_first() {
+        assert_eq!(held_mouse_button(0), None);
+        assert_eq!(held_mouse_button(mouse_button_mask(1)), Some(1));
+        assert_eq!(held_mouse_button(mouse_button_mask(2)), Some(2));
+        assert_eq!(
+            held_mouse_button(mouse_button_mask(PRIMARY_MOUSE_BUTTON) | mouse_button_mask(1)),
+            Some(PRIMARY_MOUSE_BUTTON)
+        );
     }
 
     #[test]

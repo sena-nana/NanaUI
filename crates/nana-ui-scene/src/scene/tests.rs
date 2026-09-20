@@ -1,3 +1,4 @@
+use nana_ui_core::{UI_METRICS, type_scale};
 #[cfg(all(feature = "charts", feature = "rich-text"))]
 use nana_ui_runtime::TimeSeriesChart;
 use std::sync::Arc;
@@ -25,6 +26,7 @@ fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
 
 fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
     ExtractedNode {
+        chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: id(value),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
         parent: parent.map(id),
@@ -580,7 +582,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -843,6 +845,83 @@ fn selection_option_emits_surface_text_icon_and_focus_slots() {
                 .kind
         ),
         Some(nana_ui_core::Icon::Search)
+    );
+}
+
+/// Issue #101 F1: framework chrome follows the installed theme.
+///
+/// A menu surface's corner radius is painted by the Scene for a node that
+/// never authored one, so it used to come from the `UI_METRICS` constant and
+/// a themed radius could not reach it. The resolved steps now ride on the
+/// extracted node, and this is the assertion that the Scene paints the value
+/// it was given rather than a constant it looked up.
+#[test]
+fn a_menu_surface_paints_the_radius_it_was_handed_not_the_constant() {
+    let surface = LayoutBox {
+        x: 8.0,
+        y: 12.0,
+        width: 200.0,
+        height: 72.0,
+    };
+    let menu_with = |md: f32| {
+        let mut menu = node(3, None, &[]);
+        menu.layout = surface;
+        menu.chrome_radii = nana_ui_core::ChromeRadii {
+            md,
+            ..nana_ui_core::ChromeRadii::default()
+        };
+        menu.standard_visual = Some(StandardVisual::MenuSurface {
+            trigger_image: None,
+            open: true,
+            kind: nana_ui_runtime::MenuSurfaceKind::ContextMenu,
+            trigger: None,
+            trigger_icon: None,
+            gap: 0.0,
+            overlay: None,
+            query: None,
+            rows: Arc::from([]),
+            highlighted: None,
+        });
+        menu.component_geometry = Some(Box::new(ComponentGeometry::MenuSurface {
+            trigger_image: None,
+            trigger_surface: None,
+            trigger: None,
+            trigger_icon: None,
+            surface,
+            search: None,
+            search_field: None,
+            options: Vec::new(),
+            elevation: ComponentElevation {
+                color: [0.0, 0.0, 0.0, 0.55],
+                offset_x: 0.0,
+                offset_y: 4.0,
+                blur_radius: 18.0,
+                spread_radius: 0.0,
+                inset: false,
+            },
+            background: [0.1, 0.1, 0.1, 1.0],
+            border: [0.2, 0.2, 0.2, 1.0],
+        }));
+        let mut scene = UiScene::new();
+        scene.apply_delta([menu], []);
+        match scene
+            .primitive(PrimitiveId {
+                node: id(3),
+                slot: 0,
+            })
+            .expect("menu surface quad")
+            .kind
+        {
+            ScenePrimitiveKind::Quad { corner_radius, .. } => corner_radius,
+            ref other => panic!("menu surface is a quad, got {other:?}"),
+        }
+    };
+
+    assert_eq!(menu_with(UI_METRICS.radius_md), [UI_METRICS.radius_md; 4]);
+    assert_eq!(
+        menu_with(3.0),
+        [3.0; 4],
+        "the Scene must paint the resolved radius it was handed"
     );
 }
 
@@ -2251,7 +2330,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
             },
         ],
         line_labels_color: [0.6, 0.6, 0.6, 1.0],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2319,7 +2398,7 @@ fn long_editor_line_numbers_and_diagnostics_survive_updates_without_collisions()
             },
             content: Arc::from(format!("error {index}")),
             color: Some([1.0; 4]),
-            font_size: 11.0,
+            font_size: type_scale::HINT,
             font_weight: None,
         })
         .collect();
@@ -2544,7 +2623,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2675,7 +2754,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -2789,7 +2868,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         completion_popup: None,
         hover_popup: None,
         signature_popup: None,
@@ -3030,7 +3109,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3149,7 +3228,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3247,7 +3326,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
             },
         ],
         line_labels_color: [0.5, 0.5, 0.5, 1.0],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry {
             gutters: vec![nana_ui_runtime::TextFoldGutter {
                 bounds: LayoutBox {
@@ -3566,7 +3645,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry {
             gutters,
             markers: Vec::new(),
@@ -3718,7 +3797,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -3864,7 +3943,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -4000,7 +4079,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
         ],
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -4172,7 +4251,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -4290,7 +4369,7 @@ fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -4524,7 +4603,7 @@ fn feedback_geometry_emits_semantic_quad_text_and_icon_primitives() {
             .unwrap()
             .kind,
         ScenePrimitiveKind::Text {
-            size: 11.0,
+            size: type_scale::HINT,
             weight: None,
             ..
         }
@@ -7640,7 +7719,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
@@ -7814,7 +7893,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
         indent_guides: Vec::new(),
         line_labels: Vec::new(),
         line_labels_color: [0.0; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: Some(nana_ui_runtime::TextCompletionPopup {
@@ -7978,7 +8057,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
             number: 1,
         }],
         line_labels_color: [0.5; 4],
-        line_labels_font_size: 11.0,
+        line_labels_font_size: type_scale::HINT,
         folds: nana_ui_runtime::TextFoldGeometry::default(),
         git_marks: nana_ui_runtime::TextGitGutterGeometry::default(),
         completion_popup: None,
@@ -8490,5 +8569,487 @@ fn a_rebuild_that_drops_a_primitive_takes_it_out_of_the_scene() {
         scene.visible_operations(viewport).unwrap().len(),
         1,
         "the frame plan must be recompiled without it"
+    );
+}
+
+/// `opacity_groups` now answers `[]` from a counter instead of a parent walk,
+/// so the counter has to survive the whole node lifecycle. Drift in either
+/// direction is silent: too low and an isolation group stops being painted,
+/// too high and the walk comes back for every primitive.
+#[test]
+fn dest_group_candidate_count_tracks_inserts_updates_and_removals() {
+    let translucent = |value: u64, parent: Option<u64>, children: &[u64]| {
+        let mut node = node(value, parent, children);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                opacity: Some(0.5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let rescan = |scene: &UiScene| {
+        scene
+            .nodes
+            .values()
+            .filter(|node| may_be_dest_group(node))
+            .count()
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [
+            node(1, None, &[2, 3]),
+            node(2, Some(1), &[]),
+            node(3, Some(1), &[]),
+        ],
+        [],
+    );
+    assert_eq!(scene.dest_group_candidates, 0);
+    assert_eq!(rescan(&scene), 0);
+    assert!(scene.opacity_groups(id(2)).is_empty());
+
+    // Opaque -> translucent, then a second group, on nodes already retained.
+    scene.apply_delta([translucent(1, None, &[2, 3])], []);
+    assert_eq!(scene.dest_group_candidates, 1);
+    assert_eq!(rescan(&scene), 1);
+    assert_eq!(
+        scene
+            .opacity_groups(id(2))
+            .iter()
+            .map(|group| group.node)
+            .collect::<Vec<_>>(),
+        vec![id(1)]
+    );
+    scene.apply_delta([translucent(2, Some(1), &[])], []);
+    assert_eq!(scene.dest_group_candidates, 2);
+    assert_eq!(rescan(&scene), 2);
+
+    // Re-extracting the same translucent node must not double count it.
+    scene.apply_delta([translucent(2, Some(1), &[])], []);
+    assert_eq!(scene.dest_group_candidates, 2);
+    assert_eq!(rescan(&scene), 2);
+
+    // Translucent -> opaque, and removal of the other one.
+    scene.apply_delta([node(1, None, &[2, 3])], []);
+    assert_eq!(scene.dest_group_candidates, 1);
+    assert_eq!(rescan(&scene), 1);
+    scene.apply_delta([], [id(2)]);
+    assert_eq!(scene.dest_group_candidates, 0);
+    assert_eq!(rescan(&scene), 0);
+    assert!(scene.opacity_groups(id(3)).is_empty());
+}
+
+/// The counter is only sound while [`may_be_dest_group`] admits everything
+/// [`is_opacity_group`] does, and that is not something the type system checks.
+#[test]
+fn every_opacity_group_is_a_dest_group_candidate() {
+    let mut styles = vec![
+        nana_ui_core::LayoutStyle {
+            opacity: Some(0.5),
+            ..Default::default()
+        },
+        nana_ui_core::LayoutStyle::default(),
+        nana_ui_core::LayoutStyle::default(),
+    ];
+    styles[1].paint.filter = Some(ColorFilter {
+        blur_radius: 4.0,
+        ..Default::default()
+    });
+    styles[2].paint.mix_blend = MixBlendMode::Multiply;
+    for style in styles {
+        let mut parent = node(1, None, &[2]);
+        parent.source_style = NodeStyle {
+            layout: Arc::new(style),
+            ..Default::default()
+        };
+        let child = node(2, Some(1), &[]);
+        let nodes: SceneNodes = [(id(1), Arc::new(parent.clone())), (id(2), Arc::new(child))]
+            .into_iter()
+            .collect();
+        assert!(is_opacity_group(&nodes, &parent));
+        assert!(may_be_dest_group(&parent));
+    }
+}
+
+/// A fade is a new opacity on the same node every frame. Opacity reaches the
+/// paint-order key only as "is it translucent", so a fade between two
+/// translucent values must keep the order, the frame plan and the visibility
+/// index — and crossing out of translucency must drop all three, because the
+/// group stops isolating and its children rejoin their parent's stack.
+#[test]
+fn fading_within_translucency_retains_the_projection_and_crossing_out_rebuilds_it() {
+    let group = |opacity: Option<f32>| {
+        let mut node = node(2, Some(1), &[3, 4]);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                opacity,
+                background: Some([0.0, 0.0, 1.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let leaf = |value: u64| {
+        let mut node = node(value, Some(2), &[]);
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [node(1, None, &[2]), group(Some(0.35)), leaf(3), leaf(4)],
+        [],
+    );
+    let plan = scene.frame_plan().expect("plan");
+    let _ = scene
+        .visible_operations(SceneRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 1000.0,
+        })
+        .expect("index");
+    assert!(scene.visibility.get().is_some());
+    let order: Vec<_> = scene.primitives().map(|primitive| primitive.id).collect();
+
+    // Fade, twice, staying translucent.
+    for opacity in [0.6, 0.95] {
+        let delta = scene.apply_delta([group(Some(opacity))], []);
+        assert!(!delta.order_changed, "a fade reordered the scene");
+        assert!(
+            Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+            "a fade rebuilt the frame plan"
+        );
+        assert!(
+            scene.visibility.get().is_some(),
+            "a fade dropped the visibility index"
+        );
+        assert_eq!(
+            scene.primitives().map(|p| p.id).collect::<Vec<_>>(),
+            order,
+            "a fade moved a primitive"
+        );
+        assert_eq!(
+            scene
+                .opacity_groups(id(3))
+                .iter()
+                .map(|found| (found.node, found.opacity))
+                .collect::<Vec<_>>(),
+            vec![(id(2), opacity)],
+            "the group's own opacity must still follow the fade"
+        );
+    }
+
+    // Out of translucency: the group stops isolating, so the order must move.
+    let delta = scene.apply_delta([group(Some(1.0))], []);
+    assert!(
+        delta.order_changed,
+        "leaving translucency kept the old order"
+    );
+    assert!(scene.opacity_groups(id(3)).is_empty());
+    assert!(
+        !Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "leaving translucency kept the old frame plan"
+    );
+
+    // And back in.
+    let delta = scene.apply_delta([group(Some(0.5))], []);
+    assert!(
+        delta.order_changed,
+        "entering translucency kept the old order"
+    );
+    assert_eq!(
+        scene
+            .opacity_groups(id(3))
+            .iter()
+            .map(|found| found.node)
+            .collect::<Vec<_>>(),
+        vec![id(2)]
+    );
+}
+
+/// Rotating a container does move every descendant's bound, so the index has to
+/// re-derive them — but from the frame plan it already holds. The bounds must
+/// track the rotation (the audit inside `apply_delta` proves they equal a fresh
+/// build), and culling must follow them out of the viewport and back.
+#[test]
+fn rotating_a_container_refreshes_bounds_without_rebuilding_the_index() {
+    let container = |transform: Option<nana_ui_core::PaintTransform>| {
+        let mut node = node(2, Some(1), &[3]);
+        node.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let mut leaf = node(3, Some(2), &[]);
+    leaf.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([node(1, None, &[2]), container(None), leaf], []);
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 1000.0,
+    };
+    let visible = scene.visible_operations(viewport).expect("index");
+    assert!(!visible.is_empty());
+    let plan = scene.frame_plan().expect("plan");
+
+    // Translate the leaf's container far off-screen; the index must cull it.
+    let offscreen = nana_ui_core::PaintTransform {
+        e: 50_000.0,
+        f: 50_000.0,
+        ..nana_ui_core::PaintTransform::default()
+    };
+    scene.apply_delta([container(Some(offscreen))], []);
+    assert!(
+        Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "a transform change rebuilt the frame plan"
+    );
+    assert!(
+        scene.visibility.get().is_some(),
+        "a transform change dropped the visibility index"
+    );
+    assert!(
+        scene
+            .visible_operations(viewport)
+            .expect("index")
+            .is_empty(),
+        "a container moved off-screen kept its descendant visible"
+    );
+
+    // And back: a stale bound would keep it culled.
+    scene.apply_delta([container(None)], []);
+    assert_eq!(
+        scene.visible_operations(viewport).expect("index"),
+        visible,
+        "a container moved back on-screen stayed culled"
+    );
+}
+
+/// Scroll a list, then apply an ordinary delta, and require the retained
+/// index to answer every thin viewport exactly like a scene built from the
+/// same final nodes.
+///
+/// The scroll fast path shifts retained bounds by an offset and leaves the
+/// shift to be pushed down later, so the index stops matching a fresh build
+/// bit for bit. That is a property of the index and lasts until something
+/// re-derives it — the delta that did the shifting is long over by the time
+/// the next one keeps the same index. Both halves are checked: the audit
+/// inside `apply_delta` must not read a later delta as proof the index went
+/// stale, and the index must still answer correctly.
+fn a_scrolled_list_answers_like_a_fresh_build(rows: u64, scroll: f32, probe_to: f32) {
+    let row = |value: u64| {
+        let mut child = node(value, Some(1), &[]);
+        child.layout = LayoutBox {
+            x: 0.0,
+            y: (value - 2) as f32 * 20.0,
+            width: 100.0,
+            height: 18.0,
+        };
+        style_mut(&mut child).background = Some([1.0, 0.0, 0.0, 1.0]);
+        child
+    };
+    let all_nodes = |scroll: f32| {
+        let mut scroller = node(1, None, &(2..2 + rows).collect::<Vec<_>>());
+        scroller.layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        scroller.scroll_offset.y = scroll;
+        let mut all = vec![scroller];
+        all.extend((2..2 + rows).map(row));
+        all
+    };
+    let viewport = SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 100.0,
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(all_nodes(0.0), []);
+    // Only a query builds the index; without it nothing here is retained.
+    let _ = scene.visible_operations(viewport);
+    let plan = scene.frame_plan().expect("plan");
+
+    let scrolled = scene.apply_delta([all_nodes(scroll).remove(0)], []);
+    assert_eq!(
+        scrolled.rebuilt_primitives, 0,
+        "the scroll rebuilt primitives instead of taking the fast path"
+    );
+    assert!(
+        Arc::ptr_eq(&plan, &scene.frame_plan().expect("plan")),
+        "the scroll rebuilt the frame plan"
+    );
+    // An ordinary frame after the scroll, which is what a running app does
+    // every frame. The audit runs on this one.
+    scene.apply_delta([row(2)], []);
+    assert!(
+        scene.visibility.get().is_some(),
+        "the delta rebuilt the index, so nothing here tested the retained one"
+    );
+
+    let mut fresh = UiScene::new();
+    fresh.apply_delta(all_nodes(scroll), []);
+    // Thin slices are the point: a viewport covering everything returns every
+    // operation whatever the bounds say.
+    let mut top = -20.0f32;
+    while top < probe_to {
+        let probe = SceneRect {
+            x: 0.0,
+            y: top,
+            width: 100.0,
+            height: 1.0,
+        };
+        assert_eq!(
+            scene.visible_operations(probe),
+            fresh.visible_operations(probe),
+            "a viewport at y={top} disagrees with a fresh build"
+        );
+        top += 1.0;
+    }
+}
+
+/// Two leaves, so the one push the later delta performs reaches both and the
+/// only thing left over is a shift on a leaf, where nothing reads it.
+#[test]
+fn a_scroll_pushed_down_to_every_leaf_answers_like_a_fresh_build() {
+    a_scrolled_list_answers_like_a_fresh_build(2, 30.0, 120.0);
+}
+
+/// Four leaves, so the half the later delta never descends into still holds
+/// bounds from before the scroll, and only the shift recorded above them
+/// makes a query come out right.
+#[test]
+fn a_scroll_left_unpushed_in_one_half_answers_like_a_fresh_build() {
+    a_scrolled_list_answers_like_a_fresh_build(4, 30.0, 120.0);
+}
+
+/// The virtualised shape the big scrolling tests cover, sized to stay under
+/// [`RETAINED_AUDIT_LIMIT`] so the audit actually runs on it.
+///
+/// Those tests build ten thousand nodes, and that is how a scrolled index
+/// disagreeing with a fresh build stayed unnoticed: past the limit the audit
+/// returns on its first line, so the only two tests exercising the scroll
+/// fast path were the two it could not see.
+#[test]
+fn a_scrolled_virtualised_list_small_enough_to_audit_answers_like_a_fresh_build() {
+    a_scrolled_list_answers_like_a_fresh_build(200, 1_000.0, 140.0);
+}
+
+/// Bumping `attribute_epoch` re-bases every node that was not re-extracted,
+/// and re-basing goes through `inverse`, which divides by the determinant. For
+/// a rotation that round trip does not land back on the identity, so a node
+/// that did not move would drift by an ulp — enough to cull a primitive a
+/// pixel early, and enough for a self clip to stop matching its own bound.
+///
+/// A colour change on a parent is enough to bump the epoch, so the invariant
+/// is worth stating directly: it must not move a descendant at all.
+#[test]
+fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
+    let angle = 0.5f32;
+    let rotation = nana_ui_core::PaintTransform {
+        a: angle.cos(),
+        b: angle.sin(),
+        c: -angle.sin(),
+        d: angle.cos(),
+        ..nana_ui_core::PaintTransform::default()
+    };
+    let container = |background: [f32; 4]| {
+        let mut node = node(2, Some(1), &[3]);
+        node.layout = LayoutBox {
+            x: 7.0,
+            y: 11.0,
+            width: 100.0,
+            height: 80.0,
+        };
+        node.source_style = NodeStyle {
+            layout: Arc::new(nana_ui_core::LayoutStyle {
+                transform: Some(rotation),
+                background: Some(background),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        node
+    };
+    let mut leaf = node(3, Some(2), &[]);
+    leaf.layout = LayoutBox {
+        x: 13.0,
+        y: 17.0,
+        width: 40.0,
+        height: 30.0,
+    };
+    leaf.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [node(1, None, &[2]), container([0.0, 0.0, 1.0, 1.0]), leaf],
+        [],
+    );
+    let _ = scene.visible_operations(SceneRect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 1000.0,
+    });
+    let descendant = scene
+        .primitives()
+        .find(|primitive| primitive.node == id(3))
+        .expect("leaf primitive")
+        .id;
+    let before = scene.draw_primitive(descendant).expect("draw").transform;
+    let before_bounds = scene.draw_node_bounds(id(3)).expect("bounds");
+
+    // Only the colour differs. It bumps the epoch without moving anything.
+    scene.apply_delta([container([0.0, 1.0, 0.0, 1.0])], []);
+
+    assert!(
+        scene.visibility.get().is_some(),
+        "the delta rebuilt the index, so nothing here tested the retained one"
+    );
+    assert_eq!(
+        scene.draw_primitive(descendant).expect("draw").transform,
+        before,
+        "a colour change on the parent moved a descendant's draw transform"
+    );
+    assert_eq!(
+        scene.draw_node_bounds(id(3)).expect("bounds"),
+        before_bounds,
+        "a colour change on the parent moved a descendant's bounds"
     );
 }

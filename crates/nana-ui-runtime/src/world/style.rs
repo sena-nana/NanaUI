@@ -7,6 +7,7 @@ impl UiWorld {
         &mut self,
         id: StableNodeId,
         resolved: &mut HashSet<StableNodeId>,
+        work: &mut ThemeWorkCounters,
     ) -> Result<(), UiWorldError> {
         if !self.contains(id) {
             return Err(UiWorldError::MissingNode(id));
@@ -16,7 +17,7 @@ impl UiWorld {
         }
         let parent = self.record(id).hierarchy.parent;
         if let Some(parent) = parent {
-            self.resolve_style::<SHARE>(parent, resolved)?;
+            self.resolve_style::<SHARE>(parent, resolved, work)?;
         }
         let layout = self.motion_layout(id, &self.record(id).style.layout);
         // Only a handful of fields are read out of the parent, so share its Arc
@@ -86,22 +87,41 @@ impl UiWorld {
         {
             let resolved = &self.record(id).resolved;
             if resolved.0.as_ref() == &next && resolved.1 == self.palette_epoch {
+                work.record_skipped();
                 return Ok(());
             }
         }
+        work.record_resolved();
         // Identical inherited results can share immutable paint state. Local
         // authored style remains on the node; future changes publish a new Arc.
-        let next = if SHARE {
+        let shared = if SHARE {
             parent
                 .map(|parent| &self.record(parent).resolved.0)
                 .filter(|inherited| inherited.as_ref() == &next)
                 .map(Arc::clone)
-                .unwrap_or_else(|| Arc::new(next))
         } else {
-            Arc::new(next)
+            None
+        };
+        let next = match shared {
+            Some(shared) => shared,
+            None => {
+                // One `ComputedStyle` behind one `Arc`. A node that inherits
+                // its parent's result verbatim borrows that allocation instead.
+                work.record_allocation(1, size_of::<ComputedStyle>());
+                Arc::new(next)
+            }
         };
         let dirty =
             crate::text_node::classify_computed_style_change(&self.record(id).resolved.0, &next);
+        // What this class costs the text pipeline is `TextDirty::work`'s
+        // answer, not a second copy of that mapping here. A colour-only change
+        // implies SCENE_PAINT, so a palette switch stays paint work.
+        let text_work = dirty.work();
+        if text_work.intersects(crate::text_node::TextWork::SHAPE)
+            || text_work.intersects(crate::text_node::TextWork::LAYOUT)
+        {
+            work.record_text_invalidation(1);
+        }
         self.nodes.invalidate_text(id, dirty);
         if !self.record(id).resolved.0.visible && next.visible {
             // Text passes skip hidden nodes without resolving them, so a node
@@ -116,6 +136,198 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Apply a node's design intent to its layout, against the installed
+    /// metrics. Returns the authored `Arc` untouched when there is nothing to
+    /// resolve, so a node without intent costs nothing.
+    /// Resolve a node's design intent into the layout box the pipeline reads.
+    ///
+    /// Returns the resolved layout and whether producing it had to copy the
+    /// authored one. A node whose intent already matches what it authored —
+    /// and every node with no intent at all — keeps sharing the same `Arc`.
+    pub(crate) fn resolve_layout_intent(
+        style: &NodeStyle,
+        metrics: nana_ui_core::ThemeMetrics,
+    ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
+        let radius = style.radius.map(|tier| tier.resolve(metrics));
+        let control = style.control_height.map(|height| {
+            (
+                matches!(height, nana_ui_core::ControlHeight::Exact(_)),
+                nana_ui_core::LengthSpec::Px(height.resolve(metrics)),
+            )
+        });
+        let padding_x = style
+            .control_padding_x
+            .map(|padding| nana_ui_core::LengthSpec::Px(padding.resolve(metrics)));
+        let padding_y = style
+            .control_padding_y
+            .map(|padding| nana_ui_core::LengthSpec::Px(padding.resolve(metrics)));
+        let surface = style.surface_padding.map(|padding| {
+            (
+                nana_ui_core::LengthSpec::Px(padding.resolve_x(metrics)),
+                padding.resolve_y(metrics).map(nana_ui_core::LengthSpec::Px),
+            )
+        });
+        let square = style
+            .square
+            .map(|size| nana_ui_core::LengthSpec::Px(size.resolve(metrics)));
+        // CSS `aspect-ratio` fills an automatic height from a definite width;
+        // it does not shrink `width:auto` from a definite height. A control
+        // that names Exact height and a ratio still has to resolve the inline
+        // size here, or a spent `width` from the last project would stick.
+        let aspect_width = style.control_height.and_then(|height| {
+            if !matches!(height, nana_ui_core::ControlHeight::Exact(_))
+                || style.layout.width.is_some()
+            {
+                return None;
+            }
+            let ratio = style.layout.aspect_ratio?;
+            if !ratio.is_finite() || ratio <= 0.0 {
+                return None;
+            }
+            Some(nana_ui_core::LengthSpec::Px(
+                height.resolve(metrics) * ratio,
+            ))
+        });
+        let radius_settled = radius.is_none_or(|value| style.layout.border_radius == Some(value));
+        let padding_x_settled = padding_x.is_none_or(|length| {
+            style.layout.padding_left == Some(length) && style.layout.padding_right == Some(length)
+        });
+        let padding_y_settled = padding_y.is_none_or(|length| {
+            style.layout.padding_top == Some(length) && style.layout.padding_bottom == Some(length)
+        });
+        let surface_settled = surface.is_none_or(|(x, y)| {
+            let horizontal = style.layout.padding.is_some()
+                || (style.layout.padding_left == Some(x) && style.layout.padding_right == Some(x));
+            let vertical = y.is_none_or(|y| {
+                style.layout.padding.is_some()
+                    || (style.layout.padding_top == Some(y)
+                        && style.layout.padding_bottom == Some(y))
+            });
+            horizontal && vertical
+        });
+        let square_settled = square.is_none_or(|length| {
+            style.layout.min_width == Some(length) && style.layout.min_height == Some(length)
+        });
+        let control_settled = control.is_none_or(|(exact, length)| {
+            if exact {
+                style.layout.height == Some(length)
+            } else {
+                style.layout.min_height == Some(length)
+            }
+        });
+        let aspect_width_settled =
+            aspect_width.is_none_or(|length| style.layout.width == Some(length));
+        if radius_settled
+            && control_settled
+            && padding_x_settled
+            && padding_y_settled
+            && surface_settled
+            && square_settled
+            && aspect_width_settled
+        {
+            return (Arc::clone(&style.layout), false);
+        }
+        let mut layout = Arc::clone(&style.layout);
+        let target = Arc::make_mut(&mut layout);
+        if let Some(value) = radius {
+            target.border_radius = Some(value);
+        }
+        if let Some((exact, length)) = control {
+            if exact {
+                target.height = Some(length);
+            } else {
+                target.min_height = Some(length);
+            }
+        }
+        if let Some(length) = padding_x {
+            target.padding_left = Some(length);
+            target.padding_right = Some(length);
+        }
+        if let Some(length) = padding_y {
+            target.padding_top = Some(length);
+            target.padding_bottom = Some(length);
+        }
+        if let Some((x, y)) = surface {
+            if target.padding.is_none() {
+                target.padding_left.get_or_insert(x);
+                target.padding_right.get_or_insert(x);
+                if let Some(y) = y {
+                    target.padding_top.get_or_insert(y);
+                    target.padding_bottom.get_or_insert(y);
+                }
+            }
+        }
+        if let Some(length) = square {
+            target.min_width = Some(length);
+            target.min_height = Some(length);
+        }
+        if let Some(length) = aspect_width {
+            target.width = Some(length);
+        }
+        (layout, true)
+    }
+
+    /// Write a node's authored style and keep its resolved layout in step.
+    ///
+    /// The two have to move together: projection diffs against the authored
+    /// style, while layout and extraction read the resolved one. Every path
+    /// that writes `record.style` goes through here so the pair cannot drift.
+    pub(crate) fn write_node_style(&mut self, id: StableNodeId, style: NodeStyle) {
+        let (resolved, copied) = Self::resolve_layout_intent(&style, self.style_model.metrics);
+        if copied {
+            self.record_resolved_layout_copy();
+        }
+        let record = self.record_mut(id);
+        record.style = style;
+        record.resolved_layout = resolved;
+    }
+
+    /// Re-resolve one node's layout after its authored layout was mutated in
+    /// place. A node without design intent keeps sharing the same `Arc`.
+    pub(crate) fn refresh_resolved_layout(&mut self, id: StableNodeId) {
+        let (resolved, copied) =
+            Self::resolve_layout_intent(&self.record(id).style, self.style_model.metrics);
+        if copied {
+            self.record_resolved_layout_copy();
+        }
+        self.record_mut(id).resolved_layout = resolved;
+    }
+
+    /// Re-resolve every node's layout intent after a metrics install.
+    fn reresolve_layout_intent(&mut self, ids: &[StableNodeId]) {
+        let metrics = self.style_model.metrics;
+        for &id in ids {
+            let style = &self.record(id).style;
+            if style.radius.is_none()
+                && style.control_height.is_none()
+                && style.control_padding_x.is_none()
+                && style.control_padding_y.is_none()
+                && style.surface_padding.is_none()
+                && style.square.is_none()
+            {
+                continue;
+            }
+            let (resolved, copied) = Self::resolve_layout_intent(&self.record(id).style, metrics);
+            if copied {
+                self.record_resolved_layout_copy();
+            }
+            self.record_mut(id).resolved_layout = resolved;
+        }
+    }
+
+    /// Read one role out of the token authority, counted for Issue #101 §4.
+    fn theme_color(&self, role: SemanticColorRole) -> [f32; 4] {
+        self.record_theme_read();
+        self.style_model.color(role).as_rgba_array()
+    }
+
+    /// Resolve a palette mix. One question asked of the theme, so one read —
+    /// the roles it blends are the mix's own business.
+    fn theme_mix(&self, mix: nana_ui_core::SemanticColorMix) -> [f32; 4] {
+        self.record_theme_read();
+        mix.resolve(self.style_model).as_rgba_array()
+    }
+
     pub(super) fn palette_paint_colors(
         &self,
         id: StableNodeId,
@@ -136,42 +348,22 @@ impl UiWorld {
         let foreground = paint.foreground.unwrap_or(inherited_foreground);
         let color = layout
             .color
-            .or_else(|| {
-                paint
-                    .foreground_mix
-                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
-            })
+            .or_else(|| paint.foreground_mix.map(|mix| self.theme_mix(mix)))
             .or_else(|| {
                 paint
                     .foreground
-                    .map(|role| self.style_model.color(role).as_rgba_array())
+                    .map(|role| self.theme_color(role))
                     .or(inherited_color)
-                    .or_else(|| Some(self.style_model.color(foreground).as_rgba_array()))
+                    .or_else(|| Some(self.theme_color(foreground)))
             });
         let background = layout
             .background
-            .or_else(|| {
-                paint
-                    .background_mix
-                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
-            })
-            .or_else(|| {
-                paint
-                    .background
-                    .map(|role| self.style_model.color(role).as_rgba_array())
-            });
+            .or_else(|| paint.background_mix.map(|mix| self.theme_mix(mix)))
+            .or_else(|| paint.background.map(|role| self.theme_color(role)));
         let border_color = layout
             .resolved_border_color()
-            .or_else(|| {
-                paint
-                    .border_mix
-                    .map(|mix| mix.resolve(self.style_model).as_rgba_array())
-            })
-            .or_else(|| {
-                paint
-                    .border
-                    .map(|role| self.style_model.color(role).as_rgba_array())
-            });
+            .or_else(|| paint.border_mix.map(|mix| self.theme_mix(mix)))
+            .or_else(|| paint.border.map(|role| self.theme_color(role)));
         if let Some(transition) = self.hover_transitions.get(&id) {
             let [color, background, border_color] = std::array::from_fn(|i| {
                 interpolate_color(
@@ -198,10 +390,10 @@ impl UiWorld {
             }
             let paint = self.semantic_paint(id, local);
             if let Some(mix) = paint.foreground_mix {
-                return Some(mix.resolve(self.style_model).as_rgba_array());
+                return Some(self.theme_mix(mix));
             }
             if let Some(role) = paint.foreground {
-                return Some(self.style_model.color(role).as_rgba_array());
+                return Some(self.theme_color(role));
             }
             parent = self.record(id).hierarchy.parent;
         }
@@ -271,6 +463,9 @@ impl UiWorld {
     pub(super) fn mark_interaction_style(&mut self, id: StableNodeId) {
         self.mark(id, DirtyMask::STATE);
         if !self.record(id).style.interaction.is_empty() {
+            let mut work = ThemeWorkCounters::default();
+            work.record_paint_invalidation(1);
+            self.record_theme_work(work);
             self.mark(id, DirtyMask::STYLE | DirtyMask::RENDER);
         }
     }
@@ -284,9 +479,11 @@ impl UiWorld {
         // once so parent-chain deduplication does not repeatedly rehash large
         // initial documents.
         let mut resolved = HashSet::with_capacity(ids.len());
+        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<true>(id, &mut resolved)?;
+            self.resolve_style::<true>(id, &mut resolved, &mut work)?;
         }
+        self.record_theme_work(work);
         self.reconcile_focus(ids);
         self.drop_invalid_document_text_selections();
         Ok(())
@@ -301,9 +498,11 @@ impl UiWorld {
         ids: &[StableNodeId],
     ) -> Result<(), UiWorldError> {
         let mut resolved = HashSet::new();
+        let mut work = ThemeWorkCounters::default();
         for &id in ids {
-            self.resolve_style::<false>(id, &mut resolved)?;
+            self.resolve_style::<false>(id, &mut resolved, &mut work)?;
         }
+        self.record_theme_work(work);
         self.reconcile_focus(ids);
         Ok(())
     }
@@ -320,7 +519,8 @@ impl UiWorld {
         self.style_model = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
         let mut bits = DirtyMask::RENDER;
-        if self.style_model.metrics != previous_metrics {
+        let metrics_changed = self.style_model.metrics != previous_metrics;
+        if metrics_changed {
             bits |= DirtyMask::LAYOUT;
         }
         let mut ids = Vec::new();
@@ -328,6 +528,24 @@ impl UiWorld {
             for &root in roots {
                 ids.extend(self.subtree_ids(root));
             }
+        }
+        // Installing a theme today invalidates every live node (Issue #101 §4
+        // baseline; Issue #100 §7 is where that becomes dependency-scoped).
+        // Recording the real width is what makes the later narrowing visible.
+        let mut work = ThemeWorkCounters::default();
+        work.record_paint_invalidation(ids.len());
+        if metrics_changed {
+            work.record_layout_invalidation(ids.len());
+        }
+        if !ids.is_empty() {
+            work.record_allocation(1, ids.len().saturating_mul(size_of::<StableNodeId>()));
+        }
+        self.record_theme_work(work);
+        if metrics_changed {
+            // Design intent resolves against the metrics, so a metrics install
+            // is the one event that has to re-run it. Doing it here, once, is
+            // what keeps it off every frame's read path.
+            self.reresolve_layout_intent(&ids);
         }
         for id in ids {
             self.mark(id, bits);

@@ -114,7 +114,7 @@ impl DiffView {
         layout.overflow_x = OverflowSpec::Hidden;
         layout.overflow_y = OverflowSpec::Hidden;
         layout.font_family = Some("Cascadia Mono".to_owned());
-        layout.font_size = Some(12.0);
+        layout.font_size = Some(nana_ui_core::type_scale::META);
         Self {
             hunks: hunks.into(),
             layout: DiffLayout::Unified,

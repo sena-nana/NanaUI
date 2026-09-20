@@ -1,0 +1,8 @@
+component: action-menu-item
+mode: light
+state: danger
+  target: 20.00,20.00 380.00x28.00
+  a11y: role=MenuItem disabled=false checked=None selected=Some(false) mixed=false
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 28.00,20.00 345.00x28.00 opacity=1.00 color=#c93c3cff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/4 381.00,20.00 11.00x28.00 opacity=1.00 color=#5a616eff size=11.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

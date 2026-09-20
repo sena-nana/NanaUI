@@ -101,6 +101,34 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 `nana-text` 自己的结构化 correctness 门禁是 `cargo test -p nana-text --all-targets`，
 与本目录的 work-counter 合同是两回事。
 
+## Issue #101 theme / style 基线
+
+`catalog.json` 的 `nana_theme_ids` 是 Issue #101 §4 的 theme/style 工作量基线：static idle、
+1/100/1k/10k 控件、单节点 hover / focus、light↔dark、accent-only、density、以及大树头部的
+style mutation。和 motion / text 那两组一样，它们**不在** `harness_ids` 里——判据是一次主题
+变化让保留期流水线重做了什么（`work_counters.style_nodes_*` / `theme_reads` /
+`*_from_style`），不是公共 CI 的时序。
+
+```bash
+python3 perf/runners/nana/run.py --print-plan --scenario theme-palette-switch
+cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-theme-benchmark -- --output target/performance/issue101/theme.json
+python3 perf/runners/nana/run.py --scenario theme-palette-switch --from-report target/performance/issue101/theme.json
+# 不想重跑 benchmark 时，用归档的那份报告重放：
+python3 perf/runners/nana/run.py --scenario theme-density --from-report docs/performance-data/theme-audit-2026-09-19/theme-work-counters.json
+```
+
+这组没有单独的 `perf/fixtures/` 副本：归档报告只留一份（带日期、带机器），extractor 与门禁本身由
+`perf/contract.py --self-test` 的 `theme_baseline_tests` 覆盖——合成报告能测到真实报告测不到的
+负例（workload 不匹配、scale 不回显、`considered != resolved + skipped`、counter 缺失）。
+
+报告里 theme counter 与 `#8` frame counter 落在同一个 `work_counters` 对象：名字不冲突，
+放在一起才能用 `style_processed` 去核对 `style_nodes_considered`。`frame_work` 取的是测量
+窗口里那次 drain 自己的计数，不是 `last_work_counters`——空帧不会替换后者，否则 idle 那行
+会报上一帧的数字。
+
+这些数字是 **Phase 0 基线**，描述现状（包括 Issue #100 要收窄的地方），不是目标值。改动
+后重跑并贴回 [`docs/theme.md`](../docs/theme.md) 的「性能基线」一节。
+
 ## Vue vs Rust L3 输入成本
 
 不在这套 Scenario 里，因为它测的不是一个 toolkit 跑一个负载，而是**同一个进程里**建立

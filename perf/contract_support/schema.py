@@ -43,6 +43,7 @@ KIND_PARAM_KEYS: dict[str, tuple[str, ...]] = {
     "Overlay": ("kinds",),
     "Animation": ("active",),
     "GpuScene": ("composition",),
+    "Theme": ("workload",),
 }
 
 
@@ -57,6 +58,20 @@ MUTATION_KINDS = {
 
 
 GPU_COMPOSITIONS = {"UiOnly", "UiLive2d", "UiLive2dEffect"}
+
+
+# Issue #101 §4 theme / style baseline workloads. `controls` carries a
+# `controls` count; every other workload runs on the shared 1k-control fixture.
+THEME_WORKLOADS = {
+    "controls",
+    "idle",
+    "hover",
+    "focus",
+    "palette-switch",
+    "accent-only",
+    "density",
+    "head-scope",
+}
 
 
 
@@ -174,6 +189,25 @@ def validate_scenario(scenario: Mapping[str, Any]) -> list[str]:
         for key in ("rows", "columns"):
             if not _positive_int(params.get(key)):
                 errors.append(f"Table.{key} must be a positive integer")
+    if kind == "Theme":
+        errors.extend(_validate_theme(params))
+    return errors
+
+
+
+def _validate_theme(params: Mapping[str, Any]) -> list[str]:
+    """A Theme row names one workload, and the `controls` row names its scale.
+
+    The scale is required rather than defaulted: a row that does not say how
+    many controls it measured cannot be compared with the next run of itself.
+    """
+    errors: list[str] = []
+    workload = params.get("workload")
+    if workload not in THEME_WORKLOADS:
+        errors.append(f"Theme.workload must be one of {sorted(THEME_WORKLOADS)}")
+        return errors
+    if workload == "controls" and not _positive_int(params.get("controls")):
+        errors.append("Theme.controls must be a positive integer for workload=controls")
     return errors
 
 
@@ -318,6 +352,12 @@ GPUI_SNAPSHOT_REMOVED_REASON = (
     "Issue #12 observation uses --from-report fixtures only."
 )
 
+ICED_UNSUPPORTED_THEME_REASON = (
+    "Iced has no Nana Theme / Style Model resolver, so there is no same-Scenario "
+    "workload to run. Issue #101 §4 rows are a NanaUI-internal baseline, not an "
+    "Issue #12 cross-toolkit comparison. Fake Iced numbers are forbidden."
+)
+
 ICED_UNSUPPORTED_VIRTUAL_TREE_REASON = (
     "Iced scenario-bench has no VirtualTree Fenwick / disclosure-row materializer. "
     "A VirtualList window is not an expanded-walk tree. Fake Iced numbers are forbidden."
@@ -388,6 +428,8 @@ def iced_scenario_bench_skip_reason(scenario: Mapping[str, Any]) -> str | None:
         return ICED_UNSUPPORTED_TEXT_EDITOR_REASON
     if kind == "VirtualTree":
         return ICED_UNSUPPORTED_VIRTUAL_TREE_REASON
+    if kind == "Theme":
+        return ICED_UNSUPPORTED_THEME_REASON
     return None
 
 
@@ -846,6 +888,19 @@ def _validate_motion_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
 
 
 
+def _validate_theme_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
+    """Issue #101 §4 theme/style work-counter rows. Outside harness_ids for the
+    same reason as the motion and text rows: the gate is what one theme change
+    made the pipeline redo, not what a shared CI runner clocked."""
+    return _validate_named_id_list(
+        catalog,
+        base,
+        key="nana_theme_ids",
+        must_stay_out_of_harness=True,
+    )
+
+
+
 def _validate_text_ids(catalog: Mapping[str, Any], base: Path) -> list[str]:
     """Issue #98 retained-text work-counter rows. Outside harness_ids for the
     same reason as the motion rows: the gate is what one frame redid, not what
@@ -909,6 +964,7 @@ def validate_all_scenarios(root: Path | None = None) -> list[str]:
     errors.extend(_validate_gpu_scale_ids(catalog, base))
     errors.extend(_validate_motion_ids(catalog, base))
     errors.extend(_validate_text_ids(catalog, base))
+    errors.extend(_validate_theme_ids(catalog, base))
     issue12 = catalog.get("issue12") if isinstance(catalog.get("issue12"), Mapping) else {}
     same = list(issue12.get("same_scenario_ids") or [])
     unsupported = list(issue12.get("unsupported_ids") or [])

@@ -4,8 +4,7 @@ use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows_sys::Win32::UI::Controls::MARGINS;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WS_EX_NOREDIRECTIONBITMAP,
+    GWL_EXSTYLE, GetWindowLongPtrW, WS_EX_NOREDIRECTIONBITMAP,
 };
 
 use crate::{Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome};
@@ -17,7 +16,7 @@ pub(crate) fn apply<W: HasWindowHandle + ?Sized>(
     fallback: FallbackColor,
 ) -> MaterialOutcome {
     clear(window);
-    if should_clear_no_redirection_bitmap(requested) {
+    if should_reset_extended_frame(requested) {
         apply_solid(window);
     }
     match requested {
@@ -56,8 +55,16 @@ pub(crate) fn clear<W: HasWindowHandle + ?Sized>(window: &W) {
     let _ = clear_acrylic(window);
 }
 
-const fn should_clear_no_redirection_bitmap(requested: MaterialEffect) -> bool {
-    matches!(requested, MaterialEffect::Solid)
+/// Which requests leave an opaque client, so the extended frame an earlier
+/// material put on the window has to be undone first.
+///
+/// `Vibrancy` belongs here because Windows has no such effect: the request ends
+/// as a solid outcome, and a window that reports solid must not keep the frame
+/// a previous `Transparent` or `Mica` extended across it. Mica and Acrylic undo
+/// their own state on the branch where they fail; `Vibrancy` never had a branch
+/// that could.
+const fn should_reset_extended_frame(requested: MaterialEffect) -> bool {
+    matches!(requested, MaterialEffect::Solid | MaterialEffect::Vibrancy)
 }
 
 pub(crate) fn set_application_icon_png(_png: &[u8]) {}
@@ -73,19 +80,47 @@ fn apply_solid<W: HasWindowHandle + ?Sized>(window: &W) {
         return;
     };
     extend_frame(hwnd, 0);
-    set_no_redirection_bitmap(hwnd, false);
 }
 
 fn apply_transparent<W: HasWindowHandle + ?Sized>(window: &W) {
-    prepare_composed_client(window);
+    let Some(hwnd) = hwnd(window) else {
+        return;
+    };
+    extend_frame(hwnd, transparent_frame_margin(has_redirection_bitmap(hwnd)));
 }
 
+/// Whether DWM still has a redirection bitmap for this HWND.
+///
+/// `WS_EX_NOREDIRECTIONBITMAP` is a creation flag: winit derives it from
+/// `NO_BACK_BUFFER` and `apply_diff` rewrites the whole ex-style, so the bit
+/// is only durable when it was set at create. DirectComposition windows are
+/// created that way; a plain HWND swapchain keeps the bitmap.
+fn has_redirection_bitmap(hwnd: HWND) -> bool {
+    let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    ex_style & WS_EX_NOREDIRECTIONBITMAP as isize == 0
+}
+
+/// Glass margin for a transparent client.
+///
+/// `-1` extends the DWM frame across the client so a redirected swapchain's
+/// alpha is visible — that is how a DX12 HWND surface, which only ever
+/// advertises `Opaque`, becomes transparent. `0` leaves the frame off: a
+/// window without a redirection bitmap presents through a DirectComposition
+/// visual that already negotiated premultiplied alpha, and keeping a previous
+/// Mica/Acrylic extension would make DWM keep blending a surface that is not
+/// there.
+const fn transparent_frame_margin(has_redirection_bitmap: bool) -> i32 {
+    if has_redirection_bitmap { -1 } else { 0 }
+}
+
+/// Extends the frame across the whole client, so DWM reads the alpha of a
+/// client that presents through the redirection bitmap. Mica and Acrylic *are*
+/// that frame; Transparent uses [`transparent_frame_margin`] instead.
 fn prepare_composed_client<W: HasWindowHandle + ?Sized>(window: &W) {
     let Some(hwnd) = hwnd(window) else {
         return;
     };
     extend_frame(hwnd, -1);
-    set_no_redirection_bitmap(hwnd, true);
 }
 
 fn hwnd<W: HasWindowHandle + ?Sized>(window: &W) -> Option<HWND> {
@@ -112,47 +147,29 @@ fn extend_frame(hwnd: HWND, margin: i32) {
     }
 }
 
-fn set_no_redirection_bitmap(hwnd: HWND, enabled: bool) {
-    unsafe {
-        let current = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let bit = WS_EX_NOREDIRECTIONBITMAP as isize;
-        let next = if enabled {
-            current | bit
-        } else {
-            current & !bit
-        };
-        if next == current {
-            return;
-        }
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
-        SetWindowPos(
-            hwnd,
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::should_clear_no_redirection_bitmap;
+    use super::{should_reset_extended_frame, transparent_frame_margin};
     use crate::MaterialEffect;
 
+    /// A window whose request ends opaque must not be left composed by the
+    /// material it is replacing. Windows has no Vibrancy, so that request is
+    /// one of them however it reads.
     #[test]
-    fn only_solid_clears_no_redirection_bitmap() {
-        assert!(should_clear_no_redirection_bitmap(MaterialEffect::Solid));
-        assert!(!should_clear_no_redirection_bitmap(
-            MaterialEffect::Transparent
-        ));
-        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Mica));
-        assert!(!should_clear_no_redirection_bitmap(MaterialEffect::Acrylic));
-        assert!(!should_clear_no_redirection_bitmap(
-            MaterialEffect::Vibrancy
-        ));
+    fn a_request_that_ends_opaque_undoes_the_composed_client() {
+        assert!(should_reset_extended_frame(MaterialEffect::Solid));
+        assert!(should_reset_extended_frame(MaterialEffect::Vibrancy));
+        assert!(!should_reset_extended_frame(MaterialEffect::Transparent));
+        assert!(!should_reset_extended_frame(MaterialEffect::Mica));
+        assert!(!should_reset_extended_frame(MaterialEffect::Acrylic));
+    }
+
+    /// A redirected client borrows DWM alpha; a DirectComposition visual
+    /// already has it, and must not keep a leftover extended frame.
+    #[test]
+    fn transparent_glass_follows_the_redirection_bitmap() {
+        assert_eq!(transparent_frame_margin(true), -1);
+        assert_eq!(transparent_frame_margin(false), 0);
     }
 }
 

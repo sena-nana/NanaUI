@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "theme-head-style-mutation",
+  "kind": "Theme",
+  "params": {
+    "workload": "head-scope",
+    "tree_nodes": 10000
+  },
+  "record": [
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "head_scope_resolves_the_subtree_once",
+      "path": "work_counters.style_nodes_considered",
+      "op": "lte",
+      "value": 10000,
+      "status": "required",
+      "note": "An inherited paint change at the head re-resolves its subtree once. More than one visit per node would mean the parent chain is walked per descendant."
+    },
+    {
+      "name": "head_scope_does_not_lay_out",
+      "path": "work_counters.layout_nodes_from_style",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "An inherited colour is not a layout input."
+    }
+  ],
+  "notes": "Issue #101 §4 subtree style mutation at the head of a 10k tree. This is what a ThemeScope patch costs before ThemeScope exists (Issue #100 §5)."
+}

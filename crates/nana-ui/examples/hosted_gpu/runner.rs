@@ -229,7 +229,7 @@ impl DemoProgram {
     }
 
     fn frame(panel: &DemoPanel, size: (u32, u32)) -> ProducerFrame {
-        let colors = panel.colors();
+        let colors = panel.palette();
         ProducerFrame {
             size,
             background: colors.background,

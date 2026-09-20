@@ -1,0 +1,32 @@
+component: interactive-card
+mode: light
+state: selected
+  target: 20.00,20.00 380.00x45.60
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #3/0 20.00,20.00 380.00x45.60 opacity=1.00 bg=#e2e2e2ff border=#eef0f3ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,35.00 111.03x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: hover
+  target: 20.00,20.00 380.00x43.60
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #3/0 20.00,20.00 380.00x43.60 opacity=1.00 bg=#ebedf0ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,34.00 111.03x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: pressed
+  target: 20.00,20.00 380.00x43.60
+  a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
+  quad #3/0 20.00,20.00 380.00x43.60 opacity=1.00 bg=#dfe2e7ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,34.00 111.03x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: disabled
+  target: 20.00,20.00 380.00x43.60
+  a11y: role=Button disabled=true checked=None selected=Some(false) mixed=false
+  quad #3/0 20.00,20.00 380.00x43.60 opacity=1.00 bg=#f7f8faff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,34.00 111.03x15.60 opacity=1.00 color=#9ca3afff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: selected-hover
+  target: 20.00,20.00 380.00x45.60
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #3/0 20.00,20.00 380.00x45.60 opacity=1.00 bg=#e8e8e8ff border=#eef0f3ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,35.00 111.03x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+state: selected-pressed
+  target: 20.00,20.00 380.00x45.60
+  a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
+  quad #3/0 20.00,20.00 380.00x45.60 opacity=1.00 bg=#dfdfdfff border=#eef0f3ff border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #2/2 154.48,35.00 111.03x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

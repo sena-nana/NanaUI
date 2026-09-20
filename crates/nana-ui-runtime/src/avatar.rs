@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Default edge length when the host does not declare a size.
-pub const DEFAULT_SIZE: f32 = 32.0;
+pub const DEFAULT_SIZE: f32 = nana_ui_core::ControlSize::Medium.height_in(nana_ui_core::UI_METRICS);
 
 /// Circular image control (`nana.avatar`).
 #[derive(Debug, Clone, PartialEq)]
