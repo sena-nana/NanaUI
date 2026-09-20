@@ -449,7 +449,9 @@ impl UiWorld {
                 },
             );
         }
-        if self.input.focused.get(&self.record(id).document) == Some(&id) {
+        // `focus_visible`, not `focused`: a control that was clicked is focused
+        // and does not say so.
+        if self.focus_visible(self.record(id).document) == Some(id) {
             paint = paint.overlay(local.interaction.focused);
         }
         if accessibility.disabled && !accessibility.busy {

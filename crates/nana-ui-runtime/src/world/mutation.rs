@@ -1785,6 +1785,16 @@ impl UiWorld {
                 if let Some(target) = target {
                     self.remember_scope_focus(*target);
                 }
+                let from_pointer = self
+                    .input
+                    .pointer_press
+                    .keys()
+                    .any(|(pressed_document, _)| pressed_document == document);
+                if from_pointer {
+                    self.input.focus_from_pointer.insert(*document);
+                } else {
+                    self.input.focus_from_pointer.remove(document);
+                }
                 let old = match target {
                     Some(target) => self.input.focused.insert(*document, *target),
                     None => self.input.focused.remove(document),

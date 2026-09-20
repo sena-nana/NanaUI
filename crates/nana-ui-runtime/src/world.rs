@@ -1156,6 +1156,16 @@ impl UiWorld {
         self.input.focused.get(&document).copied()
     }
 
+    /// The focused node, when focus should also be *shown*.
+    ///
+    /// Same answer as [`Self::focused`] except right after a pointer press put
+    /// it there. Paint asks this one; hit-testing, IME and the accessibility
+    /// tree keep asking [`Self::focused`], because focus is still focus — only
+    /// its indicator is conditional.
+    pub fn focus_visible(&self, document: DocumentId) -> Option<StableNodeId> {
+        (!self.input.focus_from_pointer.contains(&document)).then(|| self.focused(document))?
+    }
+
     pub fn focused_text_input(
         &self,
         document: DocumentId,

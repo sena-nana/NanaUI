@@ -128,6 +128,18 @@ pub enum SemanticColorRole {
     AccentSoftPressed,
     AccentOnSoft,
     AccentText,
+    /// Fill a keyboard-focused control takes. See [`AccentRamp::focus`].
+    ///
+    /// [`AccentRamp::focus`]: crate::theme::AccentRamp::focus
+    FocusSurface,
+    /// Border colour a keyboard-focused control takes, for controls that
+    /// already reserve a border width — changing a colour costs no layout,
+    /// growing a border would.
+    FocusBorder,
+    /// Foreground on top of [`Self::FocusSurface`]. Equals `Text` wherever the
+    /// focus fill is a tint, and the on-accent foreground where it is nearly
+    /// solid.
+    FocusText,
     Success,
     Warning,
     WarningSoft,
@@ -286,6 +298,9 @@ pub struct SemanticPalette {
     pub accent_soft_pressed: SemanticColor,
     pub accent_on_soft: SemanticColor,
     pub accent_text: SemanticColor,
+    pub focus_surface: SemanticColor,
+    pub focus_border: SemanticColor,
+    pub focus_text: SemanticColor,
     pub success: SemanticColor,
     pub warning: SemanticColor,
     pub danger: SemanticColor,
@@ -321,6 +336,13 @@ impl SemanticPalette {
             accent_soft_pressed: ACCENT_DARK.soft_pressed(),
             accent_on_soft: ACCENT_DARK.on_soft,
             accent_text: ACCENT_DARK.text,
+            focus_surface: ACCENT_DARK.focus,
+            focus_border: ACCENT_DARK.base,
+            // The resting `#dddddd` lands at 4.27:1 on the 0.50 tint, under the
+            // 4.5:1 WCAG 1.4.3 wants of body text. The two pull against each
+            // other — a lighter fill clears the 3:1 step more easily and makes
+            // the label worse — so the label lifts to white, at 5.80:1.
+            focus_text: SemanticColor::rgba(1.0, 1.0, 1.0, 1.0),
             success: SemanticColor::rgb8(63, 185, 80),
             warning: SemanticColor::rgb8(212, 168, 91),
             danger: SemanticColor::rgb8(244, 113, 116),
@@ -350,6 +372,10 @@ impl SemanticPalette {
             accent_soft_pressed: ACCENT_LIGHT.soft_pressed(),
             accent_on_soft: ACCENT_LIGHT.on_soft,
             accent_text: ACCENT_LIGHT.text,
+            focus_surface: ACCENT_LIGHT.focus,
+            focus_border: ACCENT_LIGHT.strong,
+            // A 0.90 fill is nearly solid accent, so the label moves onto it.
+            focus_text: ACCENT_LIGHT.text,
             success: SemanticColor::rgb8(16, 126, 57),
             warning: SemanticColor::rgb8(184, 119, 28),
             danger: SemanticColor::rgb8(201, 60, 60),
@@ -411,6 +437,9 @@ impl SemanticPalette {
             SemanticColorRole::AccentSoftPressed => &mut self.accent_soft_pressed.a,
             SemanticColorRole::AccentOnSoft => &mut self.accent_on_soft.a,
             SemanticColorRole::AccentText => &mut self.accent_text.a,
+            SemanticColorRole::FocusSurface => &mut self.focus_surface.a,
+            SemanticColorRole::FocusBorder => &mut self.focus_border.a,
+            SemanticColorRole::FocusText => &mut self.focus_text.a,
             SemanticColorRole::Success => &mut self.success.a,
             SemanticColorRole::Warning => &mut self.warning.a,
             SemanticColorRole::Danger => &mut self.danger.a,
@@ -449,6 +478,9 @@ impl SemanticPalette {
             SemanticColorRole::AccentSoftPressed => self.accent_soft_pressed,
             SemanticColorRole::AccentOnSoft => self.accent_on_soft,
             SemanticColorRole::AccentText => self.accent_text,
+            SemanticColorRole::FocusSurface => self.focus_surface,
+            SemanticColorRole::FocusBorder => self.focus_border,
+            SemanticColorRole::FocusText => self.focus_text,
             SemanticColorRole::Success => self.success,
             SemanticColorRole::Warning => self.warning,
             SemanticColorRole::WarningSoft => SemanticColor {
@@ -689,6 +721,72 @@ mod tests {
             assert_ne!(
                 palette.get_in(SemanticColorRole::Keyword, OpacityTokens::DARK),
                 palette.text
+            );
+        }
+    }
+
+    /// WCAG 2.4.11 asks for 3:1 between a control's focused and unfocused
+    /// appearance. The focus fill is the whole indicator — there is no ring to
+    /// fall back on — so the ratio is a property of the token, and this holds
+    /// the arithmetic instead of a comment claiming it.
+    ///
+    /// It is also why the two modes use different accent stops. Light mode
+    /// cannot reach the step with `base` at any alpha; the assertion below
+    /// fails if someone "unifies" the two.
+    #[test]
+    fn focus_surface_clears_the_wcag_step_in_both_modes() {
+        fn channel(value: f32) -> f64 {
+            let value = f64::from(value);
+            if value <= 0.040_45 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        fn luminance(color: SemanticColor) -> f64 {
+            0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+        }
+        fn over(top: SemanticColor, bottom: SemanticColor) -> SemanticColor {
+            let a = top.a;
+            SemanticColor::rgba(
+                top.r * a + bottom.r * (1.0 - a),
+                top.g * a + bottom.g * (1.0 - a),
+                top.b * a + bottom.b * (1.0 - a),
+                1.0,
+            )
+        }
+        fn contrast(a: SemanticColor, b: SemanticColor) -> f64 {
+            let (a, b) = (luminance(a), luminance(b));
+            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+            (hi + 0.05) / (lo + 0.05)
+        }
+
+        for (mode, palette) in [
+            (ThemeMode::Dark, SemanticPalette::dark()),
+            (ThemeMode::Light, SemanticPalette::light()),
+        ] {
+            let focused = over(palette.focus_surface, palette.background);
+            let ratio = contrast(focused, palette.background);
+            assert!(
+                ratio >= 3.0,
+                "{mode:?} focus surface is {ratio:.2}:1 against the resting background, \
+                 below the 3:1 WCAG 2.4.11 asks between focused and unfocused"
+            );
+            // The label has to survive the fill it sits on: the 4.5:1 WCAG
+            // 1.4.3 wants of body text, or — where the fill is nearly solid
+            // accent and the question stops being about focus — at least what
+            // this palette already asks of text on accent. Dark's tint clears
+            // 4.5:1 outright at 5.80:1. Light's 0.90 fill is the Primary
+            // button's problem wearing a different name: white on light
+            // `accent` is 3.32:1, and focus at 3.54:1 is not the place to fix
+            // the accent ramp. Written this way, focus is never the weakest
+            // accent surface, and it improves for free when that ramp does.
+            let label = contrast(palette.focus_text, focused);
+            let on_accent = contrast(palette.accent_text, palette.accent);
+            assert!(
+                label >= 4.5 || label >= on_accent - 0.01,
+                "{mode:?} focus text is {label:.2}:1 on the focus surface, \
+                 under both 4.5:1 and this palette's {on_accent:.2}:1 for text on accent"
             );
         }
     }

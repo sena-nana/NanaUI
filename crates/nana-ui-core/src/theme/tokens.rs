@@ -54,6 +54,18 @@ pub struct AccentRamp {
     pub soft_hover_alpha: f32,
     /// Alpha of the pressed soft fill.
     pub soft_pressed_alpha: f32,
+    /// The fill a keyboard-focused control takes, alpha included.
+    ///
+    /// Written out rather than derived from [`Self::base`], because the two
+    /// modes do not agree and the disagreement is arithmetic, not taste.
+    /// WCAG 2.4.11 wants 3:1 between a control's focused and unfocused
+    /// appearance, and a wash has to move *away* from the page: lighter than a
+    /// dark one, darker than a light one. Over `#181818`, `base` at 0.50
+    /// reaches 3.16:1. Over white, no alpha of `base` ever does — it tops out
+    /// around 2:1 — so light nearly fills with `strong`, which needs
+    /// [`SemanticPalette::focus_text`] to carry the label onto it.
+    /// `focus_surface_clears_the_wcag_step_in_both_modes` holds both numbers.
+    pub focus: SemanticColor,
 }
 
 impl AccentRamp {
@@ -65,6 +77,7 @@ impl AccentRamp {
         soft_alpha: 0.14,
         soft_hover_alpha: 0.20,
         soft_pressed_alpha: 0.23,
+        focus: SemanticColor::rgba8(123, 185, 240, 0.50),
     };
 
     pub const LIGHT: Self = Self {
@@ -75,6 +88,7 @@ impl AccentRamp {
         soft_alpha: 0.10,
         soft_hover_alpha: 0.20,
         soft_pressed_alpha: 0.23,
+        focus: SemanticColor::rgba8(44, 126, 214, 0.90),
     };
 
     pub const fn soft(self) -> SemanticColor {
@@ -120,6 +134,7 @@ impl AccentRamp {
             soft_alpha: palette.accent_soft.a,
             soft_hover_alpha: palette.accent_soft_hover.a,
             soft_pressed_alpha: palette.accent_soft_pressed.a,
+            focus: palette.focus_surface,
         }
     }
 

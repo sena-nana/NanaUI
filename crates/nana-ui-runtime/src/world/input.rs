@@ -176,6 +176,19 @@ impl UiWorld {
 #[derive(Default)]
 pub(super) struct WorldInputState {
     pub(super) focused: HashMap<DocumentId, StableNodeId>,
+    /// Documents whose current focus arrived under a pointer press.
+    ///
+    /// This is the `:focus-visible` heuristic, and it is one bit rather than a
+    /// modality machine because only one question is ever asked of it: should
+    /// the focused control *show* that it is focused. Clicking a button is the
+    /// case where it should not — the user already knows where they clicked,
+    /// and every design system that paints focus unconditionally ends up with
+    /// buttons that keep a halo after a click.
+    ///
+    /// Recorded where focus is written, from whether a pointer is down at that
+    /// moment, so keyboard navigation and programmatic `focus_node` both count
+    /// as visible without the host having to report a modality.
+    pub(super) focus_from_pointer: HashSet<DocumentId>,
     pub(super) focus_scopes: HashMap<StableNodeId, Option<StableNodeId>>,
     pub(super) pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,
     pub(super) pointer_hover: HashMap<(DocumentId, u64), StableNodeId>,
