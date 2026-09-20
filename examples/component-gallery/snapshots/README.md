@@ -108,35 +108,52 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 Both are the fixture's own contract check, not the pixel comparison, and
 neither affects the exit code.
 
-### `machine_verdict: fail` — 34 fixtures
+### `machine_verdict: fail` — 14 fixtures
 
 Each fixture's `*.evidence.txt` carries a `runtime_failed:` line naming the
 clause that failed. Before that it printed only `fail`, and finding out which
 of ~22 conjuncts had tripped meant opening `evidence.rs` beside it — which is
-why this sat at 66 for weeks without moving.
+why this sat at 66 for weeks without moving. Every one triaged since has turned
+out to be the harness holding a contract the tree had already moved past, not a
+product defect.
 
-| clause | count | where |
+| clause | count | finding |
 | --- | ---: | --- |
-| `geometry_ok` | 12 | `sidebar-section`, `sidebar-frame` |
-| `segmented_contract_ok` | 8 | segmented activation contract |
-| `textarea_geometry_ok` | 6 | `textarea/{focused,invalid-focused,scroll}` |
-| `tooltip_state` | 4 | `icon-button/{tooltip-delay,tooltip-edge}` |
-| `segmented_geometry_ok` | 2 | `segmented-control/focused` |
-| `action_applied` | 2 | |
+| `segmented_contract_ok` | 8 | **the harness asserts the pre-self-driving contract** |
+| `segmented_geometry_ok` | 2 | `segmented-control/focused`, unexplained |
+| `tooltip_state` | 2 | `icon-button/tooltip-edge` never opens its tooltip |
+| `action_applied` | 2 | `tabs/focused` |
 
-The 32 that are gone were all `hit_ok`, and all one harness flaw. The contract
-was split passive / interactive; what actually decides the hit result is **leaf
-/ container**, and the old split failed in both directions at once:
+**`segmented_contract_ok`.** The four failing states — `pointer-request`,
+`controlled-commit`, `a11y-radio`, `atomic-reconcile` — are four of the five
+states that expect exactly one activation request. The fifth,
+`selected-repeat-request`, re-activates the option that is *already* selected
+and passes. The difference is `selection_ok`, which demands
+`selected_after == selected_before`: the contract from before
+`SegmentedControl` became self-driving. The control now commits the selection
+itself, the pixel baselines were re-recorded for that change, and this
+exerciser was not.
 
-- it demanded a `Card` never be the hit target — but a card must keep
-  `pointer_events`, or the buttons inside it stop being clickable;
-- it demanded a `Tabs` strip *be* the hit target — but the strip's centre lands
-  in the gap between two tabs and hits nothing.
+**`segmented_geometry_ok`.** Only `focused`. The arithmetic all checks out by
+hand against the semantic dump — options 55.94 + 52.86 + 73.82, two 2px gaps
+and the 6px track inset give exactly the recorded 192.62 track width, option
+heights are the expected 26, and each label sits inside its option. Whatever
+fails is one of the `SelectionOption` geometry or slot lookups, and finding it
+needs the clause broken down further the way `runtime_ok` was.
 
-A leaf decoration can promise it is never the target. A container can only
-promise the pointer did not escape its subtree: the centre of a container
-legitimately resolves to itself, to a descendant, or — over a gap it does not
-paint — to nothing. `hit_ok` now says that.
+**`tooltip_state`.** `icon-button/tooltip-edge` reports `tooltip=Some(..)` with
+`active_overlay=None` — the pending state, not an open one. Its sibling
+`tooltip-delay` had the identical observation and has been routed to the delay
+contract, which it satisfies. `tooltip-edge` reads as wanting an *open* tooltip
+at a viewport edge, so the fixture is probably not advancing the hover clock to
+the deadline. That is a fixture question, not a contract one.
+
+Cleared since: 32 `hit_ok` (leaf / container, above), 12 `geometry_ok`
+(`SidebarFrame` / `SidebarFooter` / `SidebarSection` / `OverlayHost` have no
+`ComponentGeometry` by design and were missing from the list), 6
+`textarea_geometry_ok` (slot 1 is the caret-line highlight when there is no
+selection — `multiline && focused && selection.is_none()` — and the check
+predated it), 2 `tooltip_state`, 8 hit-test misclassifications.
 
 ### 2 snapshots paint nothing but the clear colour (`FLAT`)
 

@@ -80,6 +80,7 @@ pub(super) fn write_evidence(
                     multiline,
                     selection,
                     caret,
+                    caret_line,
                     preedit,
                     focus_ring,
                     border,
@@ -87,8 +88,18 @@ pub(super) fn write_evidence(
                     ..
                 }),
             ) => {
+                // Slot 1 is the selection batch when there is a selection, and
+                // the caret-line highlight when there is not — a focused
+                // multiline field paints one (`world/geometry.rs`: `multiline
+                // && focused && selection.is_none()`). This check predates that
+                // highlight and read its quad as a stray selection.
                 let selection_scene_ok = if selection.is_empty() {
-                    primitive(1).is_none()
+                    match caret_line {
+                        Some(_) => primitive(1).is_some_and(|primitive| {
+                            matches!(primitive.kind, ScenePrimitiveKind::Quad { .. })
+                        }),
+                        None => primitive(1).is_none(),
+                    }
                 } else {
                     primitive(1).is_some_and(|primitive| {
                         has_own_clip(primitive)
@@ -676,6 +687,16 @@ pub(super) fn write_evidence(
             | Component::GpuView
             | Component::Thumbnail
             | Component::Avatar
+            // Plain containers. The runtime derives a `ComponentGeometry` only
+            // for components whose visual the Scene paints from a custom
+            // description; a sidebar section is a box with rows in it and has
+            // none by design. They were missing from this list, so the
+            // `geometry.is_some()` fallback demanded a description that is
+            // never produced.
+            | Component::SidebarFrame
+            | Component::SidebarFooter
+            | Component::SidebarSection
+            | Component::OverlayHost
     ) || geometry.is_some();
     let layout_ok = bounds.is_some_and(|bounds| match fixture.component {
         Component::Text if matches!(fixture.state, "wrap" | "ellipsis") => {
@@ -796,7 +817,13 @@ pub(super) fn write_evidence(
         (
             "tooltip_state",
             match (fixture.component, fixture.state) {
-                (Component::Tooltip, "delay") => {
+                // `tooltip-delay` on any component is the *pending* state, the
+                // same one `(Tooltip, "delay")` describes: the hover clock has not
+                // reached the deadline, so there is a tooltip node but no active
+                // overlay. It was grouped with "open" below, which asked the
+                // pending state to already be open — identical observations,
+                // opposite verdicts, decided only by which arm it landed in.
+                (Component::Tooltip, "delay") | (_, "tooltip-delay") => {
                     tooltip.is_some()
                         && active_overlay.is_none()
                         && runtime.next_deadline.is_some()
@@ -807,7 +834,7 @@ pub(super) fn write_evidence(
                             })
                         })
                 }
-                (Component::Tooltip, "open" | "edge") | (_, "tooltip-delay" | "tooltip-edge") => {
+                (Component::Tooltip, "open" | "edge") | (_, "tooltip-edge") => {
                     tooltip.is_some()
                         && tooltip == active_overlay
                         && tooltip.is_some_and(|id| {
