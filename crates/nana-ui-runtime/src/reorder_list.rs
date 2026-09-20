@@ -856,13 +856,16 @@ mod tests {
         let mut list = sample();
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 80.0 });
+        // Dropping past the last row puts the line one thickness below the
+        // whole stack. Derived from the same constants `bounds()` is, so a
+        // spacing or control-height token can move without editing a literal.
         assert_eq!(
             list.insert_line(bounds(), UI_METRICS),
             Some(LayoutBox {
-                x: 4.0,
-                y: 88.0,
-                width: 172.0,
-                height: 2.0,
+                x: bounds().x + INSERT_INSET,
+                y: bounds().y + bounds().height + INSERT_THICKNESS,
+                width: bounds().width - INSERT_INSET * 2.0,
+                height: INSERT_THICKNESS,
             })
         );
         assert_eq!(
@@ -905,13 +908,15 @@ mod tests {
         .tree_drop(true);
         apply(&mut list, ReorderListPointer::Down { x: 40.0, y: 12.0 });
         apply(&mut list, ReorderListPointer::Move { x: 40.0, y: 42.0 });
+        // The inside highlight sits on the second row, inset within it.
+        let row = ControlSize::Small.height_in(UI_METRICS);
         assert_eq!(
             list.insert_line(bounds(), UI_METRICS),
             Some(LayoutBox {
-                x: 3.0,
-                y: 31.0,
-                width: 174.0,
-                height: 24.0,
+                x: bounds().x + 3.0,
+                y: bounds().y + row + DEFAULT_SPACING + INSERT_THICKNESS,
+                width: bounds().width - 6.0,
+                height: row - 4.0,
             })
         );
         assert_eq!(

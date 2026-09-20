@@ -1,5 +1,7 @@
 use nana_ui::{RuntimeInputAdapter, runtime::*};
-use nana_ui_core::{RegionId, RegionRole, RegionState, WorkspaceLayout, WorkspaceModel};
+use nana_ui_core::{
+    RadiusTier, RegionId, RegionRole, RegionState, WorkspaceLayout, WorkspaceModel,
+};
 use nana_ui_platform::{InputEvent, InputModifiers, PointerPhase, PointerType};
 fn pointer(phase: PointerPhase, x: f32, y: f32) -> InputEvent {
     InputEvent::Pointer {
@@ -94,7 +96,9 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
     let interaction = cx.world().interaction(scroll.stable_id()).unwrap();
     let bounds = cx.world().layout_box(scroll.stable_id()).unwrap();
     assert_eq!(style.background, Some(SemanticColorRole::Background));
-    assert!(style.layout.border_radius.unwrap_or_default() > 0.0);
+    // Workspace corners name the tier and let the installed theme pick the
+    // number; the radius no longer lands in `layout.border_radius`.
+    assert_eq!(style.radius, Some(RadiusTier::Lg));
     assert_eq!(
         accessibility.label.as_deref(),
         Some("renamed project content")
