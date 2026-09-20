@@ -1,5 +1,7 @@
 component: overlay-host
 mode: light
 state: stacked
-  target: 20.00,20.00 0.00x0.00
+  target: 20.00,20.00 380.00x120.00
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
+  quad #5/0 20.00,20.00 380.00x120.00 opacity=1.00 bg=#f3f4f6ff border=none border_width=0.00 radius=10.00/10.00/10.00/10.00 shadow=none
+  text #6/2 36.00,34.00 348.00x15.60 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

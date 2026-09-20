@@ -106,7 +106,9 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 ## Two advisories the suite prints, and neither is a pixel failure
 
 Both are the fixture's own contract check, not the pixel comparison, and
-neither affects the exit code. One of the two is currently clear.
+neither affects the exit code. Both are currently clear — which is recent, and
+the sections below are kept because how they were cleared is the part worth
+reusing.
 
 ### `machine_verdict: fail` — none left
 
@@ -186,16 +188,43 @@ Six pixel and four semantic baselines moved, and `tooltip-edge` finally shows
 what its name promised: Left requested, no room at 20px from the edge, flipped
 to the right and clamped inside the viewport.
 
-### 2 snapshots paint nothing but the clear colour (`FLAT`)
+### `FLAT` — none left
 
-`overlay-host/{dark,light}/stacked`: the node is `0.00x0.00` with no scene
-primitives at all. An `OverlayHost` shows only the overlay its
-`OverlayHostState.active` names, and the fixture adopts one child without ever
-making it active, so the state called "stacked" stacks nothing.
+A `FLAT` snapshot paints nothing but the clear colour. It agrees with any
+baseline recorded from it and therefore proves nothing, which is the whole
+reason the suite calls it out separately: a green count can be made of blank
+frames.
 
-`segmented-control/{dark,light}/empty` used to be here too. It is not any more:
-its track asked for a 1px border and painted none, so the whole fixture came
-out the colour of the page behind it. See below.
+`overlay-host/{dark,light}/stacked` was the last pair. The fixture adopted one
+parked `Text` into an `OverlayHost` and activated nothing. A host paints only
+the child its `OverlayHostState.active` names — `box_visible` is gated on
+`overlay_branch_active` — so with no active overlay it painted nothing, and the
+node came out `0.00x0.00`.
+
+The state is called "stacked", and the contract line says *exclusive* stacking
+order. One surface and no activation demonstrated neither half. It now adopts
+two labelled `Panel` surfaces and activates one: the frame shows "In front",
+"Behind" contributes no primitives, and the host measures `380x120`.
+
+`segmented-control/{dark,light}/empty` used to be here too — its track asked
+for a 1px border and painted none, so the whole fixture came out the colour of
+the page behind it. See below.
+
+**What both had in common is worth more than either fix.** A fixture's own
+clause never asked whether anything was drawn, so a blank frame passed. That is
+also what let four `tooltip/*` baselines sit as empty frames. `machine_verdict`
+now carries `overlay_exclusive_ok`, which names both halves of the claim: that
+the active overlay draws, and that every adopted sibling does not. Run against
+the old fixture shape it says
+
+```
+runtime_failed: overlay_exclusive_ok[active(none)]
+```
+
+which is the defect it existed to miss. Checking a new clause against the state
+it should have caught is cheap and is the only thing that separates a clause
+from a comment. When you write a fixture whose name is a claim, give the claim
+a clause.
 
 ### The border that never painted
 

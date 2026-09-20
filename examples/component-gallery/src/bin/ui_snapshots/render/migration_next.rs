@@ -49,11 +49,11 @@ use nana_ui::runtime::{
     ListItemSlots, MarkdownBlock, MarkdownBlockKind, MarkdownSpan, ModalSlots, MountState,
     MutationQueue, NativeMarkdown as RuntimeNativeMarkdown, NodeStyle,
     OverlayHost as RuntimeOverlayHost, PaneChrome as RuntimePaneChrome,
-    PaneTree as RuntimePaneTree, PaneTreeNode as RuntimePaneTreeNode, Popover as RuntimePopover,
-    Progress as RuntimeProgress, QrCode as RuntimeQrCode, RangeField as RuntimeRangeField,
-    ReorderItem as RuntimeReorderItem, ReorderList as RuntimeReorderList, RichSpan,
-    RuntimeDocument, SearchDropdown as RuntimeSearchDropdown,
-    SearchDropdownOption as RuntimeSearchDropdownOption,
+    PaneTree as RuntimePaneTree, PaneTreeNode as RuntimePaneTreeNode, Panel as RuntimePanel,
+    Popover as RuntimePopover, Progress as RuntimeProgress, QrCode as RuntimeQrCode,
+    RangeField as RuntimeRangeField, ReorderItem as RuntimeReorderItem,
+    ReorderList as RuntimeReorderList, RichSpan, RuntimeDocument,
+    SearchDropdown as RuntimeSearchDropdown, SearchDropdownOption as RuntimeSearchDropdownOption,
     SegmentedControl as RuntimeSegmentedControl, SegmentedOption as RuntimeSegmentedOption,
     SegmentedSelectionRequested, Select as RuntimeSelect, SelectOption as RuntimeSelectOption,
     SelectableRichText as RuntimeSelectableRichText, SettingsCard as RuntimeSettingsCard,
@@ -1348,12 +1348,31 @@ fn runtime_fixture(
                 ),
             )?
             .stable_id(),
-        Component::OverlayHost => document.context_mut().build(document_id, |ui| {
-            let base = ui.parked(RuntimeText::new("Base surface"));
-            let host = ui.child("host", RuntimeOverlayHost::new());
-            ui.nest(host, |ui| ui.adopt(base));
+        Component::OverlayHost => {
+            // "stacked" is a claim about exclusivity: a host holds more than
+            // one adopted surface and paints exactly the one its
+            // `OverlayHostState.active` names, because `box_visible` is gated
+            // on `overlay_branch_active`. The fixture used to adopt a single
+            // parked text and activate nothing, so the rule had neither a
+            // winner nor a loser to show and the frame came out empty.
+            let (host, front) = document.context_mut().build(document_id, |ui| {
+                let host = ui.child("host", RuntimeOverlayHost::new());
+                let front = ui.nest(host, |ui| {
+                    let behind = ui.child("behind", RuntimePanel::new("Behind"));
+                    ui.nest(behind, |ui| {
+                        ui.child("behind-label", RuntimeText::new("Behind"));
+                    });
+                    let front = ui.child("front", RuntimePanel::new("In front"));
+                    ui.nest(front, |ui| {
+                        ui.child("front-label", RuntimeText::new("In front"));
+                    });
+                    front
+                });
+                (host, front)
+            })?;
+            document.context_mut().activate_overlay(host, front)?;
             host.stable_id()
-        })?,
+        }
         Component::Dropdown => document
             .context_mut()
             .create_component(

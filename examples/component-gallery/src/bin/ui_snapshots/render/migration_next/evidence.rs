@@ -799,7 +799,54 @@ pub(super) fn write_evidence(
     // does not say *which* clause failed is a finding nobody can act on:
     // 66 of these sat in the tree because reading one meant opening the
     // source of this function beside it.
-    let checks: [(&str, bool); 22] = [
+    // `overlay-host/stacked` claims exclusivity, and nothing here used to
+    // check it: the fixture adopted one surface, activated none, and passed
+    // while painting an empty frame. Both halves are named — the active
+    // overlay draws, every adopted sibling does not — so a regression in
+    // either direction says which one.
+    let overlay_exclusive_failed: Vec<String> = if fixture.component == Component::OverlayHost {
+        let paints = |root: nana_ui::runtime::StableNodeId| {
+            primitives.iter().any(|primitive| {
+                let mut id = primitive.node;
+                loop {
+                    if id == root {
+                        return true;
+                    }
+                    match world.node(id).and_then(|node| node.parent) {
+                        Some(parent) => id = parent,
+                        None => return false,
+                    }
+                }
+            })
+        };
+        let children = world
+            .node(runtime.target)
+            .map(|node| node.children.to_vec())
+            .unwrap_or_default();
+        let mut failed = Vec::new();
+        match active_overlay {
+            None => failed.push("active(none)".to_string()),
+            Some(active) if !paints(active) => {
+                failed.push(format!("active({active:?}) paints nothing"))
+            }
+            Some(_) => {}
+        }
+        if children.len() < 2 {
+            failed.push(format!(
+                "adopted({}) leaves nothing to exclude",
+                children.len()
+            ));
+        }
+        for child in children {
+            if active_overlay != Some(child) && paints(child) {
+                failed.push(format!("inactive({child:?}) still paints"));
+            }
+        }
+        failed
+    } else {
+        Vec::new()
+    };
+    let checks: [(&str, bool); 23] = [
         ("bounds", bounds.is_some()),
         ("accessibility", accessibility.is_some()),
         ("geometry_ok", geometry_ok),
@@ -900,6 +947,7 @@ pub(super) fn write_evidence(
                 _ => true,
             },
         ),
+        ("overlay_exclusive_ok", overlay_exclusive_failed.is_empty()),
     ];
     let machine_failed: Vec<String> = checks
         .iter()
@@ -915,6 +963,12 @@ pub(super) fn write_evidence(
                 format!(
                     "segmented_contract_ok[{}]",
                     runtime.segmented_contract_failed.join(" ")
+                )
+            }
+            "overlay_exclusive_ok" => {
+                format!(
+                    "overlay_exclusive_ok[{}]",
+                    overlay_exclusive_failed.join(" ")
                 )
             }
             other => other.to_string(),
