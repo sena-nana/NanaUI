@@ -192,19 +192,25 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         "gallery-controls-light.png",
         &mut controls_light,
     )?;
+    // (180, 60) is the band the section label sits in, and nothing there is
+    // hit-testable, so this hovered nothing and came out byte-identical to
+    // `gallery-controls`. It is also named for tools this Gallery's sidebar
+    // does not have — no call site anywhere passes `SidebarSection::tools` —
+    // so the name moves to what the scene can actually show: a sidebar row
+    // hovered inside the full shell. (12, 104, 200x28) is the "表面" row.
     gallery_snapshot_with_cursor(
         &mut snapshots,
         &mut recorder,
-        "gallery-sidebar-tools-dark.png",
+        "gallery-sidebar-hover-dark.png",
         &mut controls,
-        LogicalPoint::new(180.0, 60.0),
+        LogicalPoint::new(100.0, 118.0),
     )?;
     gallery_snapshot_with_cursor(
         &mut snapshots,
         &mut recorder,
-        "gallery-sidebar-tools-light.png",
+        "gallery-sidebar-hover-light.png",
         &mut controls_light,
-        LogicalPoint::new(180.0, 60.0),
+        LogicalPoint::new(100.0, 118.0),
     )?;
 
     let mut loading = GalleryState::new();
@@ -418,22 +424,20 @@ pub fn generate(mut recorder: Recorder) -> Result<Report, Box<dyn std::error::Er
         &mut workspace,
     )?;
 
-    let mut workspace_dock_preview = GalleryState::new();
-    workspace_dock_preview.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    // There used to be a `gallery-workspace-dock-preview` pair here, built
+    // from exactly the same two messages as the scene above and therefore
+    // byte-identical to it in dark. No drag was ever started, and `GalleryDock`
+    // has no message that would start one. The five `dock-preview-*` snapshots
+    // already cover every drop zone, so the dark copy is gone and the light one
+    // keeps the coverage it was really providing, under its real name.
+    let mut workspace_light = GalleryState::new();
+    workspace_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
+    workspace_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
     gallery_snapshot(
         &mut snapshots,
         &mut recorder,
-        "gallery-workspace-dock-preview-dark.png",
-        &mut workspace_dock_preview,
-    )?;
-    let mut workspace_dock_preview_light = GalleryState::new();
-    workspace_dock_preview_light.update(GalleryMessage::SelectSection(GallerySection::Workspace));
-    workspace_dock_preview_light.update(GalleryMessage::SetTheme(ThemeMode::Light));
-    gallery_snapshot(
-        &mut snapshots,
-        &mut recorder,
-        "gallery-workspace-dock-preview-light.png",
-        &mut workspace_dock_preview_light,
+        "gallery-workspace-light.png",
+        &mut workspace_light,
     )?;
 
     let mut sidebar_collapsed = GalleryState::new();
@@ -1264,6 +1268,7 @@ fn gallery_snapshot_with_cursor(
 ) -> Result<(), Box<dyn std::error::Error>> {
     state.flush_snapshot_scene();
     state.snapshot_hover(cursor.x, cursor.y);
+    state.snapshot_settle(nana_ui_core::motion::HOVER_COLOR);
     gallery_snapshot(snapshots, recorder, name, state)
 }
 

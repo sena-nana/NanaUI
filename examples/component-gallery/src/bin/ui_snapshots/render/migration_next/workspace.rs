@@ -190,13 +190,37 @@ pub(super) fn mount_runtime_pane_chrome(
     })?)
 }
 
+/// A pane leaf that can be seen.
+///
+/// `PaneTree` paints nothing of its own — no chrome, no divider — so a leaf
+/// with no surface leaves the split geometry entirely unobservable. Filling the
+/// pane and outlining it is what turns this fixture into evidence: the boxes in
+/// the baseline *are* the tree.
+fn pane_leaf_style() -> NodeStyle {
+    let mut style = slot_label_style();
+    style.background = Some(SemanticColorRole::Surface);
+    style.border = Some(SemanticColorRole::Border);
+    style.radius = Some(nana_ui_core::RadiusTier::Sm);
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.border_width = Some(nana_ui_core::HAIRLINE);
+    style
+}
+
 pub(super) fn mount_runtime_pane_tree(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        let left = ui.parked(RuntimeText::new("left").style(slot_label_style()));
-        let right = ui.parked(RuntimeText::new("right").style(slot_label_style()));
+        // One split of two leaves, which is all `PaneTree` implements: a
+        // nested split's axis is discarded and its ratio overwrites the
+        // parent's, so `project_slots` flattens any tree into one flex line.
+        // The fixture is named "nested" and cannot nest — see the note in
+        // `snapshots/README.md`. What it can now show is the 0.4 ratio, which
+        // two bare `Text` leaves in a 480x240 canvas never did.
+        let left = ui.parked(RuntimeText::new("left").style(pane_leaf_style()));
+        let right = ui.parked(RuntimeText::new("right").style(pane_leaf_style()));
         let tree = ui.child(
             "tree",
             RuntimePaneTree::new(RuntimePaneTreeNode::split(

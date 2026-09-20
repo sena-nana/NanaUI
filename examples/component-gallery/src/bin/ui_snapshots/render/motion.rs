@@ -76,7 +76,15 @@ pub(super) fn generate(
         } else {
             "light"
         };
-        for ms in [0, 60, 140, 180, 260, 320, 400, 440, 520, 590, 660, 730, 800] {
+        // 540 and 680 exist because 520 and 660 do not carry what their
+        // neighbours suggest: each is taken in the same breath as the
+        // `activate_overlay` / `dismiss_overlay` beside it, so both catch the
+        // dialog at progress 0 and both show no dialog at all — in dark they
+        // came out byte-identical. The sequence proved the dialog *is* open at
+        // 590 and nothing about how it arrives or leaves.
+        for ms in [
+            0, 60, 140, 180, 260, 320, 400, 440, 520, 540, 590, 660, 680, 730, 800,
+        ] {
             let cx = document.context_mut();
             cx.advance_animations(Duration::from_millis(ms));
             if ms == 0 {
@@ -95,6 +103,14 @@ pub(super) fn generate(
                 cx.dismiss_overlay(host)?;
             }
             document.flush(viewport, &mut shaper)?;
+            // 520 and 660 are the instants the dialog is told to open and to
+            // close, and a frame taken there catches the animation at progress
+            // zero — neither shows a dialog, and in dark the two came out
+            // byte-identical. They stay as the schedule's action points and
+            // stop being baselines; 540 and 680 carry the entry and the exit.
+            if matches!(ms, 520 | 660) {
+                continue;
+            }
             let clear = clear_color(theme);
             let pixels = snapshots.paint(document.scene(), size, clear, None, None)?;
             recorder.record(

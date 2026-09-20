@@ -2018,6 +2018,67 @@ mod tests {
         );
     }
 
+    /// No two top-level scenes may be the same image.
+    ///
+    /// The ~80 scenes in the adapter root — `gallery-*`, `dock-*`, `motion-*` —
+    /// have no `machine_verdict`; the 22 clauses only run for
+    /// `component-migration/*`. That is the soil three defects grew in, and all
+    /// three had one symptom: a scene byte-identical to another under a
+    /// different name. `gallery-workspace-dock-preview` was built from exactly
+    /// the same two messages as `gallery-workspace`; `gallery-sidebar-tools`
+    /// moved a pointer onto nothing and painted before the fade could start;
+    /// `motion-*-0520` and `-0660` both caught the dialog at progress zero.
+    ///
+    /// Hashing the files is the whole check. It costs one read each, needs no
+    /// adapter, and is the probe that actually found them.
+    ///
+    /// Scoped to the root on purpose. Two *states of one component* may
+    /// legitimately agree — a keyboard state that leaves the control focused,
+    /// a size variant that is the default size — and those are covered by
+    /// `machine_verdict` and by
+    /// `a_focused_fixture_never_looks_like_a_state_the_keyboard_did_not_cause`.
+    #[test]
+    fn no_two_top_level_scenes_are_the_same_image() {
+        use std::collections::HashMap;
+
+        let mut collisions = Vec::new();
+        let mut adapters = 0usize;
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("snapshots");
+        for adapter in std::fs::read_dir(&root).expect("snapshot tree") {
+            let adapter = adapter.expect("entry").path();
+            if !adapter.is_dir() || adapter.file_name().is_some_and(|name| name == "semantic") {
+                continue;
+            }
+            adapters += 1;
+            let mut seen: HashMap<Vec<u8>, String> = HashMap::new();
+            let mut scenes = 0usize;
+            for entry in std::fs::read_dir(&adapter).expect("adapter tree") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() || path.extension().is_none_or(|ext| ext != "png") {
+                    continue;
+                }
+                scenes += 1;
+                let name = path
+                    .file_name()
+                    .expect("name")
+                    .to_string_lossy()
+                    .into_owned();
+                if let Some(previous) =
+                    seen.insert(std::fs::read(&path).expect("read scene"), name.clone())
+                {
+                    collisions.push(format!("{previous} == {name}"));
+                }
+            }
+            assert!(scenes > 50, "expected the top-level scenes, found {scenes}");
+        }
+        assert!(adapters > 0, "no adapter directory in the snapshot tree");
+        assert!(
+            collisions.is_empty(),
+            "two scenes are the same image, so at least one of them proves nothing:\n  {}",
+            collisions.join("\n  ")
+        );
+    }
+
     /// A focus indicator that looks exactly like some other state is not an
     /// indicator, and nothing used to say so: eleven of fourteen components
     /// with a `focused` fixture rendered it byte-identically to their resting,

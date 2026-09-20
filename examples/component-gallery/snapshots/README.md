@@ -241,6 +241,70 @@ going to stroke with, so width and colour come from one decision. Pinned by
 `a_border_coloured_outside_the_layout_still_strokes_when_the_caller_names_it`,
 which also checks that `border-style: none` and a zero width stay zero.
 
+## Two things a green run still does not tell you
+
+The gate answers "does this frame match the one committed". It does not answer
+"does this frame show anything", or "is this frame different from the one next
+to it" — and those two questions are where every defect in this tree has
+actually lived.
+
+### Hash the tree; identical files are the cheapest defect probe there is
+
+Group the committed baselines by md5 and look at what collides. It needs no
+adapter, no build, and one read per file. Run over 615 snapshots it found, in
+one pass:
+
+- **11 of 14 components rendered keyboard focus identically to another state** —
+  three to their resting state, three to hover, one to selection. A focus
+  indicator that looks like something else is not an indicator, and every
+  baseline agreed with itself.
+- `gallery-sidebar-tools` was byte-identical to `gallery-controls`. It moved
+  the pointer to a point nothing occupies, and the Gallery scene path never
+  advanced the animation clock, so even a hit would have painted at t=0 before
+  the fade started. It also named tools this Gallery's sidebar does not have.
+- `gallery-workspace-dock-preview` was built from exactly the same two messages
+  as `gallery-workspace` and started no drag.
+- `motion-*-0520` and `motion-*-0660` were both taken in the same breath as the
+  `activate_overlay` / `dismiss_overlay` beside them, catching the dialog at
+  progress zero. The sequence proved the dialog is open at 590 and nothing
+  about how it arrives or leaves; 540 and 680 now carry that.
+
+Two of those are pinned as tests — `no_two_top_level_scenes_are_the_same_image`
+and `a_focused_fixture_never_looks_like_a_state_the_keyboard_did_not_cause` —
+and both were checked against the baselines that preceded them, where they
+report 4 and 18 collisions. A guard nobody has seen fail is a comment.
+
+The focus one compares what is **painted**, not what is recorded: a colour on an
+edge of zero width normalises to `none` first. `sidebar-row` wrote
+`border=#7bb9f0ff border_width=0.00` for focus, which draws nothing, and a plain
+text comparison would have called that a difference and let it through.
+
+### Sort by painted fraction; a frame can be almost as empty as `FLAT`
+
+`FLAT` is the zero case, and it is reported. One step above it is a frame that
+paints a rounding error. `pane-tree/*/nested` was 310 painted pixels in a
+480x240 canvas — the two words "left" and "right" — because `PaneTree` draws no
+chrome of its own and the fixture's leaves had no surface. Neither the split
+nor its ratio was observable in either baseline.
+
+Giving the leaves a surface made two things visible at once, and both are open:
+
+- **`PaneTree` does not nest.** `project_slots` walks the tree but only ever
+  emits leaves, each as a direct child of the root with a `flex_grow`; an inner
+  split's axis is discarded and its ratio overwrites the parent's. A nested tree
+  renders as one flat row. Every call site in the repo is depth-1, so nothing
+  had noticed.
+- **The split ratio has no effect.** A 0.4 split renders 220/220 of 440.
+  `project_leaf_slot` sets `width: Fill` on both panes, and
+  `LayoutStyle::child_main_length` returns `Fill` for anything that grows
+  before it consults `flex_basis` — so `flex_grow` acts as a boolean and the
+  weight is dropped.
+
+The fixture is therefore still named `nested` and still cannot nest. It is left
+that way deliberately, the same way `tooltip-edge` was: renaming it would hide
+the finding, and fixing it means changing either the flex engine or the slot
+contract, which is not a snapshot-suite change.
+
 ## Adding an adapter
 
 Run `--bless` on that machine and commit the new directory. Adapters are

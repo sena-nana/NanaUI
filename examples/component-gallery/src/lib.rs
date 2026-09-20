@@ -437,6 +437,20 @@ impl GalleryState {
             .flatten()
     }
 
+    /// Run the animation clock forward so a transition an input started has
+    /// somewhere to go.
+    ///
+    /// Nothing in the Gallery scene path advanced it, so every top-level
+    /// snapshot was painted at t=0. That is why `gallery-sidebar-tools` came
+    /// out byte-identical to `gallery-controls`: it moved the pointer onto a
+    /// sidebar tool and took the frame in the same breath, before the hover
+    /// fade had a single frame to run.
+    pub fn snapshot_settle(&mut self, now: std::time::Duration) {
+        if let Some(document) = self.document_mut() {
+            document.context_mut().advance_animations(now);
+        }
+    }
+
     /// Drive hover through Runtime input so snapshot paint includes pointer state.
     pub fn snapshot_hover(&mut self, x: f32, y: f32) {
         let point = LogicalPoint::new(x, y);
