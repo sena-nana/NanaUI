@@ -294,11 +294,17 @@ Giving the leaves a surface made two things visible at once, and both are open:
   split's axis is discarded and its ratio overwrites the parent's. A nested tree
   renders as one flat row. Every call site in the repo is depth-1, so nothing
   had noticed.
-- **The split ratio has no effect.** A 0.4 split renders 220/220 of 440.
-  `project_leaf_slot` sets `width: Fill` on both panes, and
-  `LayoutStyle::child_main_length` returns `Fill` for anything that grows
-  before it consults `flex_basis` — so `flex_grow` acts as a boolean and the
-  weight is dropped.
+- **`PaneTree` cannot size its leaves at all**, so the split ratio has never
+  had any effect. `project_leaf_slot` writes width, height and flex onto the
+  *content* node, and that node's own `ComponentView::project` overwrites them
+  from its authored style in the same pass. Whoever writes last wins, and it is
+  never the tree: with the leaves left alone they shrink to their text
+  (37.96 and 46.74 of 440 for a 0.4 split), and with the leaves asked to fill
+  they come out 220/220. Neither is 176/264.
+
+  Both defects want the same thing — `PaneTree` owning a container node per
+  split and per leaf, instead of writing style onto nodes the host also owns —
+  which is why neither is patched here.
 
 The fixture is therefore still named `nested` and still cannot nest. It is left
 that way deliberately, the same way `tooltip-edge` was: renaming it would hide
