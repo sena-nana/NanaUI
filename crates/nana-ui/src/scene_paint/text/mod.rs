@@ -337,6 +337,7 @@ struct ShapeKey {
     align: u8,
     direction: u8,
     writing_mode: u8,
+    preserve_lines: bool,
     font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
 
@@ -366,6 +367,7 @@ struct ShapeKeyRef<'a> {
     align: u8,
     direction: u8,
     writing_mode: u8,
+    preserve_lines: bool,
     font_features: &'a [nana_ui_core::FontFeatureSetting],
 }
 
@@ -394,6 +396,7 @@ impl ShapeKeyRef<'_> {
         self.font_features.hash(&mut hasher);
         self.direction.hash(&mut hasher);
         self.writing_mode.hash(&mut hasher);
+        self.preserve_lines.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -421,6 +424,7 @@ impl ShapeKeyRef<'_> {
             font_features: self.font_features.to_vec(),
             direction: self.direction,
             writing_mode: self.writing_mode,
+            preserve_lines: self.preserve_lines,
         }
     }
 }
@@ -449,6 +453,7 @@ impl ShapeKey {
             && self.font_features == other.font_features
             && self.direction == other.direction
             && self.writing_mode == other.writing_mode
+            && self.preserve_lines == other.preserve_lines
     }
 }
 
@@ -822,6 +827,11 @@ impl TextPipeline {
         // resolved with: a fade must not be a reason to reshape rich text or
         // to rebuild a single instance.
         let default_color = color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        // Built before the retained lookup because its fingerprint is half of
+        // what decides that lookup: the layout is not keyed by colour, so for
+        // rich text this is the only thing that can tell one paint from
+        // another. Solid text costs an empty `Vec` and a zero.
+        let colors = SpanColors::new(content, spans, default_color);
         // Every path shapes with the full OpenType machinery. The scene still
         // carries the old `Auto | Advanced` distinction; `nana-text` has no
         // reduced mode to select, and a reduced one changed advances enough to
@@ -850,6 +860,7 @@ impl TextPipeline {
                 !entry.damaged
                     && revision != UNTRACKED_REVISION
                     && entry.revision == revision
+                    && entry.colors == colors.fingerprint
                     && entry.scale_bits == scale.to_bits()
                     && entry.font_generation == self.font_generation
             })
@@ -891,6 +902,7 @@ impl TextPipeline {
                         nana_ui_core::WritingModeSpec::VerticalRl => 1,
                         nana_ui_core::WritingModeSpec::VerticalLr => 2,
                     },
+                    preserve_lines: opentype.preserve_lines,
                     font_features,
                 };
                 let hash = key.hash64();
@@ -1030,7 +1042,13 @@ impl TextPipeline {
             .or_else(|| self.target.entries.lookup(entry_key))
             .filter(|id| {
                 self.target.entries.get(*id).is_some_and(|entry| {
-                    entry.valid(hash, phase, scale.to_bits(), self.font_generation)
+                    entry.valid(
+                        hash,
+                        colors.fingerprint,
+                        phase,
+                        scale.to_bits(),
+                        self.font_generation,
+                    )
                 })
             })
             .filter(|id| {
@@ -1062,19 +1080,16 @@ impl TextPipeline {
                 self.target.nodes_skipped += 1;
                 id
             }
-            None => {
-                let colors = SpanColors::new(content, spans, default_color);
-                self.build_entry(
-                    device,
-                    entry_key,
-                    hash,
-                    phase,
-                    scale,
-                    default_color,
-                    &colors,
-                    revision,
-                )?
-            }
+            None => self.build_entry(
+                device,
+                entry_key,
+                hash,
+                phase,
+                scale,
+                default_color,
+                &colors,
+                revision,
+            )?,
         };
         let frame = self.target.frame;
         if let Some(entry) = self.target.entries.get_mut(entry) {
@@ -1183,12 +1198,21 @@ impl TextPipeline {
     ) -> Arc<TextLayout> {
         let source = nana_text::TextSource::new(content);
         let style = nana_text::TextStyle {
-            font_family: family.map(Arc::from),
+            // The same family rule Runtime measured with, from the same
+            // function: a named family that says `mono` falls back to
+            // `monospace`. Two spellings of it would be two font selections
+            // for one node.
+            font_family: family.map(nana_ui_runtime::nana_font_family),
             font_size_px,
             font_weight: weight.unwrap_or(400),
             italic,
             line_height: Some(LineHeightSpec::Absolute(line_height_px)),
-            letter_spacing_px,
+            // A non-finite tracking would poison every advance after it.
+            letter_spacing_px: if letter_spacing_px.is_finite() {
+                letter_spacing_px
+            } else {
+                0.0
+            },
             features: opentype.features.clone(),
             variations: opentype.variations.clone(),
             kerning: opentype.kerning,
@@ -1207,9 +1231,11 @@ impl TextPipeline {
             line_break: opentype.line_break,
             max_lines,
             ellipsis,
-            // An authored newline is a line break here. Collapsing them is a
-            // CSS `white-space` decision the Runtime has already made.
-            preserve_lines: true,
+            // What the Runtime measured this node with. `white-space: normal`
+            // folds an authored newline into a space, and measuring one line
+            // while painting two is the whole reason this rides on the scene
+            // rather than being assumed here.
+            preserve_lines: opentype.preserve_lines,
             base_direction: opentype.direction,
             align,
             writing_mode: opentype.writing_mode,
@@ -1381,6 +1407,7 @@ impl TextPipeline {
         let fonts = self.font_generation;
         let entry = self.target.entries.get_mut(id).expect("just built");
         entry.layout = hash;
+        entry.colors = colors.fingerprint;
         entry.phase = phase;
         entry.font_generation = fonts;
         entry.revision = revision;
@@ -1773,12 +1800,20 @@ struct SpanColors {
     /// Well-formed spans, in start order. Empty means solid `default`.
     spans: Vec<(Range<usize>, [f32; 4])>,
     default: [f32; 4],
+    /// Identity of the whole mapping, for [`TextGpuEntry::colors`]. Zero for
+    /// solid text, which is the case that may be recoloured without rebuilding
+    /// anything.
+    fingerprint: u64,
 }
 
 impl SpanColors {
     fn new(content: &str, spans: &[SceneTextSpan], default: [f32; 4]) -> Self {
+        let mut ordered: Vec<&SceneTextSpan> = spans.iter().collect();
+        // Overlap is resolved by start order below, so the order has to be the
+        // one the rule assumes rather than the one the scene happened to write.
+        ordered.sort_by_key(|span| (span.start, span.end));
         let mut kept: Vec<(Range<usize>, [f32; 4])> = Vec::new();
-        for span in spans {
+        for span in ordered {
             // A span the scene built against different bytes would recolor
             // whatever now sits at those offsets, so a range that is not a
             // char boundary of *this* content is dropped rather than snapped.
@@ -1796,9 +1831,28 @@ impl SpanColors {
             }
             kept.push((span.start..span.end, span.color));
         }
+        // The default is in the fingerprint because it decides which glyphs
+        // carry their own colour: a span that happens to paint the default
+        // inherits the run row, and would keep inheriting a *different* one
+        // after a recolour if this did not notice.
+        let fingerprint = if kept.is_empty() {
+            0
+        } else {
+            let mut hasher = ShapeHasher::default();
+            default.map(f32::to_bits).hash(&mut hasher);
+            kept.len().hash(&mut hasher);
+            for (range, color) in &kept {
+                range.start.hash(&mut hasher);
+                range.end.hash(&mut hasher);
+                color.map(f32::to_bits).hash(&mut hasher);
+            }
+            // Zero means "solid"; a fingerprint that lands there would claim it.
+            hasher.finish() | 1
+        };
         Self {
             spans: kept,
             default,
+            fingerprint,
         }
     }
 
@@ -2316,6 +2370,137 @@ mod tests {
         assert!(inside, "rotated clip interior must still paint the glyph");
     }
 
+    /// `white-space: normal` folds an authored newline into a space. Runtime
+    /// measures that way, so the painter has to lay it out that way: a
+    /// paragraph measured as one line and painted as two overflows its box.
+    #[test]
+    fn an_authored_newline_only_breaks_the_line_when_the_scene_says_it_does() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let laid_out = |pipeline: &mut TextPipeline, preserve_lines: bool| {
+            let layout = pipeline.lay_out(
+                "first\nsecond",
+                None,
+                None,
+                16.0,
+                20.0,
+                0.0,
+                false,
+                false,
+                nana_ui_core::TextWrapBreak::Word,
+                false,
+                None,
+                400.0,
+                64.0,
+                TextAlignSpec::Start,
+                &SceneTextOpenType {
+                    preserve_lines,
+                    ..SceneTextOpenType::default()
+                },
+            );
+            layout.lines.len()
+        };
+        assert_eq!(
+            laid_out(&mut pipeline, false),
+            1,
+            "`white-space: normal` folds the newline into a space"
+        );
+        assert_eq!(
+            laid_out(&mut pipeline, true),
+            2,
+            "a preserved newline is a line break"
+        );
+    }
+
+    /// Paint one rich-text label with the given spans, under a fixed revision.
+    fn paint_rich(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        spans: &[SceneTextSpan],
+    ) {
+        pipeline.begin_frame([256, 64]);
+        pipeline.prepare(
+            device,
+            LogicalRect::from_xywh(0.0, 0.0, 240.0, 32.0),
+            LogicalRect::from_xywh(0.0, 0.0, 256.0, 64.0),
+            1.0,
+            "warm and cold",
+            Some([1.0, 1.0, 1.0, 1.0]),
+            16.0,
+            None,
+            None,
+            None,
+            false,
+            nana_ui_core::TextWrapBreak::Word,
+            false,
+            false,
+            None,
+            TextShaping::Auto,
+            TextHorizontalAlignment::Start,
+            TextVerticalAlignment::Top,
+            spans,
+            0.0,
+            &[],
+            &SceneTextOpenType::default(),
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            1.0,
+            [0.0; 2],
+            EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            },
+            UNTRACKED_REVISION,
+        );
+        pipeline.flush_runs();
+        pipeline.upload(device, queue, None);
+    }
+
+    /// A rich span's colour is not part of the layout any more, so the layout
+    /// hash cannot tell two paints of one string apart. The entry has to.
+    #[test]
+    fn repainting_a_span_in_a_new_color_rebuilds_that_entry_without_relayout() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let span = |color: [f32; 4]| {
+            vec![SceneTextSpan {
+                start: 0,
+                end: "warm".len(),
+                color,
+            }]
+        };
+        paint_rich(&device, &queue, &mut pipeline, &span([1.0, 0.0, 0.0, 1.0]));
+        let warm = pipeline.glyph_counters();
+        let (_, misses_before, _) = pipeline.shape_cache_stats();
+        paint_rich(&device, &queue, &mut pipeline, &span([0.0, 0.0, 1.0, 1.0]));
+        let recolored = pipeline.glyph_counters();
+        let (_, misses_after, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            recolored.text_instance_rebuilds - warm.text_instance_rebuilds,
+            1,
+            "the span paints a different colour, so its instances are resolved again"
+        );
+        assert_eq!(
+            misses_after, misses_before,
+            "but colour is not part of the layout, so nothing is laid out again"
+        );
+        assert_eq!(
+            recolored.glyph_rasterized, warm.glyph_rasterized,
+            "nor rasterized: the bitmaps never depended on the colour"
+        );
+
+        // And repainting the same spans is still a steady frame.
+        paint_rich(&device, &queue, &mut pipeline, &span([0.0, 0.0, 1.0, 1.0]));
+        let steady = pipeline.glyph_counters();
+        assert_eq!(
+            steady.text_instance_rebuilds, recolored.text_instance_rebuilds,
+            "an unchanged rich repaint resolves nothing"
+        );
+    }
+
     /// Prepare one label, flush it and upload, reporting the GPU work.
     #[allow(clippy::too_many_arguments)]
     fn prepare_label(
@@ -2790,6 +2975,7 @@ mod tests {
             align: 0,
             direction: 0,
             writing_mode: 0,
+            preserve_lines: false,
             font_features: &[],
         }
     }

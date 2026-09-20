@@ -351,7 +351,14 @@ pub struct SceneTextOpenType {
     pub line_break: LineBreakSpec,
     /// CSS `direction` after inherit. Drives the same RLI/PDI wrap as shaping.
     pub direction: DirSpec,
-    /// CSS `writing-mode` after inherit. cosmic-text 0.19 has no vertical
+    /// Whether an authored newline is a line break rather than a space.
+    ///
+    /// CSS `white-space` decides it, and a multiline editor's value keeps its
+    /// breaks whatever `white-space` says. The renderer cannot derive it from
+    /// anything else here, and getting it wrong measures one line and paints
+    /// two.
+    pub preserve_lines: bool,
+    /// CSS `writing-mode` after inherit. The layout engine has no vertical
     /// glyph orientation; paint still shapes horizontally.
     pub writing_mode: WritingModeSpec,
 }
@@ -366,6 +373,9 @@ impl SceneTextOpenType {
             line_break: style.line_break,
             direction: style.direction,
             writing_mode: style.writing_mode,
+            // Not on `ComputedStyle`: `white-space` is a box-layout property,
+            // so the caller that has the layout style sets it.
+            preserve_lines: false,
         }
     }
 }
@@ -2336,7 +2346,14 @@ fn component_text_primitive(
                 .unwrap_or_default(),
             italic: node.style.italic,
             wrap_break: node.source_style.layout.text_wrap_break(),
-            opentype: SceneTextOpenType::from_computed(&node.style),
+            opentype: SceneTextOpenType {
+                // What this node was measured with. An editor's value keeps
+                // the newlines the user typed whatever `white-space` says, and
+                // a renderer that folds them paints one line where six were
+                // measured.
+                preserve_lines: node.text_preserve_lines,
+                ..SceneTextOpenType::from_computed(&node.style)
+            },
             layout: None,
         },
     }

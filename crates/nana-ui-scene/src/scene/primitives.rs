@@ -410,7 +410,16 @@ impl UiScene {
                         font_features: style.font_features.clone().unwrap_or_default(),
                         italic: node.style.italic,
                         wrap_break: style.text_wrap_break(),
-                        opentype: SceneTextOpenType::from_computed(&node.style),
+                        opentype: SceneTextOpenType {
+                            // What this node was *measured* with, carried by
+                            // the Runtime rather than re-derived here: a
+                            // renderer that lays the text out again has to
+                            // reach the same answer, and neither `white-space`
+                            // nor "is this a multiline editor" is visible from
+                            // the scene.
+                            preserve_lines: node.text_preserve_lines,
+                            ..SceneTextOpenType::from_computed(&node.style)
+                        },
                         layout: node.text_layout.clone(),
                     },
                 });

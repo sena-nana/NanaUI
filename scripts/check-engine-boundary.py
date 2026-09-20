@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Forbid Iced or GPUI from re-entering Nana product crates, and keep
-`nana-text` free of the text engine it is replacing.
+"""Forbid Iced or GPUI from re-entering Nana product crates, and keep every
+product crate free of the text engines NanaUI replaced.
 
 The in-tree engine/iced and engine/gpui-scenario-bench trees were removed.
 Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
 nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
 or native GPU implementation crates).
 
+No workspace member may reach cosmic-text, cryoglyph or glyphon through a
+normal dependency edge (Issue #99): `nana-text` and `NanaRenderer::text` are the
+only text authorities in the product. A *dev* edge is still allowed on purpose
+— the cosmic reference engine lives in `crates/nana-text/tests/reference/` and
+is what the migration goldens are compared against.
+
 nana-text (Issue #89) additionally must not name cosmic-text or cryoglyph
 anywhere under src/, and may borrow only the typography vocabulary from
-nana-ui-core. The cosmic reference engine is a dev dependency used from tests/,
-which is deliberately still allowed while the migration runs.
+nana-ui-core.
 
 nana-text's font layer (Issue #90), shaper (Issue #91) and layout engine
 (Issue #92) use fontdb, skrifa, icu_properties, harfrust, unicode-bidi and
@@ -32,10 +37,12 @@ ICED_PACKAGES = {"iced", "iced-wgpu", "iced-winit"}
 GPUI_PACKAGES = {"gpui"}
 ICED_WINIT_MARKERS = ("iced-rs/winit",)
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
-# Issue #89. `nana-text` owns the text IR; the engine it is replacing must not
-# reach its product API. A dev edge is allowed on purpose: the cosmic reference
-# engine lives in `crates/nana-text/tests/reference/` and is deleted with it.
+# Issue #89. `nana-text` owns the text IR, and its *sources* must not name the
+# engine it replaced even in a type position — the dependency graph alone cannot
+# say that, because the reference engine is a legitimate dev dependency.
 TEXT_NEUTRAL_PACKAGES = {"nana-text"}
+# Issue #99. The replaced text engines, forbidden on every workspace member's
+# normal dependency edges. They may only be reached from tests.
 LEGACY_TEXT_PACKAGES = {"cosmic-text", "cryoglyph", "glyphon"}
 # Migration-only crates. Nothing in the product may depend on one. These are
 # Cargo *package* names, which are not always the lib target name: the crate in
@@ -126,11 +133,9 @@ def check_dependency_graph(data: dict) -> list[str]:
         name = packages[root]["name"]
         pending = [(d, [name]) for d in graph.get(root, [])]
         seen = set()
-        forbidden = ICED_PACKAGES | GPUI_PACKAGES
+        forbidden = ICED_PACKAGES | GPUI_PACKAGES | LEGACY_TEXT_PACKAGES
         if name in BACKEND_NEUTRAL_PACKAGES:
             forbidden |= GPU_BACKEND_PACKAGES
-        if name in TEXT_NEUTRAL_PACKAGES:
-            forbidden |= LEGACY_TEXT_PACKAGES
         while pending:
             dependency, path = pending.pop()
             if dependency in seen:
@@ -306,10 +311,12 @@ def main() -> int:
         return 1
 
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
-    text_neutral = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
+    legacy_text = ", ".join(sorted(LEGACY_TEXT_PACKAGES))
+    text_sources = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
     print(
         f"Engine boundary: OK (Iced/GPUI trees removed; the pinned upstream winit; "
-        f"backend-neutral: {neutral}; text-engine-neutral: {text_neutral})"
+        f"backend-neutral: {neutral}; no product edge to {legacy_text}; "
+        f"sources free of them: {text_sources})"
     )
     return 0
 

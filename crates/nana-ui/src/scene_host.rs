@@ -3740,7 +3740,11 @@ mod tests {
         // A transparent surface is still transparent: the host colour describes
         // what an opaque window fills with, not whether it is opaque.
         assert_eq!(
-            scene_clear_color(ThemeMode::Light, MaterialOutcome::transparent(), Some(black)),
+            scene_clear_color(
+                ThemeMode::Light,
+                MaterialOutcome::transparent(),
+                Some(black)
+            ),
             [0.0, 0.0, 0.0, 0.0]
         );
     }

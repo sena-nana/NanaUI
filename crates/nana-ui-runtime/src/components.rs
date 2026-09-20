@@ -3342,6 +3342,13 @@ pub struct ExtractedNode {
     /// node resolved through an engine (Issue #95). `None` for text measured by
     /// the host shaper, which a renderer still lays out itself.
     pub text_layout: Option<crate::RetainedTextLayout>,
+    /// Whether an authored newline in [`Self::text`] is a line break rather
+    /// than a space, as the constraints this node was measured with say.
+    ///
+    /// Carried rather than re-derived: a renderer that lays this text out
+    /// again has to reach the same answer, and `white-space` plus "is this a
+    /// multiline editor" is not something the scene can see.
+    pub text_preserve_lines: bool,
     pub z_index: i32,
     pub focused: bool,
     pub ime: Option<ImeComposition>,

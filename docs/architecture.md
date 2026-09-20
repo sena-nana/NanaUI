@@ -27,16 +27,17 @@ Vue + JS L1/L2（可选宿主）
     nana-ui-vue + nana-js-v8 + nanavue-runtime / nanavue-components
     写入同一棵 UiWorld，不是另一套窗口
 
-文本引擎（Phase 0–4，不在产品绘制路径）
+文本引擎（Phase 0–8，产品唯一的排版权威）
     nana-text            文本 IR、稳定代际 ID、结构化 diff 与迁移语料；
                          字体层（注册 / 代际 / 匹配 / 变体坐标 / fallback）；
                          shaping（分段 / BiDi / HarfRust / ShapeRun cache）；
                          layout（Label fast path / UAX #14 断行 / 行内视觉序 /
                          行盒度量 / 对齐 / 省略号 / layout cache）；
                          retained layout 句柄（TextLayoutStore）。
-                         Runtime 的保留文本节点经它解析（NanaTextEngineShaper），
-                         产品文本仍走 nana-ui/nana_text.rs（cosmic-text）与
-                         scene_paint/text/（NanaRenderer::text）。见 [文本引擎](text-engine.md)
+                         测量与绘制都经它：nana-ui/text_engine.rs 持有进程
+                         唯一的引擎，nana_text.rs（NanaTextShaper）测量，
+                         scene_paint/text/（NanaRenderer::text）画。
+                         见 [文本引擎](text-engine.md)
 
 图标目录（可选，独立构建，不在 workspace members）
     nana-icons-tabler    Tabler outline 全量 `Icon` 常量（生成物，见
@@ -46,7 +47,7 @@ Vue + JS L1/L2（可选宿主）
 
 依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
 
-`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达。
+`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达；#99 之后整个工作区的 `cargo tree --edges normal` 都不再含 cosmic-text 或 cryoglyph，脚本按全工作区守住这一条。
 
 产品路径：
 

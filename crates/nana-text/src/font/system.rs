@@ -463,6 +463,9 @@ pub struct FontSystem {
     policy: FallbackPolicy,
     selections: HashMap<FontQuery, Arc<FontSelection>>,
     coverage: CoverageCache,
+    /// The face a database-wide scan found for one codepoint, or `None` when
+    /// nothing in the database covers it. See [`Self::scan_database`].
+    scanned: HashMap<char, Option<FontId>>,
     counters: FontCounters,
     retired: Vec<Weak<dyn AsRef<[u8]> + Send + Sync>>,
 }
@@ -491,6 +494,7 @@ impl FontSystem {
             policy,
             selections: HashMap::new(),
             coverage: CoverageCache::new(DEFAULT_COVERAGE_BUDGET_BYTES),
+            scanned: HashMap::new(),
             counters: FontCounters::default(),
             retired: Vec::new(),
         }
@@ -530,6 +534,9 @@ impl FontSystem {
     fn bump(&mut self) {
         self.generation = self.generation.bumped();
         self.selections.clear();
+        // A registration can add exactly the face a previous scan failed to
+        // find, and can retire the one it did find.
+        self.scanned.clear();
     }
 
     // ---- registration --------------------------------------------------
@@ -1182,8 +1189,71 @@ impl FontSystem {
                 return (Some(font), reason);
             }
         }
+        // Nothing the policy names covers it. Before reporting a missing
+        // glyph, ask the database itself: a check mark, a box-drawing rune or
+        // a dingbat lives in a face no generic, script or symbol list mentions,
+        // and rendering `.notdef` for it when the machine *has* the glyph is
+        // the worst of both answers. Memoized per codepoint, so a document
+        // full of one missing character scans once.
+        if let Some(font) = self.scan_database(selection, codepoints) {
+            let family = self
+                .record(font)
+                .and_then(|face| face.families().first().cloned())
+                .unwrap_or_else(|| Arc::from(""));
+            return (Some(font), FontChoiceReason::LastResort { family });
+        }
         self.counters.font_fallback_misses += 1;
         (None, FontChoiceReason::Missing)
+    }
+
+    /// The first registered face that covers every codepoint of a cluster the
+    /// policy could not place, or `None` when the database has none.
+    ///
+    /// Deliberately last: it is O(faces) on the first miss for a codepoint and
+    /// its answer depends on what the machine has installed, so everything the
+    /// policy *can* decide is decided before this runs.
+    fn scan_database(&mut self, selection: &FontSelection, codepoints: &[char]) -> Option<FontId> {
+        // Only a single-codepoint cluster is memoized: a multi-codepoint
+        // cluster is a sequence, and caching it by its first char would answer
+        // for a different sequence. The memo holds the *scan's* answer, which
+        // does not depend on the query; the weight and style refinement below
+        // does, and is cheap enough to redo.
+        let memo = (codepoints.len() == 1).then(|| codepoints[0]);
+        let first = match memo.and_then(|ch| self.scanned.get(&ch).copied()) {
+            Some(found) => found,
+            None => {
+                let mut found = None;
+                for font in self.faces() {
+                    self.counters.fallback_candidates_examined += 1;
+                    if self.covers_all(font, codepoints) {
+                        found = Some(font);
+                        break;
+                    }
+                }
+                if let Some(ch) = memo {
+                    self.scanned.insert(ch, found);
+                }
+                found
+            }
+        };
+        let first = first?;
+        // The first *covering* face is whichever slot the scan reached, which
+        // is not the same question as "which face of that family does this
+        // text want": a bold check mark should come from the family's bold.
+        let Some(family) = self
+            .record(first)
+            .and_then(|face| face.families().first().cloned())
+        else {
+            return Some(first);
+        };
+        let Some(best) = self.best_face_in_family(&family, &selection.query) else {
+            return Some(first);
+        };
+        if best == first || self.covers_all(best, codepoints) {
+            Some(best)
+        } else {
+            Some(first)
+        }
     }
 
     // ---- diagnostics ---------------------------------------------------

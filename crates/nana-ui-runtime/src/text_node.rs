@@ -386,7 +386,12 @@ pub(crate) fn nana_text_style(style: &ComputedStyle) -> NanaTextStyle {
 /// A family list with the generic the host shaper has always implied: a named
 /// family that says `mono` falls back to `monospace`, anything else to
 /// `sans-serif` (which `nana-text` appends itself).
-fn nana_font_family(family: &str) -> Arc<str> {
+///
+/// Public because the *painter* has to ask the engine for the same layout this
+/// node was measured with, and it builds its style from the scene rather than
+/// from `ComputedStyle`. Two spellings of this rule would be two font
+/// selections for one node.
+pub fn nana_font_family(family: &str) -> Arc<str> {
     let lowered = family.to_ascii_lowercase();
     let has_generic = lowered.split(',').any(|name| {
         matches!(
@@ -425,6 +430,43 @@ pub(crate) fn nana_text_constraints(
         },
         writing_mode: style.writing_mode,
         ..NanaTextConstraints::default()
+    }
+}
+
+/// Record the advance of every glyph that is a whole single-character cluster
+/// into the Runtime's own [`GlyphCache`](crate::GlyphCache).
+///
+/// The cache answers a question no layout cache can: what one character
+/// advances to, independent of the string it appeared in. Rich text is what
+/// asks it — `world::geometry::rich_text` measures an inline run character by
+/// character out of this cache, and falls back to a crude `size * 0.6`
+/// heuristic when a character is missing. So every path that lays plain text
+/// out has to fill it, including the engine path that never calls
+/// [`TextShaper::shape_cached`](crate::TextShaper::shape_cached).
+///
+/// A cluster of two characters (a combining mark, an emoji sequence) has no
+/// per-character advance to record, and a character that shaped to several
+/// glyphs has no single one either — both are skipped rather than approximated.
+pub(crate) fn record_glyph_advances(
+    layout: &nana_text::TextLayout,
+    text: &str,
+    style: &ComputedStyle,
+    glyphs: &mut crate::GlyphCache,
+) {
+    for run in &layout.runs {
+        for glyph in &run.glyphs {
+            let (start, end) = (glyph.cluster as usize, glyph.cluster_end as usize);
+            let Some(cluster) = text.get(start..end) else {
+                continue;
+            };
+            let mut chars = cluster.chars();
+            let (Some(ch), None) = (chars.next(), chars.next()) else {
+                continue;
+            };
+            if glyphs.lookup(ch, style).is_none() {
+                glyphs.insert(ch, style, glyph.advance_px);
+            }
+        }
     }
 }
 

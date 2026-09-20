@@ -23,8 +23,8 @@ use nana_text::{
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
 use crate::{
-    ComputedStyle, LayoutBox, StableNodeId, TextContent, TextHit, TextHorizontalAlignment,
-    TextMetrics, TextShapeConstraints, TextShaper,
+    ComputedStyle, GlyphCache, LayoutBox, StableNodeId, TextContent, TextHit,
+    TextHorizontalAlignment, TextMetrics, TextShapeConstraints, TextShaper,
 };
 
 /// Editors whose geometry is kept. Each entry holds layouts of one editor's
@@ -257,8 +257,28 @@ impl NanaTextEngineShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
+        self.measure_into(id, text, style, constraints, None)
+    }
+
+    /// [`Self::measure`], optionally recording per-character advances into the
+    /// Runtime's own [`GlyphCache`].
+    ///
+    /// The cache is the Runtime's, not the engine's, and it answers a question
+    /// no layout cache can: what one character advances to, independent of the
+    /// string it appeared in. A one-character label — a counter digit, a
+    /// keyboard-hint letter — is then measured without laying anything out.
+    fn measure_into(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: Option<&mut GlyphCache>,
+    ) -> TextMetrics {
         // An editor measures from the geometry its probes read, so an edit
-        // lays out its own paragraph rather than the whole text.
+        // lays out its own paragraph rather than the whole text. Its advances
+        // are deliberately not recorded: an editor's text is the longest in
+        // the document and none of it is a one-character label.
         if let Some(metrics) = self.editor_metrics(id, &text.value, style, constraints) {
             return metrics;
         }
@@ -271,8 +291,36 @@ impl NanaTextEngineShaper {
             &mut self.work,
         );
         self.work.text_source_clones += 1;
+        if let Some(glyphs) = glyphs {
+            crate::text_node::record_glyph_advances(&layout, &text.value, style, glyphs);
+        }
         text_metrics_of_layout(&layout)
     }
+}
+
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) => Some(ch),
+        _ => None,
+    }
+}
+
+fn finite_or_zero(value: f32) -> f32 {
+    if value.is_finite() && value > 0.0 {
+        value
+    } else {
+        0.0
+    }
+}
+
+/// The line box height the style asks for, in the same px space the engine
+/// reports. Mirrors `nana_text_style`'s 1.2em default, so the fast path and a
+/// real layout cannot disagree about how tall one line is.
+fn line_box_height(style: &ComputedStyle) -> f32 {
+    nana_text_style(style)
+        .line_height_px()
+        .unwrap_or(style.font_size * 1.2)
 }
 
 /// A byte offset a caret can stand at.
@@ -310,6 +358,32 @@ impl TextShaper for NanaTextEngineShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         self.measure(id, text, style, constraints)
+    }
+
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut GlyphCache,
+    ) -> TextMetrics {
+        // One character in a box that cannot wrap or truncate is its advance
+        // and the style's line box, which the cache already holds if anything
+        // drew that character before.
+        if !constraints.wrap
+            && !constraints.ellipsis
+            && let Some(ch) = single_char(&text.value)
+            && glyphs.peek(ch, style).is_some()
+            && let Some(advance) = glyphs.lookup(ch, style)
+        {
+            return TextMetrics {
+                width: finite_or_zero(advance),
+                height: finite_or_zero(line_box_height(style)),
+                ascent: None,
+            };
+        }
+        self.measure_into(id, text, style, constraints, Some(glyphs))
     }
 
     /// An editor with geometry is measured by summing its paragraphs, so the
@@ -517,6 +591,17 @@ impl TextShaper for PreparedEngineShaper<'_> {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         self.host.measure(id, text, style, constraints)
+    }
+
+    fn shape_cached(
+        &mut self,
+        id: StableNodeId,
+        text: &TextContent,
+        style: &ComputedStyle,
+        constraints: TextShapeConstraints,
+        glyphs: &mut GlyphCache,
+    ) -> TextMetrics {
+        self.host.shape_cached(id, text, style, constraints, glyphs)
     }
 
     fn retains_measurement(&self, id: StableNodeId) -> bool {

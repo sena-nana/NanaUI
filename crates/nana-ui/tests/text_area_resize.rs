@@ -211,3 +211,25 @@ fn textarea_resize_uses_transformed_logical_coordinates_and_content_box_chrome()
     layout(&mut cx, doc, area);
     assert!((cx.world().layout_box(area.stable_id()).unwrap().height - height - 20.0).abs() < 0.1);
 }
+
+/// A multiline editor's value keeps its line breaks whatever `white-space`
+/// says. The scene has to say so: the renderer lays the same text out again,
+/// and a paragraph measured as six lines and painted as one overflows nothing
+/// — it silently loses the breaks the user typed.
+#[test]
+fn a_multiline_editors_text_primitive_says_its_newlines_are_line_breaks() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let view = TextArea::new("first\nsecond\nthird");
+    let area = cx.create_component(doc, view).unwrap();
+    layout(&mut cx, doc, area);
+    let extracted = cx.world().extract_document(doc);
+    let node = extracted
+        .iter()
+        .find(|node| node.id == area.stable_id())
+        .expect("the editor must be extracted");
+    assert!(
+        node.text_preserve_lines,
+        "a multiline editor preserves the newlines in its value"
+    );
+}

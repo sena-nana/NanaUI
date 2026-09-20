@@ -1122,8 +1122,9 @@ def _extract_nana_gpu_scene(
         "(viewport, host_texture slot, ui_nodes, node_repeat).",
         "RuntimeDocument flush + HostTexture content slot + SceneWgpuPainter encode/submit. "
         "Not a private hosted-gpu-demo tree. No CPU readback.",
-        "gpu_upload_bytes counts observed queue.write_buffer on that path. cryoglyph atlas "
-        "uploads are not estimated.",
+        "gpu_upload_bytes counts observed queue.write_buffer on that path. "
+        "NanaRenderer::text atlas uploads are reported separately as "
+        "glyph_upload_bytes, not estimated into this one.",
         "Batch / GpuUpload / Encode / Submit are FrameProfiler status=ran on the same "
         "encode/submit. Runtime-only drains keep those stages unsupported and omit GPU keys.",
     ]

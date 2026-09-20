@@ -7,24 +7,29 @@
 //! animation in it, anywhere.
 //!
 //! An entry is the answer: the resolved instances of one node, held in a slab
-//! and handed back whenever the four facts they were derived from still hold.
+//! and handed back whenever the facts they were derived from still hold.
 //!
 //! ```text
-//! layout unchanged  ── the shaped paragraph is the same one
+//! layout unchanged  ── the laid-out paragraph is the same one
+//! colors unchanged  ── its rich spans still paint what they painted
 //! phase unchanged   ── the bitmaps were rasterized for this sub-pixel offset
+//! scale unchanged   ── they were placed at this device scale
 //! fonts unchanged   ── the face set still issues these face ids
 //! atlas unchanged   ── the rectangles are still these glyphs'
 //! ```
 //!
-//! The first three are compared in `prepare`; a mismatch rebuilds that one
-//! entry and nothing else. The fourth is repaired rather than rebuilt: the
+//! All but the last are compared in `prepare`; a mismatch rebuilds that one
+//! entry and nothing else. The atlas is repaired rather than rebuilt: the
 //! entry keeps one atlas handle per glyph, so a relocation only has to re-read
 //! rectangles.
 //!
 //! What an entry deliberately does **not** hold is where its text sits, what
-//! color it paints, how opaque it is or what transform it is under. Those are
-//! the run and presentation rows of [`super::pipeline`], which is why moving,
-//! fading or recoloring a paragraph never touches a single instance.
+//! *solid* color it paints, how opaque it is or what transform it is under.
+//! Those are the run and presentation rows of [`super::pipeline`], which is
+//! why moving, fading or recoloring plain text never touches a single
+//! instance. Rich spans are the exception, and the one they prove: a span
+//! paints something the run row cannot say, so its bytes are baked into the
+//! instances and `colors` is what notices when they change.
 
 use std::collections::HashMap;
 
@@ -61,22 +66,32 @@ pub(super) struct EntrySegment {
 pub(super) struct TextGpuEntry {
     /// Hash of the shaped paragraph these glyphs were resolved from.
     pub layout: u64,
+    /// What these glyphs were painted with, when that is not the run row's
+    /// colour alone: a fingerprint of the rich spans and the colour they were
+    /// resolved against. Zero for solid text, whose every glyph inherits the
+    /// run row and is therefore recoloured without touching an instance.
+    ///
+    /// Its own field because the *layout* is not keyed by colour any more:
+    /// since #99 two spellings of one string in different colours are the same
+    /// paragraph, and only this tells their glyphs apart.
+    pub colors: u64,
     /// Sub-pixel phase of the run origin the bitmaps were rasterized for.
     pub phase: [u32; 2],
     /// Font-set generation the face ids were issued under.
     pub font_generation: u64,
     /// The scene rebuild that wrote the primitive these glyphs were resolved
-    /// from, and the device scale they were shaped at. Together with
+    /// from, and the device scale they were resolved at. Together with
     /// `font_generation` they are the cheap half of `layout`: if none of them
     /// moved, the paragraph and its box are the ones this entry already holds,
     /// so the shape key does not have to be assembled and hashed to find that
     /// out. `u64::MAX` is "no primitive said", which never matches.
     pub revision: u64,
     pub scale_bits: u32,
-    /// What the shaped paragraph measured: the widest line and the height the
-    /// lines laid out to, in physical pixels. A pure function of the shape,
-    /// which `revision` already pins, so a steady frame reads it here instead
-    /// of walking the layout runs again.
+    /// What the paragraph measured: the widest line and the height the lines
+    /// laid out to, in **logical** px — the layout is laid out there and the
+    /// device scale only reaches the glyph coordinates. A pure function of the
+    /// layout, which `revision` already pins, so a steady frame reads it here
+    /// instead of walking the lines again.
     pub measured: [f32; 2],
     /// Atlas placement epoch the rectangles were read at.
     pub atlas_epoch: u64,
@@ -112,7 +127,7 @@ pub(super) struct TextGpuEntry {
 
 impl TextGpuEntry {
     /// Whether the glyphs this entry holds are still the ones `layout` at
-    /// `phase` and `scale_bits` would resolve to under `fonts`.
+    /// `phase`, `colors` and `scale_bits` would resolve to under `fonts`.
     ///
     /// The scale is its own term because the layout is not keyed by it: since
     /// #99 a paragraph is laid out in logical px and the device scale is
@@ -122,9 +137,17 @@ impl TextGpuEntry {
     /// Deliberately does not consider the atlas: a relocation is repaired by
     /// re-reading rectangles through the handles, which costs no shaping, no
     /// rasterizing and no atlas traffic.
-    pub(super) fn valid(&self, layout: u64, phase: [u32; 2], scale_bits: u32, fonts: u64) -> bool {
+    pub(super) fn valid(
+        &self,
+        layout: u64,
+        colors: u64,
+        phase: [u32; 2],
+        scale_bits: u32,
+        fonts: u64,
+    ) -> bool {
         !self.damaged
             && self.layout == layout
+            && self.colors == colors
             && self.phase == phase
             && self.scale_bits == scale_bits
             && self.font_generation == fonts
@@ -290,6 +313,7 @@ impl EntryStore {
                 let block = self.take_block(capacity);
                 let entry = TextGpuEntry {
                     layout: 0,
+                    colors: 0,
                     phase: [0; 2],
                     font_generation: 0,
                     revision: u64::MAX,

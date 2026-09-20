@@ -394,9 +394,12 @@ fn a_glyph_nothing_covers_is_reported_missing_and_counted() {
     let counters = system.counters();
     assert_eq!(counters.font_fallback_attempts, 1);
     assert_eq!(counters.font_fallback_misses, 1);
-    // Thai has no script rule and the cluster has its own script, so only the
-    // chain beyond the primary could have been probed: nothing.
-    assert_eq!(counters.fallback_candidates_examined, 0);
+    // Thai has no script rule and the cluster has its own script, so the
+    // policy phase could only have probed the chain beyond the primary:
+    // nothing. What it did probe is the database scan that runs last, over
+    // both registered faces, and that is what makes "missing" mean "this
+    // machine does not have it" rather than "no list happened to name it".
+    assert_eq!(counters.fallback_candidates_examined, 2);
 }
 
 #[test]
@@ -778,4 +781,45 @@ fn a_non_finite_weight_or_stretch_still_equals_itself() {
         FontWeight::NORMAL,
         "the constructor still rejects it outright"
     );
+}
+
+/// A codepoint no policy family names, in a face the database happens to hold.
+///
+/// The policy is a *preference* order, not the set of faces that exist. A
+/// check mark, a box-drawing rune or a dingbat lives in a face no generic,
+/// script or symbol list mentions, and rendering `.notdef` for it while the
+/// database has the glyph is the worst of both answers.
+#[test]
+fn a_codepoint_no_policy_family_names_is_still_found_in_the_database() {
+    let mut system = FontSystem::with_policy(FallbackPolicy::empty());
+    // The only face the policy names cannot cover the text, and it is not the
+    // one that can: there is no path to the second face except a scan.
+    let vf = register(&mut system, "nana-test-vf");
+    let sc = register_static(&mut system, UI_FONT_REGULAR);
+    let mut policy = FallbackPolicy::empty();
+    policy.set_generic(GenericFamily::SansSerif, ["NanaTestVF"]);
+    system.set_policy(policy);
+
+    let selection = system.select(&query("NanaTestVF"));
+    assert_eq!(selection.primary, Some(vf));
+    let resolved = system.resolve_text(&selection, "中", None);
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].font,
+        Some(sc),
+        "the scan finds the only face that covers it: {:?}",
+        resolved[0].reason
+    );
+    assert!(
+        matches!(resolved[0].reason, FontChoiceReason::LastResort { .. }),
+        "and says it got there last: {:?}",
+        resolved[0].reason
+    );
+
+    // Nothing covers a private-use codepoint, and saying so is still the
+    // answer — the scan must not invent a face.
+    let missing = system.resolve_text(&selection, "\u{f8ff}", None);
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].font, None);
+    assert_eq!(missing[0].reason, FontChoiceReason::Missing);
 }

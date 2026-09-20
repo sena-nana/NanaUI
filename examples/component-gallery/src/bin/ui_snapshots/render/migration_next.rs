@@ -885,6 +885,14 @@ fn runtime_fixture(
             .disabled(fixture.state == "disabled")
             .size(control_size(fixture.state))
             .auto_height(fixture.state == "auto-height");
+            if fixture.state == "auto-height" {
+                // The fixture's two lines are an authored newline, and
+                // `white-space: normal` folds one into a space. Declaring
+                // what it means is what keeps this exercising auto-height
+                // instead of measuring one line and calling it two.
+                Arc::make_mut(&mut component.style.layout).white_space =
+                    nana_ui_core::WhiteSpaceSpec::PreLine;
+            }
             set_full_width(&mut component.style);
             if fixture.state == "three-slots" {
                 let item = document.context_mut().build(document_id, |ui| {

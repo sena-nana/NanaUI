@@ -42,12 +42,19 @@ class EngineBoundaryTests(unittest.TestCase):
         data = self.graph({"nana-text": ["cosmic-text"]}, root="nana-text")
         next(node for node in data["resolve"]["nodes"] if node["id"] == "nana-text")["deps"][0]["dep_kinds"][0]["kind"] = "dev"
         self.assertEqual(boundary.check_dependency_graph(data), [])
-    def test_other_crates_may_still_depend_on_cosmic_text(self):
-        # Only nana-text is held to this rule; nana-ui is the product backend.
-        self.assertEqual(
-            boundary.check_dependency_graph(self.graph({"nana-ui": ["cosmic-text"]}, root="nana-ui")),
-            [],
+    def test_no_product_crate_may_depend_on_the_engine_that_was_replaced(self):
+        # Issue #99: the rule is every workspace member's, not nana-text's.
+        failures = boundary.check_dependency_graph(
+            self.graph({"nana-ui": ["cosmic-text"]}, root="nana-ui")
         )
+        self.assertTrue(any("nana-ui -> cosmic-text" in failure for failure in failures))
+
+    def test_any_crate_may_keep_a_dev_only_edge_to_the_reference_engine(self):
+        data = self.graph({"nana-ui": ["cryoglyph"]}, root="nana-ui")
+        next(node for node in data["resolve"]["nodes"] if node["id"] == "nana-ui")["deps"][0][
+            "dep_kinds"
+        ][0]["kind"] = "dev"
+        self.assertEqual(boundary.check_dependency_graph(data), [])
     def test_naming_the_reference_engine_in_nana_text_sources_is_rejected(self):
         root = self.text_crate("pub fn shape(buffer: &cosmic_text::Buffer) {}\n")
         failures = boundary.check_text_engine_sources(root)

@@ -1,8 +1,8 @@
 # 文本引擎骨架（nana-text）
 
-给**改 NanaUI 文本的人**。写应用不需要看这篇：产品文本仍由 cosmic-text 测量，
-**绘制已经是 NanaUI 自己的** `NanaRenderer::text`（#97），`nana-text` 目前经 Runtime 的
-保留文本节点接入。
+给**改 NanaUI 文本的人**。写应用不需要看这篇：产品文本的**测量与绘制都已经是
+NanaUI 自己的**——`nana-text` 排版，`NanaRenderer::text` 画，`cosmic-text` 与 `cryoglyph`
+都不在 release 依赖里了（#99）。
 
 Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 是其中的 Phase 0：
 先把内部合同、reference backend 和 correctness corpus 固定下来，让后续每一阶段都能对着
@@ -15,6 +15,9 @@ Epic #88 要把文本能力从 `cosmic-text` / `cryoglyph` fork 上迁走。#89 
 caret / selection、hit-test、IME composition 与按段落失效的编辑器几何，见「Editable 路径」一节。
 #97 是 Phase 6：`NanaRenderer::text`——renderer 自有的 glyph IR、栅格化边界、raster cache、
 GPU atlas、上传队列与 text pipeline，cryoglyph 由此退出产品路径，见「NanaRenderer::text」一节。
+#99 是 Phase 8：全路径 cutover——Runtime 的 `NanaTextShaper` 与画笔都改问同一个进程级
+`nana-text` 引擎，Canvas2D 同样换掉，`cargo tree --edges normal` 里再无 cosmic-text，见
+「cutover 之后的产品路径」一节。
 
 ## 这是什么
 
@@ -33,8 +36,9 @@ corpus/cases/TX-*.json          输入：文本 + 样式 + 约束 + 探针
 `compare` 是唯一的结构化 diff。Phase 0 比「参照引擎 vs golden」；后续阶段原生引擎接上
 **同一个函数**，比「原生 vs golden」和「原生 vs 参照」。不换实现，不重写断言。
 
-产品文本的**测量**仍走 `crates/nana-ui/src/nana_text.rs`（cosmic-text 后端）；**绘制**从 #97 起
-走 `crates/nana-ui/src/scene_paint/text/`（NanaUI 原生）。
+产品文本的**测量**走 `crates/nana-ui/src/nana_text.rs`（它现在只是
+`NanaTextEngineShaper` 的壳），**绘制**走 `crates/nana-ui/src/scene_paint/text/`；两边问的是
+`crates/nana-ui/src/text_engine.rs` 里那一个进程级引擎。
 
 ## nana-text 自己拥有什么，什么留在成熟 crate 上
 
@@ -229,7 +233,8 @@ counters，所以计数变化是一次可评审的 diff。
 `scripts/check-engine-boundary.py` 多了三条规则，都带自测
 （`scripts/tests/test_engine_boundary.py`，现在真的在 CI 里跑了）：
 
-1. **产品图**：`nana-text` 不得有任何**非 dev** 边通向 `cosmic-text` / `cryoglyph` / `glyphon`。
+1. **产品图**：**任何**工作区成员都不得有**非 dev** 边通向 `cosmic-text` / `cryoglyph` /
+   `glyphon`（#99 把这条从只管 `nana-text` 扩到了全工作区）。
    dev 边是本阶段有意留的。
 2. **源码**（承重的一条）：`crates/nana-text/src/**` 里不得出现 `cosmic_text` / `cryoglyph` /
    `glyphon` 标识符。这就是「核心 API 不出现 cosmic 类型」的机械含义——依赖图本身说不了这句话，
@@ -324,8 +329,14 @@ Default_Ignorable 码位不要求覆盖。primary 已覆盖且无需彩色时直
 
 两者之后都是：该 cluster 的 script 策略（没有自身 script 的 cluster 沿用前一个有 script 的
 cluster，所以 CJK 后面的标点继续找 CJK face）＋语言提示（`ja` / `ko` / `zh-Hant` / `zh-HK`
-优先对应字形）→ 无自身 script 时的 symbol 与 emoji 策略 → last resort。都覆盖不到记
-`Missing`，渲染 primary 的 `.notdef`。
+优先对应字形）→ 无自身 script 时的 symbol 与 emoji 策略 → last resort。
+
+**策略全都不覆盖时再扫一遍字体库**（`scan_database`）：策略是*偏好顺序*，不是「机器上有哪些
+face」的全集。✓（U+2713）就是例子——macOS 上它既不在 sans 里也不在 `Apple Symbols` 里，
+而在 `Arial Unicode MS` 里；策略找不到就画 `.notdef`，而机器明明有这个字形，是最差的一种答案。
+扫描按码位记忆（`scanned`），所以一篇满是同一个缺字的文档只扫一次；字体集合变更时清空。
+真的全库都没有才记 `Missing`，渲染 primary 的 `.notdef`——这时「缺字」才真的是「这台机器没有」，
+而不是「没有哪张列表恰好写了它」。扫描命中记 `LastResort { family }`，family 是命中 face 自己的名字。
 
 `FallbackPolicy::platform_default()` 按 Windows / macOS / 其他（Linux、Android）给出常见
 family；名字解析不到 face 就跳过。hermetic 测试一律从 `FallbackPolicy::empty()` 自己搭。
@@ -355,7 +366,9 @@ family；名字解析不到 face 就跳过。hermetic 测试一律从 `FallbackP
   分别落到 Segoe UI / Microsoft YaHei UI / Malgun Gothic / Segoe UI Emoji，无 `Missing`；
   冷启动（读盘）约 110–140 ms，热路径约 40 µs。
 
-产品路径**仍未**接入字体层：`nana-ui` 继续用 cosmic-text 的 `FontSystem`。接入属于后续阶段。
+产品路径从 #99 起就接在这一层上：`crates/nana-ui/src/text_engine.rs` 持有进程唯一的
+`FontSystem`，`@font-face`、`local()` 别名和 `sans-serif` 覆盖都落在它上面，画笔的栅格器也
+按它签发的 `FontId` 取字体数据。
 
 ## Shaping（Phase 2，#91）
 
@@ -702,8 +715,8 @@ vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 - `TextEngine::layout` 返回 `Arc<TextLayout>`：layout 不可变，同一帧里同文本同约束应当拿到**同一份**，
   而不是它的拷贝。
 
-Runtime 通过 `NanaTextEngineShaper` 持有它（见「UiWorld 保留文本节点」）；产品宿主
-`NanaTextShaper` 仍用 cosmic-text 测量，绘制走 `NanaRenderer::text`。
+Runtime 通过 `NanaTextEngineShaper` 持有它（见「UiWorld 保留文本节点」）；从 #99 起产品宿主
+`NanaTextShaper` **就是**它的壳，绘制走 `NanaRenderer::text`，两边问同一个引擎。
 
 ### 与 cosmic 参照对账
 
@@ -833,18 +846,17 @@ renderer，#99 才把产品路径的段落换成 `TextLayout`）和可编辑路�
 
 `TextShaper` 多了两个默认方法：
 
-- `font_generation()`：宿主测量所用字体集合的代际。`NanaTextShaper` 返回 cosmic 字体库的代际，
-  `@font-face` 注册之后已解析文本会重新测量，Runtime 的 `TextLayoutCache` key 也带上它，
-  旧字体下的度量不会被新字体命中。
+- `font_generation()`：宿主测量所用字体集合的代际。`@font-face` 注册之后已解析文本会重新测量，
+  Runtime 的 `TextLayoutCache` key 也带上它，旧字体下的度量不会被新字体命中。
 - `take_text_work()`：宿主在 `shape()` 里做的文本工作。`NanaTextEngineShaper` 交出引擎的 shape /
   layout cache 与建出 layout 的计数（节点数由 pass 自己数），所以组件文本的引擎工作也在帧计数里；
   它的 `font_generation()` 折叠整个引擎代际（字体系统身份、字体代际、语言代际）。
 - `text_engine()`：返回 `Some(SharedTextEngine)` 时，纯文本节点经 `nana-text` 解析，保留
   它读出度量的那份 `TextLayout`。**只有能绘制 retained layout 的宿主才该返回引擎**，否则同一节点
   会出现两个测量权威。`NanaTextEngineShaper` 是这样的宿主：纯文本走 `text_engine()`，其余文本
-  （EmptyState / Modal / editor）的 `shape()` 也走同一个引擎。产品的 `SceneWgpuPainter` 从 #97 起绘制的是
-  自有的 `NanaGlyphRun`，但那些 run 仍由它自己用 cosmic 塑形得来——喂它 `TextLayout` 是 #99
-  的事，所以 `NanaTextShaper` 目前仍不返回引擎。
+  （EmptyState / Modal / editor）的 `shape()` 也走同一个引擎。产品的 `NanaTextShaper` 从 #99 起
+  正是它，因此返回引擎；`SceneWgpuPainter` 用**同一个**引擎、按同一节点的约束在逻辑 px 里排出
+  同一份 `TextLayout`，再解析成 `NanaGlyphRun`，所以两边不会得出两个盒子。
 
 度量合同：宽 = 最宽行的 `width_px`，高 = 各行 `height_px` 之和，ascent = 首行 baseline − top；
 未声明行高按宿主一直用的 1.2em 传给引擎；只写了带 `mono` 的具名字体族时补上 `monospace`
@@ -868,7 +880,7 @@ renderer，#99 才把产品路径的段落换成 `TextLayout`）和可编辑路�
   再从样式重新解析一次实例。
 - `ScenePrimitiveKind::Text.layout` 与 `ExtractedNode.text_layout` 是 renderer-neutral IR
   （`RetainedTextLayout { id, layout }`），相等性按「同句柄且同一份 layout」判，重排即场景变化。
-  UiScene 不持有任何 cosmic `Buffer`。
+  UiScene 不持有任何第三方引擎的 buffer。
 
 ### 计数器
 
@@ -923,7 +935,7 @@ transform + opacity 稳态动画不动 revision、padding 动画重排、高度�
 
 | 项 | 状态 |
 | --- | --- |
-| 产品绘制 retained layout | #97 拆掉了 cryoglyph 这道墙（renderer 现在消费自有的 `NanaGlyphRun`），但 `SceneWgpuPainter` 仍自行 cosmic 塑形，喂 `TextLayout` 属于 #99 |
+| ~~产品绘制 retained layout~~ **已接**（#99） | `SceneWgpuPainter` 改问同一个 `nana-text` 引擎要 `TextLayout` 再解析成 `NanaGlyphRun`；场景里的 `ScenePrimitiveKind::Text.layout` 句柄仍未被画笔直接取用（它按同一约束排出同一份），属于后续的一次查表优化 |
 | Editable 文本 | 见 Phase 5（#96）：presentation 仍每趟重测、不打戳，引擎宿主的探针改由段落几何回答 |
 | font-size / 字体轴动画 | Runtime 尚无 CPU 写回路径；一旦写回计算样式，会按 `SHAPE_STYLE` 分类 |
 
@@ -1061,7 +1073,7 @@ caret_geometry_queries          对保留几何的 caret 查询
 | 阶段 | 状态 |
 | --- | --- |
 | 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
-| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；产品 `NanaTextShaper`（cosmic）保持原样，直到 #99 把塑形与测量切到 `nana-text`——#97 只换了绘制，产品路径的段落仍是 cosmic 排的，此时让宿主返回引擎就会出现两个测量权威 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；#99 之后产品 `NanaTextShaper` 就是 `NanaTextEngineShaper` 的壳，测量与绘制同源，编辑器几何因此也走这条路 |
 | 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
 
 引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
@@ -1090,7 +1102,7 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 - 探针合同：`TextShaper::text_caret_position(offset, affinity, ..)` 回答「带这个 affinity 的 caret 画在
   哪」，`text_position` 仍是「这个边界的原点」（选区条带、run 起点、括号框等按字节派生的几何用它）；
   `text_hit_at_point` 返回 `TextHit { offset, affinity }`。默认实现忽略 affinity，不换行或分不出两侧的
-  宿主每个偏移只有一个位置——产品 `NanaTextShaper`（cosmic）就走这条路，一律 `Downstream`。
+  宿主每个偏移只有一个位置——譬如测试里的轻量 shaper，一律 `Downstream`。
 - `NanaTextEngineShaper` 直接用 `EditorGeometry::caret_rect(offset, affinity)` 与 `hit_test` 的 affinity，
   #96 里「命中软换行行尾退回前一个 grapheme」的兜底已经删掉：那个行尾位置现在点得到，caret 留在被点
   中的行，BiDi 边界点哪一侧就画哪一侧。
@@ -1176,8 +1188,9 @@ TextPipeline                            pipeline.rs / mod.rs
       WGPU
 ```
 
-resolve 以下的每一层都不知道段落是谁排的。今天是本 crate 的 cosmic-text shaper，#99 换成
-`nana-text` 引擎时只改 `resolve_runs` 和 rasterizer 的 face 来源，往下一行不用动。
+resolve 以下的每一层都不知道段落是谁排的。#99 换掉的正是 resolve 之上的那两处——段落改由
+`nana-text` 引擎排，rasterizer 的 face 来源改成引擎的字体层——下面的 raster cache、atlas、
+上传队列与 pipeline 一行未动。
 
 ### 三条生命周期，刻意不一样
 
@@ -1937,5 +1950,9 @@ cargo test -p nana-text --release --test font_system_platform_acceptance -- --ig
 cargo tree -p nana-text --locked --edges normal | grep -ci cosmic   # 0
 ```
 
-Phase 4 起 `nana-ui-runtime` 依赖 `nana-text`（保留文本节点与句柄），所以 `nana-ui` 的依赖树里
-有它；绘制仍不经过它。
+Phase 4 起 `nana-ui-runtime` 依赖 `nana-text`（保留文本节点与句柄）；#99 起 `nana-ui` 的测量与
+绘制都经过它，`nana-ui-web-api` 的 Canvas2D 也是。全工作区的同一条断言：
+
+```bash
+cargo tree --workspace --locked --edges normal | grep -ci cosmic   # 0
+```

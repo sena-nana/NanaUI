@@ -43,6 +43,7 @@ fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         text: None,
         text_metrics: None,
         text_layout: None,
+        text_preserve_lines: false,
         z_index: 0,
         focused: false,
         ime: None,

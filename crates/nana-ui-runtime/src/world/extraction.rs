@@ -197,6 +197,10 @@ impl UiWorld {
                     id,
                     layout: Arc::clone(layout),
                 }),
+            // Not gated on `has_text`: an editor's displayed value is built
+            // by its presentation, not held in `text`, and it is exactly the
+            // node whose newlines must survive.
+            text_preserve_lines: self.text_preserves_lines(id),
             // Paint's question, so paint's answer: a control put into focus
             // by a click is focused and does not draw a ring about it.
             focused: self.focus_visible(document) == Some(id),

@@ -232,6 +232,12 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
             );
         }
         let mut scaler = builder.build();
+        // A face with no outlines has only strikes, and a strike cannot be
+        // shifted by a fraction of a pixel — asking for one blurs it. Asked of
+        // the scaler rather than carried as a synthesis flag, because it is a
+        // property of the face, not of what the caller wanted.
+        let snap_to_pixel =
+            !scaler.has_outlines() || key.synthesis.contains(GlyphSynthesis::PIXEL_FONT);
         let mut render = swash::scale::Render::new(&[
             // A color outline with the first palette, then a color strike,
             // then the plain outline. Order matters: an emoji face can have
@@ -242,7 +248,7 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         ]);
         render
             .format(swash::zeno::Format::Alpha)
-            .offset(subpixel_offset(key));
+            .offset(subpixel_offset(key, snap_to_pixel));
         if key.synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
             render.transform(Some(swash::zeno::Transform::skew(
                 swash::zeno::Angle::from_degrees(OBLIQUE_DEGREES),
@@ -282,14 +288,12 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
     }
 }
 
-/// The fractional pen offset a glyph is rendered at.
-///
-/// A bitmap face has no outline to shift, so it is only ever rendered on whole
-/// pixels — the same rule the reference backend applied.
-fn subpixel_offset(key: &GlyphRasterKey) -> swash::zeno::Vector {
+/// The fractional pen offset a glyph is rendered at, snapped whole for a face
+/// that has nothing to shift.
+fn subpixel_offset(key: &GlyphRasterKey, snap: bool) -> swash::zeno::Vector {
     let x = f32::from(key.subpixel_x.quarters()) * 0.25;
     let y = f32::from(key.subpixel_y.quarters()) * 0.25;
-    if key.synthesis.contains(GlyphSynthesis::PIXEL_FONT) {
+    if snap {
         swash::zeno::Vector::new(x.round(), y.round())
     } else {
         swash::zeno::Vector::new(x, y)

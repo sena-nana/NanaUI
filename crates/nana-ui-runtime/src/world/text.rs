@@ -3159,6 +3159,27 @@ impl UiWorld {
         self.text_shape_constraints_for(id, self.text_input_kind(id))
     }
 
+    /// Whether an authored newline is a line break for this node.
+    ///
+    /// A multiline editor's value keeps its line breaks whatever
+    /// `white-space` says: they are the text being edited, not authored markup
+    /// whitespace. Everywhere else CSS decides.
+    ///
+    /// One function because two consumers answer it: the constraints this node
+    /// is *measured* with, and the scene the renderer *paints* from. A second
+    /// spelling would measure one line and paint two.
+    fn preserves_lines(style: &NodeStyle, text_input_multiline: bool) -> bool {
+        style.layout.white_space.preserve_newlines() || text_input_multiline
+    }
+
+    /// [`Self::preserves_lines`] for one node, as the scene carries it.
+    pub(crate) fn text_preserves_lines(&self, id: StableNodeId) -> bool {
+        Self::preserves_lines(
+            &self.record(id).style,
+            self.text_input_kind(id).unwrap_or(false),
+        )
+    }
+
     /// Whether the node is an editor, and whether it is multiline: the only
     /// two things [`Self::text_shape_constraints_for`] needs to know about its
     /// presentation.
@@ -3207,10 +3228,7 @@ impl UiWorld {
         } else {
             source.layout.text_wraps()
         };
-        // A multiline editor's value keeps its line breaks whatever
-        // `white-space` says: they are the text being edited, not authored
-        // markup whitespace.
-        let preserve_lines = source.layout.white_space.preserve_newlines() || text_input_multiline;
+        let preserve_lines = Self::preserves_lines(source, text_input_multiline);
         let wrap_break = source.layout.text_wrap_break();
         let ellipsis = !is_text_input && source.layout.uses_text_ellipsis();
         let max_lines = (!is_text_input)
@@ -3871,6 +3889,16 @@ impl UiWorld {
                     &crate::text_node::nana_text_style(&style),
                     &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
                     &mut node_work,
+                );
+                // Rich text measures its inline runs out of the Runtime's
+                // per-character advance cache and falls back to a crude
+                // heuristic for anything missing, so the engine path has to
+                // fill it too — nothing on this path calls `shape_cached`.
+                crate::text_node::record_glyph_advances(
+                    &layout,
+                    source.text(),
+                    &style,
+                    shaper.glyphs,
                 );
                 if copied {
                     node_work.text_source_clones += 1;

@@ -322,7 +322,7 @@ pub use text_editing::{
     replace_all_matches_in_range, sort_lines,
 };
 pub use text_engine_shaper::NanaTextEngineShaper;
-pub use text_node::{RetainedTextLayout, TextDirty, TextRevisions, TextWork};
+pub use text_node::{RetainedTextLayout, TextDirty, TextRevisions, TextWork, nana_font_family};
 pub use thumbnail::{DEFAULT_ASPECT as THUMBNAIL_DEFAULT_ASPECT, Thumbnail, ThumbnailState};
 pub use toast::{Toast, ToastDismissed, ToastTone};
 pub use tree_view::TreeView;

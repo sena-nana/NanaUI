@@ -615,6 +615,90 @@ mod tests {
         );
     }
 
+    /// The Runtime's own advance cache is not the engine's layout cache: it
+    /// answers what one character advances to, whatever string it came in, so
+    /// a one-character label is measured without laying anything out.
+    ///
+    /// Rich text measures its inline runs out of it character by character,
+    /// so every path that lays plain text out has to fill it — including the
+    /// engine path a world pass takes, which never calls `shape_cached`.
+    #[test]
+    fn every_path_that_lays_text_out_fills_the_glyph_cache() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let mut glyphs = GlyphCache::default();
+        let style = ComputedStyle {
+            font_size: 16.0,
+            ..ComputedStyle::default()
+        };
+        let constraints = TextShapeConstraints {
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        };
+        let first = shaper.shape_cached(
+            node(),
+            &TextContent { value: "ab".into() },
+            &style,
+            constraints,
+            &mut glyphs,
+        );
+        assert_positive_finite(first);
+        let advance_a = glyphs.peek('a', &style).expect("shaped 'a' must be cached");
+        let advance_b = glyphs.peek('b', &style).expect("shaped 'b' must be cached");
+        assert!(advance_a > 0.0 && advance_a.is_finite());
+        assert!(advance_b > 0.0 && advance_b.is_finite());
+
+        let reused = shaper.shape_cached(
+            node(),
+            &TextContent { value: "a".into() },
+            &style,
+            constraints,
+            &mut glyphs,
+        );
+        assert!(
+            (reused.width - advance_a).abs() < 0.01,
+            "a one-character label is its cached advance: {} vs {advance_a}",
+            reused.width
+        );
+        assert!(reused.height.is_finite() && reused.height > 0.0);
+
+        // And the world pass, which resolves plain text through the engine.
+        let mut world = nana_ui_runtime::UiWorld::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
+        queue.set_text(id, TextContent { value: "ab".into() });
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        let mut world_shaper = NanaTextShaper::default();
+        world.shape_text(&work.text, &mut world_shaper).unwrap();
+        let missed = world.last_work_counters();
+        assert_eq!(
+            missed.glyph_cache_misses,
+            Some(2),
+            "both characters were measured for the first time: {missed:?}"
+        );
+        assert_eq!(missed.glyph_cache_hits, Some(0));
+
+        let mut patch = nana_ui_runtime::MutationQueue::new();
+        patch.set_text(id, TextContent { value: "ba".into() });
+        world.commit(patch).unwrap();
+        let reused_work = world.take_system_work();
+        world.resolve_styles(&reused_work.style).unwrap();
+        world
+            .shape_text(&reused_work.text, &mut world_shaper)
+            .unwrap();
+        let hit = world.last_work_counters();
+        assert_eq!(
+            hit.glyph_cache_hits,
+            Some(2),
+            "the same two characters in the other order are both known: {hit:?}"
+        );
+        assert_eq!(hit.glyph_cache_misses, Some(0));
+    }
+
     #[test]
     fn host_font_empty_bytes_are_rejected() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());

@@ -452,9 +452,15 @@ mod host_ingest_tests {
             used.iter().any(|name| name == "Host Sans"),
             "CSS family must map to the loaded face, used={used:?}"
         );
+        // `@font-face` *replaces* the face's own names: the bytes answer to
+        // the declared family and to nothing else, so a stylesheet cannot
+        // reach them by the name table Noto happens to carry. Before #99 the
+        // alias was pushed alongside the original names, which let
+        // `font-family: "Noto Sans SC"` resolve to a face the document never
+        // declared.
         assert!(
-            used.iter().any(|name| name.contains("Noto")),
-            "used face name table must stay Noto (≠ Host Sans), used={used:?}"
+            !used.iter().any(|name| name.contains("Noto")),
+            "a declared family must not keep the face's own names, used={used:?}"
         );
     }
 

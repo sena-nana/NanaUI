@@ -200,6 +200,7 @@ fn leaf(value: u64, shade: f32) -> ExtractedNode {
         text: None,
         text_metrics: None,
         text_layout: None,
+        text_preserve_lines: false,
         z_index: 0,
         focused: false,
         ime: None,
