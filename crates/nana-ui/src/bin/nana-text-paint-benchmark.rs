@@ -464,6 +464,14 @@ fn run(
         end.text_prepare_nodes_culled,
         warm.text_prepare_nodes_culled,
     );
+    // #99: paragraphs drawn from the layout Runtime measured with, rather than
+    // laid out a second time here. Next to `shape_cache_misses` it says which
+    // of the two paths a workload is actually on.
+    delta(
+        "text_retained_layouts_drawn",
+        end.text_retained_layouts_drawn,
+        warm.text_retained_layouts_drawn,
+    );
     counters.insert(
         "text_gpu_entries_active".to_string(),
         end.text_gpu_entries_active as f64,

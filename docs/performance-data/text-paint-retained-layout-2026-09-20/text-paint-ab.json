@@ -1,0 +1,1029 @@
+{
+  "schema_version": 1,
+  "adapter": "Apple M4 (Metal)",
+  "method": "nana-text-paint-benchmark, 3 iterations per run order, both orders (A,B,B,A), min of batch_ms.p50",
+  "a": "painter lays the paragraph out itself (pre-#99-handle)",
+  "b": "painter draws ScenePrimitiveKind::Text.layout",
+  "cells": [
+    {
+      "workload": "color",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000542,
+        "flush_ms_p50_min": 0.002208,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000458,
+        "flush_ms_p50_min": 0.002167,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000542,
+        "flush_ms_p50_min": 0.002209,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000458,
+        "flush_ms_p50_min": 0.002209,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.002291,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000458,
+        "flush_ms_p50_min": 0.0022500000000000003,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.021542000000000002,
+        "flush_ms_p50_min": 0.06975,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.01225,
+        "flush_ms_p50_min": 0.069208,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 100.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.02175,
+        "flush_ms_p50_min": 0.068792,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.012125,
+        "flush_ms_p50_min": 0.06849999999999999,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 100.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.021667000000000002,
+        "flush_ms_p50_min": 0.068,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.012084,
+        "flush_ms_p50_min": 0.06849999999999999,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 100.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.206708,
+        "flush_ms_p50_min": 0.685875,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.121833,
+        "flush_ms_p50_min": 0.680291,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1000.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.21158400000000002,
+        "flush_ms_p50_min": 0.678667,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.120875,
+        "flush_ms_p50_min": 0.6759999999999999,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1000.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.21187499999999998,
+        "flush_ms_p50_min": 0.686042,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.11983300000000001,
+        "flush_ms_p50_min": 0.6783330000000001,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1000.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.399375,
+        "flush_ms_p50_min": 9.834166,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 1.8033750000000002,
+        "flush_ms_p50_min": 9.774333,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 10000.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.4147909999999997,
+        "flush_ms_p50_min": 9.980417000000001,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 1.822,
+        "flush_ms_p50_min": 10.058625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 10000.0
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.445542,
+        "flush_ms_p50_min": 10.0215,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 1.816875,
+        "flush_ms_p50_min": 9.914667,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 10000.0
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.002542,
+        "flush_ms_p50_min": 0.009667,
+        "shape_cache_misses_per_frame": 1.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000834,
+        "flush_ms_p50_min": 0.009417,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.015209,
+        "flush_ms_p50_min": 0.00425,
+        "shape_cache_misses_per_frame": 1.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.012667,
+        "flush_ms_p50_min": 0.004083,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.14400000000000002,
+        "flush_ms_p50_min": 0.020625,
+        "shape_cache_misses_per_frame": 1.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.128417,
+        "flush_ms_p50_min": 0.020166999999999997,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 10.0
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.221542,
+        "flush_ms_p50_min": 0.359958,
+        "shape_cache_misses_per_frame": 1.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 2.0373330000000003,
+        "flush_ms_p50_min": 0.389917,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 100.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.0006670000000000001,
+        "flush_ms_p50_min": 0.002875,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000625,
+        "flush_ms_p50_min": 0.002792,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.0006670000000000001,
+        "flush_ms_p50_min": 0.002792,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000625,
+        "flush_ms_p50_min": 0.002667,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.0007080000000000001,
+        "flush_ms_p50_min": 0.002916,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000625,
+        "flush_ms_p50_min": 0.0028339999999999997,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.015083,
+        "flush_ms_p50_min": 0.01375,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.013834,
+        "flush_ms_p50_min": 0.013625000000000002,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.014916,
+        "flush_ms_p50_min": 0.013584,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.013584,
+        "flush_ms_p50_min": 0.013583,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.014917,
+        "flush_ms_p50_min": 0.013542,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.013333,
+        "flush_ms_p50_min": 0.013625000000000002,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.164208,
+        "flush_ms_p50_min": 0.112,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.14341700000000002,
+        "flush_ms_p50_min": 0.111958,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.165375,
+        "flush_ms_p50_min": 0.11254199999999999,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.139667,
+        "flush_ms_p50_min": 0.11075,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.164709,
+        "flush_ms_p50_min": 0.111334,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.14325000000000002,
+        "flush_ms_p50_min": 0.11225,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.5349580000000005,
+        "flush_ms_p50_min": 3.172209,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.257750000000001,
+        "flush_ms_p50_min": 3.0818339999999997,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.5195,
+        "flush_ms_p50_min": 3.184708,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.246207999999999,
+        "flush_ms_p50_min": 3.1956670000000003,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.557084000000001,
+        "flush_ms_p50_min": 3.1837079999999998,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.3117909999999995,
+        "flush_ms_p50_min": 3.248958,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.00075,
+        "flush_ms_p50_min": 0.006666,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000709,
+        "flush_ms_p50_min": 0.006666,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.013542,
+        "flush_ms_p50_min": 0.006541,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.012707999999999999,
+        "flush_ms_p50_min": 0.006541,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.142292,
+        "flush_ms_p50_min": 0.00675,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.12904100000000002,
+        "flush_ms_p50_min": 0.006792,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.372958,
+        "flush_ms_p50_min": 0.022833,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 1.9949579999999998,
+        "flush_ms_p50_min": 0.018416000000000002,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.00075,
+        "flush_ms_p50_min": 0.006375,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.0006670000000000001,
+        "flush_ms_p50_min": 0.006292,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.013875,
+        "flush_ms_p50_min": 0.006625,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.012707999999999999,
+        "flush_ms_p50_min": 0.006542,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.14404199999999998,
+        "flush_ms_p50_min": 0.006792,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.12875,
+        "flush_ms_p50_min": 0.00675,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.94925,
+        "flush_ms_p50_min": 0.028959,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 2.069834,
+        "flush_ms_p50_min": 0.022042,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000541,
+        "flush_ms_p50_min": 0.004,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.0005,
+        "flush_ms_p50_min": 0.004,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.0005,
+        "flush_ms_p50_min": 0.003959,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.0005,
+        "flush_ms_p50_min": 0.003958,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.0005,
+        "flush_ms_p50_min": 0.004,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.0005,
+        "flush_ms_p50_min": 0.003958,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.015875,
+        "flush_ms_p50_min": 0.048458999999999995,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.014792,
+        "flush_ms_p50_min": 0.047833,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.015834,
+        "flush_ms_p50_min": 0.048458,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.014708,
+        "flush_ms_p50_min": 0.048083,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.01575,
+        "flush_ms_p50_min": 0.047583999999999994,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.014457999999999999,
+        "flush_ms_p50_min": 0.047541,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.171042,
+        "flush_ms_p50_min": 0.465291,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.152583,
+        "flush_ms_p50_min": 0.470292,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.17075,
+        "flush_ms_p50_min": 0.468291,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.151625,
+        "flush_ms_p50_min": 0.463583,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.171125,
+        "flush_ms_p50_min": 0.464375,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.1515,
+        "flush_ms_p50_min": 0.464,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.513459,
+        "flush_ms_p50_min": 11.314625,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 2.3111669999999997,
+        "flush_ms_p50_min": 11.287792,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.5353749999999997,
+        "flush_ms_p50_min": 11.407499999999999,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 2.3558749999999997,
+        "flush_ms_p50_min": 11.404833,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 2.5310829999999997,
+        "flush_ms_p50_min": 11.380208,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 2.325333,
+        "flush_ms_p50_min": 11.318583,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000584,
+        "flush_ms_p50_min": 0.0036669999999999997,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.003625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.003583,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.003625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.003584,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.000583,
+        "flush_ms_p50_min": 0.003625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.019166,
+        "flush_ms_p50_min": 0.0077919999999999994,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.017499999999999998,
+        "flush_ms_p50_min": 0.007625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 1.85
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.018917,
+        "flush_ms_p50_min": 0.007583,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.017541,
+        "flush_ms_p50_min": 0.007583,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.95
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.019208999999999997,
+        "flush_ms_p50_min": 0.007709000000000001,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.017708,
+        "flush_ms_p50_min": 0.007666999999999999,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.475
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.20008299999999998,
+        "flush_ms_p50_min": 0.008291000000000001,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.185917,
+        "flush_ms_p50_min": 0.008541,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.199209,
+        "flush_ms_p50_min": 0.008084,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.18525,
+        "flush_ms_p50_min": 0.008333,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 0.199375,
+        "flush_ms_p50_min": 0.008416,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 0.180834,
+        "flush_ms_p50_min": 0.008,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "frames": 60,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.806042,
+        "flush_ms_p50_min": 0.026667,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.603875,
+        "flush_ms_p50_min": 0.025625,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "frames": 120,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.828291999999999,
+        "flush_ms_p50_min": 0.024958,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.814958,
+        "flush_ms_p50_min": 0.030542,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "frames": 240,
+      "runs": 6,
+      "own_layout": {
+        "batch_ms_p50_min": 4.883834,
+        "flush_ms_p50_min": 0.0255,
+        "shape_cache_misses_per_frame": 0.0
+      },
+      "retained_handle": {
+        "batch_ms_p50_min": 4.7092089999999995,
+        "flush_ms_p50_min": 0.027250000000000003,
+        "shape_cache_misses_per_frame": 0.0,
+        "text_retained_layouts_drawn_per_frame": 0.0
+      }
+    }
+  ]
+}

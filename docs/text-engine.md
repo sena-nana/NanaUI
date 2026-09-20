@@ -935,7 +935,7 @@ transform + opacity 稳态动画不动 revision、padding 动画重排、高度�
 
 | 项 | 状态 |
 | --- | --- |
-| ~~产品绘制 retained layout~~ **已接**（#99） | `SceneWgpuPainter` 改问同一个 `nana-text` 引擎要 `TextLayout` 再解析成 `NanaGlyphRun`；场景里的 `ScenePrimitiveKind::Text.layout` 句柄仍未被画笔直接取用（它按同一约束排出同一份），属于后续的一次查表优化 |
+| ~~产品绘制 retained layout~~ **已接**（#99） | `SceneWgpuPainter` 直接画 `ScenePrimitiveKind::Text.layout` 指的那一份 `TextLayout`——量它的和画它的是同一个段落，不是两个按构造相等的段落。盒子对不上的节点（尾随控件、ListItem 覆盖文本盒）退回自己排一份，见「画笔取保留 layout」 |
 | Editable 文本 | 见 Phase 5（#96）：presentation 仍每趟重测、不打戳，引擎宿主的探针改由段落几何回答 |
 | font-size / 字体轴动画 | Runtime 尚无 CPU 写回路径；一旦写回计算样式，会按 `SHAPE_STYLE` 分类 |
 
@@ -1191,6 +1191,40 @@ TextPipeline                            pipeline.rs / mod.rs
 resolve 以下的每一层都不知道段落是谁排的。#99 换掉的正是 resolve 之上的那两处——段落改由
 `nana-text` 引擎排，rasterizer 的 face 来源改成引擎的字体层——下面的 raster cache、atlas、
 上传队列与 pipeline 一行未动。
+
+### 画笔取保留 layout
+
+段落的来源有两条，优先第一条：
+
+1. **Runtime 保留的那一份**（`ScenePrimitiveKind::Text.layout`）。句柄本身就是身份——
+   `TextLayoutId` 是两个 `u32`，代际槽位不会以同一代际重发，所以直接打包成 `u64`
+   （最高位置 1，见 `PARAGRAPH_IS_RETAINED`），**不读字符串、不做哈希**。wrap、省略号、
+   max-lines、`white-space`、方向这些约束全都是 Runtime 已经定好的，照单全收，不再从场景
+   对它们的描述里重建一遍。
+2. **画笔自己排**（`lay_out` + `ShapeCache`）。给的是没有句柄的文本（编辑器 presentation、
+   EmptyState / Modal 的内建文本），以及句柄不可用的情况。
+
+唯一要成立的前提是**对齐盒**：glyph 落位是在 `max_width_px` 里对齐的，而画笔把段落贴在盒子
+左边，所以 `layout.constraints.max_width_px != Some(bounds.width)` 时必须退回第二条——
+带尾随控件的 Switch、用 content geometry 覆盖了文本盒的 ListItem 就是这种节点，否则居中的
+文字会画得不居中。这是一次浮点比较，判据自检：两边什么时候不一致，画笔当帧就自己排，不会画错。
+
+`text_retained_layouts_drawn` 计的是走第一条的段落数，和 `shape_cache_misses` 一起读就知道
+某个 workload 实际在哪条路上。
+
+A/B（`nana-text-paint-benchmark`，交替两种跑序各 3 轮取 min，见
+[performance-data](performance-data/text-paint-retained-layout-2026-09-20/)）：
+
+| workload | batch p50（画笔自己排） | batch p50（取句柄） | |
+| --- | --- | --- | --- |
+| `static-unique` 10k | 2.949 ms | 2.070 ms | −29.8% |
+| `static` 10k | 2.373 ms | 1.995 ms | −15.9% |
+| `mutate-1pct` 10k | 2.222 ms | 2.037 ms | −8.3% |
+| `mutate-1pct` 1k | 0.144 ms | 0.128 ms | −10.8% |
+
+`static` 这一行值得解释：两边 `shape_cache_misses` 都是 0，省下来的是**每节点每帧一次
+HashMap 查询**——旧路径要 `shape_cache.holds(hash)` 确认段落还在缓存里，句柄由场景持有，
+不需要问。`static-unique` 那 30% 则是旧路径为 1 万条不重复段落维护缓存的代价，现在一条不存。
 
 ### 三条生命周期，刻意不一样
 

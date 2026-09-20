@@ -777,13 +777,11 @@ impl SceneWgpuPainter {
                             italic,
                             wrap_break,
                             opentype,
-                            // The Runtime's retained handle. The painter lays
-                            // the same paragraph out through the same engine,
-                            // in logical px and against this node's own
-                            // constraints, so it resolves to the layout this
-                            // names; taking the handle directly is a lookup
-                            // this path does not need yet.
-                            layout: _,
+                            // The Runtime's retained handle: the layout this
+                            // node was *measured* with. The painter draws it
+                            // rather than laying the same paragraph out again,
+                            // so there is one paragraph, not two that agree.
+                            layout,
                         } => {
                             // A text node's glyphs are retained per node and
                             // per pass, so the shadows under a label are their
@@ -827,6 +825,7 @@ impl SceneWgpuPainter {
                                         extra_offset,
                                         text::EntryKey { node, slot, pass },
                                         primitive.revision,
+                                        layout.as_ref(),
                                     );
                                     pass += 1;
                                     if let Some(prepared) = prepared {

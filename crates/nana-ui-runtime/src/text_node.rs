@@ -415,7 +415,16 @@ pub(crate) fn nana_text_constraints(
 ) -> NanaTextConstraints {
     NanaTextConstraints {
         max_width_px: constraints.max_width,
-        max_height_px: constraints.max_height,
+        // A height budget is a *truncation* budget: `nana-text` drops the
+        // lines that do not fit it. A box too short for its text is an
+        // overflow, not a shorter paragraph — CSS clips it at paint and the
+        // text is still there to select and to hit-test. So the engine only
+        // gets the height when truncation was actually asked for; `max_lines`
+        // travels on its own and clamps either way.
+        max_height_px: constraints
+            .ellipsis
+            .then_some(constraints.max_height)
+            .flatten(),
         wrap: constraints.wrap.then_some(constraints.wrap_break),
         word_break: style.word_break,
         line_break: style.line_break,

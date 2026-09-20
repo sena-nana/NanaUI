@@ -134,6 +134,8 @@ pub struct TextGlyphCounters {
     pub text_prepare_nodes_skipped: u64,
     /// Nodes that could not reach a pixel, so they cost no entry and no draw.
     pub text_prepare_nodes_culled: u64,
+    /// Paragraphs resolved straight from the Runtime's retained layout.
+    pub text_retained_layouts_drawn: u64,
 }
 
 struct ShapeEntry {
@@ -280,6 +282,25 @@ impl ShapeCache {
     }
 }
 
+/// Marks a paragraph identity as a Runtime layout handle rather than a hash of
+/// this painter's own shape key.
+///
+/// The two share one `u64` — [`TextGpuEntry::layout`] — and a value from one
+/// must never read as a value from the other, because what it gates is whether
+/// a set of resolved glyphs may be drawn again. The hash space is halved
+/// instead: handles set this bit, [`ShapeKeyRef::hash64`] clears it.
+const PARAGRAPH_IS_RETAINED: u64 = 1 << 63;
+
+/// One Runtime layout handle as a paragraph identity.
+///
+/// Exact, not hashed: the handle is two `u32`s and a generational slot is
+/// never reissued at the same generation, so packing them *is* the identity.
+/// The index is masked to 31 bits, which a store of two billion live layouts
+/// would be needed to reach.
+fn retained_paragraph_id(id: nana_text::TextLayoutId) -> u64 {
+    PARAGRAPH_IS_RETAINED | (u64::from(id.index() & 0x7fff_ffff) << 32) | u64::from(id.generation())
+}
+
 /// FNV-1a over the shape key.
 ///
 /// Not a general-purpose hasher and deliberately not the default one: this
@@ -397,7 +418,11 @@ impl ShapeKeyRef<'_> {
         self.direction.hash(&mut hasher);
         self.writing_mode.hash(&mut hasher);
         self.preserve_lines.hash(&mut hasher);
-        hasher.finish()
+        // The top bit belongs to [`PARAGRAPH_IS_RETAINED`], so a hash can
+        // never be mistaken for a Runtime handle. What this costs is one bit
+        // of a hash whose collisions are already caught by
+        // [`ShapeKey::matches`] and cost a relayout, never wrong glyphs.
+        hasher.finish() & !PARAGRAPH_IS_RETAINED
     }
 
     fn to_owned_key(&self) -> ShapeKey {
@@ -601,6 +626,11 @@ pub(super) struct TextPipeline {
     /// and the glyph bitmaps stop meaning what they meant.
     font_generation: u64,
     resolve_requests: u64,
+    /// Paragraphs drawn straight from the Runtime's retained layout, i.e. not
+    /// laid out a second time here. The counter exists so "measurement and
+    /// paint are the same paragraph" is a number a gate can read rather than a
+    /// claim in a comment.
+    retained_layouts_drawn: u64,
     draws: Cell<u64>,
 }
 
@@ -634,6 +664,7 @@ impl TextPipeline {
             target,
             font_generation: crate::text_engine::engine_font_generation(),
             resolve_requests: 0,
+            retained_layouts_drawn: 0,
             draws: Cell::new(0),
         }
     }
@@ -760,6 +791,7 @@ impl TextPipeline {
             text_prepare_nodes_considered: self.target.nodes_considered,
             text_prepare_nodes_skipped: self.target.nodes_skipped,
             text_prepare_nodes_culled: self.target.nodes_culled,
+            text_retained_layouts_drawn: self.retained_layouts_drawn,
         }
     }
 
@@ -799,6 +831,7 @@ impl TextPipeline {
         paint_offset: [f32; 2],
         entry_key: EntryKey,
         revision: u64,
+        text_layout: Option<&nana_ui_runtime::RetainedTextLayout>,
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
@@ -842,6 +875,25 @@ impl TextPipeline {
             TextHorizontalAlignment::Center => TextAlignSpec::Center,
             TextHorizontalAlignment::End => TextAlignSpec::End,
         };
+        // The layout Runtime *measured* this node with, when it measured into
+        // the box this paints into.
+        //
+        // Taking it is the difference between measurement and paint being the
+        // same paragraph and being two paragraphs that agree by construction:
+        // every constraint the Runtime decided — wrap, ellipsis, max-lines,
+        // `white-space`, direction — arrives already decided instead of being
+        // rebuilt from the scene's description of it. It also costs one float
+        // compare where laying out again costs a hash of the whole string.
+        //
+        // The one thing that has to hold is the alignment box: the glyphs are
+        // placed inside `max_width_px` and this paints them at the box's left
+        // edge, so a node whose paint box is not the box it was measured into
+        // (a switch with a trailing control, a list item whose content
+        // geometry overrides the text box) falls back to laying out for
+        // itself rather than drawing centred text off-centre.
+        let retained_paragraph = text_layout
+            .filter(|retained| retained.layout.constraints.max_width_px == Some(box_width))
+            .map(|retained| Arc::clone(&retained.layout));
         // Nothing the shape key is made of can have changed: the scene has not
         // rewritten this primitive since these glyphs were resolved, and
         // neither the device scale nor the font set has moved. Assembling the
@@ -865,10 +917,21 @@ impl TextPipeline {
                     && entry.font_generation == self.font_generation
             })
             .map(|(id, entry)| (id, entry.layout, entry.measured))
-            .filter(|(_, hash, _)| self.shape_cache.holds(*hash));
-        let hash = match retained {
-            Some((_, hash, _)) => hash,
-            None => {
+            // A paragraph the Runtime retains is kept alive by the scene, so
+            // only a painter-owned one has to still be in the cache.
+            .filter(|(_, hash, _)| {
+                *hash & PARAGRAPH_IS_RETAINED != 0 || self.shape_cache.holds(*hash)
+            });
+        let hash = match (retained, &retained_paragraph) {
+            (Some((_, hash, _)), _) => hash,
+            // The Runtime's handle *is* the identity: two u32s of a
+            // generational slot, never reissued at the same generation. No
+            // string is read and nothing is hashed.
+            (None, Some(paragraph)) => {
+                self.retained_layouts_drawn += 1;
+                retained_paragraph_id(paragraph.id)
+            }
+            (None, None) => {
                 // Width, height and requested ellipsis uniquely determine the
                 // result; the cache lookup happens before layout so a repaint
                 // of unchanged text never reaches the engine.
@@ -932,9 +995,10 @@ impl TextPipeline {
         // The widest line and the laid-out height are the layout's, in logical
         // px, and the layout is the one this entry was built from, so a steady
         // frame does not walk its lines again to find that out.
-        let (measured_width, laid_out_height) = match retained {
-            Some((_, _, measured)) => (measured[0], measured[1]),
-            None => {
+        let (measured_width, laid_out_height) = match (retained, &retained_paragraph) {
+            (Some((_, _, measured)), _) => (measured[0], measured[1]),
+            (None, Some(paragraph)) => measure(paragraph),
+            (None, None) => {
                 let layout = self.shape_cache.layout(hash).expect("laid out above");
                 measure(layout)
             }
@@ -1089,6 +1153,7 @@ impl TextPipeline {
                 default_color,
                 &colors,
                 revision,
+                retained_paragraph.as_deref(),
             )?,
         };
         let frame = self.target.frame;
@@ -1219,12 +1284,12 @@ impl TextPipeline {
         };
         let constraints = nana_text::TextConstraints {
             max_width_px: Some(max_width_px),
-            // Only where a height can change the answer, which is the
-            // ellipsis decision. A height budget on a plain wrapped paragraph
-            // would *drop* the last line of a box one pixel too short, and
-            // what bounds overflow on screen is the batch's scissor, not the
-            // layout. It also puts a label on the paragraph path even when it
-            // is one unwrapped line no short box can truncate.
+            // A height budget is a truncation budget, so it only goes to the
+            // engine when truncation was asked for — the same rule
+            // `nana_text_constraints` applies to the layout Runtime keeps, so
+            // the fallback here and the handle cannot disagree about it. A
+            // box too short is an overflow the scissor clips, not a shorter
+            // paragraph.
             max_height_px: ellipsis.then_some(max_height_px),
             wrap: wrap.then_some(wrap_break),
             word_break: opentype.word_break,
@@ -1269,6 +1334,10 @@ impl TextPipeline {
         default_color: [f32; 4],
         colors: &SpanColors,
         revision: u64,
+        // The Runtime's own layout for this node, when it has one. `None`
+        // means the painter laid this paragraph out itself and it is in the
+        // shape cache under `hash`.
+        paragraph: Option<&TextLayout>,
     ) -> Option<u32> {
         let origin = [f32::from_bits(phase[0]), f32::from_bits(phase[1])];
         let Self {
@@ -1278,7 +1347,10 @@ impl TextPipeline {
             font_generation,
             ..
         } = self;
-        let layout = shape_cache.layout(hash).expect("laid out above");
+        let layout = match paragraph {
+            Some(paragraph) => paragraph,
+            None => shape_cache.layout(hash).expect("laid out above"),
+        };
         resolved.clear();
         let generation = *font_generation as u32;
         for line in &layout.lines {
@@ -2036,6 +2108,7 @@ mod tests {
                             pass: 0,
                         },
                         UNTRACKED_REVISION,
+                        None,
                     )
                     .expect("label must prepare");
                 let entry = pipeline
@@ -2133,6 +2206,7 @@ mod tests {
                     pass: 0,
                 },
                 UNTRACKED_REVISION,
+                None,
             )
             .expect("rtl latin must prepare");
         let layout = pipeline
@@ -2412,6 +2486,153 @@ mod tests {
         );
     }
 
+    /// Lay a paragraph out through the engine the way Runtime would, and hand
+    /// it back as the scene's retained handle.
+    fn runtime_layout(
+        content: &str,
+        box_width: f32,
+        align: TextAlignSpec,
+    ) -> nana_ui_runtime::RetainedTextLayout {
+        let source = nana_text::TextSource::new(content);
+        let style = nana_text::TextStyle {
+            font_size_px: 16.0,
+            line_height: Some(LineHeightSpec::Absolute(20.0)),
+            ..nana_text::TextStyle::default()
+        };
+        let constraints = nana_text::TextConstraints {
+            max_width_px: Some(box_width),
+            align,
+            preserve_lines: true,
+            ..nana_text::TextConstraints::default()
+        };
+        let engine = crate::text_engine::nana_text_engine();
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        let mut counters = nana_text::TextWorkCounters::default();
+        let layout = nana_text::TextEngine::layout(
+            &mut *engine,
+            nana_text::TextKind::Label,
+            &source,
+            &style,
+            &constraints,
+            &mut counters,
+        );
+        nana_ui_runtime::RetainedTextLayout {
+            id: layout.id,
+            layout,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_with_layout(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        content: &str,
+        box_width: f32,
+        handle: Option<&nana_ui_runtime::RetainedTextLayout>,
+    ) {
+        pipeline.begin_frame([512, 64]);
+        pipeline.prepare(
+            device,
+            LogicalRect::from_xywh(0.0, 0.0, box_width, 32.0),
+            LogicalRect::from_xywh(0.0, 0.0, 512.0, 64.0),
+            1.0,
+            content,
+            Some([1.0, 1.0, 1.0, 1.0]),
+            16.0,
+            None,
+            None,
+            Some(LineHeightSpec::Absolute(20.0)),
+            false,
+            nana_ui_core::TextWrapBreak::Word,
+            false,
+            false,
+            None,
+            TextShaping::Auto,
+            TextHorizontalAlignment::Start,
+            TextVerticalAlignment::Top,
+            &[],
+            0.0,
+            &[],
+            &SceneTextOpenType {
+                preserve_lines: true,
+                ..SceneTextOpenType::default()
+            },
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            1.0,
+            [0.0; 2],
+            EntryKey {
+                node: 1,
+                slot: 0,
+                pass: 0,
+            },
+            UNTRACKED_REVISION,
+            handle,
+        );
+        pipeline.flush_runs();
+        pipeline.upload(device, queue, None);
+    }
+
+    /// The point of the handle: the paragraph Runtime measured is the one that
+    /// is drawn. Nothing is laid out here, and no string is hashed to find
+    /// that out.
+    #[test]
+    fn a_paragraph_the_runtime_retains_is_drawn_without_laying_it_out_again() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let handle = runtime_layout("Retained paragraph", 240.0, TextAlignSpec::Start);
+        prepare_with_layout(
+            &device,
+            &queue,
+            &mut pipeline,
+            "Retained paragraph",
+            240.0,
+            Some(&handle),
+        );
+        let drawn = pipeline.glyph_counters();
+        assert!(
+            drawn.text_retained_layouts_drawn >= 1,
+            "the handle is what identified the paragraph: {drawn:?}"
+        );
+        assert!(
+            drawn.glyph_resolve_requests > 0,
+            "and its glyphs were resolved from it"
+        );
+        let (hits, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            (hits, misses),
+            (0, 0),
+            "the painter's own paragraph cache is never consulted"
+        );
+    }
+
+    /// The handle is only usable when the box it was measured into is the box
+    /// being painted: a centred line inside a wider box would otherwise be
+    /// drawn off-centre. A mismatch falls back rather than misplacing text.
+    #[test]
+    fn a_layout_measured_into_a_different_box_is_not_drawn_from_its_handle() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let handle = runtime_layout("Centred", 240.0, TextAlignSpec::Center);
+        prepare_with_layout(
+            &device,
+            &queue,
+            &mut pipeline,
+            "Centred",
+            180.0,
+            Some(&handle),
+        );
+        let drawn = pipeline.glyph_counters();
+        assert_eq!(
+            drawn.text_retained_layouts_drawn, 0,
+            "the alignment box is not the paint box, so the handle is refused"
+        );
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(misses, 1, "and the painter laid the paragraph out itself");
+    }
+
     /// Paint one rich-text label with the given spans, under a fixed revision.
     fn paint_rich(
         device: &wgpu::Device,
@@ -2454,6 +2675,7 @@ mod tests {
                 pass: 0,
             },
             UNTRACKED_REVISION,
+            None,
         );
         pipeline.flush_runs();
         pipeline.upload(device, queue, None);
@@ -2546,6 +2768,7 @@ mod tests {
                     pass: 0,
                 },
                 UNTRACKED_REVISION,
+                None,
             )
             .expect("label must prepare");
         pipeline.flush_runs();
@@ -2840,6 +3063,7 @@ mod tests {
                 [0.0; 2],
                 label.key,
                 UNTRACKED_REVISION,
+                None,
             );
         }
         pipeline.flush_runs();
@@ -3365,6 +3589,7 @@ mod tests {
                     pass: 0,
                 },
                 UNTRACKED_REVISION,
+                None,
             );
             pipeline.flush_runs();
             pipeline.upload(&device, &queue, None);
@@ -3829,6 +4054,7 @@ mod tests {
                 [0.0; 2],
                 *key,
                 UNTRACKED_REVISION,
+                None,
             );
             let Some(prepared) = prepared else {
                 continue;
@@ -3942,6 +4168,7 @@ mod tests {
                     pass: 0,
                 },
                 UNTRACKED_REVISION,
+                None,
             )
             .expect("text must prepare");
         // Placements are handles until the run is flushed; nothing is on the
@@ -4046,6 +4273,7 @@ mod tests {
                     pass: 0,
                 },
                 UNTRACKED_REVISION,
+                None,
             )
             .expect("block text must prepare");
         pipeline.flush_runs();

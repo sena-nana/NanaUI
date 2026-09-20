@@ -752,6 +752,14 @@ fn an_animated_height_that_only_becomes_definite_is_still_a_constraint_change() 
             paragraph,
             label_style(LayoutStyle {
                 width: Some(LengthSpec::Px(200.0)),
+                // The witness below is `max_height_px`, and a height only
+                // reaches the engine when it is a *truncation* budget: a box
+                // too short for its text is an overflow the scissor clips, not
+                // a paragraph with lines removed. Asking for an ellipsis is
+                // what makes the height mean something to layout, and this
+                // test is about the height becoming definite, not about which
+                // field carries it.
+                text_overflow_ellipsis: true,
                 ..LayoutStyle::default()
             }),
         );
