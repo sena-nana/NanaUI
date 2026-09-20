@@ -1,0 +1,398 @@
+{
+  "schema_version": 1,
+  "profile": "release",
+  "catalog_theme": {
+    "cases": [
+      {
+        "id": "theme-controls-1",
+        "workload": "controls",
+        "status": "ok",
+        "controls": 1,
+        "nodes": 2,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 2,
+          "style_nodes_resolved": 2,
+          "style_nodes_skipped": 0,
+          "theme_reads": 2,
+          "style_allocations": 2,
+          "style_allocated_bytes": 416,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 1,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 2,
+          "style_processed": 2,
+          "text_shaped": 1,
+          "layout_nodes": 2,
+          "render_nodes_changed": 2,
+          "allocations": 10,
+          "allocated_bytes": 152
+        },
+        "elapsed_ms": {
+          "p50": 0.002458,
+          "p95": 0.004875,
+          "max": 0.007209
+        }
+      },
+      {
+        "id": "theme-controls-100",
+        "workload": "controls",
+        "status": "ok",
+        "controls": 100,
+        "nodes": 101,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 101,
+          "style_nodes_resolved": 101,
+          "style_nodes_skipped": 0,
+          "theme_reads": 101,
+          "style_allocations": 101,
+          "style_allocated_bytes": 21008,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 100,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 101,
+          "style_processed": 101,
+          "text_shaped": 100,
+          "layout_nodes": 101,
+          "render_nodes_changed": 101,
+          "allocations": 10,
+          "allocated_bytes": 8072
+        },
+        "elapsed_ms": {
+          "p50": 0.08,
+          "p95": 0.24520899999999998,
+          "max": 0.27745899999999996
+        }
+      },
+      {
+        "id": "theme-controls-1k",
+        "workload": "controls",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 1001,
+          "style_nodes_resolved": 1001,
+          "style_nodes_skipped": 0,
+          "theme_reads": 1001,
+          "style_allocations": 1001,
+          "style_allocated_bytes": 208208,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 1000,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 1001,
+          "text_shaped": 1000,
+          "layout_nodes": 1001,
+          "render_nodes_changed": 1001,
+          "allocations": 10,
+          "allocated_bytes": 80072
+        },
+        "elapsed_ms": {
+          "p50": 2.0662089999999997,
+          "p95": 3.628166,
+          "max": 4.365666
+        }
+      },
+      {
+        "id": "theme-controls-10k",
+        "workload": "controls",
+        "status": "ok",
+        "controls": 10000,
+        "nodes": 10001,
+        "iterations": 3,
+        "work": {
+          "style_nodes_considered": 10001,
+          "style_nodes_resolved": 10001,
+          "style_nodes_skipped": 0,
+          "theme_reads": 10001,
+          "style_allocations": 10001,
+          "style_allocated_bytes": 2080208,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 10000,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 10001,
+          "style_processed": 10001,
+          "text_shaped": 10000,
+          "layout_nodes": 10001,
+          "render_nodes_changed": 10001,
+          "allocations": 10,
+          "allocated_bytes": 800072
+        },
+        "elapsed_ms": {
+          "p50": 45.157917,
+          "p95": 49.394833999999996,
+          "max": 49.394833999999996
+        }
+      },
+      {
+        "id": "theme-static-idle",
+        "workload": "idle",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 0,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 0,
+          "theme_reads": 0,
+          "style_allocations": 0,
+          "style_allocated_bytes": 0,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 0,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 0,
+          "allocations": 0,
+          "allocated_bytes": 0
+        },
+        "elapsed_ms": {
+          "p50": 0.000083,
+          "p95": 0.000084,
+          "max": 0.000084
+        }
+      },
+      {
+        "id": "theme-hover-one",
+        "workload": "hover",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 2,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 2,
+          "theme_reads": 6,
+          "style_allocations": 0,
+          "style_allocated_bytes": 0,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 1
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 1,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 1,
+          "allocations": 4,
+          "allocated_bytes": 32
+        },
+        "elapsed_ms": {
+          "p50": 0.001791,
+          "p95": 0.0018750000000000001,
+          "max": 0.004292
+        }
+      },
+      {
+        "id": "theme-focus-one",
+        "workload": "focus",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 0,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 0,
+          "theme_reads": 0,
+          "style_allocations": 0,
+          "style_allocated_bytes": 0,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 0,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 1,
+          "allocations": 5,
+          "allocated_bytes": 40
+        },
+        "elapsed_ms": {
+          "p50": 0.0014169999999999999,
+          "p95": 0.001583,
+          "max": 0.005167
+        }
+      },
+      {
+        "id": "theme-palette-switch",
+        "workload": "palette-switch",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 0,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 0,
+          "theme_reads": 1001,
+          "style_allocations": 1,
+          "style_allocated_bytes": 8008,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 1001
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 0,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 1001,
+          "allocations": 2,
+          "allocated_bytes": 16016
+        },
+        "elapsed_ms": {
+          "p50": 0.756042,
+          "p95": 2.577125,
+          "max": 3.667667
+        }
+      },
+      {
+        "id": "theme-accent-only",
+        "workload": "accent-only",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 0,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 0,
+          "theme_reads": 1001,
+          "style_allocations": 1,
+          "style_allocated_bytes": 8008,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 1001
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 0,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 1001,
+          "allocations": 2,
+          "allocated_bytes": 16016
+        },
+        "elapsed_ms": {
+          "p50": 0.404,
+          "p95": 0.421584,
+          "max": 0.48254199999999997
+        }
+      },
+      {
+        "id": "theme-density",
+        "workload": "density",
+        "status": "ok",
+        "controls": 1000,
+        "nodes": 1001,
+        "iterations": 12,
+        "work": {
+          "style_nodes_considered": 0,
+          "style_nodes_resolved": 0,
+          "style_nodes_skipped": 0,
+          "theme_reads": 1001,
+          "style_allocations": 1,
+          "style_allocated_bytes": 8008,
+          "layout_copies": 1000,
+          "layout_copied_bytes": 4808000,
+          "layout_nodes_from_style": 1001,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 1001
+        },
+        "frame_work": {
+          "entities_total": 1001,
+          "style_processed": 0,
+          "text_shaped": 0,
+          "layout_nodes": 1001,
+          "render_nodes_changed": 1001,
+          "allocations": 3,
+          "allocated_bytes": 24024
+        },
+        "elapsed_ms": {
+          "p50": 1.0351659999999998,
+          "p95": 4.0377089999999995,
+          "max": 6.532792
+        }
+      },
+      {
+        "id": "theme-head-style-mutation",
+        "workload": "head-scope",
+        "status": "ok",
+        "controls": 0,
+        "nodes": 10000,
+        "iterations": 3,
+        "work": {
+          "style_nodes_considered": 10000,
+          "style_nodes_resolved": 10000,
+          "style_nodes_skipped": 0,
+          "theme_reads": 1,
+          "style_allocations": 1,
+          "style_allocated_bytes": 208,
+          "layout_copies": 0,
+          "layout_copied_bytes": 0,
+          "layout_nodes_from_style": 0,
+          "text_nodes_from_style": 0,
+          "paint_nodes_from_style": 0
+        },
+        "frame_work": {
+          "entities_total": 10000,
+          "style_processed": 10000,
+          "text_shaped": 0,
+          "layout_nodes": 0,
+          "render_nodes_changed": 10000,
+          "allocations": 3,
+          "allocated_bytes": 240000
+        },
+        "elapsed_ms": {
+          "p50": 4.102584,
+          "p95": 5.332292,
+          "max": 5.332292
+        }
+      }
+    ]
+  },
+  "notes": [
+    "Generated by: cargo run --release --locked -p nana-ui-runtime --features benchmark --bin nana-theme-benchmark -- --output target/performance/issue101/theme.json",
+    "Issue #101 §4 baseline. work counts are the contract; elapsed_ms is a host observation.",
+    "Controls are product Buttons through AppContext, not bare divs: a Button is what carries SemanticPaint and InteractionStyle."
+  ]
+}

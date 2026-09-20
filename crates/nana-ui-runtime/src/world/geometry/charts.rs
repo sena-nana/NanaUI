@@ -146,6 +146,9 @@ pub(in crate::world) fn stacked_time_series_geometry(
     axis_labels: &[Arc<str>],
     active: Option<usize>,
     palette: &SemanticPalette,
+    // A layer's role comes from application data, so it can be one of the
+    // derived soft roles whose alpha the theme owns.
+    opacity: nana_ui_core::OpacityTokens,
 ) -> crate::ComponentGeometry {
     let plot = crate::TimeSeriesChart::stacked_plot(bounds);
     let clean = |value: f64| {
@@ -193,7 +196,7 @@ pub(in crate::world) fn stacked_time_series_geometry(
                         width: bar_width,
                         height,
                     },
-                    palette.get(layer.color).as_rgba_array(),
+                    palette.get_in(layer.color, opacity).as_rgba_array(),
                 ));
             }
         }
@@ -248,7 +251,7 @@ pub(in crate::world) fn stacked_time_series_geometry(
         .map(|layer| {
             (
                 layer.label.as_ref(),
-                palette.get(layer.color).as_rgba_array(),
+                palette.get_in(layer.color, opacity).as_rgba_array(),
             )
         })
         .chain(std::iter::once((title, palette.text.as_rgba_array())))

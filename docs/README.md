@@ -50,7 +50,7 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 | L3 组成式建树（`build` / `mount`） | [L3 组成式建树](l3-authoring.md) |
 | crate 分层、所有权（改框架时） | [架构](architecture.md) |
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
-| Theme/Style 合同、硬编码清单、work counter 基线（改主题架构时） | [主题与样式](theme.md) |
+| Theme/Style 合同、`ThemeDefinition` 与 typed token、硬编码清单、work counter 基线（改主题架构时） | [主题与样式](theme.md) |
 | Markdown 绘制与图像合同 | [Markdown 渲染](markdown-rendering.md) |
 | Android（实验宿主，非产品绘制核） | [Android](android.md) |
 

@@ -1,8 +1,13 @@
-# 主题与样式 — Phase 0 审计与基线
+# 主题与样式 — Phase 0 审计基线与 Phase 1 ThemeDefinition
 
-这篇是 [#101](https://github.com/sena-nana/NanaUI/issues/101) 的交付物：在 Theme 架构改造（[#100](https://github.com/sena-nana/NanaUI/issues/100)）开动之前，把 NanaUI **现在**的主题/样式合同、视觉基线和性能基线钉死。
+这篇覆盖 Theme 改造（[#100](https://github.com/sena-nana/NanaUI/issues/100)）的前两阶段：
 
-**§1 记录现状，§1.5 记录按这些现状做掉的收敛。** 没有新建 Theme package，没有 ThemeScope，也没有引入字符串 token map。
+- **§0–§6 是 Phase 0（[#101](https://github.com/sena-nana/NanaUI/issues/101)）**：在动架构之前，把当时的主题/样式合同、视觉基线和性能基线钉死。
+- **§7 是 Phase 1（[#102](https://github.com/sena-nana/NanaUI/issues/102)）**：`ThemeDefinition` 与 typed token 体系落地，NanaLight/NanaDark 用它表达。
+
+Phase 0 的章节保留成**当时**的审计记录，不回头重写——那份记录的价值就在于它说的是动手之前的样子。Phase 1 改掉的结论在原处标了「→ §7 已解决」，别的照旧。
+
+没有新建 Theme package，没有 ThemeScope，也没有引入字符串 token map。
 
 **没有改任何一个已有像素。** 新增的 29 个 fixture 拍的是以前没拍过的状态（语义基线逐文件确认是纯追加）；token 收敛在默认主题下逐字节不变（语义基线 146/146 MATCH），变的是「数值从哪里来」。
 
@@ -15,12 +20,12 @@
 | 有没有 Style Model | 有，而且是唯一一套：`nana_ui_core::style_model`，L1/L2/L3 共用 |
 | 颜色权威 | `SemanticPalette`（24 个字段 + 15 个派生角色）；组件按角色表达意图，不写 RGB |
 | 尺寸权威 | **收敛中**：radius、滚动条、control height、control/field/list inset、**panel inset、icon-button 方盒、多行 field 垂直 inset、Large padding** 已跟随安装的 `ThemeMetrics`；renderer 一处都不读常量。剩下的是局部几何 `const` 与少数菜单高度估算 |
-| 运动权威 | **分裂**：`ThemeMetrics::motion_*_ms` 是死字段（零消费方），实际时长是 `nana_ui_core::motion` 的 `const` |
+| 运动权威 | ~~**分裂**：`ThemeMetrics::motion_*_ms` 是死字段（零消费方），实际时长是 `nana_ui_core::motion` 的 `const`~~ → **§7 已解决**：八个时长各成一个 `MotionRole`，`motion` 的 `const` 反过来读默认主题 |
 | Theme 在哪解析 | 按值的大小分两处：**颜色在 extract**（16 字节，下游解析），**尺寸在样式写入时**（`LayoutStyle` 4808 字节，放读路径上会被每帧放大——见 §1.5）。都不在保留期 style 阶段 |
 | Theme 切换代价 | 全文档 paint 失效；palette-only 不碰 Layout / Text（已验证） |
 | Renderer 懂不懂 Theme | 基本不懂：`nana-ui-scene` 只有 3 处 `SemanticColorRole`，全在测试与 benchmark |
 | 组件自带硬编码 RGB | 0 处 |
-| 重复的 token 类型 | 已消除两份：`Colors`（= `SemanticPalette`）、独立的 `SCROLLBAR_METRICS` |
+| 重复的 token 类型 | 已消除两份：`Colors`（= `SemanticPalette`）、独立的 `SCROLLBAR_METRICS`；§7 又消除两份：`space`/`type_scale`/`HAIRLINE`/motion `const` 全部改成读 token 默认值 |
 | 状态矩阵 | 组件声明了 paint 的状态，32 个从未被捕获；本轮补了 29 个，剩 3 个说明了为什么补不了 |
 
 ## 1. 现有 Style Model inventory
@@ -85,20 +90,20 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 
 | 类型 | 位置 | 是什么 | 归宿 |
 | --- | --- | --- | --- |
-| `ThemeMode` | [theme.rs](../crates/nana-ui-core/src/theme.rs) | Dark / Light 二选一，可序列化 | **演进**：#100 的 `ThemeDefinition.mode`，不再是主题的全部 |
+| `ThemeMode` | [theme/mod.rs](../crates/nana-ui-core/src/theme/mod.rs) | Dark / Light 二选一，可序列化 | **已演进**：§7 的 `ThemeDefinition.mode`，不再是主题的全部 |
 | `SemanticPalette` | [style_model.rs](../crates/nana-ui-core/src/style_model.rs) | 24 个语义色字段，dark/light 两份常量 | **保留**，直接作为 semantic color token 层，禁止复制第二份 |
 | `SemanticColorRole` | 同上 | 39 个角色：24 个对应字段，15 个在 `get()` 里派生（`WarningSoft*`、`DangerSoft*`、`Titlebar`、9 个代码 token 角色） | **保留**；派生规则是 recipe 的雏形，Phase 1 要把它显式化 |
 | `SemanticColorMix` | 同上 | 两个角色的 premultiplied 混合 / 单角色 alpha，权重用 basis points | **保留**，这是「状态层」的现有表达 |
 | `SemanticColor` | 同上 | 后端中立 RGBA 0..=1 | **保留** |
-| `ThemeMetrics` | [theme.rs](../crates/nana-ui-core/src/theme.rs) | 16 个非颜色 token：radius ×4、control height ×3、padding、icon size、panel padding、field/list padding、**motion ×2** | **演进**，但先要修权威分裂（见 §1.4） |
-| `UI_METRICS` | 同上 | `ThemeMetrics` 的 `const` 默认值 | **废弃为唯一权威**：可以留作 base theme 的初值，不能继续当运行期读取点 |
+| `ThemeMetrics` | [theme/mod.rs](../crates/nana-ui-core/src/theme/mod.rs) | 非颜色 token：radius ×4、control height ×3、padding、icon size、panel padding、field/list padding，外加组合进来的 scrollbar。~~**motion ×2**~~ 已删（§7） | **已演进**：§7 的 `DesignTokens.metrics` 按值持有它本身 |
+| `UI_METRICS` | 同上 | `ThemeMetrics` 的 `const` 默认值 | **废弃为唯一权威**：现在是 `DesignTokens::for_mode` 的初值；仍有 62 处产品读取点，见 §1.5 |
 | `ScrollbarMetrics` / `SCROLLBAR_METRICS` | [scrollbar.rs](../crates/nana-ui-core/src/scrollbar.rs) | 滚动条独有的 5 个几何 token（thickness 12 / thumb 6 / min length 24 / inset 2 / page 0.9） | **保留**：本轮已由 `ThemeMetrics.scrollbar` 组合持有（§1.5），不再是第三份 metrics |
-| `space` / `type_scale` | 同上 | 间距 10 档、字号 7 档（含 `HINT` 11 / `TITLE` 18）+ 字重 4 档，裸 `const` | **演进**：Phase 1 的 spacing / typography token 类别 |
+| `space` / `type_scale` | 同上 | 间距 10 档、字号 7 档（含 `HINT` 11 / `TITLE` 18）+ 字重 4 档，裸 `const` | **已演进**：§7 的 `SpacingTokens` / `TypographyTokens`；`const` 现在读它们的 `DEFAULT`，不再自己拿着数字 |
 | `StyleModelRef` | [style_model.rs](../crates/nana-ui-core/src/style_model.rs) | mode + metrics + palette + titlebar 的只读视图，`color(role)` 是 token 读取入口 | **演进**为 compiled theme 的运行期句柄 |
 | `ControlSemantics` | 同上 | size + button/card kind + status 的组合 | **保留**，是 recipe 的 selector |
 | `ControlSize` / `ButtonKind` / `CardKind` / `StatusTone` / `ToastTone` / `ValidationIntent` | [semantics.rs](../crates/nana-ui-core/src/semantics.rs) | 组件意图枚举 | **保留**，Component Recipe 的 variant 轴 |
 | `WidgetKind` | [bridge/semantic.rs](../crates/nana-ui-vue/src/bridge/semantic.rs) | L1/L2 tag/class → 控件类型 | **保留**，仅 Vue 适配层 |
-| `ThemeTokens` / `ThemeModeExt` | [nana-ui/theme.rs](../crates/nana-ui/src/theme.rs) | L3 宿主侧 adapter：直接装 `SemanticPalette` + `ThemeMetrics` + titlebar | **保留**（`Colors` 副本本轮已删，见 §1.5）；`ThemeTokens` 的 backdrop 合成逻辑仍要迁进 #100 §11 的 composition |
+| `ThemeTokens` / `ThemeModeExt` | [nana-ui/theme.rs](../crates/nana-ui/src/theme.rs) | L3 宿主侧 adapter：直接装 `SemanticPalette` + `ThemeMetrics` + titlebar | **保留**（`Colors` 副本本轮已删，见 §1.5）；§7 起 `ThemeTokens` 是 `ThemeDefinition` 的颜色+尺寸投影，`with_backdrop` 按 `SurfaceTokens` 决定给哪个角色上 alpha |
 | `RadiusTier` | [theme.rs](../crates/nana-ui-core/src/theme.rs) | 圆角档位意图（Xs/Sm/Md/Lg），由 `NodeStyle.radius` 携带、样式写入时对安装的 `ThemeMetrics` 解析 | **保留**：这是「组件说意图、主题给数值」在尺寸侧的第一个落点，其余 metrics 按同一形状推进 |
 | `ControlHeight` | [theme.rs](../crates/nana-ui-core/src/theme.rs) | 控件高度意图：`Min(ControlSize)` / `Exact(ControlSize)`，由 `NodeStyle.control_height` 携带、样式写入时解析 | **保留**：`Min` / `Exact` 的区分以前藏在调用点写 `min_height` 还是 `height` 里，现在是被说出来的意图 |
 | `ControlPadding` | 同上 | 水平 inset 意图：`Compact` / `Standard` / `Roomy` / `Field` / `ListItem`，由 `NodeStyle.control_padding_x` 携带；多行 field 另用 `control_padding_y` | **保留**：不是 `ControlSize` 的包装——text field 与 list row 各有独立 metrics 字段 |
@@ -128,9 +133,9 @@ nana_ui_core::motion::{HOVER_COLOR, …} ─────► 组件动画
 `AppearanceSettings::metrics()` 造出带自定义 radius 的 `ThemeMetrics`，经 `set_style_tokens` 装进 `StyleModelRef`，`apply_style_model` 也正确地把 metrics 变化升级成 LAYOUT 失效。但产品代码（排除 tests 与 bin）里读 **`UI_METRICS` 常量 116 行**（runtime 92 / scene 21 / host 3），读安装值只有 **16 行**，且全在 runtime。典型如 `view_components.rs` 的 `control_layout()` 直接写 `border_radius: Some(6.0)`，而同一文件另一处写 `layout.border_radius = Some(world.theme_metrics().radius_md)`。
 → #100 Phase 1 的第一件事应该是把 metrics 读取点收敛，否则 `ThemeDefinition` 装了也不生效。**本轮做了 radius、滚动条、control height 与 control/field/list 水平 inset 四条**（scene 0；runtime 里剩下 panel / icon / 垂直 field 与模块级 const），剩下的与阻塞原因见 §1.5。
 
-**F2 — Motion token 是死字段。**
+**F2 — Motion token 是死字段。**（**§7 已解决**）
 `ThemeMetrics::motion_fast_ms` (120) / `motion_standard_ms` (240) 全仓零消费方。实际时长是 `nana_ui_core::motion` 的 8 个 `const`：`HOVER_COLOR` 120、`OVERLAY_FADE` 140、`MENU_OPACITY` 160、`MENU_POP` 180、`SIDEBAR_COLLAPSE` 260、`SKELETON_PULSE` 1400、`SPINNER_ROTATION` 900、`LOADING_SPIN` 800。它们是 `const`，主题改不了。
-→ #100 §8 / #87 对接时，这两个字段要么接上要么删掉，不能继续当「看起来已经有了」。
+→ #100 §8 / #87 对接时，这两个字段要么接上要么删掉，不能继续当「看起来已经有了」。**Phase 1 选了删掉**：那两个字段没了，八个时长各自成为一个 `MotionRole`，`SIDEBAR_COLLAPSE` 的 260 不再需要和谁对齐——它就是自己那一档。
 
 **F3 — Theme 在 extract 阶段解析，不在保留期 style 阶段。**
 `SetTheme` 只标 RENDER，不标 STYLE（[world/tests.rs](../crates/nana-ui-runtime/src/world/tests.rs) 的 `set_theme_marks_render_not_style_when_only_palette_roles_change` 已经钉住这个行为）。真正换色发生在 `extract_node` 里：`resolved_epoch != palette_epoch` 时重跑 `palette_paint_colors`，把新颜色打进 `ExtractedNode.style`，保留期 `ComputedStyle` 并不刷新。
@@ -286,7 +291,7 @@ runtime crate 里 `const NAME: f32/u16/u64 = <数字>` 共 217 个（`ROW_HEIGHT
 
 | 剩余 | 为什么还没做 |
 | --- | --- |
-| 运动 token（F2） | `motion_*_ms` 仍是死字段。真实 duration 在 `motion` 模块，`SIDEBAR_COLLAPSE` 260 已经和 `motion_standard_ms` 240 对不上；接上等于决定八个 duration 各归谁，是 #100 的事 |
+| 运动 token（F2） | ~~`motion_*_ms` 仍是死字段~~ → **§7 做掉了**：八个 duration 各归一个 role，`motion` 的 `const` 反过来读主题 |
 
 剩余字面量已经接到 `space` / `type_scale` / `ControlSize` 上（命令面板行高 = Large + `space::XS` = 40，色板/标题 loading 宽 = `PAGE_TIGHT + XXS` = 22，sidebar 工具边 = `PAGE_TIGHT`）。对不齐的档位按角色评估过，不是就近 1px 平移：
 
@@ -571,11 +576,11 @@ extractor 与这些门禁本身由 `perf/contract.py --self-test` 的 `theme_bas
 
 ```text
 Tokens + Semantics + Layout = existing Style Model    ← 成立
-ThemeDefinition = Tokens/recipes 的设计系统 authority  ← 未建立（Phase 1）
+ThemeDefinition = Tokens/recipes 的设计系统 authority  ← 未建立（Phase 1）    → §7 已建立
 Theme Resolver  = retained StyleSystem 工作            ← 未成立：解析在 extract（F3）
 ResolvedStyle   = Layout/Text/Paint 下游合同           ← 部分：ComputedStyle 只覆盖继承与颜色
 Renderer       != Theme resolver                       ← 成立（F8），除 scene 读 UI_METRICS（F1）
-Motion         != Theme runtime                        ← 成立：Motion IR 是唯一执行器；但 Theme 也没有 transition policy（F2）
+Motion         != Theme runtime                        ← 成立：Motion IR 是唯一执行器；但 Theme 也没有 transition policy（F2） → §7 补上了 policy，执行器仍只有一个
 CSSOM          != Nana core                            ← 成立：CSS 解析只在 nana-ui-vue
 ```
 
@@ -593,7 +598,7 @@ CSSOM          != Nana core                            ← 成立：CSS 解析�
 两条容易被违反的细则，本轮明确：
 
 1. **颜色变化不是文本工作。** `text_nodes_from_style` 只在 `TextDirty::work()` 含 SHAPE 或 LAYOUT 时计数；颜色走 `TextWork::SCENE_PAINT`。这个分类由 `TextDirty::work()` 单点回答，不在 style 路径复制第二份映射。
-2. **`SemanticPalette` / `ThemeMetrics` 是演进基础，不是复制对象。** Phase 1 不得出现 `ThemeColors2` / `ThemeMetrics2`。反过来，`nana_ui::theme::Colors`（F9）是**已经存在**的第二份，Phase 1 要收掉它，而不是再加一份。
+2. **`SemanticPalette` / `ThemeMetrics` 是演进基础，不是复制对象。** Phase 1 不得出现 `ThemeColors2` / `ThemeMetrics2`。反过来，`nana_ui::theme::Colors`（F9）是**已经存在**的第二份，Phase 1 要收掉它，而不是再加一份。（§7 的 `DesignTokens` 按值持有这两个类型本身，没有第三个拼写。）
 
 ## 6. 复现
 
@@ -641,3 +646,192 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 ```
 
 本轮在 Windows + Vulkan (RTX 5060) 上验的：counters 与 scenario 门禁全绿、语义基线 146/146 MATCH、像素套件在临时 adapter key 下 557/557 录制并复验通过（提交树里的 `metal-apple-m4` 基线**不能**在这台机器上验，这正是语义基线存在的理由）。
+
+## 7. Phase 1：ThemeDefinition 与 typed token 体系
+
+这一节是 [#102](https://github.com/sena-nana/NanaUI/issues/102) 的交付物。Phase 0 的结论是「token 权威散在常量里，装了主题也不生效」；Phase 1 建立那个**被装的东西**：一个版本化、强类型、可校验的 `ThemeDefinition`。
+
+**同样没有改任何一个已有像素。** 证据不是「跑了一遍快照觉得没事」，而是三条各自独立的：
+
+1. **语义基线逐字节比对。** 在同一台机器上、用同一个二进制路径，分别对干净 HEAD 和本轮各录一次全部 146 个 fixture（666 个输出文件，含 baseline 副本），`diff -rq` 为 **0 个文件不同**。
+2. **编译结果等值断言。** `the_built_in_definitions_compile_to_exactly_the_tokens_already_rendered` 断言 `ThemeDefinition::NANA_DARK.compile()` 产出的 `SemanticPalette` 与 `ThemeMetrics` 和树上现在渲染用的**完全相等**。等值成立时，任何 fixture 都没有可动的余地——一次需要重录 615 张图才能证明自己安全的迁移，等于没有证明。
+3. **work counter 逐字段比对。** 11 个 theme 场景对 Phase 0 存档**全部 11 项 counter 逐字段相同**（见 §7.7）。
+
+> ⚠️ **本轮之前语义基线就已经和 HEAD 对不上了。** 干净 HEAD 上跑 `--semantic` 有 **46 个 fixture 报 CHANGED**，`cargo test -p component-gallery --bin ui-snapshots` 因此在 main 上就是红的。差异全是几何（分段控件圆角 7→8、行高 +1、badge 尺寸），来自 83d1bcefc 的尺寸常量收敛没有重录基线，不是本轮造成的——上面第 1 条正是为了把这两件事分开才那样做。**本轮不代为 bless**：那是别人有意的视觉改动，埋进 #102 的 PR 里会让它再也没人审。
+
+### 7.1 类型全景
+
+```text
+                     ThemeDefinition            ← 作者写的，可 diff
+                     ├─ id / schema / generation
+                     ├─ mode
+                     ├─ tokens: DesignTokens
+                     │  ├─ foundation: FoundationTokens  ← 作者私有，组件够不到
+                     │  │  └─ accent: AccentRamp
+                     │  ├─ palette:  SemanticPalette     ← 就是原来那个类型
+                     │  ├─ metrics:  ThemeMetrics        ← 就是原来那个类型
+                     │  ├─ spacing:  SpacingTokens
+                     │  ├─ border:   BorderTokens
+                     │  ├─ opacity:  OpacityTokens
+                     │  └─ titlebar: Option<SemanticColor>
+                     ├─ typography: TypographyTokens
+                     ├─ motion:     MotionTokens
+                     ├─ effects:    EffectTokens
+                     ├─ surfaces:   SurfaceTokens
+                     └─ components: ComponentThemeRegistry   ← 槽位是 Option
+                                │
+                                │  compile()  ← 校验 + 降级，失败就整个不装
+                                ▼
+                     CompiledTheme              ← 运行期读的，槽位不再是 Option
+                     ├─ identity: ThemeIdentity
+                     ├─ style_model: StyleModelRef   ← 热路径切片
+                     ├─ spacing / border / typography / motion / effects / surfaces
+                     └─ recipes: CompiledRecipes     ← 定长数组，enum 下标
+                                │
+                                ▼
+                     UiWorld.theme: Arc<CompiledTheme>
+                     UiWorld.style_model: StyleModelRef   ← 上面那个的缓存投影
+```
+
+`DesignTokens` 不叫 `ThemeTokens`：后者是 `nana_ui::theme::ThemeTokens`，宿主侧的安装包。**一个名字一个类型**，这是 F9 那条教训的直接后果。
+
+### 7.2 为什么 authoring 和 compiled 是两个类型
+
+两条理由，都不是洁癖：
+
+**fail-closed。** `ComponentThemeRegistry` 的槽位是 `Option`，`CompiledRecipes` 的不是。作者漏掉一个 family，`compile()` 返回 `MissingRecipe { component, slot }`，整个主题装不上；而不是那一处悄悄退回 `Text`，等三屏之后被人发现某个角落颜色不对。校验覆盖：schema 不兼容、generation 为 0、非有限值、负长度、alpha 越界、字号越界、字重越界、时长为 0、recipe 槽位缺失。每条都有一个从「能编译的主题」出发只动一个字段的测试。
+
+**热路径不认字符串。** 名字只活在 authoring 侧（`ThemeId`、错误里的 token 名）。跨进 runtime 的全是 enum 索引定长数组。`theme.get("button.primary.background")` 这种写法在类型上就不存在。
+
+### 7.3 `StyleModelRef` 为什么没有变成主题句柄
+
+`CompiledTheme` 约 1 KB，**不是 `Copy`**，挂在 `Arc` 上。`StyleModelRef` 还是那个小的、按值传的读句柄，本轮只给它加了 24 字节的 `OpacityTokens`（下面 §7.5 要用）。
+
+这条是照抄 §1.5 的教训：`LayoutStyle` 4808 字节放在读路径上被每帧放大，palette-switch 实测 +196%。「把整套主题做成 `Copy` 交给每个读者」是同一个形状，只是这次 1 KB。所以 `CompiledTheme` 也**没有**预计算 39 个角色的颜色表：解析一个角色本来就是一次 `match` 加最多一次 alpha 替换，一张表要多背 ~600 字节，买不到东西。缓存要配得上它省掉的开销。
+
+### 7.4 Foundation → Semantic：只在真的有派生的地方
+
+#100 §2 要 foundation 层。本轮**只**给了 accent 一族，因为那是调色板里唯一真的在派生的地方：`accent_soft` / `accent_soft_hover` / `accent_soft_pressed` 就是 base accent 的三个 alpha，以前是三个字面 RGBA 常量。
+
+后果是一个真 bug 消失了：以前只设 `palette.accent`（`theme-accent-only` 场景、`--nana-custom-accent`）会留下上一个色相的三个软填充——派生规则只存在于「当初谁选的那几个常量」里。现在 `ThemeDefinition::with_accent(ramp)` 一次移动整族。
+
+反过来，`with_palette(p)` 仍然逐字写入 `p`，只是**顺带把 foundation 的 ramp 按 `p` 重读一遍**（`AccentRamp::from_palette`）——记录，不修正。一个 `accent_soft` 和 `accent` 色相不一致的调色板，读出来的 ramp 就照实说它不一致。
+
+`base` 之外的四个颜色不是算出来的：能在 accent 上读清的前景是设计决定不是公式，light 模式就是证据（`on_soft` 比 `base` 深，`text` 是白的）。
+
+组件够不到 foundation：从组件到 `FoundationTokens` 没有路径，这就是「不得依赖 `blue500`」的执行方式。
+
+### 7.5 本轮接上的 token，和各自的消费方
+
+**不接消费方的 token 就是下一个 F2。** 每一类都有真实读者：
+
+| 类别 | 类型 | 谁在读 | 接上之前是什么 |
+| --- | --- | --- | --- |
+| Color | `SemanticPalette` | 全树 | 同左（直接持有，没有第二份） |
+| Control metrics | `ThemeMetrics` | 全树 | 同左 |
+| Spacing | `SpacingTokens` | `space::*` 读它的 `DEFAULT` | 10 个裸 `const` |
+| Typography | `TypographyTokens` | `type_scale::*` / `UI_BASE_TEXT_SIZE` 读它的 `DEFAULT` | 13 个裸 `const` |
+| Border | `BorderTokens` | `HAIRLINE` 读它的 `DEFAULT` | 1 个裸 `const` |
+| Opacity | `OpacityTokens` | `StyleModelRef::color` 解析五个 soft 角色 | `SemanticPalette::get` 里的字面量 + `background.r > 0.5` 亮度嗅探 |
+| Motion | `MotionTokens` | hover 交叉淡入、switch 拨动读**安装值**；`motion::*` 八个 `const` 读 `DEFAULT` | 八个裸 `const` + 两个死字段 |
+| Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
+| Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
+| Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |
+
+方向很关键：**`const` 读 token，不是 token 读 `const`**。F2 之所以修不动，正是因为当时方向是反的——时长是权威，主题只挂着两个没人读的字段。
+
+亮度嗅探消失了两处（warning soft alpha、模态框阴影）。它们本来就不是「省事」，是错的：背景是中灰的主题会选到反的那一支，而且任何主题都改不动那个数。
+
+### 7.6 Component recipe：两张表，两种解析点
+
+只搬了两张，都挑在**安装主题已经在手边**的地方解析：
+
+**family 前景表**（`world/extraction.rs` 那 25 臂）→ `ComponentRecipe`。它每次 extract 解析，所以换了 recipe 的主题**不需要重投影**就能到达活节点。测试：`an_installed_family_recipe_reaches_a_live_node_without_reprojecting_it`。
+
+**Button 的 variant×state 表**（`Button::project` 里五张内联 `match self.kind`）→ `ButtonRecipe`。这张在**投影期**解析，因为它决定的是组件往自己节点上写哪个 `SemanticColorRole`——那个字段只有组件自己写得了，下游谁都改不了。所以 `Button` 选入了一个新钩子 `wants_recipe_reproject()`。
+
+这看起来和 §1.6「选 A，不选 B」矛盾，其实是 §1.6 自己留的口子：
+
+> B 什么时候才是对的：当某个组件真的需要**按 metric 改变它投影出什么**。那时让**那一个组件**选入重投影。
+
+§1.6 拒绝 B 的理由是「重投影产出 0 mutation，因为 `effective_style` 仍读 `UI_METRICS`」。recipe 让这条不再成立：重投影确实会写出不同的角色。而且钩子和 `wants_metrics_reproject` **分开**，不是合并——合并会让 palette-only 切换白白重投影一批组件，而那正是 §4 量到 0 次重投影的那个常见场景。两个测试各自钉住：去掉 `Button` 的选入，`an_installed_button_recipe_reaches_a_button_that_is_already_on_screen` 报红（验过）。
+
+`invalid` 是本轮第一个**叠加态**而不是互斥态：invalid 的 primary 按钮保留 primary 的填充，另外加一道 danger 描边。#100 §4 要求 recipe 说清哪些状态叠加，这是第一条。
+
+`ComponentRecipeId` 有 14 个 family，其中好几个今天都解析到 `Text`。它们仍各占一格：registry 存在的意义就是主题能单独移动一个 family 而不牵动其余。
+
+### 7.7 代价
+
+work counter 对 Phase 0 存档**逐字段相同**，11 个场景 × 11 项：
+
+```bash
+cargo run --release --locked -p nana-ui-runtime --features benchmark \
+  --bin nana-theme-benchmark -- --output target/performance/issue102/theme.json
+```
+
+存档在 [`docs/performance-data/theme-phase1-2026-09-20/`](performance-data/theme-phase1-2026-09-20/)。要点：
+
+- `theme-palette-switch` / `theme-accent-only` 的 `layout_copies` 仍是 **0**，`layout_nodes_from_style` 仍是 **0**。只动颜色不许碰盒子，这条没被新 token 破坏。
+- 这两个场景也**不触发**任何重投影：recipe 没变，`reproject_recipe_views` 不跑。
+- `theme-static-idle` 全零：稳定帧不 walk、不读 token、不分配。
+- `theme-density` 的 `layout_copies = 1000` 照旧。
+
+一次主题安装现在多做两件事：`compile()`（约五十个浮点的校验 + 建一个定长 recipe 数组）和 `*self.theme == *next` 的整体比较（约 1 KB）。相对同一次安装本身就要做的 1001 个节点失效，量级上不构成一行。
+
+### 7.8 硬编码清单的变化
+
+同一把尺子（`scripts/audit-theme-hardcoding.py`），对干净 HEAD 和本轮各跑一次：
+
+| | HEAD | Phase 1 | 说明 |
+| --- | ---: | ---: | --- |
+| 组件自己的 `color_role` | 232 | **208** | Button 的 24 个角色决策搬进主题 |
+| 组件之外的 `color_role` | 216 | **211** | extraction 的 family 表搬进主题 |
+| 组件之外的 `design_number` | 87 | **81** | 两组阴影字面量 + 两处亮度嗅探 |
+| 组件之外的 `motion` | 18 | **16** | hover / switch 改读安装值 |
+| 组件之外的 `elevation` | 1 | **0** | |
+| `token_read`（分母） | 681 | **683** | |
+
+**扫描器本轮也改了两处，否则这张表会撒谎。** `TOKEN_READ` 加上了 `MotionRole::` / `ElevationRole::` / `ComponentRecipeId::` / `recipes()` 等新的命名方式——理由和当初加 `RadiusTier::` 一字不差：组件从 `motion::HOVER_COLOR` 换成 `MotionRole::HoverColor` 是在**读** token，不加的话分母会缩、迁移会被读成回归。`ELEVATION` 排除了 `ComponentElevation::from_shadow`，那是在消费主题解析好的阴影，跟「组件自己挑了个阴影」正相反；不排除的话这个数会随着迁移成功而上涨。两条都有测试（`scripts/tests/test_theme_hardcoding.py`）。
+
+`--check` 的基线改指 Phase 1 存档：对着一份树上早就超过的数字设门禁，等于门禁有旷量。
+
+### 7.9 没做的，和为什么
+
+| 项 | 状态 |
+| --- | --- |
+| ThemeScope / 子树 override | #102 明确非范围 |
+| 组件全量迁移到 recipe | #102 明确非范围。搬了 Button + family 前景表 + status tone 表，其余 11 个 family 的 recipe 只有前景一槽 |
+| Theme package / 文件格式加载 | 非范围。`ThemeId` 因此是 `&'static str`；要从文件装主题时它得先变 |
+| F3（解析点在 extract 不在保留期） | 未动。这是 #100 §6，要改的是 resolver 的形状，不是 token 的形状 |
+| F4（安装 = 全文档失效） | 未动。这是 #100 §7 的 dependency class |
+| typography / spacing 的调用点收敛 | 未做。合同建立了，但 `ControlSize::text_size()` 这类仍对 `type_scale` 常量解析——和 Phase 0 对 metrics 做的那一轮是同一形状的工作，只是换一个类别，留给下一阶段 |
+| focus ring 的 2px 描边与 4px 外扩 | 仍是 `nana-ui-scene` 里的字面量。`BorderTokens` 只有 `hairline` 一档，没有替它们发明档位——按 `ChromeRadii` 的先例搬运需要动 `ExtractedNode`，那是 chrome recipe 的活 |
+
+### 7.10 复现
+
+```bash
+# 定义、校验、fail-closed、accent ramp、状态层 alpha
+cargo test -p nana-ui-core --all-features --lib theme::
+
+# 安装的 recipe / motion / elevation 真的到达运行期
+cargo test -p nana-ui-runtime --all-features --lib an_installed_button_recipe
+cargo test -p nana-ui-runtime --all-features --lib an_installed_family_recipe
+cargo test -p nana-ui-runtime --all-features --lib an_installed_hover_duration
+cargo test -p nana-ui-runtime --all-features --lib a_theme_that_fails_validation
+
+# 硬编码清单与扫描规则
+python3 scripts/audit-theme-hardcoding.py --check \
+  docs/performance-data/theme-phase1-2026-09-20/theme-hardcoding.json
+python3 -m unittest discover -s scripts/tests
+
+# work counters（应与 Phase 0 存档逐字段相同）
+cargo run --release --locked -p nana-ui-runtime --features benchmark \
+  --bin nana-theme-benchmark -- --output target/performance/issue102/theme.json
+for id in theme-static-idle theme-controls-1k theme-palette-switch theme-accent-only \
+          theme-density theme-head-style-mutation; do
+  python3 perf/runners/nana/run.py --scenario "$id" --from-report target/performance/issue102/theme.json
+done
+
+# 语义基线：本轮与干净 HEAD 逐字节相同（都仍有 46 个 pre-existing CHANGED）
+cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
+```

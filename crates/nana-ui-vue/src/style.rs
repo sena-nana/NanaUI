@@ -14,7 +14,7 @@
 //! [`map_css_color_for_tokens`] 是正式 Tokens 路径的唯一入口；[`parse_css_color`]
 //! 仅服务 L1 paint 解析。
 
-use nana_ui_core::{SemanticColor, SemanticColorRole, SemanticPalette, ThemeMode};
+use nana_ui_core::{SemanticColor, SemanticColorRole, ThemeMode};
 
 /// Parse `#rgb` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` / named colors.
 ///
@@ -276,7 +276,10 @@ pub fn map_css_color_for_tokens(
     mode: ThemeMode,
 ) -> Option<(SemanticColorRole, SemanticColor)> {
     let role = SemanticColorRole::from_css_token_name(raw)?;
-    let color = SemanticPalette::for_mode(mode).get(role);
+    // The built-in theme for `mode`, not a bare palette: the soft warning and
+    // danger roles resolve through its state-layer alphas. An L1 adapter maps a
+    // CSS token name onto a role; it does not get to pick the alpha.
+    let color = nana_ui_core::builtin_theme(mode).style_model().color(role);
     Some((role, color))
 }
 
@@ -376,7 +379,7 @@ mod tests {
         assert!(!is_non_token_css_color("accent"));
         let (role, color) = map_css_color_for_tokens("accent", ThemeMode::Light).unwrap();
         assert_eq!(role, SemanticColorRole::Accent);
-        assert_eq!(color, SemanticPalette::light().accent);
+        assert_eq!(color, nana_ui_core::SemanticPalette::light().accent);
         assert!(map_css_color_for_tokens("#e74c3c", ThemeMode::Light).is_none());
     }
 }

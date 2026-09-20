@@ -125,6 +125,36 @@ hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMo
 `dropdown`、`search-dropdown`、`xy-pad` 的 `hovered` 与 `focused` 都指向
 `BorderStrong`，悬停与聚焦在视觉上分不开。录完像素后这三对也会是同一张图。
 
+## 语义基线也欠着 46 个（与 adapter 无关，任何机器都能重录）
+
+`snapshots/semantic/` 有 **46 个 fixture 和干净 HEAD 对不上**，所以
+`cargo test -p component-gallery --bin ui-snapshots --features snapshots` 在 main 上
+就是红的。这不是像素债——语义基线不分 adapter，随便哪台机器都能 `--semantic --bless`。
+
+差异全是几何，来自 83d1bcefc 的尺寸常量收敛没有把基线一起重录：
+
+| 看得见的形态 | 例子 |
+| --- | --- |
+| 行距 +1px / 面板高度 +1px | `tree-view`、`sidebar-section`、`action-menu`、`anchored-action-menu` |
+| 分段控件圆角 7 → 8 | `segmented-control` |
+| badge 盒 44.83×19.20 → 41.83×17.20 | `status-badge` |
+| 文本量度位移 | `empty-state`、`graph-canvas`、`dropdown` |
+
+一条都不是颜色。7e81d7fb9 的提交说明已经把其中 `DEFAULT_SPACING` 1.0 → `space::XXS`
+2.0 那一条认成**有意的新值**，只是基线没跟上。
+
+重录之前要逐条对上「哪个常量动了」，别当成噪声一把 bless：
+
+```bash
+cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
+# 逐个读 target/ui-snapshots/component-migration/<name>/<mode>.txt 与 .baseline.txt 的 diff
+cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic --bless
+```
+
+Issue #102（Phase 1 ThemeDefinition）**没有代为重录**：那是别的提交有意的视觉改动，
+混进主题重构的 PR 里就再也没人会审它。#102 自己对这 46 张的贡献是 0——同一台机器上
+对干净 HEAD 与 #102 各录一次全部 666 个输出文件，`diff -rq` 无差异。
+
 ## 不在此列
 
 `gallery-sidebar-collapsed-dark.png` **在干净工作树上就已经失败**，且自身抖动，抖动来自

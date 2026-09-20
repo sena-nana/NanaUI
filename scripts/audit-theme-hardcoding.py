@@ -104,10 +104,19 @@ INTERACTION_STATES = (
 # defers it to the constant — only later, which is the whole point. Without
 # this, migrating a component from the constant to the tier would read as the
 # denominator shrinking, the opposite of what happened.
+# Issue #102 added token categories, and with them new ways to *name* a step:
+# `MotionRole::HoverColor` defers a duration to the installed theme exactly as
+# `RadiusTier::Sm` defers a radius. They belong here for the same reason —
+# without them, moving a component off `motion::HOVER_COLOR` onto the role
+# would read as the denominator shrinking while the numerator held, which is
+# the opposite of what happened.
 TOKEN_READ = re.compile(
     r"\bUI_METRICS\b|\bmetrics\.\w|\bspace::|\btype_scale::|\bControlSize::"
     r"|\bUI_BASE_TEXT_SIZE\b|\bTooltipConfig::|\bstyle_model\b|\bRadiusTier::"
     r"|\bControlHeight::|\bControlPadding::|\bSurfacePadding::|\bSquareSize::"
+    r"|\bMotionRole::|\bEasingRole::|\bElevationRole::|\bSpacingStep::|\bTypeRole::"
+    r"|\bLineRole::|\bTextWeight::|\bBorderWidth::|\bStateLayer::|\bSurfaceRole::"
+    r"|\bComponentRecipeId::|\brecipes\(\)|\bStatusRecipe::|\bOpacityTokens::"
 )
 
 COLOR_ROLE = re.compile(r"\bSemanticColorRole::(\w+)")
@@ -121,7 +130,11 @@ DESIGN_NUMBER = re.compile(
     r"(?::\s*(?:Some\(\s*)?|=\s*Some\(\s*)" + NUMBER
 )
 MOTION = re.compile(r"\bfrom_millis\s*\(\s*\d+|\bEasing::\w+")
-ELEVATION = re.compile(r"\bComponentElevation::\w+")
+# `ComponentElevation::from_shadow` is the opposite of picking an elevation:
+# it consumes an `ElevationRole` the theme resolved. Counting it here would
+# make the number climb as the migration succeeds. `from_box_shadow` stays
+# counted — a CSS shadow arriving from L1 is still a shadow nobody tokenized.
+ELEVATION = re.compile(r"\bComponentElevation::(?!from_shadow\b)\w+")
 STATE_FIELD = re.compile(
     r"\b(?:interaction|InteractionStyle)\b[^;\n]*?\b(" + "|".join(INTERACTION_STATES) + r")\b"
     r"|\b(" + "|".join(INTERACTION_STATES) + r")\s*[:.]\s*(?:SemanticPaint|\w+\s*=|background|foreground|border)"

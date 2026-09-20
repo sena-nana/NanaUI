@@ -502,6 +502,10 @@ pub struct UiWorld {
     closing_surfaces: HashSet<StableNodeId>,
     hover_transitions: HashMap<StableNodeId, style::HoverTransition>,
     animation_deadlines: BTreeSet<(Duration, AnimationId)>,
+    /// The installed design system. This is the authority; `style_model` below
+    /// is its hot slice, cached so per-node resolution does not chase an `Arc`
+    /// and copy a kilobyte to read one colour.
+    theme: Arc<nana_ui_core::CompiledTheme>,
     style_model: StyleModelRef,
     generation: u64,
     /// Cursor declarations changed since the last system-work drain.
@@ -657,6 +661,7 @@ impl UiWorld {
             closing_surfaces: HashSet::new(),
             hover_transitions: HashMap::new(),
             animation_deadlines: BTreeSet::new(),
+            theme: nana_ui_core::builtin_theme_arc(ThemeMode::default()),
             style_model: StyleModelRef::default(),
             generation: 0,
             cursor_style_dirty: false,
@@ -951,6 +956,21 @@ impl UiWorld {
 
     pub fn style_model(&self) -> StyleModelRef {
         self.style_model
+    }
+
+    /// The installed design system.
+    ///
+    /// Returned by reference: a [`CompiledTheme`](nana_ui_core::CompiledTheme)
+    /// is around a kilobyte, and handing one out by value on a read path is
+    /// the mistake Issue #101 §1.5 measured with `LayoutStyle`. Callers that
+    /// only want a colour or a metric take [`Self::style_model`] instead.
+    pub fn theme(&self) -> &nana_ui_core::CompiledTheme {
+        &self.theme
+    }
+
+    /// A shareable handle on the installed theme.
+    pub fn theme_handle(&self) -> Arc<nana_ui_core::CompiledTheme> {
+        Arc::clone(&self.theme)
     }
 
     /// Drain dirty components into deterministic system work. Calling this on

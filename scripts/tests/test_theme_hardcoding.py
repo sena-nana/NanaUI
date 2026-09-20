@@ -137,11 +137,47 @@ impl Default for Helper {
         self.assertEqual(shared[0]["counts"]["design_number"], 1)
 
 
+    def test_naming_a_motion_or_elevation_role_is_a_token_read(self):
+        """Issue #102's categories defer a value exactly as `RadiusTier` does.
+
+        Left out of `TOKEN_READ`, a component moving off `motion::HOVER_COLOR`
+        onto `MotionRole::HoverColor` would shrink the denominator while the
+        numerator held — the inventory would report the migration as a
+        regression.
+        """
+        scanned = audit.scan_body(
+            "    let fade = theme.duration(MotionRole::HoverColor);\n"
+            "    let lift = theme.shadow(ElevationRole::Surface);\n"
+            "    let role = theme.recipes().foreground(ComponentRecipeId::Card, false);\n"
+        )
+        self.assertEqual(scanned["counts"]["design_number"], 0)
+        self.assertEqual(scanned["counts"]["motion"], 0)
+        self.assertEqual(scanned["token_reads"], 3)
+
+    def test_consuming_a_resolved_shadow_is_not_picking_an_elevation(self):
+        """`from_shadow` takes what the theme resolved; `from_box_shadow` does not.
+
+        Counting the first would make `elevation` climb as the migration
+        succeeds, which is the failure mode this whole file exists to prevent.
+        """
+        consumed = audit.scan_body(
+            "    elevation: ComponentElevation::from_shadow(overlay),\n"
+        )
+        self.assertEqual(consumed["counts"]["elevation"], 0)
+        picked = audit.scan_body(
+            "    elevation: ComponentElevation::from_box_shadow(css),\n"
+        )
+        self.assertEqual(picked["counts"]["elevation"], 1)
+
     def test_the_committed_baseline_is_current(self):
-        """`--check` is only useful if the recorded numbers are the real ones."""
+        """`--check` is only useful if the recorded numbers are the real ones.
+
+        Pinned to the Phase 1 archive, not Phase 0's: a gate set to numbers the
+        tree has already beaten is a gate with slack in it.
+        """
         baseline_path = (
             audit.REPO_ROOT
-            / "docs/performance-data/theme-audit-2026-09-19/theme-hardcoding.json"
+            / "docs/performance-data/theme-phase1-2026-09-20/theme-hardcoding.json"
         )
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         report = audit.scan()

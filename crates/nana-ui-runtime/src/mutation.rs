@@ -44,11 +44,14 @@ pub enum UiMutation {
     SetTheme {
         mode: ThemeMode,
     },
-    SetStyleTokens {
-        mode: ThemeMode,
-        metrics: nana_ui_core::ThemeMetrics,
-        palette: Box<nana_ui_core::SemanticPalette>,
-        titlebar: nana_ui_core::SemanticColor,
+    /// Install a validated design system.
+    ///
+    /// Carries the whole [`CompiledTheme`](nana_ui_core::CompiledTheme) rather
+    /// than loose palette / metrics fields: those two were never the whole
+    /// theme, and a mutation that can only express two categories is a
+    /// mutation every later category has to route around.
+    SetThemeTokens {
+        theme: std::sync::Arc<nana_ui_core::CompiledTheme>,
     },
     SetText {
         id: StableNodeId,
@@ -268,19 +271,8 @@ impl MutationQueue {
         self.mutations.push(UiMutation::SetTheme { mode });
     }
 
-    pub fn set_style_tokens(
-        &mut self,
-        mode: ThemeMode,
-        metrics: nana_ui_core::ThemeMetrics,
-        palette: nana_ui_core::SemanticPalette,
-        titlebar: nana_ui_core::SemanticColor,
-    ) {
-        self.mutations.push(UiMutation::SetStyleTokens {
-            mode,
-            metrics,
-            palette: Box::new(palette),
-            titlebar,
-        });
+    pub fn set_theme_tokens(&mut self, theme: std::sync::Arc<nana_ui_core::CompiledTheme>) {
+        self.mutations.push(UiMutation::SetThemeTokens { theme });
     }
 
     pub fn set_text(&mut self, id: StableNodeId, text: TextContent) {

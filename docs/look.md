@@ -26,6 +26,8 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 颜色来自共享的 `ThemeTokens` / `SemanticPalette`（`nana_ui::theme`），不是每个控件一份样式表。间距标度是 `nana_ui::theme::space`，字号/字重是 `nana_ui::theme::type_scale`；消费方不要直依赖 `nana-ui-core`，也不要复制字面量。
 
+要整套换掉（不只是颜色和尺寸，还有排版、动效时长、阴影、组件配方），装一个 `ThemeDefinition`：`nana_ui::theme::install_theme_definition(&mut context, &definition)`。从内置的 `ThemeMode::Dark.definition()` 派生并改你要改的那几档，别从头拼——缺一个槽位它装不上，这是有意的。
+
 要改框架本身的主题架构，先读 [主题与样式](theme.md)：那篇是这套合同当前的完整清单与基线，包括哪些 token 装了却没人读。
 
 ## 字体

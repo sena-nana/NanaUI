@@ -258,7 +258,7 @@ impl<'a> ValidationPlan<'a> {
                     }
                     self.styles.insert(*id, style.clone());
                 }
-                UiMutation::SetTheme { .. } | UiMutation::SetStyleTokens { .. } => {}
+                UiMutation::SetTheme { .. } | UiMutation::SetThemeTokens { .. } => {}
                 UiMutation::SetText { id, .. } => {
                     self.require_exists(*id)?;
                 }
@@ -1414,17 +1414,10 @@ impl UiWorld {
                 }
             }
             UiMutation::SetTheme { mode } => {
-                self.apply_style_model(StyleModelRef::new(*mode));
+                self.apply_compiled_theme(nana_ui_core::builtin_theme_arc(*mode));
             }
-            UiMutation::SetStyleTokens {
-                mode,
-                metrics,
-                palette,
-                titlebar,
-            } => {
-                self.apply_style_model(StyleModelRef::with_tokens(
-                    *mode, *metrics, **palette, *titlebar,
-                ));
+            UiMutation::SetThemeTokens { theme } => {
+                self.apply_compiled_theme(Arc::clone(theme));
             }
             UiMutation::SetText { id, text } => {
                 // Re-setting the same text is not a content change: nothing
@@ -1537,8 +1530,10 @@ impl UiWorld {
                     self.start_component_track(
                         *id,
                         crate::component_animation_kinds::SWITCH,
-                        nana_ui_core::motion::OVERLAY_FADE,
-                        crate::Easing::EaseOutCubic,
+                        self.theme.duration(nana_ui_core::MotionRole::OverlayFade),
+                        self.theme
+                            .motion()
+                            .easing(nana_ui_core::EasingRole::Standard),
                         crate::AnimatableProperty::Progress,
                         crate::MotionValue::Scalar(*thumb_progress),
                         crate::MotionValue::Scalar(f32::from(*next)),

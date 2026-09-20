@@ -5,15 +5,26 @@
 //! / ThemeTokens factory for arbitrary L1 paint values — see
 //! `nana_ui_core::style_model`.
 
-use nana_ui_core::{AppearanceSettings, BackdropTarget};
+use nana_ui_core::{
+    AppearanceSettings, BackdropTarget, SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens,
+};
 
 pub use nana_ui_core::{
-    HAIRLINE, SemanticColor, SemanticPalette, ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE,
-    UI_METRICS, space, type_scale,
+    CompiledTheme, HAIRLINE, SemanticColor, SemanticPalette, ThemeCompileError, ThemeDefinition,
+    ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space, type_scale,
 };
 
 /// Linear RGBA color used by L3 token adapters. Same layout as [`SemanticColor`].
 pub type Color = SemanticColor;
+
+/// Identity of a built-in theme after the Scene host has applied its own
+/// Appearance policy on top.
+const fn host_theme_id(mode: ThemeMode) -> nana_ui_core::ThemeId {
+    match mode {
+        ThemeMode::Dark => nana_ui_core::ThemeId::new("nana.dark+host"),
+        ThemeMode::Light => nana_ui_core::ThemeId::new("nana.light+host"),
+    }
+}
 
 /// Runtime token bundle: [`SemanticPalette`] + [`ThemeMetrics`] + chrome.
 ///
@@ -48,6 +59,41 @@ impl ThemeTokens {
         }
     }
 
+    /// The colour and metric slice of a design system.
+    ///
+    /// This bundle is a *projection* of a [`ThemeDefinition`], not a rival to
+    /// it: it carries the two categories the window host needs to apply its
+    /// own Appearance policy on top of, and [`Self::definition`] folds the
+    /// result back into a full definition so the other categories survive the
+    /// round trip.
+    pub const fn from_definition(definition: &ThemeDefinition) -> Self {
+        Self {
+            palette: definition.tokens.palette,
+            metrics: definition.tokens.metrics,
+            workspace_corners_enabled: true,
+            titlebar: definition.tokens.titlebar_color(),
+        }
+    }
+
+    /// Fold this bundle back onto the built-in definition for `mode`.
+    ///
+    /// Typography, motion, effects, surfaces and component recipes come from
+    /// that definition. A host that wants to move those authors a
+    /// [`ThemeDefinition`] and installs it directly.
+    ///
+    /// The result is **not** NanaDark any more, so it does not claim to be:
+    /// a bundle carrying Appearance's radii and a backdrop alpha is a variant,
+    /// and a diagnostic that printed `nana.dark` for it would be pointing at
+    /// the wrong thing. Two host bundles still share an id — identity answers
+    /// "which theme", never "are these equal"; installs compare values.
+    pub const fn definition(&self, mode: ThemeMode) -> ThemeDefinition {
+        ThemeDefinition::for_mode(mode)
+            .with_id(host_theme_id(mode))
+            .with_metrics(self.metrics)
+            .with_palette(self.palette)
+            .with_titlebar(Some(self.titlebar))
+    }
+
     pub const fn with_workspace_corners(mut self, enabled: bool) -> Self {
         self.workspace_corners_enabled = enabled;
         self
@@ -77,20 +123,41 @@ impl ThemeTokens {
             return self;
         }
         let opacity = AppearanceSettings::clamp_backdrop_opacity(opacity);
-        match target {
-            BackdropTarget::Sidebar => {
-                self.palette.surface.a = opacity;
-                if titlebar_follows_sidebar {
-                    self.titlebar.a = opacity;
-                } else {
-                    self.titlebar.a = 1.0;
-                }
-            }
-            BackdropTarget::Main => {
-                self.palette.background.a = opacity;
-            }
+        // Which palette role a backdrop thins is a surface-role question, not
+        // a `match` on the target written here. This bundle carries no surface
+        // roles of its own, so it reads the default ones; a host that authors
+        // its own installs a `ThemeDefinition` instead of routing through here.
+        let spec = SurfaceTokens::DEFAULT.spec(match target {
+            BackdropTarget::Sidebar => SurfaceRole::Chrome,
+            BackdropTarget::Main => SurfaceRole::Window,
+        });
+        if spec.material != SurfaceMaterial::Translucent {
+            // The theme says this surface stays opaque. A window material is a
+            // platform capability; whether a surface may use it is the design
+            // system's call, and this is where that call is honoured.
+            return self;
+        }
+        self.apply_surface_alpha(spec, opacity);
+        if matches!(target, BackdropTarget::Sidebar) {
+            self.titlebar.a = if titlebar_follows_sidebar {
+                opacity
+            } else {
+                1.0
+            };
         }
         self
+    }
+
+    fn apply_surface_alpha(&mut self, spec: SurfaceSpec, opacity: f32) {
+        if let Some(alpha) = self.palette.alpha_mut(spec.paint) {
+            *alpha = opacity;
+        } else {
+            debug_assert!(
+                false,
+                "surface role {:?} names a derived colour with no alpha of its own",
+                spec.paint
+            );
+        }
     }
 }
 
@@ -100,13 +167,34 @@ impl From<SemanticPalette> for ThemeTokens {
     }
 }
 
+impl From<&ThemeDefinition> for ThemeTokens {
+    fn from(definition: &ThemeDefinition) -> Self {
+        Self::from_definition(definition)
+    }
+}
+
 /// Install Style Model tokens on a Runtime document after applying window material.
+///
+/// Goes through [`ThemeTokens::definition`], so the install is validated like
+/// any other theme: a host that hands over a NaN radius gets an error instead
+/// of a window that lays out wrong.
 pub fn install_theme_tokens(
     context: &mut nana_ui_runtime::AppContext,
     mode: ThemeMode,
     tokens: ThemeTokens,
 ) -> Result<bool, nana_ui_runtime::FrameworkError> {
-    context.set_style_tokens(mode, tokens.metrics, tokens.palette, tokens.titlebar)
+    context.set_theme_definition(&tokens.definition(mode))
+}
+
+/// Install a full design system on a Runtime document.
+///
+/// The direct path, for hosts that author typography, motion, effects or
+/// component recipes rather than only colour and metrics.
+pub fn install_theme_definition(
+    context: &mut nana_ui_runtime::AppContext,
+    definition: &ThemeDefinition,
+) -> Result<bool, nana_ui_runtime::FrameworkError> {
+    context.set_theme_definition(definition)
 }
 
 /// Token helpers for [`ThemeMode`].
@@ -116,6 +204,8 @@ pub fn install_theme_tokens(
 pub trait ThemeModeExt: Copy {
     fn tokens(self) -> ThemeTokens;
     fn palette(self) -> SemanticPalette;
+    /// The built-in design system for this mode.
+    fn definition(self) -> ThemeDefinition;
 }
 
 impl ThemeModeExt for ThemeMode {
@@ -123,8 +213,12 @@ impl ThemeModeExt for ThemeMode {
         ThemeMode::palette(self)
     }
 
+    fn definition(self) -> ThemeDefinition {
+        ThemeDefinition::for_mode(self)
+    }
+
     fn tokens(self) -> ThemeTokens {
-        ThemeTokens::new(self.palette(), self.metrics())
+        ThemeTokens::from_definition(&ThemeDefinition::for_mode(self))
     }
 }
 

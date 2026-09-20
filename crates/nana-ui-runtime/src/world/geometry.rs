@@ -213,11 +213,11 @@ impl UiWorld {
                     }
                     _ => y + crate::overlay_surfaces::MODAL_HEADER_PAD_TOP,
                 };
-                let shadow_alpha = if self.style_model.palette.background.as_rgba_array()[0] > 0.5 {
-                    0.28
-                } else {
-                    0.45
-                };
+                // Was `if background.r > 0.5 { 0.28 } else { 0.45 }` — the
+                // modal's lift decided by sniffing how bright the page is. It
+                // is an elevation token now, so each theme states it and a
+                // mid-grey background no longer picks the wrong branch.
+                let overlay_shadow = self.theme.shadow(nana_ui_core::ElevationRole::Overlay);
                 Some(crate::ComponentGeometry::ModalFrame {
                     scrim: bounds,
                     surface,
@@ -266,14 +266,7 @@ impl UiWorld {
                     }),
                     background: self.style_model.palette.surface.as_rgba_array(),
                     border: [0.0; 4],
-                    elevation: crate::ComponentElevation {
-                        color: [0.0, 0.0, 0.0, shadow_alpha],
-                        offset_x: 0.0,
-                        offset_y: 14.0,
-                        blur_radius: 30.0,
-                        spread_radius: 0.0,
-                        inset: false,
-                    },
+                    elevation: crate::ComponentElevation::from_shadow(overlay_shadow),
                 })
             }
             StandardVisual::Button {
@@ -1534,7 +1527,9 @@ impl UiWorld {
                     }),
                     content,
                     elevation: (*kind == nana_ui_core::CardKind::Raised).then_some(
-                        crate::ComponentElevation::surface_shadow(self.style_model.theme_mode),
+                        crate::ComponentElevation::from_shadow(
+                            self.theme.shadow(nana_ui_core::ElevationRole::Surface),
+                        ),
                     ),
                     spinner: (*loading).then_some(LayoutBox {
                         x: (bounds.x + border + padding.left + shaped_title_width + 8.0)
@@ -1658,8 +1653,7 @@ impl UiWorld {
                 let diameter = indicator_slot * 10.0 / 24.0;
                 let foreground = self
                     .style_model
-                    .palette
-                    .get(status_tone_role(*tone))
+                    .color(self.theme.recipes().status().role(*tone))
                     .as_rgba_array();
                 let mut background = foreground;
                 background[3] *= 0.12;
@@ -1708,8 +1702,7 @@ impl UiWorld {
                 let diameter = indicator_slot * 10.0 / 24.0;
                 let foreground = self
                     .style_model
-                    .palette
-                    .get(match intent {
+                    .color(match intent {
                         nana_ui_core::ValidationIntent::Warning => SemanticColorRole::Warning,
                         nana_ui_core::ValidationIntent::Danger => SemanticColorRole::Danger,
                     })
@@ -2048,7 +2041,7 @@ impl UiWorld {
                 error.as_ref(),
                 *control,
                 &|id| self.layout_box(id),
-                &self.style_model.palette,
+                self.style_model,
             ),
             StandardVisual::Toast {
                 title,
@@ -2354,6 +2347,7 @@ impl UiWorld {
                 labels,
                 *active,
                 &self.style_model.palette,
+                self.style_model.opacity,
             )),
             #[cfg(feature = "charts")]
             StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
@@ -2485,6 +2479,7 @@ impl UiWorld {
                 indicator.as_ref(),
                 *node_fill,
                 &self.style_model.palette,
+                self.style_model.opacity,
             )),
             #[cfg(feature = "image-viewer")]
             StandardVisual::ImageViewer {

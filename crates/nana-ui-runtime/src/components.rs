@@ -9,14 +9,15 @@ use nana_ui_core::{
     SemanticColorRole, SwitchControlPosition, UI_BASE_TEXT_SIZE, WordBreakSpec,
 };
 
+/// The **default theme's** status-tone mapping.
+///
+/// Component constructors have no installed theme to ask, so they read the
+/// default recipe. Paths that do have one — extraction, geometry — go through
+/// `world.theme().recipes().status()` instead, which is what lets a theme move
+/// the mapping. Same relationship as [`nana_ui_core::space`] to the installed
+/// spacing tokens.
 pub(crate) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    match tone {
-        nana_ui_core::StatusTone::Neutral => SemanticColorRole::Muted,
-        nana_ui_core::StatusTone::Info => SemanticColorRole::Accent,
-        nana_ui_core::StatusTone::Success => SemanticColorRole::Success,
-        nana_ui_core::StatusTone::Warning => SemanticColorRole::Warning,
-        nana_ui_core::StatusTone::Danger => SemanticColorRole::Danger,
-    }
+    nana_ui_core::StatusRecipe::DEFAULT.role(tone)
 }
 
 use crate::{NodeKind, StableNodeId};
@@ -1150,26 +1151,31 @@ pub struct ComponentElevation {
 }
 
 impl ComponentElevation {
-    /// Lilia `--shadow-surface`: `0 10px 30px -24px` (dark) / `0 10px 26px -24px` (light).
-    pub fn surface_shadow(theme_mode: nana_ui_core::ThemeMode) -> Self {
-        match theme_mode {
-            nana_ui_core::ThemeMode::Dark => Self {
-                color: [0.0, 0.0, 0.0, 0.62],
-                offset_x: 0.0,
-                offset_y: 10.0,
-                blur_radius: 30.0,
-                spread_radius: -24.0,
-                inset: false,
-            },
-            nana_ui_core::ThemeMode::Light => Self {
-                color: [17.0 / 255.0, 24.0 / 255.0, 39.0 / 255.0, 0.24],
-                offset_x: 0.0,
-                offset_y: 10.0,
-                blur_radius: 26.0,
-                spread_radius: -24.0,
-                inset: false,
-            },
+    /// One elevation step of a theme, as the scene consumes it.
+    pub fn from_shadow(shadow: nana_ui_core::ShadowToken) -> Self {
+        Self {
+            color: shadow.color.as_rgba_array(),
+            offset_x: shadow.offset_x,
+            offset_y: shadow.offset_y,
+            blur_radius: shadow.blur_radius,
+            spread_radius: shadow.spread_radius,
+            inset: shadow.inset,
         }
+    }
+
+    /// The **default theme's** lifted-surface shadow for `theme_mode`.
+    ///
+    /// Lilia `--shadow-surface`: `0 10px 30px -24px` (dark) / `0 10px 26px
+    /// -24px` (light). The two used to be a `match theme_mode` written here,
+    /// which made this function the authority on how high a menu floats. It is
+    /// now [`ElevationRole::Surface`](nana_ui_core::ElevationRole) on the
+    /// theme; callers holding a world should ask it via
+    /// `world.theme().shadow(..)` so an installed theme can move the ramp.
+    pub fn surface_shadow(theme_mode: nana_ui_core::ThemeMode) -> Self {
+        Self::from_shadow(
+            nana_ui_core::EffectTokens::for_mode(theme_mode)
+                .shadow(nana_ui_core::ElevationRole::Surface),
+        )
     }
 
     pub fn from_box_shadow(shadow: nana_ui_core::BoxShadowSpec) -> Self {

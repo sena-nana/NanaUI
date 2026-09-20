@@ -507,8 +507,11 @@ impl UiWorld {
         Ok(())
     }
 
-    pub(super) fn apply_style_model(&mut self, next: StyleModelRef) {
-        if self.style_model == next {
+    pub(super) fn apply_compiled_theme(&mut self, next: Arc<nana_ui_core::CompiledTheme>) {
+        // Values, not identity. `CompiledTheme::is_same_revision` is the cheap
+        // question and it trusts the author's generation bump; an install has
+        // to be right even for a theme that forgot to bump.
+        if *self.theme == *next {
             return;
         }
         let hover_ids = self.hover_transitions.keys().copied().collect::<Vec<_>>();
@@ -516,7 +519,8 @@ impl UiWorld {
             self.cancel_hover_transition(id);
         }
         let previous_metrics = self.style_model.metrics;
-        self.style_model = next;
+        self.style_model = next.style_model();
+        self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
         let mut bits = DirtyMask::RENDER;
         let metrics_changed = self.style_model.metrics != previous_metrics;
@@ -617,8 +621,10 @@ impl UiWorld {
             self.start_component_track(
                 id,
                 crate::component_animation_kinds::HOVER,
-                nana_ui_core::motion::HOVER_COLOR,
-                crate::Easing::EaseOutCubic,
+                self.theme.duration(nana_ui_core::MotionRole::HoverColor),
+                self.theme
+                    .motion()
+                    .easing(nana_ui_core::EasingRole::Standard),
                 crate::AnimatableProperty::Progress,
                 crate::MotionValue::Scalar(0.0),
                 crate::MotionValue::Scalar(1.0),

@@ -1,10 +1,31 @@
 use serde::{Deserialize, Serialize};
 
+pub mod compiled;
+pub mod definition;
+pub mod recipe;
+pub mod tokens;
+
+pub use compiled::{CompiledTheme, builtin_theme, builtin_theme_arc};
+pub use definition::{
+    DesignTokens, FoundationTokens, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId,
+    ThemeIdentity, ThemeSchemaVersion,
+};
+pub use recipe::{
+    ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft, ButtonVariantRecipe, CompiledRecipes,
+    ComponentRecipe, ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, StatusRecipe,
+};
+pub use tokens::{
+    AccentRamp, BorderTokens, BorderWidth, EasingRole, EffectTokens, ElevationRole, LineRole,
+    MotionRole, MotionTokens, OpacityTokens, ShadowToken, SpacingStep, SpacingTokens, StateLayer,
+    SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens, TextWeight, TypeRole,
+    TypographyTokens,
+};
+
 /// NanaUI's standard body and medium-control text size.
-pub const UI_BASE_TEXT_SIZE: f32 = 13.0;
+pub const UI_BASE_TEXT_SIZE: f32 = tokens::TypographyTokens::DEFAULT.body;
 
 /// 1px rule. Not a [`space`] step.
-pub const HAIRLINE: f32 = 1.0;
+pub const HAIRLINE: f32 = tokens::BorderTokens::DEFAULT.hairline;
 
 /// Spacing scale shared by every NanaUI component family.
 ///
@@ -17,26 +38,35 @@ pub const HAIRLINE: f32 = 1.0;
 /// container padding. Control-internal metrics stay in [`ThemeMetrics`].
 /// Off-grid leftovers (1, 3, 5, 7) map onto [`XXS`] / [`XS`] / [`SM`].
 pub mod space {
+    use super::tokens::SpacingTokens;
+
+    /// The default theme's spacing scale. These are **not** a second
+    /// authority: each one reads the matching field of
+    /// [`SpacingTokens::DEFAULT`], which is where the number lives. They exist
+    /// for the call sites that cannot reach an installed theme yet; a site
+    /// that can should read `theme.spacing()` instead.
+    const STEPS: SpacingTokens = SpacingTokens::DEFAULT;
+
     /// Hairline separation; adjacent rows in a dense list.
-    pub const XXS: f32 = 2.0;
+    pub const XXS: f32 = STEPS.xxs;
     /// Menu and popover inner padding; tight icon groups.
-    pub const XS: f32 = 4.0;
+    pub const XS: f32 = STEPS.xs;
     /// Icon-to-label inside one control.
-    pub const SM: f32 = 6.0;
+    pub const SM: f32 = STEPS.sm;
     /// The default gap between related controls in a row.
-    pub const MD: f32 = 8.0;
+    pub const MD: f32 = STEPS.md;
     /// Row inner padding; looser inline groups.
-    pub const LG: f32 = 10.0;
+    pub const LG: f32 = STEPS.lg;
     /// Between grouped blocks inside a panel.
-    pub const XL: f32 = 12.0;
+    pub const XL: f32 = STEPS.xl;
     /// Panel vertical padding.
-    pub const XXL: f32 = 14.0;
+    pub const XXL: f32 = STEPS.xxl;
     /// Panel horizontal padding; between sections.
-    pub const XXXL: f32 = 16.0;
+    pub const XXXL: f32 = STEPS.xxxl;
     /// Page top inset.
-    pub const PAGE_TIGHT: f32 = 20.0;
+    pub const PAGE_TIGHT: f32 = STEPS.page_tight;
     /// Page horizontal inset; between top-level page sections.
-    pub const PAGE: f32 = 24.0;
+    pub const PAGE: f32 = STEPS.page;
 }
 
 /// Product type scale: font size and weight steps shared by desktop shells.
@@ -44,35 +74,39 @@ pub mod space {
 /// [`BODY`] is [`UI_BASE_TEXT_SIZE`]. Card-title and metric display sizes
 /// stay with the application when they are product-specific.
 pub mod type_scale {
-    use super::UI_BASE_TEXT_SIZE;
+    use super::tokens::TypographyTokens;
+
+    /// The default theme's type scale. Derived, like [`super::space`]: the
+    /// numbers live on [`TypographyTokens::DEFAULT`].
+    const SCALE: TypographyTokens = TypographyTokens::DEFAULT;
 
     /// Body line box (small/medium controls).
-    pub const LINE: f32 = 16.0;
+    pub const LINE: f32 = SCALE.line;
     /// Tall line box (large controls, card titles).
-    pub const LINE_TALL: f32 = 18.0;
+    pub const LINE_TALL: f32 = SCALE.line_tall;
     /// Compact chrome caption (hints, section titles, toast copy).
-    pub const HINT: f32 = 11.0;
+    pub const HINT: f32 = SCALE.hint;
     /// Caption / meta line (timestamps, counts, badges).
-    pub const META: f32 = 12.0;
-    /// Body copy. Same value as [`UI_BASE_TEXT_SIZE`].
-    pub const BODY: f32 = UI_BASE_TEXT_SIZE;
+    pub const META: f32 = SCALE.meta;
+    /// Body copy. Same value as [`super::UI_BASE_TEXT_SIZE`].
+    pub const BODY: f32 = SCALE.body;
     /// Section title inside a page or card.
-    pub const SECTION: f32 = 14.0;
+    pub const SECTION: f32 = SCALE.section;
     /// In-page heading (profile name, dialog title).
-    pub const HEADING: f32 = 16.0;
+    pub const HEADING: f32 = SCALE.heading;
     /// Page title (settings).
-    pub const TITLE: f32 = 18.0;
+    pub const TITLE: f32 = SCALE.title;
     /// Display / hero line.
-    pub const DISPLAY: f32 = 20.0;
+    pub const DISPLAY: f32 = SCALE.display;
 
     /// Regular body weight.
-    pub const REGULAR: u16 = 400;
+    pub const REGULAR: u16 = SCALE.regular;
     /// Medium emphasis (labels, card titles).
-    pub const MEDIUM: u16 = 500;
+    pub const MEDIUM: u16 = SCALE.medium;
     /// Semibold headings.
-    pub const SEMIBOLD: u16 = 600;
+    pub const SEMIBOLD: u16 = SCALE.semibold;
     /// Bold chrome (sidebar section titles).
-    pub const BOLD: u16 = 700;
+    pub const BOLD: u16 = SCALE.bold;
 }
 
 /// Non-color design tokens shared by layout and interaction primitives.
@@ -103,21 +137,6 @@ pub struct ThemeMetrics {
     /// the value the Large step used when it was a spacing constant.
     #[serde(default = "default_large_control_padding_x")]
     pub large_control_padding_x: f32,
-    /// **Nothing reads this.** Every real duration is a `const` in
-    /// [`crate::motion`] — `HOVER_COLOR` 120, `OVERLAY_FADE` 140,
-    /// `MENU_OPACITY` 160, `MENU_POP` 180, `SIDEBAR_COLLAPSE` 260,
-    /// `SPINNER_ROTATION` 900, `LOADING_SPIN` 800, `SKELETON_PULSE` 1400 —
-    /// so changing this field changes nothing a user can see.
-    ///
-    /// Kept rather than deleted because the two are not equivalent choices:
-    /// wiring them up means deciding which of those eight durations each token
-    /// owns, and `SIDEBAR_COLLAPSE` (260) already disagrees with
-    /// `motion_standard_ms` (240). That decision is Issue #100's Motion token
-    /// layer, not a rename. Until then, treat this as reserved.
-    /// See `docs/theme.md` §1.4 F2.
-    pub motion_fast_ms: u16,
-    /// Reserved, like [`Self::motion_fast_ms`]. Nothing reads it.
-    pub motion_standard_ms: u16,
     /// Scrollbar chrome geometry.
     ///
     /// Composed rather than flattened: five scrollbar-shaped numbers do not
@@ -345,8 +364,6 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     field_padding_x: space::LG,
     list_item_padding_x: space::MD,
     large_control_padding_x: space::XXL,
-    motion_fast_ms: 120,
-    motion_standard_ms: 240,
     scrollbar: crate::scrollbar::SCROLLBAR_METRICS,
 };
 
@@ -432,25 +449,51 @@ mod tests {
         assert_eq!(restored, ThemeMode::Light);
     }
 
-    /// Issue #101 §1.4 F2: these two fields are reserved, and the audit says
-    /// so because nothing reads them. If that stops being true, the audit is
-    /// stale and this test is where it says so.
+    /// Issue #101 §1.4 F2 recorded `motion_fast_ms` / `motion_standard_ms` as
+    /// dead fields on [`super::ThemeMetrics`]. They are gone; the eight real
+    /// durations are [`MotionRole`](super::MotionRole) tokens, and the `const`s
+    /// in [`crate::motion`] read the theme rather than the other way round.
+    ///
+    /// `SIDEBAR_COLLAPSE` is the one that made the old pair unwirable — 260,
+    /// against a "standard" of 240. It now has a role of its own, which is
+    /// what "decide which duration each token owns" actually looked like.
     #[test]
-    fn the_motion_metrics_are_still_reserved_rather_than_wired() {
-        let metrics = super::UI_METRICS;
-        assert_eq!(metrics.motion_fast_ms, 120);
-        assert_eq!(metrics.motion_standard_ms, 240);
-        // The real durations live in `crate::motion` and do not agree with the
-        // reserved tokens, which is precisely why wiring them is a decision
-        // rather than a rename.
+    fn every_motion_duration_is_a_theme_token_now() {
+        use super::MotionRole;
+        let motion = super::MotionTokens::DEFAULT;
+        for (role, duration) in [
+            (MotionRole::HoverColor, crate::motion::HOVER_COLOR),
+            (MotionRole::OverlayFade, crate::motion::OVERLAY_FADE),
+            (MotionRole::MenuOpacity, crate::motion::MENU_OPACITY),
+            (MotionRole::MenuPop, crate::motion::MENU_POP),
+            (MotionRole::SidebarCollapse, crate::motion::SIDEBAR_COLLAPSE),
+            (MotionRole::SkeletonPulse, crate::motion::SKELETON_PULSE),
+            (MotionRole::SpinnerRotation, crate::motion::SPINNER_ROTATION),
+            (MotionRole::LoadingSpin, crate::motion::LOADING_SPIN),
+        ] {
+            assert_eq!(
+                motion.duration(role),
+                duration,
+                "{role:?} must be the constant's only source"
+            );
+        }
         assert_eq!(
-            crate::motion::HOVER_COLOR,
-            std::time::Duration::from_millis(u64::from(metrics.motion_fast_ms)),
+            motion.duration(MotionRole::SidebarCollapse),
+            std::time::Duration::from_millis(260)
         );
-        assert_ne!(
-            crate::motion::SIDEBAR_COLLAPSE,
-            std::time::Duration::from_millis(u64::from(metrics.motion_standard_ms)),
-        );
+    }
+
+    /// The bare `const`s are a view of the default theme, not a second copy of
+    /// it. Moving a token has to move the constant with it.
+    #[test]
+    fn the_spacing_and_type_constants_read_the_default_tokens() {
+        let spacing = super::SpacingTokens::DEFAULT;
+        assert_eq!(super::space::XXS, spacing.xxs);
+        assert_eq!(super::space::PAGE, spacing.page);
+        let type_tokens = super::TypographyTokens::DEFAULT;
+        assert_eq!(super::type_scale::BODY, type_tokens.body);
+        assert_eq!(super::type_scale::BOLD, type_tokens.bold);
+        assert_eq!(super::HAIRLINE, super::BorderTokens::DEFAULT.hairline);
     }
 
     #[test]

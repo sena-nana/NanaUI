@@ -67,21 +67,34 @@ pub use property::{
 
 use std::time::Duration;
 
-/// Shared motion durations aligned with the LiliaUI motion spec. Surfaces wire
-/// these in per interaction; the constants only centralize the values.
-pub const HOVER_COLOR: Duration = Duration::from_millis(120);
+/// The **default theme's** motion durations.
+///
+/// These are a view of [`MotionTokens::DEFAULT`], not a second authority: the
+/// numbers live on the theme, and each constant reads its role. A surface that
+/// can reach an installed theme should ask it —
+/// `theme.duration(MotionRole::HoverColor)` — because only that follows a
+/// theme that moved the value. Issue #101 §1.4 F2 is why the direction matters:
+/// when the durations were the authority and the theme merely had two unread
+/// `motion_*_ms` fields, no theme could change a transition at all.
+const DEFAULT_MOTION: crate::theme::MotionTokens = crate::theme::MotionTokens::DEFAULT;
+
+/// Hover / pressed colour cross-fade on a control.
+pub const HOVER_COLOR: Duration = DEFAULT_MOTION.duration(crate::theme::MotionRole::HoverColor);
 /// Overlay fade-in/out duration.
-pub const OVERLAY_FADE: Duration = Duration::from_millis(140);
+pub const OVERLAY_FADE: Duration = DEFAULT_MOTION.duration(crate::theme::MotionRole::OverlayFade);
 /// Menu opacity transition duration.
-pub const MENU_OPACITY: Duration = Duration::from_millis(160);
+pub const MENU_OPACITY: Duration = DEFAULT_MOTION.duration(crate::theme::MotionRole::MenuOpacity);
 /// Menu pop-in scale/translate duration.
-pub const MENU_POP: Duration = Duration::from_millis(180);
+pub const MENU_POP: Duration = DEFAULT_MOTION.duration(crate::theme::MotionRole::MenuPop);
 /// Sidebar collapse/expand duration.
-pub const SIDEBAR_COLLAPSE: Duration = Duration::from_millis(260);
+pub const SIDEBAR_COLLAPSE: Duration =
+    DEFAULT_MOTION.duration(crate::theme::MotionRole::SidebarCollapse);
 /// Skeleton pulse cycle duration.
-pub const SKELETON_PULSE: Duration = Duration::from_millis(1400);
+pub const SKELETON_PULSE: Duration =
+    DEFAULT_MOTION.duration(crate::theme::MotionRole::SkeletonPulse);
 
 /// One full turn of an indeterminate busy indicator.
-pub const SPINNER_ROTATION: Duration = Duration::from_millis(900);
+pub const SPINNER_ROTATION: Duration =
+    DEFAULT_MOTION.duration(crate::theme::MotionRole::SpinnerRotation);
 /// Button / switch / card loading indicator cycle.
-pub const LOADING_SPIN: Duration = Duration::from_millis(800);
+pub const LOADING_SPIN: Duration = DEFAULT_MOTION.duration(crate::theme::MotionRole::LoadingSpin);

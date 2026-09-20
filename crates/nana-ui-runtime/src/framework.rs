@@ -696,6 +696,8 @@ impl<V: View> ViewContext<'_, V> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameworkError {
     World(UiWorldError),
+    /// A theme definition failed validation, so nothing was installed.
+    ThemeCompile(nana_ui_core::ThemeCompileError),
     MissingView(StableNodeId),
     ViewType(StableNodeId),
     DuplicateAction(ActionId),
@@ -744,6 +746,7 @@ impl fmt::Display for FrameworkError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::World(error) => error.fmt(formatter),
+            Self::ThemeCompile(error) => error.fmt(formatter),
             Self::MissingView(id) => write!(formatter, "view {} does not exist", id.get()),
             Self::ViewType(id) => write!(formatter, "view {} has a different type", id.get()),
             Self::DuplicateAction(id) => write!(formatter, "action `{id}` is already registered"),
@@ -882,6 +885,9 @@ pub struct AppContext {
     /// Opt-in reproject when installed metrics change, registered from
     /// [`ComponentView::wants_metrics_reproject`].
     metrics_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    /// Opt-in reproject when the installed component recipes change,
+    /// registered from [`ComponentView::wants_recipe_reproject`].
+    recipe_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
@@ -1170,6 +1176,7 @@ impl AppContext {
             views: HashMap::new(),
             child_reproject_views: HashMap::new(),
             metrics_reproject_views: HashMap::new(),
+            recipe_reproject_views: HashMap::new(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             event_handlers: HashMap::new(),
@@ -1416,6 +1423,18 @@ impl AppContext {
         Ok(())
     }
 
+    /// Same shape as [`Self::reproject_metrics_views`], different trigger.
+    fn reproject_recipe_views(&mut self) -> Result<(), FrameworkError> {
+        let ids: Vec<_> = self.recipe_reproject_views.keys().copied().collect();
+        for id in ids {
+            let Some(reproject) = self.recipe_reproject_views.get(&id).copied() else {
+                continue;
+            };
+            reproject(self, id)?;
+        }
+        Ok(())
+    }
+
     fn drain_child_reprojects(&mut self) -> Result<(), FrameworkError> {
         if self.draining_child_reprojects {
             return Ok(());
@@ -1467,17 +1486,39 @@ impl AppContext {
     /// Resets palette alphas. Hosts that apply window backdrop follow with
     /// [`Self::set_style_tokens`].
     pub fn set_theme(&mut self, mode: ThemeMode) -> Result<bool, FrameworkError> {
-        if self.world.style_model() == nana_ui_core::StyleModelRef::new(mode) {
-            return Ok(false);
-        }
-        let mut queue = MutationQueue::new();
-        queue.set_theme(mode);
-        self.world.commit(queue)?;
-        Ok(true)
+        self.install_theme(nana_ui_core::builtin_theme_arc(mode))
+    }
+
+    /// Compile, validate and install a design system.
+    ///
+    /// This is the primary theme entry point. A definition that fails
+    /// validation — a negative radius, a font size of zero, a recipe slot the
+    /// author forgot — is rejected here and nothing is installed. Issue #102
+    /// §6 calls that fail-closed; the practical version is that a broken theme
+    /// produces one error with a token name in it instead of a screen that is
+    /// subtly wrong in one corner.
+    pub fn set_theme_definition(
+        &mut self,
+        definition: &nana_ui_core::ThemeDefinition,
+    ) -> Result<bool, FrameworkError> {
+        let compiled = definition.compile().map_err(FrameworkError::ThemeCompile)?;
+        self.install_theme(Arc::new(compiled))
+    }
+
+    /// Install an already-compiled design system.
+    pub fn set_theme_tokens(
+        &mut self,
+        theme: Arc<nana_ui_core::CompiledTheme>,
+    ) -> Result<bool, FrameworkError> {
+        self.install_theme(theme)
     }
 
     /// Install Style Model tokens, including backdrop alphas on Surface /
     /// Background / Titlebar.
+    ///
+    /// A convenience over [`Self::set_theme_definition`] for hosts that only
+    /// move colour and control metrics: the remaining categories come from the
+    /// built-in definition for `mode`. It validates like any other install.
     pub fn set_style_tokens(
         &mut self,
         mode: ThemeMode,
@@ -1485,16 +1526,39 @@ impl AppContext {
         palette: nana_ui_core::SemanticPalette,
         titlebar: nana_ui_core::SemanticColor,
     ) -> Result<bool, FrameworkError> {
-        let next = nana_ui_core::StyleModelRef::with_tokens(mode, metrics, palette, titlebar);
-        if self.world.style_model() == next {
+        let definition = nana_ui_core::ThemeDefinition::for_mode(mode)
+            .with_metrics(metrics)
+            .with_palette(palette)
+            .with_titlebar(Some(titlebar));
+        self.set_theme_definition(&definition)
+    }
+
+    /// Commit a theme and reproject whatever the change can reach no other way.
+    ///
+    /// Two opt-in reprojections, deliberately separate. Metrics reprojection
+    /// exists because some geometry is derived at projection time and no
+    /// layout-intent field names it. Recipe reprojection exists because a
+    /// component recipe decides *which role* a component authors onto its own
+    /// node, and only the component writes that node. Keeping them apart is
+    /// what stops a palette-only switch — the common case, and the one Issue
+    /// #101 §4 measured at zero reprojections — from paying for either.
+    fn install_theme(
+        &mut self,
+        theme: Arc<nana_ui_core::CompiledTheme>,
+    ) -> Result<bool, FrameworkError> {
+        if *self.world.theme() == *theme {
             return Ok(false);
         }
-        let metrics_changed = self.world.theme_metrics() != metrics;
+        let metrics_changed = self.world.theme_metrics() != theme.metrics();
+        let recipes_changed = self.world.theme().recipes() != theme.recipes();
         let mut queue = MutationQueue::new();
-        queue.set_style_tokens(mode, metrics, palette, titlebar);
+        queue.set_theme_tokens(theme);
         self.world.commit(queue)?;
         if metrics_changed {
             self.reproject_metrics_views()?;
+        }
+        if recipes_changed {
+            self.reproject_recipe_views()?;
         }
         Ok(true)
     }
@@ -2639,6 +2703,8 @@ impl AppContext {
         self.child_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.metrics_reproject_views
+            .retain(|id, _| !removed.contains(id));
+        self.recipe_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects
             .retain(|id| !removed.contains(id));

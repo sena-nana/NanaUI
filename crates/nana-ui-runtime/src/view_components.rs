@@ -270,6 +270,24 @@ pub trait ComponentView: Clone + Send + 'static {
     {
         false
     }
+
+    /// Opt in to one reprojection when the installed component recipes change.
+    ///
+    /// A [`ComponentRecipe`](nana_ui_core::ComponentRecipe) that this component
+    /// reads in `project` — deciding which `SemanticColorRole` to author onto
+    /// its own node — cannot reach the node any other way: the role lives on
+    /// the authored `NodeStyle`, and only the component writes that. This is
+    /// the narrow case Issue #101 §1.6 left open for reprojection, opted into
+    /// per component rather than made global.
+    ///
+    /// Separate from [`Self::wants_metrics_reproject`] so a palette-only theme
+    /// switch reprojects nothing. Defaults to `false`.
+    fn wants_recipe_reproject() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -544,6 +562,13 @@ impl ComponentView for Button {
         }
     }
 
+    /// The button recipe decides which roles `project` authors onto the node,
+    /// and nothing downstream can re-decide that. Opting in is what makes a
+    /// recipe change reach buttons that are already on screen.
+    fn wants_recipe_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let text = TextContent {
             value: self.label.clone(),
@@ -573,81 +598,28 @@ impl ComponentView for Button {
             mutations.set_standard_visual(id, Some(visual));
         }
         let mut effective_style = self.style.clone();
+        let recipe = world.theme().recipes().button();
         if !self.style_override {
-            effective_style.foreground = Some(match self.kind {
-                nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentOnSoft,
-                nana_ui_core::ButtonKind::Warning => nana_ui_core::SemanticColorRole::Warning,
-                nana_ui_core::ButtonKind::Danger => nana_ui_core::SemanticColorRole::Danger,
-                nana_ui_core::ButtonKind::Text => nana_ui_core::SemanticColorRole::Accent,
-                nana_ui_core::ButtonKind::Ghost
-                | nana_ui_core::ButtonKind::Subtle
-                | nana_ui_core::ButtonKind::Selected
-                | nana_ui_core::ButtonKind::Menu => nana_ui_core::SemanticColorRole::Text,
-            });
-            effective_style.background = match self.kind {
-                nana_ui_core::ButtonKind::Ghost
-                | nana_ui_core::ButtonKind::Danger
-                | nana_ui_core::ButtonKind::Text => None,
-                nana_ui_core::ButtonKind::Subtle | nana_ui_core::ButtonKind::Menu => {
-                    Some(nana_ui_core::SemanticColorRole::Subtle)
-                }
-                nana_ui_core::ButtonKind::Selected => {
-                    Some(nana_ui_core::SemanticColorRole::Selected)
-                }
-                nana_ui_core::ButtonKind::Primary => {
-                    Some(nana_ui_core::SemanticColorRole::AccentSoft)
-                }
-                nana_ui_core::ButtonKind::Warning => {
-                    Some(nana_ui_core::SemanticColorRole::WarningSoft)
-                }
-            };
-            effective_style.border = if matches!(
-                self.kind,
-                nana_ui_core::ButtonKind::Subtle | nana_ui_core::ButtonKind::Menu
-            ) {
-                Some(nana_ui_core::SemanticColorRole::BorderSoft)
-            } else {
-                None
-            };
-            effective_style.interaction.hovered.background = Some(match self.kind {
-                nana_ui_core::ButtonKind::Primary => {
-                    nana_ui_core::SemanticColorRole::AccentSoftHover
-                }
-                nana_ui_core::ButtonKind::Warning => {
-                    nana_ui_core::SemanticColorRole::WarningSoftHover
-                }
-                nana_ui_core::ButtonKind::Danger => {
-                    nana_ui_core::SemanticColorRole::DangerSoftHover
-                }
-                nana_ui_core::ButtonKind::Selected => {
-                    nana_ui_core::SemanticColorRole::SelectedHover
-                }
-                _ => nana_ui_core::SemanticColorRole::Hover,
-            });
-            effective_style.interaction.pressed.background = Some(match self.kind {
-                nana_ui_core::ButtonKind::Primary => {
-                    nana_ui_core::SemanticColorRole::AccentSoftPressed
-                }
-                nana_ui_core::ButtonKind::Warning => {
-                    nana_ui_core::SemanticColorRole::WarningSoftPressed
-                }
-                nana_ui_core::ButtonKind::Danger => {
-                    nana_ui_core::SemanticColorRole::DangerSoftPressed
-                }
-                nana_ui_core::ButtonKind::Selected => {
-                    nana_ui_core::SemanticColorRole::SelectedPressed
-                }
-                _ => nana_ui_core::SemanticColorRole::Active,
-            });
+            // These five slots used to be five inline `match self.kind` tables
+            // right here, which made this function the design authority on what
+            // a primary button looks like. The variant is still the selector;
+            // the answer now comes from the installed theme.
+            let variant = recipe.variant(self.kind);
+            effective_style.foreground = Some(variant.foreground);
+            effective_style.background = variant.background;
+            effective_style.border = variant.border;
+            effective_style.interaction.hovered.background = Some(variant.hovered_background);
+            effective_style.interaction.pressed.background = Some(variant.pressed_background);
         }
         if self.invalid {
-            effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.hovered.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.pressed.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
-            effective_style.interaction.focused.border =
-                Some(nana_ui_core::SemanticColorRole::Danger);
+            // Invalid is an *overlay* state, not an exclusive one: the variant
+            // keeps its fill and gains a stroke in every state. Issue #100 §4
+            // asks recipes to say which states stack; this is that one.
+            let border = Some(recipe.invalid_border);
+            effective_style.border = border;
+            effective_style.interaction.hovered.border = border;
+            effective_style.interaction.pressed.border = border;
+            effective_style.interaction.focused.border = border;
         }
         project_common(
             id,

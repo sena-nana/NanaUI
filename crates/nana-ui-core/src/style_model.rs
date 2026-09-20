@@ -48,6 +48,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::semantics::{ButtonKind, CardKind, ControlSize, StatusTone};
+use crate::theme::tokens::{AccentRamp, OpacityTokens, StateLayer};
 use crate::theme::{ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS};
 
 /// Backend-neutral RGBA in 0..=1.
@@ -290,6 +291,12 @@ pub struct SemanticPalette {
     pub danger: SemanticColor,
 }
 
+/// The accent family the dark palette is built from. Naming it once is what
+/// keeps `accent_soft` and friends from drifting off `accent`.
+const ACCENT_DARK: AccentRamp = AccentRamp::DARK;
+/// The light palette's accent family.
+const ACCENT_LIGHT: AccentRamp = AccentRamp::LIGHT;
+
 impl SemanticPalette {
     pub const fn dark() -> Self {
         Self {
@@ -307,13 +314,13 @@ impl SemanticPalette {
             text: SemanticColor::rgb8(221, 221, 221),
             muted: SemanticColor::rgb8(163, 163, 163),
             faint: SemanticColor::rgb8(90, 90, 90),
-            accent: SemanticColor::rgb8(123, 185, 240),
-            accent_strong: SemanticColor::rgb8(73, 145, 215),
-            accent_soft: SemanticColor::rgba8(123, 185, 240, 0.14),
-            accent_soft_hover: SemanticColor::rgba8(123, 185, 240, 0.20),
-            accent_soft_pressed: SemanticColor::rgba8(123, 185, 240, 0.23),
-            accent_on_soft: SemanticColor::rgb8(123, 185, 240),
-            accent_text: SemanticColor::rgb8(13, 22, 34),
+            accent: ACCENT_DARK.base,
+            accent_strong: ACCENT_DARK.strong,
+            accent_soft: ACCENT_DARK.soft(),
+            accent_soft_hover: ACCENT_DARK.soft_hover(),
+            accent_soft_pressed: ACCENT_DARK.soft_pressed(),
+            accent_on_soft: ACCENT_DARK.on_soft,
+            accent_text: ACCENT_DARK.text,
             success: SemanticColor::rgb8(63, 185, 80),
             warning: SemanticColor::rgb8(212, 168, 91),
             danger: SemanticColor::rgb8(244, 113, 116),
@@ -336,13 +343,13 @@ impl SemanticPalette {
             text: SemanticColor::rgb8(26, 26, 31),
             muted: SemanticColor::rgb8(90, 97, 110),
             faint: SemanticColor::rgb8(156, 163, 175),
-            accent: SemanticColor::rgb8(73, 145, 215),
-            accent_strong: SemanticColor::rgb8(44, 126, 214),
-            accent_soft: SemanticColor::rgba8(73, 145, 215, 0.10),
-            accent_soft_hover: SemanticColor::rgba8(73, 145, 215, 0.20),
-            accent_soft_pressed: SemanticColor::rgba8(73, 145, 215, 0.23),
-            accent_on_soft: SemanticColor::rgb8(0, 85, 159),
-            accent_text: SemanticColor::rgba(1.0, 1.0, 1.0, 1.0),
+            accent: ACCENT_LIGHT.base,
+            accent_strong: ACCENT_LIGHT.strong,
+            accent_soft: ACCENT_LIGHT.soft(),
+            accent_soft_hover: ACCENT_LIGHT.soft_hover(),
+            accent_soft_pressed: ACCENT_LIGHT.soft_pressed(),
+            accent_on_soft: ACCENT_LIGHT.on_soft,
+            accent_text: ACCENT_LIGHT.text,
             success: SemanticColor::rgb8(16, 126, 57),
             warning: SemanticColor::rgb8(184, 119, 28),
             danger: SemanticColor::rgb8(201, 60, 60),
@@ -356,7 +363,70 @@ impl SemanticPalette {
         }
     }
 
-    pub const fn get(self, role: SemanticColorRole) -> SemanticColor {
+    /// Re-derive the whole accent family from one ramp.
+    ///
+    /// Setting `accent` alone leaves `accent_soft` / `accent_soft_hover` /
+    /// `accent_soft_pressed` on the previous hue, because those three are the
+    /// base accent at three alphas. Nothing enforced that before this method
+    /// existed, which is why a custom accent used to produce a button whose
+    /// fill and label disagreed about what the accent was.
+    pub const fn with_accent_ramp(mut self, ramp: AccentRamp) -> Self {
+        self.accent = ramp.base;
+        self.accent_strong = ramp.strong;
+        self.accent_soft = ramp.soft();
+        self.accent_soft_hover = ramp.soft_hover();
+        self.accent_soft_pressed = ramp.soft_pressed();
+        self.accent_on_soft = ramp.on_soft;
+        self.accent_text = ramp.text;
+        self
+    }
+
+    /// The alpha channel of the field a role names, if it names one.
+    ///
+    /// `None` for the derived roles (`WarningSoft`, `Titlebar`, the code-token
+    /// roles): those have no field of their own, so there is nothing to write.
+    /// Returning `None` rather than silently doing nothing is what lets a
+    /// caller — the window backdrop, today — notice that it aimed at a role
+    /// that cannot hold an alpha.
+    pub fn alpha_mut(&mut self, role: SemanticColorRole) -> Option<&mut f32> {
+        Some(match role {
+            SemanticColorRole::Background => &mut self.background.a,
+            SemanticColorRole::Surface => &mut self.surface.a,
+            SemanticColorRole::Subtle => &mut self.subtle.a,
+            SemanticColorRole::Hover => &mut self.hover.a,
+            SemanticColorRole::Active => &mut self.active.a,
+            SemanticColorRole::Selected => &mut self.selected.a,
+            SemanticColorRole::SelectedHover => &mut self.selected_hover.a,
+            SemanticColorRole::SelectedPressed => &mut self.selected_pressed.a,
+            SemanticColorRole::Border => &mut self.border.a,
+            SemanticColorRole::BorderSoft => &mut self.border_soft.a,
+            SemanticColorRole::BorderStrong => &mut self.border_strong.a,
+            SemanticColorRole::Text => &mut self.text.a,
+            SemanticColorRole::Muted => &mut self.muted.a,
+            SemanticColorRole::Faint => &mut self.faint.a,
+            SemanticColorRole::Accent => &mut self.accent.a,
+            SemanticColorRole::AccentStrong => &mut self.accent_strong.a,
+            SemanticColorRole::AccentSoft => &mut self.accent_soft.a,
+            SemanticColorRole::AccentSoftHover => &mut self.accent_soft_hover.a,
+            SemanticColorRole::AccentSoftPressed => &mut self.accent_soft_pressed.a,
+            SemanticColorRole::AccentOnSoft => &mut self.accent_on_soft.a,
+            SemanticColorRole::AccentText => &mut self.accent_text.a,
+            SemanticColorRole::Success => &mut self.success.a,
+            SemanticColorRole::Warning => &mut self.warning.a,
+            SemanticColorRole::Danger => &mut self.danger.a,
+            _ => return None,
+        })
+    }
+
+    /// Resolve a role against this palette and the theme's state-layer alphas.
+    ///
+    /// The `opacity` argument is not ceremony. The soft warning and danger
+    /// fills are the base colour at a theme-chosen alpha, and that alpha used
+    /// to be a literal in this function — with the light/dark difference
+    /// decided by sniffing `background.r > 0.5`. A theme with a mid-grey
+    /// background got the wrong branch and no theme could move the number.
+    /// Taking the alphas as an argument is what makes them a token.
+    pub const fn get_in(self, role: SemanticColorRole, opacity: OpacityTokens) -> SemanticColor {
         match role {
             SemanticColorRole::Background => self.background,
             SemanticColorRole::Surface => self.surface,
@@ -382,24 +452,24 @@ impl SemanticPalette {
             SemanticColorRole::Success => self.success,
             SemanticColorRole::Warning => self.warning,
             SemanticColorRole::WarningSoft => SemanticColor {
-                a: if self.background.r > 0.5 { 0.12 } else { 0.16 },
+                a: opacity.resolve(StateLayer::WarningSoft),
                 ..self.warning
             },
             SemanticColorRole::WarningSoftHover => SemanticColor {
-                a: 0.20,
+                a: opacity.resolve(StateLayer::WarningSoftHover),
                 ..self.warning
             },
             SemanticColorRole::WarningSoftPressed => SemanticColor {
-                a: 0.24,
+                a: opacity.resolve(StateLayer::WarningSoftPressed),
                 ..self.warning
             },
             SemanticColorRole::Danger => self.danger,
             SemanticColorRole::DangerSoftHover => SemanticColor {
-                a: 0.18,
+                a: opacity.resolve(StateLayer::DangerSoftHover),
                 ..self.danger
             },
             SemanticColorRole::DangerSoftPressed => SemanticColor {
-                a: 0.22,
+                a: opacity.resolve(StateLayer::DangerSoftPressed),
                 ..self.danger
             },
             SemanticColorRole::Titlebar => self.surface,
@@ -430,6 +500,10 @@ pub struct StyleModelRef {
     pub metrics: ThemeMetrics,
     pub palette: SemanticPalette,
     pub titlebar: SemanticColor,
+    /// State-layer alphas for the derived soft roles. Small on purpose: this
+    /// struct is the per-node read handle, and Issue #101 §1.5 measured what
+    /// putting a large value on a read path costs.
+    pub opacity: OpacityTokens,
 }
 
 impl StyleModelRef {
@@ -440,6 +514,7 @@ impl StyleModelRef {
             metrics: UI_METRICS,
             titlebar: palette.surface,
             palette,
+            opacity: OpacityTokens::for_mode(theme_mode),
         }
     }
 
@@ -448,19 +523,21 @@ impl StyleModelRef {
         metrics: ThemeMetrics,
         palette: SemanticPalette,
         titlebar: SemanticColor,
+        opacity: OpacityTokens,
     ) -> Self {
         Self {
             theme_mode,
             metrics,
             palette,
             titlebar,
+            opacity,
         }
     }
 
     pub const fn color(self, role: SemanticColorRole) -> SemanticColor {
         match role {
             SemanticColorRole::Titlebar => self.titlebar,
-            other => self.palette.get(other),
+            other => self.palette.get_in(other, self.opacity),
         }
     }
 
@@ -498,7 +575,7 @@ impl Default for ControlSemantics {
 
 #[cfg(test)]
 mod tests {
-    use super::{SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
+    use super::{OpacityTokens, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
     use crate::theme::ThemeMode;
 
     #[test]
@@ -524,11 +601,24 @@ mod tests {
         palette.surface.a = 0.5;
         let mut titlebar = palette.surface;
         titlebar.a = 1.0;
-        let model =
-            StyleModelRef::with_tokens(ThemeMode::Dark, crate::UI_METRICS, palette, titlebar);
+        let model = StyleModelRef::with_tokens(
+            ThemeMode::Dark,
+            crate::UI_METRICS,
+            palette,
+            titlebar,
+            OpacityTokens::DARK,
+        );
         assert!((model.color(SemanticColorRole::Surface).a - 0.5).abs() < f32::EPSILON);
         assert!((model.color(SemanticColorRole::Titlebar).a - 1.0).abs() < f32::EPSILON);
-        assert!((model.palette.get(SemanticColorRole::Titlebar).a - 0.5).abs() < f32::EPSILON);
+        assert!(
+            (model
+                .palette
+                .get_in(SemanticColorRole::Titlebar, OpacityTokens::DARK)
+                .a
+                - 0.5)
+                .abs()
+                < f32::EPSILON
+        );
     }
 
     #[test]
@@ -561,18 +651,45 @@ mod tests {
     fn code_token_roles_default_to_conservative_theme_colors() {
         for palette in [SemanticPalette::dark(), SemanticPalette::light()] {
             assert_eq!(
-                palette.get(SemanticColorRole::Keyword),
+                palette.get_in(SemanticColorRole::Keyword, OpacityTokens::DARK),
                 palette.accent_strong
             );
-            assert_eq!(palette.get(SemanticColorRole::Function), palette.accent);
-            assert_eq!(palette.get(SemanticColorRole::Builtin), palette.accent);
-            assert_eq!(palette.get(SemanticColorRole::Type), palette.accent_on_soft);
-            assert_eq!(palette.get(SemanticColorRole::Variable), palette.text);
-            assert_eq!(palette.get(SemanticColorRole::Parameter), palette.muted);
-            assert_eq!(palette.get(SemanticColorRole::Const), palette.muted);
-            assert_eq!(palette.get(SemanticColorRole::Texture), palette.muted);
-            assert_eq!(palette.get(SemanticColorRole::Property), palette.muted);
-            assert_ne!(palette.get(SemanticColorRole::Keyword), palette.text);
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Function, OpacityTokens::DARK),
+                palette.accent
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Builtin, OpacityTokens::DARK),
+                palette.accent
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Type, OpacityTokens::DARK),
+                palette.accent_on_soft
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Variable, OpacityTokens::DARK),
+                palette.text
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Parameter, OpacityTokens::DARK),
+                palette.muted
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Const, OpacityTokens::DARK),
+                palette.muted
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Texture, OpacityTokens::DARK),
+                palette.muted
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Property, OpacityTokens::DARK),
+                palette.muted
+            );
+            assert_ne!(
+                palette.get_in(SemanticColorRole::Keyword, OpacityTokens::DARK),
+                palette.text
+            );
         }
     }
 }

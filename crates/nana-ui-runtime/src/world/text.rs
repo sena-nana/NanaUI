@@ -657,7 +657,7 @@ pub(super) fn form_field_geometry(
     error: Option<&Arc<str>>,
     control: Option<crate::StableNodeId>,
     layout_box: &dyn Fn(crate::StableNodeId) -> Option<LayoutBox>,
-    palette: &SemanticPalette,
+    model: nana_ui_core::StyleModelRef,
 ) -> Option<crate::ComponentGeometry> {
     let (label_size, _gap, label_role, label_weight) =
         crate::form_surfaces::form_field_density(size);
@@ -681,7 +681,7 @@ pub(super) fn form_field_geometry(
                     width: diameter,
                     height: diameter,
                 },
-                palette.get(support_role).as_rgba_array(),
+                model.color(support_role).as_rgba_array(),
             )),
             bounds.x + slot + nana_ui_core::space::XS,
         )
@@ -697,7 +697,7 @@ pub(super) fn form_field_geometry(
                 height: label_height.min(bounds.height),
             },
             content: Arc::clone(label),
-            color: Some(palette.get(label_role).as_rgba_array()),
+            color: Some(model.color(label_role).as_rgba_array()),
             font_size: label_size,
             font_weight: Some(label_weight),
         },
@@ -709,7 +709,7 @@ pub(super) fn form_field_geometry(
                 height: support_height,
             },
             content: Arc::clone(message),
-            color: Some(palette.get(support_role).as_rgba_array()),
+            color: Some(model.color(support_role).as_rgba_array()),
             font_size: nana_ui_core::type_scale::HINT,
             font_weight: None,
         }),
@@ -724,10 +724,6 @@ pub(super) fn text_input_placeholder_color(layout: &LayoutStyle, faint: [f32; 4]
         color[3] = (color[3] * opacity).clamp(0.0, 1.0);
     }
     color
-}
-
-pub(super) fn status_tone_role(tone: nana_ui_core::StatusTone) -> SemanticColorRole {
-    crate::components::status_tone_role(tone)
 }
 
 /// 折叠摘要标记前缀：折叠起始行行尾显示 ` …N`（N 为隐藏行数）。

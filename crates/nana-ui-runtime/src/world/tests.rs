@@ -23,6 +23,25 @@ fn hit_entry_transform(world: &UiWorld, document: DocumentId, id: StableNodeId) 
     find_hit_transform(&world.hit_test_index[&document], id).expect("hit entry")
 }
 
+/// Compile a theme from loose palette / metric overrides, the way
+/// `AppContext::set_style_tokens` does, so a world-level test can install one
+/// without going through the framework.
+fn test_theme(
+    mode: ThemeMode,
+    metrics: nana_ui_core::ThemeMetrics,
+    palette: nana_ui_core::SemanticPalette,
+    titlebar: nana_ui_core::SemanticColor,
+) -> std::sync::Arc<nana_ui_core::CompiledTheme> {
+    std::sync::Arc::new(
+        nana_ui_core::ThemeDefinition::for_mode(mode)
+            .with_metrics(metrics)
+            .with_palette(palette)
+            .with_titlebar(Some(titlebar))
+            .compile()
+            .expect("a test theme compiles"),
+    )
+}
+
 #[test]
 fn batch_builds_reparents_and_detaches_hierarchy() {
     let mut world = UiWorld::new();
@@ -8188,12 +8207,12 @@ fn metrics_change_adds_layout_invalidation_to_the_same_theme_install() {
     metrics.control_height += 4.0;
     world.begin_frame_counters();
     let mut tokens = MutationQueue::new();
-    tokens.set_style_tokens(
+    tokens.set_theme_tokens(test_theme(
         ThemeMode::Dark,
         metrics,
         nana_ui_core::SemanticPalette::dark(),
         nana_ui_core::SemanticPalette::dark().surface,
-    );
+    ));
     world.commit(tokens).unwrap();
     world.end_frame_counters();
 
@@ -8460,7 +8479,12 @@ fn style_tokens_drive_surface_background_and_titlebar_extract_alphas() {
     let mut titlebar = palette.surface;
     titlebar.a = 1.0;
     let mut tokens = MutationQueue::new();
-    tokens.set_style_tokens(ThemeMode::Dark, nana_ui_core::UI_METRICS, palette, titlebar);
+    tokens.set_theme_tokens(test_theme(
+        ThemeMode::Dark,
+        nana_ui_core::UI_METRICS,
+        palette,
+        titlebar,
+    ));
     world.commit(tokens).unwrap();
     let work = world.take_system_work();
     assert!(work.style.is_empty());
@@ -10797,4 +10821,100 @@ fn text_measured_before_a_font_set_change_is_measured_again_after_it() {
     shaper.generation = 2;
     world.shape_text(&[node(1)], &mut shaper).unwrap();
     assert_eq!(world.text_metrics(node(1)).unwrap().height, 24.0);
+}
+
+/// Issue #101 §1.4 F2: `ThemeMetrics::motion_fast_ms` was a dead field, and
+/// the real hover duration was a `const` no theme could move. It is a token
+/// now, and this is the proof that the *installed* value is the one played.
+///
+/// The assertion is on where the cross-fade has got to, not on a stored
+/// number: at the old 120 ms default the fade would already be over, so a
+/// regression that quietly went back to the constant shows up as a colour
+/// that has arrived too early.
+#[test]
+fn an_installed_hover_duration_is_the_one_the_cross_fade_runs_for() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(node(2), document(1), NodeKind::Element { tag: "a".into() });
+    queue.insert(node(1), node(2), None);
+    queue.set_style(
+        node(2),
+        NodeStyle {
+            background: Some(SemanticColorRole::Surface),
+            interaction: crate::InteractionStyle {
+                hovered: crate::SemanticPaint {
+                    background: Some(SemanticColorRole::Hover),
+                    ..crate::SemanticPaint::default()
+                },
+                ..crate::InteractionStyle::default()
+            },
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    world.take_system_work();
+
+    let mut slow = nana_ui_core::ThemeDefinition::NANA_DARK;
+    slow.motion.hover_color_ms = 500;
+    let mut install = MutationQueue::new();
+    install.set_theme_tokens(std::sync::Arc::new(
+        slow.bump().compile().expect("compiles"),
+    ));
+    world.commit(install).unwrap();
+    world.take_system_work();
+
+    world
+        .set_pointer_hover(document(1), 7, Some(node(2)))
+        .unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+
+    let background = |world: &mut UiWorld| world.extract_nodes(&[node(2)])[0].style.background;
+    let palette = nana_ui_core::SemanticPalette::dark();
+
+    // Past the old constant, nowhere near the installed duration.
+    world.advance_animations(nana_ui_core::motion::HOVER_COLOR);
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert_ne!(
+        background(&mut world),
+        Some(palette.hover.as_rgba_array()),
+        "at 120 ms of a 500 ms fade the hover colour must not have arrived yet"
+    );
+
+    world.advance_animations(std::time::Duration::from_millis(500));
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    assert_eq!(
+        background(&mut world),
+        Some(palette.hover.as_rgba_array()),
+        "the fade must finish at the installed duration"
+    );
+}
+
+/// A fresh world's cached `StyleModelRef` and its `Arc<CompiledTheme>` have to
+/// agree, or the first install is compared against the wrong thing and skipped.
+///
+/// The two are written from different places — `StyleModelRef::default()` and
+/// `builtin_theme_arc` — so nothing but this test makes them the same value.
+#[test]
+fn a_fresh_world_caches_the_style_slice_of_the_theme_it_installed() {
+    let world = UiWorld::new();
+    assert_eq!(world.style_model(), world.theme().style_model());
+    assert_eq!(
+        world.theme().identity(),
+        nana_ui_core::builtin_theme(ThemeMode::default()).identity()
+    );
+
+    // And the comparison an install makes is the one that would catch a drift:
+    // installing the same built-in twice must be a no-op.
+    let mut world = world;
+    let mut queue = MutationQueue::new();
+    queue.set_theme_tokens(nana_ui_core::builtin_theme_arc(ThemeMode::default()));
+    world.commit(queue).unwrap();
+    assert!(
+        world.take_system_work().style.is_empty(),
+        "re-installing the theme already in place must do no work"
+    );
 }

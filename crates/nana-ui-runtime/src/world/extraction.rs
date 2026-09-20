@@ -134,96 +134,9 @@ impl UiWorld {
             .as_ref()
             .and_then(|visual| self.derive_component_geometry(id, visual, style.as_ref()))
             .map(Box::new);
-        let standard_visual_foreground = standard_visual.as_ref().map(|visual| match visual {
-            StandardVisual::ModalFrame { .. } => self.style_model.palette.text.as_rgba_array(),
-            StandardVisual::Icon { .. } => style
-                .color
-                .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
-            StandardVisual::Button { .. } => style
-                .color
-                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
-            StandardVisual::TextInput { .. } => style
-                .color
-                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
-            StandardVisual::SelectionOption { .. } => style
-                .color
-                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array()),
-            StandardVisual::Checkbox {
-                checked,
-                indeterminate,
-                ..
-            } => {
-                if *checked || *indeterminate {
-                    self.style_model.palette.accent_text.as_rgba_array()
-                } else {
-                    self.style_model.palette.muted.as_rgba_array()
-                }
-            }
-            StandardVisual::Switch { checked: true, .. } => {
-                self.style_model.palette.accent_text.as_rgba_array()
-            }
-            StandardVisual::Switch { checked: false, .. } => {
-                self.style_model.palette.muted.as_rgba_array()
-            }
-            StandardVisual::Scrollbar { .. } => {
-                self.style_model.palette.border_strong.as_rgba_array()
-            }
-            StandardVisual::Range { .. }
-            | StandardVisual::Card { .. }
-            | StandardVisual::ListItem { .. }
-            | StandardVisual::StatusBadge { .. }
-            | StandardVisual::ValidationMessage { .. }
-            | StandardVisual::EmptyState { .. }
-            | StandardVisual::LabeledValue { .. }
-            | StandardVisual::Progress { .. }
-            | StandardVisual::Spinner { .. }
-            | StandardVisual::FormField { .. } => self.style_model.palette.accent.as_rgba_array(),
-            StandardVisual::QrCode { .. } => [0.0, 0.0, 0.0, 1.0],
-            StandardVisual::Toast { tone, .. } => self
-                .style_model
-                .palette
-                .get(status_tone_role(tone.status()))
-                .as_rgba_array(),
-            StandardVisual::XYPad { .. } => self.style_model.palette.text.as_rgba_array(),
-            StandardVisual::Select { .. }
-            | StandardVisual::MenuSurface { .. }
-            | StandardVisual::ActionMenuItem { .. }
-            | StandardVisual::TreeView { .. }
-            | StandardVisual::CommandPalette { .. } => {
-                self.style_model.palette.text.as_rgba_array()
-            }
-            StandardVisual::LevelMeter { tone, .. } => self
-                .style_model
-                .palette
-                .get(status_tone_role(*tone))
-                .as_rgba_array(),
-            #[cfg(feature = "calendar")]
-            StandardVisual::CalendarHeatmap { .. } => self.style_model.palette.text.as_rgba_array(),
-            #[cfg(feature = "charts")]
-            StandardVisual::TimeSeriesChart { .. }
-            | StandardVisual::TimestampSeriesChart { .. }
-            | StandardVisual::DonutChart { .. }
-            | StandardVisual::StackedTimeSeriesChart { .. } => {
-                self.style_model.palette.text.as_rgba_array()
-            }
-            #[cfg(feature = "controls")]
-            StandardVisual::ReorderList { .. } => self.style_model.palette.text.as_rgba_array(),
-            #[cfg(feature = "rich-text")]
-            StandardVisual::NativeMarkdown { .. } => self.style_model.palette.text.as_rgba_array(),
-            #[cfg(feature = "rich-text")]
-            StandardVisual::SelectableRichText { .. } => {
-                self.style_model.palette.text.as_rgba_array()
-            }
-            #[cfg(feature = "graph-canvas")]
-            StandardVisual::GraphCanvas { .. } => self.style_model.palette.text.as_rgba_array(),
-            #[cfg(feature = "graph-canvas")]
-            StandardVisual::GraphMinimap { .. } => self.style_model.palette.text.as_rgba_array(),
-            #[cfg(feature = "image-viewer")]
-            StandardVisual::ImageViewer { .. } => self.style_model.palette.text.as_rgba_array(),
-            StandardVisual::KeyCaptureLayer { .. } | StandardVisual::KeymapLayer => {
-                self.style_model.palette.text.as_rgba_array()
-            }
-        });
+        let standard_visual_foreground = standard_visual
+            .as_ref()
+            .map(|visual| self.standard_visual_foreground(visual, style.color));
         let mut source_style = source_style;
         // The node's design intent is already resolved into `resolved_layout`,
         // on write. Resolving it here instead meant an `Arc::make_mut` copy of
@@ -444,5 +357,117 @@ impl UiWorld {
                     .filter(|node| node.style.visible)
             })
             .collect()
+    }
+}
+
+impl UiWorld {
+    /// Which colour a `StandardVisual` paints its own foreground with.
+    ///
+    /// This used to be a 25-arm `match` that named a palette field per visual.
+    /// The arms are still here, but they now answer *which component family
+    /// this is*; the family's role is the installed theme's
+    /// [`ComponentRecipe`](nana_ui_core::ComponentRecipe). The decision moved,
+    /// the dispatch did not — and because it resolves here, per extract, an
+    /// installed recipe reaches live nodes without reprojecting anything.
+    ///
+    /// `authored` is the node's own resolved colour. Four families let it win:
+    /// an icon, a button, a field and a selection row all take a caller's
+    /// explicit colour ahead of the recipe. The rest paint chrome the caller
+    /// does not address.
+    fn standard_visual_foreground(
+        &self,
+        visual: &StandardVisual,
+        authored: Option<[f32; 4]>,
+    ) -> [f32; 4] {
+        use nana_ui_core::ComponentRecipeId;
+
+        let recipes = self.theme.recipes();
+        let role = |family: ComponentRecipeId, checked: bool| recipes.foreground(family, checked);
+        let paint = |role| self.style_model.color(role).as_rgba_array();
+
+        match visual {
+            // Families that defer to an authored colour when the caller set one.
+            StandardVisual::Icon { .. } => {
+                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Icon, false)))
+            }
+            StandardVisual::Button { .. } => {
+                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Button, false)))
+            }
+            StandardVisual::TextInput { .. } => {
+                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::TextInput, false)))
+            }
+            StandardVisual::SelectionOption { .. } => {
+                authored.unwrap_or_else(|| paint(role(ComponentRecipeId::Selection, false)))
+            }
+
+            // Indicator families: the recipe carries an on-state role.
+            StandardVisual::Checkbox {
+                checked,
+                indeterminate,
+                ..
+            } => paint(role(
+                ComponentRecipeId::Checkbox,
+                *checked || *indeterminate,
+            )),
+            StandardVisual::Switch { checked, .. } => {
+                paint(role(ComponentRecipeId::Switch, *checked))
+            }
+
+            // Status-driven surfaces read the tone table, not a family.
+            StandardVisual::Toast { tone, .. } => paint(recipes.status().role(tone.status())),
+            StandardVisual::LevelMeter { tone, .. } => paint(recipes.status().role(*tone)),
+
+            StandardVisual::ModalFrame { .. } => paint(role(ComponentRecipeId::Overlay, false)),
+            StandardVisual::Scrollbar { .. } => paint(role(ComponentRecipeId::Scrollbar, false)),
+            StandardVisual::Range { .. } => paint(role(ComponentRecipeId::Range, false)),
+            StandardVisual::Card { .. } => paint(role(ComponentRecipeId::Card, false)),
+            StandardVisual::ListItem { .. } => paint(role(ComponentRecipeId::ListItem, false)),
+            StandardVisual::StatusBadge { .. }
+            | StandardVisual::ValidationMessage { .. }
+            | StandardVisual::EmptyState { .. }
+            | StandardVisual::LabeledValue { .. }
+            | StandardVisual::Progress { .. }
+            | StandardVisual::Spinner { .. }
+            | StandardVisual::FormField { .. } => paint(role(ComponentRecipeId::Indicator, false)),
+            StandardVisual::Select { .. }
+            | StandardVisual::MenuSurface { .. }
+            | StandardVisual::ActionMenuItem { .. }
+            | StandardVisual::TreeView { .. }
+            | StandardVisual::CommandPalette { .. } => paint(role(ComponentRecipeId::Menu, false)),
+
+            // A QR code's ink is not a theme colour. The quiet zone has to stay
+            // scannable, so it is black on white whatever the theme says.
+            StandardVisual::QrCode { .. } => [0.0, 0.0, 0.0, 1.0],
+
+            StandardVisual::XYPad { .. } => paint(role(ComponentRecipeId::Content, false)),
+            #[cfg(feature = "calendar")]
+            StandardVisual::CalendarHeatmap { .. } => {
+                paint(role(ComponentRecipeId::Content, false))
+            }
+            #[cfg(feature = "charts")]
+            StandardVisual::TimeSeriesChart { .. }
+            | StandardVisual::TimestampSeriesChart { .. }
+            | StandardVisual::DonutChart { .. }
+            | StandardVisual::StackedTimeSeriesChart { .. } => {
+                paint(role(ComponentRecipeId::Content, false))
+            }
+            #[cfg(feature = "controls")]
+            StandardVisual::ReorderList { .. } => paint(role(ComponentRecipeId::Content, false)),
+            #[cfg(feature = "rich-text")]
+            StandardVisual::NativeMarkdown { .. } => paint(role(ComponentRecipeId::Content, false)),
+            #[cfg(feature = "rich-text")]
+            StandardVisual::SelectableRichText { .. } => {
+                paint(role(ComponentRecipeId::Content, false))
+            }
+            #[cfg(feature = "graph-canvas")]
+            StandardVisual::GraphCanvas { .. } => paint(role(ComponentRecipeId::Content, false)),
+            #[cfg(feature = "graph-canvas")]
+            StandardVisual::GraphMinimap { .. } => paint(role(ComponentRecipeId::Content, false)),
+            #[cfg(feature = "image-viewer")]
+            StandardVisual::ImageViewer { .. } => paint(role(ComponentRecipeId::Content, false)),
+            StandardVisual::KeyCaptureLayer { .. } | StandardVisual::KeymapLayer => {
+                paint(role(ComponentRecipeId::Content, false))
+            }
+        }
     }
 }

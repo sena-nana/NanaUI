@@ -174,9 +174,11 @@ pub(in crate::world) fn graph_minimap_geometry(
     indicator: Option<&GraphRect>,
     node_fill: Option<SemanticColorRole>,
     palette: &SemanticPalette,
+    // The fill role is application data; the theme owns the soft alphas.
+    opacity: nana_ui_core::OpacityTokens,
 ) -> crate::ComponentGeometry {
     let fill = palette
-        .get(node_fill.unwrap_or(SemanticColorRole::Muted))
+        .get_in(node_fill.unwrap_or(SemanticColorRole::Muted), opacity)
         .as_rgba_array();
     let mut indicator_fill = palette.accent.as_rgba_array();
     indicator_fill[3] *= 0.16;

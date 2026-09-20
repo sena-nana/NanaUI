@@ -7402,3 +7402,150 @@ fn a_secure_field_never_probes_its_plaintext_for_a_visual_caret_step() {
     );
     assert_eq!(shaper.probed.len(), 2, "{:?}", shaper.probed);
 }
+
+/// Issue #102: a component recipe reaches a control that was already on
+/// screen when the theme was installed.
+///
+/// The `Button` path is the hard half. Its recipe decides which
+/// `SemanticColorRole` the component *authors* onto its own node, and nothing
+/// downstream can re-decide that — so the button has to be reprojected. Issue
+/// #101 §1.6 measured reprojection and rejected it as a general mechanism
+/// precisely because it produced zero mutations when nothing read the
+/// installed theme; opting one component in, for the one thing only that
+/// component can write, is the case §1.6 left open.
+#[test]
+fn an_installed_button_recipe_reaches_a_button_that_is_already_on_screen() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            crate::Button::new("Ship it").kind(nana_ui_core::ButtonKind::Primary),
+        )
+        .unwrap();
+
+    let hovered_role = |context: &AppContext| {
+        context
+            .world()
+            .node_style(button.stable_id())
+            .expect("the button has a style")
+            .interaction
+            .hovered
+            .background
+    };
+    assert_eq!(
+        hovered_role(&context),
+        Some(nana_ui_core::SemanticColorRole::AccentSoftHover)
+    );
+
+    let mut definition = nana_ui_core::ThemeDefinition::NANA_DARK;
+    let primary = nana_ui_core::ButtonVariantDraft {
+        hovered_background: Some(nana_ui_core::SemanticColorRole::Warning),
+        ..definition
+            .components
+            .button
+            .variant(nana_ui_core::ButtonKind::Primary)
+    };
+    definition.components.button = definition
+        .components
+        .button
+        .with(nana_ui_core::ButtonKind::Primary, primary);
+    let definition = definition.bump();
+
+    assert!(context.set_theme_definition(&definition).unwrap());
+    assert_eq!(
+        hovered_role(&context),
+        Some(nana_ui_core::SemanticColorRole::Warning),
+        "a recipe change must reach a button that already exists"
+    );
+}
+
+/// The other half, and the cheap one: a family recipe resolves in `extract`,
+/// where the installed theme is already in hand, so it needs no reprojection.
+#[test]
+fn an_installed_family_recipe_reaches_a_live_node_without_reprojecting_it() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let bar = context
+        .create_component(document, crate::Progress::new(0.5, 1.0))
+        .unwrap();
+
+    let foreground = |context: &AppContext| {
+        context.world().extract_nodes(&[bar.stable_id()])[0].standard_visual_foreground
+    };
+    let palette = nana_ui_core::SemanticPalette::dark();
+    assert_eq!(foreground(&context), Some(palette.accent.as_rgba_array()));
+
+    let mut definition = nana_ui_core::ThemeDefinition::NANA_DARK;
+    definition.components.families[nana_ui_core::ComponentRecipeId::Indicator.index()] =
+        nana_ui_core::ComponentRecipeDraft::plain(nana_ui_core::SemanticColorRole::Success);
+    let definition = definition.bump();
+
+    assert!(context.set_theme_definition(&definition).unwrap());
+    assert_eq!(
+        foreground(&context),
+        Some(palette.success.as_rgba_array()),
+        "a family recipe resolves at extract, so the node needs no reprojection"
+    );
+}
+
+/// Fail-closed reaches the host: an invalid definition installs nothing.
+#[test]
+fn a_theme_that_fails_validation_leaves_the_installed_one_alone() {
+    let mut context = AppContext::new();
+    let before = context.world().theme().clone();
+
+    let mut broken = nana_ui_core::ThemeDefinition::NANA_DARK;
+    broken.tokens.metrics.radius_md = -4.0;
+    let broken = broken.bump();
+
+    let error = context
+        .set_theme_definition(&broken)
+        .expect_err("a negative radius is not installable");
+    assert!(
+        error.to_string().contains("metrics.radius_md"),
+        "the error has to name the token: {error}"
+    );
+    assert_eq!(
+        *context.world().theme(),
+        before,
+        "a rejected theme must not have been partially applied"
+    );
+}
+
+/// Issue #102: the elevation ramp is a theme token, so a modal's lift follows
+/// the installed theme instead of a `background.r > 0.5` brightness sniff.
+#[test]
+fn the_overlay_shadow_is_a_theme_token_not_a_brightness_sniff() {
+    let mut definition = nana_ui_core::ThemeDefinition::NANA_DARK;
+    definition.effects.overlay = nana_ui_core::ShadowToken {
+        color: nana_ui_core::SemanticColor::rgba(0.0, 0.0, 0.0, 0.9),
+        offset_x: 0.0,
+        offset_y: 21.0,
+        blur_radius: 42.0,
+        spread_radius: 0.0,
+        inset: false,
+    };
+    let compiled = definition.bump().compile().expect("compiles");
+    let elevation = crate::ComponentElevation::from_shadow(
+        compiled.shadow(nana_ui_core::ElevationRole::Overlay),
+    );
+    assert_eq!(elevation.offset_y, 21.0);
+    assert_eq!(elevation.color[3], 0.9);
+
+    // A dark theme whose background happens to be pale used to flip to the
+    // light shadow. It now keeps its own.
+    let mut pale = nana_ui_core::SemanticPalette::dark();
+    pale.background = nana_ui_core::SemanticColor::rgb8(240, 240, 240);
+    let compiled = nana_ui_core::ThemeDefinition::NANA_DARK
+        .with_palette(pale)
+        .compile()
+        .expect("compiles");
+    assert_eq!(
+        compiled
+            .shadow(nana_ui_core::ElevationRole::Overlay)
+            .color
+            .a,
+        nana_ui_core::EffectTokens::DARK.overlay.color.a
+    );
+}
