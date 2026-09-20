@@ -144,12 +144,12 @@ pub use theme::{
     ButtonVariantRecipe, ChromeRadii, CompiledRecipes, CompiledTheme, ComponentRecipe,
     ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, ControlHeight, ControlPadding,
     DesignTokens, EasingRole, EffectTokens, ElevationRole, FoundationTokens, HAIRLINE, LineRole,
-    MotionRole, MotionTokens, OpacityTokens, RadiusTier, ShadowToken, SpacingStep, SpacingTokens,
-    SquareSize, StateLayer, StatusRecipe, SurfaceMaterial, SurfacePadding, SurfaceRole,
-    SurfaceSpec, SurfaceTokens, TextWeight, ThemeCompileError, ThemeDefinition, ThemeGeneration,
-    ThemeId, ThemeIdentity, ThemeMetrics, ThemeMode, ThemeSchemaVersion, TypeRole,
-    TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme, builtin_theme_arc, space,
-    type_scale,
+    MotionRole, MotionTokens, OpacityTokens, RadiusTier, SWITCH_METRICS, ShadowToken, SpacingStep,
+    SpacingTokens, SquareSize, StateLayer, StatusRecipe, SurfaceMaterial, SurfacePadding,
+    SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics, TextWeight, ThemeCompileError,
+    ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity, ThemeMetrics, ThemeMode,
+    ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE, UI_METRICS, builtin_theme,
+    builtin_theme_arc, space, type_scale,
 };
 pub use tree::{TreeNavigation, TreeNode, TreeViewEvent, tree_navigation_event};
 pub use typography::{FontKerningSpec, FontVariationSetting, LineBreakSpec};

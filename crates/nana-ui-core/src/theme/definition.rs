@@ -753,7 +753,7 @@ fn palette_fields(palette: &SemanticPalette) -> [(&'static str, SemanticColor); 
     ]
 }
 
-fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 19] {
+fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 22] {
     [
         ("metrics.radius_xs", metrics.radius_xs),
         ("metrics.radius_sm", metrics.radius_sm),
@@ -788,6 +788,9 @@ fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 19] {
             "metrics.scrollbar.thumb_min_length",
             metrics.scrollbar.thumb_min_length,
         ),
+        ("metrics.switch.track_width", metrics.switch.track_width),
+        ("metrics.switch.track_height", metrics.switch.track_height),
+        ("metrics.switch.label_gap", metrics.switch.label_gap),
         (
             "metrics.scrollbar.track_inset",
             metrics.scrollbar.track_inset,

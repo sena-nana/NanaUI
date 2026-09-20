@@ -32,32 +32,49 @@ use image_viewer::*;
 
 use super::*;
 
+/// Diameter of a status dot, as a fraction of the slot reserved for it.
+///
+/// `StatusBadge` and `ValidationMessage` both wrote this as
+/// `indicator_slot * 10.0 / 24.0`, where nothing in either arm is 24: the
+/// denominator was the icon box the ratio was originally measured against, and
+/// it survived the move to a spacing-step slot. Two copies of a phantom
+/// denominator is how the two badges drift apart.
+const STATUS_DOT_FRACTION: f32 = 10.0 / 24.0;
+
+/// Block extent of a progress bar.
+const PROGRESS_GIRTH: f32 = nana_ui_core::space::SM;
+
+/// Extent of the glyph an empty state leads with. Composed, the way §1.5
+/// composed the other off-ladder sizes: one page-tight step plus the smallest.
+const EMPTY_STATE_ICON: f32 = nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS;
+
 pub(super) fn key_capture_geometry(
     content: LayoutBox,
     recording: bool,
-    palette: &SemanticPalette,
+    style_model: StyleModelRef,
 ) -> crate::ComponentGeometry {
+    let palette = style_model;
     let label: Arc<str> = if recording {
         Arc::from("Recording")
     } else {
         Arc::from("Idle")
     };
     crate::ComponentGeometry::KeyCaptureLayer {
-        badge: key_badge_region(content, &label, !recording, palette),
+        badge: key_badge_region(content, &label, !recording, style_model),
         background: Some(if recording {
-            palette.accent_soft.as_rgba_array()
+            palette.color(SemanticColorRole::AccentSoft).as_rgba_array()
         } else {
-            palette.subtle.as_rgba_array()
+            palette.color(SemanticColorRole::Subtle).as_rgba_array()
         }),
     }
 }
 
 pub(super) fn keymap_geometry(
     content: LayoutBox,
-    palette: &SemanticPalette,
+    style_model: StyleModelRef,
 ) -> crate::ComponentGeometry {
     crate::ComponentGeometry::KeymapLayer {
-        badge: key_badge_region(content, "Keymap", false, palette),
+        badge: key_badge_region(content, "Keymap", false, style_model),
     }
 }
 
@@ -65,23 +82,27 @@ pub(super) fn key_badge_region(
     origin: LayoutBox,
     label: &str,
     muted: bool,
-    palette: &SemanticPalette,
+    palette: StyleModelRef,
 ) -> crate::ComponentTextRegion {
-    const HEIGHT: f32 = 28.0;
-    const PAD: f32 = 8.0;
-    let font_size = 12.0;
+    let metrics = palette.metrics;
+    let height = nana_ui_core::ControlSize::Small.height_in(metrics);
+    const PAD: f32 = nana_ui_core::space::MD;
+    // Four of the widest spacing step: the narrowest badge still has to read
+    // as a key cap rather than as a letter with a box round it.
+    const MIN_WIDTH: f32 = nana_ui_core::space::XXXL * 4.0;
+    let font_size = nana_ui_core::type_scale::META;
     crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: origin.x,
             y: origin.y,
-            width: (estimated_text_width(label, font_size) + PAD * 2.0).max(64.0),
-            height: HEIGHT.min(origin.height.max(HEIGHT)),
+            width: (estimated_text_width(label, font_size) + PAD * 2.0).max(MIN_WIDTH),
+            height: height.min(origin.height.max(height)),
         },
         content: Arc::from(label),
         color: Some(if muted {
-            palette.muted.as_rgba_array()
+            palette.color(SemanticColorRole::Muted).as_rgba_array()
         } else {
-            palette.text.as_rgba_array()
+            palette.color(SemanticColorRole::Text).as_rgba_array()
         }),
         font_size,
         font_weight: Some(600),
@@ -103,7 +124,7 @@ pub(super) fn estimated_text_width(text: &str, font_size: f32) -> f32 {
 
 #[cfg(feature = "charts")]
 pub(super) fn area_under_polyline(points: &[[f32; 2]], baseline: f32) -> Vec<LayoutBox> {
-    const STRIP: f32 = 2.0;
+    const STRIP: f32 = nana_ui_core::space::XXS;
     let mut strips = Vec::new();
     for pair in points.windows(2) {
         let [x0, y0] = pair[0];
@@ -150,16 +171,25 @@ impl UiWorld {
         let padding = self.used_layout_padding(id);
         let border = source.layout.resolved_border_width();
         let content = self.component_content_box(id)?;
+        // Both branches now answer "what colour is this node's text, in the
+        // state it is in": the primary from the resolved style, the secondary
+        // from the `foreground_secondary` role the same state machine picks.
+        // The secondary used to be `palette.muted` read straight off the
+        // palette, which is how a focused row ended up with a grey detail line
+        // on a near-solid `focus_surface` fill.
+        let secondary = self.secondary_text_color(id);
         let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
             crate::ComponentTextRegion {
                 bounds,
                 content,
                 color: Some(if muted {
-                    self.style_model.palette.muted.as_rgba_array()
+                    secondary
                 } else {
-                    style
-                        .color
-                        .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array())
+                    style.color.unwrap_or_else(|| {
+                        self.style_model
+                            .color(SemanticColorRole::Text)
+                            .as_rgba_array()
+                    })
                 }),
                 font_size: size,
                 font_weight: weight,
@@ -264,7 +294,10 @@ impl UiWorld {
                             None,
                         )
                     }),
-                    background: self.style_model.palette.surface.as_rgba_array(),
+                    background: self
+                        .style_model
+                        .color(SemanticColorRole::Surface)
+                        .as_rgba_array(),
                     border: [0.0; 4],
                     elevation: crate::ComponentElevation::from_shadow(overlay_shadow),
                 })
@@ -376,8 +409,14 @@ impl UiWorld {
                             && numeric.is_none_or(|(value, minimum, _)| {
                                 minimum.is_none_or(|minimum| value > minimum)
                             });
-                        let active = self.style_model.palette.muted.as_rgba_array();
-                        let inert = self.style_model.palette.faint.as_rgba_array();
+                        let active = self
+                            .style_model
+                            .color(SemanticColorRole::Muted)
+                            .as_rgba_array();
+                        let inert = self
+                            .style_model
+                            .color(SemanticColorRole::Faint)
+                            .as_rgba_array();
                         Some(crate::NumberSteppers {
                             increment: LayoutBox {
                                 x,
@@ -481,9 +520,11 @@ impl UiWorld {
                 });
                 // 附加多光标：与主光标同形，用主光标色的半透明变体区分；
                 // 只随焦点出现（多行编辑器才有附加光标）。
-                let caret_color = style
-                    .color
-                    .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array());
+                let caret_color = style.color.unwrap_or_else(|| {
+                    self.style_model
+                        .color(SemanticColorRole::Text)
+                        .as_rgba_array()
+                });
                 let additional_caret_color = {
                     let mut color = caret_color;
                     color[3] *= 0.55;
@@ -504,16 +545,19 @@ impl UiWorld {
                     Vec::new()
                 };
                 let marker_color = |severity| match severity {
-                    crate::TextDiagnosticSeverity::Error => {
-                        self.style_model.palette.danger.as_rgba_array()
-                    }
-                    crate::TextDiagnosticSeverity::Warning => {
-                        self.style_model.palette.warning.as_rgba_array()
-                    }
+                    crate::TextDiagnosticSeverity::Error => self
+                        .style_model
+                        .color(SemanticColorRole::Danger)
+                        .as_rgba_array(),
+                    crate::TextDiagnosticSeverity::Warning => self
+                        .style_model
+                        .color(SemanticColorRole::Warning)
+                        .as_rgba_array(),
                     crate::TextDiagnosticSeverity::Information
-                    | crate::TextDiagnosticSeverity::Hint => {
-                        self.style_model.palette.muted.as_rgba_array()
-                    }
+                    | crate::TextDiagnosticSeverity::Hint => self
+                        .style_model
+                        .color(SemanticColorRole::Muted)
+                        .as_rgba_array(),
                 };
                 let diagnostic_markers = presentation
                     .diagnostic_marks
@@ -550,10 +594,15 @@ impl UiWorld {
                 // 色相加深（本地强调系数，与诊断条带的 2px 常量同级的局部约定）。
                 let match_color = |current: bool| -> [f32; 4] {
                     if current {
-                        let accent = self.style_model.palette.accent.as_rgba_array();
+                        let accent = self
+                            .style_model
+                            .color(SemanticColorRole::Accent)
+                            .as_rgba_array();
                         [accent[0], accent[1], accent[2], 0.45]
                     } else {
-                        self.style_model.palette.accent_soft_hover.as_rgba_array()
+                        self.style_model
+                            .color(SemanticColorRole::AccentSoftHover)
+                            .as_rgba_array()
                     }
                 };
                 let map_chip_box = |rect: LayoutBox| LayoutBox {
@@ -572,11 +621,20 @@ impl UiWorld {
                         mapped.icon_bounds = map_chip_box(chip.icon_bounds);
                         mapped.label.bounds = map_chip_box(chip.label.bounds);
                         if mapped.label.color.is_none() {
-                            mapped.label.color =
-                                Some(self.style_model.palette.text.as_rgba_array());
+                            mapped.label.color = Some(
+                                self.style_model
+                                    .color(SemanticColorRole::Text)
+                                    .as_rgba_array(),
+                            );
                         }
-                        mapped.background = self.style_model.palette.subtle.as_rgba_array();
-                        mapped.border = self.style_model.palette.border.as_rgba_array();
+                        mapped.background = self
+                            .style_model
+                            .color(SemanticColorRole::Subtle)
+                            .as_rgba_array();
+                        mapped.border = self
+                            .style_model
+                            .color(SemanticColorRole::Border)
+                            .as_rgba_array();
                         mapped
                     })
                     .collect();
@@ -624,7 +682,9 @@ impl UiWorld {
                             width: content.width,
                             height: line_height,
                         },
-                        self.style_model.palette.hover.as_rgba_array(),
+                        self.style_model
+                            .color(SemanticColorRole::Hover)
+                            .as_rgba_array(),
                     ))
                 } else {
                     None
@@ -642,7 +702,9 @@ impl UiWorld {
                                     width: rect.width,
                                     height: rect.height,
                                 },
-                                self.style_model.palette.accent.as_rgba_array(),
+                                self.style_model
+                                    .color(SemanticColorRole::Accent)
+                                    .as_rgba_array(),
                             )
                         })
                         .collect()
@@ -663,7 +725,9 @@ impl UiWorld {
                                     width: rect.width,
                                     height: rect.height,
                                 },
-                                self.style_model.palette.accent_soft.as_rgba_array(),
+                                self.style_model
+                                    .color(SemanticColorRole::AccentSoft)
+                                    .as_rgba_array(),
                             )
                         })
                         .collect()
@@ -672,7 +736,10 @@ impl UiWorld {
                 };
                 // 空白字符标记：静态结构标记（不随焦点变化），按视口裁剪
                 // ——标记只服务可见行，视口外的空白不产生图元。
-                let whitespace_color = self.style_model.palette.faint.as_rgba_array();
+                let whitespace_color = self
+                    .style_model
+                    .color(SemanticColorRole::Faint)
+                    .as_rgba_array();
                 let whitespace_marks = presentation
                     .whitespace_marks
                     .iter()
@@ -704,7 +771,9 @@ impl UiWorld {
                                 width: 1.0,
                                 height: content.height,
                             },
-                            self.style_model.palette.faint.as_rgba_array(),
+                            self.style_model
+                                .color(SemanticColorRole::Faint)
+                                .as_rgba_array(),
                         )
                     })
                     .collect();
@@ -720,7 +789,9 @@ impl UiWorld {
                                 width: rect.width,
                                 height: rect.height,
                             },
-                            self.style_model.palette.border.as_rgba_array(),
+                            self.style_model
+                                .color(SemanticColorRole::Border)
+                                .as_rgba_array(),
                         )
                     })
                     .collect();
@@ -749,15 +820,18 @@ impl UiWorld {
                 // 新增 = success、修改 = warning、删除 = danger（调色板的
                 // 绿/黄/红三档，与诊断条带同源的语义配色，对应 git 惯例）。
                 let git_color = |kind| match kind {
-                    crate::TextGitMarkKind::Added => {
-                        self.style_model.palette.success.as_rgba_array()
-                    }
-                    crate::TextGitMarkKind::Modified => {
-                        self.style_model.palette.warning.as_rgba_array()
-                    }
-                    crate::TextGitMarkKind::Deleted => {
-                        self.style_model.palette.danger.as_rgba_array()
-                    }
+                    crate::TextGitMarkKind::Added => self
+                        .style_model
+                        .color(SemanticColorRole::Success)
+                        .as_rgba_array(),
+                    crate::TextGitMarkKind::Modified => self
+                        .style_model
+                        .color(SemanticColorRole::Warning)
+                        .as_rgba_array(),
+                    crate::TextGitMarkKind::Deleted => self
+                        .style_model
+                        .color(SemanticColorRole::Danger)
+                        .as_rgba_array(),
                 };
                 let mut git_geometry = crate::TextGitGutterGeometry {
                     added_color: git_color(crate::TextGitMarkKind::Added),
@@ -833,7 +907,10 @@ impl UiWorld {
                                     },
                                     fold: *fold,
                                     collapsed,
-                                    color: self.style_model.palette.faint.as_rgba_array(),
+                                    color: self
+                                        .style_model
+                                        .color(SemanticColorRole::Faint)
+                                        .as_rgba_array(),
                                 });
                             }
                         }
@@ -948,9 +1025,14 @@ impl UiWorld {
                                 font_weight: style.font_weight,
                             },
                             background: style.background.unwrap_or_else(|| {
-                                self.style_model.palette.surface.as_rgba_array()
+                                self.style_model
+                                    .color(SemanticColorRole::Surface)
+                                    .as_rgba_array()
                             }),
-                            divider_color: self.style_model.palette.border.as_rgba_array(),
+                            divider_color: self
+                                .style_model
+                                .color(SemanticColorRole::Border)
+                                .as_rgba_array(),
                         }
                     })
                 } else {
@@ -985,7 +1067,9 @@ impl UiWorld {
                             width: rect.width,
                             height: rect.height,
                         },
-                        self.style_model.palette.accent.as_rgba_array(),
+                        self.style_model
+                            .color(SemanticColorRole::Accent)
+                            .as_rgba_array(),
                     )
                 });
                 Some(crate::ComponentGeometry::TextInput {
@@ -997,7 +1081,7 @@ impl UiWorld {
                     diagnostic_labels,
                     match_markers,
                     swatch_markers,
-                    swatch_border_color: self.style_model.palette.border.as_rgba_array(),
+                    swatch_border_color: self.style_model.color(SemanticColorRole::Border).as_rgba_array(),
                     atom_chips,
                     caret_line,
                     bracket_markers,
@@ -1010,7 +1094,7 @@ impl UiWorld {
                     line_labels,
                     folds: fold_geometry,
                     git_marks: git_geometry,
-                    line_labels_color: self.style_model.palette.faint.as_rgba_array(),
+                    line_labels_color: self.style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                     line_labels_font_size: size.caption_size(),
                     text: crate::ComponentTextRegion {
                         bounds: LayoutBox {
@@ -1027,12 +1111,12 @@ impl UiWorld {
                         color: Some(if presentation.placeholder {
                             text_input_placeholder_color(
                                 &source.layout,
-                                self.style_model.palette.faint.as_rgba_array(),
+                                self.style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                             )
                         } else {
                             style
                                 .color
-                                .unwrap_or_else(|| self.style_model.palette.text.as_rgba_array())
+                                .unwrap_or_else(|| self.style_model.color(SemanticColorRole::Text).as_rgba_array())
                         }),
                         font_size: size.text_size(),
                         font_weight: style.font_weight,
@@ -1128,10 +1212,10 @@ impl UiWorld {
                         }
                     },
                     focus_ring: None,
-                    selection_color: self.style_model.palette.accent_soft.as_rgba_array(),
+                    selection_color: self.style_model.color(SemanticColorRole::AccentSoft).as_rgba_array(),
                     caret_color,
                     additional_caret_color,
-                    preedit_color: self.style_model.palette.accent.as_rgba_array(),
+                    preedit_color: self.style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                     steppers,
                 })
             }
@@ -1145,22 +1229,25 @@ impl UiWorld {
                 invalid,
                 ..
             } => {
+                let track = self.style_model.metrics.switch;
                 let control = LayoutBox {
                     x: match control_position {
                         SwitchControlPosition::Start => content.x,
-                        SwitchControlPosition::End => content.x + (content.width - 30.0).max(0.0),
+                        SwitchControlPosition::End => {
+                            content.x + (content.width - track.track_width).max(0.0)
+                        }
                     },
-                    y: content.y + (content.height - 16.0) / 2.0,
-                    width: 30.0_f32.min(content.width),
-                    height: 16.0_f32.min(content.height),
+                    y: content.y + (content.height - track.track_height) / 2.0,
+                    width: track.track_width.min(content.width),
+                    height: track.track_height.min(content.height),
                 };
                 let text_x = if *control_position == SwitchControlPosition::Start {
-                    control.x + control.width + 8.0
+                    control.x + control.width + track.label_gap
                 } else {
                     content.x
                 };
                 let text_right = if *control_position == SwitchControlPosition::End {
-                    control.x - 8.0
+                    control.x - track.label_gap
                 } else {
                     content.x + content.width
                 };
@@ -1191,7 +1278,7 @@ impl UiWorld {
                         None,
                     )
                 };
-                let palette = self.style_model.palette;
+                let palette = self.style_model;
                 let hovered = self
                     .input
                     .pointer_hover
@@ -1217,40 +1304,48 @@ impl UiWorld {
                 };
                 let track_background = if *checked {
                     if pressed {
-                        palette.accent_strong.as_rgba_array()
+                        palette
+                            .color(SemanticColorRole::AccentStrong)
+                            .as_rgba_array()
                     } else {
-                        palette.accent.as_rgba_array()
+                        palette.color(SemanticColorRole::Accent).as_rgba_array()
                     }
                 } else {
                     mix(
-                        palette.hover.as_rgba_array(),
-                        palette.background.as_rgba_array(),
+                        palette.color(SemanticColorRole::Hover).as_rgba_array(),
+                        palette.color(SemanticColorRole::Background).as_rgba_array(),
                         0.78,
                     )
                 };
                 let track_border = if *invalid {
-                    palette.danger.as_rgba_array()
+                    palette.color(SemanticColorRole::Danger).as_rgba_array()
                 } else if *checked {
                     if hovered || pressed {
-                        palette.accent_strong.as_rgba_array()
+                        palette
+                            .color(SemanticColorRole::AccentStrong)
+                            .as_rgba_array()
                     } else {
-                        palette.accent.as_rgba_array()
+                        palette.color(SemanticColorRole::Accent).as_rgba_array()
                     }
                 } else if hovered || pressed {
                     mix(
-                        palette.accent.as_rgba_array(),
-                        palette.border_strong.as_rgba_array(),
+                        palette.color(SemanticColorRole::Accent).as_rgba_array(),
+                        palette
+                            .color(SemanticColorRole::BorderStrong)
+                            .as_rgba_array(),
                         if pressed { 0.70 } else { 0.42 },
                     )
                 } else {
-                    palette.border_strong.as_rgba_array()
+                    palette
+                        .color(SemanticColorRole::BorderStrong)
+                        .as_rgba_array()
                 };
                 let thumb_background = if *checked {
-                    palette.accent_text.as_rgba_array()
+                    palette.color(SemanticColorRole::AccentText).as_rgba_array()
                 } else {
                     mix(
-                        palette.faint.as_rgba_array(),
-                        palette.background.as_rgba_array(),
+                        palette.color(SemanticColorRole::Faint).as_rgba_array(),
+                        palette.color(SemanticColorRole::Background).as_rgba_array(),
                         0.70,
                     )
                 };
@@ -1295,10 +1390,10 @@ impl UiWorld {
                 // has to arrive here or it never reaches a scrollbar.
                 let base = self.style_model.metrics.scrollbar;
                 let chrome = skin.map(|skin| skin.metrics(base)).unwrap_or(base);
-                let palette = &self.style_model.palette;
+                let palette = self.style_model;
                 let track_background = skin.and_then(|skin| skin.track_color).or_else(|| {
                     matches!(visibility, nana_ui_core::ScrollbarVisibility::Always)
-                        .then(|| palette.subtle.as_rgba_array())
+                        .then(|| palette.color(SemanticColorRole::Subtle).as_rgba_array())
                 });
                 let scrolls = |axis: nana_ui_core::ScrollbarAxis| match axis {
                     nana_ui_core::ScrollbarAxis::Horizontal => {
@@ -1390,9 +1485,11 @@ impl UiWorld {
                         thumb_background: skin.and_then(|skin| skin.thumb_color).unwrap_or_else(
                             || {
                                 if active {
-                                    palette.muted.as_rgba_array()
+                                    palette.color(SemanticColorRole::Muted).as_rgba_array()
                                 } else {
-                                    palette.border_strong.as_rgba_array()
+                                    palette
+                                        .color(SemanticColorRole::BorderStrong)
+                                        .as_rgba_array()
                                 }
                             },
                         ),
@@ -1416,10 +1513,13 @@ impl UiWorld {
                 size,
                 ..
             } => {
+                // The spacing ladder, not a second one: these were 6 / 8 / 10
+                // as bare numbers sitting next to `SpacingTokens`' own SM / MD
+                // / LG, which are the same three values.
                 let gap = match size {
-                    nana_ui_core::ControlSize::Small => 6.0,
-                    nana_ui_core::ControlSize::Medium => 8.0,
-                    nana_ui_core::ControlSize::Large => 10.0,
+                    nana_ui_core::ControlSize::Small => nana_ui_core::space::SM,
+                    nana_ui_core::ControlSize::Medium => nana_ui_core::space::MD,
+                    nana_ui_core::ControlSize::Large => nana_ui_core::space::LG,
                 };
                 let label_width = label
                     .as_ref()
@@ -1590,11 +1690,11 @@ impl UiWorld {
                         .map(|detail| {
                             let label_size = style.font_size;
                             let detail_size = (label_size - 1.0).max(10.0);
-                            let gap = 8.0_f32;
+                            let gap = nana_ui_core::space::MD;
                             let label_natural =
                                 estimated_text_width(self.text(id).unwrap_or_default(), label_size);
                             let detail_natural = estimated_text_width(&detail, detail_size);
-                            let min_detail_visible = 16.0_f32;
+                            let min_detail_visible = nana_ui_core::space::XXXL;
                             let detail_width =
                                 if label_natural + gap + detail_natural <= label_rect.width {
                                     detail_natural
@@ -1618,7 +1718,7 @@ impl UiWorld {
                                     height: detail_height,
                                 },
                                 content: detail,
-                                color: Some(self.style_model.palette.muted.as_rgba_array()),
+                                color: Some(secondary),
                                 font_size: detail_size,
                                 font_weight: None,
                             }
@@ -1650,7 +1750,7 @@ impl UiWorld {
                         nana_ui_core::type_scale::META,
                     )
                 };
-                let diameter = indicator_slot * 10.0 / 24.0;
+                let diameter = indicator_slot * STATUS_DOT_FRACTION;
                 let foreground = self
                     .style_model
                     .color(self.theme.recipes().status().role(*tone))
@@ -1699,7 +1799,7 @@ impl UiWorld {
                         nana_ui_core::type_scale::META,
                     )
                 };
-                let diameter = indicator_slot * 10.0 / 24.0;
+                let diameter = indicator_slot * STATUS_DOT_FRACTION;
                 let foreground = self
                     .style_model
                     .color(match intent {
@@ -1772,7 +1872,7 @@ impl UiWorld {
                 };
                 let mut y = bounds.y + vertical;
                 let icon = icon.map(|icon| {
-                    let icon_width = 22.0_f32.min(width);
+                    let icon_width = EMPTY_STATE_ICON.min(width);
                     let icon_bounds = LayoutBox {
                         x: if *compact {
                             bounds.x + horizontal
@@ -1781,22 +1881,26 @@ impl UiWorld {
                         },
                         y,
                         width: icon_width,
-                        height: 22.0,
+                        height: EMPTY_STATE_ICON,
                     };
-                    y += 22.0 + spacing;
+                    y += EMPTY_STATE_ICON + spacing;
                     (
                         icon,
                         icon_bounds,
-                        self.style_model.palette.faint.as_rgba_array(),
+                        self.style_model
+                            .color(SemanticColorRole::Faint)
+                            .as_rgba_array(),
                     )
                 });
                 let title_region = crate::ComponentTextRegion {
                     bounds: text_bounds(presentation.title, y),
                     content: Arc::clone(title),
                     color: Some(if *compact {
-                        self.style_model.palette.muted.as_rgba_array()
+                        secondary
                     } else {
-                        self.style_model.palette.text.as_rgba_array()
+                        self.style_model
+                            .color(SemanticColorRole::Text)
+                            .as_rgba_array()
                     }),
                     font_size: title_size,
                     font_weight: Some(600),
@@ -1807,7 +1911,7 @@ impl UiWorld {
                     crate::ComponentTextRegion {
                         bounds: text_bounds(presentation.message.unwrap_or_default(), y),
                         content: Arc::clone(message),
-                        color: Some(self.style_model.palette.muted.as_rgba_array()),
+                        color: Some(secondary),
                         font_size: message_size,
                         font_weight: None,
                     }
@@ -1856,7 +1960,7 @@ impl UiWorld {
                     estimated_text_width(label, label_size)
                 };
                 let value_natural = estimated_text_width(value, value_size);
-                let min_value_visible = 16.0_f32;
+                let min_value_visible = nana_ui_core::space::XXXL;
                 // 放不下时值侧占满剩余宽度,超出部分由文本图元的省略号收尾;
                 // 仅属性名自身就放不下(剩余为负)才回退最小可见宽度。
                 let value_width = if label_natural + gap + value_natural <= available {
@@ -1878,7 +1982,11 @@ impl UiWorld {
                             height: label_height,
                         },
                         content: Arc::clone(label),
-                        color: Some(self.style_model.palette.faint.as_rgba_array()),
+                        color: Some(
+                            self.style_model
+                                .color(SemanticColorRole::Faint)
+                                .as_rgba_array(),
+                        ),
                         font_size: label_size,
                         font_weight: None,
                     },
@@ -1921,15 +2029,25 @@ impl UiWorld {
                         height: extent,
                     };
                     let (ring_color, dot_color) = if *disabled {
-                        let faint = self.style_model.palette.faint.as_rgba_array();
+                        let faint = self
+                            .style_model
+                            .color(SemanticColorRole::Faint)
+                            .as_rgba_array();
                         (faint, faint)
                     } else if *selected {
-                        let accent = self.style_model.palette.accent.as_rgba_array();
+                        let accent = self
+                            .style_model
+                            .color(SemanticColorRole::Accent)
+                            .as_rgba_array();
                         (accent, accent)
                     } else {
                         (
-                            self.style_model.palette.border_strong.as_rgba_array(),
-                            self.style_model.palette.accent.as_rgba_array(),
+                            self.style_model
+                                .color(SemanticColorRole::BorderStrong)
+                                .as_rgba_array(),
+                            self.style_model
+                                .color(SemanticColorRole::Accent)
+                                .as_rgba_array(),
                         )
                     };
                     let dot_extent = extent / 2.5;
@@ -1966,9 +2084,11 @@ impl UiWorld {
                             width: icon_extent,
                             height: icon_extent,
                         },
-                        style
-                            .color
-                            .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
+                        style.color.unwrap_or_else(|| {
+                            self.style_model
+                                .color(SemanticColorRole::Muted)
+                                .as_rgba_array()
+                        }),
                     )
                 });
                 // The label is the content box: `SegmentedOption::project`
@@ -1994,7 +2114,11 @@ impl UiWorld {
                     // control is focused and does not announce it.
                     focus_ring: (*show_focus_ring
                         && self.focus_visible(self.record(id).document) == Some(id))
-                    .then(|| self.style_model.palette.focus_border.as_rgba_array()),
+                    .then(|| {
+                        self.style_model
+                            .color(SemanticColorRole::FocusBorder)
+                            .as_rgba_array()
+                    }),
                     indicator: ring,
                 })
             }
@@ -2006,11 +2130,16 @@ impl UiWorld {
                 bounds,
                 style,
                 *value_ratio,
-                6.0,
-                3.0,
+                PROGRESS_GIRTH,
+                // A pill, derived — not the literal `3.0` it used to be. The
+                // two were equal and free to drift, and only `LevelMeter`
+                // right below said so in code.
+                PROGRESS_GIRTH / 2.0,
                 label.as_ref(),
                 *cancellable,
-                self.style_model.palette.text.as_rgba_array(),
+                self.style_model
+                    .color(SemanticColorRole::Text)
+                    .as_rgba_array(),
             ),
             StandardVisual::LevelMeter {
                 value_ratio, girth, ..
@@ -2018,7 +2147,7 @@ impl UiWorld {
                 let girth = if girth.is_finite() && *girth > 0.0 {
                     *girth
                 } else {
-                    4.0
+                    nana_ui_core::space::XS
                 };
                 progress_geometry(
                     bounds,
@@ -2092,7 +2221,11 @@ impl UiWorld {
                             height: title_height,
                         },
                         content: Arc::clone(title),
-                        color: Some(self.style_model.palette.text.as_rgba_array()),
+                        color: Some(
+                            self.style_model
+                                .color(SemanticColorRole::Text)
+                                .as_rgba_array(),
+                        ),
                         font_size: nana_ui_core::type_scale::META,
                         font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
                     },
@@ -2105,7 +2238,7 @@ impl UiWorld {
                                 height: desc_height,
                             },
                             content: Arc::clone(description),
-                            color: Some(self.style_model.palette.muted.as_rgba_array()),
+                            color: Some(secondary),
                             font_size: nana_ui_core::type_scale::HINT,
                             font_weight: None,
                         }
@@ -2133,14 +2266,14 @@ impl UiWorld {
                     },
                     h_axis: LayoutBox {
                         x: pad.x,
-                        y: pad.y + pad.height / 2.0 - 0.5,
+                        y: pad.y + pad.height / 2.0 - nana_ui_core::HAIRLINE / 2.0,
                         width: pad.width,
-                        height: 1.0,
+                        height: nana_ui_core::HAIRLINE,
                     },
                     v_axis: LayoutBox {
-                        x: pad.x + pad.width / 2.0 - 0.5,
+                        x: pad.x + pad.width / 2.0 - nana_ui_core::HAIRLINE / 2.0,
                         y: pad.y,
-                        width: 1.0,
+                        width: nana_ui_core::HAIRLINE,
                         height: pad.height,
                     },
                     background: style.background,
@@ -2150,8 +2283,14 @@ impl UiWorld {
                     } else {
                         0.0
                     },
-                    thumb_color: self.style_model.palette.accent.as_rgba_array(),
-                    axis_color: self.style_model.palette.border.as_rgba_array(),
+                    thumb_color: self
+                        .style_model
+                        .color(SemanticColorRole::Accent)
+                        .as_rgba_array(),
+                    axis_color: self
+                        .style_model
+                        .color(SemanticColorRole::Border)
+                        .as_rgba_array(),
                 })
             }
             StandardVisual::Select {
@@ -2505,14 +2644,10 @@ impl UiWorld {
                 &self.style_model.palette,
                 self.style_model.metrics,
             )),
-            StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(
-                content,
-                *recording,
-                &self.style_model.palette,
-            )),
-            StandardVisual::KeymapLayer => {
-                Some(keymap_geometry(content, &self.style_model.palette))
+            StandardVisual::KeyCaptureLayer { recording } => {
+                Some(key_capture_geometry(content, *recording, self.style_model))
             }
+            StandardVisual::KeymapLayer => Some(keymap_geometry(content, self.style_model)),
             _ => None,
         }
     }

@@ -149,6 +149,46 @@ pub struct ThemeMetrics {
     /// loads; the default is that same constant.
     #[serde(default)]
     pub scrollbar: crate::ScrollbarMetrics,
+    /// Switch track geometry.
+    ///
+    /// Composed for the same reason as [`Self::scrollbar`]: three
+    /// switch-shaped numbers do not belong beside `control_height`, but they do
+    /// belong to the *installed* theme. Before this they were four literals in
+    /// `world/geometry.rs` plus a hand-added copy of `width + gap` in the scene
+    /// painter, which meant a density or theme change could not reach a switch
+    /// and moving the track silently desynced the two.
+    ///
+    /// `serde(default)` so a metrics blob written before this field still
+    /// loads.
+    #[serde(default)]
+    pub switch: SwitchMetrics,
+}
+
+/// Switch track geometry, in logical pixels.
+///
+/// The thumb is not here: the painter derives it from the track, so a theme
+/// that states a track states a thumb.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SwitchMetrics {
+    /// Inline extent of the track.
+    pub track_width: f32,
+    /// Block extent of the track, and the basis for the thumb diameter.
+    pub track_height: f32,
+    /// Gap between the track and the label beside it.
+    pub label_gap: f32,
+}
+
+/// Lilia-style switch geometry.
+pub const SWITCH_METRICS: SwitchMetrics = SwitchMetrics {
+    track_width: 30.0,
+    track_height: 16.0,
+    label_gap: space::MD,
+};
+
+impl Default for SwitchMetrics {
+    fn default() -> Self {
+        SWITCH_METRICS
+    }
 }
 
 /// Which radius step a control wants, rather than how many pixels that is.
@@ -365,6 +405,7 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     list_item_padding_x: space::MD,
     large_control_padding_x: space::XXL,
     scrollbar: crate::scrollbar::SCROLLBAR_METRICS,
+    switch: SWITCH_METRICS,
 };
 
 impl Default for ThemeMetrics {

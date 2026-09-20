@@ -50,6 +50,17 @@ pub struct SemanticPaint {
     pub background_mix: Option<nana_ui_core::SemanticColorMix>,
     pub border_mix: Option<nana_ui_core::SemanticColorMix>,
     pub foreground: Option<SemanticColorRole>,
+    /// The quieter companion of [`Self::foreground`]: a row's detail line, a
+    /// field's placeholder, a hint under a label, a slider's unit.
+    ///
+    /// `None` means `Muted`, which is what every component painted before this
+    /// slot existed. It exists because a state that replaces `foreground` has
+    /// to be able to replace this too: a focused row fills with
+    /// `focus_surface`, its label follows to `focus_text`, and a detail line
+    /// pinned to `Muted` stays resolved against the surface the row *used* to
+    /// have — 1.09:1 in light mode. Naming the pair is the same argument
+    /// [`Self::FOCUS_SURFACE`] already makes for the label.
+    pub foreground_secondary: Option<SemanticColorRole>,
     pub background: Option<SemanticColorRole>,
     pub border: Option<SemanticColorRole>,
 }
@@ -79,6 +90,7 @@ impl SemanticPaint {
                     .flatten()
             }),
             foreground: overlay.foreground.or(self.foreground),
+            foreground_secondary: overlay.foreground_secondary.or(self.foreground_secondary),
             background: overlay.background.or(self.background),
             border: overlay.border.or(self.border),
         }
@@ -96,11 +108,17 @@ impl SemanticPaint {
     /// keeps eight components from each inventing a focus look — which is how
     /// three of them ended up with `border: Accent` on a zero-width border and
     /// painted nothing at all.
+    /// Secondary text follows the label rather than staying `Muted`: the fill
+    /// is the same for both, and a quieter grey resolved against the *resting*
+    /// surface disappears into it. Focus is transient, so the one step of
+    /// colour hierarchy the detail line loses here costs less than the
+    /// contrast it gains — size and position still separate the two.
     pub const FOCUS_SURFACE: Self = Self {
         foreground_mix: None,
         background_mix: None,
         border_mix: None,
         foreground: Some(SemanticColorRole::FocusText),
+        foreground_secondary: Some(SemanticColorRole::FocusText),
         background: Some(SemanticColorRole::FocusSurface),
         border: None,
     };
@@ -112,6 +130,7 @@ impl SemanticPaint {
         background_mix: None,
         border_mix: None,
         foreground: None,
+        foreground_secondary: None,
         background: None,
         border: Some(SemanticColorRole::FocusBorder),
     };

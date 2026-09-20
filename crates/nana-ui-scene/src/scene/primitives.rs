@@ -314,6 +314,16 @@ impl UiScene {
             }) {
                 let padding = style.resolved_padding_against(Some(bounds.width));
                 let border = style.resolved_border_width();
+                // A switch that produced component geometry lays its own label
+                // out from the installed `SwitchMetrics`, and
+                // `component_owns_text` sends it down that path — this is the
+                // fallback for one that produced none (a degenerate content
+                // box). It used to be the literal `38.0`, twice, which was
+                // `30 + 8` copied by hand from the geometry arm: moving the
+                // track desynced the painter silently. Derive it from the same
+                // default the geometry arm starts from instead.
+                const SWITCH_TEXT_INSET: f32 = nana_ui_core::UI_METRICS.switch.track_width
+                    + nana_ui_core::UI_METRICS.switch.label_gap;
                 let leading_visual = match node.standard_visual {
                     Some(StandardVisual::Checkbox { size, .. }) => {
                         size.indicator_size() + size.indicator_gap()
@@ -321,14 +331,14 @@ impl UiScene {
                     Some(StandardVisual::Switch {
                         control_position: SwitchControlPosition::Start,
                         ..
-                    }) => 38.0,
+                    }) => SWITCH_TEXT_INSET,
                     _ => 0.0,
                 };
                 let trailing_visual = match node.standard_visual {
                     Some(StandardVisual::Switch {
                         control_position: SwitchControlPosition::End,
                         ..
-                    }) => 38.0,
+                    }) => SWITCH_TEXT_INSET,
                     _ => 0.0,
                 };
                 let mut text_bounds = SceneRect {

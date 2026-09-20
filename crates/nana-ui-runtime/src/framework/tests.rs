@@ -3911,6 +3911,162 @@ fn an_installed_radius_reaches_a_control_that_named_the_tier() {
     );
 }
 
+/// Issue #101 F1: the switch track follows the **installed** theme.
+///
+/// Its width, height and label gap used to be four literals in
+/// `world/geometry.rs`, so no theme or density could move them — and the scene
+/// painter carried a hand-added `30 + 8` of its own, which meant moving the
+/// track desynced the label inset silently. `ThemeMetrics::switch` owns them
+/// now, and this is the assertion that says the installed value arrives.
+#[test]
+fn an_installed_switch_track_reaches_the_switch() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let switch = context
+        .create_component(document, crate::Switch::new("Follow cursor", false))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+
+    let track_of = |context: &AppContext| match context.world().extract_nodes(&[switch.stable_id()])
+        [0]
+    .component_geometry
+    .as_deref()
+    {
+        Some(crate::ComponentGeometry::Switch { control, .. }) => (control.width, control.x),
+        other => panic!("a switch derives switch geometry, got {other:?}"),
+    };
+    let (width, x) = track_of(&context);
+    assert_eq!(width, nana_ui_core::SWITCH_METRICS.track_width);
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.switch.track_width = 48.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+    let (wide, moved) = track_of(&context);
+    assert_eq!(
+        wide, 48.0,
+        "the installed track width is the one that paints"
+    );
+    assert!(
+        moved < x,
+        "a trailing track that grew has to start further left, not overflow \
+         its content box: {moved} vs {x}"
+    );
+}
+
+/// A switch that spent its own inset keeps it.
+///
+/// `control_padding_x` overwrites the padding edges, and `Switch` used to set
+/// it unconditionally — which made it the one intent field a switch could not
+/// opt out of. A trailing switch has no label to supply its width, so the
+/// default inset ate its content box and the track, which clamps to
+/// `min(track_width, content width)`, painted a sliver.
+#[test]
+fn a_switch_that_authored_its_inset_keeps_its_track() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let track = nana_ui_core::SWITCH_METRICS.track_width;
+
+    let mut bare = crate::Switch::new("", false);
+    {
+        let layout = std::sync::Arc::make_mut(&mut bare.style.layout);
+        layout.width = Some(nana_ui_core::LengthSpec::Px(track));
+        layout.padding_left = Some(nana_ui_core::LengthSpec::Px(0.0));
+        layout.padding_right = Some(nana_ui_core::LengthSpec::Px(0.0));
+    }
+    let bare = context.create_component(document, bare).unwrap();
+    // A labelled one alongside, to show the default still arrives for callers
+    // that said nothing.
+    let labelled = context
+        .create_component(document, crate::Switch::new("Follow cursor", false))
+        .unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 120.0))
+        .unwrap();
+
+    let control_width = |context: &AppContext, id: crate::StableNodeId| match context
+        .world()
+        .extract_nodes(&[id])[0]
+        .component_geometry
+        .as_deref()
+    {
+        Some(crate::ComponentGeometry::Switch { control, .. }) => control.width,
+        other => panic!("a switch derives switch geometry, got {other:?}"),
+    };
+    assert_eq!(
+        control_width(&context, bare.stable_id()),
+        track,
+        "a switch that spent its own inset gets a content box wide enough for \
+         the whole track"
+    );
+    assert_eq!(
+        control_width(&context, labelled.stable_id()),
+        track,
+        "and a labelled switch still gets the size step's inset"
+    );
+}
+
+/// Issue #101 F1: a focused row's secondary text stays readable.
+///
+/// A `ListItem` focuses with `SemanticPaint::FOCUS_SURFACE`, which fills it
+/// with `focus_surface` and moves the label to `focus_text`. The detail line
+/// used to read `palette.muted` straight off the palette, so it kept a colour
+/// resolved against the surface the row no longer had — 1.09:1 against the
+/// light fill, which no single value of `muted` can fix, because it also has to
+/// stay quiet on a white card. `foreground_secondary` lets the state say so.
+#[test]
+fn a_focused_rows_secondary_text_follows_its_label() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut view = crate::ListItem::new("nanalive.model3.json");
+    view.detail = "current actor".into();
+    let row = context.create_component(document, view).unwrap();
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+
+    let colors = |context: &AppContext| match context.world().extract_nodes(&[row.stable_id()])[0]
+        .component_geometry
+        .as_deref()
+    {
+        Some(crate::ComponentGeometry::ListItem { detail, .. }) => {
+            detail.as_ref().expect("the row declares a detail").color
+        }
+        other => panic!("a list item derives list-item geometry, got {other:?}"),
+    };
+    let palette = nana_ui_core::SemanticPalette::dark();
+    assert_eq!(
+        colors(&context),
+        Some(palette.muted.as_rgba_array()),
+        "an unfocused row's detail is still the muted role it always was"
+    );
+
+    assert!(context.focus_node(document, row.stable_id()).unwrap());
+    context
+        .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
+        .unwrap();
+    assert_eq!(
+        colors(&context),
+        Some(palette.focus_text.as_rgba_array()),
+        "a focused row fills with focus_surface, so its detail has to follow \
+         the label onto focus_text instead of staying resolved against the \
+         surface underneath"
+    );
+}
+
 /// Issue #101 F1/F10: the scrollbar follows the **installed** theme.
 ///
 /// Its geometry used to come only from the `SCROLLBAR_METRICS` constant, so a

@@ -13,7 +13,7 @@ pub(in crate::world) fn reorder_list_geometry(
 ) -> crate::ComponentGeometry {
     let height = size.height_in(metrics);
     let spacing = spacing.max(0.0);
-    let pad = 8.0;
+    let pad = nana_ui_core::space::MD;
     let rows = rows
         .iter()
         .enumerate()

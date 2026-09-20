@@ -28,6 +28,8 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 要整套换掉（不只是颜色和尺寸，还有排版、动效时长、阴影、组件配方），装一个 `ThemeDefinition`：`nana_ui::theme::install_theme_definition(&mut context, &definition)`。从内置的 `ThemeMode::Dark.definition()` 派生并改你要改的那几档，别从头拼——缺一个槽位它装不上，这是有意的。
 
+`nana_ui::theme` 把构成一份定义的 token 结构体都导出了（`ThemeMetrics`、`SwitchMetrics`、`TypographyTokens`、`MotionTokens`、`EffectTokens`、`SpacingTokens`、`BorderTokens`、`OpacityTokens`、`SurfaceTokens`、`AccentRamp`、`ComponentThemeRegistry` 与 `ButtonVariantDraft` 一类的 recipe draft，以及 `ThemeId` / `ThemeSchemaVersion` / `ThemeGeneration`），还有节点级命名尺寸要用的 `RadiusTier` / `ControlHeight` / `ControlPadding` / `SurfacePadding` / `SquareSize` 和 `SemanticColorMix`。消费方从这里拿，不要直依赖 `nana-ui-core`。
+
 要改框架本身的主题架构，先读 [主题与样式](theme.md)：那篇是这套合同当前的完整清单与基线，包括哪些 token 装了却没人读。
 
 ## 字体
@@ -37,6 +39,12 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 应用也可以关掉捆绑字体、用 `register_host_font_bytes` / `register_host_font_file` 把自有字体载入同一套 FontSystem（与捆绑 Noto 并列）。未注册仍回落捆绑或系统字体。
 
 字距走 `nana-text` shaping（tracking，不是事后平移）。`font-feature-settings` / `font-kerning` 进 shaper；`font-variation-settings` 兑现已声明且字体存在的轴（`wght` 并进 `font-weight`，`wdth` 与自定义轴如 `BEVL` 走同一份 `FontVariations`；字体没有的轴跳过，不改写成 `wght`）。`word-break: break-all|break-word` 与 `line-break: anywhere` 改 wrap；`keep-all` / `strict` / `loose` 与竖排不支持，声明被跳过。`@font-face` 在 stylesheet 解析时只收集规则；`url(...)` 的加载与字体注册发生在 `inject_stylesheet`（宿主适配器，`scene-view`），不在 CSS parse。CSS `font-family`（及 weight/style）会映射到刚载入的 face，坏 src 丢掉该 face，不用系统字体顶替。
+
+## 控件尺寸
+
+单行控件的三档高度和内边距在 `ThemeMetrics`；switch 的轨道在 `ThemeMetrics::switch`（`SwitchMetrics`：30×16 轨道 + 8 标签间距），scrollbar 的在 `ThemeMetrics::scrollbar`。两者都是组合进来的子结构，理由一样：几个某控件专属的数字不该跟 `control_height` 并排，但它们确实属于**安装的**主题。
+
+节点级尺寸用命名档位（`NodeStyle::radius` / `control_height` / `control_padding_x` / `square`），不要把 `UI_METRICS.radius_lg` 这类数字写进 `layout`——那是在构造期把 token 花掉，之后装什么主题都推不动它。`control_padding_x` 会盖掉节点自己的左右内边距，这是「命名档位而不是花掉数字」的代价；要退出就把它设成 `None` 再自己写 padding（`sidebar.rs` 就是这么做的）。
 
 ## 圆角
 

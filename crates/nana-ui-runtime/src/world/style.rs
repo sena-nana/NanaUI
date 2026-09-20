@@ -459,6 +459,25 @@ impl UiWorld {
         }
         paint
     }
+
+    /// The colour a component's quieter text resolves to for `id`, in its
+    /// current interaction state.
+    ///
+    /// Component geometry used to read `palette.muted` straight off the
+    /// palette for every detail line, hint, placeholder and unit. That skips
+    /// the state the node is actually in: a focused row fills with
+    /// `focus_surface` and its label follows to `focus_text`, while the pinned
+    /// grey stays resolved against the surface the row no longer has. The
+    /// role still defaults to `Muted`, so a component that says nothing paints
+    /// exactly what it painted before.
+    pub(super) fn secondary_text_color(&self, id: StableNodeId) -> [f32; 4] {
+        let local = &self.record(id).style;
+        let role = self
+            .semantic_paint(id, local)
+            .foreground_secondary
+            .unwrap_or(SemanticColorRole::Muted);
+        self.theme_color(role)
+    }
 }
 
 impl UiWorld {

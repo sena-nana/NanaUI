@@ -3416,7 +3416,28 @@ impl ComponentView for Switch {
         } else if effective_style.control_height.is_none() {
             effective_style.control_height = Some(nana_ui_core::ControlHeight::Min(self.size));
         }
-        effective_style.control_padding_x = Some(self.size.into());
+        // Only when the caller spent no inset of its own, the way the control
+        // height right above is guarded.
+        //
+        // Writing it unconditionally made `control_padding_x` the one intent
+        // field a switch could not opt out of. It overwrites `padding_left` /
+        // `padding_right`, so a switch with no label — which has no text to
+        // supply its width — was left a content box `width - 2 * inset` wide,
+        // and the track clamps to `min(track_width, content width)`: at the
+        // default inset, a 2pt sliver with a thumb beside it. Clearing
+        // `control_padding_x` was no escape either, because it starts `None`
+        // and this line put it straight back.
+        //
+        // Authored padding is the signal, not an unset intent field: a caller
+        // that spent a number on this edge said what it wanted there, and a
+        // component default must not overwrite it — the same rule
+        // `Button::layout` states for a caller that hands over a whole box.
+        let authored_inset = effective_style.layout.padding.is_some()
+            || effective_style.layout.padding_left.is_some()
+            || effective_style.layout.padding_right.is_some();
+        if effective_style.control_padding_x.is_none() && !authored_inset {
+            effective_style.control_padding_x = Some(self.size.into());
+        }
         if self.invalid {
             effective_style.border = Some(nana_ui_core::SemanticColorRole::Danger);
         }

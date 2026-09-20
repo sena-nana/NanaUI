@@ -5,14 +5,39 @@
 //! / ThemeTokens factory for arbitrary L1 paint values — see
 //! `nana_ui_core::style_model`.
 
-use nana_ui_core::{
-    AppearanceSettings, BackdropTarget, SurfaceMaterial, SurfaceRole, SurfaceSpec, SurfaceTokens,
-};
+use nana_ui_core::{AppearanceSettings, BackdropTarget};
 
+/// The design system, as a theme author writes it.
+///
+/// [`ThemeDefinition`] and [`install_theme_definition`] were reachable before
+/// this block and the types they are *built from* were not, which made the L3
+/// theme surface unusable by construction: a host could hold a definition and
+/// compile it, but every `with_*` builder takes a type it could not name, the
+/// token structs behind `DesignTokens` could not be spelled, and
+/// [`ThemeId`] / [`ThemeSchemaVersion`] / [`ThemeGeneration`] — the three
+/// fields a definition needs for identity — were all private to the consumer.
+/// The host's only way through was to derive from `ThemeMode::definition()`
+/// and mutate public fields, which works but cannot name a step.
+///
+/// `look.md` tells consumers not to depend on `nana-ui-core` directly, so this
+/// is where those names have to surface. The list mirrors
+/// `nana_ui_core::lib`'s own theme re-export; keep them in step.
 pub use nana_ui_core::{
-    CompiledTheme, HAIRLINE, SemanticColor, SemanticPalette, ThemeCompileError, ThemeDefinition,
-    ThemeMetrics, ThemeMode, UI_BASE_TEXT_SIZE, UI_METRICS, space, type_scale,
+    AccentRamp, BorderTokens, BorderWidth, ButtonRecipe, ButtonRecipeDraft, ButtonVariantDraft,
+    ButtonVariantRecipe, ChromeRadii, CompiledRecipes, CompiledTheme, ComponentRecipe,
+    ComponentRecipeDraft, ComponentRecipeId, ComponentThemeRegistry, ControlHeight, ControlPadding,
+    DesignTokens, EasingRole, EffectTokens, ElevationRole, FoundationTokens, HAIRLINE, LineRole,
+    MotionRole, MotionTokens, OpacityTokens, RadiusTier, SWITCH_METRICS, SemanticColor,
+    SemanticPalette, ShadowToken, SpacingStep, SpacingTokens, SquareSize, StateLayer, StatusRecipe,
+    SurfaceMaterial, SurfacePadding, SurfaceRole, SurfaceSpec, SurfaceTokens, SwitchMetrics,
+    TextWeight, ThemeCompileError, ThemeDefinition, ThemeGeneration, ThemeId, ThemeIdentity,
+    ThemeMetrics, ThemeMode, ThemeSchemaVersion, TypeRole, TypographyTokens, UI_BASE_TEXT_SIZE,
+    UI_METRICS, space, type_scale,
 };
+/// Style-model names a host needs to name a node's paint rather than spend a
+/// number: the two-role mix behind `NodeStyle::surface_mix` / `outline_mix`,
+/// and the CSS-grade paint block reachable through `LayoutStyle::paint`.
+pub use nana_ui_core::{BoxShadowSpec, PaintStyle, SemanticColorMix};
 
 /// Linear RGBA color used by L3 token adapters. Same layout as [`SemanticColor`].
 pub type Color = SemanticColor;
