@@ -7436,3 +7436,29 @@ fn rewriting_a_component_with_its_own_values_leaves_no_pending_work() {
         "a real change must dirty the node"
     );
 }
+
+/// Removing content is a change too: a repaint that parks a subtree must read
+/// as pending work, or a host that skips frames on "nothing changed" would
+/// leave the removed rows on screen.
+#[test]
+fn parking_a_subtree_is_pending_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(918).unwrap();
+    let root = context
+        .create_component(document, Stack::column(4.0))
+        .unwrap();
+    let row = context
+        .create_detached_component(document, Text::new("一行"))
+        .unwrap();
+    context.append_child(root, row).unwrap();
+    let _ = context.world_mut().take_system_work();
+    assert!(!context.world().has_pending_work());
+
+    let mut queue = crate::MutationQueue::new();
+    queue.park_subtree(row.stable_id());
+    context.commit_mutations(queue).unwrap();
+    assert!(
+        context.world().has_pending_work(),
+        "parking a subtree must leave work for the next flush"
+    );
+}

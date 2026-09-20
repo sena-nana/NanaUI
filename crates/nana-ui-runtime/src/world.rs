@@ -762,7 +762,12 @@ impl UiWorld {
     /// mutations leaves nothing dirty. Answering it from the outside otherwise
     /// means re-deriving per-field diffs the commit already computed.
     pub fn has_pending_work(&self) -> bool {
+        // The removal queues are drained by the same call and are refilled
+        // independently of the dirty set when a frame does not settle, so
+        // reporting only dirty nodes would answer "clean" while work waits.
         !self.dirty_entities.is_empty()
+            || !self.pending_accessibility_removals.is_empty()
+            || !self.pending_render_removals.is_empty()
     }
 
     /// Algorithm-level counters from the last non-empty drain, or the current
