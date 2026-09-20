@@ -14,10 +14,10 @@
 //!        WGPU
 //! ```
 //!
-//! Nothing below the resolver knows what shaped the paragraph. Today it is
-//! this crate's cosmic-text shaper; #99 replaces that with `nana-text`'s
-//! engine by rewriting [`TextPipeline::resolve_runs`] and the rasterizer's
-//! face source, and every stage after it is unchanged.
+//! Nothing below the resolver knows what laid the paragraph out. Since #99
+//! that is `nana-text`: this module asks the process-wide engine for an
+//! immutable [`nana_text::TextLayout`] and resolves it into glyph runs. No
+//! cosmic-text type reaches the paint path.
 //!
 //! Three lifetimes meet here and are deliberately not the same:
 //!
@@ -37,14 +37,15 @@ mod raster;
 mod raster_cache;
 mod upload;
 
-use cosmic_text::{Align, Buffer, Color, Metrics, Shaping};
-use nana_ui_core::LineHeightSpec;
+use nana_text::{TextEngine as _, TextLayout};
+use nana_ui_core::{LineHeightSpec, TextAlignSpec};
 use nana_ui_runtime::{TextHorizontalAlignment, TextShaping, TextVerticalAlignment};
 use nana_ui_scene::{SceneTextOpenType, SceneTextSpan};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
+use std::sync::Arc;
 
 use self::atlas::{AtlasPageKind, GlyphAtlasLimits, GlyphAtlasManager};
 pub(in crate::scene_paint) use self::entry::EntryKey;
@@ -54,17 +55,13 @@ use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
     TextPresentationGpu, TextRunGpu, TextTargetGpu,
 };
-use self::raster::{SwashGlyphRasterizer, synthesis_from_backend};
+use self::raster::SwashGlyphRasterizer;
 use self::raster_cache::GlyphRasterCache;
 use self::upload::GlyphUploadQueue;
 
 use super::clip::{self, LogicalRect};
 use super::color::{linear_from_srgb8, to_rgba8};
 use crate::PhysicalRect;
-use crate::nana_text::{
-    RTL_ISOLATE_PREFIX, RTL_ISOLATE_SUFFIX, cosmic_wrap, ellipsize_end, measured_text_overflows,
-    shape_attrs, wrap_for_css_direction,
-};
 
 const SHAPE_CACHE_CAP: usize = 512;
 /// Hard ceiling on shaped paragraphs, whatever the view asks for.
@@ -141,12 +138,16 @@ pub struct TextGlyphCounters {
 
 struct ShapeEntry {
     key: ShapeKey,
-    buffer: Buffer,
+    layout: Arc<TextLayout>,
     /// Frame this paragraph was last asked for.
     last_used: u64,
 }
 
-/// Shaped buffers keyed by [`ShapeKeyRef::hash64`].
+/// Laid-out paragraphs keyed by [`ShapeKeyRef::hash64`].
+///
+/// A handle table, not a second layout authority: the values are `Arc`s to
+/// layouts the engine's own cache produced, so what this bounds is how many
+/// the painter keeps *reachable*, not how many exist.
 ///
 /// The map is keyed by the hash rather than by an owned key so a repaint of
 /// unchanged text looks up without copying the string, the family name, or the
@@ -169,13 +170,13 @@ impl ShapeCache {
         self.frame = self.frame.wrapping_add(1);
     }
 
-    fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Buffer> {
+    fn get(&mut self, hash: u64, key: &ShapeKeyRef<'_>) -> Option<&Arc<TextLayout>> {
         let frame = self.frame;
         match self.entries.get_mut(&hash) {
             Some(entry) if entry.key.matches(key) => {
                 entry.last_used = frame;
                 self.hits += 1;
-                Some(&entry.buffer)
+                Some(&entry.layout)
             }
             _ => {
                 self.misses += 1;
@@ -204,8 +205,8 @@ impl ShapeCache {
         }
     }
 
-    fn buffer(&self, hash: u64) -> Option<&Buffer> {
-        self.entries.get(&hash).map(|entry| &entry.buffer)
+    fn layout(&self, hash: u64) -> Option<&Arc<TextLayout>> {
+        self.entries.get(&hash).map(|entry| &entry.layout)
     }
 
     /// Drop every shaped paragraph. For the case where they are not merely
@@ -229,7 +230,7 @@ impl ShapeCache {
     /// "Recent" rather than "this frame" because two windows on one painter
     /// take turns: what window A drew last frame is still on screen while
     /// window B is drawing, and the cache has to hold both.
-    fn insert(&mut self, hash: u64, key: ShapeKey, buffer: Buffer) {
+    fn insert(&mut self, hash: u64, key: ShapeKey, layout: Arc<TextLayout>) {
         let frame = self.frame;
         let pinned = frame.saturating_sub(PIN_FRAMES);
         let mut probes = 0;
@@ -268,7 +269,7 @@ impl ShapeCache {
                 hash,
                 ShapeEntry {
                     key,
-                    buffer,
+                    layout,
                     last_used: frame,
                 },
             )
@@ -308,10 +309,12 @@ impl Hasher for ShapeHasher {
     }
 }
 
-/// Everything that determines the shaped output. Position is applied at draw
-/// time via `TextArea` and plain-text color via `default_color`, so neither
-/// is part of the key; rich spans bake their colors into shaping attrs and
-/// therefore belong to it.
+/// Everything that determines the laid-out paragraph.
+///
+/// Position and color are not here. Since #99 that includes *rich span*
+/// colors: `nana-text` lays text out without knowing what paints it, so two
+/// spellings of the same string in different colors are one layout and the
+/// colors are resolved onto glyphs afterwards.
 struct ShapeKey {
     content: String,
     family: Option<String>,
@@ -323,7 +326,6 @@ struct ShapeKey {
     italic: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
-    shaping: u8,
     letter_spacing_bits: u32,
     word_break: u8,
     line_break: u8,
@@ -335,7 +337,6 @@ struct ShapeKey {
     align: u8,
     direction: u8,
     writing_mode: u8,
-    spans: Option<Vec<(String, [u32; 4])>>,
     font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
 
@@ -354,7 +355,6 @@ struct ShapeKeyRef<'a> {
     italic: bool,
     ellipsis: bool,
     max_lines: Option<u16>,
-    shaping: u8,
     letter_spacing_bits: u32,
     word_break: u8,
     line_break: u8,
@@ -366,8 +366,6 @@ struct ShapeKeyRef<'a> {
     align: u8,
     direction: u8,
     writing_mode: u8,
-    /// `Some` only for rich text, whose span colors change the shaped attrs.
-    spans: Option<&'a [(&'a str, [f32; 4])]>,
     font_features: &'a [nana_ui_core::FontFeatureSetting],
 }
 
@@ -384,7 +382,6 @@ impl ShapeKeyRef<'_> {
         self.italic.hash(&mut hasher);
         self.ellipsis.hash(&mut hasher);
         self.max_lines.hash(&mut hasher);
-        self.shaping.hash(&mut hasher);
         self.letter_spacing_bits.hash(&mut hasher);
         self.word_break.hash(&mut hasher);
         self.line_break.hash(&mut hasher);
@@ -397,17 +394,6 @@ impl ShapeKeyRef<'_> {
         self.font_features.hash(&mut hasher);
         self.direction.hash(&mut hasher);
         self.writing_mode.hash(&mut hasher);
-        match self.spans {
-            None => 0u8.hash(&mut hasher),
-            Some(spans) => {
-                1u8.hash(&mut hasher);
-                spans.len().hash(&mut hasher);
-                for (text, color) in spans {
-                    text.hash(&mut hasher);
-                    color.map(f32::to_bits).hash(&mut hasher);
-                }
-            }
-        }
         hasher.finish()
     }
 
@@ -423,7 +409,6 @@ impl ShapeKeyRef<'_> {
             italic: self.italic,
             ellipsis: self.ellipsis,
             max_lines: self.max_lines,
-            shaping: self.shaping,
             letter_spacing_bits: self.letter_spacing_bits,
             word_break: self.word_break,
             line_break: self.line_break,
@@ -436,12 +421,6 @@ impl ShapeKeyRef<'_> {
             font_features: self.font_features.to_vec(),
             direction: self.direction,
             writing_mode: self.writing_mode,
-            spans: self.spans.map(|spans| {
-                spans
-                    .iter()
-                    .map(|(text, color)| ((*text).to_owned(), color.map(f32::to_bits)))
-                    .collect()
-            }),
         }
     }
 }
@@ -458,7 +437,6 @@ impl ShapeKey {
             && self.italic == other.italic
             && self.ellipsis == other.ellipsis
             && self.max_lines == other.max_lines
-            && self.shaping == other.shaping
             && self.letter_spacing_bits == other.letter_spacing_bits
             && self.word_break == other.word_break
             && self.line_break == other.line_break
@@ -471,19 +449,6 @@ impl ShapeKey {
             && self.font_features == other.font_features
             && self.direction == other.direction
             && self.writing_mode == other.writing_mode
-            && match (&self.spans, other.spans) {
-                (None, None) => true,
-                (Some(mine), Some(theirs)) => {
-                    mine.len() == theirs.len()
-                        && mine
-                            .iter()
-                            .zip(theirs)
-                            .all(|((text, color), (other, hue))| {
-                                text == other && *color == hue.map(f32::to_bits)
-                            })
-                }
-                _ => false,
-            }
     }
 }
 
@@ -609,8 +574,10 @@ impl TextPipelineTarget {
 }
 
 pub(super) struct TextPipeline {
-    /// Shared with Runtime shaping; see [`crate::nana_text::nana_font_system`].
-    font_system: crate::nana_text::SharedFontSystem,
+    /// The `nana-text` engine this painter lays paragraphs out through, and
+    /// the one whose faces its rasterizer scales. One per process, so a
+    /// paragraph shaped for one window is already shaped for the next.
+    engine: nana_text::SharedTextEngine,
     rasterizer: SwashGlyphRasterizer,
     raster: GlyphRasterCache,
     atlas: GlyphAtlasManager,
@@ -651,8 +618,8 @@ impl TextPipeline {
         let gpu = TextGpu::new(device, format, &atlas);
         let target = TextPipelineTarget::new(gpu.new_target(device));
         Self {
-            font_system: crate::nana_text::nana_font_system(),
-            rasterizer: SwashGlyphRasterizer::new(crate::nana_text::nana_font_system()),
+            engine: crate::text_engine::nana_text_engine(),
+            rasterizer: SwashGlyphRasterizer::new(crate::text_engine::nana_text_engine()),
             raster,
             atlas,
             uploads: GlyphUploadQueue::default(),
@@ -660,14 +627,14 @@ impl TextPipeline {
             shape_cache: ShapeCache::default(),
             resolved: NanaGlyphBuffer::default(),
             target,
-            font_generation: crate::nana_text::font_db_generation(),
+            font_generation: crate::text_engine::engine_font_generation(),
             resolve_requests: 0,
             draws: Cell::new(0),
         }
     }
 
     pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
-        let generation = crate::nana_text::font_db_generation();
+        let generation = crate::text_engine::engine_font_generation();
         if generation != self.font_generation {
             // Faces were added, replaced or removed. Shaped paragraphs named
             // the old face set and glyph bitmaps were scaled from it, so both
@@ -843,28 +810,27 @@ impl TextPipeline {
             None => size * 1.2,
         }
         .max(f32::MIN_POSITIVE);
-        // Shape in physical px so the raster size is the shaped size.
-        let physical_size = size * scale;
-        let physical_line_height = line_height * scale;
-        let physical_width = bounds.width.max(0.0) * scale;
-        let physical_height = bounds.height.max(line_height) * scale;
+        // Laid out in **logical** px, which is what makes a layout reusable
+        // across device scales and identical to the one Runtime measured the
+        // same node with. The device scale enters at resolve time, where it
+        // picks the raster size and the sub-pixel bin; advances are linear in
+        // the size, so scaling the result is the same text at a different
+        // scale, and a DPI change re-rasterizes without laying anything out.
+        let box_width = bounds.width.max(0.0);
+        let box_height = bounds.height.max(line_height);
         // Opacity rides on the run, not on the color the glyphs were
         // resolved with: a fade must not be a reason to reshape rich text or
         // to rebuild a single instance.
         let default_color = color.unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        // Match NanaTextShaper's measurement policy, including ASCII. Basic
-        // shaping changes advances and can wrap/truncate text that fits the
-        // Runtime content box (notably multiline chart tooltips).
-        let shaping = match shaping {
-            TextShaping::Auto | TextShaping::Advanced => Shaping::Advanced,
-        };
-        let rtl = opentype.direction.is_rtl();
+        // Every path shapes with the full OpenType machinery. The scene still
+        // carries the old `Auto | Advanced` distinction; `nana-text` has no
+        // reduced mode to select, and a reduced one changed advances enough to
+        // wrap text that fit the Runtime content box.
+        let (TextShaping::Auto | TextShaping::Advanced) = shaping;
         let align = match horizontal {
-            TextHorizontalAlignment::Start if rtl => Some(Align::Right),
-            TextHorizontalAlignment::Start => None,
-            TextHorizontalAlignment::Center => Some(Align::Center),
-            TextHorizontalAlignment::End if rtl => None,
-            TextHorizontalAlignment::End => Some(Align::Right),
+            TextHorizontalAlignment::Start => TextAlignSpec::Start,
+            TextHorizontalAlignment::Center => TextAlignSpec::Center,
+            TextHorizontalAlignment::End => TextAlignSpec::End,
         };
         // Nothing the shape key is made of can have changed: the scene has not
         // rewritten this primitive since these glyphs were resolved, and
@@ -872,13 +838,13 @@ impl TextPipeline {
         // key and hashing the paragraph would only prove that again, once per
         // label per frame.
         //
-        // Rich text is left out: its key carries the painted spans, which are
-        // built against a colour the caller may override without the scene
-        // having touched the primitive.
-        let retained = spans
-            .is_empty()
-            .then(|| self.target.entries.lookup(entry_key))
-            .flatten()
+        // Rich text is included: since #99 the span colors are not part of the
+        // layout key, and what a span paints is baked into the instances this
+        // entry already holds under the same primitive revision.
+        let retained = self
+            .target
+            .entries
+            .lookup(entry_key)
             .and_then(|id| Some((id, self.target.entries.get(id)?)))
             .filter(|(_, entry)| {
                 !entry.damaged
@@ -892,40 +858,28 @@ impl TextPipeline {
         let hash = match retained {
             Some((_, hash, _)) => hash,
             None => {
-                // A label with no spans is the overwhelming majority, and splitting it
-                // would allocate a one-element list per node per frame to say so.
-                let painted = if spans.is_empty() {
-                    Vec::new()
-                } else {
-                    presentation_spans(content, spans, default_color)
-                };
-                let rich = painted.len() > 1
-                    || painted.first().is_some_and(|span| span.1 != default_color);
-                // Width, height and requested ellipsis uniquely determine the result;
-                // cache lookup before shaping avoids repeating the overflow probe.
+                // Width, height and requested ellipsis uniquely determine the
+                // result; the cache lookup happens before layout so a repaint
+                // of unchanged text never reaches the engine.
                 let key = ShapeKeyRef {
                     content,
                     family,
                     weight,
-                    font_size_bits: physical_size.to_bits(),
-                    line_height_bits: physical_line_height.to_bits(),
+                    font_size_bits: size.to_bits(),
+                    line_height_bits: line_height.to_bits(),
                     wrap,
                     wrap_break,
                     italic,
                     ellipsis,
                     max_lines,
-                    shaping: match shaping {
-                        Shaping::Basic => 0,
-                        Shaping::Advanced => 1,
-                    },
                     letter_spacing_bits: letter_spacing.to_bits(),
                     word_break: opentype_disc(opentype.word_break),
                     line_break: opentype_line_disc(opentype.line_break),
                     kerning: opentype_kern_disc(opentype.kerning),
                     features: &opentype.features,
                     variations: &opentype.variations,
-                    width_bits: physical_width.to_bits(),
-                    height_bits: physical_height.to_bits(),
+                    width_bits: box_width.to_bits(),
+                    height_bits: box_height.to_bits(),
                     align: match horizontal {
                         TextHorizontalAlignment::Start => 0,
                         TextHorizontalAlignment::Center => 1,
@@ -937,85 +891,47 @@ impl TextPipeline {
                         nana_ui_core::WritingModeSpec::VerticalRl => 1,
                         nana_ui_core::WritingModeSpec::VerticalLr => 2,
                     },
-                    spans: rich.then_some(painted.as_slice()),
                     font_features,
                 };
                 let hash = key.hash64();
                 if self.shape_cache.get(hash, &key).is_none() {
-                    let mut fonts = crate::nana_text::lock_font_system(&self.font_system);
-                    let mut buffer = Buffer::new(
-                        &mut fonts,
-                        Metrics::new(physical_size, physical_line_height),
-                    );
-                    buffer.set_size(Some(physical_width), Some(physical_height));
-                    buffer.set_wrap(cosmic_wrap(
-                        wrap,
-                        wrap_break,
-                        opentype.word_break,
-                        opentype.line_break,
-                    ));
-                    // Built here rather than above the cache lookup: a hit never
-                    // shapes, and the family name, the feature list and the variation
-                    // axes are a per-node allocation to assemble.
-                    let attrs = shape_attrs(
+                    let layout = self.lay_out(
+                        content,
                         family,
                         weight,
-                        letter_spacing,
                         size,
-                        &opentype.features,
-                        &opentype.variations,
-                        opentype.kerning,
+                        line_height,
+                        letter_spacing,
                         italic,
+                        wrap,
+                        wrap_break,
+                        ellipsis,
+                        max_lines,
+                        box_width,
+                        box_height,
+                        align,
+                        opentype,
                     );
-                    buffer.set_ellipsize(cosmic_text::Ellipsize::None);
-                    if rich {
-                        let mut rich_text = painted
-                            .iter()
-                            .map(|(text, color)| (*text, attrs.clone().color(rgba8_color(*color))))
-                            .collect::<Vec<_>>();
-                        if opentype.direction.is_rtl() {
-                            rich_text.insert(0, (RTL_ISOLATE_PREFIX, attrs.clone()));
-                            rich_text.push((RTL_ISOLATE_SUFFIX, attrs.clone()));
-                        }
-                        buffer.set_rich_text(rich_text, &attrs, shaping, align);
-                    } else {
-                        let shaped = wrap_for_css_direction(content, opentype.direction);
-                        buffer.set_text(&shaped, &attrs, shaping, align);
-                    }
-                    buffer.shape_until_scroll(&mut fonts, false);
-                    if ellipsis
-                        && measured_text_overflows(
-                            &buffer,
-                            wrap,
-                            Some(physical_width),
-                            Some(physical_height),
-                            max_lines,
-                        )
-                    {
-                        buffer.set_ellipsize(ellipsize_end(max_lines, Some(physical_height)));
-                        buffer.shape_until_scroll(&mut fonts, false);
-                    }
-                    drop(fonts);
-                    self.shape_cache.insert(hash, key.to_owned_key(), buffer);
+                    self.shape_cache.insert(hash, key.to_owned_key(), layout);
                 }
                 hash
             }
         };
-        // The widest line and the laid-out height are the shape's, and the
-        // shape is the one this entry was built from, so a steady frame does
-        // not walk its layout runs again to find that out.
+        // The widest line and the laid-out height are the layout's, in logical
+        // px, and the layout is the one this entry was built from, so a steady
+        // frame does not walk its lines again to find that out.
         let (measured_width, laid_out_height) = match retained {
             Some((_, _, measured)) => (measured[0], measured[1]),
             None => {
-                let buffer = self.shape_cache.buffer(hash).expect("shaped above");
-                measure(buffer)
+                let layout = self.shape_cache.layout(hash).expect("laid out above");
+                measure(layout)
             }
         };
-        let mut aligned = text_box_origin(bounds, vertical, laid_out_height / scale);
+        let mut aligned = text_box_origin(bounds, vertical, laid_out_height);
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];
         if clip::is_translation_projective(affine, persp) {
-            let line_logical = laid_out_height / scale;
+            let line_logical = laid_out_height;
             let [_, wy] = clip::transform_point_projective(affine, persp, aligned[0], aligned[1]);
             let (top_px, _) =
                 clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
@@ -1041,8 +957,8 @@ impl TextPipeline {
         let ink = LogicalRect::from_xywh(
             aligned[0] - pad_x,
             aligned[1] - pad_y,
-            bounds.width.max(measured_width / scale) + pad_x * 2.0,
-            laid_out_height / scale + pad_y * 2.0,
+            bounds.width.max(measured_width) + pad_x * 2.0,
+            laid_out_height + pad_y * 2.0,
         );
         // An axis-aligned run is clipped by the batch's scissor. Rotated or
         // projective text carries the same homography as Quad, applied per
@@ -1113,10 +1029,9 @@ impl TextPipeline {
             .map(|(id, _, _)| id)
             .or_else(|| self.target.entries.lookup(entry_key))
             .filter(|id| {
-                self.target
-                    .entries
-                    .get(*id)
-                    .is_some_and(|entry| entry.valid(hash, phase, self.font_generation))
+                self.target.entries.get(*id).is_some_and(|entry| {
+                    entry.valid(hash, phase, scale.to_bits(), self.font_generation)
+                })
             })
             .filter(|id| {
                 // The atlas moved since this entry read its rectangles. Repair
@@ -1147,15 +1062,19 @@ impl TextPipeline {
                 self.target.nodes_skipped += 1;
                 id
             }
-            None => self.build_entry(
-                device,
-                entry_key,
-                hash,
-                phase,
-                default_color,
-                revision,
-                scale.to_bits(),
-            )?,
+            None => {
+                let colors = SpanColors::new(content, spans, default_color);
+                self.build_entry(
+                    device,
+                    entry_key,
+                    hash,
+                    phase,
+                    scale,
+                    default_color,
+                    &colors,
+                    revision,
+                )?
+            }
         };
         let frame = self.target.frame;
         if let Some(entry) = self.target.entries.get_mut(entry) {
@@ -1236,15 +1155,94 @@ impl TextPipeline {
     /// glyph in the run's own space, and the atlas handle it was read from so
     /// a later relocation can be repaired instead of re-resolved.
     #[allow(clippy::too_many_arguments)]
+    /// Lay one paragraph out through the process-wide `nana-text` engine.
+    ///
+    /// Everything is passed in **logical** px and the layout scale is left at
+    /// 1, so the result does not depend on the device scale: the same layout
+    /// serves 1x and 2x, and it is the same one Runtime measured this node
+    /// with. The scale is applied to the *positions* when the glyphs are
+    /// resolved.
+    #[allow(clippy::too_many_arguments)]
+    fn lay_out(
+        &mut self,
+        content: &str,
+        family: Option<&str>,
+        weight: Option<u16>,
+        font_size_px: f32,
+        line_height_px: f32,
+        letter_spacing_px: f32,
+        italic: bool,
+        wrap: bool,
+        wrap_break: nana_ui_core::TextWrapBreak,
+        ellipsis: bool,
+        max_lines: Option<u16>,
+        max_width_px: f32,
+        max_height_px: f32,
+        align: TextAlignSpec,
+        opentype: &SceneTextOpenType,
+    ) -> Arc<TextLayout> {
+        let source = nana_text::TextSource::new(content);
+        let style = nana_text::TextStyle {
+            font_family: family.map(Arc::from),
+            font_size_px,
+            font_weight: weight.unwrap_or(400),
+            italic,
+            line_height: Some(LineHeightSpec::Absolute(line_height_px)),
+            letter_spacing_px,
+            features: opentype.features.clone(),
+            variations: opentype.variations.clone(),
+            kerning: opentype.kerning,
+        };
+        let constraints = nana_text::TextConstraints {
+            max_width_px: Some(max_width_px),
+            // Only where a height can change the answer, which is the
+            // ellipsis decision. A height budget on a plain wrapped paragraph
+            // would *drop* the last line of a box one pixel too short, and
+            // what bounds overflow on screen is the batch's scissor, not the
+            // layout. It also puts a label on the paragraph path even when it
+            // is one unwrapped line no short box can truncate.
+            max_height_px: ellipsis.then_some(max_height_px),
+            wrap: wrap.then_some(wrap_break),
+            word_break: opentype.word_break,
+            line_break: opentype.line_break,
+            max_lines,
+            ellipsis,
+            // An authored newline is a line break here. Collapsing them is a
+            // CSS `white-space` decision the Runtime has already made.
+            preserve_lines: true,
+            base_direction: opentype.direction,
+            align,
+            writing_mode: opentype.writing_mode,
+            scale: nana_text::TextScale {
+                px_per_logical: 1.0,
+            },
+            ..nana_text::TextConstraints::default()
+        };
+        let kind = if wrap {
+            nana_text::TextKind::Paragraph
+        } else {
+            nana_text::TextKind::Label
+        };
+        let mut counters = nana_text::TextWorkCounters::default();
+        let engine = Arc::clone(&self.engine);
+        let mut engine = crate::text_engine::lock_engine(&engine);
+        engine.layout(kind, &source, &style, &constraints, &mut counters)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_entry(
         &mut self,
         device: &wgpu::Device,
         key: EntryKey,
         hash: u64,
         phase: [u32; 2],
+        // Logical-to-physical, applied to the layout's coordinates here and
+        // nowhere else: it is not in the layout key, so 1x and 2x resolve the
+        // same paragraph into different glyphs.
+        scale: f32,
         default_color: [f32; 4],
+        colors: &SpanColors,
         revision: u64,
-        scale_bits: u32,
     ) -> Option<u32> {
         let origin = [f32::from_bits(phase[0]), f32::from_bits(phase[1])];
         let Self {
@@ -1254,37 +1252,47 @@ impl TextPipeline {
             font_generation,
             ..
         } = self;
-        let buffer = shape_cache.buffer(hash).expect("shaped above");
+        let layout = shape_cache.layout(hash).expect("laid out above");
         resolved.clear();
         let generation = *font_generation as u32;
-        for run in buffer.layout_runs() {
-            let line_y = run.line_y.round();
-            for glyph in run.glyphs {
-                let font_size = glyph.font_size;
-                let x = font_size.mul_add(glyph.x_offset, glyph.x) + origin[0];
-                // Y is snapped to whole pixels before the line origin is added,
-                // which is what keeps a baseline from landing between texels.
-                // `floor`, not `trunc`: rounding toward zero would snap text
-                // above the origin the other way and shift its baseline by a
-                // pixel as it scrolls past y = 0.
-                let y = (font_size.mul_add(-glyph.y_offset, glyph.y) + origin[1]).floor() + line_y;
-                resolved.push(
-                    rasterizer.intern(glyph.font_id, glyph.font_weight),
-                    generation,
-                    glyph::GlyphVariationId(glyph.font_variation_hash),
-                    size_bits(font_size),
-                    synthesis_from_backend(glyph.cache_key_flags),
-                    GlyphRenderMode::Mask,
-                    glyph
-                        .color_opt
-                        .map(color_from_cosmic)
-                        .unwrap_or(default_color),
-                    PlacedGlyph {
-                        glyph: u32::from(glyph.glyph_id),
-                        x,
-                        y,
-                    },
-                );
+        for line in &layout.lines {
+            // The baseline is snapped whole so it cannot land between texels;
+            // the sub-pixel phase of the paragraph's origin is what the glyph
+            // bitmaps were rasterized for and stays fractional.
+            let baseline = (line.metrics.baseline_y_px * scale).round();
+            for run in layout.line_runs(line) {
+                // A run the font layer could not instantiate has no face to
+                // scale, so there is nothing to draw for it. Its advances are
+                // still in the line, which is why the layout box does not move.
+                let Some(instance) = run.instance.as_ref() else {
+                    continue;
+                };
+                let (font, variation, synthesis) = rasterizer.intern_instance(instance);
+                let size = size_bits(run.font_size_px * scale);
+                let mut pen = run.origin_x_px;
+                for glyph in &run.glyphs {
+                    let x = (pen + glyph.offset_x_px) * scale + origin[0];
+                    // `offset_y_px` is the shaper's, positive up; screen y
+                    // grows down. `floor`, not `trunc`: rounding toward zero
+                    // would snap text above the origin the other way and shift
+                    // its baseline by a pixel as it scrolls past y = 0.
+                    let y = (origin[1] - glyph.offset_y_px * scale).floor() + baseline;
+                    pen += glyph.advance_px;
+                    resolved.push(
+                        font,
+                        generation,
+                        variation,
+                        size,
+                        synthesis,
+                        GlyphRenderMode::Mask,
+                        colors.color_at(glyph.cluster as usize),
+                        PlacedGlyph {
+                            glyph: glyph.glyph_id,
+                            x,
+                            y,
+                        },
+                    );
+                }
             }
         }
         if resolved.is_empty() {
@@ -1376,7 +1384,7 @@ impl TextPipeline {
         entry.phase = phase;
         entry.font_generation = fonts;
         entry.revision = revision;
-        entry.scale_bits = scale_bits;
+        entry.scale_bits = scale.to_bits();
         entry.atlas_epoch = epoch;
         entry.segments = segments;
         entry.run = NO_RUN;
@@ -1752,43 +1760,76 @@ fn push_entry_segment(
     });
 }
 
-/// The content split into the colors it paints in.
+/// What each byte of the content paints in.
+///
+/// Rich text is a color per byte range over one layout. Since #99 the layout
+/// does not know about color at all, so this is what puts the two back
+/// together — at resolve time, per glyph cluster, which is why a recolor is no
+/// longer a reason to lay anything out again.
 ///
 /// Node opacity is deliberately not folded in: it rides on the run row, so a
-/// fade neither reshapes rich text nor rewrites a glyph.
-fn presentation_spans<'a>(
-    content: &'a str,
-    spans: &'a [SceneTextSpan],
+/// fade neither relayouts rich text nor rewrites a glyph.
+struct SpanColors {
+    /// Well-formed spans, in start order. Empty means solid `default`.
+    spans: Vec<(Range<usize>, [f32; 4])>,
     default: [f32; 4],
-) -> Vec<(&'a str, [f32; 4])> {
-    let mut painted = Vec::new();
-    let mut cursor = 0usize;
-    for span in spans {
-        if span.start > content.len()
-            || span.end > content.len()
-            || span.start >= span.end
-            || !content.is_char_boundary(span.start)
-            || !content.is_char_boundary(span.end)
-        {
-            continue;
-        }
-        if span.start > cursor {
-            painted.push((&content[cursor..span.start], default));
-        }
-        painted.push((&content[span.start..span.end], span.color));
-        cursor = span.end;
-    }
-    if cursor < content.len() {
-        painted.push((&content[cursor..], default));
-    }
-    painted
 }
 
-fn measure(buffer: &Buffer) -> (f32, f32) {
-    buffer
-        .layout_runs()
-        .fold((0.0, 0.0), |(width, height), run| {
-            (run.line_w.max(width), height + run.line_height)
+impl SpanColors {
+    fn new(content: &str, spans: &[SceneTextSpan], default: [f32; 4]) -> Self {
+        let mut kept: Vec<(Range<usize>, [f32; 4])> = Vec::new();
+        for span in spans {
+            // A span the scene built against different bytes would recolor
+            // whatever now sits at those offsets, so a range that is not a
+            // char boundary of *this* content is dropped rather than snapped.
+            if span.start >= span.end
+                || span.end > content.len()
+                || !content.is_char_boundary(span.start)
+                || !content.is_char_boundary(span.end)
+            {
+                continue;
+            }
+            // Overlaps would make "which span wins" depend on search order.
+            // Later spans lose, which is the order `Scene` writes them in.
+            if kept.last().is_some_and(|(last, _)| last.end > span.start) {
+                continue;
+            }
+            kept.push((span.start..span.end, span.color));
+        }
+        Self {
+            spans: kept,
+            default,
+        }
+    }
+
+    /// The color at a byte offset. Binary search rather than a cursor: an RTL
+    /// run walks its clusters backwards, so offsets do not arrive in order.
+    fn color_at(&self, byte: usize) -> [f32; 4] {
+        if self.spans.is_empty() {
+            return self.default;
+        }
+        let index = self.spans.partition_point(|(range, _)| range.start <= byte);
+        match index.checked_sub(1).and_then(|i| self.spans.get(i)) {
+            Some((range, color)) if range.end > byte => *color,
+            _ => self.default,
+        }
+    }
+}
+
+/// The widest line and the summed line advances, in physical px.
+///
+/// Read off the line boxes rather than the layout's bounding box: `bounds` is
+/// the union of the line rectangles, which an aligned or RTL line offsets
+/// inside the box, and the caller wants the *content* extent.
+fn measure(layout: &TextLayout) -> (f32, f32) {
+    layout
+        .lines
+        .iter()
+        .fold((0.0f32, 0.0f32), |(width, height), line| {
+            (
+                line.metrics.width_px.max(width),
+                height + line.metrics.height_px,
+            )
         })
 }
 
@@ -1827,21 +1868,6 @@ fn opentype_kern_disc(kerning: nana_ui_core::FontKerningSpec) -> u8 {
         nana_ui_core::FontKerningSpec::Normal => 1,
         nana_ui_core::FontKerningSpec::None => 2,
     }
-}
-
-fn rgba8_color(color: [f32; 4]) -> Color {
-    let [r, g, b, a] = to_rgba8(color);
-    Color::rgba(r, g, b, a)
-}
-
-fn color_from_cosmic(color: Color) -> [f32; 4] {
-    let [r, g, b, a] = color.as_rgba();
-    [
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-        a as f32 / 255.0,
-    ]
 }
 
 /// Whether `id`'s rectangles predate the atlas's current placement epoch.
@@ -1968,12 +1994,16 @@ mod tests {
                             && entry.key.ellipsis == ellipsis
                     })
                     .expect("prepared label must be cached at its own width");
-                let painted_width = measure(&entry.buffer).0;
+                let painted_width = measure(&entry.layout).0;
                 let painted_glyphs: Vec<_> = entry
-                    .buffer
-                    .layout_runs()
-                    .flat_map(|run| run.glyphs.iter())
-                    .map(|glyph| (glyph.font_id, glyph.glyph_id, glyph.start, glyph.end))
+                    .layout
+                    .runs
+                    .iter()
+                    .flat_map(|run| {
+                        run.glyphs
+                            .iter()
+                            .map(|glyph| (run.font, glyph.glyph_id, glyph.cluster))
+                    })
                     .collect();
                 if !ellipsis {
                     assert!(!painted_glyphs.is_empty());
@@ -2051,15 +2081,23 @@ mod tests {
                 UNTRACKED_REVISION,
             )
             .expect("rtl latin must prepare");
-        let buffer = pipeline
+        let layout = pipeline
             .shape_cache
             .entries
             .values()
             .next()
-            .map(|entry| &entry.buffer)
-            .expect("paint must cache the shaped run");
-        let glyph_x = crate::nana_text::first_content_glyph_x(buffer)
-            .expect("rtl latin must shape a content glyph");
+            .map(|entry| Arc::clone(&entry.layout))
+            .expect("paint must cache the laid-out paragraph");
+        let glyph_x = layout
+            .runs
+            .iter()
+            .flat_map(|run| run.glyph_cells())
+            .map(|(left, _)| left)
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            glyph_x.is_finite(),
+            "rtl latin must lay out a content glyph"
+        );
         assert!(
             glyph_x > 100.0,
             "first Latin glyph must sit on the right of a 200px RTL box, got {glyph_x}"
@@ -2741,7 +2779,6 @@ mod tests {
             italic: false,
             ellipsis: false,
             max_lines: None,
-            shaping: 1,
             letter_spacing_bits: 0f32.to_bits(),
             word_break: 0,
             line_break: 0,
@@ -2753,7 +2790,6 @@ mod tests {
             align: 0,
             direction: 0,
             writing_mode: 0,
-            spans: None,
             font_features: &[],
         }
     }
@@ -2765,14 +2801,28 @@ mod tests {
         // letters — which is the whole reason the key is kept at all.
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut fonts = crate::nana_text::lock_font_system(&pipeline.font_system);
-        let buffer = Buffer::new(&mut fonts, Metrics::new(16.0, 20.0));
-        drop(fonts);
+        let layout = pipeline.lay_out(
+            "first paragraph",
+            None,
+            None,
+            16.0,
+            20.0,
+            0.0,
+            false,
+            false,
+            nana_ui_core::TextWrapBreak::Word,
+            false,
+            None,
+            100.0,
+            20.0,
+            TextAlignSpec::Start,
+            &SceneTextOpenType::default(),
+        );
         let collision = 0x5ca1_ab1e_u64;
         pipeline.shape_cache.insert(
             collision,
             shape_key_ref("first paragraph").to_owned_key(),
-            buffer,
+            layout,
         );
         let (hits, misses, _) = pipeline.shape_cache_stats();
         assert!(
@@ -3090,7 +3140,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dpi_change_reshapes_once_and_going_back_is_free() {
+    fn a_dpi_change_reresolves_glyphs_without_laying_the_paragraph_out_again() {
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         let paint = |pipeline: &mut TextPipeline, scale: f32| {
@@ -3146,8 +3196,14 @@ mod tests {
         assert_eq!(
             after.text_instance_rebuilds - warm.text_instance_rebuilds,
             2,
-            "but each scale is its own shaped paragraph, so its own entry \
-             content: the entry is keyed by the node and the two take turns"
+            "but each scale places its glyphs at its own pixels, so its own \
+             entry content: the entry is keyed by the node and the two take turns"
+        );
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(
+            misses, 1,
+            "the layout itself is scale-free: a DPI change re-resolves glyphs \
+             and lays nothing out"
         );
     }
 
@@ -3538,8 +3594,9 @@ mod tests {
         );
         let (_, misses, _) = pipeline.shape_cache_stats();
         assert_eq!(
-            misses, 2,
-            "two raster scales are two shaped paragraphs, and going back is neither"
+            misses, 1,
+            "the paragraph is laid out in logical px, so neither scale nor the \
+             return to the first one is a second layout"
         );
     }
 

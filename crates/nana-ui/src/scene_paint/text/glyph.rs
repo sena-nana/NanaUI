@@ -1,10 +1,9 @@
 //! Renderer-facing glyph IR: what `NanaRenderer::text` draws.
 //!
-//! Nothing here names a shaping backend. A resolver turns whatever laid the
-//! paragraph out — today `nana-ui`'s cosmic-text shaper, after #99 a
-//! `nana_text::TextLayout` — into [`NanaGlyphRun`]s over a flat
-//! [`PlacedGlyph`] arena, and every stage below this module only ever sees
-//! that IR plus [`GlyphRasterKey`].
+//! Nothing here names a shaping backend. A resolver turns a
+//! `nana_text::TextLayout` into [`NanaGlyphRun`]s over a flat [`PlacedGlyph`]
+//! arena, and every stage below this module only ever sees that IR plus
+//! [`GlyphRasterKey`].
 //!
 //! The split that matters is which facts are in the raster key and which are
 //! not. Text color, node opacity and the scene transform change where a glyph
@@ -48,6 +47,10 @@ impl GlyphSynthesis {
     pub(super) const DISABLE_HINTING: Self = Self(1 << 1);
     /// Snap the subpixel offset: a bitmap face must land on whole pixels.
     pub(super) const PIXEL_FONT: Self = Self(1 << 2);
+    /// Embolden an upright face to stand in for a weight it cannot reach.
+    /// Reported by the font layer when the requested weight is out of the
+    /// face's range and no other face covers it.
+    pub(super) const FAKE_BOLD: Self = Self(1 << 3);
 
     pub(super) const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0

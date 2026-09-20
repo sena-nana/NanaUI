@@ -777,13 +777,12 @@ impl SceneWgpuPainter {
                             italic,
                             wrap_break,
                             opentype,
-                            // This painter still lays text out itself through
-                            // cosmic-text, and its hosts' shapers measure with
-                            // the same engine, so no scene it paints carries a
-                            // layout. #97 moved the *glyph* half to
-                            // `NanaRenderer::text`, whose resolver is the one
-                            // place that reads a laid-out paragraph; feeding it
-                            // this handle instead is #99's cutover.
+                            // The Runtime's retained handle. The painter lays
+                            // the same paragraph out through the same engine,
+                            // in logical px and against this node's own
+                            // constraints, so it resolves to the layout this
+                            // names; taking the handle directly is a lookup
+                            // this path does not need yet.
                             layout: _,
                         } => {
                             // A text node's glyphs are retained per node and

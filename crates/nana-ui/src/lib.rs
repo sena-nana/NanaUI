@@ -59,6 +59,7 @@ mod nana_text;
 mod native_browser;
 #[cfg(feature = "gpu")]
 mod native_content;
+mod text_engine;
 #[cfg(feature = "hosted")]
 pub use native_browser::{
     BrowserCommand, BrowserEvent, BrowserPolicy, BrowserRect, BrowserState, NativeBrowserEvent,
@@ -215,8 +216,8 @@ pub use nana_frame_exchange::{
 pub use nana_icons_tabler as icons_tabler;
 pub use nana_text::{
     HostFontError, HostFontStyle, NanaTextShaper, alias_host_font_face_local,
-    register_host_font_bytes, register_host_font_face, register_host_font_file,
-    set_sans_serif_family, shaped_face_families,
+    register_host_font_bytes, register_host_font_face, register_host_font_face_styled,
+    register_host_font_file, set_sans_serif_family, shaped_face_families,
 };
 #[cfg(feature = "gpu")]
 pub use nana_ui_core::GpuWorkObservation;

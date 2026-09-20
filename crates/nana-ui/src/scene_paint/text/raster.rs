@@ -1,21 +1,33 @@
 //! The renderer's own rasterizer boundary.
 //!
 //! [`GlyphRasterizer`] is the abstraction `NanaRenderer::text` owns; what sits
-//! under it is an implementation detail it may replace. The first
-//! implementation scales outlines with `swash`, reached through the shaping
-//! backend's scaler so there is exactly one font instance resolution in the
-//! process — #99 swaps that for `nana-text`'s font layer by writing another
-//! `impl GlyphRasterizer`, with no change above this file.
+//! under it is an implementation detail it may replace. The implementation
+//! scales outlines with `swash` off the faces `nana-text`'s font layer issued,
+//! so there is exactly one font instance resolution in the process: the
+//! coordinates a run was *shaped* at are the ones it is *scaled* at.
 //!
 //! The boundary is deliberately wider than today's needs: a request names a
 //! [`GlyphRenderMode`] and an answer names its own [`GlyphImageFormat`], so an
 //! LCD, SDF or vector backend is a new arm rather than a new pipeline.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use cosmic_text::{CacheKey, CacheKeyFlags, SwashCache, SwashContent, fontdb};
+use nana_text::font::{AxisCoord, FontInstanceKey};
 
-use super::glyph::{GlyphFontId, GlyphRasterKey, GlyphRenderMode, GlyphSynthesis, size_from_bits};
+use super::glyph::{
+    GlyphFontId, GlyphRasterKey, GlyphRenderMode, GlyphSynthesis, GlyphVariationId, size_from_bits,
+};
+
+/// Synthetic-oblique slant, in degrees. The angle the reference backend faked
+/// italics at, so a face that had no italic before the cutover leans the same
+/// way after it.
+const OBLIQUE_DEGREES: f32 = 14.0;
+
+/// Synthetic-bold stroke as a fraction of the raster size. Stroke weight is
+/// proportional to size in every real face, so faking it with a constant
+/// number of pixels would over-embolden captions and under-embolden headings.
+const EMBOLDEN_RATIO: f32 = 0.02;
 
 /// How a rasterized glyph's bytes are laid out.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -75,13 +87,27 @@ pub(super) trait GlyphRasterizer {
     fn rasterize(&mut self, request: &GlyphRasterRequest) -> Option<GlyphImage>;
 }
 
-/// The face identity the cosmic-text-backed source interns behind a
-/// [`GlyphFontId`]. Variation coordinates are *not* here: they vary per run
-/// over the same face and travel as [`GlyphVariationId`].
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct CosmicFace {
-    id: fontdb::ID,
-    weight: fontdb::Weight,
+/// One id for a set of axis coordinates.
+///
+/// Zero is the face's own default instance, which is why the empty set has to
+/// hash to it rather than to FNV's offset basis — and why a hash that lands on
+/// zero is nudged off it.
+fn variation_id(coords: &[AxisCoord]) -> GlyphVariationId {
+    if coords.is_empty() {
+        return GlyphVariationId(0);
+    }
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut write = |bytes: [u8; 4]| {
+        for byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for coord in coords {
+        write(coord.tag);
+        write(coord.value.to_bits().to_be_bytes());
+    }
+    GlyphVariationId(if hash == 0 { 1 } else { hash })
 }
 
 /// `swash` behind the renderer's rasterizer boundary.
@@ -89,37 +115,70 @@ struct CosmicFace {
 /// Holds the face table that issues [`GlyphFontId`]s, so the ids the glyph IR
 /// carries and the faces this rasterizer can scale cannot drift apart.
 pub(super) struct SwashGlyphRasterizer {
-    /// Shared with Runtime shaping; see [`crate::nana_text::nana_font_system`].
-    fonts: crate::nana_text::SharedFontSystem,
-    /// Used only for its scaler: every cached answer lives in
-    /// [`super::raster_cache::GlyphRasterCache`], which is the renderer's.
-    scaler: SwashCache,
-    faces: Vec<CosmicFace>,
-    index: HashMap<CosmicFace, GlyphFontId>,
+    /// The engine whose font set issues these faces. The same one the layouts
+    /// being resolved were measured against, so a face id in a run always
+    /// names a face this can read bytes for.
+    engine: nana_text::SharedTextEngine,
+    /// Swash's own scaler, which carries its outline cache. Every *cached
+    /// answer* lives in [`super::raster_cache::GlyphRasterCache`], which is
+    /// the renderer's; this is only the machinery that produces them.
+    context: swash::scale::ScaleContext,
+    faces: Vec<nana_text::FontId>,
+    index: HashMap<nana_text::FontId, GlyphFontId>,
+    /// Axis coordinates behind each [`GlyphVariationId`] a run interned. The
+    /// key carries the id because a bitmap differs by coordinates; the scaler
+    /// needs the coordinates themselves.
+    variations: HashMap<u64, Arc<[AxisCoord]>>,
     /// The face asked for last. Runs are contiguous by face, so a paragraph
     /// asks for the same one for every glyph and this keeps the hash lookup
     /// off the per-glyph path.
-    recent: Option<(CosmicFace, GlyphFontId)>,
+    recent: Option<(nana_text::FontId, GlyphFontId)>,
 }
 
 impl SwashGlyphRasterizer {
-    pub(super) fn new(fonts: crate::nana_text::SharedFontSystem) -> Self {
+    pub(super) fn new(engine: nana_text::SharedTextEngine) -> Self {
         Self {
-            fonts,
-            scaler: SwashCache::new(),
+            engine,
+            context: swash::scale::ScaleContext::new(),
             faces: Vec::new(),
             index: HashMap::new(),
+            variations: HashMap::new(),
             recent: None,
         }
     }
 
-    /// The renderer's id for one backend face, minting it on first sight.
+    /// The renderer's ids for one face instance.
     ///
-    /// Face ids are never reused by the backend, so an id stays valid across
+    /// Interning the whole instance rather than the face alone is what keeps
+    /// the coordinates reachable at raster time: the key carries a
+    /// [`GlyphVariationId`], and this is the table that turns it back into the
+    /// axis values the scaler needs.
+    ///
+    /// Face ids are generational and never alias, so an id stays valid across
     /// font-set generations; the generation rides in the raster key instead,
     /// where it invalidates bitmaps without invalidating identity.
-    pub(super) fn intern(&mut self, id: fontdb::ID, weight: fontdb::Weight) -> GlyphFontId {
-        let face = CosmicFace { id, weight };
+    pub(super) fn intern_instance(
+        &mut self,
+        instance: &FontInstanceKey,
+    ) -> (GlyphFontId, GlyphVariationId, GlyphSynthesis) {
+        let font = self.intern_face(instance.font);
+        let variation = variation_id(&instance.coords);
+        if variation.0 != 0 {
+            self.variations
+                .entry(variation.0)
+                .or_insert_with(|| Arc::clone(&instance.coords));
+        }
+        let mut synthesis = GlyphSynthesis::NONE;
+        if instance.synthesis.bold {
+            synthesis = synthesis.with(GlyphSynthesis::FAKE_BOLD);
+        }
+        if instance.synthesis.oblique {
+            synthesis = synthesis.with(GlyphSynthesis::FAKE_ITALIC);
+        }
+        (font, variation, synthesis)
+    }
+
+    fn intern_face(&mut self, face: nana_text::FontId) -> GlyphFontId {
         if let Some((recent, font)) = self.recent
             && recent == face
         {
@@ -149,32 +208,64 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         let key = &request.key;
         let face = *self.faces.get(key.font.0 as usize)?;
         let glyph_id = u16::try_from(key.glyph).ok()?;
-        let cache_key = CacheKey {
-            font_id: face.id,
-            glyph_id,
-            font_size_bits: size_from_bits(key.size_bits).to_bits(),
-            x_bin: subpixel(key.subpixel_x.quarters()),
-            y_bin: subpixel(key.subpixel_y.quarters()),
-            font_weight: face.weight,
-            font_variation_hash: key.variation.0,
-            flags: flags(key.synthesis),
-        };
         let GlyphRenderMode::Mask = key.mode;
-        let image = {
-            let mut fonts = crate::nana_text::lock_font_system(&self.fonts);
-            self.scaler.get_image_uncached(&mut fonts, cache_key)?
+        // The blob is cloned out of the engine rather than scaled under its
+        // lock: a glyph that misses must not hold the lock every other
+        // window's layout needs. `FontData` shares the bytes, so this is a
+        // refcount, not a copy of the face.
+        let data = {
+            let engine = crate::text_engine::lock_engine(&self.engine);
+            engine.fonts().face_data(face)?
         };
+        let font = swash::FontRef::from_index(data.bytes(), data.index() as usize)?;
+        let size = size_from_bits(key.size_bits);
+        let mut builder = self
+            .context
+            .builder(font)
+            .size(size)
+            .hint(!key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING));
+        if let Some(coords) = self.variations.get(&key.variation.0) {
+            builder = builder.variations(
+                coords
+                    .iter()
+                    .map(|coord| (swash::Tag::from_be_bytes(coord.tag), coord.value)),
+            );
+        }
+        let mut scaler = builder.build();
+        let mut render = swash::scale::Render::new(&[
+            // A color outline with the first palette, then a color strike,
+            // then the plain outline. Order matters: an emoji face can have
+            // all three, and the first is the one with the palette applied.
+            swash::scale::Source::ColorOutline(0),
+            swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),
+            swash::scale::Source::Outline,
+        ]);
+        render
+            .format(swash::zeno::Format::Alpha)
+            .offset(subpixel_offset(key));
+        if key.synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
+            render.transform(Some(swash::zeno::Transform::skew(
+                swash::zeno::Angle::from_degrees(OBLIQUE_DEGREES),
+                swash::zeno::Angle::from_degrees(0.0),
+            )));
+        }
+        if key.synthesis.contains(GlyphSynthesis::FAKE_BOLD) {
+            render.embolden(size * EMBOLDEN_RATIO);
+        }
+        let image = render.render(&mut scaler, glyph_id)?;
         let width = image.placement.width;
         let height = image.placement.height;
         let pixels = (width as usize).saturating_mul(height as usize);
         let format = match image.content {
-            SwashContent::Mask => GlyphImageFormat::Mask,
+            swash::scale::image::Content::Mask => GlyphImageFormat::Mask,
             // A subpixel mask is three coverages plus padding, i.e. the same
             // four bytes per pixel a color bitmap has. Treating it as a mask
             // would read a quarter of it; the backend does not emit one under
             // the alpha format requested above, and this keeps the byte count
             // honest if it ever does.
-            SwashContent::Color | SwashContent::SubpixelMask => GlyphImageFormat::ColorRgba,
+            swash::scale::image::Content::Color | swash::scale::image::Content::SubpixelMask => {
+                GlyphImageFormat::ColorRgba
+            }
         };
         let bytes = pixels * format.bytes_per_pixel();
         if image.data.len() < bytes {
@@ -191,84 +282,99 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
     }
 }
 
-fn subpixel(quarters: u8) -> cosmic_text::SubpixelBin {
-    match quarters {
-        1 => cosmic_text::SubpixelBin::One,
-        2 => cosmic_text::SubpixelBin::Two,
-        3 => cosmic_text::SubpixelBin::Three,
-        _ => cosmic_text::SubpixelBin::Zero,
+/// The fractional pen offset a glyph is rendered at.
+///
+/// A bitmap face has no outline to shift, so it is only ever rendered on whole
+/// pixels — the same rule the reference backend applied.
+fn subpixel_offset(key: &GlyphRasterKey) -> swash::zeno::Vector {
+    let x = f32::from(key.subpixel_x.quarters()) * 0.25;
+    let y = f32::from(key.subpixel_y.quarters()) * 0.25;
+    if key.synthesis.contains(GlyphSynthesis::PIXEL_FONT) {
+        swash::zeno::Vector::new(x.round(), y.round())
+    } else {
+        swash::zeno::Vector::new(x, y)
     }
-}
-
-/// Mapped arm by arm rather than by bit value: the two flag sets happen to
-/// agree today, and a silent `from_bits` would turn a future divergence into
-/// wrongly hinted glyphs instead of a compile error.
-fn flags(synthesis: GlyphSynthesis) -> CacheKeyFlags {
-    let mut flags = CacheKeyFlags::empty();
-    if synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
-        flags |= CacheKeyFlags::FAKE_ITALIC;
-    }
-    if synthesis.contains(GlyphSynthesis::DISABLE_HINTING) {
-        flags |= CacheKeyFlags::DISABLE_HINTING;
-    }
-    if synthesis.contains(GlyphSynthesis::PIXEL_FONT) {
-        flags |= CacheKeyFlags::PIXEL_FONT;
-    }
-    flags
-}
-
-/// The renderer's synthesis flags for one shaped glyph's backend flags.
-pub(super) fn synthesis_from_backend(backend: CacheKeyFlags) -> GlyphSynthesis {
-    let mut synthesis = GlyphSynthesis::NONE;
-    if backend.contains(CacheKeyFlags::FAKE_ITALIC) {
-        synthesis = synthesis.with(GlyphSynthesis::FAKE_ITALIC);
-    }
-    if backend.contains(CacheKeyFlags::DISABLE_HINTING) {
-        synthesis = synthesis.with(GlyphSynthesis::DISABLE_HINTING);
-    }
-    if backend.contains(CacheKeyFlags::PIXEL_FONT) {
-        synthesis = synthesis.with(GlyphSynthesis::PIXEL_FONT);
-    }
-    synthesis
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nana_text::font::Synthesis;
 
-    #[test]
-    fn synthesis_round_trips_through_the_backend_flag_set() {
-        let all = GlyphSynthesis::NONE
-            .with(GlyphSynthesis::FAKE_ITALIC)
-            .with(GlyphSynthesis::DISABLE_HINTING)
-            .with(GlyphSynthesis::PIXEL_FONT);
-        assert_eq!(synthesis_from_backend(flags(all)), all);
-        assert_eq!(
-            synthesis_from_backend(flags(GlyphSynthesis::NONE)),
-            GlyphSynthesis::NONE
-        );
+    fn instance(font: nana_text::FontId, coords: Vec<AxisCoord>) -> FontInstanceKey {
+        FontInstanceKey {
+            font,
+            coords: coords.into(),
+            synthesis: Synthesis::default(),
+        }
+    }
+
+    fn faces(count: usize) -> Vec<nana_text::FontId> {
+        let engine = crate::text_engine::nana_text_engine();
+        let engine = crate::text_engine::lock_engine(&engine);
+        engine.fonts().faces().into_iter().take(count).collect()
     }
 
     #[test]
     fn interning_the_same_face_twice_issues_one_id() {
-        let mut rasterizer = SwashGlyphRasterizer::new(crate::nana_text::nana_font_system());
-        let db = fontdb::Database::new();
-        let _ = db;
-        let weight = fontdb::Weight::NORMAL;
-        let ids: Vec<_> = {
-            let fonts = crate::nana_text::lock_font_system(&rasterizer.fonts);
-            fonts.db().faces().take(2).map(|face| face.id).collect()
-        };
+        let mut rasterizer = SwashGlyphRasterizer::new(crate::text_engine::nana_text_engine());
+        let ids = faces(2);
         if ids.is_empty() {
             return;
         }
-        let first = rasterizer.intern(ids[0], weight);
-        assert_eq!(rasterizer.intern(ids[0], weight), first);
-        assert_eq!(rasterizer.face_count(), 1);
-        assert_ne!(
-            rasterizer.intern(ids[0], fontdb::Weight::BOLD),
-            first,
-            "a different synthetic weight is a different face instance"
+        let first = rasterizer.intern_instance(&instance(ids[0], Vec::new())).0;
+        assert_eq!(
+            rasterizer.intern_instance(&instance(ids[0], Vec::new())).0,
+            first
         );
+        assert_eq!(rasterizer.face_count(), 1);
+        if let Some(second) = ids.get(1) {
+            assert_ne!(
+                rasterizer.intern_instance(&instance(*second, Vec::new())).0,
+                first,
+                "a different face is a different id"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_instance_and_a_varied_one_are_different_raster_keys() {
+        let mut rasterizer = SwashGlyphRasterizer::new(crate::text_engine::nana_text_engine());
+        let ids = faces(1);
+        if ids.is_empty() {
+            return;
+        }
+        let (_, default, _) = rasterizer.intern_instance(&instance(ids[0], Vec::new()));
+        let (_, varied, _) = rasterizer.intern_instance(&instance(
+            ids[0],
+            vec![AxisCoord {
+                tag: *b"wght",
+                value: 700.0,
+            }],
+        ));
+        assert_eq!(default, GlyphVariationId(0));
+        assert_ne!(varied, default, "coordinates change the bitmap");
+        assert_eq!(
+            rasterizer.face_count(),
+            1,
+            "coordinates are not a second face"
+        );
+    }
+
+    #[test]
+    fn synthesis_travels_from_the_font_layer_to_the_raster_key() {
+        let mut rasterizer = SwashGlyphRasterizer::new(crate::text_engine::nana_text_engine());
+        let ids = faces(1);
+        if ids.is_empty() {
+            return;
+        }
+        let mut key = instance(ids[0], Vec::new());
+        key.synthesis = Synthesis {
+            bold: true,
+            oblique: true,
+        };
+        let (_, _, synthesis) = rasterizer.intern_instance(&key);
+        assert!(synthesis.contains(GlyphSynthesis::FAKE_BOLD));
+        assert!(synthesis.contains(GlyphSynthesis::FAKE_ITALIC));
     }
 }

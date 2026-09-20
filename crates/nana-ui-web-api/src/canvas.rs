@@ -8,9 +8,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use base64::Engine as _;
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 use image::{DynamicImage, ImageFormat};
 use nana_js_engine::{HostApiRegistry, HostValue, JsException};
+use nana_text::font::{FaceDescriptor, FontInstanceKey, FontSystem, font_blob};
+use nana_text::{NativeTextEngine, TextEngine as _};
 use nana_ui_core::fonts::{UI_FONT_FAMILY as FONT_FAMILY, UI_FONT_REGULAR as FONT_BYTES};
 use tiny_skia::{
     BlendMode, Color, FillRule, FilterQuality, GradientStop, IntRect, LineCap, LineJoin,
@@ -21,9 +22,20 @@ use tiny_skia::{
 const DEFAULT_WIDTH: u32 = 300;
 const DEFAULT_HEIGHT: u32 = 150;
 
+/// A rasterized glyph mask: coverage plus where it sits relative to the pen.
+struct CanvasGlyphMask {
+    width: u32,
+    height: u32,
+    left: i32,
+    top: i32,
+    coverage: Vec<u8>,
+}
+
 /// One shaped, rasterizable glyph positioned relative to the text baseline.
 struct ShapedCanvasGlyph {
-    cache_key: cosmic_text::CacheKey,
+    instance: FontInstanceKey,
+    glyph_id: u32,
+    size_bits: u32,
     /// X offset from the line start to the glyph origin.
     dx: i32,
     /// Y offset from the baseline to the glyph origin.
@@ -35,50 +47,131 @@ struct ShapedCanvasText {
     glyphs: Vec<ShapedCanvasGlyph>,
 }
 
-/// Canvas text engine: shapes with the same cosmic-text stack as the product
-/// font system and rasterizes through the swash cache.
+/// Canvas text engine: `nana-text` shaping over a font set of its own, and a
+/// `swash` scaler behind a mask cache.
+///
+/// Its own [`FontSystem`], deliberately: Canvas 2D has no cascade and no
+/// system fallback, and a host `@font-face` must not change what a canvas
+/// draws. One bundled face is the whole database.
 struct CanvasTextEngine {
-    font_system: FontSystem,
-    swash_cache: SwashCache,
+    engine: NativeTextEngine,
+    scaler: swash::scale::ScaleContext,
+    /// Rendered masks by glyph and raster size. Canvas text is redrawn on
+    /// every frame that touches it, so this is the difference between scaling
+    /// an outline once per character and once per frame.
+    masks: HashMap<(u32, u32), Option<Arc<CanvasGlyphMask>>>,
 }
 
 impl CanvasTextEngine {
     fn new() -> Self {
+        let mut fonts = FontSystem::hermetic();
+        let _ = fonts.register_bytes(font_blob(FONT_BYTES), &FaceDescriptor::default());
         Self {
-            font_system: FontSystem::new_with_fonts([cosmic_text::fontdb::Source::Binary(
-                Arc::new(FONT_BYTES),
-            )]),
-            swash_cache: SwashCache::new(),
+            engine: NativeTextEngine::new(fonts),
+            scaler: swash::scale::ScaleContext::new(),
+            masks: HashMap::new(),
         }
     }
 
-    /// Shape a single line at `size`. Only the first layout line is used, which
-    /// matches the Canvas 2D `fillText` spec for multi-line strings.
+    /// Shape a single line at `size`. Only the first laid-out line is used,
+    /// which matches the Canvas 2D `fillText` spec for multi-line strings.
     fn shape(&mut self, size: f32, text: &str) -> ShapedCanvasText {
-        let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(size, size));
-        buffer.set_text(
-            text,
-            &Attrs::new().family(Family::Name(FONT_FAMILY)),
-            Shaping::Advanced,
-            None,
+        let source = nana_text::TextSource::new(text);
+        let style = nana_text::TextStyle {
+            font_family: Some(Arc::from(FONT_FAMILY)),
+            font_size_px: size,
+            line_height: Some(nana_ui_core::LineHeightSpec::Absolute(size)),
+            ..nana_text::TextStyle::default()
+        };
+        let constraints = nana_text::TextConstraints {
+            preserve_lines: true,
+            ..nana_text::TextConstraints::default()
+        };
+        let mut counters = nana_text::TextWorkCounters::default();
+        let layout = self.engine.layout(
+            nana_text::TextKind::Label,
+            &source,
+            &style,
+            &constraints,
+            &mut counters,
         );
-        buffer.shape_until_scroll(&mut self.font_system, false);
         let mut shaped = ShapedCanvasText {
             width: 0.0,
             glyphs: Vec::new(),
         };
-        if let Some(run) = buffer.layout_runs().next() {
-            shaped.width = run.line_w;
-            for glyph in run.glyphs {
-                let physical = glyph.physical((0.0, 0.0), 1.0);
+        let Some(line) = layout.lines.first() else {
+            return shaped;
+        };
+        shaped.width = line.metrics.width_px;
+        for run in layout.line_runs(line) {
+            let Some(instance) = run.instance.as_ref() else {
+                continue;
+            };
+            let mut pen = run.origin_x_px;
+            for glyph in &run.glyphs {
                 shaped.glyphs.push(ShapedCanvasGlyph {
-                    cache_key: physical.cache_key,
-                    dx: physical.x,
-                    dy: physical.y,
+                    instance: instance.clone(),
+                    glyph_id: glyph.glyph_id,
+                    size_bits: run.font_size_px.to_bits(),
+                    dx: (pen + glyph.offset_x_px).round() as i32,
+                    dy: (-glyph.offset_y_px).round() as i32,
                 });
+                pen += glyph.advance_px;
             }
         }
         shaped
+    }
+
+    /// The coverage mask for one shaped glyph, or `None` when the face cannot
+    /// produce it or it came back as a colour bitmap — Canvas paints the fill
+    /// itself, so it has nothing to do with one.
+    fn mask(&mut self, glyph: &ShapedCanvasGlyph) -> Option<Arc<CanvasGlyphMask>> {
+        let key = (glyph.glyph_id, glyph.size_bits);
+        if let Some(cached) = self.masks.get(&key) {
+            return cached.clone();
+        }
+        let rendered = self.render(glyph).map(Arc::new);
+        self.masks.insert(key, rendered.clone());
+        rendered
+    }
+
+    fn render(&mut self, glyph: &ShapedCanvasGlyph) -> Option<CanvasGlyphMask> {
+        let data = self.engine.fonts().face_data(glyph.instance.font)?;
+        let font = swash::FontRef::from_index(data.bytes(), data.index() as usize)?;
+        let mut builder = self
+            .scaler
+            .builder(font)
+            .size(f32::from_bits(glyph.size_bits))
+            .hint(true);
+        if !glyph.instance.coords.is_empty() {
+            builder = builder.variations(
+                glyph
+                    .instance
+                    .coords
+                    .iter()
+                    .map(|coord| (swash::Tag::from_be_bytes(coord.tag), coord.value)),
+            );
+        }
+        let mut scaler = builder.build();
+        let image = swash::scale::Render::new(&[swash::scale::Source::Outline])
+            .format(swash::zeno::Format::Alpha)
+            .render(&mut scaler, u16::try_from(glyph.glyph_id).ok()?)?;
+        if image.content != swash::scale::image::Content::Mask {
+            return None;
+        }
+        let width = image.placement.width;
+        let height = image.placement.height;
+        let pixels = (width as usize).checked_mul(height as usize)?;
+        if image.data.len() < pixels {
+            return None;
+        }
+        Some(CanvasGlyphMask {
+            width,
+            height,
+            left: image.placement.left,
+            top: image.placement.top,
+            coverage: image.data[..pixels].to_vec(),
+        })
     }
 }
 
@@ -1216,25 +1309,20 @@ impl CanvasRuntime {
             Mask::new(canvas.pixmap.width(), canvas.pixmap.height()).expect("canvas text mask");
         let transform = canvas.state.transform;
         for shaped_glyph in &shaped.glyphs {
-            let Some(image) = self
-                .text
-                .swash_cache
-                .get_image(&mut self.text.font_system, shaped_glyph.cache_key)
-                .clone()
-            else {
+            let Some(image) = self.text.mask(shaped_glyph) else {
                 continue;
             };
-            if image.data.is_empty() || image.content == SwashContent::Color {
+            if image.coverage.is_empty() {
                 continue;
             }
-            // Swash placement: baseline sits `placement.top` pixels below the
-            // image top, pen origin sits `placement.left` pixels left of it.
-            let left = x + shaped_glyph.dx as f32 + image.placement.left as f32;
-            let top = y + shaped_glyph.dy as f32 - image.placement.top as f32;
-            for row in 0..image.placement.height {
-                for col in 0..image.placement.width {
+            // Swash placement: the baseline sits `top` pixels below the image
+            // top, and the pen origin `left` pixels left of it.
+            let left = x + shaped_glyph.dx as f32 + image.left as f32;
+            let top = y + shaped_glyph.dy as f32 - image.top as f32;
+            for row in 0..image.height {
+                for col in 0..image.width {
                     let coverage =
-                        image.data[row as usize * image.placement.width as usize + col as usize];
+                        image.coverage[row as usize * image.width as usize + col as usize];
                     if coverage == 0 {
                         continue;
                     }

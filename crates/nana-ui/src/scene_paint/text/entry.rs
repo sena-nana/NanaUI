@@ -112,15 +112,21 @@ pub(super) struct TextGpuEntry {
 
 impl TextGpuEntry {
     /// Whether the glyphs this entry holds are still the ones `layout` at
-    /// `phase` would resolve to under `fonts`.
+    /// `phase` and `scale_bits` would resolve to under `fonts`.
+    ///
+    /// The scale is its own term because the layout is not keyed by it: since
+    /// #99 a paragraph is laid out in logical px and the device scale is
+    /// applied to its coordinates at resolve time, so one layout hash stands
+    /// for two sets of glyphs at 1x and 2x.
     ///
     /// Deliberately does not consider the atlas: a relocation is repaired by
     /// re-reading rectangles through the handles, which costs no shaping, no
     /// rasterizing and no atlas traffic.
-    pub(super) fn valid(&self, layout: u64, phase: [u32; 2], fonts: u64) -> bool {
+    pub(super) fn valid(&self, layout: u64, phase: [u32; 2], scale_bits: u32, fonts: u64) -> bool {
         !self.damaged
             && self.layout == layout
             && self.phase == phase
+            && self.scale_bits == scale_bits
             && self.font_generation == fonts
     }
 }

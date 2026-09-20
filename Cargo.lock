@@ -2391,7 +2391,6 @@ dependencies = [
  "accesskit_windows",
  "base64 0.23.1",
  "bytemuck",
- "cosmic-text",
  "etagere",
  "image",
  "nana-app-icon",
@@ -2408,6 +2407,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "swash",
  "unicode-segmentation",
  "wgpu",
  "windows 0.62.2",
@@ -2531,14 +2531,15 @@ name = "nana-ui-web-api"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
- "cosmic-text",
  "cpal",
  "crossbeam-channel",
  "image",
  "nana-js-engine",
  "nana-svg-raster",
+ "nana-text",
  "nana-ui-core",
  "nana-ui-platform",
+ "swash",
  "tiny-skia",
 ]
 

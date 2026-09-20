@@ -20,7 +20,11 @@ nana-ui-platform = { workspace = true, features = ["clipboard", "fetch", "ws"] }
 tiny-skia.workspace = true
 nana-svg-raster.workspace = true
 image.workspace = true
-cosmic-text.workspace = true
+# Canvas2D shaping and rasterization (#99). The same two layers the product
+# text path uses, over a hermetic font set of its own: Canvas has no cascade
+# and no system fallback, so it must not see the host's registered faces.
+nana-text.workspace = true
+swash = "0.2.10"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 cpal.workspace = true
