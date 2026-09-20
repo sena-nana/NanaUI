@@ -432,7 +432,7 @@ python3 scripts/audit-theme-hardcoding.py --check docs/performance-data/theme-au
 
 ### 3.1 像素基线（已有）
 
-`snapshots/<adapter-key>/component-migration/<component>/<dark|light>/<state>.png`：72 个组件 472 张，加上 shell / dock / titlebar 等整窗快照 83 张，提交树共 555 张。一次完整运行渲染 557 个 fixture——`donut-chart` 的两张（dark/light `slices`）当时还没录过基线（2026-09-20 已补）。零容差，按 GPU adapter 分目录；规则见该目录的 [README](../examples/component-gallery/snapshots/README.md)。
+`snapshots/<adapter-key>/component-migration/<component>/<dark|light>/<state>.png`：73 个组件 532 张，加上 shell / dock / titlebar 等整窗快照 82 张，提交树共 614 张，一次完整运行全部渲染。零容差，按 GPU adapter 分目录；规则见该目录的 [README](../examples/component-gallery/snapshots/README.md)——那篇现在还记着**一张基线对不上另一张基线时该怎么读**，比单张对不上committed更常见也更难发现。
 
 ```bash
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked
@@ -491,7 +491,12 @@ state: primary
 
 29 个 fixture × light/dark = 58 张新像素键 + 58 段新语义基线。语义基线本轮已录并验；像素是新键（不是「像素变了」），2026-09-20 已补录。
 
-**每一段都验过确实进入了状态**，方式是拿语义基线做逐字节比对：与该组件任何其他状态都不相同，或相同时能说清为什么。三对例外是组件的真实声明而非 fixture 失效——`dropdown` / `search-dropdown` / `xy-pad` 的 `hovered` 与 `focused` 都指向 `BorderStrong`，**悬停与聚焦在视觉上无法区分**。这是一条可访问性层面的现状，Phase 4 定 recipe 时要么保留要么显式改掉。
+**每一段都验过确实进入了状态**，方式是拿语义基线做逐字节比对：与该组件任何其他状态都不相同，或相同时能说清为什么。
+
+这条比对当时只按家族抽查，漏掉了它本可以一次说清的事。后来把 615 张基线**全部按 md5 分组**再看，结论要大得多：**14 个有 `focused` fixture 的组件里，11 个把焦点渲染得和另一个状态逐字节相同**——`button` / `icon-button` / `sidebar-section` 与静息态一样（什么都没画），`dropdown` / `search-dropdown` / `xy-pad` 与 hover 一样，`tabs` 与选中一样，`sidebar-row` 写了 `border: Accent` 却配 `border_width: 0`。这不是 Phase 4 的待办，已经在本分支修掉：焦点数值收进 `AccentRamp.focus` 与三个语义角色，只在键盘焦点时出现，并由
+`a_focused_fixture_never_looks_like_a_state_the_keyboard_did_not_cause` 守着（拿修之前的基线跑，它报 18 处碰撞）。
+
+**方法本身比这条结论更值得留下**：把基线按内容分组，看哪些"不同状态"其实是同一张图。它不需要 adapter、不需要构建，一次读一遍文件，而本树里每一个真缺陷最后都是这么浮出来的。
 
 剩下**没补**的，以及为什么：
 
@@ -736,6 +741,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 | Motion | `MotionTokens` | hover 交叉淡入、switch 拨动读**安装值**；`motion::*` 八个 `const` 读 `DEFAULT` | 八个裸 `const` + 两个死字段 |
 | Effect / Elevation | `EffectTokens` | 菜单/浮层阴影、模态框阴影读**安装值** | `surface_shadow` 里的 `match mode` + 模态框的亮度嗅探 |
 | Surface / material | `SurfaceTokens` | `ThemeTokens::with_backdrop` 决定 backdrop 给哪个角色上 alpha | `match target` 写死在宿主适配层 |
+| Focus | `AccentRamp.focus` + `FocusSurface` / `FocusBorder` / `FocusText` | 11 个组件的 `InteractionStyle::focused`，以及 radio 焦点环的颜色 | 三个组件写 `border: Accent` 配零宽度边（画不出来）、三个与 hover 同值、一个与选中同值 |
 | Component recipe | `ComponentThemeRegistry` | extraction 的 family 前景表、`Button` 的 variant×state 表、status tone 表 | 25 臂 `match StandardVisual` + `Button::project` 里五张内联表 |
 
 方向很关键：**`const` 读 token，不是 token 读 `const`**。F2 之所以修不动，正是因为当时方向是反的——时长是权威，主题只挂着两个没人读的字段。
@@ -805,7 +811,8 @@ cargo run --release --locked -p nana-ui-runtime --features benchmark \
 | F3（解析点在 extract 不在保留期） | 未动。这是 #100 §6，要改的是 resolver 的形状，不是 token 的形状 |
 | F4（安装 = 全文档失效） | 未动。这是 #100 §7 的 dependency class |
 | typography / spacing 的调用点收敛 | 未做。合同建立了，但 `ControlSize::text_size()` 这类仍对 `type_scale` 常量解析——和 Phase 0 对 metrics 做的那一轮是同一形状的工作，只是换一个类别，留给下一阶段 |
-| focus ring 的 2px 描边与 4px 外扩 | 仍是 `nana-ui-scene` 里的字面量。`BorderTokens` 只有 `hairline` 一档，没有替它们发明档位——按 `ChromeRadii` 的先例搬运需要动 `ExtractedNode`，那是 chrome recipe 的活 |
+| focus ring 的 2px 描边与 4px 外扩 | **几何**仍是 `nana-ui-scene` 里的字面量；颜色已经是 `palette.focus_border`。`BorderTokens` 只有 `hairline` 一档，没有替这两个尺寸发明档位——按 `ChromeRadii` 的先例搬运需要动 `ExtractedNode`，那是 chrome recipe 的活 |
+| `sidebar-section` 焦点底色覆盖整个 200x86 区块 | 可聚焦的节点就是整个 section，所以这是如实渲染。要只高亮 header，得把可聚焦节点从 section 根移到 header——那是行为变更（焦点顺序、命中），不是指示器变更 |
 
 ### 7.10 复现
 
