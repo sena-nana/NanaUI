@@ -2002,3 +2002,49 @@ fn a_language_change_moves_the_engine_epoch_and_a_repeat_does_not() {
         "the same hint again changes nothing"
     );
 }
+
+/// #59: a vertical request is laid out horizontally, and **says so** all the
+/// way out to the pass counters.
+///
+/// The fallback itself is the right answer — reporting horizontal metrics as
+/// if they were vertical ones would be worse — but it is invisible on screen.
+/// The flag on the layout was set and counted inside the layouter and read by
+/// nobody; carrying it into `TextWorkCounters` is what lets a frame, a
+/// devtools panel or a gate notice that a document asked for something this
+/// engine does not implement.
+#[test]
+fn a_vertical_request_falls_back_horizontally_and_is_counted_out_to_the_pass() {
+    let mut engine = text_engine(&["nana-test-vf"]);
+    let source = TextSource::new("AB");
+    let style = style(&["nana-test-vf"], 16.0);
+    let vertical = TextConstraints {
+        max_width_px: Some(200.0),
+        writing_mode: WritingModeSpec::VerticalRl,
+        ..TextConstraints::default()
+    };
+    let mut counters = TextWorkCounters::default();
+    let laid = engine.layout(TextKind::Label, &source, &style, &vertical, &mut counters);
+    assert!(
+        laid.unsupported_writing_mode,
+        "the layout says it could not do what was asked"
+    );
+    assert_eq!(
+        counters.vertical_writing_fallbacks, 1,
+        "and the pass carries that out where somebody can see it: {counters:?}"
+    );
+
+    // Horizontal asks for nothing it cannot do, so it reports nothing.
+    let mut horizontal_counters = TextWorkCounters::default();
+    let horizontal = engine.layout(
+        TextKind::Label,
+        &source,
+        &style,
+        &TextConstraints {
+            max_width_px: Some(200.0),
+            ..TextConstraints::default()
+        },
+        &mut horizontal_counters,
+    );
+    assert!(!horizontal.unsupported_writing_mode);
+    assert_eq!(horizontal_counters.vertical_writing_fallbacks, 0);
+}

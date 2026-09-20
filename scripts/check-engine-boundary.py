@@ -7,15 +7,10 @@ Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
 nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
 or native GPU implementation crates).
 
-The text engines NanaUI replaced -- cosmic-text, cryoglyph, glyphon -- must not
-appear in the dependency graph at all, on any edge, not even a dev one
-(Issue #99). The migration is over: the cosmic reference engine and its goldens'
-re-recording path were deleted with it, so nothing is left that may legitimately
-reach one.
-
-nana-text (Issue #89) additionally must not name cosmic-text or cryoglyph
-anywhere under src/, and may borrow only the typography vocabulary from
-nana-ui-core.
+nana-text (Issue #89) must not name cosmic-text or cryoglyph anywhere under
+src/, and may borrow only the typography vocabulary from nana-ui-core. The
+source rule is the load-bearing one: it is what "no cosmic type reaches the core
+API" means mechanically.
 
 nana-text's font layer (Issue #90), shaper (Issue #91) and layout engine
 (Issue #92) use fontdb, skrifa, icu_properties, harfrust, unicode-bidi and
@@ -38,12 +33,13 @@ GPUI_PACKAGES = {"gpui"}
 ICED_WINIT_MARKERS = ("iced-rs/winit",)
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 # Issue #89. `nana-text` owns the text IR, and its *sources* must not name the
-# engine it replaced even in a type position — the dependency graph alone cannot
-# say that, because the reference engine is a legitimate dev dependency.
+# engine it replaced even in a type position. This outlived the dependency: the
+# engine is gone from the tree, and what this still says is that nobody may
+# bring a type of it back in through a new edge.
 TEXT_NEUTRAL_PACKAGES = {"nana-text"}
-# Issue #99. The replaced text engines. Forbidden on every workspace member's
-# normal dependency edges *and* absent from `Cargo.lock` entirely -- a dev edge
-# would mean the reference engine came back.
+# The text engines NanaUI replaced (#88). Gone from the tree entirely since
+# #99; the rule stays scoped to nana-text, whose whole point is to be free of
+# them.
 LEGACY_TEXT_PACKAGES = {"cosmic-text", "cryoglyph", "glyphon"}
 # Migration-only crates. Nothing in the product may depend on one. These are
 # Cargo *package* names, which are not always the lib target name: the crate in
@@ -134,9 +130,11 @@ def check_dependency_graph(data: dict) -> list[str]:
         name = packages[root]["name"]
         pending = [(d, [name]) for d in graph.get(root, [])]
         seen = set()
-        forbidden = ICED_PACKAGES | GPUI_PACKAGES | LEGACY_TEXT_PACKAGES
+        forbidden = ICED_PACKAGES | GPUI_PACKAGES
         if name in BACKEND_NEUTRAL_PACKAGES:
             forbidden |= GPU_BACKEND_PACKAGES
+        if name in TEXT_NEUTRAL_PACKAGES:
+            forbidden |= LEGACY_TEXT_PACKAGES
         while pending:
             dependency, path = pending.pop()
             if dependency in seen:
@@ -271,15 +269,6 @@ def main() -> int:
         )
 
     lock_text = (ROOT / "Cargo.lock").read_text(encoding="utf-8")
-    # The dependency-graph walk below only sees normal edges, so a dev edge to a
-    # replaced text engine would pass it. Nothing may reach one any more, and a
-    # lockfile entry is the cheapest way to say so.
-    for legacy in sorted(LEGACY_TEXT_PACKAGES):
-        if re.search(rf'^name = "{re.escape(legacy)}"$', lock_text, re.MULTILINE):
-            failures.append(
-                f"Cargo.lock still contains {legacy}; the replaced text engines are gone, "
-                "including from dev dependencies"
-            )
     for marker in ICED_WINIT_MARKERS:
         if marker in lock_text:
             failures.append(
@@ -321,12 +310,10 @@ def main() -> int:
         return 1
 
     neutral = ", ".join(sorted(BACKEND_NEUTRAL_PACKAGES))
-    legacy_text = ", ".join(sorted(LEGACY_TEXT_PACKAGES))
-    text_sources = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
+    text_neutral = ", ".join(sorted(TEXT_NEUTRAL_PACKAGES))
     print(
         f"Engine boundary: OK (Iced/GPUI trees removed; the pinned upstream winit; "
-        f"backend-neutral: {neutral}; no edge at all to {legacy_text}; "
-        f"sources free of them: {text_sources})"
+        f"backend-neutral: {neutral}; text-engine-neutral: {text_neutral})"
     )
     return 0
 

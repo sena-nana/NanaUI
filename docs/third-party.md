@@ -16,9 +16,10 @@ NanaUI 自己的代码是 **MIT 或 Apache-2.0**（见 [LICENSE-MIT](../LICENSE-
   是一条边都没有。参照引擎已随之删除（见下）。
 - 从被替换的引擎**照抄过一段代码**：`SubpixelBin::split`。已就地署名，见「照抄了什么」。
 
-机器守着这几条的是 `scripts/check-engine-boundary.py`（CI 每次跑）：任何工作区成员都不得有
-非 dev 边通向 `cosmic-text` / `cryoglyph` / `glyphon`，**并且 `Cargo.lock` 里一条记录都不许有**
-——后半条是必要的，因为依赖图的遍历只看非 dev 边，dev 边会从它底下溜过去。
+没有为「别让它回来」立门禁：依赖已经删了，`Cargo.lock` 里一条记录都没有。
+`scripts/check-engine-boundary.py`（CI 每次跑）守的是 `nana-text` **源码**里不得出现
+`cosmic_text` / `cryoglyph` / `glyphon` 标识符——那条是 #89 的 API 纯净度规则，不是
+依赖删除的看门狗。
 
 ## 文本栈依赖谁的代码
 
@@ -104,7 +105,7 @@ MIT OR Apache-2.0。它的一段代码仍在本仓库里，见「照抄了什么
 ## 怎么重跑这份审计
 
 ```bash
-# 被替换的引擎一条边都没有,包括 dev（CI 也跑这一条）
+# nana-text 的源码里没有被替换引擎的标识符（CI 也跑这一条）
 python3 scripts/check-engine-boundary.py
 
 # release 依赖图里的许可证分布

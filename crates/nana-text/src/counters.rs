@@ -63,6 +63,15 @@ pub struct TextWorkCounters {
     /// Nodes that ended the pass holding the same layout they started with.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub text_layouts_reused: usize,
+    /// #59: layouts that asked for a vertical writing mode and were laid out
+    /// horizontally, because this engine has no glyph orientation.
+    ///
+    /// The fallback is deliberate and fail-safe — reporting horizontal metrics
+    /// as if they were vertical ones would be the worse answer — but it is
+    /// silent on screen, so it has to be loud in the counters. `> 0` means a
+    /// document asked for something the engine does not implement yet.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub vertical_writing_fallbacks: usize,
     /// #96: edits that changed committed editable text.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub editable_mutations: usize,
@@ -135,6 +144,7 @@ impl TextWorkCounters {
         self.layouts_created += other.layouts_created;
         self.constraint_only_relayouts += other.constraint_only_relayouts;
         self.text_layouts_reused += other.text_layouts_reused;
+        self.vertical_writing_fallbacks += other.vertical_writing_fallbacks;
         self.editable_mutations += other.editable_mutations;
         self.editable_bytes_inserted += other.editable_bytes_inserted;
         self.editable_bytes_deleted += other.editable_bytes_deleted;

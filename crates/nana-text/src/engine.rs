@@ -271,6 +271,10 @@ impl TextEngine for NativeTextEngine {
         counters.layouts_created += layouts.layout_created - layouts_before.layout_created;
         counters.constraint_only_relayouts +=
             layouts.constraint_only_relayouts - layouts_before.constraint_only_relayouts;
+        // #59: the layouter reports a vertical request it fell back on; the
+        // pass is what carries it out to a frame, where somebody can see it.
+        counters.vertical_writing_fallbacks +=
+            layouts.vertical_writing_fallbacks - layouts_before.vertical_writing_fallbacks;
         counters.text_bytes_hashed += after.text_bytes_hashed - before.text_bytes_hashed;
         layout
     }

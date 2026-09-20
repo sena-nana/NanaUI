@@ -230,13 +230,14 @@ Phase 0 没有产品生产者，这是设计如此。当时防止它们变成摆
 `scripts/check-engine-boundary.py` 多了三条规则，都带自测
 （`scripts/tests/test_engine_boundary.py`，现在真的在 CI 里跑了）：
 
-1. **依赖图与 lockfile**：任何工作区成员都不得有**非 dev** 边通向 `cosmic-text` /
-   `cryoglyph` / `glyphon`，并且 `Cargo.lock` 里**一条记录都不许有**。后半条是必要的：
-   依赖图的遍历只看非 dev 边，dev 边会从它底下溜过去，而现在连 dev 边也不该存在了。
+1. **产品图**：`nana-text` 不得有**非 dev** 边通向 `cosmic-text` / `cryoglyph` / `glyphon`。
 2. **源码**（承重的一条）：`crates/nana-text/src/**` 里不得出现 `cosmic_text` / `cryoglyph` /
    `glyphon` 标识符。这条在参照引擎还活着时是唯一能说「核心 API 不出现 cosmic 类型」的机械
-   手段（依赖图说不了，因为那时它是一条合法的 dev 依赖）；现在它守的是不许有人把它请回来。
-   注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
+   手段（依赖图说不了，因为那时它是一条合法的 dev 依赖）；引擎删掉之后它守的是不许有人
+   把它的类型再带回来。注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
+
+这两条都只管 `nana-text`。「别的 crate 不许依赖被替换的引擎」不靠门禁——依赖已经删了，
+`Cargo.lock` 里一条记录都没有，再为它立一道门禁是在给一件已经不存在的事上锁。
 3. **allowlist**：`crates/nana-text/src/**` 引用 `nana_ui_core::` 时，只许命中上面那张表里的项。
 4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`，`skrifa` 只许出现在
    `src/font/face.rs`，`icu_properties` 只许出现在 `src/font/unicode.rs`，`read_fonts` /
@@ -705,6 +706,11 @@ shape_runs_reused_for_layout                被 layout 读走而不是重塑形�
 label_fast_paths / paragraph_paths          走了哪条路（只记真正建出的 layout）
 vertical_writing_fallbacks                  竖排请求被横排兜底的次数
 ```
+
+`vertical_writing_fallbacks` 会折进 `TextWorkCounters`（#59）：兜底本身是对的——把横排度量
+当成竖排报回去更糟——但它**在屏幕上是看不见的**，所以必须在计数器里响。`> 0` 就是「这一帧
+有文档要了这个引擎还没实现的东西」。`TextLayout::unsupported_writing_mode` 是同一件事的
+逐节点版本，随保留 layout 一路带到场景上。
 
 对账测试断言 `lines_created` / `runs_placed` 等于它们声称描述的 layout 的行数与 run 数，
 `TextWorkCounters::glyphs_resolved` 等于 `layout.glyph_count()`。
@@ -1996,11 +2002,10 @@ python3 scripts/build-text-corpus-fonts.py --check   # 需要 fonttools
 cargo test -p nana-text --release --test font_system_platform_acceptance -- --ignored --nocapture
 ```
 
-证明它一条边都没有（dev 边也没有，所以不用 `--edges normal` 绕开）：
+证明它一条边都没有（dev 边也没有）：
 
 ```bash
 grep -c '^name = "cosmic-text"$' Cargo.lock   # 0
-python3 scripts/check-engine-boundary.py      # CI 每次跑
 ```
 
 Phase 4 起 `nana-ui-runtime` 依赖 `nana-text`（保留文本节点与句柄）；#99 起 `nana-ui` 的测量与

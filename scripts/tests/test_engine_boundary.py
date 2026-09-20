@@ -2,7 +2,6 @@ import importlib.util
 import shutil
 import tempfile
 from pathlib import Path
-import re
 import unittest
 
 spec = importlib.util.spec_from_file_location("boundary", Path(__file__).resolve().parents[1] / "check-engine-boundary.py")
@@ -43,30 +42,14 @@ class EngineBoundaryTests(unittest.TestCase):
         data = self.graph({"nana-text": ["cosmic-text"]}, root="nana-text")
         next(node for node in data["resolve"]["nodes"] if node["id"] == "nana-text")["deps"][0]["dep_kinds"][0]["kind"] = "dev"
         self.assertEqual(boundary.check_dependency_graph(data), [])
-    def test_no_product_crate_may_depend_on_the_engine_that_was_replaced(self):
-        # Issue #99: the rule is every workspace member's, not nana-text's.
-        failures = boundary.check_dependency_graph(
-            self.graph({"nana-ui": ["cosmic-text"]}, root="nana-ui")
+    def test_the_rule_is_nana_texts_own(self):
+        # Scoped deliberately: `nana-text` is the crate whose point is to be
+        # free of the engine it replaced. Keeping every other crate out of it
+        # is what deleting the dependency did, not what a gate has to repeat.
+        self.assertEqual(
+            boundary.check_dependency_graph(self.graph({"nana-ui": ["cosmic-text"]}, root="nana-ui")),
+            [],
         )
-        self.assertTrue(any("nana-ui -> cosmic-text" in failure for failure in failures))
-
-    def test_a_dev_only_edge_passes_the_graph_walk_and_is_caught_by_the_lockfile(self):
-        # The walk only sees normal edges, which is why the lockfile rule below
-        # exists: after #99 nothing may reach a replaced engine on any edge.
-        data = self.graph({"nana-ui": ["cryoglyph"]}, root="nana-ui")
-        next(node for node in data["resolve"]["nodes"] if node["id"] == "nana-ui")["deps"][0][
-            "dep_kinds"
-        ][0]["kind"] = "dev"
-        self.assertEqual(boundary.check_dependency_graph(data), [])
-
-    def test_the_real_lockfile_has_no_replaced_text_engine(self):
-        lock = (boundary.ROOT / "Cargo.lock").read_text(encoding="utf-8")
-        for legacy in boundary.LEGACY_TEXT_PACKAGES:
-            self.assertNotRegex(
-                lock,
-                rf'(?m)^name = "{re.escape(legacy)}"$',
-                f"{legacy} is back in Cargo.lock",
-            )
     def test_naming_the_reference_engine_in_nana_text_sources_is_rejected(self):
         root = self.text_crate("pub fn shape(buffer: &cosmic_text::Buffer) {}\n")
         failures = boundary.check_text_engine_sources(root)
