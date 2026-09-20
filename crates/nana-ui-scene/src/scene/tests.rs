@@ -7667,6 +7667,42 @@ fn icon_visual_skips_vector_children() {
 }
 
 #[test]
+fn an_icon_visual_still_paints_the_surface_it_only_hosts() {
+    let mut icon = node(1, None, &[2]);
+    icon.standard_visual = Some(StandardVisual::Icon {
+        icon: nana_ui_core::Icon::Search,
+        size: 16.0,
+        tooltip: None,
+    });
+    let mut tooltip = node(2, Some(1), &[]);
+    tooltip.kind = Arc::new(NodeKind::Element {
+        tag: "tooltip".into(),
+    });
+    tooltip.layout = LayoutBox {
+        x: 54.0,
+        y: 22.0,
+        width: 70.0,
+        height: 23.0,
+    };
+    tooltip.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            position: nana_ui_core::PositionSpec::Fixed,
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            z_index: Some(1_000),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    style_mut(&mut tooltip).background = Some([1.0, 0.0, 0.0, 1.0]);
+    let mut scene = UiScene::new();
+    scene.apply_delta([icon, tooltip], []);
+    assert!(
+        scene.primitives().any(|primitive| primitive.node == id(2)),
+        "an out-of-flow surface hosted by an icon is not part of its glyph"
+    );
+}
+
+#[test]
 fn completion_and_hover_overlays_paint_above_editor_layers() {
     let mut input = node(1, None, &[]);
     input.standard_visual = Some(StandardVisual::TextInput {

@@ -1612,6 +1612,42 @@ fn settle_hover(context: &mut nana_ui::runtime::AppContext) {
     context.advance_animations(nana_ui_core::motion::HOVER_COLOR);
 }
 
+fn overlay_active(context: &nana_ui::runtime::AppContext, target: StableNodeId) -> bool {
+    context
+        .world()
+        .overlay_host(target)
+        .is_some_and(|host| host.active.is_some())
+}
+
+/// Step the animation clock deadline by deadline until `target`'s overlay host
+/// has an active overlay, and answer whether it opened.
+///
+/// Bounded twice over. A fixture whose overlay never opens has to come back
+/// `false` so the harness reports it instead of hanging, and a component with a
+/// looping animation — a spinner, a skeleton pulse — always has a next
+/// deadline, so an unbounded loop would never return at all.
+fn advance_until_overlay_active(
+    context: &mut nana_ui::runtime::AppContext,
+    target: StableNodeId,
+) -> bool {
+    const MAX_STEPS: usize = 256;
+    const HORIZON: Duration = Duration::from_secs(5);
+
+    for _ in 0..MAX_STEPS {
+        if overlay_active(context, target) {
+            return true;
+        }
+        let Some(deadline) = context.next_animation_deadline() else {
+            break;
+        };
+        if deadline > HORIZON {
+            break;
+        }
+        context.advance_animations(deadline);
+    }
+    overlay_active(context, target)
+}
+
 fn apply_runtime_state(
     document: &mut RuntimeDocument,
     fixture: Fixture,
@@ -1642,7 +1678,11 @@ fn apply_runtime_state(
             Ok(handled)
         }
         "open" if !matches!(fixture.component, Component::Tooltip) => Ok(true),
-        "tooltip-delay" | "tooltip-edge" | "open" | "edge" => {
+        // The pending half. Step the clock to the *first* deadline only: that
+        // one belongs to the hover fade, one frame away, while the tooltip is
+        // still counting down its `delay_ms`. Which is the state this fixture
+        // is named for, so it is asserted rather than assumed.
+        "tooltip-delay" => {
             adapter.dispatch_at(
                 context,
                 document_id,
@@ -1653,14 +1693,21 @@ fn apply_runtime_state(
             if let Some(deadline) = deadline {
                 context.advance_animations(deadline);
             }
-            Ok(if matches!(fixture.state, "open" | "edge") {
-                context
-                    .world()
-                    .overlay_host(target)
-                    .is_some_and(|host| host.active.is_some())
-            } else {
-                deadline.is_some()
-            })
+            Ok(deadline.is_some() && !overlay_active(context, target))
+        }
+        // The open half. Advancing to *a* deadline is not enough, which is why
+        // `tooltip-edge` spent so long showing a closed tooltip: the first
+        // deadline is the hover fade at one frame, and an icon button takes
+        // `TooltipConfig::default().delay_ms` — 350ms — before its tooltip is
+        // due. Pump the clock until the overlay actually goes active.
+        "tooltip-edge" | "open" | "edge" => {
+            adapter.dispatch_at(
+                context,
+                document_id,
+                &pointer(PointerPhase::Move, center_x, center_y),
+                Duration::ZERO,
+            )?;
+            Ok(advance_until_overlay_active(context, target))
         }
         "delay" if fixture.component == Component::Tooltip => {
             adapter.dispatch_at(

@@ -106,20 +106,21 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 ## Two advisories the suite prints, and neither is a pixel failure
 
 Both are the fixture's own contract check, not the pixel comparison, and
-neither affects the exit code.
+neither affects the exit code. One of the two is currently clear.
 
-### `machine_verdict: fail` — 2 fixtures
+### `machine_verdict: fail` — none left
 
 Each fixture's `*.evidence.txt` carries a `runtime_failed:` line naming the
 clause that failed, and a clause with sub-parts names the part:
 `segmented_contract_ok[selection(expected=option[0] actual=option[2])]`. Before
 that it printed only `fail`, and finding out which of ~22 conjuncts had tripped
 meant opening `evidence.rs` beside it — which is why this sat at 66 for weeks
-without moving. Naming the clauses is what cleared it: 66 → 2.
+without moving. Naming the clauses is what cleared it: 66 → 0.
 
-**Every one of the 64 was the harness holding a contract the tree had already
-moved past.** Not one was a product defect. Read the component's own contract
-before suspecting the component.
+**64 of the 66 were the harness holding a contract the tree had already moved
+past** — read the component's own contract before suspecting the component. The
+last two were the opposite, and worth the wait: a real defect in the scene
+builder that only a fixture refusing to be reclassified could have found.
 
 | what it turned out to be | count |
 | --- | ---: |
@@ -131,9 +132,10 @@ before suspecting the component.
 | `tooltip_state` routing `tooltip-delay` into the "open" arm | 2 |
 | `segmented_geometry_ok` demanding a focus ring the component never requests | 2 |
 | `action_applied` reading "focus did not move" as "the state failed to apply" | 2 |
+| **an icon button's tooltip never reaching the scene at all** | 2 |
 
-Two of those are worth reading in full because the fix was a contract change,
-not a classification one:
+Three of those are worth reading in full because the fix was a contract change
+or a code change, not a reclassification:
 
 **Self-driving segmented control.** `pointer-request`, `a11y-radio`,
 `atomic-reconcile` and `controlled-commit` each asserted that activating an
@@ -150,23 +152,39 @@ first tab, then `apply_runtime_state("focused")` focused it again;
 harness read that as the state failing. It now accepts either — moved, or
 already there.
 
-### The 2 that are left, and why they stay red
+### The tooltip that was never in the scene
 
-`icon-button/{dark,light}/tooltip-edge`. Both icon-button tooltip fixtures are
-driven identically — same pointer move, same advance to the deadline — and
-differ only in `placement`. Neither ends with an active overlay, so
-`tooltip-delay` is the pending state and now uses the delay contract, which it
-satisfies. `tooltip-edge` is driven the same way, so it is *also* the pending
-state, and its name promises something it never shows: edge placement of an
-**open** tooltip.
+`icon-button/{dark,light}/tooltip-edge` was the last pair, and it was right.
+Two things were wrong behind it.
 
-Routing it to the delay contract too would turn it green and leave a fixture
-that lies about what it covers. It is left red on purpose. The work is to make
-it open the tooltip — which needs finding out why the icon-button path has no
-active overlay after the deadline while `(Tooltip, "edge")` does — and then
-re-recording it, at which point it will finally show the placement it is named
-for. `machine_verdict` does not affect the exit code, so this costs nothing but
-keeps the signal.
+**The clock stopped too early.** The fixture hovered, read
+`next_animation_deadline()` once and advanced to it. That deadline is the hover
+fade, one frame out; an icon button's tooltip is due at
+`TooltipConfig::default().delay_ms` — 350ms — and never got there. The pending
+`tooltip-delay` fixture beside it asked only that *a* deadline existed, so the
+same drive satisfied both and the pair looked identical by construction. They
+are driven apart now: `tooltip-delay` steps one deadline and asserts the
+overlay is still closed, `tooltip-edge` pumps until it opens.
+
+**And it still painted nothing.** `is_descendant_of_icon_visual` suppressed
+every descendant of a node with an `Icon` standard visual. That rule is right
+for what it was written for — an `<i>` bound to `IconGlyph` keeps its `path`
+children, and the atlas glyph already draws them — but an `IconButton` parents
+its *tooltip* to itself, and the walk swallowed that too. The tooltip node was
+mounted, visible, laid out at `54.0,22.4 70.80x23.20`, and produced zero scene
+primitives. The `Tooltip` component's own fixtures were blank for the same
+reason — `tooltip/{dark,light}/{open,edge}` had committed baselines of an empty
+frame, and `machine_verdict` passed them because their clause never asked
+whether anything was drawn.
+
+The walk now stops at the first out-of-flow box: the icon's own children are in
+flow and still skipped, a surface the icon merely hosts is not.
+`an_icon_visual_still_paints_the_surface_it_only_hosts` pins it beside
+`icon_visual_skips_vector_children`, which still passes.
+
+Six pixel and four semantic baselines moved, and `tooltip-edge` finally shows
+what its name promised: Left requested, no room at 20px from the edge, flipped
+to the right and clamped inside the viewport.
 
 ### 2 snapshots paint nothing but the clear colour (`FLAT`)
 
@@ -194,7 +212,7 @@ going to stroke with, so width and colour come from one decision. Pinned by
 `a_border_coloured_outside_the_layout_still_strokes_when_the_caller_names_it`,
 which also checks that `border-style: none` and a zero width stay zero.
 
-## Adding an adapter## Adding an adapter## Adding an adapter
+## Adding an adapter
 
 Run `--bless` on that machine and commit the new directory. Adapters are
 independent; adding one does not affect the others. A software rasteriser

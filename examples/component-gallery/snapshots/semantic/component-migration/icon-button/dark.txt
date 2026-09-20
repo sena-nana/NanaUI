@@ -43,8 +43,10 @@ state: tooltip-delay
 state: tooltip-edge
   target: 20.00,20.00 28.00x28.00
   a11y: role=Button disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#a3a3a3ff
+  quad #2/0 20.00,20.00 28.00x28.00 opacity=1.00 bg=#2d2d2dff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  icon #2/3 27.50,27.50 13.00x13.00 opacity=1.00 icon=Icon("plus") color=#ddddddff
+  quad #3/0 54.00,22.40 70.80x23.20 opacity=1.00 bg=#202020ff border=#232323ff border_width=1.00 radius=4.00/4.00/4.00/4.00 shadow=none
+  text #3/2 61.00,27.40 56.80x13.20 opacity=1.00 color=#ddddddff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: selected-hover
   target: 20.00,20.00 28.00x28.00
   a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false

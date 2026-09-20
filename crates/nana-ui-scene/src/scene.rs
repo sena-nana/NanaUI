@@ -1641,12 +1641,34 @@ fn is_descendant_of_rasterized_svg(nodes: &SceneNodes, node: &ExtractedNode) -> 
     false
 }
 
+/// Whether `node` is part of a glyph an ancestor already paints.
+///
+/// An icon bound to `IconGlyph` keeps the vector markup it came from — `path`,
+/// `circle` — as children. The atlas glyph draws all of it, so those children
+/// must not paint their own boxes on top of it.
+///
+/// They are *in flow* inside the icon, and that is the part worth naming. A
+/// surface an icon only hosts is not: an `IconButton` parents its tooltip to
+/// itself, fixed-positioned at `z_index` 1000, and a walk that stopped at the
+/// first `Icon` ancestor swallowed it — which is why no icon-button tooltip has
+/// ever reached the scene. The walk therefore ends at the first out-of-flow
+/// box, and the icon's own children keep being skipped.
 fn is_descendant_of_icon_visual(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
+    if node.source_style.layout.is_out_of_flow() {
+        return false;
+    }
     let Some(parent) = node.parent else {
         return false;
     };
-    ancestor_nodes(nodes, parent)
-        .any(|(_, parent)| matches!(parent.standard_visual, Some(StandardVisual::Icon { .. })))
+    for (_, ancestor) in ancestor_nodes(nodes, parent) {
+        if matches!(ancestor.standard_visual, Some(StandardVisual::Icon { .. })) {
+            return true;
+        }
+        if ancestor.source_style.layout.is_out_of_flow() {
+            return false;
+        }
+    }
+    false
 }
 
 fn has_extracted_child(nodes: &SceneNodes, node: &ExtractedNode) -> bool {

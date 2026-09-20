@@ -247,14 +247,14 @@ impl UiWorld {
             target.padding_top = Some(length);
             target.padding_bottom = Some(length);
         }
-        if let Some((x, y)) = surface {
-            if target.padding.is_none() {
-                target.padding_left.get_or_insert(x);
-                target.padding_right.get_or_insert(x);
-                if let Some(y) = y {
-                    target.padding_top.get_or_insert(y);
-                    target.padding_bottom.get_or_insert(y);
-                }
+        if let Some((x, y)) = surface
+            && target.padding.is_none()
+        {
+            target.padding_left.get_or_insert(x);
+            target.padding_right.get_or_insert(x);
+            if let Some(y) = y {
+                target.padding_top.get_or_insert(y);
+                target.padding_bottom.get_or_insert(y);
             }
         }
         if let Some(length) = square {
