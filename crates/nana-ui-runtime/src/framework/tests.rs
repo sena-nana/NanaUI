@@ -7402,3 +7402,37 @@ fn a_secure_field_never_probes_its_plaintext_for_a_visual_caret_step() {
     );
     assert_eq!(shaper.probed.len(), 2, "{:?}", shaper.probed);
 }
+
+/// A host that repaints a surface from business state needs to know whether
+/// that repaint changed anything, so it can skip asking for a frame. The commit
+/// already diffs; rewriting a component with the values it already holds must
+/// leave nothing for the next flush to do.
+#[test]
+fn rewriting_a_component_with_its_own_values_leaves_no_pending_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(917).unwrap();
+    let text = context
+        .create_component(document, Text::new("输出 · 已连接"))
+        .unwrap();
+    let _ = context.world_mut().take_system_work();
+    assert!(
+        !context.world().has_pending_work(),
+        "a drained world owes no work"
+    );
+
+    context
+        .update_component(text, |view, _| view.value = "输出 · 已连接".to_string())
+        .unwrap();
+    assert!(
+        !context.world().has_pending_work(),
+        "an unchanged rewrite must not dirty the node"
+    );
+
+    context
+        .update_component(text, |view, _| view.value = "输出 · 已断开".to_string())
+        .unwrap();
+    assert!(
+        context.world().has_pending_work(),
+        "a real change must dirty the node"
+    );
+}

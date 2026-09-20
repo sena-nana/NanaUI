@@ -754,6 +754,17 @@ impl UiWorld {
         self.generation
     }
 
+    /// Whether any node still owes system work, i.e. whether the next flush has
+    /// anything to do. [`Self::take_system_work`] drains this.
+    ///
+    /// A host that wrote into a document and wants to know whether that write
+    /// actually changed anything asks here: an update that projects no
+    /// mutations leaves nothing dirty. Answering it from the outside otherwise
+    /// means re-deriving per-field diffs the commit already computed.
+    pub fn has_pending_work(&self) -> bool {
+        !self.dirty_entities.is_empty()
+    }
+
     /// Algorithm-level counters from the last non-empty drain, or the current
     /// frame accumulator while a product flush is running. An idle
     /// [`Self::take_system_work`] does not replace this snapshot.
