@@ -1656,6 +1656,10 @@ fn apply_scene_window_chrome(
 ) -> winit::window::WindowAttributes {
     #[cfg(target_os = "macos")]
     {
+        // Whether the surface is composed only changes chrome on Windows,
+        // where it decides the redirection bitmap and the undecorated shadow.
+        // macOS reads `system_caption` alone.
+        let _ = composed;
         if settings.system_caption {
             return attributes.with_decorations(true);
         }
