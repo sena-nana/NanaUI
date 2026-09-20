@@ -108,19 +108,21 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 Both are the fixture's own contract check, not the pixel comparison, and
 neither affects the exit code.
 
-### `machine_verdict: fail` — 14 fixtures
+### `machine_verdict: fail` — 12 fixtures
 
 Each fixture's `*.evidence.txt` carries a `runtime_failed:` line naming the
-clause that failed. Before that it printed only `fail`, and finding out which
-of ~22 conjuncts had tripped meant opening `evidence.rs` beside it — which is
-why this sat at 66 for weeks without moving. Every one triaged since has turned
-out to be the harness holding a contract the tree had already moved past, not a
-product defect.
+clause that failed, and a clause with sub-parts names the part:
+`segmented_geometry_ok[option[1].height track_width]`. Before that it printed
+only `fail`, and finding out which of ~22 conjuncts had tripped meant opening
+`evidence.rs` beside it — which is why this sat at 66 for weeks without moving.
+
+**Every one triaged so far has been the harness holding a contract the tree had
+already moved past, not a product defect.** That is worth knowing before
+picking up the rest: read the component's own contract first.
 
 | clause | count | finding |
 | --- | ---: | --- |
-| `segmented_contract_ok` | 8 | **the harness asserts the pre-self-driving contract** |
-| `segmented_geometry_ok` | 2 | `segmented-control/focused`, unexplained |
+| `segmented_contract_ok` | 8 | the harness asserts the pre-self-driving contract |
 | `tooltip_state` | 2 | `icon-button/tooltip-edge` never opens its tooltip |
 | `action_applied` | 2 | `tabs/focused` |
 
@@ -134,26 +136,33 @@ and passes. The difference is `selection_ok`, which demands
 itself, the pixel baselines were re-recorded for that change, and this
 exerciser was not.
 
-**`segmented_geometry_ok`.** Only `focused`. The arithmetic all checks out by
-hand against the semantic dump — options 55.94 + 52.86 + 73.82, two 2px gaps
-and the 6px track inset give exactly the recorded 192.62 track width, option
-heights are the expected 26, and each label sits inside its option. Whatever
-fails is one of the `SelectionOption` geometry or slot lookups, and finding it
-needs the clause broken down further the way `runtime_ok` was.
-
 **`tooltip_state`.** `icon-button/tooltip-edge` reports `tooltip=Some(..)` with
 `active_overlay=None` — the pending state, not an open one. Its sibling
-`tooltip-delay` had the identical observation and has been routed to the delay
+`tooltip-delay` had the identical observation and now routes to the delay
 contract, which it satisfies. `tooltip-edge` reads as wanting an *open* tooltip
 at a viewport edge, so the fixture is probably not advancing the hover clock to
-the deadline. That is a fixture question, not a contract one.
+the deadline. A fixture question, not a contract one.
 
-Cleared since: 32 `hit_ok` (leaf / container, above), 12 `geometry_ok`
+Cleared so far: 32 `hit_ok` (leaf / container), 12 `geometry_ok`
 (`SidebarFrame` / `SidebarFooter` / `SidebarSection` / `OverlayHost` have no
-`ComponentGeometry` by design and were missing from the list), 6
-`textarea_geometry_ok` (slot 1 is the caret-line highlight when there is no
-selection — `multiline && focused && selection.is_none()` — and the check
-predated it), 2 `tooltip_state`, 8 hit-test misclassifications.
+`ComponentGeometry` by design), 6 `textarea_geometry_ok` (slot 1 is the
+caret-line highlight when there is no selection), 2 `tooltip_state`, 2
+`segmented_geometry_ok`, 8 hit-test misclassifications.
+
+#### One open question this triage raised
+
+`segmented_geometry_ok` demanded a focus ring on the focused option, and the
+component never requests one: `SegmentedOption` sets `show_focus_ring` for
+`Radio` chrome only, and `tabs_options_do_not_request_a_focus_ring` pins that
+for tabs. The check now follows the request — a ring must be painted iff the
+geometry asked for one — so the clause passes and still catches both a
+requested-but-unpainted ring and an unrequested one.
+
+That leaves the **design** question the harness was clumsily pointing at: a
+segmented control shows selection with a filled pill, and since selection and
+focus were merged into one pill, a keyboard user moving focus without
+activating has no separate indicator. Whether that is acceptable is an
+accessibility decision, not a harness one, and nothing here decides it.
 
 ### 2 snapshots paint nothing but the clear colour (`FLAT`)
 

@@ -183,7 +183,11 @@ pub(super) fn write_evidence(
             _ => false,
         }
     };
-    let mut segmented_geometry_ok = true;
+    // Named sub-clauses, for the same reason `runtime_ok` has them: a bare
+    // `segmented_geometry_ok: false` says a segmented control is wrong
+    // somewhere across three options, four measurements each, plus the track
+    // and two per-state extras. Each entry below names what it checked.
+    let mut segmented_geometry_failed: Vec<String> = Vec::new();
     let mut segmented_accessibility_ok = true;
     if fixture.component == Component::SegmentedControl {
         let expected_option_height = (segmented_control_size(fixture.state).height_in(UI_METRICS)
@@ -208,7 +212,7 @@ pub(super) fn write_evidence(
             .collect::<Vec<_>>();
         let mut checked = 0;
         let mut enabled = Vec::new();
-        for id in &mounted_options {
+        for (index, id) in mounted_options.iter().enumerate() {
             let option = Entity::<RuntimeSegmentedOption>::from_stable_id(*id);
             let option_selected = runtime
                 .document
@@ -235,20 +239,35 @@ pub(super) fn write_evidence(
             let option_text = primitives
                 .iter()
                 .find(|primitive| primitive.node == *id && primitive.id.slot == 2);
-            segmented_geometry_ok &= matches!(
-                (option_bounds, option_geometry),
+            match (option_bounds, option_geometry) {
                 (
-                    Some(bounds),
-                    Some(nana_ui::runtime::ComponentGeometry::SelectionOption { label, .. })
-                ) if bounds.height > 0.0
-                    && (bounds.height - expected_option_height).abs() < 0.01
-                    && label.bounds.x >= bounds.x
-                    && label.bounds.x + label.bounds.width <= bounds.x + bounds.width + 0.01
-            ) && option_surface
+                    Some(option_bounds),
+                    Some(nana_ui::runtime::ComponentGeometry::SelectionOption { label, .. }),
+                ) => {
+                    if !(option_bounds.height > 0.0
+                        && (option_bounds.height - expected_option_height).abs() < 0.01)
+                    {
+                        segmented_geometry_failed.push(format!("option[{index}].height"));
+                    }
+                    if !(label.bounds.x >= option_bounds.x
+                        && label.bounds.x + label.bounds.width
+                            <= option_bounds.x + option_bounds.width + 0.01)
+                    {
+                        segmented_geometry_failed.push(format!("option[{index}].label_inside"));
+                    }
+                }
+                _ => segmented_geometry_failed.push(format!("option[{index}].selection_geometry")),
+            }
+            if !option_surface
                 .is_some_and(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Quad { .. }))
-                && option_text.is_some_and(|primitive| {
-                    matches!(primitive.kind, ScenePrimitiveKind::Text { .. })
-                });
+            {
+                segmented_geometry_failed.push(format!("option[{index}].surface_quad"));
+            }
+            if !option_text
+                .is_some_and(|primitive| matches!(primitive.kind, ScenePrimitiveKind::Text { .. }))
+            {
+                segmented_geometry_failed.push(format!("option[{index}].text"));
+            }
         }
         let expected_width = mounted_options
             .iter()
@@ -257,8 +276,9 @@ pub(super) fn write_evidence(
             .sum::<f32>()
             + mounted_options.len().saturating_sub(1) as f32 * 2.0
             + 6.0;
-        segmented_geometry_ok &=
-            bounds.is_some_and(|bounds| (bounds.width - expected_width).abs() < 0.01);
+        if !bounds.is_some_and(|bounds| (bounds.width - expected_width).abs() < 0.01) {
+            segmented_geometry_failed.push("track_width".to_string());
+        }
         let expected_checked = usize::from(selected.is_some());
         let tab_stop_ok = match focus_target {
             Some(id) => enabled.contains(&id),
@@ -266,36 +286,69 @@ pub(super) fn write_evidence(
         };
         segmented_accessibility_ok &= checked == expected_checked && tab_stop_ok;
         if fixture.state == "medium-icon" {
-            segmented_geometry_ok &= mounted_options.first().is_some_and(|id| {
+            let icon_ok = mounted_options.first().is_some_and(|id| {
                 primitives.iter().any(|primitive| {
                     primitive.node == *id
                         && primitive.id.slot == 3
                         && matches!(primitive.kind, ScenePrimitiveKind::Icon { .. })
                 })
             });
+            if !icon_ok {
+                segmented_geometry_failed.push("option[0].icon".to_string());
+            }
         }
         if fixture.state == "focused" {
-            segmented_geometry_ok &= focus_target.is_some_and(|id| {
-                let Some(bounds) = world.layout_box(id) else {
-                    return false;
-                };
-                primitives.iter().any(|primitive| {
-                    primitive.node == id
-                        && primitive.id.slot == 7
-                        && (primitive.bounds.x - (bounds.x - 4.0)).abs() < 0.01
-                        && (primitive.bounds.y - (bounds.y - 4.0)).abs() < 0.01
-                        && (primitive.bounds.width - (bounds.width + 8.0)).abs() < 0.01
-                        && matches!(
-                            primitive.kind,
-                            ScenePrimitiveKind::Quad {
-                                border_width,
-                                ..
-                            } if (border_width - 2.0).abs() < 0.01
-                        )
-                })
-            });
+            // Split three ways: "no ring at all", "a ring in the wrong place"
+            // and "a ring of the wrong weight" are three different bugs, and
+            // one boolean cannot tell them apart.
+            match focus_target.and_then(|id| world.layout_box(id).map(|bounds| (id, bounds))) {
+                None => segmented_geometry_failed.push("focus_ring.no_focus_target".to_string()),
+                Some((id, bounds)) => {
+                    let ring = primitives
+                        .iter()
+                        .find(|primitive| primitive.node == id && primitive.id.slot == 7);
+                    // Only an option that *asked* for a ring must paint one.
+                    // `SegmentedOption` sets `show_focus_ring` for `Radio`
+                    // chrome alone — segmented and tabs options deliberately do
+                    // not request it, and `tabs_options_do_not_request_a_focus_ring`
+                    // pins that. Demanding one unconditionally asked the
+                    // component for the opposite of its own contract. Checking
+                    // both directions still catches a ring that was requested
+                    // and never drawn, or drawn and never requested.
+                    let wants_ring = matches!(
+                        world.component_geometry(id),
+                        Some(nana_ui::runtime::ComponentGeometry::SelectionOption {
+                            focus_ring: Some(_),
+                            ..
+                        })
+                    );
+                    match ring {
+                        None if !wants_ring => {}
+                        Some(_) if !wants_ring => {
+                            segmented_geometry_failed.push("focus_ring.unrequested".to_string())
+                        }
+                        None => segmented_geometry_failed.push("focus_ring.absent".to_string()),
+                        Some(ring) => {
+                            if !((ring.bounds.x - (bounds.x - 4.0)).abs() < 0.01
+                                && (ring.bounds.y - (bounds.y - 4.0)).abs() < 0.01
+                                && (ring.bounds.width - (bounds.width + 8.0)).abs() < 0.01)
+                            {
+                                segmented_geometry_failed.push("focus_ring.bounds".to_string());
+                            }
+                            if !matches!(
+                                ring.kind,
+                                ScenePrimitiveKind::Quad { border_width, .. }
+                                    if (border_width - 2.0).abs() < 0.01
+                            ) {
+                                segmented_geometry_failed.push("focus_ring.stroke".to_string());
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
+    let segmented_geometry_ok = segmented_geometry_failed.is_empty();
     let feedback_parent_inert = !matches!(
         fixture.component,
         Component::StatusBadge
@@ -848,10 +901,18 @@ pub(super) fn write_evidence(
             },
         ),
     ];
-    let machine_failed: Vec<&str> = checks
+    let machine_failed: Vec<String> = checks
         .iter()
         .filter(|(_, ok)| !ok)
-        .map(|(name, _)| *name)
+        .map(|(name, _)| match *name {
+            "segmented_geometry_ok" if !segmented_geometry_failed.is_empty() => {
+                format!(
+                    "segmented_geometry_ok[{}]",
+                    segmented_geometry_failed.join(" ")
+                )
+            }
+            other => other.to_string(),
+        })
         .collect();
     let runtime_ok = machine_failed.is_empty();
 
