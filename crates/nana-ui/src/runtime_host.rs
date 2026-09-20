@@ -509,6 +509,19 @@ pub trait RuntimeProgram: Sized + 'static {
         crate::MaterialEffect::Solid
     }
 
+    /// The colour an opaque window surface clears to, and the colour a system
+    /// material falls back to when the platform cannot honour it.
+    ///
+    /// `None` takes the installed theme's `background`, which is what a window
+    /// whose content *is* the page wants. A host whose window is a frame around
+    /// content of its own — a stage, a canvas, a video surface — answers with
+    /// its own colour instead, and that colour does not move when the theme
+    /// does. This is the window surface, which the host owns; it is not a
+    /// semantic role, and nothing inside the document reads it.
+    fn window_background(&self) -> Option<nana_ui_core::SemanticColor> {
+        None
+    }
+
     fn appearance_backdrop_opacity(&self) -> f32 {
         nana_ui_core::AppearanceSettings::DEFAULT_BACKDROP_OPACITY
     }

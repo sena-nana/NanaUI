@@ -833,12 +833,15 @@ fn attach_primary_surface(
     // reference goes with them and the HWND created for a target that did not
     // work out is destroyed rather than reused.
     let mut provisional = PendingNativeWindow(Some(window.clone()));
+    // The program does not exist yet; line 951 re-applies the material with the
+    // host's own colour once it does.
     let (requested_material, applied_material) = apply_window_material(
         window.as_ref(),
         theme,
         settings,
         material_mode,
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+        None,
     );
     let want_transparent = requested_material.wants_transparent_surface();
     let mode = surface_mode_for(target);
@@ -947,6 +950,7 @@ fn initialize<Program: RuntimeProgram>(
     last_theme = program.theme_mode();
     last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     let backdrop_opacity = program.appearance_backdrop_opacity_for(WindowId::PRIMARY);
+    let window_background = program.window_background();
     let applied;
     (requested_material, applied) = apply_window_material(
         window.as_ref(),
@@ -954,6 +958,7 @@ fn initialize<Program: RuntimeProgram>(
         &settings,
         last_material_mode,
         backdrop_opacity,
+        window_background,
     );
     graphics
         .apply_surface_alpha_mode(
@@ -978,6 +983,7 @@ fn initialize<Program: RuntimeProgram>(
         &settings,
         &presentation,
         backdrop_opacity,
+        window_background,
         false,
     );
     #[cfg(not(target_os = "android"))]
@@ -1429,12 +1435,15 @@ fn apply_scene_material(
     theme: crate::ThemeMode,
     requested: crate::MaterialEffect,
     backdrop_opacity: f32,
+    window_background: Option<nana_ui_core::SemanticColor>,
 ) -> MaterialOutcome {
     let appearance = match theme {
         crate::ThemeMode::Dark => Appearance::Dark,
         crate::ThemeMode::Light => Appearance::Light,
     };
-    let (red, green, blue, _) = theme.palette().background.to_u8_rgba();
+    let (red, green, blue, _) = window_background
+        .unwrap_or_else(|| theme.palette().background)
+        .to_u8_rgba();
     let alpha = (AppearanceSettings::clamp_backdrop_opacity(backdrop_opacity) * 255.0 + 0.5) as u8;
     apply_hosted_system_material(
         window,
@@ -1460,9 +1469,16 @@ fn apply_window_material(
     settings: &WindowDescriptor,
     appearance: crate::MaterialEffect,
     backdrop_opacity: f32,
+    window_background: Option<nana_ui_core::SemanticColor>,
 ) -> (crate::MaterialEffect, MaterialOutcome) {
     let requested = window_surface_effect(settings.transparent, appearance);
-    let material = apply_scene_material(window, theme, requested, backdrop_opacity);
+    let material = apply_scene_material(
+        window,
+        theme,
+        requested,
+        backdrop_opacity,
+        window_background,
+    );
     apply_window_transparency(window, requested);
     (requested, material)
 }
@@ -1490,6 +1506,7 @@ fn apply_resolved_presentation(
     settings: &WindowDescriptor,
     presentation: &ResolvedWindowPresentation,
     backdrop_opacity: f32,
+    window_background: Option<nana_ui_core::SemanticColor>,
     allow_caption_change: bool,
 ) {
     if presentation.needs_material_reset() {
@@ -1500,6 +1517,7 @@ fn apply_resolved_presentation(
             theme,
             presentation.effective().effect,
             backdrop_opacity,
+            window_background,
         );
         apply_window_transparency(window, presentation.effective().effect);
     }
@@ -1636,6 +1654,7 @@ fn scene_paint_viewport(
     geometry: &WindowGeometry,
     material: MaterialOutcome,
     theme: crate::ThemeMode,
+    window_background: Option<nana_ui_core::SemanticColor>,
 ) -> ScenePaintViewport {
     ScenePaintViewport {
         logical_size: [geometry.logical_size.0, geometry.logical_size.1],
@@ -1643,16 +1662,20 @@ fn scene_paint_viewport(
         scale_factor: geometry.scale_factor,
         scene_origin: [0.0, 0.0],
         target_origin: [0.0, 0.0],
-        clear_color: scene_clear_color(theme, material),
+        clear_color: scene_clear_color(theme, material, window_background),
         clear: true,
     }
 }
 
-fn scene_clear_color(theme: crate::ThemeMode, material: MaterialOutcome) -> [f32; 4] {
+fn scene_clear_color(
+    theme: crate::ThemeMode,
+    material: MaterialOutcome,
+    window_background: Option<nana_ui_core::SemanticColor>,
+) -> [f32; 4] {
     if material.wants_transparent_surface() {
         return [0.0, 0.0, 0.0, 0.0];
     }
-    let color = theme.palette().background;
+    let color = window_background.unwrap_or_else(|| theme.palette().background);
     [color.r, color.g, color.b, color.a]
 }
 
@@ -3673,24 +3696,51 @@ mod tests {
 
     #[test]
     fn native_and_transparent_materials_clear_the_surface_to_zero_alpha() {
-        let solid = scene_clear_color(ThemeMode::Dark, MaterialOutcome::chosen_solid());
+        let solid = scene_clear_color(ThemeMode::Dark, MaterialOutcome::chosen_solid(), None);
         assert!(solid[3] > 0.0, "opaque windows keep a readable clear color");
         assert_eq!(
-            scene_clear_color(ThemeMode::Dark, MaterialOutcome::transparent()),
+            scene_clear_color(ThemeMode::Dark, MaterialOutcome::transparent(), None),
             [0.0, 0.0, 0.0, 0.0]
         );
         assert_eq!(
             scene_clear_color(
                 ThemeMode::Dark,
-                MaterialOutcome::native(MaterialEffect::Mica)
+                MaterialOutcome::native(MaterialEffect::Mica),
+                None
             ),
             [0.0, 0.0, 0.0, 0.0]
         );
         assert_eq!(
             scene_clear_color(
                 ThemeMode::Light,
-                MaterialOutcome::native(MaterialEffect::Acrylic)
+                MaterialOutcome::native(MaterialEffect::Acrylic),
+                None
             ),
+            [0.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn an_opaque_window_clears_to_the_host_colour_rather_than_the_theme() {
+        // A host whose window frames content of its own — a stage, a canvas —
+        // wants one surround in both themes, so its answer wins over the
+        // palette and does not move when the theme does.
+        let black = nana_ui_core::SemanticColor::rgb8(0, 0, 0);
+        for theme in [ThemeMode::Dark, ThemeMode::Light] {
+            assert_eq!(
+                scene_clear_color(theme, MaterialOutcome::chosen_solid(), Some(black)),
+                [0.0, 0.0, 0.0, 1.0]
+            );
+        }
+        // Without an answer the palette still decides, and the two modes differ.
+        assert_ne!(
+            scene_clear_color(ThemeMode::Dark, MaterialOutcome::chosen_solid(), None),
+            scene_clear_color(ThemeMode::Light, MaterialOutcome::chosen_solid(), None)
+        );
+        // A transparent surface is still transparent: the host colour describes
+        // what an opaque window fills with, not whether it is opaque.
+        assert_eq!(
+            scene_clear_color(ThemeMode::Light, MaterialOutcome::transparent(), Some(black)),
             [0.0, 0.0, 0.0, 0.0]
         );
     }
@@ -3703,7 +3753,7 @@ mod tests {
         // Windows DX12 only ever advertises Opaque for an HWND surface, where
         // the transparent clear color shows as solid black. The request has to
         // come back as a reported fallback rather than silently look honoured.
-        assert!(scene_clear_color(ThemeMode::Dark, demoted)[3] > 0.0);
+        assert!(scene_clear_color(ThemeMode::Dark, demoted, None)[3] > 0.0);
         for requested in [
             MaterialOutcome::transparent(),
             MaterialOutcome::native(MaterialEffect::Mica),

@@ -509,6 +509,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let desktop = scene_desktop(event_loop, settings.constrain_to_work_area);
         let backdrop_opacity = self.program.appearance_backdrop_opacity_for(id);
         let material_mode = self.program.window_material_mode_for(id);
+        let window_background = self.program.window_background();
         // A composed window is provisional here for the same reason the first
         // window is: `WS_EX_NOREDIRECTIONBITMAP` is decided at creation, and
         // every step that could reject the composition target comes after it.
@@ -542,6 +543,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 &settings,
                 material_mode,
                 backdrop_opacity,
+                window_background,
             );
             match self.graphics.create_surface_with_mode(
                 Arc::clone(&window),
@@ -586,6 +588,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &settings,
             &presentation,
             backdrop_opacity,
+            window_background,
             true,
         );
         let format = surface.format();
@@ -824,6 +827,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             opacity: AppearanceSettings::clamp_backdrop_opacity(
                 self.program.appearance_backdrop_opacity_for(id),
             ),
+            background: self.program.window_background(),
         };
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return Ok(());
@@ -841,6 +845,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 &host.settings,
                 desired.material,
                 desired.opacity,
+                desired.background,
             );
             self.graphics.apply_surface_alpha_mode(
                 &mut host.surface,
@@ -864,6 +869,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 &host.settings,
                 &presentation,
                 desired.opacity,
+                desired.background,
                 true,
             );
             Ok(presentation)
@@ -1892,6 +1898,9 @@ pub(super) struct WindowAppearance {
     theme: crate::ThemeMode,
     material: nana_window::MaterialEffect,
     opacity: f32,
+    /// The host's own window-surface colour, or `None` to follow the theme.
+    /// It rides here so a host that changes only this still re-applies.
+    background: Option<nana_ui_core::SemanticColor>,
 }
 
 /// Moves a window's native buttons onto the placeholder box last laid out
@@ -1931,6 +1940,7 @@ mod appearance_tests {
             theme: crate::ThemeMode::Dark,
             material: nana_window::MaterialEffect::Solid,
             opacity: 1.0,
+            background: None,
         };
         let mut windows = [Some(original); 3];
         let changed = WindowAppearance {
@@ -1970,6 +1980,7 @@ mod appearance_tests {
             theme: crate::ThemeMode::Dark,
             material: nana_window::MaterialEffect::Solid,
             opacity: 1.0,
+            background: None,
         };
         let mut cached = Some(original);
         let light = WindowAppearance {

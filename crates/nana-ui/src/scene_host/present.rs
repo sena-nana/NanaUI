@@ -280,6 +280,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         let theme = self.program.theme_mode();
+        let window_background = self.program.window_background();
         let fetch_host = self.program.resource_fetch_host(id);
         let painter = self.painter_mut(format);
         // Painters are shared per format, so every window supplies its own
@@ -290,7 +291,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             scene.as_ref(),
             &mut encoder,
             &target,
-            scene_paint_viewport(&geometry, material, theme),
+            scene_paint_viewport(&geometry, material, theme, window_background),
             host_textures.as_ref(),
             gpu_renderers.as_ref(),
         );
