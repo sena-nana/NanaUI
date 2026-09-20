@@ -525,20 +525,28 @@ impl ComponentView for SegmentedOption {
                 ));
             }
         }
-        if self.icon.is_some() {
-            let layout = Arc::make_mut(&mut effective_style.layout);
-            let lead = match self.chrome {
-                SelectionChrome::Radio => self.size.radio_lead(),
-                _ => self.size.padding_x_in(world.theme_metrics()) + nana_ui_core::space::XXS,
+        {
+            let radio = matches!(self.chrome, SelectionChrome::Radio);
+            let inset = if radio {
+                self.size.radio_lead()
+            } else {
+                self.size.padding_x_in(world.theme_metrics()) + nana_ui_core::space::XXS
             };
-            layout.padding_left = Some(LengthSpec::Px(
-                lead + self.size.icon_size() + nana_ui_core::space::XS,
-            ));
-        } else if !matches!(self.chrome, SelectionChrome::Radio) {
-            let pad = self.size.padding_x_in(world.theme_metrics()) + nana_ui_core::space::XXS;
+            // The icon has no box of its own: it is drawn inside the leading
+            // inset, so the inset has to grow by the icon and its gap or the
+            // label is measured into a box the icon already occupies. The
+            // trailing inset is the plain one either way — an icon on the left
+            // is no reason to leave the label flush against the right edge, and
+            // dropping it also measured every icon option short by one inset.
             let layout = Arc::make_mut(&mut effective_style.layout);
-            layout.padding_left = Some(LengthSpec::Px(pad));
-            layout.padding_right = Some(LengthSpec::Px(pad));
+            layout.padding_left = Some(LengthSpec::Px(if self.icon.is_some() {
+                inset + self.size.icon_size() + nana_ui_core::space::XS
+            } else {
+                inset
+            }));
+            if !radio {
+                layout.padding_right = Some(LengthSpec::Px(inset));
+            }
         }
         project_common(
             id,

@@ -1971,16 +1971,17 @@ impl UiWorld {
                             .unwrap_or_else(|| self.style_model.palette.muted.as_rgba_array()),
                     )
                 });
-                let label_x = icon_bounds
-                    .as_ref()
-                    .map_or(content.x, |(_, icon, _)| icon.x + icon.width + 5.0);
+                // The label is the content box: `SegmentedOption::project`
+                // already spent the icon and its gap in the leading padding, so
+                // re-deriving the label origin from the icon only invents a
+                // second gap that layout never reserved.
                 Some(crate::ComponentGeometry::SelectionOption {
                     icon: icon_bounds,
                     label: text_region(
                         LayoutBox {
-                            x: label_x,
+                            x: content.x,
                             y: content.y,
-                            width: (content.x + content.width - label_x).max(0.0),
+                            width: content.width,
                             height: content.height,
                         },
                         Arc::clone(label),
