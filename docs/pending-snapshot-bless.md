@@ -1,10 +1,64 @@
 # 待重录的快照
 
-下面这些改动动了快照的像素，但**没有**在开发机上 `--bless`：那台机器的
-字体栅格化与录制基线的机器不同，difference 图是整幅画面的文字重影，blessing 会把
-开发机的文字渲染写进共享基线。要在**录制基线的那台机器/平台**上重录。
+## 先更正一条：开发机**可以**录像素基线
+
+本文件原先说「这台机器的字体栅格化与录制基线的机器不同，difference 图是整幅画面的
+文字重影，不要在本机 `--bless`」。2026-09-20 实测，这条**不成立**：
+
+- 本机（`metal-apple-m4`，与基线同一个 adapter key）**逐字节复现了 200 张**基线，
+  其中大量是文字密集的（`button/*/primary`、`text-input/*/value`、`text/dark/normal`、
+  `tooltip/*/open`、`command-palette/*/open`）。字体栅格化真不一样的话，这些不可能相同。
+- 连跑两遍全套 615 张，**0 张**前后不一致——包括本文件点名抖动的
+  `gallery-sidebar-collapsed-dark.png`（自转 `Spinner`）。那条也过期了。
+
+「文字重影」的 difference 图是真的，但它来自**字形位置的亚像素位移**（排版变了），
+不是栅格化差异——同一张 side-by-side 肉眼完全看不出区别，而语义基线说这一帧
+逐字节相同。两者并存正说明差异在语义层**之下**。
+
+所以剩下的像素债不需要特定机器，需要的是**解释**。
 
 删掉本文件即表示这件事做完了。
+
+## 现状（2026-09-20）
+
+全套 615 个 key：
+
+| | 张数 | 说明 |
+| --- | ---: | --- |
+| 与基线逐字节相同 | **200** | |
+| 基线陈旧，待解释后重录 | **355** | 干净 HEAD 上就有 421 张不同，与后来的改动无关 |
+| 本轮已录 | **120** | 见下 |
+
+本轮录的两类，都是**先证明范围再动手**：
+
+1. **本轮代码真正移动的 60 张。** 做法是 A/B：同一台机器上对干净 HEAD 与本分支各跑
+   一次全套，比 md5。本分支相对干净 HEAD 只动了 68 个 key，全部落在改过的组件上
+   （`segmented-control` 40、`select`/`dropdown`/`search-dropdown` 10、
+   `app-title-bar`/`app-shell`/`appearance-section`/`settings` 8、含这些控件的整窗图 10）。
+   其中 **8 张是被修复「还原」成与基线逐字节相同的**——Select/Dropdown 触发器内缩那条
+   回归修完之后，像素自己回到了基线，和语义层给出的是同一个结论。剩下 60 张重录。
+
+   > 用前缀 bless 要复核。`--bless component-migration/settings/dark/settings-page` 会
+   > 连 `settings-page-full` 一起匹配，`component-migration/segmented-control` 会把
+   > `all-disabled` / `no-selection` 一起扫进来——这 6 张不在 A/B 集合里，已还原。
+   > bless 完一定要拿 `git status` 和 A/B 名单对一遍。
+
+2. **从来没有基线的 60 张。** #101 §3 补的状态矩阵（58）加 `donut-chart` 的 2 张。
+   它们每次跑都报 MISSING，没有任何东西会被覆盖，所以零风险。
+
+## 还欠着的 355 张
+
+**没有重录，因为没人能说清它们为什么变。** 这 355 张在**干净 HEAD 上就和基线不同**，
+早于本轮所有改动；下面「清单」几节解释了其中大约 57 张（SegmentedControl 自驱 6、
+行家族行盒 10、FormField 2、三个离群内边距 21、hover 18），其余约 300 张没有出处。
+
+一个具体的例子说明为什么不能整批 bless：`component-migration/text/dark/{wrap,ellipsis}`
+两张不同，而同组的 `normal` / `centered` / `muted` 逐字节相同——三张静态文字对得上、
+两张会换行的对不上，指向的是**排版/断行**变过，不是噪声。语义基线看不见它（它记的是
+文本图元的盒与属性，不记字形位置）。这类东西 bless 掉就再也没人会去找了。
+
+建议的下一步：按上面的 A/B 方法，对着**引入变化的那个提交**逐类定位，而不是对着今天
+的树整批重录。语义基线那 46 张就是这么做的，结果 3 类里查出 2 个真回归。
 
 ## 怎么做
 
@@ -115,8 +169,10 @@ hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMo
 
 这 29 个 fixture × light/dark 是 #101 §3 查出的缺口：组件自己在
 `InteractionStyle` 里声明了这些状态的 paint，但从来没有 fixture 捕获过。它们**没有
-旧基线**，每次跑都报 MISSING，不是「像素变了」而是「以前根本没拍过」，所以按前缀
-`--bless` 即可，不需要逐张比对 side-by-side。
+旧基线**，每次跑都报 MISSING，不是「像素变了」而是「以前根本没拍过」。
+
+**2026-09-20 已录**（连同 `donut-chart` 的 2 张，共 60 张）：没有任何旧基线会被覆盖，
+而且本机已验证与基线兼容、跑两遍零抖动。
 
 语义基线（`snapshots/semantic/`，与 adapter 无关）已经在本轮录好并验过，可以先看它
 确认每个状态解析出的颜色/边框是不是预期的，再在录制机上补像素。
@@ -160,14 +216,13 @@ hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMo
 
 ## 不在此列
 
-`gallery-sidebar-collapsed-dark.png` **在干净工作树上就已经失败**，且自身抖动，抖动来自
-会自转的 `Spinner`。2026-09-18 复核：同一份代码连续跑两遍，全套 557 张里**只有它**一张
-前后不一致，其余逐字节可复现。它与本轮改动无关，需要单独处理：要么把 Spinner 的相位在
-快照里固定住，要么把这张排除出套件。
+~~`gallery-sidebar-collapsed-dark.png` 自身抖动，抖动来自会自转的 `Spinner`。~~
+2026-09-20 复核：连跑两遍全套 615 张，**0 张**前后不一致，这张也稳定了。它本轮随
+A/B 名单一起重录。
 
 套件还自报「painted nothing but the clear colour… prove nothing」——只画了清屏色的快照，
 对任何基线都成立、什么也证明不了（2026-09-18 是 4 张：`segmented-control/{dark,light}/empty`、
 `overlay-host/{dark,light}/stacked`）。同样值得单独清理。
 
-另有 2 张从来没录过基线：`component-migration/donut-chart/{dark,light}/slices.png`，
-每次跑都报 MISSING。也要在录制机上补录。
+~~另有 2 张从来没录过基线：`component-migration/donut-chart/{dark,light}/slices.png`~~
+2026-09-20 已随那 60 张一起补录。
