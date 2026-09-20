@@ -1,0 +1,2649 @@
+{
+  "schema_version": 1,
+  "phase": "text-edit-scaling",
+  "profile": "release",
+  "samples": 60,
+  "warmup": 10,
+  "cells": [
+    {
+      "action": "type",
+      "position": "head",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.003333,
+        "p95": 0.005917,
+        "mean": 0.0041063333333333325,
+        "max": 0.006917
+      },
+      "flush_ms": {
+        "p50": 0.010125,
+        "p95": 0.012333,
+        "mean": 0.010908933333333337,
+        "max": 0.018292
+      },
+      "storage_ms": {
+        "p50": 0.000167,
+        "p95": 0.000209,
+        "mean": 0.00021398333333333338,
+        "max": 0.002125
+      },
+      "value_clone_ms": {
+        "p50": 0.000167,
+        "p95": 0.000209,
+        "mean": 0.00017216666666666655,
+        "max": 0.00025
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004594999999999997
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.00625,
+          "mean_ms": 0.006593833333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000958,
+          "mean_ms": 0.0009583166666666673
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002209,
+          "mean_ms": 0.0026681333333333345
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "head",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.008791,
+        "p95": 0.01225,
+        "mean": 0.009332666666666668,
+        "max": 0.012667
+      },
+      "flush_ms": {
+        "p50": 0.0305,
+        "p95": 0.034458,
+        "mean": 0.02997848333333334,
+        "max": 0.039083
+      },
+      "storage_ms": {
+        "p50": 0.000625,
+        "p95": 0.0006670000000000001,
+        "mean": 0.0006444666666666672,
+        "max": 0.002041
+      },
+      "value_clone_ms": {
+        "p50": 0.000542,
+        "p95": 0.000625,
+        "mean": 0.0005623833333333336,
+        "max": 0.001333
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004578333333333332
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.018000000000000002,
+          "mean_ms": 0.01803405
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0026249999999999997,
+          "mean_ms": 0.0026130999999999997
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.00925,
+          "mean_ms": 0.008578450000000005
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "head",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.029875000000000002,
+        "p95": 0.038,
+        "mean": 0.031029099999999997,
+        "max": 0.047542
+      },
+      "flush_ms": {
+        "p50": 0.086875,
+        "p95": 0.10337500000000001,
+        "mean": 0.09259306666666668,
+        "max": 0.30979199999999996
+      },
+      "storage_ms": {
+        "p50": 0.002458,
+        "p95": 0.003541,
+        "mean": 0.002722133333333334,
+        "max": 0.009792
+      },
+      "value_clone_ms": {
+        "p50": 0.0025830000000000002,
+        "p95": 0.003042,
+        "mean": 0.0031055833333333343,
+        "max": 0.029833000000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00005561666666666668
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.06612499999999999,
+          "mean_ms": 0.06903886666666667
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.007709000000000001,
+          "mean_ms": 0.00793335
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.01225,
+          "mean_ms": 0.014526333333333337
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "head",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.059458,
+        "p95": 0.073167,
+        "mean": 0.06158543333333332,
+        "max": 0.102042
+      },
+      "flush_ms": {
+        "p50": 0.171,
+        "p95": 0.19124999999999998,
+        "mean": 0.17434995000000006,
+        "max": 0.238375
+      },
+      "storage_ms": {
+        "p50": 0.004959,
+        "p95": 0.005625000000000001,
+        "mean": 0.0059860999999999985,
+        "max": 0.054375
+      },
+      "value_clone_ms": {
+        "p50": 0.004875,
+        "p95": 0.0067079999999999996,
+        "mean": 0.005778449999999998,
+        "max": 0.046708
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00006805000000000001
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.131125,
+          "mean_ms": 0.13285204999999997
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.015666,
+          "mean_ms": 0.015568083333333328
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.023334,
+          "mean_ms": 0.024947200000000006
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "tail",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.003125,
+        "p95": 0.0050420000000000005,
+        "mean": 0.0036812333333333335,
+        "max": 0.0052499999999999995
+      },
+      "flush_ms": {
+        "p50": 0.009791,
+        "p95": 0.009958,
+        "mean": 0.009786083333333332,
+        "max": 0.010084000000000001
+      },
+      "storage_ms": {
+        "p50": 0.000041,
+        "p95": 0.000042,
+        "mean": 0.000044399999999999995,
+        "max": 0.000875
+      },
+      "value_clone_ms": {
+        "p50": 0.00020800000000000001,
+        "p95": 0.00025,
+        "mean": 0.00019866666666666676,
+        "max": 0.000292
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004379999999999999
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.005915999999999999,
+          "mean_ms": 0.005907616666666672
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000959,
+          "mean_ms": 0.0009646500000000006
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002209,
+          "mean_ms": 0.002238216666666668
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "tail",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.009625,
+        "p95": 0.012041,
+        "mean": 0.009925633333333333,
+        "max": 0.013583
+      },
+      "flush_ms": {
+        "p50": 0.029,
+        "p95": 0.031167,
+        "mean": 0.027928550000000007,
+        "max": 0.033917
+      },
+      "storage_ms": {
+        "p50": 0.000041,
+        "p95": 0.000042,
+        "mean": 0.00005135,
+        "max": 0.001542
+      },
+      "value_clone_ms": {
+        "p50": 0.0005,
+        "p95": 0.000583,
+        "mean": 0.0005215833333333338,
+        "max": 0.0013340000000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004233333333333332
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.016583999999999998,
+          "mean_ms": 0.016621616666666665
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0027080000000000003,
+          "mean_ms": 0.002693766666666667
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.009167,
+          "mean_ms": 0.007865283333333334
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "tail",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.027958,
+        "p95": 0.033917,
+        "mean": 0.028117283333333347,
+        "max": 0.036542
+      },
+      "flush_ms": {
+        "p50": 0.079417,
+        "p95": 0.087542,
+        "mean": 0.08124371666666665,
+        "max": 0.153542
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.000084,
+        "mean": 0.00008263333333333334,
+        "max": 0.003459
+      },
+      "value_clone_ms": {
+        "p50": 0.002167,
+        "p95": 0.002375,
+        "mean": 0.002212450000000001,
+        "max": 0.003625
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004663333333333331
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.059,
+          "mean_ms": 0.05935901666666665
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.007542,
+          "mean_ms": 0.007547266666666668
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.011958,
+          "mean_ms": 0.013503450000000004
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "type",
+      "position": "tail",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.058499999999999996,
+        "p95": 0.1185,
+        "mean": 0.06546936666666665,
+        "max": 0.136542
+      },
+      "flush_ms": {
+        "p50": 0.161333,
+        "p95": 0.319458,
+        "mean": 0.19491048333333333,
+        "max": 0.624208
+      },
+      "storage_ms": {
+        "p50": 0.000042,
+        "p95": 0.0005,
+        "mean": 0.00022776666666666668,
+        "max": 0.008417
+      },
+      "value_clone_ms": {
+        "p50": 0.005,
+        "p95": 0.013291,
+        "mean": 0.0059437499999999985,
+        "max": 0.019667
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000083,
+          "mean_ms": 0.00012501666666666665
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.120667,
+          "mean_ms": 0.14635416666666665
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.015791,
+          "mean_ms": 0.018060416666666673
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.024125,
+          "mean_ms": 0.028976416666666675
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 1.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "head",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.003125,
+        "p95": 0.003458,
+        "mean": 0.003178383333333334,
+        "max": 0.003583
+      },
+      "flush_ms": {
+        "p50": 0.010166999999999999,
+        "p95": 0.010458,
+        "mean": 0.010191716666666668,
+        "max": 0.010708
+      },
+      "storage_ms": {
+        "p50": 0.000167,
+        "p95": 0.00020800000000000001,
+        "mean": 0.00017223333333333323,
+        "max": 0.000292
+      },
+      "value_clone_ms": {
+        "p50": 0.00020800000000000001,
+        "p95": 0.000375,
+        "mean": 0.00023745000000000003,
+        "max": 0.000417
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.000042899999999999986
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.00625,
+          "mean_ms": 0.006240966666666669
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000958,
+          "mean_ms": 0.0009603500000000004
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.0022919999999999998,
+          "mean_ms": 0.0023256666666666677
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "head",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.008667,
+        "p95": 0.026042,
+        "mean": 0.011248633333333338,
+        "max": 0.036958
+      },
+      "flush_ms": {
+        "p50": 0.027125,
+        "p95": 0.063709,
+        "mean": 0.03440485,
+        "max": 0.18204199999999998
+      },
+      "storage_ms": {
+        "p50": 0.000625,
+        "p95": 0.002125,
+        "mean": 0.0008194500000000005,
+        "max": 0.003292
+      },
+      "value_clone_ms": {
+        "p50": 0.000542,
+        "p95": 0.002,
+        "mean": 0.0007214500000000004,
+        "max": 0.0022919999999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00007911666666666666
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.018459,
+          "mean_ms": 0.023668016666666656
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.002833,
+          "mean_ms": 0.0031938833333333343
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.005167,
+          "mean_ms": 0.0064243
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "head",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.030333,
+        "p95": 0.082,
+        "mean": 0.035576350000000014,
+        "max": 0.11966700000000001
+      },
+      "flush_ms": {
+        "p50": 0.09016700000000001,
+        "p95": 0.32745799999999997,
+        "mean": 0.11800621666666666,
+        "max": 0.46220799999999995
+      },
+      "storage_ms": {
+        "p50": 0.0024590000000000002,
+        "p95": 0.008124999999999999,
+        "mean": 0.003179866666666667,
+        "max": 0.009584
+      },
+      "value_clone_ms": {
+        "p50": 0.0029170000000000003,
+        "p95": 0.00775,
+        "mean": 0.003652133333333334,
+        "max": 0.011167
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00010485
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.067542,
+          "mean_ms": 0.08890063333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.008333,
+          "mean_ms": 0.010052050000000002
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.013084,
+          "mean_ms": 0.01774648333333333
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "head",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.061584,
+        "p95": 0.177167,
+        "mean": 0.09141951666666664,
+        "max": 0.21870900000000001
+      },
+      "flush_ms": {
+        "p50": 0.19141699999999998,
+        "p95": 0.997041,
+        "mean": 0.3971950833333333,
+        "max": 1.9518330000000002
+      },
+      "storage_ms": {
+        "p50": 0.005958000000000001,
+        "p95": 0.017333,
+        "mean": 0.008538166666666664,
+        "max": 0.022791
+      },
+      "value_clone_ms": {
+        "p50": 0.006875,
+        "p95": 0.017833,
+        "mean": 0.009006900000000002,
+        "max": 0.020834000000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000125,
+          "mean_ms": 0.00035411666666666677
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.146542,
+          "mean_ms": 0.32525558333333326
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.017917000000000002,
+          "mean_ms": 0.026852149999999998
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.026292,
+          "mean_ms": 0.04184656666666666
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "tail",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.004208,
+        "p95": 0.006084,
+        "mean": 0.0042833333333333334,
+        "max": 0.006459
+      },
+      "flush_ms": {
+        "p50": 0.009875,
+        "p95": 0.013875,
+        "mean": 0.011013216666666669,
+        "max": 0.01475
+      },
+      "storage_ms": {
+        "p50": 0.000042,
+        "p95": 0.000042,
+        "mean": 0.00003198333333333333,
+        "max": 0.00025
+      },
+      "value_clone_ms": {
+        "p50": 0.000167,
+        "p95": 0.000209,
+        "mean": 0.0001874666666666667,
+        "max": 0.00025
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.000044483333333333315
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.006,
+          "mean_ms": 0.0067089666666666666
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.001,
+          "mean_ms": 0.0010375500000000008
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.0022500000000000003,
+          "mean_ms": 0.002582650000000001
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "tail",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.009625,
+        "p95": 0.022208000000000002,
+        "mean": 0.01368685,
+        "max": 0.032334
+      },
+      "flush_ms": {
+        "p50": 0.02875,
+        "p95": 0.07262500000000001,
+        "mean": 0.04713746666666666,
+        "max": 0.10900000000000001
+      },
+      "storage_ms": {
+        "p50": 0.000042,
+        "p95": 0.000167,
+        "mean": 0.000057666666666666675,
+        "max": 0.000292
+      },
+      "value_clone_ms": {
+        "p50": 0.000833,
+        "p95": 0.002208,
+        "mean": 0.001154833333333334,
+        "max": 0.0024590000000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000083,
+          "mean_ms": 0.00010764999999999999
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.019625,
+          "mean_ms": 0.03252984999999999
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.004792,
+          "mean_ms": 0.004433316666666668
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.005708,
+          "mean_ms": 0.00862221666666667
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "tail",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.027667,
+        "p95": 0.071375,
+        "mean": 0.038237549999999995,
+        "max": 0.080584
+      },
+      "flush_ms": {
+        "p50": 0.08429199999999999,
+        "p95": 0.276375,
+        "mean": 0.1337910833333334,
+        "max": 0.321416
+      },
+      "storage_ms": {
+        "p50": 0.000042,
+        "p95": 0.00025,
+        "mean": 0.00007435000000000002,
+        "max": 0.000375
+      },
+      "value_clone_ms": {
+        "p50": 0.0026249999999999997,
+        "p95": 0.007542,
+        "mean": 0.0037180500000000014,
+        "max": 0.0085
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000083,
+          "mean_ms": 0.00013059999999999998
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.061042000000000006,
+          "mean_ms": 0.10244933333333334
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.008124999999999999,
+          "mean_ms": 0.011027849999999999
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.013709,
+          "mean_ms": 0.018696516666666666
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "delete",
+      "position": "tail",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.055417,
+        "p95": 0.169708,
+        "mean": 0.09280209999999998,
+        "max": 1.0367499999999998
+      },
+      "flush_ms": {
+        "p50": 0.170416,
+        "p95": 0.9538329999999999,
+        "mean": 0.32736513333333345,
+        "max": 1.232208
+      },
+      "storage_ms": {
+        "p50": 0.000083,
+        "p95": 0.0005,
+        "mean": 0.00016106666666666671,
+        "max": 0.0007080000000000001
+      },
+      "value_clone_ms": {
+        "p50": 0.006584,
+        "p95": 0.017750000000000002,
+        "mean": 0.009196566666666664,
+        "max": 0.062792
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000084,
+          "mean_ms": 0.00030550000000000005
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.125583,
+          "mean_ms": 0.25759299999999996
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.017249999999999998,
+          "mean_ms": 0.025636749999999996
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.025875,
+          "mean_ms": 0.04148188333333333
+        }
+      ],
+      "counters": {
+        "editable_mutations": 1.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 1.0,
+        "caret_only_updates": 0.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 1.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 2.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "head",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.008959,
+        "p95": 0.009208000000000001,
+        "mean": 0.008957633333333333,
+        "max": 0.009333000000000001
+      },
+      "flush_ms": {
+        "p50": 0.00825,
+        "p95": 0.008334,
+        "mean": 0.00823193333333333,
+        "max": 0.008416
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.00020800000000000001,
+        "p95": 0.00025,
+        "mean": 0.00020696666666666672,
+        "max": 0.00029099999999999997
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004229999999999998
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.004542,
+          "mean_ms": 0.004556899999999999
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000917,
+          "mean_ms": 0.0009201833333333341
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002084,
+          "mean_ms": 0.0020854166666666677
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "head",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.014,
+        "p95": 0.014291,
+        "mean": 0.014012466666666666,
+        "max": 0.014375
+      },
+      "flush_ms": {
+        "p50": 0.020958,
+        "p95": 0.021333,
+        "mean": 0.02085279999999999,
+        "max": 0.021375
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000541,
+        "p95": 0.0006670000000000001,
+        "mean": 0.000550016666666667,
+        "max": 0.000833
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.000040333333333333315
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.013042,
+          "mean_ms": 0.013084750000000003
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0026249999999999997,
+          "mean_ms": 0.0025721999999999993
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.004417,
+          "mean_ms": 0.0044138499999999995
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "head",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.031542,
+        "p95": 0.041124999999999995,
+        "mean": 0.035488216666666676,
+        "max": 0.14141600000000001
+      },
+      "flush_ms": {
+        "p50": 0.066167,
+        "p95": 0.094208,
+        "mean": 0.07294515,
+        "max": 0.22270800000000002
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.002166,
+        "p95": 0.00275,
+        "mean": 0.0027873500000000014,
+        "max": 0.028833
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00008755
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.047,
+          "mean_ms": 0.050407700000000014
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0067079999999999996,
+          "mean_ms": 0.008211083333333332
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.011125,
+          "mean_ms": 0.013096500000000002
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "head",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.058625000000000003,
+        "p95": 0.146958,
+        "mean": 0.08296933333333335,
+        "max": 0.174875
+      },
+      "flush_ms": {
+        "p50": 0.135709,
+        "p95": 0.331125,
+        "mean": 0.1842805166666667,
+        "max": 0.36166699999999996
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.005083000000000001,
+        "p95": 0.01425,
+        "mean": 0.0071027833333333346,
+        "max": 0.016292
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000084,
+          "mean_ms": 0.00018263333333333337
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.094,
+          "mean_ms": 0.127875
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.015708,
+          "mean_ms": 0.020991616666666667
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.024542,
+          "mean_ms": 0.03347288333333333
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "tail",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.006416,
+        "p95": 0.006541,
+        "mean": 0.0064145000000000035,
+        "max": 0.006583
+      },
+      "flush_ms": {
+        "p50": 0.00825,
+        "p95": 0.008457999999999999,
+        "mean": 0.008245183333333333,
+        "max": 0.008542000000000001
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000167,
+        "p95": 0.000209,
+        "mean": 0.00017356666666666658,
+        "max": 0.00025
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004029999999999997
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.004542,
+          "mean_ms": 0.0045437833333333314
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000875,
+          "mean_ms": 0.0008986166666666674
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002125,
+          "mean_ms": 0.002135433333333335
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "tail",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.011125,
+        "p95": 0.027125,
+        "mean": 0.015125649999999996,
+        "max": 0.042334
+      },
+      "flush_ms": {
+        "p50": 0.021041999999999998,
+        "p95": 0.048625,
+        "mean": 0.02750211666666667,
+        "max": 0.07162500000000001
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000583,
+        "p95": 0.00175,
+        "mean": 0.0010061833333333337,
+        "max": 0.013958
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00007086666666666668
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.013125000000000001,
+          "mean_ms": 0.01722638333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0025830000000000002,
+          "mean_ms": 0.0031638666666666676
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.004583,
+          "mean_ms": 0.006015283333333332
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "tail",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.029,
+        "p95": 0.07200000000000001,
+        "mean": 0.03692291666666668,
+        "max": 0.091416
+      },
+      "flush_ms": {
+        "p50": 0.067166,
+        "p95": 0.16241699999999998,
+        "mean": 0.08092071666666664,
+        "max": 0.17862499999999998
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.002208,
+        "p95": 0.005958000000000001,
+        "mean": 0.002928416666666668,
+        "max": 0.015417000000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00009788333333333333
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.046875,
+          "mean_ms": 0.055813933333333336
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.007459,
+          "mean_ms": 0.008995166666666665
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.012334000000000001,
+          "mean_ms": 0.014779183333333338
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "caret",
+      "position": "tail",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.063125,
+        "p95": 0.13916699999999999,
+        "mean": 0.07854859999999997,
+        "max": 0.19574999999999998
+      },
+      "flush_ms": {
+        "p50": 0.163416,
+        "p95": 0.282291,
+        "mean": 0.17779091666666672,
+        "max": 0.329792
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.004667,
+        "p95": 0.0135,
+        "mean": 0.0059062333333333335,
+        "max": 0.024334
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000083,
+          "mean_ms": 0.00012566666666666667
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.116291,
+          "mean_ms": 0.1229292333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.016084,
+          "mean_ms": 0.020367433333333337
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.02525,
+          "mean_ms": 0.03235768333333334
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 0.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "head",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.022917,
+        "p95": 0.02325,
+        "mean": 0.0218563,
+        "max": 0.023416
+      },
+      "flush_ms": {
+        "p50": 0.02,
+        "p95": 0.020375,
+        "mean": 0.020020216666666663,
+        "max": 0.020584
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000417,
+        "p95": 0.000625,
+        "mean": 0.0004374500000000003,
+        "max": 0.000625
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000125,
+          "mean_ms": 0.0001319666666666667
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.011,
+          "mean_ms": 0.010986000000000003
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.001958,
+          "mean_ms": 0.001973600000000001
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.005334,
+          "mean_ms": 0.005367316666666668
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "head",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.050374999999999996,
+        "p95": 0.051291,
+        "mean": 0.04705283333333333,
+        "max": 0.051834
+      },
+      "flush_ms": {
+        "p50": 0.048708,
+        "p95": 0.050083,
+        "mean": 0.04879308333333332,
+        "max": 0.0505
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.001458,
+        "p95": 0.001833,
+        "mean": 0.0015041500000000012,
+        "max": 0.0020829999999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000125,
+          "mean_ms": 0.00013545000000000004
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.0315,
+          "mean_ms": 0.03152366666666668
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.005167,
+          "mean_ms": 0.005236116666666666
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.010166999999999999,
+          "mean_ms": 0.010174400000000004
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "head",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.063334,
+        "p95": 0.085375,
+        "mean": 0.06917026666666667,
+        "max": 0.41562499999999997
+      },
+      "flush_ms": {
+        "p50": 0.073208,
+        "p95": 0.106083,
+        "mean": 0.07636594999999999,
+        "max": 0.1905
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.0025840000000000004,
+        "p95": 0.005292000000000001,
+        "mean": 0.006461850000000001,
+        "max": 0.208083
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00008061666666666667
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.047583,
+          "mean_ms": 0.051149983333333336
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.008749999999999999,
+          "mean_ms": 0.009622216666666667
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.013291,
+          "mean_ms": 0.014454249999999997
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "head",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.11574999999999999,
+        "p95": 0.122958,
+        "mean": 0.10771048333333332,
+        "max": 0.166083
+      },
+      "flush_ms": {
+        "p50": 0.120417,
+        "p95": 0.134958,
+        "mean": 0.12317363333333332,
+        "max": 0.17650000000000002
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.003792,
+        "p95": 0.0045000000000000005,
+        "mean": 0.0038916166666666673,
+        "max": 0.004792
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.000054800000000000004
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.08666599999999999,
+          "mean_ms": 0.08875824999999998
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.01325,
+          "mean_ms": 0.013425000000000001
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.019625,
+          "mean_ms": 0.020103516666666668
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "tail",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.009208000000000001,
+        "p95": 0.009625,
+        "mean": 0.008933916666666668,
+        "max": 0.010875
+      },
+      "flush_ms": {
+        "p50": 0.008,
+        "p95": 0.008375,
+        "mean": 0.008082566666666667,
+        "max": 0.009916
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000167,
+        "p95": 0.00020800000000000001,
+        "mean": 0.0001686333333333332,
+        "max": 0.00025
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004171666666666665
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.004416,
+          "mean_ms": 0.004442333333333334
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000916,
+          "mean_ms": 0.0009028166666666673
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.0020829999999999998,
+          "mean_ms": 0.0020874833333333347
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "tail",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.020292,
+        "p95": 0.020792,
+        "mean": 0.018948633333333333,
+        "max": 0.020959000000000002
+      },
+      "flush_ms": {
+        "p50": 0.020417,
+        "p95": 0.021167,
+        "mean": 0.02047775,
+        "max": 0.028041
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.0005,
+        "p95": 0.0006670000000000001,
+        "mean": 0.0005285000000000004,
+        "max": 0.000792
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004588333333333332
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.01275,
+          "mean_ms": 0.012875049999999997
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0025,
+          "mean_ms": 0.0025069833333333335
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.0043749999999999995,
+          "mean_ms": 0.004322883333333333
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "tail",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.057583,
+        "p95": 0.06499999999999999,
+        "mean": 0.05697436666666668,
+        "max": 0.095541
+      },
+      "flush_ms": {
+        "p50": 0.061208,
+        "p95": 0.068292,
+        "mean": 0.06200411666666668,
+        "max": 0.073084
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.0018750000000000001,
+        "p95": 0.0024159999999999997,
+        "mean": 0.0019111166666666679,
+        "max": 0.0025840000000000004
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004788333333333332
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.044333,
+          "mean_ms": 0.04473953333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.006125,
+          "mean_ms": 0.006305549999999998
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.009875,
+          "mean_ms": 0.010128500000000002
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "vertical",
+      "position": "tail",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.11733299999999999,
+        "p95": 0.121542,
+        "mean": 0.10842353333333338,
+        "max": 0.181416
+      },
+      "flush_ms": {
+        "p50": 0.119875,
+        "p95": 0.12404199999999999,
+        "mean": 0.1218576333333333,
+        "max": 0.232
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.003834,
+        "p95": 0.004291,
+        "mean": 0.003941049999999998,
+        "max": 0.004916
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004793333333333334
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.08745900000000001,
+          "mean_ms": 0.08753061666666667
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.012583,
+          "mean_ms": 0.013877750000000001
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.01875,
+          "mean_ms": 0.019622833333333332
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 2.0,
+        "caret_geometry_queries": 3.5
+      }
+    },
+    {
+      "action": "click",
+      "position": "head",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.004667,
+        "p95": 0.004958,
+        "mean": 0.004709000000000001,
+        "max": 0.005125
+      },
+      "flush_ms": {
+        "p50": 0.008124999999999999,
+        "p95": 0.008291000000000001,
+        "mean": 0.00809928333333333,
+        "max": 0.008375
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.00020800000000000001,
+        "p95": 0.00025,
+        "mean": 0.00019160000000000005,
+        "max": 0.000292
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004243333333333331
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.0045000000000000005,
+          "mean_ms": 0.004493783333333333
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000916,
+          "mean_ms": 0.0009090500000000005
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002041,
+          "mean_ms": 0.002035366666666668
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "head",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.010832999999999999,
+        "p95": 0.011291,
+        "mean": 0.010845750000000008,
+        "max": 0.012291
+      },
+      "flush_ms": {
+        "p50": 0.019959,
+        "p95": 0.020375,
+        "mean": 0.019928533333333328,
+        "max": 0.020542
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.0005,
+        "p95": 0.0006670000000000001,
+        "mean": 0.0005541500000000003,
+        "max": 0.000875
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004024999999999998
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.012666,
+          "mean_ms": 0.01264161666666667
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.002458,
+          "mean_ms": 0.0024215
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.0041659999999999996,
+          "mean_ms": 0.004120883333333334
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "head",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.035167,
+        "p95": 0.037333000000000005,
+        "mean": 0.035419483333333335,
+        "max": 0.039
+      },
+      "flush_ms": {
+        "p50": 0.061708,
+        "p95": 0.064542,
+        "mean": 0.06375143333333337,
+        "max": 0.170708
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.001917,
+        "p95": 0.002333,
+        "mean": 0.002001316666666668,
+        "max": 0.002792
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00004443333333333332
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.044875,
+          "mean_ms": 0.04679716666666665
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.006375,
+          "mean_ms": 0.00645205
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.009542,
+          "mean_ms": 0.009676316666666662
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "head",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.068792,
+        "p95": 0.079833,
+        "mean": 0.07532285,
+        "max": 0.26033300000000004
+      },
+      "flush_ms": {
+        "p50": 0.12291599999999998,
+        "p95": 0.139209,
+        "mean": 0.13178675000000004,
+        "max": 0.387708
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.004458,
+        "p95": 0.0053750000000000004,
+        "mean": 0.004724966666666667,
+        "max": 0.016249999999999997
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00008673333333333333
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.09016700000000001,
+          "mean_ms": 0.09539093333333332
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.012707999999999999,
+          "mean_ms": 0.014088883333333333
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.019375,
+          "mean_ms": 0.021213250000000003
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "tail",
+      "lines": 250,
+      "bytes": 9389,
+      "input_ms": {
+        "p50": 0.004792,
+        "p95": 0.00575,
+        "mean": 0.005292333333333333,
+        "max": 0.021417
+      },
+      "flush_ms": {
+        "p50": 0.008291999999999999,
+        "p95": 0.01,
+        "mean": 0.009503466666666665,
+        "max": 0.045334000000000006
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.00020800000000000001,
+        "p95": 0.00025,
+        "mean": 0.00020975000000000014,
+        "max": 0.000541
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00005488333333333334
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.004583,
+          "mean_ms": 0.004909
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.000917,
+          "mean_ms": 0.0011187666666666672
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.002125,
+          "mean_ms": 0.0027145500000000018
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "tail",
+      "lines": 1000,
+      "bytes": 37889,
+      "input_ms": {
+        "p50": 0.011125,
+        "p95": 0.035916,
+        "mean": 0.015586116666666667,
+        "max": 0.048458999999999995
+      },
+      "flush_ms": {
+        "p50": 0.020999999999999998,
+        "p95": 0.061416,
+        "mean": 0.02966731666666666,
+        "max": 0.136375
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.000625,
+        "p95": 0.001916,
+        "mean": 0.0007972000000000006,
+        "max": 0.002125
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00009096666666666666
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.012917,
+          "mean_ms": 0.01809306666666667
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.0026249999999999997,
+          "mean_ms": 0.003667383333333334
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.004875,
+          "mean_ms": 0.0066652833333333324
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "tail",
+      "lines": 4000,
+      "bytes": 154889,
+      "input_ms": {
+        "p50": 0.036333,
+        "p95": 0.055292,
+        "mean": 0.040754833333333323,
+        "max": 0.194
+      },
+      "flush_ms": {
+        "p50": 0.063917,
+        "p95": 0.074834,
+        "mean": 0.06737638333333335,
+        "max": 0.15270799999999998
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.002125,
+        "p95": 0.002792,
+        "mean": 0.0022555833333333343,
+        "max": 0.0053750000000000004
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00007646666666666666
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.045625,
+          "mean_ms": 0.048706233333333335
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.006709,
+          "mean_ms": 0.006839533333333334
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.01025,
+          "mean_ms": 0.010663866666666667
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    },
+    {
+      "action": "click",
+      "position": "tail",
+      "lines": 8000,
+      "bytes": 310889,
+      "input_ms": {
+        "p50": 0.06787499999999999,
+        "p95": 0.079042,
+        "mean": 0.071307,
+        "max": 0.17133299999999999
+      },
+      "flush_ms": {
+        "p50": 0.12254200000000001,
+        "p95": 0.137834,
+        "mean": 0.12715141666666666,
+        "max": 0.271583
+      },
+      "storage_ms": {
+        "p50": 0.0,
+        "p95": 0.0,
+        "mean": 0.0,
+        "max": 0.0
+      },
+      "value_clone_ms": {
+        "p50": 0.00425,
+        "p95": 0.005292000000000001,
+        "mean": 0.004654199999999997,
+        "max": 0.015875
+      },
+      "stages_ms": [
+        {
+          "stage": "Style",
+          "p50_ms": 0.000042,
+          "mean_ms": 0.00005555000000000001
+        },
+        {
+          "stage": "TextShape",
+          "p50_ms": 0.089667,
+          "mean_ms": 0.09180281666666668
+        },
+        {
+          "stage": "Accessibility",
+          "p50_ms": 0.012666,
+          "mean_ms": 0.013122883333333333
+        },
+        {
+          "stage": "Extract",
+          "p50_ms": 0.019458,
+          "mean_ms": 0.021245866666666672
+        }
+      ],
+      "counters": {
+        "editable_mutations": 0.0,
+        "editable_bytes_inserted": 0.0,
+        "editable_bytes_deleted": 0.0,
+        "caret_only_updates": 1.0,
+        "selection_only_updates": 0.0,
+        "composition_updates": 0.0,
+        "paragraphs_relayout_from_edit": 0.0,
+        "paragraphs_reshaped_from_edit": 0.0,
+        "layouts_created": 0.0,
+        "text_source_clones": 1.0,
+        "hit_test_queries": 1.0,
+        "caret_geometry_queries": 2.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,2526 @@
+{
+  "schema_version": 1,
+  "adapter": "Apple M4 (Metal)",
+  "cells": [
+    {
+      "workload": "static",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 6,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.008124999999999999,
+        "p95": 0.019458,
+        "max": 0.063584
+      },
+      "batch_ms": {
+        "p50": 0.000833,
+        "p95": 0.00175,
+        "max": 0.00275
+      },
+      "gpu_upload_ms": {
+        "p50": 0.017750000000000002,
+        "p95": 0.072667,
+        "max": 0.10070799999999999
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 6,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.007375,
+        "p95": 0.008624999999999999,
+        "max": 0.012541
+      },
+      "batch_ms": {
+        "p50": 0.00075,
+        "p95": 0.000958,
+        "max": 0.001833
+      },
+      "gpu_upload_ms": {
+        "p50": 0.014042,
+        "p95": 0.063792,
+        "max": 0.07216700000000001
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 48.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.0025840000000000004,
+        "p95": 0.002959,
+        "max": 0.012125
+      },
+      "batch_ms": {
+        "p50": 0.000541,
+        "p95": 0.00075,
+        "max": 0.001542
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013708,
+        "p95": 0.064916,
+        "max": 0.149875
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 120,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 48.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.002667,
+        "p95": 0.003208,
+        "max": 0.006792
+      },
+      "batch_ms": {
+        "p50": 0.000542,
+        "p95": 0.0006659999999999999,
+        "max": 0.0015409999999999998
+      },
+      "gpu_upload_ms": {
+        "p50": 0.014875000000000001,
+        "p95": 0.075459,
+        "max": 0.100542
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 240,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 48.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.002417,
+        "p95": 0.003625,
+        "max": 0.008875000000000001
+      },
+      "batch_ms": {
+        "p50": 0.0005,
+        "p95": 0.0007080000000000001,
+        "max": 0.001167
+      },
+      "gpu_upload_ms": {
+        "p50": 0.014917,
+        "p95": 0.075375,
+        "max": 0.10341700000000001
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.003167,
+        "p95": 0.004209,
+        "max": 0.007625
+      },
+      "batch_ms": {
+        "p50": 0.00075,
+        "p95": 0.000959,
+        "max": 0.0015
+      },
+      "gpu_upload_ms": {
+        "p50": 0.011958,
+        "p95": 0.02025,
+        "max": 0.023833
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 120,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.002833,
+        "p95": 0.003917,
+        "max": 0.016583999999999998
+      },
+      "batch_ms": {
+        "p50": 0.0006659999999999999,
+        "p95": 0.000916,
+        "max": 0.002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010959,
+        "p95": 0.016,
+        "max": 0.020958
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 240,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.0029579999999999997,
+        "p95": 0.004208,
+        "max": 0.0085
+      },
+      "batch_ms": {
+        "p50": 0.0007080000000000001,
+        "p95": 0.000958,
+        "max": 0.002458
+      },
+      "gpu_upload_ms": {
+        "p50": 0.0115,
+        "p95": 0.0665,
+        "max": 0.113625
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.0043749999999999995,
+        "p95": 0.010875,
+        "max": 0.032666
+      },
+      "batch_ms": {
+        "p50": 0.000542,
+        "p95": 0.000917,
+        "max": 0.002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.017124999999999998,
+        "p95": 0.031416,
+        "max": 0.10070799999999999
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 120,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.004208,
+        "p95": 0.010959,
+        "max": 0.042416999999999996
+      },
+      "batch_ms": {
+        "p50": 0.000542,
+        "p95": 0.00125,
+        "max": 0.0050420000000000005
+      },
+      "gpu_upload_ms": {
+        "p50": 0.015417000000000002,
+        "p95": 0.042624999999999996,
+        "max": 0.080333
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 240,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 2.0,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.004084,
+        "p95": 0.007417,
+        "max": 0.028333
+      },
+      "batch_ms": {
+        "p50": 0.000541,
+        "p95": 0.000833,
+        "max": 0.006333
+      },
+      "gpu_upload_ms": {
+        "p50": 0.015375000000000002,
+        "p95": 0.061542,
+        "max": 0.10825
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 1.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.003917,
+        "p95": 0.017334,
+        "max": 0.030417
+      },
+      "batch_ms": {
+        "p50": 0.000625,
+        "p95": 0.0018750000000000001,
+        "max": 0.005875
+      },
+      "gpu_upload_ms": {
+        "p50": 0.012292,
+        "p95": 0.020166999999999997,
+        "max": 0.063833
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 120,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 1.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.003542,
+        "p95": 0.007875,
+        "max": 0.033042
+      },
+      "batch_ms": {
+        "p50": 0.000583,
+        "p95": 0.000875,
+        "max": 0.00775
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010166999999999999,
+        "p95": 0.014333,
+        "max": 0.063167
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 240,
+      "live_glyphs": 5,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 1.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.003708,
+        "p95": 0.005708,
+        "max": 0.065625
+      },
+      "batch_ms": {
+        "p50": 0.000583,
+        "p95": 0.000834,
+        "max": 0.005416000000000001
+      },
+      "gpu_upload_ms": {
+        "p50": 0.011708,
+        "p95": 0.050709,
+        "max": 0.186666
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 1,
+      "depth": 0,
+      "viewport": [
+        320,
+        240
+      ],
+      "frames": 60,
+      "live_glyphs": 6,
+      "counters": {
+        "glyph_rasterized": 0.2,
+        "glyph_resolve_requests": 6.966666666666667,
+        "glyph_upload_bytes": 19.25,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 2.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 263.2,
+        "text_prepare_nodes_considered": 2.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.009625,
+        "p95": 0.015290999999999999,
+        "max": 0.081541
+      },
+      "batch_ms": {
+        "p50": 0.000875,
+        "p95": 0.014292,
+        "max": 0.025833000000000002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.01475,
+        "p95": 0.025667,
+        "max": 0.108916
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 482,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 100.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.007125,
+        "p95": 0.014792,
+        "max": 0.058499999999999996
+      },
+      "batch_ms": {
+        "p50": 0.013542,
+        "p95": 0.019958,
+        "max": 0.075583
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013,
+        "p95": 0.022833,
+        "max": 0.090541
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 492,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 100.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.0077919999999999994,
+        "p95": 0.01175,
+        "max": 0.021041
+      },
+      "batch_ms": {
+        "p50": 0.014417,
+        "p95": 0.018040999999999998,
+        "max": 0.019625
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013415999999999999,
+        "p95": 0.021958,
+        "max": 0.035708
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 4800.0,
+        "text_retained_layouts_drawn": 100.0
+      },
+      "flush_ms": {
+        "p50": 0.078291,
+        "p95": 0.10475,
+        "max": 0.125292
+      },
+      "batch_ms": {
+        "p50": 0.014792,
+        "p95": 0.018000000000000002,
+        "max": 0.02575
+      },
+      "gpu_upload_ms": {
+        "p50": 0.012875,
+        "p95": 0.020375,
+        "max": 0.084584
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 120,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 4800.0,
+        "text_retained_layouts_drawn": 100.0
+      },
+      "flush_ms": {
+        "p50": 0.074875,
+        "p95": 0.0855,
+        "max": 0.095541
+      },
+      "batch_ms": {
+        "p50": 0.012083,
+        "p95": 0.017167,
+        "max": 0.019041
+      },
+      "gpu_upload_ms": {
+        "p50": 0.011667,
+        "p95": 0.016249999999999997,
+        "max": 0.024833
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 240,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 4800.0,
+        "text_retained_layouts_drawn": 100.0
+      },
+      "flush_ms": {
+        "p50": 0.072042,
+        "p95": 0.08745800000000001,
+        "max": 0.250958
+      },
+      "batch_ms": {
+        "p50": 0.012542,
+        "p95": 0.018208,
+        "max": 0.023667
+      },
+      "gpu_upload_ms": {
+        "p50": 0.012625,
+        "p95": 0.018000000000000002,
+        "max": 0.040833
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.014875000000000001,
+        "p95": 0.020458,
+        "max": 0.022417
+      },
+      "batch_ms": {
+        "p50": 0.015000000000000001,
+        "p95": 0.020041,
+        "max": 0.024666999999999998
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010875,
+        "p95": 0.015917,
+        "max": 0.036625000000000005
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 120,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.013875,
+        "p95": 0.019625,
+        "max": 0.022958
+      },
+      "batch_ms": {
+        "p50": 0.01525,
+        "p95": 0.019542,
+        "max": 0.056542
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010916,
+        "p95": 0.017583,
+        "max": 0.022458000000000002
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 240,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 101.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.01425,
+        "p95": 0.019709,
+        "max": 0.065542
+      },
+      "batch_ms": {
+        "p50": 0.014957999999999999,
+        "p95": 0.020792,
+        "max": 0.080875
+      },
+      "gpu_upload_ms": {
+        "p50": 0.011916999999999999,
+        "p95": 0.016333,
+        "max": 0.050834000000000004
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 380.4,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 4.733333333333333,
+        "text_prepare_nodes_skipped": 96.26666666666667,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.054125,
+        "p95": 0.064959,
+        "max": 0.07341700000000001
+      },
+      "batch_ms": {
+        "p50": 0.015290999999999999,
+        "p95": 0.0195,
+        "max": 0.020166999999999997
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013667,
+        "p95": 0.020125,
+        "max": 0.112
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 120,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 576.6,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 3.45,
+        "text_prepare_nodes_skipped": 97.55,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.052208,
+        "p95": 0.064541,
+        "max": 0.088375
+      },
+      "batch_ms": {
+        "p50": 0.016334,
+        "p95": 0.021542000000000002,
+        "max": 0.035125
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013083,
+        "p95": 0.019625,
+        "max": 0.089583
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 240,
+      "live_glyphs": 481,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 484.8,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 3.975,
+        "text_prepare_nodes_skipped": 97.025,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.047125,
+        "p95": 0.058208,
+        "max": 0.155625
+      },
+      "batch_ms": {
+        "p50": 0.014542000000000001,
+        "p95": 0.015667,
+        "max": 0.051667
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013292,
+        "p95": 0.018334,
+        "max": 0.076167
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 473,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.08333333333333333,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 100.0,
+        "text_instance_patches": 0.016666666666666666,
+        "text_instance_rebuilds": 0.016666666666666666,
+        "text_instance_upload_bytes": 3.6,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 4.566666666666666,
+        "text_prepare_nodes_skipped": 96.41666666666667,
+        "text_presentation_upload_bytes": 64.8,
+        "text_retained_layouts_drawn": 1.85
+      },
+      "flush_ms": {
+        "p50": 0.007833,
+        "p95": 0.01175,
+        "max": 0.021124999999999998
+      },
+      "batch_ms": {
+        "p50": 0.017417,
+        "p95": 0.023375,
+        "max": 0.040042
+      },
+      "gpu_upload_ms": {
+        "p50": 0.0125,
+        "p95": 0.0185,
+        "max": 0.07195800000000001
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 120,
+      "live_glyphs": 473,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.08333333333333333,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.016666666666666666,
+        "text_instance_rebuilds": 0.016666666666666666,
+        "text_instance_upload_bytes": 3.6,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 3.8,
+        "text_prepare_nodes_skipped": 97.18333333333334,
+        "text_presentation_upload_bytes": 64.8,
+        "text_retained_layouts_drawn": 0.95
+      },
+      "flush_ms": {
+        "p50": 0.008042,
+        "p95": 0.011125,
+        "max": 0.018333
+      },
+      "batch_ms": {
+        "p50": 0.018583000000000002,
+        "p95": 0.025,
+        "max": 0.032708
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013208,
+        "p95": 0.018542,
+        "max": 0.026916000000000002
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 240,
+      "live_glyphs": 473,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.041666666666666664,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 0.008333333333333333,
+        "text_instance_rebuilds": 0.008333333333333333,
+        "text_instance_upload_bytes": 1.8,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 3.6416666666666666,
+        "text_prepare_nodes_skipped": 97.35,
+        "text_presentation_upload_bytes": 64.4,
+        "text_retained_layouts_drawn": 0.475
+      },
+      "flush_ms": {
+        "p50": 0.008291999999999999,
+        "p95": 0.011958,
+        "max": 0.054
+      },
+      "batch_ms": {
+        "p50": 0.020125,
+        "p95": 0.025417000000000002,
+        "max": 0.036000000000000004
+      },
+      "gpu_upload_ms": {
+        "p50": 0.014667,
+        "p95": 0.021292,
+        "max": 0.078334
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 100,
+      "depth": 0,
+      "viewport": [
+        520,
+        400
+      ],
+      "frames": 60,
+      "live_glyphs": 482,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 6.966666666666667,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 101.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 263.2,
+        "text_prepare_nodes_considered": 101.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 100.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.004583,
+        "p95": 0.011083,
+        "max": 0.017249999999999998
+      },
+      "batch_ms": {
+        "p50": 0.014667,
+        "p95": 0.018333,
+        "max": 0.032084
+      },
+      "gpu_upload_ms": {
+        "p50": 0.01525,
+        "p95": 0.020417,
+        "max": 0.031
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4842,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.007458,
+        "p95": 0.014375,
+        "max": 0.043334000000000004
+      },
+      "batch_ms": {
+        "p50": 0.133208,
+        "p95": 0.157792,
+        "max": 0.19145800000000002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013209,
+        "p95": 0.018875000000000003,
+        "max": 0.021709
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 5892,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.006333,
+        "p95": 0.009000000000000001,
+        "max": 0.013333
+      },
+      "batch_ms": {
+        "p50": 0.12487500000000001,
+        "p95": 0.14308300000000002,
+        "max": 0.147541
+      },
+      "gpu_upload_ms": {
+        "p50": 0.012667,
+        "p95": 0.0185,
+        "max": 0.084541
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 48000.0,
+        "text_retained_layouts_drawn": 1000.0
+      },
+      "flush_ms": {
+        "p50": 0.678,
+        "p95": 0.7346250000000001,
+        "max": 0.789709
+      },
+      "batch_ms": {
+        "p50": 0.12175000000000001,
+        "p95": 0.1315,
+        "max": 0.16162500000000002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.022125,
+        "p95": 0.026167,
+        "max": 0.03275
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 120,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 48000.0,
+        "text_retained_layouts_drawn": 1000.0
+      },
+      "flush_ms": {
+        "p50": 0.6765,
+        "p95": 0.733083,
+        "max": 0.792292
+      },
+      "batch_ms": {
+        "p50": 0.11983400000000001,
+        "p95": 0.134709,
+        "max": 0.185291
+      },
+      "gpu_upload_ms": {
+        "p50": 0.023125,
+        "p95": 0.028584,
+        "max": 0.040083
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 240,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 48000.0,
+        "text_retained_layouts_drawn": 1000.0
+      },
+      "flush_ms": {
+        "p50": 0.67375,
+        "p95": 0.768417,
+        "max": 1.090042
+      },
+      "batch_ms": {
+        "p50": 0.118167,
+        "p95": 0.136125,
+        "max": 0.166625
+      },
+      "gpu_upload_ms": {
+        "p50": 0.022791,
+        "p95": 0.031833,
+        "max": 0.06999999999999999
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.117208,
+        "p95": 0.138209,
+        "max": 0.196417
+      },
+      "batch_ms": {
+        "p50": 0.145041,
+        "p95": 0.180292,
+        "max": 0.21975
+      },
+      "gpu_upload_ms": {
+        "p50": 0.009292,
+        "p95": 0.016541999999999998,
+        "max": 0.020709
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 120,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.118125,
+        "p95": 0.133167,
+        "max": 0.184458
+      },
+      "batch_ms": {
+        "p50": 0.143625,
+        "p95": 0.169042,
+        "max": 0.46945800000000004
+      },
+      "gpu_upload_ms": {
+        "p50": 0.009208000000000001,
+        "p95": 0.016166,
+        "max": 0.021584
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 240,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.11900000000000001,
+        "p95": 0.13229100000000002,
+        "max": 0.220916
+      },
+      "batch_ms": {
+        "p50": 0.14425000000000002,
+        "p95": 0.164,
+        "max": 0.20325000000000001
+      },
+      "gpu_upload_ms": {
+        "p50": 0.008416,
+        "p95": 0.013917,
+        "max": 0.018333
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 49995.2,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 94.26666666666667,
+        "text_prepare_nodes_skipped": 906.7333333333333,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.460084,
+        "p95": 0.521625,
+        "max": 0.57075
+      },
+      "batch_ms": {
+        "p50": 0.1485,
+        "p95": 0.16033399999999998,
+        "max": 0.175208
+      },
+      "gpu_upload_ms": {
+        "p50": 0.012334000000000001,
+        "p95": 0.045292,
+        "max": 0.051
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 120,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 51213.6,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 73.65,
+        "text_prepare_nodes_skipped": 927.35,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.457084,
+        "p95": 0.539166,
+        "max": 0.5867920000000001
+      },
+      "batch_ms": {
+        "p50": 0.146542,
+        "p95": 0.160958,
+        "max": 0.17983300000000002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.01375,
+        "p95": 0.0445,
+        "max": 0.0885
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 240,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 53686.3,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 78.31666666666666,
+        "text_prepare_nodes_skipped": 922.6833333333333,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.45587500000000003,
+        "p95": 0.548792,
+        "max": 0.832166
+      },
+      "batch_ms": {
+        "p50": 0.14825,
+        "p95": 0.177084,
+        "max": 0.21241700000000002
+      },
+      "gpu_upload_ms": {
+        "p50": 0.013415999999999999,
+        "p95": 0.046083,
+        "max": 0.791
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 2.966666666666667,
+        "text_prepare_nodes_skipped": 998.0333333333333,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.008875000000000001,
+        "p95": 0.014708,
+        "max": 0.0665
+      },
+      "batch_ms": {
+        "p50": 0.190834,
+        "p95": 0.208,
+        "max": 0.26225
+      },
+      "gpu_upload_ms": {
+        "p50": 0.011375,
+        "p95": 0.018000000000000002,
+        "max": 0.033916
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 120,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 998.0166666666667,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.00925,
+        "p95": 0.013709,
+        "max": 0.018000000000000002
+      },
+      "batch_ms": {
+        "p50": 0.1885,
+        "p95": 0.21404099999999998,
+        "max": 0.32
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010667,
+        "p95": 0.015167,
+        "max": 0.030458
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 240,
+      "live_glyphs": 4841,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 2.8208333333333333,
+        "text_prepare_nodes_skipped": 998.1791666666667,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.009292,
+        "p95": 0.012791,
+        "max": 0.018334
+      },
+      "batch_ms": {
+        "p50": 0.19245800000000002,
+        "p95": 0.211333,
+        "max": 0.26241699999999996
+      },
+      "gpu_upload_ms": {
+        "p50": 0.010832999999999999,
+        "p95": 0.016208,
+        "max": 0.024
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 1000,
+      "depth": 0,
+      "viewport": [
+        1456,
+        1440
+      ],
+      "frames": 60,
+      "live_glyphs": 4844,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 69.66666666666667,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 10.0,
+        "text_instance_rebuilds": 10.0,
+        "text_instance_upload_bytes": 6531.2,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 991.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 10.0
+      },
+      "flush_ms": {
+        "p50": 0.024125,
+        "p95": 0.029791,
+        "max": 0.052041
+      },
+      "batch_ms": {
+        "p50": 0.140208,
+        "p95": 0.16170900000000002,
+        "max": 0.189625
+      },
+      "gpu_upload_ms": {
+        "p50": 0.032375,
+        "p95": 0.040625,
+        "max": 0.054792
+      }
+    },
+    {
+      "workload": "static",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48432,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.021208,
+        "p95": 0.040625,
+        "max": 0.06425
+      },
+      "batch_ms": {
+        "p50": 1.900583,
+        "p95": 2.417584,
+        "max": 2.793125
+      },
+      "gpu_upload_ms": {
+        "p50": 0.029417,
+        "p95": 0.058125,
+        "max": 0.083416
+      }
+    },
+    {
+      "workload": "static-unique",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 68892,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "flush_ms": {
+        "p50": 0.030750000000000003,
+        "p95": 0.055791999999999994,
+        "max": 0.071292
+      },
+      "batch_ms": {
+        "p50": 1.988334,
+        "p95": 2.258041,
+        "max": 2.325875
+      },
+      "gpu_upload_ms": {
+        "p50": 0.034708,
+        "p95": 0.08616700000000001,
+        "max": 0.132208
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 480000.0,
+        "text_retained_layouts_drawn": 10000.0
+      },
+      "flush_ms": {
+        "p50": 10.135,
+        "p95": 10.955,
+        "max": 12.692791
+      },
+      "batch_ms": {
+        "p50": 1.745125,
+        "p95": 2.004166,
+        "max": 2.5172499999999998
+      },
+      "gpu_upload_ms": {
+        "p50": 0.1225,
+        "p95": 0.141375,
+        "max": 0.164542
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 120,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 480000.0,
+        "text_retained_layouts_drawn": 10000.0
+      },
+      "flush_ms": {
+        "p50": 10.71475,
+        "p95": 13.431666,
+        "max": 16.065042000000002
+      },
+      "batch_ms": {
+        "p50": 1.8345,
+        "p95": 2.545416,
+        "max": 3.186292
+      },
+      "gpu_upload_ms": {
+        "p50": 0.129333,
+        "p95": 0.162042,
+        "max": 0.259958
+      }
+    },
+    {
+      "workload": "color",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 240,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 480000.0,
+        "text_retained_layouts_drawn": 10000.0
+      },
+      "flush_ms": {
+        "p50": 9.981208,
+        "p95": 10.898375,
+        "max": 37.943625000000004
+      },
+      "batch_ms": {
+        "p50": 1.745958,
+        "p95": 2.052708,
+        "max": 5.3956669999999995
+      },
+      "gpu_upload_ms": {
+        "p50": 0.119708,
+        "p95": 0.138333,
+        "max": 0.21195799999999998
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 3.075,
+        "p95": 3.3158749999999997,
+        "max": 3.4424170000000003
+      },
+      "batch_ms": {
+        "p50": 4.125208,
+        "p95": 4.329084000000001,
+        "max": 4.425125
+      },
+      "gpu_upload_ms": {
+        "p50": 0.042333,
+        "p95": 0.052291,
+        "max": 0.058041
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 120,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 3.044667,
+        "p95": 3.3834999999999997,
+        "max": 4.703208
+      },
+      "batch_ms": {
+        "p50": 4.138707999999999,
+        "p95": 4.701124999999999,
+        "max": 5.303707999999999
+      },
+      "gpu_upload_ms": {
+        "p50": 0.040583,
+        "p95": 0.057374999999999995,
+        "max": 0.068792
+      }
+    },
+    {
+      "workload": "opacity",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 240,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 3.0790420000000003,
+        "p95": 3.3825000000000003,
+        "max": 3.787167
+      },
+      "batch_ms": {
+        "p50": 4.129709,
+        "p95": 4.294499999999999,
+        "max": 7.874542
+      },
+      "gpu_upload_ms": {
+        "p50": 0.040291,
+        "p95": 0.04975,
+        "max": 0.144333
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 550509.2,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 1273.4833333333333,
+        "text_prepare_nodes_skipped": 8727.516666666666,
+        "text_presentation_upload_bytes": 68.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 10.779584,
+        "p95": 11.408458999999999,
+        "max": 13.799083
+      },
+      "batch_ms": {
+        "p50": 2.145791,
+        "p95": 2.411791,
+        "max": 2.493708
+      },
+      "gpu_upload_ms": {
+        "p50": 0.059959,
+        "p95": 0.277375,
+        "max": 0.29695900000000003
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 120,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 565649.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 1036.975,
+        "text_prepare_nodes_skipped": 8964.025,
+        "text_presentation_upload_bytes": 86.4,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 11.808083,
+        "p95": 12.866125,
+        "max": 13.800459
+      },
+      "batch_ms": {
+        "p50": 2.3508750000000003,
+        "p95": 2.716417,
+        "max": 2.894625
+      },
+      "gpu_upload_ms": {
+        "p50": 0.065291,
+        "p95": 0.320709,
+        "max": 0.372042
+      }
+    },
+    {
+      "workload": "transform",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 240,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 580842.8,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 1081.7541666666666,
+        "text_prepare_nodes_skipped": 8919.245833333332,
+        "text_presentation_upload_bytes": 75.2,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 12.164,
+        "p95": 12.63575,
+        "max": 13.177292
+      },
+      "batch_ms": {
+        "p50": 2.4792080000000003,
+        "p95": 2.6979170000000003,
+        "max": 3.130292
+      },
+      "gpu_upload_ms": {
+        "p50": 0.074083,
+        "p95": 0.32316700000000004,
+        "max": 0.43445799999999996
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 2.966666666666667,
+        "text_prepare_nodes_skipped": 9998.033333333333,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.029917,
+        "p95": 0.045417,
+        "max": 0.04775
+      },
+      "batch_ms": {
+        "p50": 4.62025,
+        "p95": 5.353791999999999,
+        "max": 5.713875
+      },
+      "gpu_upload_ms": {
+        "p50": 0.038,
+        "p95": 0.066083,
+        "max": 0.06958400000000001
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 120,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 9998.016666666666,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.029584,
+        "p95": 0.036000000000000004,
+        "max": 0.0455
+      },
+      "batch_ms": {
+        "p50": 4.683959,
+        "p95": 5.18125,
+        "max": 5.892333
+      },
+      "gpu_upload_ms": {
+        "p50": 0.035792,
+        "p95": 0.046792,
+        "max": 0.058582999999999996
+      }
+    },
+    {
+      "workload": "transform-panel",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 240,
+      "live_glyphs": 48431,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 2.8208333333333333,
+        "text_prepare_nodes_skipped": 9998.179166666667,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "flush_ms": {
+        "p50": 0.028083,
+        "p95": 0.038625,
+        "max": 0.048584
+      },
+      "batch_ms": {
+        "p50": 4.653291,
+        "p95": 5.42325,
+        "max": 10.489167
+      },
+      "gpu_upload_ms": {
+        "p50": 0.034375,
+        "p95": 0.051833000000000004,
+        "max": 0.06629199999999999
+      }
+    },
+    {
+      "workload": "mutate-1pct",
+      "labels": 10000,
+      "depth": 0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 60,
+      "live_glyphs": 48451,
+      "counters": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 696.6666666666666,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 100.0,
+        "text_instance_rebuilds": 100.0,
+        "text_instance_upload_bytes": 65302.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 9901.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 100.0
+      },
+      "flush_ms": {
+        "p50": 0.39337500000000003,
+        "p95": 0.525041,
+        "max": 0.611959
+      },
+      "batch_ms": {
+        "p50": 2.048292,
+        "p95": 2.39325,
+        "max": 2.6125
+      },
+      "gpu_upload_ms": {
+        "p50": 0.266459,
+        "p95": 0.354958,
+        "max": 0.416708
+      }
+    }
+  ]
+}

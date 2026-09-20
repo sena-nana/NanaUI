@@ -1165,6 +1165,18 @@ Issue #96 的「IME 单一语义后端」目前只兑现了一半，而且是有
 | IME 语义后端换 `EditSession` | 规则已全部委托，存储没换；三个前提见上一节 |
 | 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
+## 性能与许可证收口（#99）
+
+- **性能矩阵**：[text-release-matrix-2026-09-20](performance-data/text-release-matrix-2026-09-20/README.md)
+  ——static steady / paint-only / compositor-only 三条门禁、#33 的 head-dirty
+  网格（2k/4k/8k 节点上 `text_nodes_shaped` / `text_bytes_hashed` /
+  `layouts_created` 全为 0）、以及 8000 行编辑器的每次编辑只重排一段。
+  没覆盖的几项（constraint-only resize、text-heavy table 等）在那篇里逐条写明。
+- **第三方与许可证**：[third-party.md](third-party.md)——release 依赖图 587 个
+  外部 crate 全是宽松许可证，`cryoglyph` 已不在 `Cargo.lock` 里，`cosmic-text`
+  只剩 `nana-text` 的一条 dev 边；从被替换引擎照抄的一处（`SubpixelBin::split`）
+  已就地署名。
+
 ## NanaRenderer::text（Phase 6，#97）
 
 绘制这一半从 cryoglyph 换成了 NanaUI 自己的子系统。目录是

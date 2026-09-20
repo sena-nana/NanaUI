@@ -81,6 +81,13 @@ pub(super) enum GlyphRenderMode {
 /// under an animation would rasterize a new bitmap every frame. Quarters are
 /// the same bucketing the reference path used, so glyph positioning does not
 /// shift under this rewrite.
+///
+/// [`Self::split`] is cosmic-text's `SubpixelBin::new` — the thresholds, the
+/// branch order and the carry into the whole pixel are all kept, because what
+/// makes the migration invisible is that a glyph lands in the same bin it
+/// used to. Derived from cosmic-text, Copyright (c) 2022 System76, MIT OR
+/// Apache-2.0 (<https://github.com/pop-os/cosmic-text>), the same licence pair
+/// NanaUI is under. See `docs/third-party.md`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub(super) struct SubpixelBin(u8);
 

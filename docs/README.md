@@ -52,6 +52,7 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 | 保留树与抽取（改 Runtime 时） | [Runtime 与 Scene](runtime-scene.md) |
 | Theme/Style 合同、`ThemeDefinition` 与 typed token、硬编码清单、work counter 基线（改主题架构时） | [主题与样式](theme.md) |
 | Markdown 绘制与图像合同 | [Markdown 渲染](markdown-rendering.md) |
+| 第三方代码、许可证与 fork 状态（要发布或过法务时） | [第三方与许可证](third-party.md) |
 | Android（实验宿主，非产品绘制核） | [Android](android.md) |
 
 ## 工作记录

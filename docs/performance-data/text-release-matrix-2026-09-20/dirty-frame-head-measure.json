@@ -1,0 +1,3759 @@
+{
+  "schema_version": 1,
+  "phase": "dirty-frame-scaling",
+  "profile": "release",
+  "samples": 200,
+  "warmup": 40,
+  "cells": [
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.798584,
+        "p95": 0.9088339999999999,
+        "mean": 0.8113641550000003,
+        "max": 0.963292
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.00039938
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.0035429999999999997,
+          "mean_ms": 0.00363232
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.239459,
+          "mean_ms": 0.243526865
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.179875,
+          "mean_ms": 0.181417505
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081166,
+          "mean_ms": 0.081680025
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.263166,
+          "mean_ms": 0.26736498000000003
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 503,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 501,
+        "accessibility_nodes_updated": 501,
+        "render_nodes_changed": 503,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000039585,
+        "engine_ms": 0.196146905,
+        "writeback_commit_ms": 0.028401714999999998,
+        "scroll_metrics_ms": 0.018850855
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 0.79625,
+        "p95": 0.8865000000000001,
+        "mean": 0.8031527500000002,
+        "max": 1.131917
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.000530875
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.003624,
+          "mean_ms": 0.0036856999999999997
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.241041,
+          "mean_ms": 0.243552065
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.177875,
+          "mean_ms": 0.17916005499999998
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081792,
+          "mean_ms": 0.08203101
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.25875,
+          "mean_ms": 0.261599555
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 505,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 503,
+        "accessibility_nodes_updated": 503,
+        "render_nodes_changed": 505,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000038345,
+        "engine_ms": 0.19683729,
+        "writeback_commit_ms": 0.027796079999999997,
+        "scroll_metrics_ms": 0.018798545
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 0.802584,
+        "p95": 0.8660410000000001,
+        "mean": 0.8069194049999999,
+        "max": 0.928542
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0008759999999999999,
+          "mean_ms": 0.00090849
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.003791,
+          "mean_ms": 0.003814545
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.244959,
+          "mean_ms": 0.24627024000000003
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.178833,
+          "mean_ms": 0.17903047500000002
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.082083,
+          "mean_ms": 0.082140265
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.26075000000000004,
+          "mean_ms": 0.26172563
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 517,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 515,
+        "accessibility_nodes_updated": 515,
+        "render_nodes_changed": 517,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000043705,
+        "engine_ms": 0.19920437,
+        "writeback_commit_ms": 0.027820679999999997,
+        "scroll_metrics_ms": 0.019114155
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 0.8195830000000001,
+        "p95": 0.8985,
+        "mean": 0.8231695350000003,
+        "max": 0.953167
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002791,
+          "mean_ms": 0.0027815699999999997
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.004207,
+          "mean_ms": 0.00419329
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.257958,
+          "mean_ms": 0.26009604
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.178791,
+          "mean_ms": 0.17805184000000002
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081417,
+          "mean_ms": 0.081177315
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.26079199999999997,
+          "mean_ms": 0.26294913000000003
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 565,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 18832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 563,
+        "accessibility_nodes_updated": 563,
+        "render_nodes_changed": 565,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000047705000000000005,
+        "engine_ms": 0.21325582499999998,
+        "writeback_commit_ms": 0.02798582,
+        "scroll_metrics_ms": 0.018725215
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 0.9047909999999999,
+        "p95": 0.9592080000000001,
+        "mean": 0.9062624750000002,
+        "max": 1.0467090000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010375,
+          "mean_ms": 0.010346619999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.0054589999999999994,
+          "mean_ms": 0.005489555
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.324666,
+          "mean_ms": 0.32606329500000003
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.177042,
+          "mean_ms": 0.176399585
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081833,
+          "mean_ms": 0.08207129
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.262666,
+          "mean_ms": 0.262665235
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 757,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 27280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 755,
+        "accessibility_nodes_updated": 755,
+        "render_nodes_changed": 757,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000045035000000000005,
+        "engine_ms": 0.27947767500000004,
+        "writeback_commit_ms": 0.027728515,
+        "scroll_metrics_ms": 0.0187285
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 1.627375,
+        "p95": 1.754667,
+        "mean": 1.6456560500000001,
+        "max": 2.825666
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000376,
+          "mean_ms": 0.00048129499999999997
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.006751,
+          "mean_ms": 0.007200075
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.48570800000000003,
+          "mean_ms": 0.492490435
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.359458,
+          "mean_ms": 0.36402792500000003
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.161875,
+          "mean_ms": 0.16295458499999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.53325,
+          "mean_ms": 0.54332646
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 1001,
+        "accessibility_nodes_updated": 1001,
+        "render_nodes_changed": 1003,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00005065,
+        "engine_ms": 0.39460077000000005,
+        "writeback_commit_ms": 0.05887166,
+        "scroll_metrics_ms": 0.038884235
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 1.6245,
+        "p95": 1.669542,
+        "mean": 1.6223164200000002,
+        "max": 1.7542499999999999
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.000522935
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.0067079999999999996,
+          "mean_ms": 0.006784345
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.48700000000000004,
+          "mean_ms": 0.48937687
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.362458,
+          "mean_ms": 0.361840655
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.161042,
+          "mean_ms": 0.160988975
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5345000000000001,
+          "mean_ms": 0.53411777
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 1003,
+        "accessibility_nodes_updated": 1003,
+        "render_nodes_changed": 1005,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000037935,
+        "engine_ms": 0.391527095,
+        "writeback_commit_ms": 0.058653335,
+        "scroll_metrics_ms": 0.039076265
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 1.624584,
+        "p95": 1.7283330000000001,
+        "mean": 1.6326796050000008,
+        "max": 1.8215830000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000917,
+          "mean_ms": 0.000945155
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.006959,
+          "mean_ms": 0.0070350000000000005
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.489959,
+          "mean_ms": 0.499066085
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.360125,
+          "mean_ms": 0.36154959
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.16137500000000002,
+          "mean_ms": 0.16160997
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.530166,
+          "mean_ms": 0.532486375
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 1015,
+        "accessibility_nodes_updated": 1015,
+        "render_nodes_changed": 1017,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00004374999999999999,
+        "engine_ms": 0.40126019999999996,
+        "writeback_commit_ms": 0.058772925000000004,
+        "scroll_metrics_ms": 0.038902685
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 1.642291,
+        "p95": 1.738542,
+        "mean": 1.6498629000000005,
+        "max": 1.875667
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0028320000000000003,
+          "mean_ms": 0.002856485
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.007292,
+          "mean_ms": 0.00797817
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.5029159999999999,
+          "mean_ms": 0.50764212
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.356791,
+          "mean_ms": 0.358531675
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.1615,
+          "mean_ms": 0.16176248999999998
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5330410000000001,
+          "mean_ms": 0.537762695
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 34832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 1063,
+        "accessibility_nodes_updated": 1063,
+        "render_nodes_changed": 1065,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00004585,
+        "engine_ms": 0.41080806,
+        "writeback_commit_ms": 0.05844313,
+        "scroll_metrics_ms": 0.03826189
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 1.7260000000000002,
+        "p95": 1.813291,
+        "mean": 1.732710579999999,
+        "max": 1.8760409999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010458,
+          "mean_ms": 0.010489535000000001
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.008624999999999999,
+          "mean_ms": 0.00873002
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.570708,
+          "mean_ms": 0.5732543849999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.357042,
+          "mean_ms": 0.36089371
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.161667,
+          "mean_ms": 0.162482295
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5343330000000001,
+          "mean_ms": 0.5360981300000001
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 43280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 1255,
+        "accessibility_nodes_updated": 1255,
+        "render_nodes_changed": 1257,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000044754999999999994,
+        "engine_ms": 0.47557499500000006,
+        "writeback_commit_ms": 0.059297515,
+        "scroll_metrics_ms": 0.038253315
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 3.415708,
+        "p95": 3.637042,
+        "mean": 3.4360096250000005,
+        "max": 3.944459
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000709,
+          "mean_ms": 0.0008039649999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.014791,
+          "mean_ms": 0.01576125
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.001917,
+          "mean_ms": 1.01605894
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.7470829999999999,
+          "mean_ms": 0.75743066
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.321458,
+          "mean_ms": 0.32411350499999997
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.111875,
+          "mean_ms": 1.12986765
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2001,
+        "accessibility_nodes_updated": 2001,
+        "render_nodes_changed": 2003,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000079965,
+        "engine_ms": 0.814527525,
+        "writeback_commit_ms": 0.119566475,
+        "scroll_metrics_ms": 0.08180271500000001
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 3.399167,
+        "p95": 3.526875,
+        "mean": 3.408033319999999,
+        "max": 3.849459
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00075,
+          "mean_ms": 0.000815155
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.014416,
+          "mean_ms": 0.014892985
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.995,
+          "mean_ms": 1.0018578949999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.7412500000000001,
+          "mean_ms": 0.745091215
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.32216599999999995,
+          "mean_ms": 0.324418115
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.116291,
+          "mean_ms": 1.121803545
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 2003,
+        "accessibility_nodes_updated": 2003,
+        "render_nodes_changed": 2005,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00005538,
+        "engine_ms": 0.80448837,
+        "writeback_commit_ms": 0.11755041999999999,
+        "scroll_metrics_ms": 0.07967686
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 3.44625,
+        "p95": 3.646875,
+        "mean": 3.4628768500000024,
+        "max": 4.122208
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.001374,
+          "mean_ms": 0.0014097400000000003
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.015251,
+          "mean_ms": 0.0163354
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.010917,
+          "mean_ms": 1.023743145
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.7418750000000001,
+          "mean_ms": 0.756487915
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.321416,
+          "mean_ms": 0.323539595
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.122166,
+          "mean_ms": 1.14106977
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 2015,
+        "accessibility_nodes_updated": 2015,
+        "render_nodes_changed": 2017,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008730999999999999,
+        "engine_ms": 0.82327456,
+        "writeback_commit_ms": 0.11997498999999999,
+        "scroll_metrics_ms": 0.080323105
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 3.4524999999999997,
+        "p95": 3.700958,
+        "mean": 3.4768093450000004,
+        "max": 3.80975
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00325,
+          "mean_ms": 0.0033135400000000002
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.016,
+          "mean_ms": 0.017104785
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.0232080000000001,
+          "mean_ms": 1.04086286
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.745792,
+          "mean_ms": 0.7573933150000001
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.320708,
+          "mean_ms": 0.322320395
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.121042,
+          "mean_ms": 1.13750358
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 66832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 2063,
+        "accessibility_nodes_updated": 2063,
+        "render_nodes_changed": 2065,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00008165499999999999,
+        "engine_ms": 0.843591055,
+        "writeback_commit_ms": 0.11806354000000001,
+        "scroll_metrics_ms": 0.07904481
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 3.56075,
+        "p95": 3.738916,
+        "mean": 3.575581620000001,
+        "max": 4.021042
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010875,
+          "mean_ms": 0.011177945
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.017374999999999998,
+          "mean_ms": 0.018183935
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.09125,
+          "mean_ms": 1.105603945
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.743958,
+          "mean_ms": 0.752263915
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.321958,
+          "mean_ms": 0.32356812999999995
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.1277080000000002,
+          "mean_ms": 1.1434325300000001
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 75280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 2255,
+        "accessibility_nodes_updated": 2255,
+        "render_nodes_changed": 2257,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000064775,
+        "engine_ms": 0.9059804000000001,
+        "writeback_commit_ms": 0.11904227499999999,
+        "scroll_metrics_ms": 0.08042631
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 7.987208000000001,
+        "p95": 8.514209,
+        "mean": 8.032073105,
+        "max": 9.101792
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002,
+          "mean_ms": 0.0020258299999999997
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.051916000000000004,
+          "mean_ms": 0.052877030000000005
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.3625410000000002,
+          "mean_ms": 2.3936814149999996
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.698958,
+          "mean_ms": 1.7192906499999998
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.658375,
+          "mean_ms": 0.66429816
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.704209,
+          "mean_ms": 2.7134088000000003
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 4001,
+        "accessibility_nodes_updated": 4001,
+        "render_nodes_changed": 4003,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.0004002,
+        "engine_ms": 1.95783085,
+        "writeback_commit_ms": 0.268344575,
+        "scroll_metrics_ms": 0.167000625
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 7.77275,
+        "p95": 9.782875,
+        "mean": 7.920645590000001,
+        "max": 11.258041
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002042,
+          "mean_ms": 0.002139795
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.041793,
+          "mean_ms": 0.047057795
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.271917,
+          "mean_ms": 2.339916625
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.652958,
+          "mean_ms": 1.7008241800000001
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.654417,
+          "mean_ms": 0.67557294
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.613083,
+          "mean_ms": 2.66735395
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 4003,
+        "accessibility_nodes_updated": 4003,
+        "render_nodes_changed": 4005,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00021437000000000002,
+        "engine_ms": 1.91174168,
+        "writeback_commit_ms": 0.261346875,
+        "scroll_metrics_ms": 0.16651147000000002
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 8.027750000000001,
+        "p95": 8.696208,
+        "mean": 8.07432169,
+        "max": 13.309166000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0025009999999999998,
+          "mean_ms": 0.002573955
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.05175,
+          "mean_ms": 0.05137067
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.3969590000000003,
+          "mean_ms": 2.39724231
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.6876669999999998,
+          "mean_ms": 1.72078314
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.655833,
+          "mean_ms": 0.671708775
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.719958,
+          "mean_ms": 2.7467026750000003
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 4015,
+        "accessibility_nodes_updated": 4015,
+        "render_nodes_changed": 4017,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00028003,
+        "engine_ms": 1.96540441,
+        "writeback_commit_ms": 0.26432625000000004,
+        "scroll_metrics_ms": 0.16712291
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 7.947125,
+        "p95": 8.425167,
+        "mean": 7.999670695000001,
+        "max": 9.098
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00425,
+          "mean_ms": 0.004528094999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.049042,
+          "mean_ms": 0.050184084999999996
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.3695,
+          "mean_ms": 2.3943642200000004
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.661416,
+          "mean_ms": 1.6980208399999999
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.653375,
+          "mean_ms": 0.660134405
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.68775,
+          "mean_ms": 2.703459795
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 130832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 4063,
+        "accessibility_nodes_updated": 4063,
+        "render_nodes_changed": 4065,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00022379,
+        "engine_ms": 1.970036475,
+        "writeback_commit_ms": 0.25904087,
+        "scroll_metrics_ms": 0.16496267500000003
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 7.967791999999999,
+        "p95": 8.770916,
+        "mean": 8.020743559999998,
+        "max": 11.369792
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.011875,
+          "mean_ms": 0.012183389999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.051208000000000004,
+          "mean_ms": 0.05040731500000001
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.411083,
+          "mean_ms": 2.433601045
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.649416,
+          "mean_ms": 1.673229585
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.656542,
+          "mean_ms": 0.66750086
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.656042,
+          "mean_ms": 2.677034585
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 139280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 4255,
+        "accessibility_nodes_updated": 4255,
+        "render_nodes_changed": 4257,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000178695,
+        "engine_ms": 2.0078174800000004,
+        "writeback_commit_ms": 0.260819415,
+        "scroll_metrics_ms": 0.16467997
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 19.316458,
+        "p95": 20.551292,
+        "mean": 19.388737485,
+        "max": 24.622292
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0026249999999999997,
+          "mean_ms": 0.0026445649999999998
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.120041,
+          "mean_ms": 0.124988935
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.7985,
+          "mean_ms": 5.80306774
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.060791999999999,
+          "mean_ms": 4.11463296
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.692292,
+          "mean_ms": 1.7197739200000002
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.563708,
+          "mean_ms": 6.563056275
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 8001,
+        "accessibility_nodes_updated": 8001,
+        "render_nodes_changed": 8003,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00030689,
+        "engine_ms": 4.832222865,
+        "writeback_commit_ms": 0.625889,
+        "scroll_metrics_ms": 0.34451184500000004
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 21.459916999999997,
+        "p95": 25.988584,
+        "mean": 21.797284395000005,
+        "max": 31.564292000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.003333,
+          "mean_ms": 0.00335725
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.125083,
+          "mean_ms": 0.13433452
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 6.2680419999999994,
+          "mean_ms": 6.339774590000001
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.580375,
+          "mean_ms": 4.678285625
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 2.03425,
+          "mean_ms": 2.093686495
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 7.217041,
+          "mean_ms": 7.418455835
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 8003,
+        "accessibility_nodes_updated": 8003,
+        "render_nodes_changed": 8005,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00035377,
+        "engine_ms": 5.295851385,
+        "writeback_commit_ms": 0.6840604100000001,
+        "scroll_metrics_ms": 0.35937621
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 19.671166,
+        "p95": 22.886917,
+        "mean": 20.0470233,
+        "max": 27.116958999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.003209,
+          "mean_ms": 0.0034122999999999996
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.123917,
+          "mean_ms": 0.131828175
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.872708,
+          "mean_ms": 5.970146905
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.157667,
+          "mean_ms": 4.215532065
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.71375,
+          "mean_ms": 1.8138224500000002
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.688208,
+          "mean_ms": 6.832719389999999
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 8015,
+        "accessibility_nodes_updated": 8015,
+        "render_nodes_changed": 8017,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00033042,
+        "engine_ms": 4.97172748,
+        "writeback_commit_ms": 0.6489856099999999,
+        "scroll_metrics_ms": 0.348965435
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 21.322333999999998,
+        "p95": 22.97975,
+        "mean": 21.449232095,
+        "max": 27.6415
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.005584,
+          "mean_ms": 0.005719759999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.129418,
+          "mean_ms": 0.13230854
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 6.253917,
+          "mean_ms": 6.308509195
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.55925,
+          "mean_ms": 4.56800583
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 2.005167,
+          "mean_ms": 2.0296814750000003
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 7.204834,
+          "mean_ms": 7.276543954999999
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 258832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 8063,
+        "accessibility_nodes_updated": 8063,
+        "render_nodes_changed": 8065,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00036521,
+        "engine_ms": 5.272068945,
+        "writeback_commit_ms": 0.68372587,
+        "scroll_metrics_ms": 0.35220186499999995
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "measure",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 25.393165999999997,
+        "p95": 65.520417,
+        "mean": 34.087848745,
+        "max": 373.950875
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.014708,
+          "mean_ms": 0.017490435
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.158333,
+          "mean_ms": 0.210188115
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 7.2802500000000006,
+          "mean_ms": 10.595641254999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 5.441084,
+          "mean_ms": 7.01138107
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 2.687583,
+          "mean_ms": 3.7491080999999995
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 8.488541,
+          "mean_ms": 11.013208555
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 267280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 8255,
+        "accessibility_nodes_updated": 8255,
+        "render_nodes_changed": 8257,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000397075,
+        "engine_ms": 9.043299524999998,
+        "writeback_commit_ms": 1.0787083,
+        "scroll_metrics_ms": 0.47305481
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    }
+  ]
+}

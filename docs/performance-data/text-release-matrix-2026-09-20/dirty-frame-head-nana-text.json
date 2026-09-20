@@ -1,0 +1,3759 @@
+{
+  "schema_version": 1,
+  "phase": "dirty-frame-scaling",
+  "profile": "release",
+  "samples": 200,
+  "warmup": 40,
+  "cells": [
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 0.808083,
+        "p95": 0.891084,
+        "mean": 0.8208341950000001,
+        "max": 0.9989169999999999
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000375,
+          "mean_ms": 0.000399975
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.003916,
+          "mean_ms": 0.00400494
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.242458,
+          "mean_ms": 0.24580497
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.176291,
+          "mean_ms": 0.179279185
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.080666,
+          "mean_ms": 0.08151853
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.272,
+          "mean_ms": 0.275816695
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 503,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 501,
+        "accessibility_nodes_updated": 501,
+        "render_nodes_changed": 503,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000045775,
+        "engine_ms": 0.19749830499999999,
+        "writeback_commit_ms": 0.028832285,
+        "scroll_metrics_ms": 0.019344595
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 0.8039580000000001,
+        "p95": 0.832584,
+        "mean": 0.8054364999999999,
+        "max": 0.894458
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.00050108
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.003874,
+          "mean_ms": 0.0038841800000000005
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.241291,
+          "mean_ms": 0.2421052
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.176,
+          "mean_ms": 0.176365835
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.080584,
+          "mean_ms": 0.08074935999999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.26845800000000003,
+          "mean_ms": 0.26917561
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 505,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 503,
+        "accessibility_nodes_updated": 503,
+        "render_nodes_changed": 505,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000039585,
+        "engine_ms": 0.194397865,
+        "writeback_commit_ms": 0.028327315,
+        "scroll_metrics_ms": 0.019256525
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 0.817375,
+        "p95": 0.935209,
+        "mean": 0.83531233,
+        "max": 1.100125
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000916,
+          "mean_ms": 0.00096775
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.004083,
+          "mean_ms": 0.00430332
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.246041,
+          "mean_ms": 0.252332685
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.176542,
+          "mean_ms": 0.17852263999999998
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081375,
+          "mean_ms": 0.082273515
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.27675,
+          "mean_ms": 0.28200267500000004
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 517,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 16720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 515,
+        "accessibility_nodes_updated": 515,
+        "render_nodes_changed": 517,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000043370000000000007,
+        "engine_ms": 0.20404018000000002,
+        "writeback_commit_ms": 0.02869877,
+        "scroll_metrics_ms": 0.01946249
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 0.853666,
+        "p95": 1.057334,
+        "mean": 0.8826079399999994,
+        "max": 1.322
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002874,
+          "mean_ms": 0.003058125
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.004542,
+          "mean_ms": 0.0050227449999999995
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.2635,
+          "mean_ms": 0.274389385
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.178666,
+          "mean_ms": 0.18460977
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.082667,
+          "mean_ms": 0.085903805
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.281709,
+          "mean_ms": 0.288665655
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 565,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 18832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 563,
+        "accessibility_nodes_updated": 563,
+        "render_nodes_changed": 565,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00005189,
+        "engine_ms": 0.22446833,
+        "writeback_commit_ms": 0.029958119999999998,
+        "scroll_metrics_ms": 0.019823965000000002
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 250,
+      "nodes": 502,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 0.9318339999999999,
+        "p95": 1.0067089999999999,
+        "mean": 0.9409456250000007,
+        "max": 1.090875
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010541,
+          "mean_ms": 0.010513945
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.005708,
+          "mean_ms": 0.00583453
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.329875,
+          "mean_ms": 0.33216891499999995
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.176958,
+          "mean_ms": 0.178180835
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.081458,
+          "mean_ms": 0.08301918000000001
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.281083,
+          "mean_ms": 0.28363566
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 502,
+        "entities_changed": 757,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 27280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 755,
+        "accessibility_nodes_updated": 755,
+        "render_nodes_changed": 757,
+        "render_nodes_extracted": 502
+      },
+      "projected": {
+        "accessibility_updated": 500,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 502,
+        "scene_rebuilt_primitives": 250,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000048339999999999995,
+        "engine_ms": 0.28399436,
+        "writeback_commit_ms": 0.0289506,
+        "scroll_metrics_ms": 0.019086649999999997
+      },
+      "text_shape": {
+        "scope_nodes": 502,
+        "nonempty_text_nodes": 250,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 250,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 250.0,
+        "text_nodes_revision_skipped": 250.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 1.633083,
+        "p95": 1.7074589999999998,
+        "mean": 1.638752479999999,
+        "max": 1.855084
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000376,
+          "mean_ms": 0.00042191000000000006
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.006916,
+          "mean_ms": 0.007078705000000001
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.47895899999999997,
+          "mean_ms": 0.48231417
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.357666,
+          "mean_ms": 0.358480655
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.160667,
+          "mean_ms": 0.16146166999999997
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.55325,
+          "mean_ms": 0.55783317
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 1001,
+        "accessibility_nodes_updated": 1001,
+        "render_nodes_changed": 1003,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000046245,
+        "engine_ms": 0.385395015,
+        "writeback_commit_ms": 0.057692059999999996,
+        "scroll_metrics_ms": 0.03910024
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 1.633125,
+        "p95": 1.712291,
+        "mean": 1.6375051949999997,
+        "max": 1.7679580000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0005,
+          "mean_ms": 0.00052662
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.007,
+          "mean_ms": 0.0070737050000000004
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.480666,
+          "mean_ms": 0.48265960500000005
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.357667,
+          "mean_ms": 0.35985769500000003
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.159916,
+          "mean_ms": 0.161272475
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5525,
+          "mean_ms": 0.5557633049999999
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 1003,
+        "accessibility_nodes_updated": 1003,
+        "render_nodes_changed": 1005,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000042515,
+        "engine_ms": 0.38584019999999997,
+        "writeback_commit_ms": 0.05774229,
+        "scroll_metrics_ms": 0.038945195
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 1.6408340000000001,
+        "p95": 1.749125,
+        "mean": 1.6532059949999998,
+        "max": 1.8565420000000001
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000917,
+          "mean_ms": 0.00097899
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.007292,
+          "mean_ms": 0.007508310000000001
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.48662500000000003,
+          "mean_ms": 0.49222705999999994
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.356958,
+          "mean_ms": 0.35953023500000003
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.160458,
+          "mean_ms": 0.16052670000000002
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5536249999999999,
+          "mean_ms": 0.55913314
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 32720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 1015,
+        "accessibility_nodes_updated": 1015,
+        "render_nodes_changed": 1017,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000044739999999999995,
+        "engine_ms": 0.395227725,
+        "writeback_commit_ms": 0.05768998499999999,
+        "scroll_metrics_ms": 0.039180195
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 1.652625,
+        "p95": 1.720167,
+        "mean": 1.6565053950000002,
+        "max": 1.798792
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002792,
+          "mean_ms": 0.002950435
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.007625,
+          "mean_ms": 0.007728545
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.49866699999999997,
+          "mean_ms": 0.49963852000000003
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.35716699999999996,
+          "mean_ms": 0.35716248
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.15937500000000002,
+          "mean_ms": 0.160877455
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.5515410000000001,
+          "mean_ms": 0.553395395
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 34832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 1063,
+        "accessibility_nodes_updated": 1063,
+        "render_nodes_changed": 1065,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000040705000000000004,
+        "engine_ms": 0.40328435000000007,
+        "writeback_commit_ms": 0.057252494999999994,
+        "scroll_metrics_ms": 0.03897628
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 500,
+      "nodes": 1002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 1.7561250000000002,
+        "p95": 1.8227499999999999,
+        "mean": 1.758607474999999,
+        "max": 1.879458
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010542,
+          "mean_ms": 0.010504059999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.008834,
+          "mean_ms": 0.009015404999999999
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.572125,
+          "mean_ms": 0.5734275050000001
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.360167,
+          "mean_ms": 0.36177875
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.160791,
+          "mean_ms": 0.160816225
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 0.556167,
+          "mean_ms": 0.558450185
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 1002,
+        "entities_changed": 1257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 43280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 1255,
+        "accessibility_nodes_updated": 1255,
+        "render_nodes_changed": 1257,
+        "render_nodes_extracted": 1002
+      },
+      "projected": {
+        "accessibility_updated": 1000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 1002,
+        "scene_rebuilt_primitives": 500,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000046825,
+        "engine_ms": 0.47599,
+        "writeback_commit_ms": 0.05791770499999999,
+        "scroll_metrics_ms": 0.039386275
+      },
+      "text_shape": {
+        "scope_nodes": 1002,
+        "nonempty_text_nodes": 500,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 500,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 500.0,
+        "text_nodes_revision_skipped": 500.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 3.382959,
+        "p95": 3.765917,
+        "mean": 3.4284821150000027,
+        "max": 4.524167
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000542,
+          "mean_ms": 0.0006885949999999999
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.014957999999999999,
+          "mean_ms": 0.015905715
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.983584,
+          "mean_ms": 1.00070086
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.7347910000000001,
+          "mean_ms": 0.74929187
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.31504200000000004,
+          "mean_ms": 0.317912145
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.142209,
+          "mean_ms": 1.15550334
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 2001,
+        "accessibility_nodes_updated": 2001,
+        "render_nodes_changed": 2003,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007126,
+        "engine_ms": 0.7947618900000001,
+        "writeback_commit_ms": 0.12309919000000001,
+        "scroll_metrics_ms": 0.082681255
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 3.439708,
+        "p95": 3.597583,
+        "mean": 3.45308875,
+        "max": 3.7399579999999997
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.000792,
+          "mean_ms": 0.00087145
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.015166,
+          "mean_ms": 0.015669395
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.984333,
+          "mean_ms": 0.99690433
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.744417,
+          "mean_ms": 0.7530860300000001
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.317333,
+          "mean_ms": 0.32085814999999995
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.152625,
+          "mean_ms": 1.16345498
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 2003,
+        "accessibility_nodes_updated": 2003,
+        "render_nodes_changed": 2005,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007832499999999999,
+        "engine_ms": 0.7942377,
+        "writeback_commit_ms": 0.121457095,
+        "scroll_metrics_ms": 0.08105124
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 3.4580409999999997,
+        "p95": 3.607125,
+        "mean": 3.466457909999997,
+        "max": 4.080708
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0012079999999999999,
+          "mean_ms": 0.001262705
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.01575,
+          "mean_ms": 0.016699515
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 0.9994999999999999,
+          "mean_ms": 1.0125329049999998
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.74925,
+          "mean_ms": 0.75731354
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.315583,
+          "mean_ms": 0.31782378
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.1576250000000001,
+          "mean_ms": 1.1720689149999999
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 64720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 2015,
+        "accessibility_nodes_updated": 2015,
+        "render_nodes_changed": 2017,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000067545,
+        "engine_ms": 0.80755977,
+        "writeback_commit_ms": 0.12288669,
+        "scroll_metrics_ms": 0.08193123
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 3.48,
+        "p95": 3.675625,
+        "mean": 3.5044027150000003,
+        "max": 3.9317500000000005
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.003167,
+          "mean_ms": 0.0032434
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.016458999999999998,
+          "mean_ms": 0.017410865
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.010834,
+          "mean_ms": 1.0302333549999998
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.7436670000000001,
+          "mean_ms": 0.7562355599999999
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.31670800000000005,
+          "mean_ms": 0.318494765
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.159584,
+          "mean_ms": 1.174552915
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 66832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 2063,
+        "accessibility_nodes_updated": 2063,
+        "render_nodes_changed": 2065,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007068,
+        "engine_ms": 0.8277333400000001,
+        "writeback_commit_ms": 0.121912525,
+        "scroll_metrics_ms": 0.08043206000000001
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 1000,
+      "nodes": 2002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 3.614125,
+        "p95": 3.8145000000000002,
+        "mean": 3.6293358549999994,
+        "max": 4.113916
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.010875,
+          "mean_ms": 0.01098627
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.017915999999999998,
+          "mean_ms": 0.018787929999999998
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 1.091209,
+          "mean_ms": 1.104942105
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 0.745125,
+          "mean_ms": 0.7584420550000001
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.318084,
+          "mean_ms": 0.32089580999999995
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 1.184084,
+          "mean_ms": 1.19778275
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 2002,
+        "entities_changed": 2257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 75280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 2255,
+        "accessibility_nodes_updated": 2255,
+        "render_nodes_changed": 2257,
+        "render_nodes_extracted": 2002
+      },
+      "projected": {
+        "accessibility_updated": 2000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 2002,
+        "scene_rebuilt_primitives": 1000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00007542,
+        "engine_ms": 0.898799635,
+        "writeback_commit_ms": 0.12355877,
+        "scroll_metrics_ms": 0.08242022
+      },
+      "text_shape": {
+        "scope_nodes": 2002,
+        "nonempty_text_nodes": 1000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 1000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 1000.0,
+        "text_nodes_revision_skipped": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 8.049125,
+        "p95": 8.532875,
+        "mean": 8.065484835,
+        "max": 9.015749999999999
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002,
+          "mean_ms": 0.002034115
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.050874,
+          "mean_ms": 0.052490354999999995
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.3455,
+          "mean_ms": 2.364286035
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.689958,
+          "mean_ms": 1.714742065
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.644667,
+          "mean_ms": 0.6579124949999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.78275,
+          "mean_ms": 2.7958128799999997
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 4001,
+        "accessibility_nodes_updated": 4001,
+        "render_nodes_changed": 4003,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00027019500000000004,
+        "engine_ms": 1.938159355,
+        "writeback_commit_ms": 0.26045017000000004,
+        "scroll_metrics_ms": 0.16529728999999999
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 8.097166,
+        "p95": 10.891209,
+        "mean": 8.485848324999997,
+        "max": 12.708583
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002293,
+          "mean_ms": 0.002582275
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.054125,
+          "mean_ms": 0.05628532000000001
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.377292,
+          "mean_ms": 2.4866562649999997
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.698209,
+          "mean_ms": 1.79091815
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.6472920000000001,
+          "mean_ms": 0.70357022
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.810916,
+          "mean_ms": 2.9542224700000004
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 4003,
+        "accessibility_nodes_updated": 4003,
+        "render_nodes_changed": 4005,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000281025,
+        "engine_ms": 2.04744353,
+        "writeback_commit_ms": 0.27176810999999995,
+        "scroll_metrics_ms": 0.16704957999999998
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 8.997,
+        "p95": 10.021417,
+        "mean": 9.119330619999996,
+        "max": 11.242
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.00325,
+          "mean_ms": 0.0033183550000000003
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.064208,
+          "mean_ms": 0.066195445
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.656209,
+          "mean_ms": 2.70520045
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.881792,
+          "mean_ms": 1.925936475
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.7168749999999999,
+          "mean_ms": 0.7412191199999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 3.1315,
+          "mean_ms": 3.163992725
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 128720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 4015,
+        "accessibility_nodes_updated": 4015,
+        "render_nodes_changed": 4017,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00032083000000000003,
+        "engine_ms": 2.24595542,
+        "writeback_commit_ms": 0.28428937,
+        "scroll_metrics_ms": 0.17449496
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 8.19375,
+        "p95": 9.328292,
+        "mean": 8.375895624999997,
+        "max": 9.744667
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.004583,
+          "mean_ms": 0.004688675
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.055,
+          "mean_ms": 0.057364584999999996
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.418375,
+          "mean_ms": 2.47818059
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.734041,
+          "mean_ms": 1.7659453999999999
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.648208,
+          "mean_ms": 0.6682841450000001
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.8556250000000003,
+          "mean_ms": 2.9049964900000003
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 130832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 4063,
+        "accessibility_nodes_updated": 4063,
+        "render_nodes_changed": 4065,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00027581,
+        "engine_ms": 2.047008145,
+        "writeback_commit_ms": 0.265364565,
+        "scroll_metrics_ms": 0.16541315
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 2000,
+      "nodes": 4002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 8.129000000000001,
+        "p95": 10.625917000000001,
+        "mean": 8.713894149999994,
+        "max": 35.189375000000005
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.01225,
+          "mean_ms": 0.01271904
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.053209,
+          "mean_ms": 0.056188965
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 2.425833,
+          "mean_ms": 2.60736205
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 1.677541,
+          "mean_ms": 1.8072773049999997
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 0.6535,
+          "mean_ms": 0.724476425
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 2.814291,
+          "mean_ms": 2.98951645
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 4002,
+        "entities_changed": 4257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 139280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 4255,
+        "accessibility_nodes_updated": 4255,
+        "render_nodes_changed": 4257,
+        "render_nodes_extracted": 4002
+      },
+      "projected": {
+        "accessibility_updated": 4000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 4002,
+        "scene_rebuilt_primitives": 2000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000188475,
+        "engine_ms": 2.1666293850000002,
+        "writeback_commit_ms": 0.272833155,
+        "scroll_metrics_ms": 0.16758624
+      },
+      "text_shape": {
+        "scope_nodes": 4002,
+        "nonempty_text_nodes": 2000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 2000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 2000.0,
+        "text_nodes_revision_skipped": 2000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 1,
+      "flush_ms": {
+        "p50": 19.171041,
+        "p95": 20.1865,
+        "mean": 19.20548604,
+        "max": 25.373041999999998
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002542,
+          "mean_ms": 0.002597505
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.126125,
+          "mean_ms": 0.13067862
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.698957999999999,
+          "mean_ms": 5.7384403950000005
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.018042,
+          "mean_ms": 4.0385175
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.573584,
+          "mean_ms": 1.613396685
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.602125,
+          "mean_ms": 6.62599022
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8003,
+        "style_processed": 1,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256104,
+        "layout_nodes": 4,
+        "hit_test_candidates": 8001,
+        "accessibility_nodes_updated": 8001,
+        "render_nodes_changed": 8003,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00029686000000000003,
+        "engine_ms": 4.7779194050000005,
+        "writeback_commit_ms": 0.616086235,
+        "scroll_metrics_ms": 0.343995665
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 2,
+      "flush_ms": {
+        "p50": 19.949875,
+        "p95": 20.965916,
+        "mean": 20.024463714999996,
+        "max": 25.147208
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.002999,
+          "mean_ms": 0.0030429850000000002
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.12787500000000002,
+          "mean_ms": 0.133162905
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.895917,
+          "mean_ms": 5.921076875
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.207833,
+          "mean_ms": 4.221746045
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.712167,
+          "mean_ms": 1.7463245699999999
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.917040999999999,
+          "mean_ms": 6.93218169
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8005,
+        "style_processed": 2,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256192,
+        "layout_nodes": 6,
+        "hit_test_candidates": 8003,
+        "accessibility_nodes_updated": 8003,
+        "render_nodes_changed": 8005,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00034190000000000007,
+        "engine_ms": 4.938148780000001,
+        "writeback_commit_ms": 0.63949411,
+        "scroll_metrics_ms": 0.34295936499999996
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 8,
+      "flush_ms": {
+        "p50": 19.658875,
+        "p95": 21.24125,
+        "mean": 19.807247900000004,
+        "max": 24.643292000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.003208,
+          "mean_ms": 0.00325813
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.12679100000000001,
+          "mean_ms": 0.132881255
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.850791999999999,
+          "mean_ms": 5.874947675
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.112334,
+          "mean_ms": 4.14785896
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.652875,
+          "mean_ms": 1.69370375
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.831833,
+          "mean_ms": 6.88554711
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8017,
+        "style_processed": 8,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 256720,
+        "layout_nodes": 18,
+        "hit_test_candidates": 8015,
+        "accessibility_nodes_updated": 8015,
+        "render_nodes_changed": 8017,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00032286,
+        "engine_ms": 4.896815145000001,
+        "writeback_commit_ms": 0.6368164799999999,
+        "scroll_metrics_ms": 0.34085792
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 32,
+      "flush_ms": {
+        "p50": 19.664208,
+        "p95": 20.955958,
+        "mean": 19.77145667499999,
+        "max": 22.111625
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.0052499999999999995,
+          "mean_ms": 0.005315120000000001
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.126083,
+          "mean_ms": 0.13261941
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.845333,
+          "mean_ms": 5.865522684999999
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.1025,
+          "mean_ms": 4.138206855
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.651459,
+          "mean_ms": 1.6980683599999997
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.8299579999999995,
+          "mean_ms": 6.866394165
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8065,
+        "style_processed": 32,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 258832,
+        "layout_nodes": 66,
+        "hit_test_candidates": 8063,
+        "accessibility_nodes_updated": 8063,
+        "render_nodes_changed": 8065,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.00025706,
+        "engine_ms": 4.9003581050000005,
+        "writeback_commit_ms": 0.6229985299999999,
+        "scroll_metrics_ms": 0.34177232500000004
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    },
+    {
+      "engine": "nana-text",
+      "shape": "layout",
+      "position": "head",
+      "rows": 4000,
+      "nodes": 8002,
+      "dirty_rows": 128,
+      "flush_ms": {
+        "p50": 19.816041,
+        "p95": 20.899334,
+        "mean": 19.857547900000007,
+        "max": 22.437291000000002
+      },
+      "stages_ms": [
+        {
+          "stage": "Input",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Reconcile",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Style",
+          "status": "ran",
+          "p50_ms": 0.012707999999999999,
+          "mean_ms": 0.012993325
+        },
+        {
+          "stage": "TextShape",
+          "status": "ran",
+          "p50_ms": 0.128167,
+          "mean_ms": 0.134676925
+        },
+        {
+          "stage": "Layout",
+          "status": "ran",
+          "p50_ms": 5.916290999999999,
+          "mean_ms": 5.92696435
+        },
+        {
+          "stage": "HitTest",
+          "status": "ran",
+          "p50_ms": 4.105250000000001,
+          "mean_ms": 4.12186858
+        },
+        {
+          "stage": "Accessibility",
+          "status": "ran",
+          "p50_ms": 1.6485,
+          "mean_ms": 1.6788468500000002
+        },
+        {
+          "stage": "Animation",
+          "status": "skipped",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Extract",
+          "status": "ran",
+          "p50_ms": 6.878042,
+          "mean_ms": 6.894499395
+        },
+        {
+          "stage": "Batch",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "GpuUpload",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Encode",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        },
+        {
+          "stage": "Submit",
+          "status": "unsupported",
+          "p50_ms": 0.0,
+          "mean_ms": 0.0
+        }
+      ],
+      "counters": {
+        "entities_total": 8002,
+        "entities_changed": 8257,
+        "style_processed": 128,
+        "text_shaped": 0,
+        "text_shaped_runs": 0,
+        "text_layout_cache_hits": 0,
+        "text_layout_cache_misses": 0,
+        "text_wrap_layouts": 0,
+        "cache_eviction": 0,
+        "allocations": 10,
+        "allocated_bytes": 267280,
+        "layout_nodes": 258,
+        "hit_test_candidates": 8255,
+        "accessibility_nodes_updated": 8255,
+        "render_nodes_changed": 8257,
+        "render_nodes_extracted": 8002
+      },
+      "projected": {
+        "accessibility_updated": 8000,
+        "accessibility_removed": 0,
+        "scene_updated_nodes": 8002,
+        "scene_rebuilt_primitives": 4000,
+        "passes": 2
+      },
+      "layout_substages_ms": {
+        "tooltips_ms": 0.000255205,
+        "engine_ms": 4.956327455,
+        "writeback_commit_ms": 0.63146021,
+        "scroll_metrics_ms": 0.338782005
+      },
+      "text_shape": {
+        "scope_nodes": 8002,
+        "nonempty_text_nodes": 4000,
+        "string_clones": 0,
+        "string_clone_bytes": 0,
+        "key_builds": 0,
+        "cache_lookups": 0,
+        "skipped_unchanged": 4000,
+        "clone_ms": 0.0,
+        "key_ms": 0.0,
+        "lookup_ms": 0.0,
+        "inner_shape_ms": 0.0
+      },
+      "text_work": {
+        "text_nodes_considered": 4000.0,
+        "text_nodes_revision_skipped": 4000.0,
+        "text_nodes_shaped": 0.0,
+        "text_source_clones": 0.0,
+        "text_bytes_hashed": 0.0,
+        "shape_cache_lookup": 0.0,
+        "layout_cache_lookup": 0.0,
+        "layouts_created": 0.0,
+        "constraint_only_relayouts": 0.0,
+        "text_layouts_reused": 0.0
+      }
+    }
+  ]
+}
