@@ -132,6 +132,20 @@ impl RuntimeInputAdapter {
         text_shaper: Option<&mut dyn TextShaper>,
     ) -> Result<InputDisposition, FrameworkError> {
         let mut text_shaper = text_shaper;
+        // Before anything routes, so the focus this event causes is recorded
+        // against the device that caused it. A pointer press focuses the node
+        // it hit well before it records the press itself, which is why this
+        // cannot be inferred downstream.
+        match event {
+            InputEvent::Pointer { .. } => context
+                .world_mut()
+                .note_input_modality(document, nana_ui_runtime::InputModality::Pointer),
+            InputEvent::Keyboard { .. } => context
+                .world_mut()
+                .note_input_modality(document, nana_ui_runtime::InputModality::Keyboard),
+            // A wheel moves nothing into focus; leave the answer alone.
+            InputEvent::Wheel { .. } => {}
+        }
         let keyboard_barrier = matches!(event, InputEvent::Keyboard { .. })
             && context.has_blocking_runtime_overlay(document);
         if let InputEvent::Keyboard {

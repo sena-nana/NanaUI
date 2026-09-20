@@ -594,10 +594,7 @@ pub(crate) fn field_style_for_size(size: ControlSize) -> NodeStyle {
                 border: Some(SemanticColorRole::BorderStrong),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(SemanticColorRole::BorderStrong),
-                ..SemanticPaint::default()
-            },
+            focused: SemanticPaint::FOCUS_BORDER,
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 background: Some(SemanticColorRole::Subtle),

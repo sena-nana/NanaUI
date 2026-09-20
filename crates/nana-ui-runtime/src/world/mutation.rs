@@ -1785,11 +1785,7 @@ impl UiWorld {
                 if let Some(target) = target {
                     self.remember_scope_focus(*target);
                 }
-                let from_pointer = self
-                    .input
-                    .pointer_press
-                    .keys()
-                    .any(|(pressed_document, _)| pressed_document == document);
+                let from_pointer = self.input.pointer_modality.contains(document);
                 if from_pointer {
                     self.input.focus_from_pointer.insert(*document);
                 } else {

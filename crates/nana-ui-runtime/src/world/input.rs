@@ -176,7 +176,13 @@ impl UiWorld {
 #[derive(Default)]
 pub(super) struct WorldInputState {
     pub(super) focused: HashMap<DocumentId, StableNodeId>,
-    /// Documents whose current focus arrived under a pointer press.
+    /// Documents whose most recent input event came from a pointer.
+    ///
+    /// Absent means keyboard, which is also what a document that has seen no
+    /// input at all reads as: a programmatic `focus_node` should show itself.
+    pub(super) pointer_modality: HashSet<DocumentId>,
+    /// Documents whose *current* focus arrived while [`Self::pointer_modality`]
+    /// held, snapshotted when the focus was written.
     ///
     /// This is the `:focus-visible` heuristic, and it is one bit rather than a
     /// modality machine because only one question is ever asked of it: should
@@ -185,9 +191,14 @@ pub(super) struct WorldInputState {
     /// and every design system that paints focus unconditionally ends up with
     /// buttons that keep a halo after a click.
     ///
-    /// Recorded where focus is written, from whether a pointer is down at that
-    /// moment, so keyboard navigation and programmatic `focus_node` both count
-    /// as visible without the host having to report a modality.
+    /// It cannot be read from `pointer_press` at focus time, which is what the
+    /// first version did: the pointer-down path focuses the hit node *before*
+    /// it records the press, so every click looked like keyboard navigation.
+    ///
+    /// Restoring focus after an overlay closes writes `focused` directly and
+    /// leaves this alone, so the restored control inherits the answer the
+    /// focus it is returning to had. That is deliberate: dismissing a dialog
+    /// with Escape should put a visible focus back where it came from.
     pub(super) focus_from_pointer: HashSet<DocumentId>,
     pub(super) focus_scopes: HashMap<StableNodeId, Option<StableNodeId>>,
     pub(super) pointer_captures: HashMap<(DocumentId, u64), StableNodeId>,

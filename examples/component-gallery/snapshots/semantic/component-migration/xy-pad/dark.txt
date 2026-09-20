@@ -24,7 +24,7 @@ state: hover
 state: focused
   target: 20.00,20.00 380.00x48.00
   a11y: role=Slider disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#1c1c1cff border=#3a3a3aff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x48.00 opacity=1.00 bg=#1c1c1cff border=#7bb9f0ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   quad #2/1 20.00,43.50 380.00x1.00 opacity=1.00 bg=#2a2a2aff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/2 209.50,20.00 1.00x48.00 opacity=1.00 bg=#2a2a2aff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/3 149.00,30.40 8.00x8.00 opacity=1.00 bg=#7bb9f0ff border=none border_width=0.00 radius=999.00/999.00/999.00/999.00 shadow=none

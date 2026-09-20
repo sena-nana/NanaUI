@@ -382,7 +382,7 @@ impl ComponentView for SearchDropdown {
             nana_ui_core::SemanticColorRole::Border
         });
         style.interaction.hovered.border = Some(nana_ui_core::SemanticColorRole::BorderStrong);
-        style.interaction.focused.border = Some(nana_ui_core::SemanticColorRole::BorderStrong);
+        style.interaction.focused.border = Some(nana_ui_core::SemanticColorRole::FocusBorder);
         style.interaction.disabled = SemanticPaint {
             foreground: Some(nana_ui_core::SemanticColorRole::Faint),
             background: Some(nana_ui_core::SemanticColorRole::Subtle),

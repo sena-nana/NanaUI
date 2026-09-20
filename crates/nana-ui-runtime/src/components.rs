@@ -87,6 +87,34 @@ impl SemanticPaint {
     pub fn is_empty(self) -> bool {
         self == Self::default()
     }
+
+    /// What a keyboard-focused control paints when it has no border width to
+    /// colour.
+    ///
+    /// Background *and* foreground: the fill is nearly solid in light mode, so
+    /// the resting label would not survive it. Naming the pair once is what
+    /// keeps eight components from each inventing a focus look — which is how
+    /// three of them ended up with `border: Accent` on a zero-width border and
+    /// painted nothing at all.
+    pub const FOCUS_SURFACE: Self = Self {
+        foreground_mix: None,
+        background_mix: None,
+        border_mix: None,
+        foreground: Some(SemanticColorRole::FocusText),
+        background: Some(SemanticColorRole::FocusSurface),
+        border: None,
+    };
+
+    /// What a keyboard-focused control paints when it already reserves a
+    /// border width. Colour only — growing a border would move its content.
+    pub const FOCUS_BORDER: Self = Self {
+        foreground_mix: None,
+        background_mix: None,
+        border_mix: None,
+        foreground: None,
+        background: None,
+        border: Some(SemanticColorRole::FocusBorder),
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

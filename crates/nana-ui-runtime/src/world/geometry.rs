@@ -1988,9 +1988,12 @@ impl UiWorld {
                         size.text_size(),
                         Some(500),
                     ),
+                    // The radio ring is the one indicator that predates the
+                    // focus tokens, and it follows the same rule: a clicked
+                    // control is focused and does not announce it.
                     focus_ring: (*show_focus_ring
-                        && self.input.focused.get(&self.record(id).document) == Some(&id))
-                    .then(|| self.style_model.palette.accent.as_rgba_array()),
+                        && self.focus_visible(self.record(id).document) == Some(id))
+                    .then(|| self.style_model.palette.focus_border.as_rgba_array()),
                     indicator: ring,
                 })
             }

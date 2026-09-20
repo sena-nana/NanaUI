@@ -1985,10 +1985,7 @@ impl ComponentView for DockHandle {
 fn handle_style(axis: DockAxis) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.interaction = InteractionStyle {
-        focused: SemanticPaint {
-            border: Some(SemanticColorRole::Accent),
-            ..SemanticPaint::default()
-        },
+        focused: SemanticPaint::FOCUS_SURFACE,
         hovered: SemanticPaint {
             background: Some(SemanticColorRole::Hover),
             ..SemanticPaint::default()

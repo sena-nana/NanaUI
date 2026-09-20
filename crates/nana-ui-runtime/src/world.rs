@@ -1155,7 +1155,35 @@ impl UiWorld {
     pub fn focused(&self, document: DocumentId) -> Option<StableNodeId> {
         self.input.focused.get(&document).copied()
     }
+}
 
+/// Which device the input being routed came from, for `:focus-visible`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputModality {
+    Keyboard,
+    Pointer,
+}
+
+impl UiWorld {
+    /// Record which kind of device the event being routed came from.
+    ///
+    /// Only the two that move focus matter; anything else leaves the answer
+    /// alone. Hosts call this from their one input entry point, and the
+    /// modality is read again each time focus is written, so a click makes
+    /// exactly the focus it causes invisible — not every focus after it.
+    pub fn note_input_modality(&mut self, document: DocumentId, modality: InputModality) {
+        match modality {
+            InputModality::Pointer => {
+                self.input.pointer_modality.insert(document);
+            }
+            InputModality::Keyboard => {
+                self.input.pointer_modality.remove(&document);
+            }
+        }
+    }
+}
+
+impl UiWorld {
     /// The focused node, when focus should also be *shown*.
     ///
     /// Same answer as [`Self::focused`] except right after a pointer press put

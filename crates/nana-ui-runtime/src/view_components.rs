@@ -131,10 +131,7 @@ fn text_field_style(multiline: bool) -> NodeStyle {
                 border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::BorderStrong),
-                ..SemanticPaint::default()
-            },
+            focused: SemanticPaint::FOCUS_BORDER,
             disabled: SemanticPaint {
                 foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                 background: Some(nana_ui_core::SemanticColorRole::Subtle),
@@ -470,6 +467,7 @@ impl Button {
                         background: Some(nana_ui_core::SemanticColorRole::Active),
                         ..SemanticPaint::default()
                     },
+                    focused: SemanticPaint::FOCUS_SURFACE,
                     disabled: SemanticPaint {
                         foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
@@ -692,7 +690,7 @@ impl IconButton {
                     background: Some(nana_ui_core::SemanticColorRole::Active),
                     ..SemanticPaint::default()
                 },
-                focused: SemanticPaint::default(),
+                focused: SemanticPaint::FOCUS_SURFACE,
                 disabled: SemanticPaint {
                     foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                     ..SemanticPaint::default()
@@ -1177,10 +1175,7 @@ impl ListItem {
                         background: Some(nana_ui_core::SemanticColorRole::Active),
                         ..SemanticPaint::default()
                     },
-                    focused: SemanticPaint {
-                        border: Some(nana_ui_core::SemanticColorRole::Accent),
-                        ..SemanticPaint::default()
-                    },
+                    focused: SemanticPaint::FOCUS_SURFACE,
                     disabled: SemanticPaint {
                         foreground: Some(nana_ui_core::SemanticColorRole::Faint),
                         background: Some(nana_ui_core::SemanticColorRole::Subtle),
@@ -3003,10 +2998,11 @@ fn checkbox_style_for(size: nana_ui_core::ControlSize) -> NodeStyle {
                 border: Some(nana_ui_core::SemanticColorRole::AccentStrong),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
-                ..SemanticPaint::default()
-            },
+            // Both of these already draw their own ring around the indicator
+            // rather than the row, which is the right target for a 16px box in a
+            // 380px row — so they take the colour and keep the ring, instead of
+            // washing the whole row.
+            focused: SemanticPaint::FOCUS_BORDER,
             disabled: SemanticPaint {
                 foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 background: Some(nana_ui_core::SemanticColorRole::Subtle),
@@ -3034,10 +3030,7 @@ fn switch_style() -> NodeStyle {
                 background: Some(nana_ui_core::SemanticColorRole::Active),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(nana_ui_core::SemanticColorRole::Accent),
-                ..SemanticPaint::default()
-            },
+            focused: SemanticPaint::FOCUS_BORDER,
             disabled: SemanticPaint {
                 foreground: Some(nana_ui_core::SemanticColorRole::Muted),
                 ..SemanticPaint::default()

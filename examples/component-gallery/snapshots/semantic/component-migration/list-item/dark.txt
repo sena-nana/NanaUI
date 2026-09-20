@@ -20,13 +20,13 @@ state: hover
 state: pressed
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#353535ff border=#7bb9f0ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#353535ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: focused
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#7bb9f0ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#7bb9f080 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ffffffff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: selected
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(true) mixed=false
@@ -70,10 +70,10 @@ state: auto-height
 state: pointer-activation
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#2d2d2dff border=#7bb9f0ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#2d2d2dff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: keyboard-activation
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#7bb9f0ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#7bb9f080 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 29.00,21.00 362.00x26.00 opacity=1.00 color=#ffffffff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

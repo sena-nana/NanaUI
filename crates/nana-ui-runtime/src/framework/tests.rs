@@ -4374,11 +4374,14 @@ fn native_theme_resolves_semantic_component_paint_without_layout_work() {
         .pop()
         .unwrap();
     assert_eq!(focused.style.border_color, None);
+    // Focus takes the background over from the resting accent fill. It used to
+    // leave `accent_soft` in place, which is another way of saying a focused
+    // button looked exactly like an unfocused one.
     assert_eq!(
         focused.style.background,
         Some(
             nana_ui_core::SemanticPalette::light()
-                .accent_soft
+                .focus_surface
                 .as_rgba_array()
         )
     );

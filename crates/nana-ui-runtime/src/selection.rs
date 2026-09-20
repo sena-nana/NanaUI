@@ -455,6 +455,7 @@ fn segmented_option_style(size: ControlSize, chrome: SelectionChrome, fill: bool
                 background: Some(SemanticColorRole::Active),
                 ..SemanticPaint::default()
             },
+            focused: SemanticPaint::FOCUS_SURFACE,
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()

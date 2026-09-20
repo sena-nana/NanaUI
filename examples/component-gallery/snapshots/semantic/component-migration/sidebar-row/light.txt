@@ -15,14 +15,14 @@ state: hover
 state: pressed
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfe2e7ff border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfe2e7ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #3/2 46.00,20.00 346.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("layout-dashboard") color=#1a1a1fff
 state: focused
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
-  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #3/2 46.00,20.00 346.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#2c7ed6e6 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #3/2 46.00,20.00 346.00x28.00 opacity=1.00 color=#ffffffff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("layout-dashboard") color=#1a1a1fff
 state: disabled
   target: 20.00,20.00 380.00x28.00
@@ -39,6 +39,6 @@ state: selected-hover
 state: selected-pressed
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(true) mixed=false
-  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfdfdfff border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #3/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=#dfdfdfff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #3/2 46.00,20.00 346.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("layout-dashboard") color=#1a1a1fff

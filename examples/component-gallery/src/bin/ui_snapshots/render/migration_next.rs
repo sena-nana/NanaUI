@@ -2017,4 +2017,102 @@ mod tests {
             report.summary
         );
     }
+
+    /// A focus indicator that looks exactly like some other state is not an
+    /// indicator, and nothing used to say so: eleven of fourteen components
+    /// with a `focused` fixture rendered it byte-identically to their resting,
+    /// hovered or selected one, and every baseline agreed with itself.
+    ///
+    /// The committed semantic tree already holds every state of every
+    /// component in one file, so the comparison is free — it just had to be
+    /// asked for. Keyboard states are excluded on purpose: a control that is
+    /// still focused after Space or an arrow key *should* look the same as
+    /// `focused`, and three components legitimately do.
+    #[test]
+    fn a_focused_fixture_never_looks_like_a_state_the_keyboard_did_not_cause() {
+        const KEYBOARD: &[&str] = &[
+            "focused",
+            "keyboard-activation",
+            "keyboard-edit",
+            "space-toggle",
+            "space-enter-repeat",
+            "arrow-skip-wrap",
+            "home-end",
+            "accessibility-toggle",
+            "a11y-radio",
+            "no-selection",
+            "atomic-reconcile",
+            "dynamic-disable",
+            "controlled-commit",
+            "selection",
+            "multiline-selection",
+            "scroll",
+            "ime-preedit",
+            "ime-commit",
+        ];
+        // Compare what is painted, not what is recorded. `sidebar-row` wrote
+        // `border=#7bb9f0ff border_width=0.00` for focus — a colour on an edge
+        // of no width, which draws nothing — and a plain text comparison would
+        // have called that a difference and passed the component.
+        fn painted(line: &str) -> String {
+            match line.split_once(" border_width=") {
+                Some((head, tail)) if tail.starts_with("0.00") => {
+                    match head.rsplit_once(" border=") {
+                        Some((before, _)) => format!("{before} border=none border_width={tail}"),
+                        None => line.to_owned(),
+                    }
+                }
+                _ => line.to_owned(),
+            }
+        }
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("snapshots/semantic/component-migration");
+        let mut checked = 0usize;
+        let mut collisions = Vec::new();
+        for entry in std::fs::read_dir(&root).expect("semantic tree") {
+            let component = entry.expect("entry").path();
+            for mode in ["dark", "light"] {
+                let path = component.join(format!("{mode}.txt"));
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                // The file is `state: <name>` followed by that state's lines.
+                let mut states: Vec<(String, String)> = Vec::new();
+                for line in text.lines() {
+                    match line.strip_prefix("state: ") {
+                        Some(name) => states.push((name.to_owned(), String::new())),
+                        None => {
+                            if let Some((_, body)) = states.last_mut() {
+                                body.push_str(&painted(line));
+                                body.push('\n');
+                            }
+                        }
+                    }
+                }
+                let Some((_, focused)) = states.iter().find(|(name, _)| name == "focused") else {
+                    continue;
+                };
+                checked += 1;
+                for (name, body) in &states {
+                    if KEYBOARD.contains(&name.as_str()) || body != focused {
+                        continue;
+                    }
+                    collisions.push(format!(
+                        "{}/{mode}: focused is identical to {name}",
+                        component.file_name().expect("component").to_string_lossy()
+                    ));
+                }
+            }
+        }
+        assert!(
+            checked > 0,
+            "no component in the semantic tree has a focused fixture"
+        );
+        assert!(
+            collisions.is_empty(),
+            "a focused control has to look focused:\n  {}",
+            collisions.join("\n  ")
+        );
+    }
 }

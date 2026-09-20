@@ -1287,10 +1287,7 @@ fn canvas_style() -> NodeStyle {
         }),
         background: Some(SemanticColorRole::Background),
         interaction: InteractionStyle {
-            focused: SemanticPaint {
-                border: Some(SemanticColorRole::BorderStrong),
-                ..SemanticPaint::default()
-            },
+            focused: SemanticPaint::FOCUS_BORDER,
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 background: Some(SemanticColorRole::Subtle),

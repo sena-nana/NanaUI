@@ -18,13 +18,13 @@ state: hover
 state: focused
   target: 20.00,20.00 380.00x32.00
   a11y: role=TextInput disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#2c7ed6ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 31.00,28.00 358.00x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/4 105.40,28.00 1.00x16.00 opacity=1.00 bg=#1a1a1fff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
 state: selection
   target: 20.00,20.00 380.00x32.00
   a11y: role=TextInput disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#2c7ed6ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   quad-batch #2/1 31.00,28.00 43.32x16.00 opacity=1.00 count=1 bg=#4991d71a border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   text #2/2 31.00,28.00 358.00x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/4 74.32,28.00 1.00x16.00 opacity=1.00 bg=#1a1a1fff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
@@ -67,20 +67,20 @@ state: loading
 state: keyboard-edit
   target: 20.00,20.00 380.00x32.00
   a11y: role=TextInput disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#2c7ed6ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 31.00,28.00 358.00x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/4 112.85,28.00 1.00x16.00 opacity=1.00 bg=#1a1a1fff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
 state: ime-preedit
   target: 20.00,20.00 380.00x32.00
   a11y: role=TextInput disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#2c7ed6ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 31.00,28.00 358.00x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/4 118.40,28.00 1.00x16.00 opacity=1.00 bg=#1a1a1fff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad-batch #2/5 105.40,42.00 13.00x2.00 opacity=1.00 count=1 bg=#4991d7ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
 state: ime-commit
   target: 20.00,20.00 380.00x32.00
   a11y: role=TextInput disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#cbcfd5ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#ffffffff border=#2c7ed6ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 31.00,28.00 358.00x16.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/4 118.40,28.00 1.00x16.00 opacity=1.00 bg=#1a1a1fff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
 state: accessibility-set-value

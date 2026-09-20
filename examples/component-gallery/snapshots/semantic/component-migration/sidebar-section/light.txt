@@ -23,7 +23,7 @@ state: collapsed
 state: focused
   target: 20.00,20.00 200.00x86.00
   a11y: role=Button disabled=false checked=None selected=Some(true) mixed=false
-  quad #9/0 20.00,20.00 200.00x86.00 opacity=1.00 bg=none border=#4991d7ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #9/0 20.00,20.00 200.00x86.00 opacity=1.00 bg=#2c7ed6e6 border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   quad #5/0 20.00,20.00 200.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   icon #2/3 28.00,28.00 12.00x12.00 opacity=1.00 icon=Icon("chevron-down") color=#9ca3afff
   text #3/2 44.00,28.50 157.51x11.00 opacity=1.00 color=#9ca3afff size=11.00 weight=700 line_height=Absolute(11.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

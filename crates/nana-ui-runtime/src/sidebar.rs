@@ -502,10 +502,7 @@ impl SidebarRow {
                 }),
                 ..SemanticPaint::default()
             },
-            focused: SemanticPaint {
-                border: Some(SemanticColorRole::Accent),
-                ..SemanticPaint::default()
-            },
+            focused: SemanticPaint::FOCUS_SURFACE,
             disabled: SemanticPaint {
                 foreground: Some(SemanticColorRole::Faint),
                 ..SemanticPaint::default()
@@ -918,10 +915,7 @@ impl SidebarSection {
                     background: Some(SemanticColorRole::Active),
                     ..SemanticPaint::default()
                 },
-                focused: SemanticPaint {
-                    border: Some(SemanticColorRole::Accent),
-                    ..SemanticPaint::default()
-                },
+                focused: SemanticPaint::FOCUS_SURFACE,
                 ..InteractionStyle::default()
             }
         } else {
@@ -1414,7 +1408,7 @@ fn footer_button_style(size: ControlSize, selected: bool) -> NodeStyle {
             background: Some(SemanticColorRole::Active),
             ..SemanticPaint::default()
         },
-        focused: SemanticPaint::default(),
+        focused: SemanticPaint::FOCUS_SURFACE,
         disabled: SemanticPaint {
             foreground: Some(SemanticColorRole::Faint),
             ..SemanticPaint::default()

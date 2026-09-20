@@ -324,7 +324,7 @@ impl Dropdown {
         style.interaction.focused.border = Some(if self.invalid {
             nana_ui_core::SemanticColorRole::Danger
         } else {
-            nana_ui_core::SemanticColorRole::BorderStrong
+            nana_ui_core::SemanticColorRole::FocusBorder
         });
         style.interaction.disabled = SemanticPaint {
             foreground: Some(nana_ui_core::SemanticColorRole::Faint),

@@ -197,7 +197,9 @@ impl UiWorld {
                     id,
                     layout: Arc::clone(layout),
                 }),
-            focused: self.input.focused.get(&document) == Some(&id),
+            // Paint's question, so paint's answer: a control put into focus
+            // by a click is focused and does not draw a ring about it.
+            focused: self.focus_visible(document) == Some(id),
             ime: self.nodes.ime(id).cloned(),
             text_input: self.nodes.text_input(id).cloned(),
             text_spans,

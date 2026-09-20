@@ -479,10 +479,7 @@ impl SettingsCollapsibleCard {
                     background: Some(SemanticColorRole::Active),
                     ..SemanticPaint::default()
                 },
-                focused: SemanticPaint {
-                    border: Some(SemanticColorRole::Accent),
-                    ..SemanticPaint::default()
-                },
+                focused: SemanticPaint::FOCUS_SURFACE,
                 ..InteractionStyle::default()
             }
         };
