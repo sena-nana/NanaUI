@@ -498,6 +498,107 @@ impl AppContext {
         Ok(owned_current)
     }
 
+    /// Build the boxes a [`crate::PaneTree`] needs, and put the host's content
+    /// inside them.
+    ///
+    /// The tree owns these nodes, which is the whole point: a number written
+    /// onto a node the host also owns is overwritten by that node's own
+    /// projection in the same pass, and that is why the split ratio never did
+    /// anything. Keyed by the tree's own split / pane ids so a reshape reuses
+    /// the boxes it still wants and despawns the rest.
+    fn sync_pane_tree(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        let root = self.read(Entity::<crate::PaneTree>::from_stable_id(id), |tree| {
+            tree.root.clone()
+        })?;
+        let document = self
+            .world
+            .node(id)
+            .ok_or(FrameworkError::MissingView(id))?
+            .document;
+        let plan = root.slot_plan();
+
+        let mut owned = self
+            .component_lifecycle
+            .pane_tree_slots
+            .remove(&id)
+            .unwrap_or_default();
+        let mut slots: HashMap<Arc<str>, StableNodeId> = HashMap::new();
+        let mut mutations = MutationQueue::new();
+        let mut created: Vec<(StableNodeId, crate::PaneSlot)> = Vec::new();
+
+        for entry in &plan {
+            let slot = match owned.remove(&entry.key) {
+                Some(existing) if self.world.node(existing).is_some() => existing,
+                _ => {
+                    let slot = self.allocate_id();
+                    let view = crate::PaneSlot::new(entry.style.clone());
+                    mutations.create(slot, document, view.node_kind());
+                    created.push((slot, view));
+                    slot
+                }
+            };
+            slots.insert(Arc::clone(&entry.key), slot);
+        }
+        // Whatever the new shape no longer names. Content the host owns is
+        // re-parented below before this runs, so despawning a box never takes
+        // a host node with it.
+        let stale = owned.into_values().collect::<Vec<_>>();
+
+        // Only what differs. This runs on every reprojection of every pane
+        // tree, and an unconditional `insert` per box would dirty an idle
+        // frame — `idle_project_does_not_dirty` is what says so.
+        for entry in &plan {
+            let slot = slots[&entry.key];
+            let parent = match &entry.parent {
+                Some(parent) => slots[parent],
+                None => id,
+            };
+            if self.world.node(slot).and_then(|node| node.parent) != Some(parent) {
+                mutations.insert(parent, slot, None);
+            }
+            // In the same commit as the box itself, so a tree is laid out
+            // correctly on the frame it appears rather than one frame later.
+            // The view below carries the same value, so its own projection
+            // agrees and changes nothing.
+            if self.world.node_style(slot) != Some(&entry.style) {
+                mutations.set_style(slot, entry.style.clone());
+            }
+            if let Some(content) = entry.content.filter(|c| self.world.node(*c).is_some())
+                && self.world.node(content).and_then(|node| node.parent) != Some(slot)
+            {
+                mutations.insert(slot, content, None);
+            }
+        }
+        for slot in stale {
+            mutations.despawn_subtree(slot);
+        }
+        if mutations.is_empty() {
+            self.component_lifecycle.pane_tree_slots.insert(id, slots);
+            return Ok(());
+        }
+        self.world.commit(mutations)?;
+        for (slot, view) in created {
+            self.views.insert(slot, Box::new(view));
+        }
+        for entry in &plan {
+            let slot = slots[&entry.key];
+            let style = entry.style.clone();
+            if self.read(Entity::<crate::PaneSlot>::from_stable_id(slot), |pane| {
+                pane.style == style
+            })? {
+                continue;
+            }
+            self.update_component(
+                Entity::<crate::PaneSlot>::from_stable_id(slot),
+                |pane, _| {
+                    pane.style = style;
+                },
+            )?;
+        }
+        self.component_lifecycle.pane_tree_slots.insert(id, slots);
+        Ok(())
+    }
+
     pub(super) fn sync_component_lifecycle(
         &mut self,
         id: StableNodeId,
@@ -514,6 +615,13 @@ impl AppContext {
             if let Some(bounds) = self.world.layout_box(id) {
                 self.resize_terminal_view(Entity::from_stable_id(id), bounds.width, bounds.height)?;
             }
+        }
+        if self
+            .views
+            .get(&id)
+            .is_some_and(|view| view.is::<crate::PaneTree>())
+        {
+            self.sync_pane_tree(id)?;
         }
         self.sync_hover_card_focus(id);
         self.sync_sidebar_section_body_port(id);

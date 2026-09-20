@@ -441,22 +441,149 @@ impl PaneTreeNode {
         }
     }
 
-    fn project_slots(&self, grow: Option<f32>, world: &UiWorld, mutations: &mut MutationQueue) {
+    pub(crate) fn content_nodes(&self) -> Vec<StableNodeId> {
+        let mut out = Vec::new();
+        self.collect_content(&mut out);
+        out
+    }
+
+    fn collect_content(&self, out: &mut Vec<StableNodeId>) {
         match self {
-            Self::Leaf { content, .. } => {
-                if let Some(content) = content {
-                    project_leaf_slot(*content, grow, world, mutations);
-                }
+            Self::Leaf { content, .. } => out.extend(*content),
+            Self::Split { first, second, .. } => {
+                first.collect_content(out);
+                second.collect_content(out);
             }
+        }
+    }
+}
+
+/// One node of the box tree a [`PaneTree`] owns.
+///
+/// The tree used to write width, height and flex straight onto the host's
+/// content nodes, and those nodes' own `ComponentView::project` overwrote it in
+/// the same pass — whoever wrote last won, and it was never the tree. So the
+/// ratio never applied in either direction: leaves left alone shrank to their
+/// content, leaves told to fill came out exactly 50/50. Owning a box per split
+/// and per leaf is what gives the tree somewhere to put a number that stays put.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneSlot {
+    pub style: NodeStyle,
+}
+
+impl PaneSlot {
+    pub(crate) fn new(style: NodeStyle) -> Self {
+        Self { style }
+    }
+}
+
+impl ComponentView for PaneSlot {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "pane-slot".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        project_common(
+            id,
+            world,
+            mutations,
+            &self.style,
+            InteractionState {
+                pointer_events: false,
+                focusable: false,
+            },
+            AccessibilityState {
+                role: AccessibilityRole::Generic,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+}
+
+/// A box the tree wants to exist, addressed by the tree's own id for it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PaneSlotPlan {
+    pub key: Arc<str>,
+    pub parent: Option<Arc<str>>,
+    pub style: NodeStyle,
+    pub content: Option<StableNodeId>,
+}
+
+/// The share of its parent's main axis this box takes, as a length.
+///
+/// A length rather than a `flex_grow` weight, because
+/// `LayoutStyle::child_main_length` answers `Fill` for anything that grows
+/// before it consults anything else — a weight is read as a boolean there.
+fn pane_slot_style(
+    direction: Option<FlexDirection>,
+    share: Option<(FlexDirection, f32)>,
+) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    let layout = Arc::make_mut(&mut style.layout);
+    layout.align_items = AlignSpec::Stretch;
+    layout.width = Some(LengthSpec::Fill);
+    layout.height = Some(LengthSpec::Fill);
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.min_height = Some(LengthSpec::Px(0.0));
+    layout.padding_top = Some(LengthSpec::Px(0.0));
+    layout.padding_right = Some(LengthSpec::Px(0.0));
+    layout.padding_bottom = Some(LengthSpec::Px(0.0));
+    layout.padding_left = Some(LengthSpec::Px(0.0));
+    if let Some(direction) = direction {
+        layout.direction = Some(direction);
+    }
+    if let Some((axis, fraction)) = share {
+        let main = Some(LengthSpec::Percent(fraction * 100.0));
+        match axis {
+            FlexDirection::Row => layout.width = main,
+            FlexDirection::Column => layout.height = main,
+        }
+        layout.flex_grow = Some(0.0);
+        layout.flex_shrink = Some(1.0);
+    }
+    style
+}
+
+impl PaneTreeNode {
+    pub(crate) fn slot_plan(&self) -> Vec<PaneSlotPlan> {
+        let mut out = Vec::new();
+        self.plan_into(None, None, &mut out);
+        out
+    }
+
+    fn plan_into(
+        &self,
+        parent: Option<Arc<str>>,
+        share: Option<(FlexDirection, f32)>,
+        out: &mut Vec<PaneSlotPlan>,
+    ) {
+        match self {
+            Self::Leaf { pane_id, content } => out.push(PaneSlotPlan {
+                key: Arc::from(format!("leaf:{pane_id}")),
+                parent,
+                style: pane_slot_style(None, share),
+                content: *content,
+            }),
             Self::Split {
+                split_id,
+                axis,
                 ratio,
                 first,
                 second,
-                ..
             } => {
+                let key: Arc<str> = Arc::from(format!("split:{split_id}"));
+                let direction = split_direction(*axis);
+                out.push(PaneSlotPlan {
+                    key: Arc::clone(&key),
+                    parent,
+                    style: pane_slot_style(Some(direction), share),
+                    content: None,
+                });
                 let ratio = clamp_split_ratio(*ratio);
-                first.project_slots(Some(ratio), world, mutations);
-                second.project_slots(Some(1.0 - ratio), world, mutations);
+                first.plan_into(Some(Arc::clone(&key)), Some((direction, ratio)), out);
+                second.plan_into(Some(key), Some((direction, 1.0 - ratio)), out);
             }
         }
     }
@@ -537,22 +664,12 @@ impl ComponentView for PaneTree {
                 ..AccessibilityState::default()
             },
         );
-        match &self.root {
-            PaneTreeNode::Leaf { content, .. } => {
-                if let Some(content) = content {
-                    project_leaf_slot(*content, None, world, mutations);
-                }
-            }
-            PaneTreeNode::Split {
-                ratio,
-                first,
-                second,
-                ..
-            } => {
-                let ratio = clamp_split_ratio(*ratio);
-                first.project_slots(Some(ratio), world, mutations);
-                second.project_slots(Some(1.0 - ratio), world, mutations);
-            }
+        // Only "fill the box you were put in". The box itself, and the share
+        // of the split it takes, belong to the `PaneSlot` nodes the tree owns —
+        // see `sync_pane_tree`. Writing the share here is what never worked:
+        // the content node's own projection overwrote it in the same pass.
+        for content in self.root.content_nodes() {
+            project_leaf_slot(content, world, mutations);
         }
     }
 }
@@ -565,12 +682,7 @@ fn clamp_split_ratio(ratio: f32) -> f32 {
     }
 }
 
-fn project_leaf_slot(
-    id: StableNodeId,
-    grow: Option<f32>,
-    world: &UiWorld,
-    mutations: &mut MutationQueue,
-) {
+fn project_leaf_slot(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
     if world.node(id).is_none() {
         return;
     }
@@ -578,12 +690,9 @@ fn project_leaf_slot(
     let layout = Arc::make_mut(&mut style.layout);
     layout.width = Some(LengthSpec::Fill);
     layout.height = Some(LengthSpec::Fill);
-    if let Some(grow) = grow {
-        layout.flex_grow = Some(grow);
-        layout.flex_shrink = Some(1.0);
-        layout.min_width = Some(LengthSpec::Px(0.0));
-        layout.min_height = Some(LengthSpec::Px(0.0));
-    } else if layout.flex_grow.is_none() {
+    layout.min_width = Some(LengthSpec::Px(0.0));
+    layout.min_height = Some(LengthSpec::Px(0.0));
+    if layout.flex_grow.is_none() {
         layout.flex_grow = Some(1.0);
         layout.flex_shrink = Some(1.0);
     }
@@ -754,17 +863,50 @@ mod tests {
                 .direction,
             Some(FlexDirection::Row)
         );
+        // The share lives on the box the tree owns, not on the host's content.
+        // This used to assert `flex_grow` on `left` / `top` / `bottom`, which
+        // is the thing that never worked: the content node's own projection
+        // overwrote it in the same pass, so no split ever honoured its ratio.
+        // It also recorded the nesting bug as if it were the contract — the
+        // `bottom` leaf was given 0.6, the *root's* second share, because an
+        // inner split's ratio overwrote its parent's on the way down.
+        let share = |content: StableNodeId, axis: FlexDirection| {
+            let slot = context
+                .world()
+                .node(content)
+                .and_then(|node| node.parent)
+                .expect("content sits inside the box the tree owns");
+            let layout = context.world().node_style(slot).unwrap().layout.clone();
+            match axis {
+                FlexDirection::Row => layout.width,
+                FlexDirection::Column => layout.height,
+            }
+        };
+        let percent = |length: Option<LengthSpec>| match length {
+            Some(LengthSpec::Percent(value)) => value,
+            other => panic!("expected a percentage share, found {other:?}"),
+        };
+        assert!((percent(share(left, FlexDirection::Row)) - 60.0).abs() < 0.01);
+        assert!((percent(share(top, FlexDirection::Column)) - 40.0).abs() < 0.01);
+        assert!((percent(share(bottom, FlexDirection::Column)) - 60.0).abs() < 0.01);
+        // And the inner split is a box of its own, laid out down its own axis.
+        let stack = context
+            .world()
+            .node(
+                context
+                    .world()
+                    .node(top)
+                    .and_then(|node| node.parent)
+                    .expect("leaf box"),
+            )
+            .and_then(|node| node.parent)
+            .expect("the inner split owns a box between the leaf and the tree");
         assert_eq!(
-            context.world().node_style(left).unwrap().layout.flex_grow,
-            Some(0.6)
+            context.world().node_style(stack).unwrap().layout.direction,
+            Some(FlexDirection::Column)
         );
-        assert_eq!(
-            context.world().node_style(top).unwrap().layout.flex_grow,
-            Some(0.4)
-        );
-        assert_eq!(
-            context.world().node_style(bottom).unwrap().layout.flex_grow,
-            Some(0.6)
+        assert!(
+            (percent(context.world().node_style(stack).unwrap().layout.width) - 40.0).abs() < 0.01
         );
     }
 

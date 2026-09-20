@@ -3,7 +3,9 @@ mode: light
 state: nested
   target: 20.00,20.00 440.00x200.00
   a11y: role=Generic disabled=false checked=None selected=None mixed=false
-  quad #2/0 20.00,20.00 220.00x200.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,29.00 202.00x182.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #3/0 240.00,20.00 220.00x200.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #3/2 249.00,29.00 202.00x182.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #2/0 20.00,20.00 176.00x200.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #2/2 29.00,29.00 158.00x182.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #3/0 196.00,20.00 264.00x100.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #3/2 205.00,29.00 246.00x82.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #4/0 196.00,120.00 264.00x100.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #4/2 205.00,129.00 246.00x82.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

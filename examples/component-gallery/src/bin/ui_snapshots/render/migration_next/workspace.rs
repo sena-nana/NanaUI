@@ -213,14 +213,14 @@ pub(super) fn mount_runtime_pane_tree(
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        // One split of two leaves, which is all `PaneTree` implements: a
-        // nested split's axis is discarded and its ratio overwrites the
-        // parent's, so `project_slots` flattens any tree into one flex line.
-        // The fixture is named "nested" and cannot nest — see the note in
-        // `snapshots/README.md`. What it can now show is the 0.4 ratio, which
-        // two bare `Text` leaves in a 480x240 canvas never did.
+        // The state is called "nested", so it nests: a 0.4 horizontal split
+        // whose right half is itself split down the middle. Both halves of
+        // that sentence used to be unobservable — `PaneTree` flattened the
+        // tree into one flex line, its ratio never applied, and leaves with no
+        // surface of their own drew nothing but two words.
         let left = ui.parked(RuntimeText::new("left").style(pane_leaf_style()));
-        let right = ui.parked(RuntimeText::new("right").style(pane_leaf_style()));
+        let top = ui.parked(RuntimeText::new("right top").style(pane_leaf_style()));
+        let bottom = ui.parked(RuntimeText::new("right bottom").style(pane_leaf_style()));
         let tree = ui.child(
             "tree",
             RuntimePaneTree::new(RuntimePaneTreeNode::split(
@@ -228,12 +228,19 @@ pub(super) fn mount_runtime_pane_tree(
                 SplitAxis::Horizontal,
                 0.4,
                 RuntimePaneTreeNode::leaf_content("left", left.stable_id()),
-                RuntimePaneTreeNode::leaf_content("right", right.stable_id()),
+                RuntimePaneTreeNode::split(
+                    "right",
+                    SplitAxis::Vertical,
+                    0.5,
+                    RuntimePaneTreeNode::leaf_content("right-top", top.stable_id()),
+                    RuntimePaneTreeNode::leaf_content("right-bottom", bottom.stable_id()),
+                ),
             )),
         );
         ui.nest(tree, |ui| {
             ui.adopt(left);
-            ui.adopt(right);
+            ui.adopt(top);
+            ui.adopt(bottom);
         });
         tree.stable_id()
     })?)

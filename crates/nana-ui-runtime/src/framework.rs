@@ -504,6 +504,8 @@ struct ComponentLifecycle {
     overlay_activation_tokens: HashMap<StableNodeId, u64>,
     next_overlay_activation_token: u64,
     split_hover_probe_last: HashMap<DocumentId, Duration>,
+    /// Per `PaneTree`, the boxes it owns, addressed by its own split / pane id.
+    pane_tree_slots: HashMap<StableNodeId, HashMap<Arc<str>, StableNodeId>>,
 }
 
 impl ComponentLifecycle {

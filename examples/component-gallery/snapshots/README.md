@@ -287,29 +287,31 @@ paints a rounding error. `pane-tree/*/nested` was 310 painted pixels in a
 chrome of its own and the fixture's leaves had no surface. Neither the split
 nor its ratio was observable in either baseline.
 
-Giving the leaves a surface made two things visible at once, and both are open:
+Giving the leaves a surface made two defects visible at once, and they turned
+out to be one defect:
 
-- **`PaneTree` does not nest.** `project_slots` walks the tree but only ever
-  emits leaves, each as a direct child of the root with a `flex_grow`; an inner
-  split's axis is discarded and its ratio overwrites the parent's. A nested tree
-  renders as one flat row. Every call site in the repo is depth-1, so nothing
-  had noticed.
-- **`PaneTree` cannot size its leaves at all**, so the split ratio has never
-  had any effect. `project_leaf_slot` writes width, height and flex onto the
-  *content* node, and that node's own `ComponentView::project` overwrites them
-  from its authored style in the same pass. Whoever writes last wins, and it is
-  never the tree: with the leaves left alone they shrink to their text
-  (37.96 and 46.74 of 440 for a 0.4 split), and with the leaves asked to fill
-  they come out 220/220. Neither is 176/264.
+- **`PaneTree` could not size its leaves.** `project_leaf_slot` wrote width,
+  height and flex onto the *content* node, and that node's own
+  `ComponentView::project` overwrote them from its authored style in the same
+  pass. Whoever wrote last won and it was never the tree, so the split ratio
+  had never had any effect in either direction: leaves left alone shrank to
+  their text (37.96 and 46.74 of 440 for a 0.4 split), leaves asked to fill
+  came out 220/220. Neither is 176/264.
+- **`PaneTree` did not nest.** `project_slots` walked the tree but only ever
+  emitted leaves, each a direct child of the root; an inner split's axis was
+  discarded and its ratio overwrote the parent's. A nested tree rendered as one
+  flat row.
 
-  Both defects want the same thing — `PaneTree` owning a container node per
-  split and per leaf, instead of writing style onto nodes the host also owns —
-  which is why neither is patched here.
+The tree now owns a `PaneSlot` box per split and per leaf, keyed by its own
+split / pane ids, and the host's content is re-parented inside its leaf box.
+A number written on a box nobody else projects stays written. `nested` now
+renders 176x200 beside two 264x100 — the ratio and the nesting, both visible
+for the first time — and `pane_tree_projects_leaf_slots_with_split_ratio`
+asserts the shares on the boxes. It used to assert `flex_grow` on the content
+nodes, which is to say it pinned the broken behaviour, down to giving the
+bottom leaf the root's second share instead of its own parent's.
 
-The fixture is therefore still named `nested` and still cannot nest. It is left
-that way deliberately, the same way `tooltip-edge` was: renaming it would hide
-the finding, and fixing it means changing either the flex engine or the slot
-contract, which is not a snapshot-suite change.
+Every call site in the repo was depth-1, which is why nothing had noticed.
 
 ## Adding an adapter
 

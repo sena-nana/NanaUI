@@ -264,7 +264,9 @@ pub use overlay_surfaces::{
 pub use overlay_visibility::{
     OVERLAY_IDLE, OverlayLocks, OverlayVisibility, OverlayVisibilityConfig,
 };
-pub use pane::{PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneTree, PaneTreeNode};
+pub use pane::{
+    PaneChrome, PaneChromeAction, PaneChromeActionKind, PaneSlot, PaneTree, PaneTreeNode,
+};
 pub use pane_section::PaneSection;
 pub use path_field::{BrowseRequested, PathField};
 pub use placeholders::{LevelMeter, Skeleton};
