@@ -124,7 +124,7 @@ NANA_TEXT_BLESS=1 cargo test -p nana-text --test text_parity_corpus
 
 bless 只记录，不判定：它写完 golden 就返回，不做比较。重新 bless 必须是一次**可见、可评审的
 diff**，永远不自动发生。这些 golden 是 hermetic 字体库下的纯 Rust 度量值，跨机器确定，和
-[像素快照](pending-snapshot-bless.md)不同，本机可以放心 bless。
+[像素快照](../examples/component-gallery/snapshots/README.md)不同，本机可以放心 bless。
 
 ### 确定性靠 hermetic 字体库
 
@@ -1246,7 +1246,7 @@ staging，并把传输排在下一次提交之前。手写 ring 需要 painter �
 ### 与 cryoglyph 的像素差
 
 改绘制那一天，component-gallery 的 561 张快照里 **551 张逐字节不变**，1 张是本来就抖动的
-`gallery-sidebar-collapsed-dark`（自转的 Spinner，见 `pending-snapshot-bless.md`），
+`gallery-sidebar-collapsed-dark`（曾因自转的 Spinner 被当成抖动；2026-09-20 复核连跑两遍零差异），
 剩下 9 张 `motion-*` 变了，且是**变好**：
 
 旧的 affine 路径把 mask 存成「RGB=255 + A=覆盖率」的 RGBA 图，着色器又做

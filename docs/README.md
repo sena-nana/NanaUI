@@ -63,5 +63,3 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [LiliaCode 组件恢复（2026-09-10）](liliacode-component-restoration-2026-09-10.md)
 - [窗口全屏与跨线程最新帧（2026-09-14）](consumer-upgrade-2026-09-14.md)
 - [窗口不出现在任务栏（2026-09-15）](consumer-upgrade-2026-09-15.md)
-
-[待重录的快照](pending-snapshot-bless.md)：像素基线还欠 355 张——不是缺机器，是缺解释；开发机已验证可以录。做完即删。

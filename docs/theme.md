@@ -432,7 +432,7 @@ python3 scripts/audit-theme-hardcoding.py --check docs/performance-data/theme-au
 
 ### 3.1 像素基线（已有）
 
-`snapshots/<adapter-key>/component-migration/<component>/<dark|light>/<state>.png`：72 个组件 472 张，加上 shell / dock / titlebar 等整窗快照 83 张，提交树共 555 张。一次完整运行渲染 557 个 fixture——`donut-chart` 的两张（dark/light `slices`）还没在录制基线的机器上 bless，见 [待重录的快照](pending-snapshot-bless.md)。零容差，按 GPU adapter 分目录；规则见该目录的 [README](../examples/component-gallery/snapshots/README.md)。
+`snapshots/<adapter-key>/component-migration/<component>/<dark|light>/<state>.png`：72 个组件 472 张，加上 shell / dock / titlebar 等整窗快照 83 张，提交树共 555 张。一次完整运行渲染 557 个 fixture——`donut-chart` 的两张（dark/light `slices`）当时还没录过基线（2026-09-20 已补）。零容差，按 GPU adapter 分目录；规则见该目录的 [README](../examples/component-gallery/snapshots/README.md)。
 
 ```bash
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked
@@ -489,7 +489,7 @@ state: primary
 | `textarea` | hover |
 | `xy-pad` | hover, focused |
 
-29 个 fixture × light/dark = 58 张新像素键 + 58 段新语义基线。语义基线本轮已录并验；像素是新键（不是「像素变了」），列在 [待重录的快照](pending-snapshot-bless.md)，要在录制基线的机器上 `--bless`。
+29 个 fixture × light/dark = 58 张新像素键 + 58 段新语义基线。语义基线本轮已录并验；像素是新键（不是「像素变了」），2026-09-20 已补录。
 
 **每一段都验过确实进入了状态**，方式是拿语义基线做逐字节比对：与该组件任何其他状态都不相同，或相同时能说清为什么。三对例外是组件的真实声明而非 fixture 失效——`dropdown` / `search-dropdown` / `xy-pad` 的 `hovered` 与 `focused` 都指向 `BorderStrong`，**悬停与聚焦在视觉上无法区分**。这是一条可访问性层面的现状，Phase 4 定 recipe 时要么保留要么显式改掉。
 
@@ -657,7 +657,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 2. **编译结果等值断言。** `the_built_in_definitions_compile_to_exactly_the_tokens_already_rendered` 断言 `ThemeDefinition::NANA_DARK.compile()` 产出的 `SemanticPalette` 与 `ThemeMetrics` 和树上现在渲染用的**完全相等**。等值成立时，任何 fixture 都没有可动的余地——一次需要重录 615 张图才能证明自己安全的迁移，等于没有证明。
 3. **work counter 逐字段比对。** 11 个 theme 场景对 Phase 0 存档**全部 11 项 counter 逐字段相同**（见 §7.7）。
 
-> ⚠️ **本轮之前语义基线就已经和 HEAD 对不上了。** 干净 HEAD 上跑 `--semantic` 有 **46 个 fixture 报 CHANGED**，`cargo test -p component-gallery --bin ui-snapshots` 因此在 main 上就是红的，与 #102 无关——上面第 1 条正是为了把这两件事分开才那样做。这 46 张已在随后一轮里逐条对因后重录（现 146/146 MATCH），其中 3 类查出来是回归而不是常量收敛，见 [待重录的快照](pending-snapshot-bless.md)。
+> ⚠️ **本轮之前语义基线就已经和 HEAD 对不上了。** 干净 HEAD 上跑 `--semantic` 有 **46 个 fixture 报 CHANGED**，`cargo test -p component-gallery --bin ui-snapshots` 因此在 main 上就是红的，与 #102 无关——上面第 1 条正是为了把这两件事分开才那样做。这 46 张已在随后一轮里逐条对因后重录（现 146/146 MATCH），其中 3 类查出来是回归而不是常量收敛；像素套件也在同一轮补齐到 615/615。
 
 ### 7.1 类型全景
 
