@@ -61,8 +61,11 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     window_tag: Option<Arc<str>>,
     geometry: WindowGeometry,
     gpu: HostedGpuResources,
-    material: MaterialOutcome,
-    surface_alpha_mode: wgpu::CompositeAlphaMode,
+    /// What this window presents, the target it reaches the screen through, and
+    /// why either of them differs from what was asked for. One value, so a
+    /// program cannot read a material and an alpha mode that disagree.
+    presentation: crate::ResolvedWindowPresentation,
+    composition_work: crate::CompositionWork,
     dispatch: Arc<dyn Fn(Message) + Send + Sync>,
     tasks: SyncSender<Task<Message>>,
     system_appearance: Option<SystemAppearance>,
@@ -80,8 +83,8 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             window_tag: self.window_tag.clone(),
             geometry: self.geometry,
             gpu: self.gpu.clone(),
-            material: self.material,
-            surface_alpha_mode: self.surface_alpha_mode,
+            presentation: self.presentation,
+            composition_work: self.composition_work,
             dispatch: Arc::clone(&self.dispatch),
             tasks: self.tasks.clone(),
             system_appearance: self.system_appearance,
@@ -100,8 +103,8 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         window_id: WindowId,
         geometry: WindowGeometry,
         gpu: HostedGpuResources,
-        material: MaterialOutcome,
-        surface_alpha_mode: wgpu::CompositeAlphaMode,
+        presentation: crate::ResolvedWindowPresentation,
+        composition_work: crate::CompositionWork,
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
         tasks: SyncSender<Task<Message>>,
         system_appearance: Option<SystemAppearance>,
@@ -112,8 +115,8 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             window_tag: None,
             geometry,
             gpu,
-            material,
-            surface_alpha_mode,
+            presentation,
+            composition_work,
             dispatch,
             tasks,
             system_appearance,
@@ -181,8 +184,24 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         &self.gpu
     }
 
+    /// What this window is actually presenting, with the fallback reason when
+    /// the request could not be met.
     pub const fn material(&self) -> MaterialOutcome {
-        self.material
+        self.presentation.effective()
+    }
+
+    /// What mirroring this window's scene into the platform compositor has
+    /// cost so far. A settled window's counters stop moving, however many GPU
+    /// frames it goes on presenting.
+    pub const fn composition_work(&self) -> crate::CompositionWork {
+        self.composition_work
+    }
+
+    /// The whole resolved presentation: requested and effective material, the
+    /// surface alpha mode, the presentation target and any fallback from the
+    /// target that was asked for.
+    pub const fn presentation(&self) -> crate::ResolvedWindowPresentation {
+        self.presentation
     }
 
     /// The operating system's light/dark preference when this context was
@@ -202,7 +221,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     }
 
     pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
-        self.surface_alpha_mode
+        self.presentation.alpha_mode()
     }
 
     pub fn dispatch(&self, message: Message) {
@@ -393,15 +412,44 @@ pub trait RuntimeProgram: Sized + 'static {
     type Message: Send + 'static;
     type Error: fmt::Display;
 
-    fn surface_mode() -> crate::HostedSurfaceMode {
-        crate::HostedSurfaceMode::Window
+    /// What this process needs from its GPU backend.
+    ///
+    /// Process-wide, because the backend, adapter and device are: every window
+    /// shares one of each. Asking for
+    /// [`GpuBackendPolicy::CompositionCapable`] makes the compositor path
+    /// *available*; it does not put any window on it. A window asks for the
+    /// path with [`WindowDescriptor::surface`].
+    ///
+    /// [`GpuBackendPolicy::CompositionCapable`]: crate::GpuBackendPolicy::CompositionCapable
+    /// [`WindowDescriptor::surface`]: crate::WindowDescriptor::surface
+    fn gpu_backend_policy() -> crate::GpuBackendPolicy {
+        crate::GpuBackendPolicy::Plain
     }
 
+    /// Mirrors this frame's native-content regions into the window's
+    /// DirectComposition tree.
+    ///
+    /// Called only when the regions differ from the ones this window was last
+    /// given, so a program that maps them onto visuals one-to-one does no work
+    /// on a frame whose native geometry did not move — however many GPU frames
+    /// the UI presents in between.
+    ///
+    /// That also means this is *not* the only place a backend may touch its
+    /// visuals. A backend with its own reason to change one — an engine frame
+    /// arrived, the application hid a layer — mutates the
+    /// [`WindowsNativeVisual`](crate::WindowsNativeVisual) it already holds,
+    /// whenever it likes. Staging is what marks the tree dirty, so the next
+    /// frame's commit publishes it; waiting for this callback would wait for a
+    /// geometry change that may never come.
+    ///
+    /// The tree handed in stages changes; it cannot commit them. The Scene
+    /// host publishes the transaction once per frame, so the backend and the
+    /// host never submit the same tree.
     #[cfg(target_os = "windows")]
     fn native_content_frame(
         &mut self,
         _id: WindowId,
-        _composition: &crate::WindowsComposition,
+        _composition: &crate::WindowsCompositionTree,
         regions: &[crate::NativeContentRegion],
         _context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(), String> {

@@ -482,47 +482,111 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let parent = settings
             .parent
             .and_then(|parent| self.window(parent).cloned());
-        let attributes = scene_aux_window_attributes(
-            &settings,
-            parent.as_deref(),
-            &scene_desktop(event_loop, settings.constrain_to_work_area),
-            super::composed_surface(self.surface_mode),
-        )?;
-        let window: Arc<dyn winit::window::Window> = Arc::from(
-            event_loop
-                .create_window(attributes.with_visible(false))
-                .map_err(|error| error.to_string())?,
-        );
-        let mut pending_native = PendingNativeWindow(Some(window.clone()));
-        apply_scene_window_icon(
-            window.as_ref(),
-            settings.icon.as_ref(),
-            id == WindowId::PRIMARY,
-        );
-        let material = apply_window_surface(
-            window.as_ref(),
-            self.last_theme,
-            &settings,
-            self.program.window_material_mode_for(id),
-            self.program.appearance_backdrop_opacity_for(id),
-            super::composed_surface(self.surface_mode),
-            true,
-        );
-        let surface = self
-            .graphics
-            .create_surface_with_mode(
-                Arc::clone(&window),
+        // This window's own target, from its own descriptor. A Settings
+        // window, a dialog or a popup stays on the platform's window surface
+        // even in a process whose main window is composed; the shared GPU
+        // device does not care which surface target each window uses.
+        let surface_target = crate::presentation::resolve_window_surface_target(
+            crate::presentation::window_surface_request(
+                settings.surface,
                 window_wants_transparent_surface(
                     settings.transparent,
                     self.program.window_material_mode_for(id),
                 ),
-                self.surface_mode,
-            )
-            .map_err(|error| error.to_string())?;
-        let material = material_for_surface_alpha(
-            material,
+                self.gpu_backend_policy,
+            ),
+            settings.surface.requires_composition(),
+            self.composition,
+        );
+        if let Some(reason) = surface_target.forbidden_fallback() {
+            // This window asked to fail rather than present another way, and
+            // failing to open is reported to the application as such.
+            return Err(format!(
+                "window requires a platform compositor surface: {}",
+                reason.label()
+            ));
+        }
+        let desktop = scene_desktop(event_loop, settings.constrain_to_work_area);
+        let backdrop_opacity = self.program.appearance_backdrop_opacity_for(id);
+        let material_mode = self.program.window_material_mode_for(id);
+        // A composed window is provisional here for the same reason the first
+        // window is: `WS_EX_NOREDIRECTIONBITMAP` is decided at creation, and
+        // every step that could reject the composition target comes after it.
+        // A failed attempt drops its window and retries on the plain path
+        // rather than opening nothing.
+        let mut attempt = surface_target;
+        let (window, surface, requested_material, applied) = loop {
+            let attributes = scene_aux_window_attributes(
+                &settings,
+                parent.as_deref(),
+                &desktop,
+                attempt.resolved,
+            )?;
+            let window: Arc<dyn winit::window::Window> = Arc::from(
+                event_loop
+                    .create_window(attributes.with_visible(false))
+                    .map_err(|error| error.to_string())?,
+            );
+            // Owns the window for the length of the attempt: an early exit
+            // drops it with the local below, destroying the HWND created for a
+            // target that did not work out.
+            let mut provisional = PendingNativeWindow(Some(window.clone()));
+            apply_scene_window_icon(
+                window.as_ref(),
+                settings.icon.as_ref(),
+                id == WindowId::PRIMARY,
+            );
+            let (requested_material, applied) = apply_window_material(
+                window.as_ref(),
+                self.last_theme,
+                &settings,
+                material_mode,
+                backdrop_opacity,
+            );
+            match self.graphics.create_surface_with_mode(
+                Arc::clone(&window),
+                requested_material.wants_transparent_surface(),
+                super::surface_mode_for(attempt.resolved),
+            ) {
+                Ok(surface) => {
+                    provisional.0 = None;
+                    break (window, surface, requested_material, applied);
+                }
+                Err(error) => match super::next_bootstrap_attempt(attempt) {
+                    Some(next) => {
+                        // A composed target that could not be built for this
+                        // window will not build for the next one either, so
+                        // the failure narrows the whole process and no later
+                        // window pays for a doomed provisional HWND.
+                        self.composition =
+                            crate::presentation::CompositionAvailability::Unavailable;
+                        attempt = next;
+                    }
+                    None => return Err(error.to_string()),
+                },
+            }
+        };
+        let surface_target = attempt;
+        let mut pending_native = PendingNativeWindow(Some(window.clone()));
+        // The surface has answered, so this window's effective material and the
+        // chrome that matches it are settled together, before it is shown.
+        let presentation = ResolvedWindowPresentation::resolve(
+            &settings,
+            requested_material,
+            applied,
             surface.alpha_mode(),
             self.graphics.adapter_info().backend,
+            surface_target,
+            self.non_client,
+        );
+        self.note_native_chrome_write();
+        apply_resolved_presentation(
+            window.as_ref(),
+            self.last_theme,
+            &settings,
+            &presentation,
+            backdrop_opacity,
+            true,
         );
         let format = surface.format();
         let _ = self.painter_mut(format);
@@ -546,8 +610,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             id,
             geometry,
             self.tasks.clone(),
-            material,
-            surface.alpha_mode(),
+            presentation,
+            self.composition_work_of(id),
             window.theme().map(system_appearance_from_winit),
         )
         .with_windows(&self.windows)
@@ -581,7 +645,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 surface,
                 geometry,
                 input: InputTracker::default(),
-                material,
+                presentation,
                 settings,
                 #[cfg(not(target_os = "android"))]
                 accessibility,
@@ -604,7 +668,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         let settings = self.settings_of(id);
         let (visible, focus_on_show) = (settings.visible, settings.focus_on_show);
-        self.mutate_native_style(id, |window| {
+        self.mutate_window_visibility(id, |window| {
             set_native_visible(window, visible, focus_on_show)
         });
         window.request_redraw();
@@ -630,6 +694,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.browsers.retain(|(window, _), _| *window != id);
         self.close_file_dialog(event_loop, id);
         self.chrome.remove(&id);
+        self.native_content.remove(&id);
         self.bind_after_present.remove(&id);
         #[cfg(target_os = "macos")]
         self.present_transaction_pinned.remove(&id);
@@ -695,16 +760,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         while let Some(modal) = self.active_modal_child(id) {
             id = modal;
         }
-        self.mutate_native_style(id, |window| window.set_visible(true));
+        // Raising a window is not a style change; only the show is, and a
+        // window that is already visible does not even get that far.
+        self.mutate_window_visibility(id, |window| window.set_visible(true));
         if let Some(window) = self.window(id) {
             window.focus_window();
         }
     }
     pub(super) fn move_window(&self, id: WindowId, position: (f32, f32)) {
-        self.mutate_native_style(id, |window| move_to_desktop_position(window, position));
+        self.mutate_window_geometry(id, |window| move_to_desktop_position(window, position));
     }
     pub(super) fn set_window_bounds(&self, id: WindowId, position: (f32, f32), size: (f32, f32)) {
-        self.mutate_native_style(id, |window| {
+        self.mutate_window_geometry(id, |window| {
             move_to_desktop_position(window, position);
             let _ = window.request_surface_size(winit::dpi::Size::Logical(
                 winit::dpi::LogicalSize::new(
@@ -761,29 +828,48 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let Some(host) = self.window_contexts.get_mut(&id) else {
             return Ok(());
         };
-        let outcome = apply_changed_appearance(&mut host.applied_appearance, desired, || {
+        // A material change never re-negotiates the presentation target; it
+        // carries the verdict this window already reached.
+        let surface_target = host.presentation.resolved_target();
+        let non_client = self.non_client;
+        let chrome_writes = &self.native_chrome_writes;
+        let resolved = apply_changed_appearance(&mut host.applied_appearance, desired, || {
             clear_system_material(host.surface.window().as_ref());
-            let outcome = apply_window_surface(
+            let (requested, applied) = apply_window_material(
                 host.surface.window().as_ref(),
                 desired.theme,
                 &host.settings,
                 desired.material,
                 desired.opacity,
-                super::composed_surface(self.surface_mode),
-                true,
             );
             self.graphics.apply_surface_alpha_mode(
                 &mut host.surface,
                 window_wants_transparent_surface(host.settings.transparent, desired.material),
             )?;
-            Ok(material_for_surface_alpha(
-                outcome,
+            let presentation = ResolvedWindowPresentation::resolve(
+                &host.settings,
+                requested,
+                applied,
                 host.surface.alpha_mode(),
                 self.graphics.adapter_info().backend,
-            ))
+                surface_target,
+                non_client,
+            );
+            // Chrome follows this presentation in the same step, so a request
+            // the surface demoted cannot leave transparent chrome behind.
+            chrome_writes.set(chrome_writes.get().saturating_add(1));
+            apply_resolved_presentation(
+                host.surface.window().as_ref(),
+                desired.theme,
+                &host.settings,
+                &presentation,
+                desired.opacity,
+                true,
+            );
+            Ok(presentation)
         })?;
-        if let Some(outcome) = outcome {
-            host.material = outcome;
+        if let Some(presentation) = resolved {
+            host.presentation = presentation;
             self.request_redraw(id);
         }
         Ok(())
@@ -1276,22 +1362,47 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .unwrap_or(&self.settings)
     }
 
-    /// Surface effect actually in force: the material last applied, or the
-    /// descriptor before anything has been applied. A request that fell back to
-    /// solid is not it — the window still presents the surface the caller asked
-    /// for, and `host.material` would report the fallback.
-    pub(super) fn window_surface_material(&self, id: WindowId) -> crate::MaterialEffect {
-        let Some(host) = self.window_contexts.get(&id) else {
-            return crate::MaterialEffect::Solid;
-        };
-        let requested = host
-            .applied_appearance
-            .map_or(crate::MaterialEffect::Solid, |appearance| {
-                appearance.material
-            });
-        window_surface_effect(host.settings.transparent, requested)
+    /// Moves or resizes a window, and does nothing else.
+    ///
+    /// Position and size are not window flags: winit stores them and calls
+    /// `SetWindowPos`, so nothing rewrites `GWL_STYLE`/`GWL_EXSTYLE` and there
+    /// is no chrome to reconcile. A move in particular must stay this cheap —
+    /// the compositor moves the frame it already has, so a dragged window
+    /// costs no redraw, no DWM corner and border rewrite, and no style guard
+    /// re-arm.
+    pub(super) fn mutate_window_geometry<R>(
+        &self,
+        id: WindowId,
+        mutate: impl FnOnce(&dyn winit::window::Window) -> R,
+    ) -> Option<R> {
+        self.window(id).map(|window| mutate(window.as_ref()))
     }
 
+    /// Shows or hides a window.
+    ///
+    /// `WS_VISIBLE` is one of winit's own window flags, so this does rewrite
+    /// the style and the chrome has to be put back — but it is not a paint,
+    /// and callers decide whether the window owes a frame.
+    pub(super) fn mutate_window_visibility<R>(
+        &self,
+        id: WindowId,
+        mutate: impl FnOnce(&dyn winit::window::Window) -> R,
+    ) -> Option<R> {
+        let result = self.window(id).map(|window| mutate(window.as_ref()));
+        if result.is_some() {
+            self.reconcile_native_chrome(id);
+        }
+        result
+    }
+
+    /// Runs a winit call that can rewrite the window's native style, then puts
+    /// NanaUI's chrome back on top of whatever winit wrote.
+    ///
+    /// Only paths that change a `WindowFlags` bit belong here — maximize,
+    /// minimize, fullscreen, window level, resizable, cursor hit-testing —
+    /// because those are the ones `apply_diff` rewrites the whole style for.
+    /// The frame change it sends is a visual change, so this also asks for a
+    /// frame.
     pub(super) fn mutate_native_style<R>(
         &self,
         id: WindowId,
@@ -1299,23 +1410,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Option<R> {
         let result = self.window(id).map(|window| mutate(window.as_ref()));
         if result.is_some() {
-            self.restore_client_chrome(id);
+            self.reconcile_native_chrome(id);
+            self.request_redraw(id);
         }
         result
     }
 
-    fn restore_client_chrome(&self, id: WindowId) {
+    /// Re-asserts this window's native chrome from its resolved presentation.
+    ///
+    /// The policy comes off `host.presentation`, which was settled when the
+    /// surface answered; nothing here re-derives it from the request, so a
+    /// window whose transparency fell back to solid cannot pick transparent
+    /// chrome back up on a later style change.
+    pub(super) fn reconcile_native_chrome(&self, id: WindowId) {
         let Some(host) = self.window_contexts.get(&id) else {
             return;
         };
+        self.note_native_chrome_write();
         let window = host.surface.window();
-        apply_client_chrome_after_create(
-            window.as_ref(),
-            &host.settings,
-            self.window_surface_material(id),
-            super::composed_surface(self.surface_mode),
-            true,
-        );
+        apply_native_chrome(window.as_ref(), &host.settings, &host.presentation, true);
         // `prepare_client_chrome` centers the buttons the way a window
         // without a laid-out placeholder wants them.
         place_native_controls(host);
@@ -1327,7 +1440,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 std::time::Duration::ZERO,
             );
         }
-        self.request_redraw(id);
+    }
+
+    /// Records one native-chrome write.
+    ///
+    /// Every path that writes chrome calls this, including the ones that go
+    /// through [`apply_resolved_presentation`] directly rather than through
+    /// [`Self::reconcile_native_chrome`]. A path that wrote chrome without
+    /// counting it would be a hole in the steady-state gate: the contract
+    /// would read zero while the window rewrote its frame styles on every
+    /// frame.
+    pub(super) fn note_native_chrome_write(&self) {
+        self.native_chrome_writes
+            .set(self.native_chrome_writes.get().saturating_add(1));
     }
 
     /// Moves the native window buttons onto the title bar's placeholder.
@@ -1618,7 +1743,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         match control {
             Control::Visible(visible) => {
                 let focus_on_show = self.settings_of(id).focus_on_show;
-                self.mutate_native_style(id, |window| {
+                self.mutate_window_visibility(id, |window| {
                     set_native_visible(window, visible, focus_on_show)
                 });
                 // Frames were deferred while hidden; a shown window repaints
@@ -1642,7 +1767,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Control::Size(size) => {
                 validate_size(size)?;
-                self.mutate_native_style(id, |window| {
+                self.mutate_window_geometry(id, |window| {
                     window.request_surface_size(winit::dpi::LogicalSize::new(size.0, size.1).into())
                 });
             }
@@ -1650,7 +1775,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if let Some(size) = size {
                     validate_size(size)?;
                 }
-                self.mutate_native_style(id, |window| {
+                self.mutate_window_geometry(id, |window| {
                     window.set_min_surface_size(
                         size.map(|s| winit::dpi::LogicalSize::new(s.0, s.1).into()),
                     )
@@ -1660,7 +1785,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if let Some(size) = size {
                     validate_size(size)?;
                 }
-                self.mutate_native_style(id, |window| {
+                self.mutate_window_geometry(id, |window| {
                     window.set_max_surface_size(
                         size.map(|s| winit::dpi::LogicalSize::new(s.0, s.1).into()),
                     )
@@ -1784,11 +1909,11 @@ pub(super) fn place_native_controls(host: &WindowContext) {
     );
 }
 
-fn apply_changed_appearance(
+fn apply_changed_appearance<T>(
     applied: &mut Option<WindowAppearance>,
     desired: WindowAppearance,
-    apply: impl FnOnce() -> Result<MaterialOutcome, HostedGpuError>,
-) -> Result<Option<MaterialOutcome>, HostedGpuError> {
+    apply: impl FnOnce() -> Result<T, HostedGpuError>,
+) -> Result<Option<T>, HostedGpuError> {
     if *applied == Some(desired) {
         return Ok(None);
     }
@@ -1825,14 +1950,14 @@ mod appearance_tests {
         assert_eq!(calls, vec![1]);
         assert_eq!(windows[1], Some(changed));
         assert!(
-            apply_changed_appearance(&mut windows[1], changed, || panic!(
+            apply_changed_appearance::<MaterialOutcome>(&mut windows[1], changed, || panic!(
                 "unchanged material was reapplied"
             ))
             .unwrap()
             .is_none()
         );
         assert!(
-            apply_changed_appearance(&mut windows[1], original, || Err(
+            apply_changed_appearance(&mut windows[1], original, || Err::<MaterialOutcome, _>(
                 HostedGpuError::SurfaceValidation
             ))
             .is_err()
@@ -1855,7 +1980,7 @@ mod appearance_tests {
         let apply = |cache: &mut Option<WindowAppearance>, desired| {
             apply_changed_appearance(cache, desired, || {
                 calls.set(calls.get() + 1);
-                Err(HostedGpuError::SurfaceValidation)
+                Err::<MaterialOutcome, _>(HostedGpuError::SurfaceValidation)
             })
         };
         assert!(apply(&mut cached, light).is_err());

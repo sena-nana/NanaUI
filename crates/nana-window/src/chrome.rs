@@ -43,6 +43,89 @@ pub fn prepare_client_chrome<W: HasWindowHandle + ?Sized>(
     prepared
 }
 
+/// How a transparent client stops DWM rendering a non-client area underneath it.
+///
+/// winit's undecorated window keeps `WS_CAPTION | WS_THICKFRAME | WS_SYSMENU`
+/// and only extends the client over them through `WM_NCCALCSIZE`, so DWM goes
+/// on drawing a caption, its buttons and a drop shadow *below* the client. An
+/// opaque client hides that; a transparent one shows it through.
+///
+/// There are two ways out, and they cost different things:
+///
+/// - [`Self::StripFrameStyles`] takes the bits away. It is measured to work,
+///   and it gives up the system behaviour those bits carry: Aero Snap, the
+///   Windows 11 Snap Layouts hover menu on the maximize button, the Alt+Space
+///   system menu, and the system minimize/maximize animations.
+/// - [`Self::SuppressNonClientRendering`] keeps the bits and asks DWM not to
+///   render the non-client area (`DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`).
+///   If that holds, a transparent window keeps every one of those system
+///   behaviours.
+///
+/// Which one is correct is a measurement, not a deduction: `DwmSetWindowAttribute`
+/// reports success whether or not the policy has the intended effect, and the
+/// first acceptance round tested it on a window that was *not* presenting
+/// through DirectComposition. So this is a switch with a recorded default
+/// rather than a branch that detects its own failure — see
+/// `docs/window.md` for the comparison the default comes from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NonClientRenderingStrategy {
+    /// Remove the frame style bits. The measured default.
+    #[default]
+    StripFrameStyles,
+    /// Keep them and disable DWM's non-client rendering instead.
+    SuppressNonClientRendering,
+}
+
+impl NonClientRenderingStrategy {
+    /// The strategy this process uses.
+    ///
+    /// `NANA_WINDOWS_NC_STRATEGY=suppress` selects
+    /// [`Self::SuppressNonClientRendering`], which is how the acceptance probe
+    /// runs the two side by side on one machine. Anything else, including
+    /// unset, is the default.
+    pub fn from_env() -> Self {
+        match std::env::var("NANA_WINDOWS_NC_STRATEGY").as_deref() {
+            Ok("suppress") => Self::SuppressNonClientRendering,
+            _ => Self::StripFrameStyles,
+        }
+    }
+
+    /// Whether a transparent client on this strategy loses its frame styles,
+    /// and with them Aero Snap, Snap Layouts, Alt+Space and the system
+    /// minimize/maximize animations.
+    pub const fn strips_frame_styles(self) -> bool {
+        matches!(self, Self::StripFrameStyles)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::StripFrameStyles => "剥离 frame 样式位",
+            Self::SuppressNonClientRendering => "保留 frame 样式位并关闭非客户区渲染",
+        }
+    }
+}
+
+/// Asks DWM whether to render this window's non-client area.
+///
+/// Keeping the frame styles and turning this off is the path that would let a
+/// transparent window keep Aero Snap, Snap Layouts, Alt+Space and the system
+/// window animations. Both directions are written, because a window whose
+/// material flips at runtime would otherwise keep whichever policy it was last
+/// given. Returns whether DWM accepted the attribute — which is not the same as
+/// the policy having the intended visual effect, so a caller must not read a
+/// `true` here as "the caption is gone". Other platforms no-op.
+pub fn set_non_client_rendering<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        set_nc_rendering_policy(window, enabled)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (window, enabled);
+        true
+    }
+}
+
 /// Sets the Win32 frame styles on a client-chrome window.
 ///
 /// An opaque frameless window keeps them and extends the client through
@@ -987,6 +1070,52 @@ fn apply_window_shape<W: HasWindowHandle + ?Sized>(window: &W, rounded_corners: 
     corner_ok && border_ok
 }
 
+#[cfg(target_os = "windows")]
+const DWMWA_NCRENDERING_POLICY: u32 = 2;
+/// `DWMNCRP_ENABLED`.
+#[cfg(target_os = "windows")]
+const DWMNCRP_ENABLED: u32 = 2;
+/// `DWMNCRP_DISABLED`.
+#[cfg(target_os = "windows")]
+const DWMNCRP_DISABLED: u32 = 1;
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const fn nc_rendering_policy(enabled: bool) -> u32 {
+    #[cfg(target_os = "windows")]
+    {
+        if enabled {
+            DWMNCRP_ENABLED
+        } else {
+            DWMNCRP_DISABLED
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if enabled { 2 } else { 1 }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_nc_rendering_policy<W: HasWindowHandle + ?Sized>(window: &W, enabled: bool) -> bool {
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+
+    let Some(hwnd) = chrome_hwnd(window) else {
+        return false;
+    };
+    let policy = nc_rendering_policy(enabled);
+    // SAFETY: `hwnd` belongs to the live window this call was handed, and the
+    // attribute is read from a `u32` this frame owns.
+    let applied = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            std::ptr::from_ref(&policy).cast(),
+            std::mem::size_of_val(&policy) as u32,
+        )
+    };
+    applied >= 0
+}
+
 /// Subclass identity for the `WM_STYLECHANGING` guard.
 #[cfg(target_os = "windows")]
 const STYLE_GUARD_SUBCLASS_ID: usize = 0x4E_41_53_47;
@@ -1059,9 +1188,10 @@ fn install_style_guard(hwnd: windows_sys::Win32::Foundation::HWND, mask: isize) 
 
     // `SetWindowSubclass` is idempotent for a given (window, proc, id) triple
     // and replaces the reference data in place, so re-arming with a new mask
-    // swaps the mask rather than stacking a second subclass. `mask == 0` makes
-    // the callback a pass-through, which is what an opaque window wants; the
-    // subclass itself dies with the HWND.
+    // swaps the mask rather than stacking a second subclass — the host arms
+    // this on every chrome reconciliation and must not grow a chain of them.
+    // `mask == 0` makes the callback a pass-through, which is what an opaque
+    // window wants. The subclass removes itself on `WM_NCDESTROY`.
     // SAFETY: `hwnd` belongs to the live window this call was handed.
     unsafe {
         SetWindowSubclass(
@@ -1073,31 +1203,60 @@ fn install_style_guard(hwnd: windows_sys::Win32::Foundation::HWND, mask: isize) 
     }
 }
 
+/// Keeps NanaUI's frame invariant on `WM_STYLECHANGING` without owning the
+/// message.
+///
+/// A framework must not take `WM_STYLECHANGING` away from the rest of the
+/// window: a native extension, an accessibility shim or an embedding host may
+/// have its own subclass on the same HWND, and returning early would cut every
+/// one of them — and the original WindowProc — out of a message they are
+/// entitled to see. So the message is always forwarded down the chain first,
+/// and the mask is applied to whatever the chain left in `styleNew`.
+///
+/// Applying it *after* `DefSubclassProc` is what makes it the final word over
+/// everything installed below this guard, which is where winit's own proc
+/// sits. A subclass installed after this one runs before it and gets control
+/// back afterwards, so it can still write the bits back; that is inherent to
+/// Win32 subclass ordering and is the price of not owning the message. Arming
+/// the guard again re-asserts it on the next style write.
 #[cfg(target_os = "windows")]
 unsafe extern "system" fn style_guard_proc(
     hwnd: windows_sys::Win32::Foundation::HWND,
     message: u32,
     wparam: usize,
     lparam: isize,
-    _id: usize,
+    id: usize,
     mask: usize,
 ) -> isize {
-    use windows_sys::Win32::UI::Shell::DefSubclassProc;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE, STYLESTRUCT, WM_STYLECHANGING};
+    use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, STYLESTRUCT, WM_NCDESTROY, WM_STYLECHANGING,
+    };
 
+    if message == WM_NCDESTROY {
+        // Detach before forwarding, which is the documented order: the chain
+        // stays usable for the rest of this call, and the window does not
+        // finish being destroyed with a subclass still pointing here.
+        // SAFETY: removing the subclass this callback was invoked as.
+        unsafe {
+            RemoveWindowSubclass(hwnd, Some(style_guard_proc), id);
+        }
+    }
+    // SAFETY: forwarding the message this callback was given, unchanged.
+    let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
     if message == WM_STYLECHANGING && wparam == GWL_STYLE as usize && mask != 0 && lparam != 0 {
         // SAFETY: `WM_STYLECHANGING` passes a `STYLESTRUCT` the handler is
         // expected to edit in place, and the sender owns it for the call.
         let style = unsafe { &mut *(lparam as *mut STYLESTRUCT) };
         style.styleNew = guarded_style(style.styleNew as isize, mask as isize) as u32;
-        return 0;
     }
-    // SAFETY: forwarding the message this callback was given, unchanged.
-    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+    result
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::install_style_guard;
     use super::{
         FRAMELESS_STYLES, FrameResizeEdge, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
         client_chrome_style, dwm_border_color, dwm_corner_preference, frameless_mask,
@@ -1178,6 +1337,158 @@ mod tests {
         // An opaque window arms the guard with an empty mask instead of
         // removing the subclass, so that case has to stay a pass-through.
         assert_eq!(guarded_style(winit_style, 0), winit_style);
+    }
+
+    /// NanaUI is a framework on somebody else's window: a native extension,
+    /// an accessibility shim or an embedding host may hold its own
+    /// `WM_STYLECHANGING` subclass on the same HWND. The guard must not take
+    /// the message away from them, and its invariant must still be the one
+    /// that survives.
+    ///
+    /// Runs on a real HWND because the thing under test is Win32 subclass
+    /// chaining, which has no model worth asserting against.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_style_guard_shares_wm_stylechanging_with_another_subclass() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use windows_sys::Win32::Foundation::HWND;
+        use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_STYLE, RegisterClassW, STYLESTRUCT,
+            SendMessageW, WM_STYLECHANGING, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        };
+
+        /// How many `WM_STYLECHANGING` messages the other subclass saw, and
+        /// the style it observed. A test-local static is enough: the fixture
+        /// owns the only window that carries this subclass.
+        static OBSERVED: AtomicUsize = AtomicUsize::new(0);
+        static OBSERVED_STYLE: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "system" fn other_subclass(
+            hwnd: HWND,
+            message: u32,
+            wparam: usize,
+            lparam: isize,
+            _id: usize,
+            _data: usize,
+        ) -> isize {
+            if message == WM_STYLECHANGING && lparam != 0 {
+                OBSERVED.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: the sender owns this STYLESTRUCT for the call.
+                let style = unsafe { &*(lparam as *const STYLESTRUCT) };
+                OBSERVED_STYLE.store(style.styleNew as usize, Ordering::Relaxed);
+            }
+            // SAFETY: forwarding the message unchanged, as a subclass must.
+            unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+        }
+
+        fn wide(text: &str) -> Vec<u16> {
+            text.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        let class_name = wide("NanaStyleGuardFixture");
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(DefWindowProcW),
+            lpszClassName: class_name.as_ptr(),
+            // SAFETY: `WNDCLASSW` is a plain C struct of integers and pointers
+            // whose all-zero state is the documented "unset" one; the fields
+            // this fixture cares about are set above.
+            ..unsafe { std::mem::zeroed() }
+        };
+        // SAFETY: a plain class registration with a static name and DefWindowProcW.
+        unsafe {
+            RegisterClassW(&class);
+        }
+        // SAFETY: creating a hidden top-level window of the class just registered.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                wide("fixture").as_ptr(),
+                WS_OVERLAPPEDWINDOW,
+                0,
+                0,
+                64,
+                64,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!hwnd.is_null(), "fixture window");
+
+        // The other subclass is installed first, so the guard sits above it
+        // and its `DefSubclassProc` is what has to reach it.
+        // SAFETY: `hwnd` is the live fixture window.
+        assert!(unsafe { SetWindowSubclass(hwnd, Some(other_subclass), 1, 0) } != 0);
+        assert!(install_style_guard(hwnd, FRAMELESS_STYLES));
+
+        let mut style = STYLESTRUCT {
+            styleOld: 0,
+            styleNew: (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_CLIPSIBLINGS) as u32,
+        };
+        // SAFETY: sending a style change with a STYLESTRUCT this frame owns.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_STYLECHANGING,
+                GWL_STYLE as usize,
+                std::ptr::from_mut(&mut style) as isize,
+            );
+        }
+
+        assert_eq!(
+            OBSERVED.load(Ordering::Relaxed),
+            1,
+            "the other subclass must still receive WM_STYLECHANGING"
+        );
+        assert_eq!(
+            OBSERVED_STYLE.load(Ordering::Relaxed) as isize & FRAMELESS_STYLES,
+            FRAMELESS_STYLES,
+            "it must see the style as written, not one the guard already edited"
+        );
+        assert_eq!(
+            style.styleNew as isize & FRAMELESS_STYLES,
+            0,
+            "and NanaUI's invariant is still the final word"
+        );
+        assert_eq!(
+            style.styleNew as isize & WS_CLIPSIBLINGS,
+            WS_CLIPSIBLINGS,
+            "bits outside the mask pass through untouched"
+        );
+
+        // Re-arming swaps the mask in place instead of stacking a second
+        // subclass, so the chain the host reconciles every frame stays one
+        // link long.
+        assert!(install_style_guard(hwnd, 0));
+        OBSERVED.store(0, Ordering::Relaxed);
+        let mut opaque = STYLESTRUCT {
+            styleOld: 0,
+            styleNew: (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU) as u32,
+        };
+        // SAFETY: as above.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_STYLECHANGING,
+                GWL_STYLE as usize,
+                std::ptr::from_mut(&mut opaque) as isize,
+            );
+        }
+        assert_eq!(OBSERVED.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            opaque.styleNew as isize & FRAMELESS_STYLES,
+            FRAMELESS_STYLES,
+            "an empty mask is a pass-through, not a second strip"
+        );
+
+        // SAFETY: destroying the window this test created; the guard detaches
+        // itself on WM_NCDESTROY.
+        unsafe {
+            DestroyWindow(hwnd);
+        }
     }
 
     #[test]

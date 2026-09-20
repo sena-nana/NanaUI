@@ -11,7 +11,7 @@ use std::{
     thread::ThreadId,
 };
 
-pub use nana_ui_platform::{WindowDescriptor, WindowLevel};
+pub use nana_ui_platform::{WindowDescriptor, WindowLevel, WindowSurfacePreference};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowError {

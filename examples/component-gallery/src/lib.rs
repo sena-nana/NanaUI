@@ -1684,6 +1684,7 @@ fn runtime_dock_window_commands(
                     parent: None,
                     system_caption: true,
                     icon: None,
+                    surface: nana_ui::WindowSurfacePreference::Auto,
                 },
             },
             DockWorkspaceEvent::CloseFloating(id) => {

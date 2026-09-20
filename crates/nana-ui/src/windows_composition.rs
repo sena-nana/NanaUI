@@ -1,7 +1,7 @@
 //! Windows host-only DirectComposition tree for native content below NanaUI.
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::fmt;
 use std::rc::Rc;
@@ -66,6 +66,21 @@ impl From<windows::core::Error> for WindowsCompositionError {
     }
 }
 
+/// What a composed window's tree has been asked to publish, and how much work
+/// it has done. DirectComposition is a retained compositor: an unchanged tree
+/// needs no `Commit`, however many GPU frames the UI presents into its visual.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowsCompositionWork {
+    /// `IDCompositionDevice::Commit` calls the system accepted. A failed commit
+    /// is not counted and leaves the tree dirty for the next frame.
+    pub commits: usize,
+    /// Changes staged on this composition device since the tree was created:
+    /// visuals added or removed, geometry written, visibility flipped, and the
+    /// swapchain binding a surface configure leaves behind. Each one is a
+    /// reason the next commit has work to publish.
+    pub tree_mutations: usize,
+}
+
 struct CompositionTree {
     device: IDCompositionDevice,
     target: IDCompositionTarget,
@@ -73,7 +88,37 @@ struct CompositionTree {
     native_root: IDCompositionVisual,
     ui: IDCompositionVisual,
     hwnd: HWND,
+    /// Staged mutations no `Commit` has published yet. A tree nothing touched
+    /// since its last commit has nothing to publish, and committing it anyway
+    /// is per-frame work with no effect — the thing this flag exists to stop.
+    dirty: Cell<bool>,
+    work: Cell<WindowsCompositionWork>,
     _window: Arc<dyn winit::window::Window>,
+}
+impl CompositionTree {
+    /// Records one staged mutation. The next commit publishes it.
+    fn touch(&self) {
+        self.dirty.set(true);
+        let mut work = self.work.get();
+        work.tree_mutations = work.tree_mutations.saturating_add(1);
+        self.work.set(work);
+    }
+    fn commit(&self) -> Result<(), WindowsCompositionError> {
+        if !self.dirty.get() {
+            return Ok(());
+        }
+        // The flag is cleared only once the system has taken the batch: a
+        // failed commit leaves the tree dirty, so the next frame publishes the
+        // changes instead of forgetting them.
+        unsafe {
+            self.device.Commit()?;
+        }
+        self.dirty.set(false);
+        let mut work = self.work.get();
+        work.commits = work.commits.saturating_add(1);
+        self.work.set(work);
+        Ok(())
+    }
 }
 impl Drop for CompositionTree {
     fn drop(&mut self) {
@@ -85,11 +130,63 @@ impl Drop for CompositionTree {
     }
 }
 
+/// The mutable half of a composed window's DirectComposition tree.
+///
+/// This is what a [`RuntimeProgram::native_content_frame`] callback receives,
+/// and it is deliberately everything that callback may do: stage visuals and
+/// their geometry. It cannot commit. The transaction belongs to the Scene
+/// host, which publishes every window's staged changes once per frame, so a
+/// backend and the host can never both submit the same tree.
+///
+/// [`RuntimeProgram::native_content_frame`]: crate::RuntimeProgram::native_content_frame
+#[derive(Clone)]
+pub struct WindowsCompositionTree {
+    tree: Rc<CompositionTree>,
+}
+impl WindowsCompositionTree {
+    /// Borrowed HWND, valid while this handle remains alive.
+    pub fn window_handle(&self) -> *mut c_void {
+        self.tree.hwnd.0
+    }
+    /// Starts hidden. Geometry and visibility are staged; the host publishes
+    /// them with the rest of the frame's tree changes.
+    pub fn create_native_visual(&self) -> Result<WindowsNativeVisual, WindowsCompositionError> {
+        let (container, content) = unsafe {
+            let container = self.tree.device.CreateVisual()?;
+            let content = self.tree.device.CreateVisual()?;
+            container.SetClip2(&D2D_RECT_F::default())?;
+            container.AddVisual(&content, false, None::<&IDCompositionVisual>)?;
+            self.tree
+                .native_root
+                .AddVisual(&container, true, None::<&IDCompositionVisual>)?;
+            (container, content)
+        };
+        self.tree.touch();
+        Ok(WindowsNativeVisual {
+            inner: Rc::new(NativeVisual {
+                tree: Rc::clone(&self.tree),
+                container,
+                content,
+                state: RefCell::new(VisualState::default()),
+            }),
+        })
+    }
+}
+
 /// UI-thread backend access; ordinary Runtime controls never receive this handle.
 /// Native visuals are children of a layer permanently below the WGPU UI visual.
+///
+/// Held by the Scene host. It owns the commit — see [`Self::commit`] — and
+/// hands backends the [`WindowsCompositionTree`], which cannot.
 #[derive(Clone)]
 pub struct WindowsComposition {
-    tree: Rc<CompositionTree>,
+    tree: WindowsCompositionTree,
+}
+impl std::ops::Deref for WindowsComposition {
+    type Target = WindowsCompositionTree;
+    fn deref(&self) -> &Self::Target {
+        &self.tree
+    }
 }
 impl WindowsComposition {
     pub(crate) fn new(
@@ -118,51 +215,59 @@ impl WindowsComposition {
             (device, target, root, native_root, ui)
         };
         Ok(Self {
-            tree: Rc::new(CompositionTree {
-                device,
-                target,
-                _root: root,
-                native_root,
-                ui,
-                hwnd,
-                _window: window,
-            }),
+            tree: WindowsCompositionTree {
+                tree: Rc::new(CompositionTree {
+                    device,
+                    target,
+                    _root: root,
+                    native_root,
+                    ui,
+                    hwnd,
+                    // The construction above committed the root tree itself.
+                    dirty: Cell::new(false),
+                    work: Cell::new(WindowsCompositionWork {
+                        commits: 1,
+                        tree_mutations: 0,
+                    }),
+                    _window: window,
+                }),
+            },
         })
-    }
-    /// Borrowed HWND, valid while this composition handle remains alive.
-    pub fn window_handle(&self) -> *mut c_void {
-        self.tree.hwnd.0
     }
     pub(crate) fn ui_visual(&self) -> *mut c_void {
-        self.tree.ui.as_raw()
+        self.tree.tree.ui.as_raw()
     }
-    /// Starts hidden. Geometry and visibility are committed explicitly with `commit`.
-    pub fn create_native_visual(&self) -> Result<WindowsNativeVisual, WindowsCompositionError> {
-        let (container, content) = unsafe {
-            let container = self.tree.device.CreateVisual()?;
-            let content = self.tree.device.CreateVisual()?;
-            container.SetClip2(&D2D_RECT_F::default())?;
-            container.AddVisual(&content, false, None::<&IDCompositionVisual>)?;
-            self.tree
-                .native_root
-                .AddVisual(&container, true, None::<&IDCompositionVisual>)?;
-            (container, content)
-        };
-        Ok(WindowsNativeVisual {
-            inner: Rc::new(NativeVisual {
-                tree: Rc::clone(&self.tree),
-                container,
-                content,
-                state: RefCell::new(VisualState::default()),
-            }),
-        })
+    /// The handle a native backend is given: staging without commit.
+    pub const fn tree(&self) -> &WindowsCompositionTree {
+        &self.tree
     }
-    /// Publishes batched tree, geometry and native-engine content changes.
+    /// Publishes this window's staged tree, geometry and native-engine content
+    /// changes, and nothing else.
+    ///
+    /// A tree with nothing staged since its last commit does no work and no
+    /// system call: DirectComposition is retained, so the visuals stay exactly
+    /// as they were while the UI presents new GPU frames into them. This is
+    /// what keeps a 120 FPS host texture from synchronising a static visual
+    /// tree 120 times a second.
     pub fn commit(&self) -> Result<(), WindowsCompositionError> {
-        unsafe {
-            self.tree.device.Commit()?;
-        }
-        Ok(())
+        self.tree.tree.commit()
+    }
+
+    /// Publishes changes something other than this tree staged on the same
+    /// composition device.
+    ///
+    /// WGPU binds a configured swapchain to the UI visual with
+    /// `IDCompositionVisual::SetContent`, which stages work on this device that
+    /// the tree's own dirty flag cannot see. Skipping that commit would leave
+    /// the UI visual holding no content at all, so a surface configure has to
+    /// say so rather than rely on the flag.
+    pub(crate) fn commit_external(&self) -> Result<(), WindowsCompositionError> {
+        self.tree.tree.touch();
+        self.tree.tree.commit()
+    }
+    /// Commits and tree mutations this window has done since it was created.
+    pub fn work(&self) -> WindowsCompositionWork {
+        self.tree.tree.work.get()
     }
 }
 
@@ -184,8 +289,11 @@ impl Drop for NativeVisual {
         if !self.state.get_mut().removed {
             unsafe {
                 let _ = self.tree.native_root.RemoveVisual(&self.container);
-                let _ = self.tree.device.Commit();
             }
+            // Staged, not published: the host's next commit takes it, like
+            // every other tree change. A drop that committed on its own would
+            // be a second transaction authority.
+            self.tree.touch();
         }
     }
 }
@@ -225,6 +333,7 @@ impl WindowsNativeVisual {
             self.inner.container.SetOffsetY2(bounds.y)?;
             self.inner.container.SetClip2(&rect)?;
         }
+        self.inner.tree.touch();
         state.bounds = bounds;
         state.clip = clip;
         Ok(())
@@ -241,10 +350,12 @@ impl WindowsNativeVisual {
         unsafe {
             self.inner.container.SetClip2(&rect)?;
         }
+        self.inner.tree.touch();
         state.visible = visible;
         Ok(())
     }
-    /// Detaches from the pending tree. Idempotent; call `commit` to publish.
+    /// Detaches from the pending tree. Idempotent; the host's frame commit
+    /// publishes it.
     pub fn remove(&self) -> Result<(), WindowsCompositionError> {
         let mut state = self.inner.state.borrow_mut();
         if !state.removed {
@@ -254,6 +365,7 @@ impl WindowsNativeVisual {
                     .native_root
                     .RemoveVisual(&self.inner.container)?;
             }
+            self.inner.tree.touch();
             state.removed = true;
         }
         Ok(())

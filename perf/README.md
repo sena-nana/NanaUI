@@ -27,6 +27,18 @@ Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆
 否则 extractor 拒绝该报告。基线与判据见
 [`docs/gpu-node-scale.md`](../docs/gpu-node-scale.md)。
 
+## Windows 合成器静止期
+
+`windows-composition-steady` 量的是宿主对 OS 合成器做了多少无效功：窗口几何静止之后，
+`IDCompositionDevice::Commit`、visual tree 改动、native-content region 提取和原生 chrome
+重写都必须停在 0，不管 GPU 还在以多高帧率出帧。六条 invariant 全是 `eq 0`。
+
+它**不在** `harness_ids` 里，不是 #8 §8.1 目录 id，也不是 weekly DoD：数字只有 Windows +
+DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——宁可没有，也不要一份全零的假报告。
+产出入口是 `cargo run -p nana-ui --features "hosted bundled-fonts" --example native-content-probe`，
+它把静止期增量写到 `target/performance/windows-composition-steady.json`。判据与实现见
+[`docs/window.md`](../docs/window.md)。
+
 ## Issue #98 保留期文本
 
 `catalog.json` 的 `nana_text_ids` 目前只有 `gpu-scene-text-retained`：一千个文本节点，

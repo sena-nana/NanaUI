@@ -260,32 +260,24 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .cloned();
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition.as_ref() {
-            let regions = crate::native_content_regions(
-                &scene,
-                nana_ui_scene::SceneRect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: geometry.logical_size.0,
-                    height: geometry.logical_size.1,
-                },
-            );
-            let result = regions.and_then(|regions| {
-                self.program
-                    .native_content_frame(id, composition, &regions, &self.context_for(id))
-            });
-            if let Err(error) = result {
-                drop(encoder);
-                drop(target);
-                self.discard_frame(id, frame);
-                self.program
-                    .host_failure(HostFailure::ResourceProduction { window: id, error });
-                self.rearm_frame_demand(id);
-                return;
+            match self.sync_native_content(id, composition, &scene, geometry.logical_size) {
+                Ok(true) => {
+                    let renderer = self.native_renderers.entry(format).or_default().clone();
+                    gpu_renderers
+                        .get_or_insert_with(SceneGpuRendererRegistry::new)
+                        .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    drop(encoder);
+                    drop(target);
+                    self.discard_frame(id, frame);
+                    self.program
+                        .host_failure(HostFailure::ResourceProduction { window: id, error });
+                    self.rearm_frame_demand(id);
+                    return;
+                }
             }
-            let renderer = self.native_renderers.entry(format).or_default().clone();
-            gpu_renderers
-                .get_or_insert_with(SceneGpuRendererRegistry::new)
-                .insert(nana_ui_runtime::NATIVE_CONTENT_RENDERER, renderer);
         }
         let theme = self.program.theme_mode();
         let fetch_host = self.program.resource_fetch_host(id);
@@ -325,6 +317,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.graphics.apply_pending_reconfigure(&mut host.surface);
         }
         self.serve_frame_demand(id);
+        // The one transaction boundary for this window's composition tree.
+        // Backends stage; the host publishes, and only when something was
+        // staged — a retained compositor does not follow the GPU's frame rate.
         #[cfg(target_os = "windows")]
         if let Some(composition) = composition
             && let Err(error) = composition.commit()
@@ -352,6 +347,65 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.sync_appearance();
         self.apply_update(event_loop, update, None);
     }
+    /// Mirrors this frame's native-content regions into the window's
+    /// composition tree, doing nothing when nothing they depend on moved.
+    ///
+    /// Returns whether the scene has native content at all, which is what
+    /// decides if the opening renderer has to be registered for this frame.
+    /// The decision itself lives on [`crate::native_content::NativeContentMirror`]; this only
+    /// hands the result to the backend.
+    #[cfg(target_os = "windows")]
+    fn sync_native_content(
+        &mut self,
+        id: WindowId,
+        composition: &crate::WindowsComposition,
+        scene: &nana_ui_scene::UiScene,
+        logical_size: (f32, f32),
+    ) -> Result<bool, String> {
+        // The mirror stays in the map across the backend call: the context that
+        // call receives reports this window's mirroring counters, and taking the
+        // mirror out would hand the backend zeros.
+        let outcome = self.native_content.entry(id).or_default().sync(
+            scene,
+            nana_ui_scene::SceneRect {
+                x: 0.0,
+                y: 0.0,
+                width: logical_size.0,
+                height: logical_size.1,
+            },
+        )?;
+        // Whether the opening renderer is needed this frame is a property of
+        // the scene, not of how many regions survived clipping: an
+        // unregistered custom renderer fails the whole frame.
+        let present = outcome.scene_has_native_content();
+        let crate::native_content::NativeContentSync::Stage { .. } = outcome else {
+            return Ok(present);
+        };
+        // Copied out so the backend call can borrow the host. This is the
+        // changed-geometry path, which already walked the scene; a settled frame
+        // never gets here.
+        let regions = self
+            .native_content
+            .get(&id)
+            .map(|mirror| mirror.regions().to_vec())
+            .unwrap_or_default();
+        let staged = self.program.native_content_frame(
+            id,
+            composition.tree(),
+            &regions,
+            &self.context_for(id),
+        );
+        if staged.is_err() {
+            // The backend did not take them, so the mirror must not go on
+            // claiming the compositor has them — the retry after this frame's
+            // failure would otherwise find itself settled and stage nothing.
+            if let Some(mirror) = self.native_content.get_mut(&id) {
+                mirror.invalidate();
+            }
+        }
+        staged.map(|()| present)
+    }
+
     fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
         if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics
@@ -423,6 +477,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         self.graphics = graphics;
+        // A replacement device can be on a different backend than the one this
+        // process started on. Whether a window opened from now on can reach a
+        // platform compositor is that device's answer, not the old one's.
+        self.composition = crate::presentation::CompositionAvailability::for_backend(
+            self.gpu_backend_policy,
+            self.graphics.adapter_info().backend,
+        );
         self.painters.clear();
         self.native_renderers.clear();
         self.next_gpu_retry = None;

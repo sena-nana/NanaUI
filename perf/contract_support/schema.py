@@ -44,6 +44,10 @@ KIND_PARAM_KEYS: dict[str, tuple[str, ...]] = {
     "Animation": ("active",),
     "GpuScene": ("composition",),
     "Theme": ("workload",),
+    # Platform-host acceptance, not a Runtime/Scene workload: what the host
+    # publishes to the OS compositor for a window whose scene is standing
+    # still. Only real target hardware can answer it.
+    "WindowsComposition": ("target", "workload"),
 }
 
 
@@ -58,6 +62,14 @@ MUTATION_KINDS = {
 
 
 GPU_COMPOSITIONS = {"UiOnly", "UiLive2d", "UiLive2dEffect"}
+
+
+# Platform compositor targets a `WindowsComposition` row can measure.
+WINDOWS_COMPOSITION_TARGETS = {"DirectComposition"}
+
+# What a `WindowsComposition` row measures. `steady` is the settled window that
+# keeps presenting GPU frames; `move` is the same window being dragged.
+WINDOWS_COMPOSITION_WORKLOADS = {"steady", "move"}
 
 
 # Issue #101 §4 theme / style baseline workloads. `controls` carries a
@@ -191,6 +203,17 @@ def validate_scenario(scenario: Mapping[str, Any]) -> list[str]:
                 errors.append(f"Table.{key} must be a positive integer")
     if kind == "Theme":
         errors.extend(_validate_theme(params))
+    if kind == "WindowsComposition":
+        if params.get("target") not in WINDOWS_COMPOSITION_TARGETS:
+            errors.append(
+                "WindowsComposition.target must be one of "
+                f"{sorted(WINDOWS_COMPOSITION_TARGETS)}"
+            )
+        if params.get("workload") not in WINDOWS_COMPOSITION_WORKLOADS:
+            errors.append(
+                "WindowsComposition.workload must be one of "
+                f"{sorted(WINDOWS_COMPOSITION_WORKLOADS)}"
+            )
     return errors
 
 

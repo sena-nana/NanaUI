@@ -600,6 +600,19 @@ impl UiScene {
         self.instance
     }
 
+    /// What an answer derived from this scene's projections, transforms and
+    /// clip chains stays valid for.
+    ///
+    /// `instance` moves whenever the scene's nodes do, `attribute_epoch`
+    /// whenever what a node inherits does — including a compositor
+    /// presentation tick, which moves geometry without touching the node set.
+    /// An idle flush moves neither, which is what lets a host mirroring this
+    /// geometry into a platform compositor skip the scan entirely rather than
+    /// rebuilding the same answer every frame.
+    pub const fn projection_revision(&self) -> (u64, u64) {
+        (self.instance, self.attribute_epoch)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -1217,7 +1230,7 @@ impl UiScene {
     /// `instance` whenever the scene's nodes do — a leaf leaving does not touch
     /// the epoch but can stop its parent being an opacity group.
     fn draw_stamp(&self) -> DrawStamp {
-        (self.instance, self.attribute_epoch)
+        self.projection_revision()
     }
 
     /// The second half of the answer is whether it read anything about `node`

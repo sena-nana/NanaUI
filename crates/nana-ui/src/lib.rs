@@ -44,7 +44,8 @@ mod hosted_context;
 mod windows_composition;
 #[cfg(all(feature = "hosted", target_os = "windows"))]
 pub use windows_composition::{
-    WindowsComposition, WindowsCompositionError, WindowsCompositionRect, WindowsNativeVisual,
+    WindowsComposition, WindowsCompositionError, WindowsCompositionRect, WindowsCompositionTree,
+    WindowsCompositionWork, WindowsNativeVisual,
 };
 #[cfg(feature = "hosted")]
 mod application;
@@ -65,6 +66,13 @@ pub use native_browser::{
 };
 pub mod overlay;
 pub mod pane;
+#[cfg(feature = "hosted")]
+mod presentation;
+#[cfg(feature = "hosted")]
+pub use presentation::{
+    GpuBackendPolicy, NativeChromePolicy, ResolvedWindowPresentation, SurfaceTargetFallback,
+    WindowSurfaceTarget,
+};
 mod runtime_animation;
 #[cfg(feature = "hosted")]
 mod runtime_dock;
@@ -74,9 +82,11 @@ mod runtime_input;
 #[cfg(feature = "gpu")]
 mod scene_gpu;
 #[cfg(feature = "gpu")]
-pub use native_content::{NativeContentRegion, native_content_regions};
+pub use native_content::{NativeContentRegion, NativeContentWork, native_content_regions};
 #[cfg(feature = "hosted")]
 mod scene_host;
+#[cfg(feature = "hosted")]
+pub use scene_host::CompositionWork;
 #[cfg(feature = "gpu")]
 mod scene_paint;
 pub mod selection;
@@ -351,7 +361,7 @@ mod window_service;
 #[cfg(feature = "hosted")]
 pub use window_service::{
     WindowCapture, WindowCursor, WindowDescriptor, WindowEffects, WindowError, WindowHandle,
-    WindowLevel, WindowRequest, WindowService,
+    WindowLevel, WindowRequest, WindowService, WindowSurfacePreference,
 };
 
 /// Native event-loop integration for advanced hosts.
