@@ -3651,6 +3651,9 @@ fn calendar_options_object_projects_heatmap_metrics() {
     );
 }
 
+// Only the `calendar` tests below use these, so they are gated with them:
+// otherwise a build without the feature carries two functions nothing calls.
+#[cfg(feature = "calendar")]
 fn calendar_sample_cells() -> nana_js_engine::HostValue {
     nana_js_engine::HostValue::Array(vec![nana_js_engine::HostValue::Object(
         [
@@ -3665,6 +3668,7 @@ fn calendar_sample_cells() -> nana_js_engine::HostValue {
     )])
 }
 
+#[cfg(feature = "calendar")]
 fn project_calendar_with_options(
     options: nana_js_engine::HostValue,
 ) -> (
