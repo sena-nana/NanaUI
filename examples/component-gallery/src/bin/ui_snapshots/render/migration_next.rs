@@ -1469,7 +1469,7 @@ fn runtime_fixture(
         Component::DesktopShell => mount_runtime_desktop_shell(&mut document, theme)?,
         Component::AppTitleBar => document
             .context_mut()
-            .create_component(document_id, RuntimeAppTitleBar::new("NanaUI"))?
+            .create_component(document_id, snapshot_title_bar("NanaUI"))?
             .stable_id(),
         Component::GpuTextureView => document
             .context_mut()

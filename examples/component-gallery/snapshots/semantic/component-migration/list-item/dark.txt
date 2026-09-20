@@ -4,9 +4,9 @@ state: three-slots
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
   quad #5/0 20.00,20.00 380.00x28.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,26.00 7.25x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #3/2 163.95,26.00 83.03x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #4/2 374.67,26.00 16.33x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 29.00,26.00 11.10x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #3/2 165.19,26.00 83.03x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #4/2 373.31,26.00 17.69x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: normal
   target: 20.00,20.00 380.00x28.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
@@ -56,12 +56,12 @@ state: medium
   target: 20.00,20.00 380.00x32.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
   quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,21.00 362.00x30.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 31.00,21.00 358.00x30.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: large
   target: 20.00,20.00 380.00x36.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false
   quad #2/0 20.00,20.00 380.00x36.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #2/2 29.00,21.00 362.00x34.00 opacity=1.00 color=#ddddddff size=14.00 weight=inherit line_height=Absolute(18.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 35.00,21.00 350.00x34.00 opacity=1.00 color=#ddddddff size=14.00 weight=inherit line_height=Absolute(18.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: auto-height
   target: 20.00,20.00 380.00x34.00
   a11y: role=ListItem disabled=false checked=None selected=Some(false) mixed=false

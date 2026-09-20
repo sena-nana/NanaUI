@@ -15,13 +15,13 @@ state: opened
   quad #2/0 20.00,20.00 380.00x32.00 opacity=1.00 bg=#181818ff border=#232323ff border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/2 31.00,21.00 342.00x30.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 377.00,34.50 8.00x1.00 opacity=1.00 bg=#a3a3a3ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  quad #2/4 20.00,52.00 380.00x106.00 opacity=1.00 bg=#202020ff border=#232323ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=ComponentElevation { color: [0.0, 0.0, 0.0, 0.48], offset_x: 0.0, offset_y: 8.0, blur_radius: 16.0, spread_radius: 0.0, inset: false }
+  quad #2/4 20.00,52.00 380.00x108.00 opacity=1.00 bg=#202020ff border=#232323ff border_width=1.00 radius=10.00/10.00/10.00/10.00 shadow=ComponentElevation { color: [0.0, 0.0, 0.0, 0.48], offset_x: 0.0, offset_y: 8.0, blur_radius: 16.0, spread_radius: 0.0, inset: false }
   quad #2/5 379.00,36.50 4.00x1.00 opacity=1.00 bg=#a3a3a3ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/6 380.00,37.50 2.00x1.00 opacity=1.00 bg=#a3a3a3ff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/10 24.00,56.00 372.00x32.00 opacity=1.00 bg=#353535ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/40 34.00,56.00 352.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/41 34.00,89.00 352.00x32.00 opacity=1.00 color=#5a5a5aff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/42 34.00,122.00 352.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/41 34.00,90.00 352.00x32.00 opacity=1.00 color=#5a5a5aff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/42 34.00,124.00 352.00x32.00 opacity=1.00 color=#ddddddff size=13.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
 state: invalid
   target: 20.00,20.00 380.00x32.00
   a11y: role=ComboBox disabled=false checked=None selected=Some(false) mixed=false

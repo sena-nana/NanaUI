@@ -7,7 +7,7 @@ state: weeks
   quad-batch #2/11 62.00,48.00 11.00x11.00 opacity=1.00 count=1 bg=#577ea1ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
   quad-batch #2/12 62.00,62.00 11.00x11.00 opacity=1.00 count=1 bg=#7bb9f0ff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
   quad-batch #2/13 62.00,76.00 11.00x53.00 opacity=1.00 count=4 bg=#1c1c1cff border=none border_width=0.00 radius=2.00/2.00/2.00/2.00 shadow=none
-  text #2/40 58.40,20.00 18.20x12.00 opacity=1.00 color=#a3a3a3ff size=10.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/40 57.59,20.00 19.82x13.00 opacity=1.00 color=#a3a3a3ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #2/41 20.00,44.00 24.00x13.00 opacity=1.00 color=#a3a3a3ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #2/42 20.00,72.00 24.00x13.00 opacity=1.00 color=#a3a3a3ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #2/43 20.00,100.00 24.00x13.00 opacity=1.00 color=#a3a3a3ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

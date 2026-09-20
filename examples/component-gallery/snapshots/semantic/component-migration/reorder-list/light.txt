@@ -1,9 +1,9 @@
 component: reorder-list
 mode: light
 state: rows
-  target: 20.00,20.00 380.00x86.00
+  target: 20.00,20.00 380.00x88.00
   a11y: role=List disabled=false checked=None selected=None mixed=false
   quad-batch #2/10 20.00,20.00 380.00x28.00 opacity=1.00 count=1 bg=#e2e2e2ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/40 28.00,20.00 364.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/41 28.00,49.00 364.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/42 28.00,78.00 364.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/41 28.00,50.00 364.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/42 28.00,80.00 364.00x28.00 opacity=1.00 color=#1a1a1fff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

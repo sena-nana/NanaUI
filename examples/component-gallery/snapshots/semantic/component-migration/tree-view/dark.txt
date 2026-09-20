@@ -1,10 +1,10 @@
 component: tree-view
 mode: dark
 state: expanded
-  target: 20.00,20.00 240.00x86.00
+  target: 20.00,20.00 240.00x88.00
   a11y: role=List disabled=false checked=None selected=None mixed=false
-  quad #2/11 20.00,49.00 240.00x28.00 opacity=1.00 bg=#353535ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  quad #2/11 20.00,50.00 240.00x28.00 opacity=1.00 bg=#353535ff border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
   text #2/40 24.00,26.00 16.00x16.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #2/110 40.00,20.00 216.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/111 36.00,49.00 220.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/112 24.00,78.00 232.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/111 36.00,50.00 220.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=600 line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/112 24.00,80.00 232.00x28.00 opacity=1.00 color=#ddddddff size=12.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

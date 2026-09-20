@@ -1,12 +1,12 @@
 component: validation-message
 mode: dark
 state: warning
-  target: 20.00,20.00 170.05x13.20
+  target: 20.00,20.00 169.05x13.20
   a11y: role=Text disabled=false checked=None selected=None mixed=false
-  text #2/2 37.00,20.00 153.05x13.20 opacity=1.00 color=#d4a85bff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 36.00,20.00 153.05x13.20 opacity=1.00 color=#d4a85bff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 23.50,24.10 5.00x5.00 opacity=1.00 bg=none border=#d4a85bff border_width=1.00 radius=999.00/999.00/999.00/999.00 shadow=none
 state: danger
-  target: 20.00,20.00 150.98x13.20
+  target: 20.00,20.00 149.98x13.20
   a11y: role=Text disabled=false checked=None selected=None mixed=false
-  text #2/2 37.00,20.00 133.98x13.20 opacity=1.00 color=#f47174ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/2 36.00,20.00 133.98x13.20 opacity=1.00 color=#f47174ff size=11.00 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/3 23.50,24.10 5.00x5.00 opacity=1.00 bg=none border=#f47174ff border_width=1.00 radius=999.00/999.00/999.00/999.00 shadow=none

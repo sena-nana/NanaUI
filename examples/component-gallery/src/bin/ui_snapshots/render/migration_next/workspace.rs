@@ -215,12 +215,26 @@ pub(super) fn mount_runtime_pane_tree(
     })?)
 }
 
+/// A title bar that looks the same on every OS.
+///
+/// `AppTitleBar::new` takes its `native_controls` default from
+/// `WindowChrome::platform_default()`, which is a `cfg(target_os)` decision:
+/// on macOS the bar reserves 78px for the traffic lights and drops the three
+/// custom window buttons entirely. The semantic baseline is committed once and
+/// checked on ubuntu, macos and windows alike — it is the *adapter*-independent
+/// half of the suite, and a fixture that moves 86px between platforms makes it
+/// neither. Pinning the mode is what makes the recorded numbers mean something
+/// on all three.
+pub(super) fn snapshot_title_bar(title: &str) -> RuntimeAppTitleBar {
+    RuntimeAppTitleBar::new(title).native_controls(false)
+}
+
 pub(super) fn mount_runtime_app_shell(
     document: &mut RuntimeDocument,
 ) -> Result<nana_ui::runtime::StableNodeId, Box<dyn std::error::Error>> {
     let document_id = document.document();
     Ok(document.context_mut().build(document_id, |ui| {
-        let title = ui.parked(RuntimeAppTitleBar::new("NanaUI"));
+        let title = ui.parked(snapshot_title_bar("NanaUI"));
         let body = ui.parked(RuntimeText::new("Workspace"));
         let shell = ui.child(
             "shell",
@@ -374,15 +388,24 @@ pub(super) fn mount_runtime_desktop_shell(
     })?;
     document.context_mut().assemble_settings_page(page)?;
     let shell = document.context_mut().build(document_id, |ui| {
-        ui.child(
+        // Supply the bar instead of letting `DesktopShell` mint one from
+        // `.title(..)`: the minted one takes its control mode from
+        // `WindowChrome::platform_default()`, which drops three window buttons
+        // and shifts the title 86px on macOS. See [`snapshot_title_bar`].
+        let title = ui.parked(snapshot_title_bar("NanaUI"));
+        let shell = ui.child(
             "shell",
             RuntimeDesktopShell::from_model(WorkspaceModel::with_layout(
                 snapshot_desktop_workspace_layout(),
             ))
-            .title("NanaUI")
+            .title_bar(title.stable_id())
             .navigation(sidebar.stable_id())
             .primary(page.stable_id()),
-        )
+        );
+        ui.nest(shell, |ui| {
+            ui.adopt(title);
+        });
+        shell
     })?;
     document.context_mut().assemble_desktop_shell(shell)?;
     Ok(shell.stable_id())

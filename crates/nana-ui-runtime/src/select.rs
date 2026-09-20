@@ -362,6 +362,14 @@ impl crate::ComponentView for Select {
     }
 }
 
+/// Geometry for a select / dropdown trigger and its open menu.
+///
+/// `padding` is the inset the node was **laid out** with, not the one it
+/// authored. A control that names its inset (`NodeStyle::control_padding_x`)
+/// carries no padding on its authored box — that is the point of naming a step
+/// instead of spending it — so re-deriving the inset from `source.layout` here
+/// reported 0 and left the trigger's label flush against its own border. The
+/// caller has already resolved it through `UiWorld::used_layout_padding`.
 pub(crate) fn select_geometry(
     bounds: LayoutBox,
     label: &Arc<str>,
@@ -376,8 +384,8 @@ pub(crate) fn select_geometry(
     metrics: nana_ui_core::ThemeMetrics,
     viewport: Option<crate::LayoutViewport>,
     checkable: bool,
+    padding: nana_ui_core::PaddingSpec,
 ) -> ComponentGeometry {
-    let padding = source.layout.resolved_padding_against(Some(bounds.width));
     let border = source.layout.resolved_border_width();
     let content = LayoutBox {
         x: bounds.x + border + padding.left,

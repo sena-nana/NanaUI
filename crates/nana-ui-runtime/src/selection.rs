@@ -303,6 +303,20 @@ impl SegmentedOption {
     }
 }
 
+/// The segmented track's own inner padding.
+const SEGMENTED_TRACK_PADDING: f32 = nana_ui_core::space::XXS;
+/// The segmented track's rule.
+const SEGMENTED_TRACK_BORDER: f32 = nana_ui_core::HAIRLINE;
+/// How far the selected pill sits inside the track's outer edge.
+///
+/// Both terms are load-bearing. The pill's corners have to stay concentric
+/// with the track's, so its radius is the track's minus **this** — padding
+/// *and* rule. Issue #101's constant convergence replaced the literal `3.0`
+/// here with `space::XXS`, which dropped the rule and left the pill a pixel
+/// rounder than the corner it sits in. Deriving the inset from the two values
+/// that produce it is what stops that happening again.
+const SEGMENTED_PILL_INSET: f32 = SEGMENTED_TRACK_PADDING + SEGMENTED_TRACK_BORDER;
+
 pub(crate) fn selection_chrome_style(
     chrome: SelectionChrome,
     size: ControlSize,
@@ -310,9 +324,9 @@ pub(crate) fn selection_chrome_style(
 ) -> NodeStyle {
     let (gap, padding, border_width, background, border) = match chrome {
         SelectionChrome::Segmented => (
-            2.0,
-            2.0,
-            1.0,
+            nana_ui_core::space::XXS,
+            SEGMENTED_TRACK_PADDING,
+            SEGMENTED_TRACK_BORDER,
             Some(SemanticColorRole::Background),
             Some(SemanticColorRole::Border),
         ),
@@ -498,7 +512,7 @@ impl ComponentView for SegmentedOption {
         let mut effective_style = self.style.clone();
         let metrics = world.theme_metrics();
         let radius = match self.chrome {
-            SelectionChrome::Segmented => (metrics.radius_md - nana_ui_core::space::XXS).max(0.0),
+            SelectionChrome::Segmented => (metrics.radius_md - SEGMENTED_PILL_INSET).max(0.0),
             SelectionChrome::Tabs | SelectionChrome::Radio => metrics.radius_sm,
         };
         {

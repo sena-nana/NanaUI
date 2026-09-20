@@ -2173,6 +2173,7 @@ impl UiWorld {
                 self.style_model.metrics,
                 self.document_viewport_of(id),
                 *checkable,
+                padding,
             )),
             StandardVisual::MenuSurface {
                 kind: crate::MenuSurfaceKind::ContextMenu,

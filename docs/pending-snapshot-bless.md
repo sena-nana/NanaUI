@@ -125,35 +125,38 @@ hover 上色是一条 `motion::HOVER_COLOR`（120ms）过渡，派发 `PointerMo
 `dropdown`、`search-dropdown`、`xy-pad` 的 `hovered` 与 `focused` 都指向
 `BorderStrong`，悬停与聚焦在视觉上分不开。录完像素后这三对也会是同一张图。
 
-## 语义基线也欠着 46 个（与 adapter 无关，任何机器都能重录）
+## 语义基线（已重录，146/146 MATCH）
 
-`snapshots/semantic/` 有 **46 个 fixture 和干净 HEAD 对不上**，所以
-`cargo test -p component-gallery --bin ui-snapshots --features snapshots` 在 main 上
-就是红的。这不是像素债——语义基线不分 adapter，随便哪台机器都能 `--semantic --bless`。
+`snapshots/semantic/` 曾有 **46 个 fixture 和干净 HEAD 对不上**，
+`cargo test -p component-gallery --bin ui-snapshots --features snapshots` 因此在 main 上
+是红的。2026-09-20 重录完毕，现在 146/146 MATCH。
 
-差异全是几何，来自 83d1bcefc 的尺寸常量收敛没有把基线一起重录：
+**重录之前先逐条对上「哪个常量动了」，结果 46 张里有 3 类不是常量收敛，是 bug：**
 
-| 看得见的形态 | 例子 |
-| --- | --- |
-| 行距 +1px / 面板高度 +1px | `tree-view`、`sidebar-section`、`action-menu`、`anchored-action-menu` |
-| 分段控件圆角 7 → 8 | `segmented-control` |
-| badge 盒 44.83×19.20 → 41.83×17.20 | `status-badge` |
-| 文本量度位移 | `empty-state`、`graph-canvas`、`dropdown` |
+| 症状 | 判定 | 处理 |
+| --- | --- | --- |
+| 分段控件药丸圆角 7 → 8（160 处） | **回归**。轨道 padding 2 + 描边 1 = 3，药丸要与轨道同心就得是 `radius_md - 3`；收敛把字面量 `3.0` 换成 `space::XXS`(2.0)，丢了描边那一项 | 改 `SEGMENTED_PILL_INSET = padding + HAIRLINE`，圆角回到 7 |
+| Select/Dropdown/SearchDropdown 触发器文字内缩 11 → 1 | **回归**。`select_geometry` 从 **authored** box 重新推 padding，而命名了档位的控件 authored box 上本来就没有 padding（那正是命名档位的意义），于是推出 0 | 改成接收调用方已经算好的 `used_layout_padding` |
+| `app-title-bar` / `app-shell` 标题左移 86px、少三个窗口按钮 | **平台差异**，不是常量。`AppTitleBar::new` 的 `native_controls` 默认值来自 `WindowChrome::platform_default()`，是 `cfg(target_os)` | fixture 钉死 `native_controls(false)`，基线重新变成三平台通用 |
 
-一条都不是颜色。7e81d7fb9 的提交说明已经把其中 `DEFAULT_SPACING` 1.0 → `space::XXS`
-2.0 那一条认成**有意的新值**，只是基线没跟上。
+前两条修完之后，`dropdown` 与 `search-dropdown` **逐字节回到了提交里原本的基线** —— 也就是说
+基线一直是对的，是代码漂走了。这是「先解释再重录」而不是直接 bless 的全部理由：
+直接 bless 会把两个回归和一份 macOS 专属布局一起焊进共享基线。
 
-重录之前要逐条对上「哪个常量动了」，别当成噪声一把 bless：
+剩下真正属于常量收敛、照实重录的（19 个组件 40 个文件）：
 
-```bash
-cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
-# 逐个读 target/ui-snapshots/component-migration/<name>/<mode>.txt 与 .baseline.txt 的 diff
-cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic --bless
-```
+| 形态 | 组件 | 来源 |
+| --- | --- | --- |
+| 行距 1 → 2 | tree-view、reorder-list、action-menu、anchored-action-menu、context-menu、sidebar-frame、sidebar-section、select 菜单、app-shell、settings、appearance-section | `DEFAULT_SPACING` → `space::XXS`，7e81d7fb9 已认成有意的新值 |
+| compact badge 盒 −3×−2 | status-badge | 7 → `space::SM`、3 → `space::XXS` |
+| toast 指示点 7 → 6 | toast | 7 → `space::SM` |
+| 日历标注字号 10 → 11 | calendar-heatmap | 10px → `type_scale::HINT` |
+| 端口标签 +1 | graph-canvas | 5 → `PORT_RADIUS + HAIRLINE` |
+| 文本量度随可用宽度变化 | empty-state、list-item、form-field、validation-message | 上面几项的下游 |
 
-Issue #102（Phase 1 ThemeDefinition）**没有代为重录**：那是别的提交有意的视觉改动，
-混进主题重构的 PR 里就再也没人会审它。#102 自己对这 46 张的贡献是 0——同一台机器上
-对干净 HEAD 与 #102 各录一次全部 666 个输出文件，`diff -rq` 无差异。
+**一条要记住的结论：语义基线不是平台无关的。** 它对 GPU adapter 无关，但
+`cfg(target_os)` 会穿透进来——`app-title-bar` 就是这么混进 46 张里的。fixture 里任何
+读 `platform_default()` 的默认值都要钉死。
 
 ## 不在此列
 

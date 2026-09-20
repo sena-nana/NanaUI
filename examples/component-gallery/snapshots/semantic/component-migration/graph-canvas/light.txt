@@ -3,8 +3,8 @@ mode: light
 state: nodes
   target: 20.00,20.00 380.00x140.00
   a11y: role=Generic disabled=false checked=None selected=Some(false) mixed=false
-  text #2/25769803776 44.00,98.00 80.00x14.00 opacity=1.00 color=#5a616eff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #2/25769803777 208.00,98.00 80.00x14.00 opacity=1.00 color=#5a616eff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/25769803776 44.00,99.00 80.00x14.00 opacity=1.00 color=#5a616eff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #2/25769803777 208.00,99.00 80.00x14.00 opacity=1.00 color=#5a616eff size=9.50 weight=inherit line_height=normal tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #2/10 20.00,20.00 380.00x140.00 opacity=1.00 bg=#ffffffff border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad-batch #2/11 20.00,20.00 380.00x140.00 opacity=1.00 count=22 bg=#eef0f3b8 border=none border_width=0.00 radius=0.00/0.00/0.00/0.00 shadow=none
   quad #2/8589934592 36.00,56.00 96.00x48.00 opacity=1.00 bg=#f3f4f6ff border=#e3e5e8ff border_width=1.00 radius=6.00/6.00/6.00/6.00 shadow=none

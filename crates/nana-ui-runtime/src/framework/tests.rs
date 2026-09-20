@@ -2113,6 +2113,12 @@ fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
             .border_radius,
         Some(radius)
     );
+    // The pill's corners are concentric with the track's, so its radius is the
+    // track's minus how far the pill sits inside it: the track's padding
+    // *and* its 1px rule. Spelling both terms is the point — this assertion
+    // used to read `radius - space::XXS`, which dropped the rule and left the
+    // pill a pixel rounder than the corner it sits in.
+    let pill_inset = nana_ui_core::space::XXS + nana_ui_core::HAIRLINE;
     assert_eq!(
         context
             .world()
@@ -2120,7 +2126,7 @@ fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
             .unwrap()
             .layout
             .border_radius,
-        Some((radius - nana_ui_core::space::XXS).max(0.0))
+        Some((radius - pill_inset).max(0.0))
     );
 
     context.focus_node(document, before.stable_id()).unwrap();

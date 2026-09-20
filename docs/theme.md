@@ -657,7 +657,7 @@ cargo test -p component-gallery --bin ui-snapshots --features snapshots --locked
 2. **编译结果等值断言。** `the_built_in_definitions_compile_to_exactly_the_tokens_already_rendered` 断言 `ThemeDefinition::NANA_DARK.compile()` 产出的 `SemanticPalette` 与 `ThemeMetrics` 和树上现在渲染用的**完全相等**。等值成立时，任何 fixture 都没有可动的余地——一次需要重录 615 张图才能证明自己安全的迁移，等于没有证明。
 3. **work counter 逐字段比对。** 11 个 theme 场景对 Phase 0 存档**全部 11 项 counter 逐字段相同**（见 §7.7）。
 
-> ⚠️ **本轮之前语义基线就已经和 HEAD 对不上了。** 干净 HEAD 上跑 `--semantic` 有 **46 个 fixture 报 CHANGED**，`cargo test -p component-gallery --bin ui-snapshots` 因此在 main 上就是红的。差异全是几何（分段控件圆角 7→8、行高 +1、badge 尺寸），来自 83d1bcefc 的尺寸常量收敛没有重录基线，不是本轮造成的——上面第 1 条正是为了把这两件事分开才那样做。**本轮不代为 bless**：那是别人有意的视觉改动，埋进 #102 的 PR 里会让它再也没人审。
+> ⚠️ **本轮之前语义基线就已经和 HEAD 对不上了。** 干净 HEAD 上跑 `--semantic` 有 **46 个 fixture 报 CHANGED**，`cargo test -p component-gallery --bin ui-snapshots` 因此在 main 上就是红的，与 #102 无关——上面第 1 条正是为了把这两件事分开才那样做。这 46 张已在随后一轮里逐条对因后重录（现 146/146 MATCH），其中 3 类查出来是回归而不是常量收敛，见 [待重录的快照](pending-snapshot-bless.md)。
 
 ### 7.1 类型全景
 
@@ -832,6 +832,6 @@ for id in theme-static-idle theme-controls-1k theme-palette-switch theme-accent-
   python3 perf/runners/nana/run.py --scenario "$id" --from-report target/performance/issue102/theme.json
 done
 
-# 语义基线：本轮与干净 HEAD 逐字节相同（都仍有 46 个 pre-existing CHANGED）
+# 语义基线：本轮与干净 HEAD 逐字节相同（当时两边都有 46 个 pre-existing CHANGED，现已重录）
 cargo run --release -p component-gallery --bin ui-snapshots --features snapshots --locked -- --semantic
 ```
