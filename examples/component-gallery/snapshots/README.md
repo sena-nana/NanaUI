@@ -105,17 +105,57 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 
 ## Two advisories the suite prints, and neither is a pixel failure
 
-Both predate the baseline gate and neither affects the exit code.
+Both are the fixture's own contract check, not the pixel comparison, and
+neither affects the exit code.
 
-- **4 snapshots paint nothing but the clear colour** (`FLAT`):
-  `segmented-control/{dark,light}/empty`, `overlay-host/{dark,light}/stacked`.
-  They agree with any baseline recorded from them and prove nothing. Either
-  give the fixture something to draw or drop it from the suite.
-- **66 fixtures record `machine_verdict: fail` in their own
-  `*.evidence.txt`.** That is the fixture's own contract check, not the pixel
-  comparison.
+### `machine_verdict: fail` — 58 fixtures
 
-## Adding an adapter
+Each fixture's `*.evidence.txt` now carries a `runtime_failed:` line naming the
+clause that failed. Before that it printed only `fail`, and finding out which
+of ~22 conjuncts had tripped meant opening `evidence.rs` beside it — which is
+why this sat at 66 for weeks without moving.
+
+| clause | count | what it means |
+| --- | ---: | --- |
+| `hit_ok` | 24 | the fixture's hit-test expectation does not match what the tree does |
+| `geometry_ok, hit_ok` | 12 | `sidebar-section` / `sidebar-frame` |
+| `segmented_contract_ok` | 8 | segmented activation contract |
+| `textarea_geometry_ok` | 6 | `textarea/{focused,invalid-focused,scroll}` |
+| `tooltip_state` | 4 | `icon-button/{tooltip-delay,tooltip-edge}` |
+| `segmented_geometry_ok` | 2 | `segmented-control/focused` |
+
+The `hit_ok` group splits into two kinds, and telling them apart is the next
+step for anyone picking this up:
+
+- **Probably the harness.** Four components were passive displays missing from
+  the passive list (`QrCode`, `TimeSeriesChart`, `KeyCaptureLayer`,
+  `KeymapLayer`); they are in it now, which is where 66 − 58 went.
+- **Probably the product, and worth a look.** `tabs/{selected,focused}` and
+  `sidebar-footer/actions` report `hit=None` — a tab strip and a footer full of
+  buttons should be clickable. `card/*` (18 fixtures) reports the opposite: the
+  harness says a plain `Card` must not be the hit target — that is what
+  `InteractiveCard` is for — but the card *is* hit, so it swallows pointer
+  events. Both are product questions; neither was decided here.
+
+### 4 snapshots paint nothing but the clear colour (`FLAT`)
+
+They agree with any baseline recorded from them and prove nothing. Root cause
+for each, so the fix is a decision and not an investigation:
+
+- `segmented-control/{dark,light}/empty` — the track *does* paint: a 6×32
+  rounded quad. It is invisible because its background is the palette's
+  `background`, which is also the page behind it, and because the track's
+  border renders at `border_width=0.00` even though `selection_chrome_style`
+  sets `1.0`. The semantic tree already records the box and `role=RadioGroup`,
+  so the pixel key adds nothing today. Worth checking why the 1px track border
+  never reaches the quad — that is a visual defect in its own right, not only
+  here.
+- `overlay-host/{dark,light}/stacked` — the node is `0.00x0.00` with no scene
+  primitives at all. An `OverlayHost` shows only the overlay its
+  `OverlayHostState.active` names, and the fixture adopts one child without
+  ever making it active, so the state called "stacked" stacks nothing.
+
+## Adding an adapter## Adding an adapter
 
 Run `--bless` on that machine and commit the new directory. Adapters are
 independent; adding one does not affect the others. A software rasteriser

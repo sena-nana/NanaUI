@@ -546,6 +546,15 @@ pub(super) fn write_evidence(
             | Component::GpuTextureView
             | Component::Thumbnail
             | Component::Avatar
+            // Passive like the rest of this list, and omitted from it only by
+            // oversight: a QR code and a time-series chart are pictures, and
+            // the two keyboard layers are invisible. All four report
+            // `hit=None`, so the `expects_hit` fallback below was demanding a
+            // hit target from components that correctly have none.
+            | Component::QrCode
+            | Component::TimeSeriesChart
+            | Component::KeyCaptureLayer
+            | Component::KeymapLayer
     ) {
         hit != Some(runtime.target)
     } else if expects_hit {
@@ -686,82 +695,113 @@ pub(super) fn write_evidence(
         }
         _ => true,
     });
-    let runtime_ok = bounds.is_some()
-        && accessibility.is_some()
-        && geometry_ok
-        && layout_ok
-        && text_scene_ok
-        && textarea_geometry_ok
-        && segmented_geometry_ok
-        && segmented_accessibility_ok
-        && feedback_parent_inert
-        && feedback_accessibility_ok
-        && feedback_geometry_ok
-        && runtime.feedback_contract_ok
-        && runtime.segmented_contract_ok
-        && runtime.idle
-        && hit_ok
-        && avatar_slot_ok
-        && chip_close_ok
-        && (!action_state || runtime.action_applied)
-        && (fixture.state != "loading"
-            || fixture.component == Component::TextInput
-            || runtime.next_deadline.is_some())
-        && (fixture.component != Component::TextInput
-            || match fixture.state {
-                "read-only" => accessibility.is_some_and(|node| !node.editable && !node.disabled),
-                "loading" => accessibility.is_some_and(|node| node.busy && node.disabled),
-                "secure" => accessibility.is_some_and(|node| node.value.is_none()),
-                "selection" => matches!(
-                    geometry,
-                    Some(nana_ui::runtime::ComponentGeometry::TextInput {
-                        ref selection,
-                        ..
-                    }) if !selection.is_empty()
-                ),
-                _ => true,
-            })
-        && (fixture.component != Component::Textarea
-            || (accessibility.is_some_and(|node| node.multiline)
-                && match fixture.state {
-                    "focused" => world.focused(runtime.document.document()) == Some(runtime.target),
-                    "invalid-focused" => {
-                        accessibility.is_some_and(|node| node.invalid)
-                            && world.focused(runtime.document.document()) == Some(runtime.target)
+    // Named clauses, not a bare `&&` chain. A `machine_verdict: fail` that
+    // does not say *which* clause failed is a finding nobody can act on:
+    // 66 of these sat in the tree because reading one meant opening the
+    // source of this function beside it.
+    let checks: [(&str, bool); 22] = [
+        ("bounds", bounds.is_some()),
+        ("accessibility", accessibility.is_some()),
+        ("geometry_ok", geometry_ok),
+        ("layout_ok", layout_ok),
+        ("text_scene_ok", text_scene_ok),
+        ("textarea_geometry_ok", textarea_geometry_ok),
+        ("segmented_geometry_ok", segmented_geometry_ok),
+        ("segmented_accessibility_ok", segmented_accessibility_ok),
+        ("feedback_parent_inert", feedback_parent_inert),
+        ("feedback_accessibility_ok", feedback_accessibility_ok),
+        ("feedback_geometry_ok", feedback_geometry_ok),
+        ("feedback_contract_ok", runtime.feedback_contract_ok),
+        ("segmented_contract_ok", runtime.segmented_contract_ok),
+        ("idle", runtime.idle),
+        ("hit_ok", hit_ok),
+        ("avatar_slot_ok", avatar_slot_ok),
+        ("chip_close_ok", chip_close_ok),
+        ("action_applied", (!action_state || runtime.action_applied)),
+        (
+            "loading_has_deadline",
+            (fixture.state != "loading"
+                || fixture.component == Component::TextInput
+                || runtime.next_deadline.is_some()),
+        ),
+        (
+            "text_input_state",
+            (fixture.component != Component::TextInput
+                || match fixture.state {
+                    "read-only" => {
+                        accessibility.is_some_and(|node| !node.editable && !node.disabled)
                     }
-                    "disabled" => {
-                        accessibility.is_some_and(|node| node.disabled)
-                            && world.focused(runtime.document.document()) != Some(runtime.target)
-                    }
-                    state if textarea_is_focused(state) => {
-                        world.focused(runtime.document.document()) == Some(runtime.target)
-                    }
+                    "loading" => accessibility.is_some_and(|node| node.busy && node.disabled),
+                    "secure" => accessibility.is_some_and(|node| node.value.is_none()),
+                    "selection" => matches!(
+                        geometry,
+                        Some(nana_ui::runtime::ComponentGeometry::TextInput {
+                            ref selection,
+                            ..
+                        }) if !selection.is_empty()
+                    ),
                     _ => true,
-                }))
-        && match (fixture.component, fixture.state) {
-            (Component::Tooltip, "delay") => {
-                tooltip.is_some()
-                    && active_overlay.is_none()
-                    && runtime.next_deadline.is_some()
-                    && tooltip.is_some_and(|id| {
-                        world.accessibility(id).is_some_and(|node| {
-                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
-                                && node.label.as_deref() == Some("Add source")
+                }),
+        ),
+        (
+            "textarea_state",
+            (fixture.component != Component::Textarea
+                || (accessibility.is_some_and(|node| node.multiline)
+                    && match fixture.state {
+                        "focused" => {
+                            world.focused(runtime.document.document()) == Some(runtime.target)
+                        }
+                        "invalid-focused" => {
+                            accessibility.is_some_and(|node| node.invalid)
+                                && world.focused(runtime.document.document())
+                                    == Some(runtime.target)
+                        }
+                        "disabled" => {
+                            accessibility.is_some_and(|node| node.disabled)
+                                && world.focused(runtime.document.document())
+                                    != Some(runtime.target)
+                        }
+                        state if textarea_is_focused(state) => {
+                            world.focused(runtime.document.document()) == Some(runtime.target)
+                        }
+                        _ => true,
+                    })),
+        ),
+        (
+            "tooltip_state",
+            match (fixture.component, fixture.state) {
+                (Component::Tooltip, "delay") => {
+                    tooltip.is_some()
+                        && active_overlay.is_none()
+                        && runtime.next_deadline.is_some()
+                        && tooltip.is_some_and(|id| {
+                            world.accessibility(id).is_some_and(|node| {
+                                node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                    && node.label.as_deref() == Some("Add source")
+                            })
                         })
-                    })
-            }
-            (Component::Tooltip, "open" | "edge") | (_, "tooltip-delay" | "tooltip-edge") => {
-                tooltip.is_some()
-                    && tooltip == active_overlay
-                    && tooltip.is_some_and(|id| {
-                        world.accessibility(id).is_some_and(|node| {
-                            node.role == nana_ui::runtime::AccessibilityRole::Tooltip
-                                && node.label.as_deref() == Some("Add source")
+                }
+                (Component::Tooltip, "open" | "edge") | (_, "tooltip-delay" | "tooltip-edge") => {
+                    tooltip.is_some()
+                        && tooltip == active_overlay
+                        && tooltip.is_some_and(|id| {
+                            world.accessibility(id).is_some_and(|node| {
+                                node.role == nana_ui::runtime::AccessibilityRole::Tooltip
+                                    && node.label.as_deref() == Some("Add source")
+                            })
                         })
-                    })
-            }
-            _ => true,
-        };
+                }
+                _ => true,
+            },
+        ),
+    ];
+    let machine_failed: Vec<&str> = checks
+        .iter()
+        .filter(|(_, ok)| !ok)
+        .map(|(name, _)| *name)
+        .collect();
+    let runtime_ok = machine_failed.is_empty();
+
     let reference_verdict =
         if fixture.component == Component::Textarea && textarea_is_focused(fixture.state) {
             "deterministic compatibility content and focus state rendered for manual review"
@@ -787,11 +827,16 @@ pub(super) fn write_evidence(
     let (review_verdict, review_observed) = review_result(fixture);
     let divergence = intentional_divergence(fixture);
     let report = format!(
-        "expected: {}\nreference_observed: {}\nreference_verdict: {}\nruntime_expected: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
+        "expected: {}\nreference_observed: {}\nreference_verdict: {}\nruntime_expected: {}\nruntime_failed: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
         fixture.expected,
         fixture.reference_contract,
         reference_verdict,
         fixture.runtime_contract,
+        if machine_failed.is_empty() {
+            "none".to_string()
+        } else {
+            machine_failed.join(", ")
+        },
         runtime.segmented_contract_ok,
         runtime.segmented_options,
         runtime.segmented_requests,
