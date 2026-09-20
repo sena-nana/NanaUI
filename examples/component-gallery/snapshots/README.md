@@ -108,61 +108,65 @@ in `docs/performance-data/gallery-pixel-rerecord-2026-09-20/`.
 Both are the fixture's own contract check, not the pixel comparison, and
 neither affects the exit code.
 
-### `machine_verdict: fail` — 12 fixtures
+### `machine_verdict: fail` — 2 fixtures
 
 Each fixture's `*.evidence.txt` carries a `runtime_failed:` line naming the
 clause that failed, and a clause with sub-parts names the part:
-`segmented_geometry_ok[option[1].height track_width]`. Before that it printed
-only `fail`, and finding out which of ~22 conjuncts had tripped meant opening
-`evidence.rs` beside it — which is why this sat at 66 for weeks without moving.
+`segmented_contract_ok[selection(expected=option[0] actual=option[2])]`. Before
+that it printed only `fail`, and finding out which of ~22 conjuncts had tripped
+meant opening `evidence.rs` beside it — which is why this sat at 66 for weeks
+without moving. Naming the clauses is what cleared it: 66 → 2.
 
-**Every one triaged so far has been the harness holding a contract the tree had
-already moved past, not a product defect.** That is worth knowing before
-picking up the rest: read the component's own contract first.
+**Every one of the 64 was the harness holding a contract the tree had already
+moved past.** Not one was a product defect. Read the component's own contract
+before suspecting the component.
 
-| clause | count | finding |
-| --- | ---: | --- |
-| `segmented_contract_ok` | 8 | the harness asserts the pre-self-driving contract |
-| `tooltip_state` | 2 | `icon-button/tooltip-edge` never opens its tooltip |
-| `action_applied` | 2 | `tabs/focused` |
+| what it turned out to be | count |
+| --- | ---: |
+| `hit_ok` modelled passive/interactive; the real split is leaf/container | 32 |
+| `geometry_ok` list missing four components that have no `ComponentGeometry` by design | 12 |
+| `segmented_contract_ok` asserting the pre-self-driving contract | 8 |
+| `textarea_geometry_ok` reading the caret-line highlight as a stray selection | 6 |
+| four passive displays missing from the hit-test list | 8 |
+| `tooltip_state` routing `tooltip-delay` into the "open" arm | 2 |
+| `segmented_geometry_ok` demanding a focus ring the component never requests | 2 |
+| `action_applied` reading "focus did not move" as "the state failed to apply" | 2 |
 
-**`segmented_contract_ok`.** The four failing states — `pointer-request`,
-`controlled-commit`, `a11y-radio`, `atomic-reconcile` — are four of the five
-states that expect exactly one activation request. The fifth,
-`selected-repeat-request`, re-activates the option that is *already* selected
-and passes. The difference is `selection_ok`, which demands
-`selected_after == selected_before`: the contract from before
-`SegmentedControl` became self-driving. The control now commits the selection
-itself, the pixel baselines were re-recorded for that change, and this
-exerciser was not.
+Two of those are worth reading in full because the fix was a contract change,
+not a classification one:
 
-**`tooltip_state`.** `icon-button/tooltip-edge` reports `tooltip=Some(..)` with
-`active_overlay=None` — the pending state, not an open one. Its sibling
-`tooltip-delay` had the identical observation and now routes to the delay
-contract, which it satisfies. `tooltip-edge` reads as wanting an *open* tooltip
-at a viewport edge, so the fixture is probably not advancing the hover clock to
-the deadline. A fixture question, not a contract one.
+**Self-driving segmented control.** `pointer-request`, `a11y-radio`,
+`atomic-reconcile` and `controlled-commit` each asserted that activating an
+option leaves `selected` where it was — `controlled-commit` even named the
+variable `remained_controlled`. The control commits the activated option
+itself now; the application publishing a selection is still supported, it is
+just no longer required. The exerciser asserts the current contract, and the
+sub-clause prints both sides when it does not hold
+(`selection(expected=… actual=… before=…)`).
 
-Cleared so far: 32 `hit_ok` (leaf / container), 12 `geometry_ok`
-(`SidebarFrame` / `SidebarFooter` / `SidebarSection` / `OverlayHost` have no
-`ComponentGeometry` by design), 6 `textarea_geometry_ok` (slot 1 is the
-caret-line highlight when there is no selection), 2 `tooltip_state`, 2
-`segmented_geometry_ok`, 8 hit-test misclassifications.
+**Focus that moved before the state ran.** `create_tabs_fixture` focuses the
+first tab, then `apply_runtime_state("focused")` focused it again;
+`focus_node` answers "did focus move", so the second call said no and the
+harness read that as the state failing. It now accepts either — moved, or
+already there.
 
-#### One open question this triage raised
+### The 2 that are left, and why they stay red
 
-`segmented_geometry_ok` demanded a focus ring on the focused option, and the
-component never requests one: `SegmentedOption` sets `show_focus_ring` for
-`Radio` chrome only, and `tabs_options_do_not_request_a_focus_ring` pins that
-for tabs. The check now follows the request — a ring must be painted iff the
-geometry asked for one — so the clause passes and still catches both a
-requested-but-unpainted ring and an unrequested one.
+`icon-button/{dark,light}/tooltip-edge`. Both icon-button tooltip fixtures are
+driven identically — same pointer move, same advance to the deadline — and
+differ only in `placement`. Neither ends with an active overlay, so
+`tooltip-delay` is the pending state and now uses the delay contract, which it
+satisfies. `tooltip-edge` is driven the same way, so it is *also* the pending
+state, and its name promises something it never shows: edge placement of an
+**open** tooltip.
 
-That leaves the **design** question the harness was clumsily pointing at: a
-segmented control shows selection with a filled pill, and since selection and
-focus were merged into one pill, a keyboard user moving focus without
-activating has no separate indicator. Whether that is acceptable is an
-accessibility decision, not a harness one, and nothing here decides it.
+Routing it to the delay contract too would turn it green and leave a fixture
+that lies about what it covers. It is left red on purpose. The work is to make
+it open the tooltip — which needs finding out why the icon-button path has no
+active overlay after the deadline while `(Tooltip, "edge")` does — and then
+re-recording it, at which point it will finally show the placement it is named
+for. `machine_verdict` does not affect the exit code, so this costs nothing but
+keeps the signal.
 
 ### 2 snapshots paint nothing but the clear colour (`FLAT`)
 

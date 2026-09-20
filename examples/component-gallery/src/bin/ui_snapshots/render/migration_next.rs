@@ -504,6 +504,8 @@ struct RuntimeEvidence {
     action_applied: bool,
     feedback_contract_ok: bool,
     segmented_contract_ok: bool,
+    /// Which sub-clauses of the segmented contract failed, if any.
+    segmented_contract_failed: Vec<String>,
     segmented_options: Vec<StableNodeId>,
     segmented_requests: usize,
     next_deadline: Option<Duration>,
@@ -1520,6 +1522,7 @@ fn runtime_fixture(
     let viewport = LayoutViewport::new(size.width as f32, size.height as f32);
     let mut shaper = NanaTextShaper::default();
     let first = document.flush(viewport, &mut shaper)?;
+    let mut segmented_contract_failed: Vec<String> = Vec::new();
     let (action_applied, feedback_contract_ok, segmented_contract_ok) = if let Some(action) =
         feedback_action
     {
@@ -1533,8 +1536,9 @@ fn runtime_fixture(
         )?;
         (contract_ok, contract_ok, true)
     } else if let Some(segmented) = segmented_fixture.as_ref() {
-        let contract_ok =
+        segmented_contract_failed =
             exercise_segmented_contract(&mut document, viewport, &mut shaper, fixture, segmented)?;
+        let contract_ok = segmented_contract_failed.is_empty();
         (contract_ok, true, contract_ok)
     } else {
         // Name the fixture in the error. A bare `NotPointerInteractive(5)`
@@ -1580,6 +1584,7 @@ fn runtime_fixture(
         action_applied,
         feedback_contract_ok,
         segmented_contract_ok,
+        segmented_contract_failed,
         segmented_options,
         segmented_requests,
         next_deadline,
@@ -1687,7 +1692,13 @@ fn apply_runtime_state(
             } else {
                 target
             };
-            Ok(context.focus_node(document_id, target)?)
+            // `focus_node` answers "did focus move", not "is it focused".
+            // `create_tabs_fixture` already focuses the first tab, so the
+            // second call correctly reported no movement and the harness read
+            // that as the state failing to apply. Accept either: it moved, or
+            // it is already where this state wants it.
+            let moved = context.focus_node(document_id, target)?;
+            Ok(moved || context.world().focused(document_id) == Some(target))
         }
         "invalid" if fixture.component == Component::TextInput => {
             Ok(context.focus_node(document_id, target)?)

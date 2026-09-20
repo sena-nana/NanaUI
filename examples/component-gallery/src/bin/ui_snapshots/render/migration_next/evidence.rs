@@ -911,6 +911,12 @@ pub(super) fn write_evidence(
                     segmented_geometry_failed.join(" ")
                 )
             }
+            "segmented_contract_ok" if !runtime.segmented_contract_failed.is_empty() => {
+                format!(
+                    "segmented_contract_ok[{}]",
+                    runtime.segmented_contract_failed.join(" ")
+                )
+            }
             other => other.to_string(),
         })
         .collect();
@@ -941,7 +947,7 @@ pub(super) fn write_evidence(
     let (review_verdict, review_observed) = review_result(fixture);
     let divergence = intentional_divergence(fixture);
     let report = format!(
-        "expected: {}\nreference_observed: {}\nreference_verdict: {}\nruntime_expected: {}\nruntime_failed: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
+        "expected: {}\nreference_observed: {}\nreference_verdict: {}\nruntime_expected: {}\nruntime_failed: {}\nruntime_observed: bounds={bounds:?}; layout_ok={layout_ok}; text_scene_ok={text_scene_ok}; textarea_geometry_ok={textarea_geometry_ok}; segmented_geometry_ok={segmented_geometry_ok}; segmented_accessibility_ok={segmented_accessibility_ok}; segmented_contract_ok={}; segmented_contract_failed={:?}; segmented_options={:?}; segmented_requests={}; feedback_parent_inert={feedback_parent_inert}; feedback_accessibility_ok={feedback_accessibility_ok}; feedback_geometry_ok={feedback_geometry_ok}; feedback_contract_ok={}; text_input={text_input:?}; geometry={geometry:?}; hit={hit:?}; accessibility={accessibility:?}; tooltip={tooltip:?}; active_overlay={active_overlay:?}; first_passes={}; first_accessibility_updates={}; final_passes={}; final_accessibility_updates={}; second_flush_idle={}; action_applied={}; next_animation_deadline={:?}; primitives={primitives:?}\nmachine_verdict: {}\nreview_observed: {}\nreview_verdict: {}\nintentional_divergence_reason: {}\n",
         fixture.expected,
         fixture.reference_contract,
         reference_verdict,
@@ -952,6 +958,7 @@ pub(super) fn write_evidence(
             machine_failed.join(", ")
         },
         runtime.segmented_contract_ok,
+        runtime.segmented_contract_failed,
         runtime.segmented_options,
         runtime.segmented_requests,
         runtime.feedback_contract_ok,

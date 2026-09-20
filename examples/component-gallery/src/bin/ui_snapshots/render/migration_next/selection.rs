@@ -98,7 +98,11 @@ pub(super) fn exercise_segmented_contract(
     shaper: &mut NanaTextShaper,
     fixture: Fixture,
     segmented: &SegmentedFixture,
-) -> Result<bool, Box<dyn std::error::Error>> {
+    // Named sub-clauses rather than one bool, for the same reason `runtime_ok`
+    // has them: this contract is three independent claims — the state's own
+    // interaction script, where the selection ended up, and how many activation
+    // requests the control emitted — and a single `false` cannot say which.
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let document_id = document.document();
     let mut adapter = RuntimeInputAdapter::default();
     let ids = segmented
@@ -185,10 +189,14 @@ pub(super) fn exercise_segmented_contract(
                     .expect("segmented requests")
                     .as_slice()
                     == [id]
+                // Self-driving: activation commits the option it activated.
+                // This used to require `== selected_before` — the contract
+                // from before the control stopped asking the application to
+                // write the selection back.
                 && document
                     .context()
                     .read(segmented.control, RuntimeSegmentedControl::selected)?
-                    == selected_before
+                    == Some(id)
         }
         "pointer-cancel" => {
             let (x, y) = center(document, ids[2]);
@@ -312,15 +320,18 @@ pub(super) fn exercise_segmented_contract(
                 document_id,
                 &pointer(PointerPhase::Up, x, y),
             )?;
-            let remained_controlled = document
+            let self_committed = document
                 .context()
                 .read(segmented.control, RuntimeSegmentedControl::selected)?
-                == selected_before;
-            let committed = document
+                == Some(ids[2]);
+            // An application publish of the same selection is still accepted
+            // and does not disturb it. Whether a publish of a *different*
+            // option wins over the self-driven one is a contract this fixture
+            // does not exercise; see `snapshots/README.md`.
+            document
                 .context_mut()
                 .set_segmented_selection(segmented.control, Some(segmented.options[2]))?;
-            remained_controlled
-                && committed
+            self_committed
                 && document
                     .context()
                     .read(segmented.control, RuntimeSegmentedControl::selected)?
@@ -342,7 +353,7 @@ pub(super) fn exercise_segmented_contract(
             )? && document
                 .context()
                 .read(segmented.control, RuntimeSegmentedControl::selected)?
-                == selected_before
+                == Some(ids[2])
                 && segmented
                     .requests
                     .lock()
@@ -400,10 +411,14 @@ pub(super) fn exercise_segmented_contract(
     let selected_after = document
         .context()
         .read(segmented.control, RuntimeSegmentedControl::selected)?;
-    let selection_ok = if fixture.state == "controlled-commit" {
-        selected_after == ids.get(2).copied()
-    } else {
-        selected_after == selected_before
+    // Activation is self-driving, so the states that activate an option end on
+    // that option rather than on whatever was selected before.
+    let expected_selection = match fixture.state {
+        "pointer-request" | "a11y-radio" | "atomic-reconcile" | "controlled-commit" => {
+            ids.get(2).copied()
+        }
+        "selected-repeat-request" => ids.first().copied(),
+        _ => selected_before,
     };
     let expected_requests = match fixture.state {
         "pointer-request"
@@ -414,7 +429,35 @@ pub(super) fn exercise_segmented_contract(
         "arrow-skip-wrap" | "home-end" | "space-enter-repeat" => 2,
         _ => 0,
     };
-    let request_count_ok =
-        segmented.requests.lock().expect("segmented requests").len() == expected_requests;
-    Ok(action_ok && selection_ok && request_count_ok)
+    let actual_requests = segmented.requests.lock().expect("segmented requests").len();
+
+    // Report the option's position in the strip, not its `StableNodeId`: the id
+    // is an allocation order that says nothing to a reader, and "ended on
+    // option 2 instead of option 0" is the sentence the failure is about.
+    let slot = |id: Option<StableNodeId>| match id {
+        None => "none".to_string(),
+        Some(id) => match ids.iter().position(|candidate| *candidate == id) {
+            Some(index) => format!("option[{index}]"),
+            None => "outside-the-strip".to_string(),
+        },
+    };
+
+    let mut failed = Vec::new();
+    if !action_ok {
+        failed.push(format!("action[{}]", fixture.state));
+    }
+    if selected_after != expected_selection {
+        failed.push(format!(
+            "selection(expected={} actual={} before={})",
+            slot(expected_selection),
+            slot(selected_after),
+            slot(selected_before)
+        ));
+    }
+    if actual_requests != expected_requests {
+        failed.push(format!(
+            "request_count(expected={expected_requests} actual={actual_requests})"
+        ));
+    }
+    Ok(failed)
 }
