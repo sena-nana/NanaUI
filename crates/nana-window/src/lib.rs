@@ -14,7 +14,6 @@ mod motion_preference;
 mod platform;
 mod size_move;
 
-pub use chrome::FrameResizeEdge;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameMove;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -28,7 +27,9 @@ pub use chrome::prepare_custom_title_bar;
 pub use chrome::resize_custom_frame;
 pub use chrome::set_frameless_styles;
 pub use chrome::set_native_window_controls_visible;
+pub use chrome::set_non_client_rendering;
 pub use chrome::set_present_transaction;
+pub use chrome::{FrameResizeEdge, NonClientRenderingStrategy};
 pub use file_dialog::{
     FileDialogError, FileDialogHandle, FileDialogKind, FileDialogRequest, FileDialogResult,
     FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "windows-composition-steady",
+  "kind": "WindowsComposition",
+  "params": {
+    "target": "DirectComposition",
+    "workload": "steady"
+  },
+  "record": [
+    "composition_work"
+  ],
+  "invariants": [
+    {
+      "name": "composition_steady_no_commits",
+      "path": "composition_work.commits",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "DirectComposition is retained. Once a window settles, continuous GPU frames must publish no transaction. Missing stays not-evaluable."
+    },
+    {
+      "name": "composition_steady_no_tree_mutations",
+      "path": "composition_work.tree_mutations",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Nothing may be staged on the visual tree by a frame whose geometry did not move."
+    },
+    {
+      "name": "composition_steady_no_region_rebuilds",
+      "path": "composition_work.native_content_region_rebuilds",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A settled scene revision reuses the regions it already produced; nothing rescans the node list."
+    },
+    {
+      "name": "composition_steady_no_regions_considered",
+      "path": "composition_work.native_content_regions_considered",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "A settled frame produces no regions at all, because it never runs the extraction that would produce them."
+    },
+    {
+      "name": "composition_steady_no_regions_changed",
+      "path": "composition_work.native_content_regions_changed",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "No region reaches a backend again. Implied by no rebuilds, kept separate so a rescan that stages is still caught."
+    },
+    {
+      "name": "composition_steady_no_chrome_writes",
+      "path": "composition_work.native_chrome_writes",
+      "op": "eq",
+      "value": 0,
+      "status": "required",
+      "note": "Moving or presenting a window is not a style change, so the host reconciles no native chrome. Covers the move-only leg of the same run."
+    }
+  ],
+  "notes": "Windows host acceptance for the retained DirectComposition contract. Counters are deltas measured after the window settles, from `RuntimeProgramContext::composition_work()`; the probe is `nana-ui --example native-content-probe`. Requires real Windows hardware with a DX12 adapter: there is no synthetic substitute, and a run that cannot reach a composition target must report unsupported rather than zeros. Not an Issue #8 §8.1 catalog id and not a weekly DoD gate."
+}

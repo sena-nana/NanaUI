@@ -476,6 +476,46 @@ pub struct WindowDescriptor {
     pub system_caption: bool,
     /// Per-window override of the process application icon.
     pub icon: Option<WindowIcon>,
+    /// How this window's frames should reach the screen.
+    pub surface: WindowSurfacePreference,
+}
+
+/// How a window's frames should reach the screen.
+///
+/// This is a per-window choice on purpose. One window needing a platform
+/// compositor visual — a transparent overlay, a window shadow companion — must
+/// not move a Settings window, a dialog or a popup onto that path with it.
+/// Whether the process *can* present that way at all is the separate,
+/// process-wide GPU backend question, because the backend and device are shared
+/// by every window. No platform type crosses this boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WindowSurfacePreference {
+    /// The host picks. A window that asks for a transparent client takes the
+    /// compositor path where the process has one; every other window stays on
+    /// the platform's ordinary window surface.
+    #[default]
+    Auto,
+    /// Always the platform's ordinary window surface.
+    NativeWindow,
+    /// A platform compositor visual where the process can present through one.
+    /// A window that cannot get it is told so rather than failing to open.
+    Composition,
+    /// A platform compositor visual or nothing.
+    ///
+    /// A window that cannot get one fails to open instead of presenting
+    /// through the ordinary window surface. For hosts whose content is only
+    /// correct on the compositor path and would rather not run at all than run
+    /// wrong — every other window should prefer [`Self::Composition`], which
+    /// reports the fallback and keeps the application alive.
+    RequireComposition,
+}
+
+impl WindowSurfacePreference {
+    /// Whether a window that cannot reach the compositor must fail to open
+    /// rather than fall back.
+    pub const fn requires_composition(self) -> bool {
+        matches!(self, Self::RequireComposition)
+    }
 }
 
 impl Default for WindowDescriptor {
@@ -507,7 +547,14 @@ impl WindowDescriptor {
             parent: None,
             system_caption: false,
             icon: None,
+            surface: WindowSurfacePreference::Auto,
         }
+    }
+
+    /// Choose how this window's frames reach the screen.
+    pub const fn surface(mut self, surface: WindowSurfacePreference) -> Self {
+        self.surface = surface;
+        self
     }
 
     pub fn system_caption(mut self, enabled: bool) -> Self {

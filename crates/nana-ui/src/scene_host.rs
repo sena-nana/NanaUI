@@ -21,6 +21,7 @@ use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::presentation::{ResolvedWindowPresentation, WindowSurfaceTarget};
 use nana_ui_core::{
     AppearanceSettings, CursorSpec, RESIZE_HANDLE_SIZE, SharedStore, TITLE_BAR_HEIGHT,
 };
@@ -38,7 +39,7 @@ use nana_ui_runtime::{
 #[cfg(target_os = "macos")]
 use nana_window::set_application_icon_png;
 use nana_window::{
-    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialFallback, MaterialOutcome,
+    Appearance, FallbackColor, FrameResizeEdge, LiveSizeMove, MaterialOutcome,
     apply_hosted_system_material, arm_frameless_guard, clear_system_material,
     prepare_client_chrome, resize_custom_frame, set_frameless_styles,
 };
@@ -129,6 +130,28 @@ enum SceneRunner<Program: RuntimeProgram> {
 }
 
 /// Clears native material registrations on every failed creation path.
+/// What mirroring a window's scene into the platform compositor has cost since
+/// the host started.
+///
+/// The steady-state contract: once a window settles, none of these move again,
+/// however many GPU frames it goes on presenting. A retained compositor holds
+/// the visuals where they were put; re-synchronising them at the GPU's frame
+/// rate is work with no effect, and these counters are how a probe proves it
+/// is not happening.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompositionWork {
+    pub native_content: crate::NativeContentWork,
+    /// Platform-compositor transactions published for this window. Zero on a
+    /// window that presents through a plain native surface, and on every
+    /// platform without a composition target.
+    pub commits: usize,
+    /// Visual-tree mutations staged for those transactions.
+    pub tree_mutations: usize,
+    /// Native chrome reconciliations this host has set out to do, over every
+    /// window. Moving a window adds none.
+    pub native_chrome_writes: usize,
+}
+
 struct PendingNativeWindow(Option<Arc<dyn winit::window::Window>>);
 impl Drop for PendingNativeWindow {
     fn drop(&mut self) {
@@ -149,7 +172,10 @@ struct WindowContext {
     surface: HostedGpuSurface,
     geometry: WindowGeometry,
     input: InputTracker,
-    material: MaterialOutcome,
+    /// The only authority for what this window presents and for the native
+    /// chrome that presentation requires. Nothing re-derives either from the
+    /// request; see [`crate::presentation`].
+    presentation: ResolvedWindowPresentation,
     settings: WindowDescriptor,
     #[cfg(not(target_os = "android"))]
     accessibility: Option<HostedAccessibility>,
@@ -194,11 +220,20 @@ struct WindowManager<Program: RuntimeProgram> {
     // Native children drop before their owning GPU/window resources.
     browsers: HashMap<(WindowId, String), browser::HostedBrowser>,
     graphics: crate::HostedGpuShared,
-    /// Resolved once, before the first window existed. Windows opened later
-    /// have to match it: the backend is already chosen by then, and
-    /// `WS_EX_NOREDIRECTIONBITMAP` is a creation-time flag nothing can set
-    /// durably afterwards.
-    surface_mode: crate::HostedSurfaceMode,
+    /// What this process needs from its GPU backend. Process-wide, because the
+    /// backend, adapter and device are.
+    gpu_backend_policy: crate::GpuBackendPolicy,
+    /// How a transparent client stops DWM rendering a non-client area under it.
+    /// Read once: the two strategies are compared on a real machine, not mixed
+    /// within one run.
+    non_client: nana_window::NonClientRenderingStrategy,
+    /// Whether this process can present a window through a platform
+    /// compositor. Settled before the first window existed, because the
+    /// redirection bitmap is a creation-time flag.
+    ///
+    /// This says the path *exists*, not that any window is on it: each window
+    /// asks for its own target from its descriptor.
+    composition: crate::presentation::CompositionAvailability,
     painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
     native_renderers:
         HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
@@ -218,7 +253,17 @@ struct WindowManager<Program: RuntimeProgram> {
     image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
     image_window_keys: HashMap<WindowId, HashSet<String>>,
     occluded: HashSet<WindowId>,
-    material: MaterialOutcome,
+    /// Per-window mirror of the scene's native-content regions into the
+    /// platform compositor. This is what makes the mirror retained: a frame
+    /// whose scene projections did not move rebuilds nothing and stages
+    /// nothing.
+    native_content: HashMap<WindowId, crate::native_content::NativeContentMirror>,
+    /// Times the host has set out to reconcile a window's native chrome — DWM
+    /// corner preference, border colour, non-client rendering policy, frame
+    /// styles, style guard. Counted at the attempt, so a window being moved
+    /// must not add to it at all: position is not a window flag, so nothing
+    /// winit does on a move can take the chrome back off.
+    native_chrome_writes: std::cell::Cell<usize>,
     window_contexts: HashMap<WindowId, WindowContext>,
     window_ids: HashMap<winit::window::WindowId, WindowId>,
     closing_windows: HashSet<WindowId>,
@@ -522,6 +567,309 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
     }
 }
 
+/// The window, GPU context and surface the first window ended up with.
+struct PrimaryBootstrap {
+    window: Arc<dyn winit::window::Window>,
+    graphics: crate::HostedGpuShared,
+    surface: HostedGpuSurface,
+    target: crate::presentation::ResolvedSurfaceTarget,
+    /// Whether this process can present through a platform compositor at all.
+    /// Every later window asks its own target against this, rather than
+    /// inheriting the first window's answer.
+    composition: crate::presentation::CompositionAvailability,
+    /// The material request this window was created with, and what the
+    /// platform gave back for it. Carried out so the caller resolves its first
+    /// presentation without asking the platform for the same thing twice.
+    requested_material: crate::MaterialEffect,
+    applied_material: MaterialOutcome,
+}
+
+/// Creates the first window and binds it to a presentation target, falling
+/// back to the plain native path when the composed one cannot be completed.
+///
+/// A composed window is created with `WS_EX_NOREDIRECTIONBITMAP`, and that is a
+/// creation-time flag: winit derives it from its own `NO_BACK_BUFFER` and
+/// rewrites the whole ex-style on every change, so nothing can add or remove it
+/// afterwards. The window therefore has to be created for the target *before*
+/// anything can find out whether that target works — the composition device,
+/// its target for the HWND, the visual, the visual's GPU surface and the
+/// premultiplied alpha that surface must negotiate are all downstream of it.
+///
+/// So the composed window is provisional. If any of those steps fails, its
+/// composition objects are released, the window is dropped — which posts
+/// winit's destroy message for that HWND — and a plain window is created in
+/// its place. The failed HWND is never reused, and it cannot be: without a
+/// redirection bitmap there is nothing for `DwmExtendFrameIntoClientArea` to
+/// composite, which is the only per-pixel alpha a DX12 HWND swapchain has, so
+/// a window kept from that attempt would silently be the one shape of window
+/// that can never be transparent on either path. It was created hidden, so
+/// nothing of it was ever on screen.
+///
+/// The outcome reaches the program through the resolved presentation rather
+/// than only the log: see [`crate::SurfaceTargetFallback`].
+fn bootstrap_primary_window(
+    event_loop: &dyn ActiveEventLoop,
+    settings: &WindowDescriptor,
+    shared_gpu: Option<crate::HostedGpuShared>,
+    policy: crate::GpuBackendPolicy,
+    theme: crate::ThemeMode,
+    material_mode: crate::MaterialEffect,
+) -> Result<PrimaryBootstrap, String> {
+    use crate::presentation::{resolve_window_surface_target, window_surface_request};
+
+    // Two separate questions, in order. First: can this process present
+    // through a platform compositor at all? That is the GPU backend's answer,
+    // it is process-wide, and it has to be settled before any window exists
+    // because the redirection bitmap is a creation-time flag. Second: does
+    // *this* window want that path? That is per window, and every other window
+    // this process opens asks it again for itself.
+    let mut bootstrap = gpu_bootstrap(policy, shared_gpu.as_ref());
+    let availability = composition_availability(&bootstrap);
+    let requested_target = window_surface_request(
+        settings.surface,
+        window_wants_transparent_surface(settings.transparent, material_mode),
+        policy,
+    );
+    let mut attempt = resolve_window_surface_target(
+        requested_target,
+        settings.surface.requires_composition(),
+        availability,
+    );
+    if let Some(reason) = attempt.forbidden_fallback() {
+        // The application said it would rather not start than present this
+        // window another way.
+        return Err(format!(
+            "window requires a platform compositor surface: {}",
+            reason.label()
+        ));
+    }
+    let mut last_error = None;
+    loop {
+        match attach_primary_surface(
+            event_loop,
+            settings,
+            shared_gpu.clone(),
+            attempt.resolved,
+            theme,
+            material_mode,
+            // The probe's instance is narrowed to the composition backend, and
+            // that narrowing is the process-wide policy taking effect: a
+            // process that asked to be composition-capable keeps a device that
+            // can compose even when its *first* window does not want one, so a
+            // Settings window opening first cannot quietly cost the main
+            // window its compositor. It is dropped only once composition has
+            // been given up on, where there is no capability left to preserve
+            // and the plain retry should be free to pick another backend.
+            attempt
+                .fallback
+                .is_none()
+                .then(|| bootstrap.take_instance())
+                .flatten(),
+        )
+        .and_then(|bound| match composition_fault_injection() {
+            // The composed path's failure branch is not reachable from a test
+            // that has no way to make DirectComposition fail, so the
+            // acceptance probe asks for it explicitly.
+            Some(reason) if attempt.resolved.composed() => Err(reason),
+            _ => Ok(bound),
+        }) {
+            Ok(PrimaryAttachment {
+                window,
+                graphics,
+                surface,
+                requested_material,
+                applied_material,
+            }) => {
+                if let Some(reason) = attempt.fallback {
+                    eprintln!(
+                        "nana window surface: {}; presenting through the plain window path \
+                         instead",
+                        reason.label()
+                    );
+                }
+                // A composed target that could not be built for this window
+                // will not build for another, so the failure narrows the whole
+                // process. Otherwise the answer is the device this bootstrap
+                // actually ended up on, which is the only thing a later window
+                // can be created against.
+                let composition = match attempt.fallback {
+                    Some(_) => crate::presentation::CompositionAvailability::Unavailable,
+                    None => crate::presentation::CompositionAvailability::for_backend(
+                        policy,
+                        graphics.adapter_info().backend,
+                    ),
+                };
+                return Ok(PrimaryBootstrap {
+                    window,
+                    graphics,
+                    surface,
+                    target: attempt,
+                    composition,
+                    requested_material,
+                    applied_material,
+                });
+            }
+            Err(error) => match next_bootstrap_attempt(attempt) {
+                // The provisional window and its composition objects were
+                // dropped by the failed attempt; the plain retry creates its
+                // own window rather than adopting that HWND.
+                Some(next) => {
+                    last_error = Some(error);
+                    attempt = next;
+                }
+                // The plain path is the last one there is. A failure here is a
+                // real startup failure, and it names the composed attempt too
+                // when there was one.
+                None => {
+                    return Err(match last_error {
+                        Some(composed) => {
+                            format!("{error} (after composition failed: {composed})")
+                        }
+                        None => error,
+                    });
+                }
+            },
+        }
+    }
+}
+
+/// The GPU bootstrap this process starts from.
+///
+/// A process that never asked for a compositor-capable backend has not narrowed
+/// its backend selection and must not be assumed to have got one, so nothing is
+/// probed for it at all. An embedded host's device already exists, so there is
+/// no narrowing left to do and the answer is simply what that device is.
+fn gpu_bootstrap(
+    policy: crate::GpuBackendPolicy,
+    shared_gpu: Option<&crate::HostedGpuShared>,
+) -> crate::hosted_context::GpuBootstrap {
+    use crate::hosted_context::GpuBootstrap;
+    if !policy.wants_composition() {
+        return GpuBootstrap::plain();
+    }
+    GpuBootstrap::probe(shared_gpu.map(|gpu| gpu.adapter().get_info().backend))
+}
+
+fn composition_availability(
+    bootstrap: &crate::hosted_context::GpuBootstrap,
+) -> crate::presentation::CompositionAvailability {
+    if bootstrap.composition_available() {
+        crate::presentation::CompositionAvailability::Available
+    } else {
+        crate::presentation::CompositionAvailability::Unavailable
+    }
+}
+
+/// The target to try after `attempt` failed, or `None` when the attempt was
+/// already the plain native path and there is nothing left below it.
+///
+/// Shared by the first window and every window opened later: a composed target
+/// is provisional wherever it is asked for, because the redirection bitmap is
+/// decided before anything can find out whether the target works.
+///
+/// Keeping the sequencing here, off the window and GPU calls, is what lets the
+/// fallback order be tested on a machine that has no DirectComposition at all.
+pub(super) fn next_bootstrap_attempt(
+    attempt: crate::presentation::ResolvedSurfaceTarget,
+) -> Option<crate::presentation::ResolvedSurfaceTarget> {
+    use crate::presentation::{ResolvedSurfaceTarget, SurfaceTargetFallback};
+    // A window that requires the compositor has no next attempt: it asked to
+    // fail rather than present another way.
+    (attempt.resolved.composed() && !attempt.required).then(|| {
+        ResolvedSurfaceTarget::fell_back(
+            attempt.requested,
+            SurfaceTargetFallback::TargetUnavailable,
+            attempt.required,
+        )
+    })
+}
+
+/// Fault injection for the acceptance probe that has to exercise the composed
+/// path's failure branch (`NANA_FORCE_COMPOSITION_FAILURE`). Nothing in the
+/// product reads it; it exists so "the composition target could not be built"
+/// is a state a real run can be put into on purpose.
+fn composition_fault_injection() -> Option<String> {
+    std::env::var_os("NANA_FORCE_COMPOSITION_FAILURE")
+        .filter(|value| !value.is_empty() && value != "0")
+        .map(|_| "composition failure requested by NANA_FORCE_COMPOSITION_FAILURE".to_owned())
+}
+
+/// A window bound to one presentation target, and what its material request
+/// resolved to on it.
+struct PrimaryAttachment {
+    window: Arc<dyn winit::window::Window>,
+    graphics: crate::HostedGpuShared,
+    surface: HostedGpuSurface,
+    requested_material: crate::MaterialEffect,
+    applied_material: MaterialOutcome,
+}
+
+/// One attempt at a presentation target: a window created for it and a surface
+/// bound to it. The window is dropped — and with it the HWND — if the surface
+/// cannot be built, so a failed attempt leaves nothing behind.
+fn attach_primary_surface(
+    event_loop: &dyn ActiveEventLoop,
+    settings: &WindowDescriptor,
+    shared_gpu: Option<crate::HostedGpuShared>,
+    target: WindowSurfaceTarget,
+    theme: crate::ThemeMode,
+    material_mode: crate::MaterialEffect,
+    instance: Option<wgpu::Instance>,
+) -> Result<PrimaryAttachment, String> {
+    let window: Arc<dyn winit::window::Window> = Arc::from(
+        event_loop
+            .create_window(
+                scene_window_attributes(
+                    settings,
+                    &scene_desktop(event_loop, settings.constrain_to_work_area),
+                    target,
+                )
+                .with_visible(false),
+            )
+            .map_err(|error| format!("failed to create scene window: {error}"))?,
+    );
+    // Holds the only other reference for the length of the attempt. An early
+    // return drops this guard and the local `window` together, so the last
+    // reference goes with them and the HWND created for a target that did not
+    // work out is destroyed rather than reused.
+    let mut provisional = PendingNativeWindow(Some(window.clone()));
+    let (requested_material, applied_material) = apply_window_material(
+        window.as_ref(),
+        theme,
+        settings,
+        material_mode,
+        AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
+    );
+    let want_transparent = requested_material.wants_transparent_surface();
+    let mode = surface_mode_for(target);
+    let bound = if let Some(graphics) = shared_gpu {
+        graphics
+            .create_surface_with_mode(Arc::clone(&window), want_transparent, mode)
+            .map(|surface| (graphics, surface))
+            .map_err(|error| error.to_string())
+    } else {
+        pollster::block_on(crate::hosted_context::HostedGpuContext::new_with_bootstrap(
+            Arc::clone(&window),
+            wgpu::Features::empty(),
+            want_transparent,
+            mode,
+            instance,
+        ))
+        .map(HostedGpuContext::into_parts)
+        .map_err(|error| error.to_string())
+    };
+    let (graphics, surface) = bound?;
+    // Kept: the material applied above belongs to the window that survived.
+    provisional.0 = None;
+    Ok(PrimaryAttachment {
+        window,
+        graphics,
+        surface,
+        requested_material,
+        applied_material,
+    })
+}
+
 fn initialize<Program: RuntimeProgram>(
     event_loop: &dyn ActiveEventLoop,
     proxy: EventLoopProxy,
@@ -537,65 +885,38 @@ fn initialize<Program: RuntimeProgram>(
     if settings.parent.is_some() {
         return Err("initial window cannot have a parent".into());
     }
-    // Before the window, not after: the window's redirection bitmap is decided
-    // at creation, so the mode it will present in has to be known first.
-    let surface_mode = crate::hosted_context::resolve_surface_mode(
-        Program::surface_mode(),
-        shared_gpu
-            .as_ref()
-            .map(|gpu| gpu.adapter().get_info().backend),
-    );
-    if surface_mode != Program::surface_mode() {
-        // Not a verdict on the material: the plain path still negotiates
-        // `PreMultiplied` on a Vulkan surface. What the client actually gets is
-        // reported once the surface has answered.
-        eprintln!(
-            "nana window surface: DirectComposition unavailable, \
-             presenting through the plain window path instead"
-        );
-    }
-    let window: Arc<dyn winit::window::Window> = Arc::from(
-        event_loop
-            .create_window(
-                scene_window_attributes(
-                    &settings,
-                    &scene_desktop(event_loop, settings.constrain_to_work_area),
-                    composed_surface(surface_mode),
-                )
-                .with_visible(false),
-            )
-            .map_err(|error| format!("failed to create scene window: {error}"))?,
-    );
-    let mut pending_native = PendingNativeWindow(Some(window.clone()));
-    apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
+    let embedded = shared_gpu.is_some();
     let mut last_theme = crate::ThemeMode::default();
     let mut last_material_mode = nana_window::MaterialEffect::Solid;
-    let mut material = apply_window_surface(
-        window.as_ref(),
-        last_theme,
+    let non_client = nana_window::NonClientRenderingStrategy::from_env();
+    let PrimaryBootstrap {
+        window,
+        graphics,
+        mut surface,
+        target,
+        composition: process_composition,
+        mut requested_material,
+        applied_material,
+    } = bootstrap_primary_window(
+        event_loop,
         &settings,
+        shared_gpu,
+        Program::gpu_backend_policy(),
+        last_theme,
         last_material_mode,
-        AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
-        composed_surface(surface_mode),
-        false,
-    );
-    let embedded = shared_gpu.is_some();
-    let (graphics, mut surface) = if let Some(graphics) = shared_gpu {
-        let surface = graphics
-            .create_surface_with_mode(Arc::clone(&window), settings.transparent, surface_mode)
-            .map_err(|error| error.to_string())?;
-        (graphics, surface)
-    } else {
-        pollster::block_on(HostedGpuContext::new_with_surface_mode(
-            Arc::clone(&window),
-            wgpu::Features::empty(),
-            window_wants_transparent_surface(settings.transparent, last_material_mode),
-            surface_mode,
-        ))
-        .map_err(|error| error.to_string())?
-        .into_parts()
-    };
+    )?;
+    let mut pending_native = PendingNativeWindow(Some(window.clone()));
+    apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
     let format = surface.format();
+    let mut presentation = ResolvedWindowPresentation::resolve(
+        &settings,
+        requested_material,
+        applied_material,
+        surface.alpha_mode(),
+        graphics.adapter_info().backend,
+        target,
+        non_client,
+    );
     let host_work = Arc::new(schedule::HostWorkWake::new(proxy.clone()));
     let window_wake = Arc::clone(&host_work);
     let (windows, window_requests) =
@@ -611,8 +932,8 @@ fn initialize<Program: RuntimeProgram>(
         WindowId::PRIMARY,
         geometry,
         tasks.clone(),
-        material,
-        surface.alpha_mode(),
+        presentation,
+        CompositionWork::default(),
         window.theme().map(system_appearance_from_winit),
     )
     .with_windows(&windows)
@@ -625,14 +946,14 @@ fn initialize<Program: RuntimeProgram>(
     let startup_requests = window_requests;
     last_theme = program.theme_mode();
     last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
-    material = apply_window_surface(
+    let backdrop_opacity = program.appearance_backdrop_opacity_for(WindowId::PRIMARY);
+    let applied;
+    (requested_material, applied) = apply_window_material(
         window.as_ref(),
         last_theme,
         &settings,
         last_material_mode,
-        program.appearance_backdrop_opacity_for(WindowId::PRIMARY),
-        composed_surface(surface_mode),
-        false,
+        backdrop_opacity,
     );
     graphics
         .apply_surface_alpha_mode(
@@ -640,10 +961,24 @@ fn initialize<Program: RuntimeProgram>(
             window_wants_transparent_surface(settings.transparent, last_material_mode),
         )
         .map_err(|error| error.to_string())?;
-    material = material_for_surface_alpha(
-        material,
+    // The surface has answered, so the effective material and the chrome that
+    // matches it are settled together, before the window is ever shown.
+    presentation = ResolvedWindowPresentation::resolve(
+        &settings,
+        requested_material,
+        applied,
         surface.alpha_mode(),
         graphics.adapter_info().backend,
+        target,
+        non_client,
+    );
+    apply_resolved_presentation(
+        window.as_ref(),
+        last_theme,
+        &settings,
+        &presentation,
+        backdrop_opacity,
+        false,
     );
     #[cfg(not(target_os = "android"))]
     let accessibility = {
@@ -668,7 +1003,7 @@ fn initialize<Program: RuntimeProgram>(
         surface,
         geometry,
         input: InputTracker::default(),
-        material,
+        presentation,
         settings: settings.clone(),
         #[cfg(not(target_os = "android"))]
         accessibility,
@@ -692,7 +1027,9 @@ fn initialize<Program: RuntimeProgram>(
     let mut ready = WindowManager {
         program,
         embedded,
-        surface_mode,
+        gpu_backend_policy: Program::gpu_backend_policy(),
+        non_client,
+        composition: process_composition,
         shutting_down: false,
         wake_deadline: None,
         host_work: Arc::clone(&host_work),
@@ -718,7 +1055,8 @@ fn initialize<Program: RuntimeProgram>(
         image_targets: Arc::new(Mutex::new(HashMap::new())),
         image_window_keys: HashMap::new(),
         occluded: HashSet::new(),
-        material,
+        native_content: HashMap::new(),
+        native_chrome_writes: std::cell::Cell::new(0),
         window_contexts: HashMap::from([(WindowId::PRIMARY, primary)]),
         window_ids,
         closing_windows: HashSet::new(),
@@ -767,13 +1105,7 @@ fn initialize<Program: RuntimeProgram>(
             ready.settings.visible,
             ready.settings.focus_on_show,
         );
-        apply_client_chrome_after_create(
-            window.as_ref(),
-            &ready.settings,
-            ready.window_surface_material(WindowId::PRIMARY),
-            composed_surface(surface_mode),
-            false,
-        );
+        ready.reconcile_native_chrome(WindowId::PRIMARY);
         window.request_redraw();
         ready.finish_ready(event_loop, WindowId::PRIMARY);
     }
@@ -811,8 +1143,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             id,
             self.geometry_of(id),
             self.tasks.clone(),
-            self.material_of(id),
-            self.alpha_mode_of(id),
+            self.presentation_of(id),
+            self.composition_work_of(id),
             self.window(id)
                 .and_then(|w| w.theme())
                 .map(system_appearance_from_winit),
@@ -885,18 +1217,46 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .unwrap_or_default()
     }
 
-    fn material_of(&self, id: WindowId) -> MaterialOutcome {
+    /// What `id` presents, and how. A window that is gone presents nothing, so
+    /// it reports a plain opaque window rather than the last live window's
+    /// state: there is one authority per window and no process-wide copy of it
+    /// to go stale.
+    fn presentation_of(&self, id: WindowId) -> ResolvedWindowPresentation {
         self.window_contexts
             .get(&id)
-            .map(|host| host.material)
-            .unwrap_or(self.material)
+            .map_or_else(ResolvedWindowPresentation::closed, |host| host.presentation)
     }
 
-    fn alpha_mode_of(&self, id: WindowId) -> wgpu::CompositeAlphaMode {
-        self.window_contexts
+    fn material_of(&self, id: WindowId) -> MaterialOutcome {
+        self.presentation_of(id).effective()
+    }
+
+    /// What mirroring `id`'s scene into the platform compositor has cost.
+    fn composition_work_of(&self, id: WindowId) -> CompositionWork {
+        #[allow(unused_mut)]
+        let mut work = CompositionWork {
+            native_content: self
+                .native_content
+                .get(&id)
+                .map(crate::native_content::NativeContentMirror::work)
+                .unwrap_or_default(),
+            commits: 0,
+            tree_mutations: 0,
+            native_chrome_writes: self.native_chrome_writes.get(),
+        };
+        #[cfg(target_os = "windows")]
+        if let Some(composition) = self
+            .window_contexts
             .get(&id)
-            .map(|host| host.surface.alpha_mode())
-            .unwrap_or(wgpu::CompositeAlphaMode::Opaque)
+            .and_then(|host| host.surface.windows_composition())
+        {
+            let composed = composition.work();
+            work.commits = composed.commits;
+            work.tree_mutations = composed.tree_mutations;
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = id;
+        work
     }
 
     fn request_redraw(&self, id: WindowId) {
@@ -923,16 +1283,16 @@ fn program_context<Message: Send + 'static>(
     id: WindowId,
     geometry: WindowGeometry,
     tasks: SyncSender<Task<Message>>,
-    material: MaterialOutcome,
-    surface_alpha_mode: wgpu::CompositeAlphaMode,
+    presentation: ResolvedWindowPresentation,
+    composition_work: CompositionWork,
     appearance: Option<nana_ui_platform::SystemAppearance>,
 ) -> RuntimeProgramContext<Message> {
     RuntimeProgramContext::new(
         id,
         geometry,
         graphics.resources(),
-        material,
-        surface_alpha_mode,
+        presentation,
+        composition_work,
         Arc::new(move |message| {
             if message_tx.send(message).is_ok() {
                 wake.wake();
@@ -1064,31 +1424,6 @@ fn window_wants_transparent_surface(
     window_surface_effect(settings_transparent, appearance).wants_transparent_surface()
 }
 
-/// Demote a transparent effect the surface cannot present.
-///
-/// Transparent effects clear to a zero alpha (see [`scene_clear_color`]), which
-/// an `Opaque` surface shows as solid black instead of the desktop behind it.
-/// Windows DX12 advertises `Opaque` for every HWND surface, so the request is
-/// unsatisfiable there. Reporting the fallback restores the opaque clear colour
-/// and lets the program and its logs see that transparency is unavailable.
-///
-/// `Gl` is excluded: wgpu-hal hardcodes `Opaque` for every GLES surface and
-/// never reads the configured mode back, leaving alpha to the EGL/WGL config,
-/// so its alpha mode says nothing about whether the window composites.
-fn material_for_surface_alpha(
-    material: MaterialOutcome,
-    alpha_mode: wgpu::CompositeAlphaMode,
-    backend: wgpu::Backend,
-) -> MaterialOutcome {
-    if material.wants_transparent_surface()
-        && alpha_mode == wgpu::CompositeAlphaMode::Opaque
-        && backend != wgpu::Backend::Gl
-    {
-        return MaterialOutcome::solid(MaterialFallback::NativeMaterialUnavailable);
-    }
-    material
-}
-
 fn apply_scene_material(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
@@ -1113,20 +1448,62 @@ fn apply_window_transparency(window: &dyn winit::window::Window, requested: crat
     window.set_transparent(requested.wants_transparent_surface());
 }
 
-fn apply_window_surface(
+/// Asks the platform for the window's requested material.
+///
+/// Native chrome is deliberately *not* written here. Chrome follows the
+/// effective presentation, and that is only known once the surface has
+/// negotiated its alpha — see [`ResolvedWindowPresentation`] and
+/// [`apply_resolved_presentation`].
+fn apply_window_material(
     window: &dyn winit::window::Window,
     theme: crate::ThemeMode,
     settings: &WindowDescriptor,
     appearance: crate::MaterialEffect,
     backdrop_opacity: f32,
-    composed: bool,
-    allow_caption_change: bool,
-) -> MaterialOutcome {
+) -> (crate::MaterialEffect, MaterialOutcome) {
     let requested = window_surface_effect(settings.transparent, appearance);
     let material = apply_scene_material(window, theme, requested, backdrop_opacity);
     apply_window_transparency(window, requested);
-    apply_client_chrome_after_create(window, settings, requested, composed, allow_caption_change);
-    material
+    (requested, material)
+}
+
+/// Writes every native consequence of a resolved presentation.
+///
+/// This is the one place that touches the window's material state and its
+/// non-client chrome once the surface has answered, so the two cannot disagree:
+///
+/// - a request that was demoted has its native material undone, because the
+///   glass a `Transparent` request extended across the client must not stay on
+///   a window that now presents `Solid`;
+/// - the frame styles, corner preference and border stroke come from
+///   `presentation.chrome()`, which was derived from the effective material.
+///
+/// Every host call site must record the write with
+/// [`WindowManager::note_native_chrome_write`], so the steady-state gate reads
+/// a number that includes it — a chrome write nothing counted would let the
+/// contract report zero while a window rewrote its frame styles every frame.
+/// The one exception is the first window's own creation, which happens before
+/// the host exists and before any measurement starts.
+fn apply_resolved_presentation(
+    window: &dyn winit::window::Window,
+    theme: crate::ThemeMode,
+    settings: &WindowDescriptor,
+    presentation: &ResolvedWindowPresentation,
+    backdrop_opacity: f32,
+    allow_caption_change: bool,
+) {
+    if presentation.needs_material_reset() {
+        // The outcome is already recorded on the presentation; this call is
+        // only here to put the platform back where that outcome says it is.
+        let _ = apply_scene_material(
+            window,
+            theme,
+            presentation.effective().effect,
+            backdrop_opacity,
+        );
+        apply_window_transparency(window, presentation.effective().effect);
+    }
+    apply_native_chrome(window, settings, presentation, allow_caption_change);
 }
 
 /// Starts a native window drag; `Ok` means the drag started and the platform
@@ -1397,7 +1774,7 @@ impl Desktop {
 fn scene_window_attributes(
     settings: &WindowDescriptor,
     desktop: &Desktop,
-    composed: bool,
+    target: WindowSurfaceTarget,
 ) -> winit::window::WindowAttributes {
     let displays = desktop.displays.as_slice();
     let mut settings = settings.clone();
@@ -1453,7 +1830,7 @@ fn scene_window_attributes(
         attributes = attributes.with_window_icon(Some(icon));
     }
 
-    apply_scene_window_chrome(attributes, &settings, composed)
+    apply_scene_window_chrome(attributes, &settings, target)
 }
 
 /// Live display bounds in the global logical coordinate space, matching the
@@ -1545,7 +1922,7 @@ struct WindowsSceneChrome {
 fn windows_scene_chrome(
     system_caption: bool,
     transparent: bool,
-    composed: bool,
+    target: WindowSurfaceTarget,
 ) -> WindowsSceneChrome {
     WindowsSceneChrome {
         decorations: system_caption,
@@ -1559,45 +1936,32 @@ fn windows_scene_chrome(
         // composed window has to be created without one or an opaque surface
         // shows through underneath. A window on the plain path keeps it — its
         // swapchain may well be presenting into it.
-        no_redirection_bitmap: composed,
+        no_redirection_bitmap: target.composed(),
         rounded_corners: !system_caption && !transparent,
     }
 }
 
-/// Whether the host presents through a DirectComposition visual rather than an
-/// HWND swapchain. Only that path takes the window's redirection bitmap away.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-const fn composed_surface(mode: crate::HostedSurfaceMode) -> bool {
+/// The surface mode that reaches a presentation target.
+const fn surface_mode_for(target: WindowSurfaceTarget) -> crate::HostedSurfaceMode {
     #[cfg(target_os = "windows")]
     {
-        matches!(mode, crate::HostedSurfaceMode::WindowsComposition)
+        match target {
+            WindowSurfaceTarget::Composition => crate::HostedSurfaceMode::WindowsComposition,
+            WindowSurfaceTarget::NativeWindow => crate::HostedSurfaceMode::Window,
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = mode;
-        false
+        let _ = target;
+        crate::HostedSurfaceMode::Window
     }
 }
 
-/// Native chrome a client-chrome window must be given to match the surface it
-/// is actually presenting, which is the live material rather than the flag the
-/// descriptor was created with: a host that keeps `transparent: false` so the
-/// user can return to an opaque background still runs transparent most of the
-/// time, and DWM would otherwise go on rounding, stroking and framing an HWND
-/// its surface no longer fills.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(all(target_os = "macos", not(test)), allow(dead_code))]
-struct ClientChrome {
-    /// DWM round clip and the system stroke that comes with it.
-    rounded_corners: bool,
-    /// Whether the Win32 frame styles should be stripped.
-    frameless: bool,
-    /// Whether the style may be rewritten now, or only armed so the strip lands
-    /// on the next style winit writes.
-    write_styles: bool,
-}
-
-/// `material` is the effect the surface is actually presenting.
+/// Writes the native chrome a resolved presentation requires.
+///
+/// Re-apply after any winit call that rewrites native window style. The policy
+/// is read off the presentation, never re-derived: `presentation.chrome()` was
+/// settled from the effective material when the presentation was resolved.
 ///
 /// `allow_caption_change` is false while the host is still inside
 /// `can_create_surfaces`, which this crate has long kept free of
@@ -1607,59 +1971,37 @@ struct ClientChrome {
 /// window rewrites the whole style through winit and the strip lands on that
 /// write, before the window has been presented once, so writing it earlier
 /// would only add a frame change nobody reads.
-fn client_chrome(
-    settings: &WindowDescriptor,
-    material: crate::MaterialEffect,
-    _composed: bool,
-    allow_caption_change: bool,
-) -> Option<ClientChrome> {
-    if settings.system_caption {
-        return None;
-    }
-    // Only a transparent client leaves the HWND rectangle for DWM to show
-    // through. Mica and Acrylic also report `wants_transparent_surface()`,
-    // but they *are* DWM's non-client rendering, so they keep the round clip
-    // and the stroke. Stripping the frame styles is enough to drop the
-    // shadow; a dedicated non-client rendering policy was measured to have
-    // no effect once those bits are gone.
-    let bare = matches!(material, crate::MaterialEffect::Transparent);
-    Some(ClientChrome {
-        rounded_corners: !bare,
-        frameless: bare,
-        write_styles: allow_caption_change,
-    })
-}
-
-/// Re-apply after any winit call that rewrites native window style.
-fn apply_client_chrome_after_create<W: HasWindowHandle + ?Sized>(
+fn apply_native_chrome<W: HasWindowHandle + ?Sized>(
     window: &W,
     settings: &WindowDescriptor,
-    material: crate::MaterialEffect,
-    composed: bool,
+    presentation: &ResolvedWindowPresentation,
     allow_caption_change: bool,
 ) {
-    let Some(chrome) = client_chrome(settings, material, composed, allow_caption_change) else {
+    let Some(chrome) = presentation.chrome() else {
         return;
     };
     let _ = prepare_client_chrome(window, f64::from(TITLE_BAR_HEIGHT), chrome.rounded_corners);
-    let _ = if chrome.write_styles {
-        set_frameless_styles(window, chrome.frameless, settings.resizable)
+    // Both directions are written: a window whose material flips at runtime
+    // would otherwise keep whichever policy it was last given.
+    let _ = nana_window::set_non_client_rendering(window, chrome.non_client_rendering_enabled());
+    let _ = if allow_caption_change {
+        set_frameless_styles(window, chrome.frameless(), settings.resizable)
     } else {
-        arm_frameless_guard(window, chrome.frameless)
+        arm_frameless_guard(window, chrome.frameless())
     };
 }
 
 fn apply_scene_window_chrome(
     attributes: winit::window::WindowAttributes,
     settings: &WindowDescriptor,
-    composed: bool,
+    target: WindowSurfaceTarget,
 ) -> winit::window::WindowAttributes {
     #[cfg(target_os = "macos")]
     {
-        // Whether the surface is composed only changes chrome on Windows,
-        // where it decides the redirection bitmap and the undecorated shadow.
-        // macOS reads `system_caption` alone.
-        let _ = composed;
+        // The presentation target only changes chrome on Windows, where it
+        // decides the redirection bitmap and the undecorated shadow. macOS
+        // reads `system_caption` alone.
+        let _ = target;
         if settings.system_caption {
             return attributes.with_decorations(true);
         }
@@ -1676,7 +2018,7 @@ fn apply_scene_window_chrome(
 
     #[cfg(not(target_os = "macos"))]
     {
-        let chrome = windows_scene_chrome(settings.system_caption, settings.transparent, composed);
+        let chrome = windows_scene_chrome(settings.system_caption, settings.transparent, target);
         let attributes = attributes.with_decorations(chrome.decorations);
         #[cfg(target_os = "windows")]
         let attributes = {
@@ -1703,9 +2045,9 @@ fn scene_aux_window_attributes(
     settings: &WindowDescriptor,
     parent: Option<&dyn winit::window::Window>,
     desktop: &Desktop,
-    composed: bool,
+    target: WindowSurfaceTarget,
 ) -> Result<winit::window::WindowAttributes, String> {
-    let attributes = scene_window_attributes(settings, desktop, composed).with_visible(false);
+    let attributes = scene_window_attributes(settings, desktop, target).with_visible(false);
     if settings.modal && parent.is_none() {
         return Err("modal window requires a parent".into());
     }
@@ -1721,7 +2063,7 @@ fn scene_aux_window_attributes(
         };
         {
             let chrome =
-                windows_scene_chrome(settings.system_caption, settings.transparent, composed);
+                windows_scene_chrome(settings.system_caption, settings.transparent, target);
             let mut win = WindowAttributesWindows::default()
                 .with_no_redirection_bitmap(chrome.no_redirection_bitmap)
                 .with_undecorated_shadow(chrome.undecorated_shadow)
@@ -2764,16 +3106,18 @@ mod tests {
     use super::next_accessibility_update;
     use super::{
         Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
-        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, client_chrome, desktop_position,
-        frame_move_step, held_mouse_button, ime_apply, input_pointer_hit,
-        invalidate_program_host_textures, material_for_surface_alpha, mouse_button_code,
-        mouse_button_mask, platform_ime_event, platform_input_key, platform_input_modifiers,
-        platform_window_event, remove_image_target_index, replace_image_target_index,
-        resolved_scene_ime_request, route_window_command, scene_clear_color,
-        scene_runtime_input_update, scene_window_attributes, screen_position,
+        PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
+        held_mouse_button, ime_apply, input_pointer_hit, invalidate_program_host_textures,
+        mouse_button_code, mouse_button_mask, platform_ime_event, platform_input_key,
+        platform_input_modifiers, platform_window_event, remove_image_target_index,
+        replace_image_target_index, resolved_scene_ime_request, route_window_command,
+        scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
         should_deliver_program_ime, surface_image_keys, tablet_pointer_id, window_cursor_override,
         window_level, window_surface_effect, window_wants_transparent_surface,
         windows_scene_chrome, windows_to_redraw, winit_icon,
+    };
+    use crate::presentation::{
+        ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
     };
     use crate::{
         HostTexture, HostTextureAlphaMode, HostTextureRegistry, MaterialEffect, MaterialFallback,
@@ -2972,7 +3316,7 @@ mod tests {
                 size_ratios: Vec::new(),
                 scale: 1.0,
             },
-            false,
+            WindowSurfaceTarget::NativeWindow,
         );
 
         assert_eq!(attributes.title, "Scene");
@@ -2989,14 +3333,17 @@ mod tests {
         );
         assert_eq!(window_level(false), winit::window::WindowLevel::Normal);
 
-        let transparent_client =
-            windows_scene_chrome(settings.system_caption, settings.transparent, false);
+        let transparent_client = windows_scene_chrome(
+            settings.system_caption,
+            settings.transparent,
+            WindowSurfaceTarget::NativeWindow,
+        );
         assert!(!transparent_client.decorations);
         assert!(!transparent_client.undecorated_shadow);
         assert!(!transparent_client.no_redirection_bitmap);
         assert!(!transparent_client.rounded_corners);
 
-        let opaque_client = windows_scene_chrome(false, false, false);
+        let opaque_client = windows_scene_chrome(false, false, WindowSurfaceTarget::NativeWindow);
         assert!(!opaque_client.decorations);
         assert!(!opaque_client.undecorated_shadow);
         assert!(!opaque_client.no_redirection_bitmap);
@@ -3010,14 +3357,15 @@ mod tests {
                 size_ratios: Vec::new(),
                 scale: 1.0,
             },
-            false,
+            WindowSurfaceTarget::NativeWindow,
         );
         assert!(caption.decorations);
-        let transparent_caption = windows_scene_chrome(true, true, false);
+        let transparent_caption =
+            windows_scene_chrome(true, true, WindowSurfaceTarget::NativeWindow);
         assert!(transparent_caption.decorations);
         assert!(!transparent_caption.undecorated_shadow);
         assert!(!transparent_caption.no_redirection_bitmap);
-        let opaque_caption = windows_scene_chrome(true, false, false);
+        let opaque_caption = windows_scene_chrome(true, false, WindowSurfaceTarget::NativeWindow);
         assert!(opaque_caption.decorations);
         assert!(!opaque_caption.no_redirection_bitmap);
     }
@@ -3033,10 +3381,20 @@ mod tests {
         for system_caption in [false, true] {
             for transparent in [false, true] {
                 assert!(
-                    !windows_scene_chrome(system_caption, transparent, false).no_redirection_bitmap
+                    !windows_scene_chrome(
+                        system_caption,
+                        transparent,
+                        WindowSurfaceTarget::NativeWindow
+                    )
+                    .no_redirection_bitmap
                 );
                 assert!(
-                    windows_scene_chrome(system_caption, transparent, true).no_redirection_bitmap
+                    windows_scene_chrome(
+                        system_caption,
+                        transparent,
+                        WindowSurfaceTarget::Composition
+                    )
+                    .no_redirection_bitmap
                 );
             }
         }
@@ -3045,34 +3403,151 @@ mod tests {
     /// A host that leaves `transparent: false` so the user can return to an
     /// opaque background still runs transparent, and its chrome has to follow
     /// the live surface or DWM keeps stroking and shadowing the HWND.
+    ///
+    /// The chrome is no longer derived at the call site: it is settled on the
+    /// resolved presentation, so this asserts that the presentation a live
+    /// transparent surface produces carries the transparent policy even though
+    /// the descriptor says otherwise.
+    fn resolved(
+        settings: &WindowDescriptor,
+        requested: MaterialEffect,
+        alpha: wgpu::CompositeAlphaMode,
+        backend: wgpu::Backend,
+    ) -> ResolvedWindowPresentation {
+        let applied = match requested {
+            MaterialEffect::Transparent => MaterialOutcome::transparent(),
+            MaterialEffect::Solid => MaterialOutcome::chosen_solid(),
+            effect => MaterialOutcome::native(effect),
+        };
+        ResolvedWindowPresentation::resolve(
+            settings,
+            requested,
+            applied,
+            alpha,
+            backend,
+            ResolvedSurfaceTarget::honoured(WindowSurfaceTarget::NativeWindow, false),
+            nana_window::NonClientRenderingStrategy::StripFrameStyles,
+        )
+    }
+
     #[test]
     fn client_chrome_follows_the_live_surface_not_the_descriptor() {
+        use crate::presentation::NativeChromePolicy;
         let mut settings = WindowDescriptor::new("Scene");
         assert!(!settings.transparent);
 
-        let transparent = client_chrome(&settings, crate::MaterialEffect::Transparent, false, true)
-            .expect("chrome");
-        assert!(!transparent.rounded_corners);
-        assert!(transparent.frameless);
+        let transparent = resolved(
+            &settings,
+            MaterialEffect::Transparent,
+            wgpu::CompositeAlphaMode::PreMultiplied,
+            wgpu::Backend::Vulkan,
+        );
+        assert_eq!(
+            transparent.chrome(),
+            Some(NativeChromePolicy::transparent(
+                nana_window::NonClientRenderingStrategy::StripFrameStyles,
+            ))
+        );
 
-        let opaque =
-            client_chrome(&settings, crate::MaterialEffect::Solid, false, true).expect("chrome");
-        assert!(opaque.rounded_corners);
-        assert!(!opaque.frameless);
-
-        // Still inside `can_create_surfaces`: the strip is decided and armed,
-        // only the style write waits for winit's own.
-        let creating = client_chrome(&settings, crate::MaterialEffect::Transparent, false, false)
-            .expect("chrome");
-        assert!(!creating.rounded_corners);
-        assert!(creating.frameless);
-        assert!(!creating.write_styles);
+        let opaque = resolved(
+            &settings,
+            MaterialEffect::Solid,
+            wgpu::CompositeAlphaMode::Opaque,
+            wgpu::Backend::Vulkan,
+        );
+        assert_eq!(opaque.chrome(), Some(NativeChromePolicy::OPAQUE));
 
         settings.system_caption = true;
         assert_eq!(
-            client_chrome(&settings, crate::MaterialEffect::Transparent, false, true),
+            resolved(
+                &settings,
+                MaterialEffect::Transparent,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::Backend::Vulkan,
+            )
+            .chrome(),
             None
         );
+    }
+
+    /// A composed attempt that cannot be completed falls back to the plain
+    /// native path exactly once, and the plain path has nothing below it: a
+    /// failure there is a real startup failure rather than another retry.
+    #[test]
+    fn a_failed_composed_attempt_falls_back_to_the_plain_path_and_stops_there() {
+        use super::next_bootstrap_attempt;
+        use crate::presentation::SurfaceTargetFallback;
+
+        let composed = ResolvedSurfaceTarget::honoured(WindowSurfaceTarget::Composition, false);
+        let next = next_bootstrap_attempt(composed).expect("a composed attempt has a fallback");
+        assert_eq!(next.requested, WindowSurfaceTarget::Composition);
+        assert_eq!(next.resolved, WindowSurfaceTarget::NativeWindow);
+        assert_eq!(
+            next.fallback,
+            Some(SurfaceTargetFallback::TargetUnavailable)
+        );
+        assert_eq!(next_bootstrap_attempt(next), None);
+        assert_eq!(
+            next_bootstrap_attempt(ResolvedSurfaceTarget::honoured(
+                WindowSurfaceTarget::NativeWindow,
+                false
+            )),
+            None
+        );
+        // A window the backend already ruled out never creates a composed
+        // HWND at all, so it has no second attempt to make either.
+        let no_backend = ResolvedSurfaceTarget::fell_back(
+            WindowSurfaceTarget::Composition,
+            SurfaceTargetFallback::BackendUnavailable,
+            false,
+        );
+        assert_eq!(next_bootstrap_attempt(no_backend), None);
+
+        // A window that requires the compositor has no fallback to take: it
+        // asked to fail rather than present another way.
+        assert_eq!(
+            next_bootstrap_attempt(ResolvedSurfaceTarget::honoured(
+                WindowSurfaceTarget::Composition,
+                true
+            )),
+            None
+        );
+    }
+
+    /// The P0 inconsistency, as a contract: a `Transparent` request on a DX12
+    /// HWND surface falls back to `Solid`, and the window's native chrome is
+    /// the opaque policy in the same value the renderer reads its material
+    /// from. Reconciling again from that stored presentation — which is what
+    /// every later maximize, DPI change and style restore does — must not walk
+    /// the chrome back to transparent.
+    #[test]
+    fn a_dx12_hwnd_fallback_keeps_opaque_chrome_across_later_reconciles() {
+        use crate::presentation::NativeChromePolicy;
+        let settings = WindowDescriptor::new("Scene");
+        let first = resolved(
+            &settings,
+            MaterialEffect::Transparent,
+            wgpu::CompositeAlphaMode::Opaque,
+            wgpu::Backend::Dx12,
+        );
+        assert_eq!(first.effective().effect, MaterialEffect::Solid);
+        assert_eq!(
+            first.effective().fallback,
+            Some(MaterialFallback::NativeMaterialUnavailable)
+        );
+        assert_eq!(first.chrome(), Some(NativeChromePolicy::OPAQUE));
+
+        // A later reconcile re-applies the effective material, whose surface
+        // still answers Opaque. The chrome stays put and the material no
+        // longer needs resetting, so the pair has settled.
+        let again = resolved(
+            &settings,
+            first.effective().effect,
+            wgpu::CompositeAlphaMode::Opaque,
+            wgpu::Backend::Dx12,
+        );
+        assert_eq!(again.chrome(), first.chrome());
+        assert!(!again.needs_material_reset());
     }
 
     /// Mica and Acrylic report `wants_transparent_surface()` like a fully
@@ -3080,12 +3555,18 @@ mod tests {
     /// round clip would erase the backdrop the window asked for.
     #[test]
     fn a_system_backdrop_keeps_the_round_clip_that_paints_it() {
+        use crate::presentation::NativeChromePolicy;
         let settings = WindowDescriptor::new("Scene");
-        for material in [crate::MaterialEffect::Mica, crate::MaterialEffect::Acrylic] {
+        for material in [MaterialEffect::Mica, MaterialEffect::Acrylic] {
             assert!(material.wants_transparent_surface());
-            let chrome = client_chrome(&settings, material, false, true).expect("chrome");
-            assert!(chrome.rounded_corners);
-            assert!(!chrome.frameless);
+            let chrome = resolved(
+                &settings,
+                material,
+                wgpu::CompositeAlphaMode::PreMultiplied,
+                wgpu::Backend::Dx12,
+            )
+            .chrome();
+            assert_eq!(chrome, Some(NativeChromePolicy::OPAQUE));
         }
     }
 
@@ -3116,7 +3597,8 @@ mod tests {
             scale: 1.0,
         };
 
-        let attributes = scene_window_attributes(&settings, &main, false);
+        let attributes =
+            scene_window_attributes(&settings, &main, WindowSurfaceTarget::NativeWindow);
         assert_eq!(
             attributes.position,
             Some(desktop_position((1032.0, 40.0), 1.0))
@@ -3133,7 +3615,8 @@ mod tests {
             size_ratios: Vec::new(),
             scale: 1.0,
         };
-        let attributes = scene_window_attributes(&settings, &disconnected, false);
+        let attributes =
+            scene_window_attributes(&settings, &disconnected, WindowSurfaceTarget::NativeWindow);
         assert_eq!(
             attributes.position,
             Some(desktop_position((2100.0, 40.0), 1.0))
@@ -3141,7 +3624,7 @@ mod tests {
 
         settings.initial_position = None;
         assert_eq!(
-            scene_window_attributes(&settings, &main, false).position,
+            scene_window_attributes(&settings, &main, WindowSurfaceTarget::NativeWindow).position,
             None
         );
     }
@@ -3180,7 +3663,7 @@ mod tests {
                 size_ratios: vec![1.0, 1.25],
                 scale,
             },
-            false,
+            WindowSurfaceTarget::NativeWindow,
         );
         assert_eq!(
             attributes.position,
@@ -3228,28 +3711,44 @@ mod tests {
         ] {
             for backend in [Dx12, Vulkan, Metal] {
                 assert_eq!(
-                    material_for_surface_alpha(requested, Opaque, backend),
+                    effective_for(requested, Opaque, backend),
                     demoted,
                     "{backend:?} honours the configured alpha mode"
                 );
                 for alpha in [PreMultiplied, PostMultiplied] {
-                    assert_eq!(
-                        material_for_surface_alpha(requested, alpha, backend),
-                        requested
-                    );
+                    assert_eq!(effective_for(requested, alpha, backend), requested);
                 }
             }
             // GLES hardcodes Opaque and never reads the configured mode back,
             // so it says nothing about whether the window composites.
-            assert_eq!(material_for_surface_alpha(requested, Opaque, Gl), requested);
+            assert_eq!(effective_for(requested, Opaque, Gl), requested);
         }
         // An opaque request is already honoured by an opaque surface.
         for chosen in [
             MaterialOutcome::chosen_solid(),
             MaterialOutcome::solid(MaterialFallback::PlatformDoesNotProvideNativeMaterial),
         ] {
-            assert_eq!(material_for_surface_alpha(chosen, Opaque, Dx12), chosen);
+            assert_eq!(effective_for(chosen, Opaque, Dx12), chosen);
         }
+    }
+
+    /// The effective material a surface's answer produces, read off the
+    /// resolved presentation rather than from a separate demotion helper.
+    fn effective_for(
+        applied: MaterialOutcome,
+        alpha: wgpu::CompositeAlphaMode,
+        backend: wgpu::Backend,
+    ) -> MaterialOutcome {
+        ResolvedWindowPresentation::resolve(
+            &WindowDescriptor::new("Scene"),
+            applied.effect,
+            applied,
+            alpha,
+            backend,
+            ResolvedSurfaceTarget::honoured(WindowSurfaceTarget::NativeWindow, false),
+            nana_window::NonClientRenderingStrategy::StripFrameStyles,
+        )
+        .effective()
     }
 
     #[test]

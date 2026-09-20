@@ -68,63 +68,100 @@ impl HostedSurfaceTarget {
         match self {
             Self::Window => Ok(()),
             #[cfg(target_os = "windows")]
+            // The swapchain WGPU just bound to the UI visual is staged on the
+            // composition device, not on the tree, so this commit is not
+            // optional the way a frame's is.
             Self::WindowsComposition(composition) => composition
-                .commit()
+                .commit_external()
                 .map_err(|e| HostedGpuError::SurfaceCreation(e.to_string())),
         }
     }
 }
 
-/// Whether this process can present through DirectComposition.
+/// One GPU bootstrap: the instance a capability was probed on, kept so the real
+/// device request does not initialise the backend a second time.
 ///
-/// `new_with_surface_mode` narrows the backends to DX12 for a composition
-/// surface, but it does that once a window already exists — too late to decide
-/// whether that window should have been created without a redirection bitmap,
-/// which is a creation-time flag winit owns and nothing can set durably
-/// afterwards. This answers the question before any window is made, with a
-/// throwaway instance and no surface. `WGPU_BACKEND` still wins: a run pinned
-/// to another backend has no composition available to it.
-#[cfg(target_os = "windows")]
-fn composition_backend_available() -> bool {
-    let backends = wgpu::Backends::from_env().unwrap_or_default() & wgpu::Backends::DX12;
-    if backends.is_empty() {
-        return false;
-    }
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends,
-        ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-    !pollster::block_on(instance.enumerate_adapters(backends)).is_empty()
+/// The composition question has to be answered before any window exists —
+/// `WS_EX_NOREDIRECTIONBITMAP` is a creation-time flag winit owns and nothing
+/// can set durably afterwards — but answering it means creating an instance and
+/// enumerating adapters, which is most of what selecting the real device does.
+/// Doing both on one instance is what keeps the probe and the device from
+/// disagreeing, and from paying for DX12 initialisation twice.
+pub(crate) struct GpuBootstrap {
+    /// Whether a window in this process can present through a platform
+    /// compositor. It answers only that: what a client's alpha then turns out
+    /// to be is the surface's answer once it negotiates, and the plain path is
+    /// not automatically opaque — a Vulkan surface negotiates `PreMultiplied`
+    /// on it.
+    composition: bool,
+    /// The instance the probe proved that adapter on, for the device request to
+    /// reuse. `None` when nothing was probed, or when an embedder's device is
+    /// the one that will be used and brought its own instance.
+    instance: Option<wgpu::Instance>,
 }
 
-/// The surface mode this process will really use, which is the requested one
-/// unless the machine cannot present that way.
-///
-/// It answers only which presentation path is available. What the client's
-/// alpha then turns out to be is a separate question the surface answers once
-/// it negotiates, and `material_for_surface_alpha` reports — the plain path is
-/// not automatically opaque, a Vulkan surface negotiates `PreMultiplied` on it.
-///
-/// `host_backend` is the backend of a GPU context an embedder already built.
-/// There is no narrowing to do there — the device exists — so composition is
-/// only on the table when that context is DX12 already.
-pub fn resolve_surface_mode(
-    requested: HostedSurfaceMode,
-    host_backend: Option<wgpu::Backend>,
-) -> HostedSurfaceMode {
-    #[cfg(target_os = "windows")]
-    if matches!(requested, HostedSurfaceMode::WindowsComposition) {
-        let available = match host_backend {
-            Some(backend) => backend == wgpu::Backend::Dx12,
-            None => composition_backend_available(),
-        };
-        if !available {
-            return HostedSurfaceMode::Window;
+impl GpuBootstrap {
+    /// A bootstrap that was not asked about composition, and so probed nothing.
+    pub(crate) const fn plain() -> Self {
+        Self {
+            composition: false,
+            instance: None,
         }
     }
-    #[cfg(not(target_os = "windows"))]
-    let _ = host_backend;
-    requested
+
+    /// Probes composition capability once, keeping the instance it probed on.
+    ///
+    /// `host_backend` is the backend of a GPU context an embedder already built.
+    /// There is nothing to narrow there — the device exists — so no instance is
+    /// created, and composition is only on the table when that context is
+    /// already DX12.
+    pub(crate) fn probe(host_backend: Option<wgpu::Backend>) -> Self {
+        if let Some(backend) = host_backend {
+            let _ = backend;
+            #[cfg(target_os = "windows")]
+            return Self {
+                composition: backend == wgpu::Backend::Dx12,
+                instance: None,
+            };
+            #[cfg(not(target_os = "windows"))]
+            return Self::plain();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // `WGPU_BACKEND` still wins: a run pinned to another backend has no
+            // composition available to it.
+            let backends = wgpu::Backends::from_env().unwrap_or_default() & wgpu::Backends::DX12;
+            if backends.is_empty() {
+                return Self::plain();
+            }
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            });
+            if pollster::block_on(instance.enumerate_adapters(backends)).is_empty() {
+                return Self::plain();
+            }
+            Self {
+                composition: true,
+                // Kept: selecting the device is the other half of what this
+                // enumeration already did.
+                instance: Some(instance),
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        Self::plain()
+    }
+
+    pub(crate) const fn composition_available(&self) -> bool {
+        self.composition
+    }
+
+    /// The probe's instance, for the device request to reuse. Taken, not
+    /// cloned: there is one probed instance per process and the device
+    /// selection is its one consumer.
+    pub(crate) fn take_instance(&mut self) -> Option<wgpu::Instance> {
+        self.instance.take()
+    }
 }
 
 fn surface_alpha(
@@ -600,8 +637,38 @@ impl HostedGpuContext {
         want_transparent: bool,
         target: HostedSurfaceTarget,
     ) -> Result<Self, HostedGpuError> {
+        Self::new_with_target_on(window, required_features, want_transparent, target, None).await
+    }
+
+    /// As `new_with_target`, reusing `instance` when the caller already built
+    /// one to answer a capability question. See [`GpuBootstrap`].
+    pub(crate) async fn new_with_bootstrap(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        want_transparent: bool,
+        mode: HostedSurfaceMode,
+        instance: Option<wgpu::Instance>,
+    ) -> Result<Self, HostedGpuError> {
+        let target = HostedSurfaceTarget::new(mode, window.clone())?;
+        Self::new_with_target_on(
+            window,
+            required_features,
+            want_transparent,
+            target,
+            instance,
+        )
+        .await
+    }
+
+    async fn new_with_target_on(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        want_transparent: bool,
+        target: HostedSurfaceTarget,
+        instance: Option<wgpu::Instance>,
+    ) -> Result<Self, HostedGpuError> {
         let (shared, surface, capabilities, format) =
-            Self::acquire_device(window.clone(), required_features, &target).await?;
+            Self::acquire_device_on(window.clone(), required_features, &target, instance).await?;
         let primary = configure_surface(
             window,
             surface,
@@ -628,6 +695,27 @@ impl HostedGpuContext {
         ),
         HostedGpuError,
     > {
+        Self::acquire_device_on(window, required_features, target, None).await
+    }
+
+    /// `instance` is a bootstrap's, when one already narrowed the backends and
+    /// enumerated adapters to answer a capability question. Building a second
+    /// instance for the same backend is initialisation done twice, and leaves
+    /// the probe and the device free to disagree.
+    async fn acquire_device_on(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        target: &HostedSurfaceTarget,
+        instance: Option<wgpu::Instance>,
+    ) -> Result<
+        (
+            HostedGpuShared,
+            wgpu::Surface<'static>,
+            wgpu::SurfaceCapabilities,
+            wgpu::TextureFormat,
+        ),
+        HostedGpuError,
+    > {
         #[allow(unused_mut)]
         let mut backends = wgpu::Backends::from_env().unwrap_or_default();
         #[cfg(target_os = "windows")]
@@ -639,9 +727,11 @@ impl HostedGpuContext {
                 ));
             }
         }
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        let instance = instance.unwrap_or_else(|| {
+            wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            })
         });
         let surface = target.create_surface(&instance, window.clone())?;
         let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
@@ -1205,32 +1295,29 @@ mod tests {
     /// cannot have it: the device is already built, so there is no narrowing
     /// left to do, and the caller has to hear that it is getting the plain
     /// path instead.
+    ///
+    /// An embedded bootstrap also creates no instance of its own — the
+    /// embedder's device is the one that will be used — so the capability
+    /// answer costs nothing there.
     #[test]
     fn an_embedded_host_only_offers_composition_on_dx12() {
-        use super::{HostedSurfaceMode, resolve_surface_mode};
+        use super::GpuBootstrap;
 
-        #[cfg(target_os = "windows")]
-        {
-            assert_eq!(
-                resolve_surface_mode(
-                    HostedSurfaceMode::WindowsComposition,
-                    Some(wgpu::Backend::Vulkan)
-                ),
-                HostedSurfaceMode::Window
-            );
-            assert_eq!(
-                resolve_surface_mode(
-                    HostedSurfaceMode::WindowsComposition,
-                    Some(wgpu::Backend::Dx12)
-                ),
-                HostedSurfaceMode::WindowsComposition
-            );
-        }
-        // A program that never asked for composition is never redirected.
-        assert_eq!(
-            resolve_surface_mode(HostedSurfaceMode::Window, Some(wgpu::Backend::Vulkan)),
-            HostedSurfaceMode::Window
+        let mut vulkan = GpuBootstrap::probe(Some(wgpu::Backend::Vulkan));
+        assert!(!vulkan.composition_available());
+        assert!(vulkan.take_instance().is_none());
+
+        let mut dx12 = GpuBootstrap::probe(Some(wgpu::Backend::Dx12));
+        assert_eq!(dx12.composition_available(), cfg!(target_os = "windows"));
+        assert!(
+            dx12.take_instance().is_none(),
+            "an embedder's device brought its own instance"
         );
+
+        // A process that never asked probes nothing at all.
+        let mut plain = GpuBootstrap::plain();
+        assert!(!plain.composition_available());
+        assert!(plain.take_instance().is_none());
     }
 
     #[test]

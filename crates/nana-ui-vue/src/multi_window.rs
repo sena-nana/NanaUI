@@ -1611,6 +1611,11 @@ impl VueRuntime {
                         parent: options.parent.map(|parent| WindowId(parent.0)),
                         system_caption: !options.frameless,
                         icon: options.icon,
+                        // JS asks for a window, not for a presentation path.
+                        // `Auto` lets the host pick, and it only reaches a
+                        // platform compositor in a process that asked to be
+                        // composition-capable — which a Vue host does not.
+                        surface: nana_ui_platform::WindowSurfacePreference::Auto,
                     },
                 },
                 VueWindowCommand::Close(id) => WindowCommand::Close(WindowId(id.0)),

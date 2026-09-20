@@ -31,15 +31,15 @@ NanaUI 画的是桌面窗口：标题栏、图标、系统材质、多窗口都�
 
 Windows 上的 chrome 由两组输入决定，读的时候要连着读：**descriptor 决定 HWND 怎么建，实时材质决定 DWM 画什么**。
 
-`WindowDescriptor::transparent` 是终身合同而不是当前状态：`window_surface_effect` 对它为真的窗口无条件返回 `Transparent`，材质再也切不回实色。想给用户留「实色背景」开关的宿主必须让它保持 `false`，由 `RuntimeProgram::window_material_mode_for` 报实时材质，chrome 跟着实时材质走（`client_chrome`）。
+`WindowDescriptor::transparent` 是终身合同而不是当前状态：`window_surface_effect` 对它为真的窗口无条件返回 `Transparent`，材质再也切不回实色。想给用户留「实色背景」开关的宿主必须让它保持 `false`，由 `RuntimeProgram::window_material_mode_for` 报实时材质，chrome 跟着 effective 材质走（`ResolvedWindowPresentation::chrome`）。
 
 #### 创建时（只看 descriptor，实现见 `windows_scene_chrome`）
 
 | 设置 | winit `decorations` | `WS_EX_NOREDIRECTIONBITMAP` | 初始圆角 |
 | --- | --- | --- | --- |
-| `system_caption: true` | 开（系统标题栏与缩放） | 仅合成路径开 | 系统默认 |
-| `system_caption: false` 且 `transparent: false` | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 仅合成路径开 | 圆角 |
-| `system_caption: false` 且 `transparent: true` | 关 | 仅合成路径开 | 不圆角 |
+| `system_caption: true` | 开（系统标题栏与缩放） | 仅这扇窗口走合成时开 | 系统默认 |
+| `system_caption: false` 且 `transparent: false` | 关，由 `AppTitleBar` 画 Minimize / Maximize / Close | 仅这扇窗口走合成时开 | 圆角 |
+| `system_caption: false` 且 `transparent: true` | 关 | 仅这扇窗口走合成时开 | 不圆角 |
 
 `undecorated_shadow` 恒为 `false`：winit 那条路会把客户区顶边内缩 1px，标题栏盖不住。
 
@@ -53,38 +53,156 @@ Windows 上的 chrome 由两组输入决定，读的时候要连着读：**descr
 | HWND swapchain | DX12 | **`Opaque`** | 只能靠 `DwmExtendFrameIntoClientArea` 那张玻璃 |
 | DirectComposition visual | DX12 | `PreMultiplied` | swapchain 自带 |
 
-DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.rs`），所以**普通路径上的窗口透明其实隐式依赖 Vulkan**。要在任何后端上都拿到确定可用的透明，应用 override `RuntimeProgram::surface_mode()` 返回 `HostedSurfaceMode::WindowsComposition`。
+DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.rs`），所以**普通路径上的窗口透明其实隐式依赖 Vulkan**。
 
-这个选择是**全进程、一次性**的：合成路径会把后端收窄到 DX12（`new_with_surface_mode`），而 instance 为所有窗口共享。`surface_mode()` 本身就是静态方法，与此一致。
+#### 两个维度：进程后端 vs 每窗口 target
 
-`resolve_surface_mode` 在**创建第一个窗口之前**把有效模式解析出来，因为 `WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它，`apply_diff` 会整体覆写 `GWL_EXSTYLE`，事后设不住。独立进程用一个 DX12-only 的临时 instance 枚举适配器来判定（无 surface，`WGPU_BACKEND` 仍然优先）；嵌入式宿主没有收窄余地，只有宿主本来就是 DX12 时才可能走合成。判定失败即降级到普通路径并上报 `MaterialFallback`，不是启动失败。
+这是两个问题，别混成一个：
+
+| 维度 | 归谁 | 谁决定 |
+| --- | --- | --- |
+| GPU backend / adapter / device | **进程**，所有窗口共用一份 | `RuntimeProgram::gpu_backend_policy()` |
+| surface target（普通窗口 surface vs 合成 visual） | **每扇窗口** | `WindowDescriptor::surface` |
+
+`GpuBackendPolicy::COMPOSITION_CAPABLE` 只是把合成路径**变得可用**（Windows 上把后端收窄到 DX12，因为 DirectComposition visual 是 DX12 的 surface target），它不把任何窗口放上那条路。这个收窄跟第一扇窗口要不要合成**无关**：否则先开一扇普通 Settings 窗就会悄悄让整个进程失去合成能力，后面的主窗再也拿不到。窗口自己用 `WindowSurfacePreference` 要：
+
+- `Auto`（默认）：进程要了合成能力、且这扇窗口要透明客户区，才走合成；否则普通窗口 surface。所以主窗透明时走合成，同一进程的 Settings / Dialog / Popup / 浮动面板仍是普通窗口。
+- `NativeWindow`：永远普通窗口 surface。
+- `Composition`：明确要合成 visual；拿不到时降级并上报，而不是开不出窗口。
+- `RequireComposition`：合成 visual 或者不开。**只有**这一档会让合成不可用变成启动/开窗失败，给那些内容在普通路径上就是错的宿主用；其它所有窗口都该用 `Composition`，降级并上报、应用继续活着。
+
+一个窗口要合成不代表所有窗口都要；#215 的 shadow companion 因此可以单独用 `Composition`，不动应用其它窗口。共享同一个 GPU device 混用两种 target 是正常的。
+
+#### 可用性在开窗之前判定，窗口本身是临时的
+
+`WS_EX_NOREDIRECTIONBITMAP` 是创建时的标志：winit 从自己的 `NO_BACK_BUFFER` 推导它，`apply_diff` 会整体覆写 `GWL_EXSTYLE`，事后设不住。所以「这台机器能不能合成」必须在第一扇窗口之前答完，`GpuBootstrap` 做这件事：独立进程建一个 DX12-only instance 枚举适配器（无 surface，`WGPU_BACKEND` 仍然优先），**并把这个 instance 留给正式的 device 请求复用**——探测和选设备是同一份 bootstrap，不重复初始化 DX12，也不会互相矛盾。嵌入式宿主的 device 已经存在，没有收窄余地，也不建 instance，只有宿主本来就是 DX12 时才可能走合成。
+
+但「有 DX12 适配器」只证明后端在。真正的合成路径还要过：composition device → `CreateTargetForHwnd` → `CreateVisual` → wgpu `CompositionVisual` surface → `PreMultiplied` 协商。这些全在 HWND 已经按 `WS_EX_NOREDIRECTIONBITMAP` 创建**之后**。所以合成窗口是**临时的**：任一步失败就释放它的 composition 对象、丢掉窗口（winit 投递销毁消息），再建一扇普通窗口顶上，绝不拿那个 HWND 当普通 HWND surface 用。理由很具体——没有重定向位图就没有东西给 `DwmExtendFrameIntoClientArea` 混合，而那是 DX12 HWND swapchain 唯一的逐像素 alpha 来源，留下来的话这扇窗口在两条路上都永远不可能透明。窗口是隐藏创建的，屏幕上从没出现过。
+
+设备换了（device loss 恢复）之后，「这个进程还能不能合成」按新设备的后端重新判定，不沿用旧答案：新设备可能落在别的后端上，而窗口是按这个答案创建的。
+
+这条回退**每扇窗口都走**，不只第一扇：合成 target 在哪里被要求，它在那里就是临时的。辅助窗口的合成失败同样是丢掉那个 HWND、改用普通窗口重开，而不是 `OpenFailed`；同时把进程的可用性收成不可用——这扇窗口建不出来的东西，下一扇也建不出来，没必要让每扇窗口都先赔一个注定失败的 HWND。
+
+普通路径是最后一条，它失败才是真正的启动失败。合成失败不会让应用起不来——除非这扇窗口声明了 `RequireComposition`。结果对上层可见：`ResolvedWindowPresentation::requested_target()` / `surface_target()` / `target_fallback()`（`SurfaceTargetFallback::{BackendUnavailable, TargetUnavailable}`），从 `RuntimeProgramContext::presentation()` 读。验收探针用 `NANA_FORCE_COMPOSITION_FAILURE=1` 人为让合成那一步失败，走一遍这条回退。
 
 `WS_EX_NOREDIRECTIONBITMAP` 归呈现路径、不归材质：DirectComposition 把 visual 画在重定向位图**之上**，合成窗口必须没有那张位图，否则底下的不透明表面会透出来；普通路径的窗口则一律保留它——它的 swapchain 很可能正在往里呈现。实测 NRB + HWND + `Opaque` 这个组合在创建、稳态出帧、`ResizeBuffers`、零尺寸往返四项上都正常，所以保留它不是妥协。
 
 玻璃（`DwmExtendFrameIntoClientArea`）只铺给**还有重定向位图**的透明窗：DX12 的 HWND swapchain 只谈得到 `Opaque`，逐像素 alpha 全靠这张玻璃。合成窗创建时就带 `WS_EX_NOREDIRECTIONBITMAP`，像素来自已经谈成 `PreMultiplied` 的 DirectComposition visual，再铺玻璃只会让 DWM 去混合一张不存在的表面；从 Mica / Acrylic 切过来时还要把先前铺上的玻璃收回（margin `0`）。材质层读 HWND 上那个创建时的 ex-style 位，不另开一条 API。Mica / Acrylic 本身就是 DWM 的 frame，仍无条件 `ExtendFrame(-1)`。
 
-窗口以隐藏状态创建，显示前实时材质已经应用过，所以用户看不到创建时这一份配置——除了 frame 样式位，见下。
+### 一份 presentation，一个 chrome 权威
 
-#### 运行时（看实时 `MaterialEffect`，实现见 `client_chrome` / `apply_window_shape`）
+`ResolvedWindowPresentation` 是每扇窗口「在呈现什么」的**唯一**权威，`crates/nana-ui/src/presentation.rs`：
 
-| 实时材质 | frame 样式位 | 圆角 | `DWMWA_BORDER_COLOR` |
-| --- | --- | --- | --- |
-| `Solid` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` |
-| `Mica` / `Acrylic` / `Vibrancy` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` |
-| `Transparent` | **剥掉** `WS_CAPTION \| WS_THICKFRAME \| WS_SYSMENU` | `DWMWCP_DONOTROUND` | `COLOR_NONE` |
-| `system_caption: true` | 宿主一概不碰 | | |
+```text
+requested_material   业务请求。只决定去问平台和 surface 要什么。
+effective_material   surface 协商完之后真正拿到的，带 MaterialFallback。
+alpha_mode           surface 的答案。
+surface_target       这扇窗口实际走的呈现路径（+ requested_target / target_fallback）。
+chrome               由 effective 推出来的原生 chrome 策略。system_caption 窗口为 None。
+```
 
-`DWMWA_WINDOW_CORNER_PREFERENCE` 管圆角裁剪，`DWMWA_BORDER_COLOR` 管那 1px 强调色描边。阴影和 DWM 自绘三大键来自 frame 样式位：winit 的无边框窗口仍带着 `WS_CAPTION | WS_THICKFRAME | WS_SYSMENU`，DWM 按这些位在客户区下面画非客户区，透明客户区就把它们透出来。剥掉这些位就够了；`DWMWA_NCRENDERING_POLICY` 在第一轮验收里根本没生效过（当时主窗还没走合成路径，非客户区渲染是开着的），而阴影已经没了。判据是「材质是不是 `Transparent`」而不是 `wants_transparent_surface()`：Mica 和 Acrylic 也让后者为真，但它们的背景**就是** DWM 的非客户区渲染，圆角和描边要留着。
+`chrome` 是在 `resolve` 里跟 `effective` 一起定下来的：拿不到 effective material 而不同时拿到对应 chrome 是做不到的事。所以「渲染认为 `Solid`、native chrome 认为 `Transparent`」这个状态不可表示。
+
+具体到那个 bug：`Transparent` 请求 + DX12 HWND surface → 协商到 `Opaque` → effective 降级为 `Solid(NativeMaterialUnavailable)` → chrome 同时变成不透明策略，并且把这次请求已经铺上的 DWM 玻璃收回（`needs_material_reset()`）。之后每一次 maximize / minimize / DPI 变化 / style restore 都从 `host.presentation.chrome()` 重放，没有第二处从 requested 重新推导，所以回不到透明 chrome。
+
+窗口以隐藏状态创建；surface 答完之后 chrome 才写，写完才显示，所以用户看不到中间状态。
+
+#### 运行时（看 effective `MaterialEffect`，实现见 `NativeChromePolicy` / `apply_native_chrome`）
+
+| effective 材质 | frame 样式位 | 圆角 | `DWMWA_BORDER_COLOR` | `DWMWA_NCRENDERING_POLICY` |
+| --- | --- | --- | --- | --- |
+| `Solid` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` | `ENABLED` |
+| `Mica` / `Acrylic` / `Vibrancy` | 保留 | `DWMWCP_ROUND` | `COLOR_DEFAULT` | `ENABLED` |
+| `Transparent`（`StripFrameStyles`） | **剥掉** `WS_CAPTION \| WS_THICKFRAME \| WS_SYSMENU` | `DWMWCP_DONOTROUND` | `COLOR_NONE` | `ENABLED` |
+| `Transparent`（`SuppressNonClientRendering`） | 保留 | `DWMWCP_DONOTROUND` | `COLOR_NONE` | **`DISABLED`** |
+| `system_caption: true` | 宿主一概不碰 | | | |
+
+判据是「effective 材质是不是 `Transparent`」而不是 `wants_transparent_surface()`：Mica 和 Acrylic 也让后者为真，但它们的背景**就是** DWM 的非客户区渲染，圆角和描边要留着。
+
+### 非客户区抑制策略：两条路，默认由实测定
+
+透明客户区要让 DWM 别在下面画非客户区，有两条路，代价不同（`NonClientRenderingStrategy`）：
+
+- `StripFrameStyles`（**当前默认**）：摘掉 frame 样式位。已实测有效，代价是换掉 Aero Snap（Win+方向键、拖到屏幕边缘分屏）、Windows 11 最大化按钮的 Snap Layouts 悬停菜单、Alt+Space 系统菜单、系统最大化/最小化动画。自绘的 8px 缩放（`LiveFrameResize`）、自绘拖窗（`LiveFrameMove` / `WM_NCLBUTTONDOWN`）和自绘三大键都不依赖它们。
+- `SuppressNonClientRendering`：保留 frame 样式位，改用 `DWMWA_NCRENDERING_POLICY = DWMNCRP_DISABLED`。成立的话上面那些系统能力全部留住，这是通用 GUI framework 更想要的默认。
+
+**哪条对是实测结论，不是推导结论。** `DwmSetWindowAttribute` 不管有没有达到预期效果都回 `S_OK`，所以代码里没有「检测到失效就回退」这种分支；它是一个带记录默认值的开关。第一轮验收里 `DWMWA_NCRENDERING_POLICY` 没生效过，但当时主窗**还没走合成路径**，那个结论不能直接搬到现在。
+
+真机对照（Windows，同一台机器跑两遍）：
+
+```bash
+cargo run --release -p nana-ui --features "hosted bundled-fonts" --example native-content-probe -- --hold
+NANA_WINDOWS_NC_STRATEGY=suppress cargo run --release -p nana-ui --features "hosted bundled-fonts" --example native-content-probe -- --hold
+```
+
+两次都读 `PRESENTATION` / `PRESENTATION_TARGET` / `NC_STRATEGY` 三行确认这一遍真的在测目标策略，然后逐项记录：透明客户区有没有透出 caption / 三大键 / 投影、Aero Snap、Snap Layouts 悬停、Alt+Space、任务栏与 Aero Peek、最大化 / 最小化动画、resize、DPI 切换、maximize / restore 往返。只有 `suppress` 在「透明正确性」上失败，才保留 `StripFrameStyles` 作为默认；反之把默认改成 `suppress`，并把这张表写回这一节。
 
 #### winit 会把 frame 样式位写回来
 
 winit 的无边框窗口并不去掉 frame 样式位。`to_window_styles()` 对非 POPUP 顶层窗口无条件写 `WS_CAPTION | WS_SYSMENU | WS_BORDER`，再按 resizable 等加 `WS_SIZEBOX | WS_MAXIMIZEBOX | WS_MINIMIZEBOX`（`MARKER_DECORATIONS` 只对 `WS_CHILD` 剥 caption），靠 `WM_NCCALCSIZE` 把客户区铺满窗口矩形。DWM 因此一直在为这个 HWND 渲染非客户区，画在客户区**下面**：不透明客户区盖住了它，透明客户区把它透出来——这就是透明窗上冒出系统三大键和投影的来源。
 
-`apply_diff` 在任何 `WindowFlags` 变化时整体覆写 `GWL_STYLE`，**包括在它自己的 WndProc 里**（`WM_DPICHANGED` 且尺寸变化时），那条路径宿主看不见。所以剥样式位不能靠每次宿主调用之后重放，只能挡在消息上：`install_style_guard` 挂一个 `WM_STYLECHANGING` 子类，把 mask 里的位从 `styleNew` 抹掉。不透明窗口用空 mask 让它变成透传，不必卸载；子类随 HWND 销毁。
+`apply_diff` 在任何 `WindowFlags` 变化时整体覆写 `GWL_STYLE`，**包括在它自己的 WndProc 里**（`WM_DPICHANGED` 且尺寸变化时），那条路径宿主看不见。所以剥样式位不能靠每次宿主调用之后重放，只能挡在消息上：`install_style_guard` 挂一个 `WM_STYLECHANGING` 子类。
 
-`arm_frameless_guard` 只装守卫、不写样式，因而不发任何窗口消息，`can_create_surfaces` 里可以调。显示窗口本身就是一次 `apply_diff`：它重写整条样式（被守卫抹掉 frame 位）并紧接着发自己的 `SetWindowPos(SWP_FRAMECHANGED)`，所以窗口从第一帧起就没有 frame，宿主不必在 surface 回调里自己发帧变更。`client_chrome` 的 `allow_caption_change` 只决定「现在能不能直接写样式」，不决定要不要剥。
+**这个子类不独占消息链。** NanaUI 是挂在别人窗口上的 framework：原生扩展、无障碍 shim、嵌入宿主都可能在同一个 HWND 上有自己的子类。所以守卫**先** `DefSubclassProc` 把消息往下传，**再**把 mask 里的位从 `styleNew` 抹掉——放在转发之后，才是排在它下面的所有环节（winit 的 proc 就在那儿）之上的最终一票。装在它之后的子类会先于它跑、并在它之后拿回控制权，仍可能把位写回去；这是 Win32 子类顺序的固有性质，也是不独占消息的代价，下一次 style 写入时重新装守卫会再次生效。不透明窗口用空 mask 让它变成透传，不必卸载；`WM_NCDESTROY` 时自己 `RemoveWindowSubclass`。同一个 `(window, proc, id)` 三元组重复 `SetWindowSubclass` 是原地换 mask，不会叠出第二个子类——宿主每次 chrome 重放都装一次，链子始终只有一节。`crates/nana-window/src/chrome.rs` 里有一个真实 HWND 的 fixture 验证另一个子类仍然收到 `WM_STYLECHANGING`、而 NanaUI 的 invariant 仍是最后一票。
 
-剥掉 frame 样式位换掉了这些系统能力：Aero Snap（Win+方向键、拖到屏幕边缘分屏）、Windows 11 最大化按钮的 Snap Layouts 悬停菜单、Alt+Space 系统菜单、系统最大化/最小化动画。自绘的 8px 缩放（`LiveFrameResize`）、自绘拖窗（`LiveFrameMove` / `WM_NCLBUTTONDOWN`）和自绘三大键都不依赖它们。`WS_SYSMENU` 是 mask 里最先该摘掉的一位，如果任务栏的最小化或 Aero Peek 出问题。
+`arm_frameless_guard` 只装守卫、不写样式，因而不发任何窗口消息，`can_create_surfaces` 里可以调。显示窗口本身就是一次 `apply_diff`：它重写整条样式（被守卫抹掉 frame 位）并紧接着发自己的 `SetWindowPos(SWP_FRAMECHANGED)`，所以窗口从第一帧起就没有 frame，宿主不必在 surface 回调里自己发帧变更。`allow_caption_change` 只决定「现在能不能直接写样式」，不决定要不要剥。
+
+### 原生改动分三类，move 只是 move
+
+只有真会让 winit 重写 `GWL_STYLE` / `GWL_EXSTYLE` 的路径才做 chrome reconciliation。规则是 winit 的：`apply_diff` 只在 `WindowFlags` 某一位变化时整体覆写样式。位置和尺寸不是 flag，是 `SetWindowPos`。
+
+| 入口 | 做什么 | 典型调用 |
+| --- | --- | --- |
+| `mutate_window_geometry` | 只改窗口矩形。不动 chrome、不重绘 | `Move`、`SetBounds`、`Size` / `MinSize` / `MaxSize` |
+| `mutate_window_visibility` | `WS_VISIBLE` 会变，重放 chrome；帧由调用方决定 | `Visible`、`focus_window` 的置顶显示 |
+| `mutate_native_style` | 某个 window flag 变了，重放 chrome 并请求一帧 | maximize、minimize、fullscreen、window level、resizable、`set_cursor_hittest` |
+
+所以持续拖动窗口不重绘、不重写 DWM 圆角与描边、不重装 style guard。`LiveFrameMove` 本来就直接 `SetWindowPos` 不经过这三个入口。`CompositionWork::native_chrome_writes` 计数宿主重放 chrome 的次数，真机探针用它证明 move-only 一次都不加（`NATIVE_MOVE_ONLY_PASS`）。**每一条**写 chrome 的路径都要计数——包括外观变化那条直接走 `apply_resolved_presentation` 的；漏计一条就是给静止期闸开了个洞，窗口每帧重写 frame 样式而合同读到 0。
+
+### DirectComposition 是 retained compositor
+
+DComp tree 不跟着 GPU 帧率提交。三道闸，从便宜到贵（`NativeContentMirror`，`crates/nana-ui/src/native_content.rs`）：
+
+1. scene 的 `projection_revision()`（`instance` + `attribute_epoch`，scene 自己为缓存维护的那一对）和 viewport 都没动 → 直接用上一帧的答案，不扫 node；
+2. scene 里没有 native-content 节点 → 根本不跑 `native_content_regions()`；
+3. 算出来的 regions 和后端上次拿到的一样 → 不交给后端，tree 不脏，这一帧的 commit 什么都不做。
+
+`IDCompositionDevice::Commit` 只在 tree 真有暂存改动时发生：`create_native_visual`、`set_geometry`、`set_visible`、`remove`、以及 visual 析构都只**暂存**（`touch()`），由宿主一次性发布。所以 Live2D / 视频 / 粒子那种 120 FPS HostTexture 在 UI 与 native visual 几何静止时，静止之后的**增量**是 0 —— 不是「接近 0」，合同判的就是 `eq 0`。
+
+反过来说：后端自己改 visual（`set_visible` 等）会把 tree 标脏，下一帧照常 commit。静止期为 0 说的是「没有东西变」，不是「变了也不发」。
+
+计数器走 `RuntimeProgramContext::composition_work()`：
+
+```text
+commits                             平台合成器事务数
+tree_mutations                      暂存的 visual tree 改动
+native_content.region_rebuilds      走过 scene 的 region 提取次数
+native_content.regions_considered   这些提取产出的 region 数
+native_content.regions_changed      真正交给后端的 region 数
+native_chrome_writes                宿主重写原生 chrome 的次数
+```
+
+`native-content-probe` 开四扇窗口覆盖这几条验收：两扇合成窗（主窗 + 辅助窗）、一扇普通不透明窗（同一个 GPU device 上混用两种 target）、一扇**被钉在普通路径上的透明窗**（DX12 的 HWND surface 只谈得到 `Opaque`，所以它必须回落成 `Solid` 并拿到不透明 chrome；这条断言在它出的**每一帧**都跑，所以中途的 maximize、restore、DPI 变化都盖得住）。然后在几何静止后连跑 120 帧断言计数器一动不动（`NATIVE_STEADY_STATE`），再做 move-only 检查，最后把这段静止期的**增量**写成 `target/performance/windows-composition-steady.json`。
+
+这份报告接 Performance Contract：`perf/scenarios/windows-composition-steady.json` 用和其它场景同一套规则引擎把六个计数器全部判 `eq 0`。
+
+```bash
+python3 perf/contract.py --self-test
+python3 perf/contract.py --evaluate-invariants target/performance/windows-composition-steady.json
+```
+
+`--self-test` 里的 `windows_composition_tests` 验证这条闸真的会拦：对静止窗口全绿，对六个计数器中任意一个变成 1 都必须红，缺 `composition_work` 时必须是 not-evaluable 而不是绿。真实数字只有 Windows + DX12 真机能产出，这不是 Issue #8 §8.1 目录里的 id，也不是 weekly DoD 闸；跑不到合成 target 的机器**不要**写这份报告，宁可没有也不要一份全零的假报告。
+
+### Commit 权威只有一个
+
+```text
+RuntimeProgram / native backend  →  只能 mutate composition tree / native visual
+Scene Host                       →  唯一负责 transaction Commit
+```
+
+`native_content_frame` 收到的是 `WindowsCompositionTree`，上面**没有** `commit`；`commit` 在宿主持有的 `WindowsComposition` 上。双方同时提交因此不可表示。
+
+反过来，`native_content_frame` **不是**后端唯一能动 visual 的地方——它只在 scene 的 region 变了时才被回调。后端自己有理由改一个 visual（引擎出了新帧、应用把某层藏了）时，直接改它手上那个 `WindowsNativeVisual` 就行：改动会把 tree 标脏，下一帧的 commit 自然把它发出去。等这个回调等的是一次可能永远不来的几何变化。确实需要手动提交的高级宿主（自己驱动 GPU context、不跑 Scene host）直接拿 `WindowsComposition`，这是显式的高级 API，不是默认回调顺手能做的事——`native-content-probe --surface-lifecycle` 就是这种宿主。
 
 自定义标题栏按钮宽高均为 `WINDOW_CONTROL_WIDTH`，在高 `TITLE_BAR_HEIGHT` 的 controls 槽内垂直居中，按钮组两侧保留 `WINDOW_CONTROL_PADDING`。
 

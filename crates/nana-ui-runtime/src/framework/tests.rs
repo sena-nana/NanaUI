@@ -7558,3 +7558,63 @@ fn the_overlay_shadow_is_a_theme_token_not_a_brightness_sniff() {
         nana_ui_core::EffectTokens::DARK.overlay.color.a
     );
 }
+
+/// A host that repaints a surface from business state needs to know whether
+/// that repaint changed anything, so it can skip asking for a frame. The commit
+/// already diffs; rewriting a component with the values it already holds must
+/// leave nothing for the next flush to do.
+#[test]
+fn rewriting_a_component_with_its_own_values_leaves_no_pending_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(917).unwrap();
+    let text = context
+        .create_component(document, Text::new("输出 · 已连接"))
+        .unwrap();
+    let _ = context.world_mut().take_system_work();
+    assert!(
+        !context.world().has_pending_work(),
+        "a drained world owes no work"
+    );
+
+    context
+        .update_component(text, |view, _| view.value = "输出 · 已连接".to_string())
+        .unwrap();
+    assert!(
+        !context.world().has_pending_work(),
+        "an unchanged rewrite must not dirty the node"
+    );
+
+    context
+        .update_component(text, |view, _| view.value = "输出 · 已断开".to_string())
+        .unwrap();
+    assert!(
+        context.world().has_pending_work(),
+        "a real change must dirty the node"
+    );
+}
+
+/// Removing content is a change too: a repaint that parks a subtree must read
+/// as pending work, or a host that skips frames on "nothing changed" would
+/// leave the removed rows on screen.
+#[test]
+fn parking_a_subtree_is_pending_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(918).unwrap();
+    let root = context
+        .create_component(document, Stack::column(4.0))
+        .unwrap();
+    let row = context
+        .create_detached_component(document, Text::new("一行"))
+        .unwrap();
+    context.append_child(root, row).unwrap();
+    let _ = context.world_mut().take_system_work();
+    assert!(!context.world().has_pending_work());
+
+    let mut queue = crate::MutationQueue::new();
+    queue.park_subtree(row.stable_id());
+    context.commit_mutations(queue).unwrap();
+    assert!(
+        context.world().has_pending_work(),
+        "parking a subtree must leave work for the next flush"
+    );
+}

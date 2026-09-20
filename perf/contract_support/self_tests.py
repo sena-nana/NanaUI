@@ -12,6 +12,7 @@ from .compositor_motion_tests import (
 )
 from .retained_text_tests import _self_test_retained_text
 from .theme_baseline_tests import _self_test_theme_baseline
+from .windows_composition_tests import _self_test_windows_composition
 from .comparison import (
     relative_gate_can_enforce,
 )
@@ -810,6 +811,7 @@ def self_test(root: Path | None = None) -> list[str]:
     errors.extend(_self_test_compositor_motion(root))
     errors.extend(_self_test_retained_text(root))
     errors.extend(_self_test_theme_baseline(root))
+    errors.extend(_self_test_windows_composition(root))
 
     try:
         nana_table_legacy = extract_nana(
