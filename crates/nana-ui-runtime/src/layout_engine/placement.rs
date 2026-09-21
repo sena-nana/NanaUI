@@ -122,6 +122,7 @@ fn replay_sequential_suffix(
     scope: &ScopeContext<'_>,
 ) -> Result<bool, UiWorldError> {
     let direction = plan.main_direction;
+    let writing = plan.writing;
     let container_align = plan.style.align_items;
     let container_cross = cross_extent(plan.content, direction);
     let full_main = main_extent(plan.content, direction);
@@ -184,11 +185,7 @@ fn replay_sequential_suffix(
         }
         let child_fonts = fonts_of(child_style, plan.child_font_px);
         let margin = child_style.resolved_margin_against_fonts(
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(child, plan.content.width, plan.content.height),
-            ),
+            Some(writing.inline_size(plan.content.width, plan.content.height)),
             child_fonts,
         );
         let mut child_size = child_intrinsic;
@@ -199,11 +196,7 @@ fn replay_sequential_suffix(
         fill_auto_height_from_aspect_ratio(
             child_style,
             &mut child_size,
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(child, plan.content.width, plan.content.height),
-            ),
+            Some(writing.inline_size(plan.content.width, plan.content.height)),
             child_fonts,
         );
         let (main_lead, main_trail) = if main_reversed {
@@ -253,6 +246,7 @@ fn replay_sequential_suffix(
             plan.content,
             child_style,
             child_fonts,
+            writing,
             Some(scope),
         ) {
             place_node_scoped(
@@ -316,6 +310,9 @@ pub(super) fn place_node_scoped(
     };
     let style_arc = node.style.clone();
     let child_ids = node.children.clone();
+    // The writing mode and direction this node lays out in, inherited from
+    // its ancestors when it declares none of its own, and its parent's.
+    let (writing, containing_writing) = (node.writing, node.containing_writing);
     let modal = node.modal.clone();
     // Only explicit boundaries need a saved placement for independent reflow.
     // Ordinary nodes must not allocate another per-node cache on full layout.
@@ -356,11 +353,7 @@ pub(super) fn place_node_scoped(
     );
 
     let padding = style.resolved_padding_against_fonts(
-        Some(
-            nodes
-                .world
-                .edge_percent_base(id, containing.width, containing.height),
-        ),
+        Some(containing_writing.inline_size(containing.width, containing.height)),
         fonts,
     );
     nodes.used_padding.insert(id, padding);
@@ -411,7 +404,7 @@ pub(super) fn place_node_scoped(
             viewport,
             &style_arc,
             &child_ids,
-            nodes.world.layout_writing(id),
+            writing,
         )
         && !scope
             .affected
@@ -481,6 +474,10 @@ pub(super) fn place_node_scoped(
     }
     sort_by_order(&mut flow, nodes);
     sort_by_order(&mut positioned, nodes);
+    // This container is its children's containing block: their percentage
+    // margins resolve against its inline size, whatever a line or a float
+    // leaves them.
+    let child_edge_base = writing.inline_size(content.width, content.height);
     let packed_floats = if floated.is_empty() {
         PackedFloats::default()
     } else {
@@ -488,6 +485,7 @@ pub(super) fn place_node_scoped(
             &floated,
             content_origin,
             content,
+            child_edge_base,
             viewport,
             child_font_px,
             nodes,
@@ -505,9 +503,6 @@ pub(super) fn place_node_scoped(
         && flow
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
-    // The writing mode and direction this container lays out in, inherited
-    // from its ancestors when it declares none of its own.
-    let writing = nodes.world.layout_writing(id);
     let direction = used_flow_direction(style, writing, ifc);
     // Flow-relative placement. Every position below is measured from the
     // main-start and cross-start edges of the content box, in flow order —
@@ -639,7 +634,7 @@ pub(super) fn place_node_scoped(
         plan_sequential &= justify == JustifySpec::Start && grid_tracks.is_none();
         let full_main = main_extent(content, direction);
         let mut line_slots = if wrapping {
-            if ifc && style.resolved_writing_mode().is_horizontal() {
+            if ifc && !writing.is_vertical() {
                 pack_ifc_line_boxes(
                     &flow,
                     &child_sizes,
@@ -658,6 +653,7 @@ pub(super) fn place_node_scoped(
                     &child_sizes,
                     direction,
                     content,
+                    child_edge_base,
                     gap,
                     grid_tracks,
                     viewport,
@@ -716,6 +712,7 @@ pub(super) fn place_node_scoped(
                     &mut line_sizes,
                     direction,
                     line_content,
+                    child_edge_base,
                     gap,
                     tracks,
                     viewport,
@@ -730,6 +727,7 @@ pub(super) fn place_node_scoped(
                     &mut line_sizes,
                     direction,
                     line_content,
+                    child_edge_base,
                     gap,
                     viewport,
                     child_font_px,
@@ -744,11 +742,7 @@ pub(super) fn place_node_scoped(
                         .style(*child)
                         .map(|style| {
                             style.resolved_margin_against_fonts(
-                                Some(nodes.world.edge_percent_base(
-                                    *child,
-                                    content.width,
-                                    content.height,
-                                )),
+                                Some(writing.inline_size(content.width, content.height)),
                                 fonts_of(style.as_ref(), child_font_px),
                             )
                         })
@@ -845,7 +839,7 @@ pub(super) fn place_node_scoped(
                 &line_flow,
                 &line_sizes,
                 direction,
-                content,
+                child_edge_base,
                 gap,
                 child_font_px,
                 nodes,
@@ -883,11 +877,7 @@ pub(super) fn place_node_scoped(
                     }
                 }
                 let mut margin = child_style.resolved_margin_against_fonts(
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(child, content.width, content.height),
-                    ),
+                    Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
                 let line_box_cross = if line_count > 1 {
@@ -911,11 +901,7 @@ pub(super) fn place_node_scoped(
                 fill_auto_height_from_aspect_ratio(
                     child_style,
                     &mut child_size,
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(child, content.width, content.height),
-                    ),
+                    Some(writing.inline_size(content.width, content.height)),
                     child_fonts,
                 );
                 let cross_offset = match align {
@@ -1002,6 +988,7 @@ pub(super) fn place_node_scoped(
                     content,
                     child_style,
                     child_fonts,
+                    writing,
                     scope,
                 ) {
                     place_node_scoped(
@@ -1086,6 +1073,7 @@ pub(super) fn place_node_scoped(
             content,
             child_style,
             child_fonts,
+            writing,
             scope,
         ) {
             place_node_scoped(
@@ -1205,6 +1193,7 @@ pub(super) fn place_node_scoped(
             base,
             child_style,
             child_fonts,
+            writing,
             scope,
         ) {
             place_node_scoped(
@@ -1307,6 +1296,7 @@ fn place_triggered_menu_items(
             available,
             child_style,
             child_fonts,
+            nodes.world.containing_writing(child),
             scope,
         ) {
             place_node_scoped(
@@ -1544,6 +1534,7 @@ pub(super) fn place_modal_slot(
         containing,
         child_style.as_ref(),
         fonts_of(child_style.as_ref(), parent_font_px),
+        nodes.world.containing_writing(id),
         scope,
     ) {
         return Ok(());

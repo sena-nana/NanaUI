@@ -1724,11 +1724,14 @@ impl UiWorld {
         let record = self.nodes.get(id).ok_or(UiWorldError::MissingNode(id))?;
         let has_text =
             matches!(record.kind.as_ref(), NodeKind::Text) || !record.text.value.is_empty();
+        let writing = record_writing(record);
         Ok(LayoutInput {
             id,
             parent: record.hierarchy.parent,
             children: Arc::clone(&record.hierarchy.children),
             style: self.motion_layout(id, &self.effective_layout_style(id)),
+            writing,
+            containing_writing: record_containing_writing(record),
             text_metrics: has_text.then_some(record.text_metrics),
             modal: self.nodes.visual(id).and_then(|visual| {
                 let StandardVisual::ModalFrame { kind, slots, .. } = visual else {
@@ -1828,7 +1831,8 @@ impl UiWorld {
     }
 
     fn effective_layout_style(&self, id: StableNodeId) -> Arc<nana_ui_core::LayoutStyle> {
-        let mut style = Arc::clone(&self.record(id).resolved_layout);
+        let record = self.record(id);
+        let mut style = Arc::clone(&record.resolved_layout);
         if style.omits_box()
             || !self.presence_live(id)
             || !self.overlay_branch_active(id)
@@ -1837,14 +1841,14 @@ impl UiWorld {
             Arc::make_mut(&mut style).hidden = true;
             return style;
         }
-        if style.has_logical_box_edges() {
-            // A box that inherits its writing mode or direction resolved its
-            // logical edges against its own declarations; land them against
-            // the context it actually lays out in.
-            let writing = self.layout_writing(id);
-            if writing != style.writing_context() {
-                Arc::make_mut(&mut style).resolve_logical_box_edges_in(writing);
-            }
+        // A box that inherits its writing mode or direction resolved its
+        // logical edges against its own declarations; land them against the
+        // context it actually lays out in. The context comparison goes first:
+        // it reads the record and two style fields, where the logical edges
+        // sit on three other cache lines of a 4.8 KB style.
+        let writing = record_writing(record);
+        if writing != style.writing_context() && style.has_logical_box_edges() {
+            Arc::make_mut(&mut style).resolve_logical_box_edges_in(writing);
         }
         if let Some(overlay) = self.parent_triggered_overlay(id) {
             let layout = Arc::make_mut(&mut style);
@@ -1892,36 +1896,23 @@ impl UiWorld {
         }
     }
 
-    /// The writing mode and direction `id` lays out in: its own
-    /// `writing-mode` / `direction`, or else its parent's — inherited, as CSS
-    /// inherits them.
-    ///
-    /// The layout style carries only what a node declares; the computed style
-    /// carries what it inherits. Reading the declared value first keeps a node
-    /// that sets its own writing mode right even before its style has been
-    /// resolved.
+    /// The writing mode and direction `id` lays out in. See
+    /// [`record_writing`].
     pub(crate) fn layout_writing(&self, id: StableNodeId) -> nana_ui_core::WritingContext {
-        let Some(record) = self.nodes.get(id) else {
-            return nana_ui_core::WritingContext::default();
-        };
-        let declared = &record.resolved_layout;
-        let inherited = &record.resolved.0;
-        nana_ui_core::WritingContext::new(
-            declared.writing_mode.unwrap_or(inherited.writing_mode),
-            declared.dir.unwrap_or(inherited.direction),
-        )
+        self.nodes
+            .get(id)
+            .map_or_else(Default::default, record_writing)
     }
 
-    /// What `id`'s percentage margins and paddings resolve against, inside a
-    /// containing block `width` × `height`: that block's inline size (CSS Box
-    /// Model §5) in the block's own writing mode — its parent's. A node that
-    /// sets a writing mode orthogonal to its parent's still resolves against
-    /// the parent's inline axis.
-    pub(crate) fn edge_percent_base(&self, id: StableNodeId, width: f32, height: f32) -> f32 {
-        let containing = self.parent_id(id).unwrap_or(id);
-        self.layout_writing(containing)
-            .logical_size(width, height)
-            .0
+    /// The writing context of `id`'s containing block: its parent's (its own
+    /// for a root). `id`'s percentage margins and paddings resolve against
+    /// that block's inline size (CSS Box Model §5), so a node that sets a
+    /// writing mode orthogonal to its parent's still resolves on the parent's
+    /// inline axis.
+    pub(crate) fn containing_writing(&self, id: StableNodeId) -> nana_ui_core::WritingContext {
+        self.nodes
+            .get(id)
+            .map_or_else(Default::default, record_containing_writing)
     }
 
     pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
@@ -2638,6 +2629,35 @@ impl UiWorld {
         if let Some(parent) = self.parent_id(id) {
             self.mark_ancestors(parent, DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
+    }
+}
+
+/// The writing mode and direction a node lays out in: its own
+/// `writing-mode` / `direction`, or else its parent's — inherited, as CSS
+/// inherits them.
+///
+/// The layout style carries only what a node declares; the record carries
+/// what it inherits ([`NodeRecord::inherited_writing`], written when
+/// styles resolve). Reading the declared value first keeps a node that
+/// sets its own writing mode right even before its style has been
+/// resolved.
+fn record_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
+    let declared = &record.resolved_layout;
+    let inherited = record.inherited_writing;
+    nana_ui_core::WritingContext::new(
+        declared.writing_mode.unwrap_or(inherited.mode),
+        declared.dir.unwrap_or(inherited.direction),
+    )
+}
+
+/// [`UiWorld::containing_writing`] for a record already in hand: what it
+/// inherits is its parent's writing context. A root is its own containing
+/// block's frame.
+fn record_containing_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
+    if record.hierarchy.parent.is_some() {
+        record.inherited_writing
+    } else {
+        record_writing(record)
     }
 }
 

@@ -8,6 +8,8 @@ pub(super) fn pack_wrap_lines(
     sizes: &[Size],
     direction: FlexDirection,
     content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     grid_tracks: Option<&[GridTrack]>,
     viewport: LayoutViewport,
@@ -32,11 +34,7 @@ pub(super) fn pack_wrap_lines(
             line_main = 0.0;
         }
         let margin = style.resolved_margin_against_fonts(
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(*child, content.width, content.height),
-            ),
+            Some(edge_base),
             fonts_of(style.as_ref(), parent_font_px),
         );
         let main = packing_main_size(
@@ -44,9 +42,7 @@ pub(super) fn pack_wrap_lines(
             sizes[index],
             direction,
             content_main,
-            nodes
-                .world
-                .edge_percent_base(*child, content.width, content.height),
+            edge_base,
             viewport,
             parent_font_px,
             grid_tracks.and_then(|tracks| tracks.get(index).copied()),
@@ -291,6 +287,8 @@ pub(super) fn wrap_intrinsic_size(
     children: &[StableNodeId],
     sizes: &[Size],
     available: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     cross_gap: f32,
     grid_tracks: Option<&[GridTrack]>,
@@ -304,6 +302,7 @@ pub(super) fn wrap_intrinsic_size(
         sizes,
         direction,
         available,
+        edge_base,
         gap,
         grid_tracks,
         viewport,
@@ -324,11 +323,7 @@ pub(super) fn wrap_intrinsic_size(
                 continue;
             };
             let margin = style.resolved_margin_against_fonts(
-                Some(nodes.world.edge_percent_base(
-                    children[index],
-                    available.width,
-                    available.height,
-                )),
+                Some(edge_base),
                 fonts_of(style.as_ref(), parent_font_px),
             );
             let main = packing_main_size(
@@ -336,9 +331,7 @@ pub(super) fn wrap_intrinsic_size(
                 sizes[index],
                 direction,
                 content_main,
-                nodes
-                    .world
-                    .edge_percent_base(children[index], available.width, available.height),
+                edge_base,
                 viewport,
                 parent_font_px,
                 grid_tracks.and_then(|tracks| tracks.get(index).copied()),

@@ -46,11 +46,6 @@ impl PhysicalEdge {
             Self::Left => Self::Right,
         }
     }
-
-    /// True for the edges that bound the horizontal axis.
-    pub const fn is_left_or_right(self) -> bool {
-        matches!(self, Self::Left | Self::Right)
-    }
 }
 
 /// A box's writing mode and direction: an inheritable environment, like its
@@ -119,7 +114,7 @@ impl WritingContext {
     /// True when the page axis `physical` (`Row` = horizontal) carries the
     /// inline axis: the horizontal one in `horizontal-tb`, the vertical one in
     /// a vertical mode.
-    pub const fn carries_inline(self, physical: FlexDirection) -> bool {
+    const fn carries_inline(self, physical: FlexDirection) -> bool {
         matches!(physical, FlexDirection::Row) != self.is_vertical()
     }
 
@@ -166,6 +161,13 @@ impl WritingContext {
         } else {
             (width, height)
         }
+    }
+
+    /// The inline extent of a page size. For a containing block this is the
+    /// base of its children's percentage margins and paddings (CSS Box Model
+    /// §5).
+    pub const fn inline_size(self, width: f32, height: f32) -> f32 {
+        self.logical_size(width, height).0
     }
 
     /// `(inline, block)` extents as a page `(width, height)`.
@@ -296,9 +298,10 @@ mod tests {
                 let context = WritingContext::new(mode, direction);
                 assert_eq!(context.inline_end(), context.inline_start().opposite());
                 assert_eq!(context.block_end(), context.block_start().opposite());
+                let horizontal = |edge| matches!(edge, Left | Right);
                 assert_ne!(
-                    context.inline_start().is_left_or_right(),
-                    context.block_start().is_left_or_right(),
+                    horizontal(context.inline_start()),
+                    horizontal(context.block_start()),
                     "the two axes are perpendicular"
                 );
             }

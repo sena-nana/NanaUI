@@ -5703,6 +5703,152 @@ fn logical_edges_land_in_the_inherited_direction() {
     );
 }
 
+/// Inheriting a writing mode and direction is the same as declaring them: a
+/// container of every kind -- an IFC, a wrapping flex row, a grid -- lays out
+/// identically whether it says `writing-mode` / `direction` itself or gets
+/// them from its parent.
+#[test]
+fn an_inherited_writing_context_lays_out_like_a_declared_one() {
+    let inline_block = |id: String| StyleLayoutNode {
+        id,
+        style: LayoutStyle {
+            display: Some(DisplaySpec::InlineBlock),
+            width: Some(LengthSpec::Px(30.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let containers: [(&str, LayoutStyle); 3] = [
+        (
+            "ifc",
+            LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                ..LayoutStyle::default()
+            },
+        ),
+        (
+            "flex-wrap",
+            LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                flex_wrap: FlexWrap::Wrap,
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+        ),
+        (
+            "grid",
+            LayoutStyle {
+                display: Some(DisplaySpec::Grid),
+                grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(40.0)]),
+                ..LayoutStyle::default()
+            },
+        ),
+    ];
+    for mode in [
+        WritingModeSpec::HorizontalTb,
+        WritingModeSpec::VerticalRl,
+        WritingModeSpec::VerticalLr,
+    ] {
+        for dir in [DirSpec::Ltr, DirSpec::Rtl] {
+            for (kind, container) in &containers {
+                let layout = |declared: bool| {
+                    let mut inner = container.clone();
+                    inner.width = Some(LengthSpec::Px(100.0));
+                    inner.height = Some(LengthSpec::Px(100.0));
+                    if declared {
+                        inner.writing_mode = Some(mode);
+                        inner.dir = Some(dir);
+                    }
+                    let tree = StyleLayoutNode {
+                        id: "root".into(),
+                        style: LayoutStyle {
+                            display: Some(DisplaySpec::Block),
+                            width: Some(LengthSpec::Px(200.0)),
+                            height: Some(LengthSpec::Px(200.0)),
+                            writing_mode: Some(mode),
+                            dir: Some(dir),
+                            ..LayoutStyle::default()
+                        },
+                        children: vec![StyleLayoutNode {
+                            id: "inner".into(),
+                            style: inner,
+                            children: (0..5).map(|i| inline_block(format!("c{i}"))).collect(),
+                            text: None,
+                        }],
+                        text: None,
+                    };
+                    box_map(&tree, 200.0, 200.0)
+                };
+                let (declared, inherited) = (layout(true), layout(false));
+                for (id, want) in &declared {
+                    assert_eq!(
+                        inherited.get(id),
+                        Some(want),
+                        "{kind} in {mode:?} {dir:?}: {id} inherited vs declared"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A line that a float shortens does not shrink its items' percentage
+/// margins: they resolve against the container's inline size, like every
+/// other percentage edge (CSS Box Model §5), not against what the line has
+/// left.
+#[test]
+fn a_float_shortened_line_keeps_the_containers_percent_base() {
+    let layout = |display: DisplaySpec, margin: LengthSpec| {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                ..LayoutStyle::default()
+            },
+            children: vec![
+                StyleLayoutNode {
+                    id: "float".into(),
+                    style: LayoutStyle {
+                        width: Some(LengthSpec::Px(50.0)),
+                        height: Some(LengthSpec::Px(40.0)),
+                        float: FloatSpec::Left,
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                },
+                StyleLayoutNode {
+                    id: "a".into(),
+                    style: LayoutStyle {
+                        display: Some(display),
+                        width: Some(LengthSpec::Px(30.0)),
+                        height: Some(LengthSpec::Px(20.0)),
+                        margin_left: Some(margin),
+                        ..LayoutStyle::default()
+                    },
+                    children: Vec::new(),
+                    text: None,
+                },
+            ],
+            text: None,
+        };
+        box_map(&tree, 200.0, 100.0)["a"]
+    };
+    for display in [DisplaySpec::InlineBlock, DisplaySpec::Block] {
+        let percent = layout(display, LengthSpec::Percent(10.0));
+        let px = layout(display, LengthSpec::Px(20.0));
+        assert_eq!(
+            percent, px,
+            "{display:?}: 10% of the 200px container is 20px"
+        );
+    }
+}
+
 /// Percentage margins resolve against the containing block's inline size in
 /// the containing block's own writing mode (CSS Writing Modes §7.3). A box
 /// that sets a writing mode orthogonal to its parent's still resolves against

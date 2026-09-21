@@ -678,11 +678,7 @@ pub(super) fn layout_grid_2d(
             .style(item.id)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(item.id, content.width, content.height),
-                    ),
+                    Some(writing.inline_size(content.width, content.height)),
                     fonts_of(&style, fonts.element_px),
                 )
             })
@@ -869,11 +865,7 @@ pub(super) fn place_grid_2d_items(
             scope,
         )?;
         let margin = child_style.resolved_margin_against_fonts(
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(item.id, cell.width, cell.height),
-            ),
+            Some(writing.inline_size(cell.width, cell.height)),
             child_fonts,
         );
         let inline_lead = margin_at(margin, writing.inline_start());
@@ -922,11 +914,7 @@ pub(super) fn place_grid_2d_items(
             fill_auto_height_from_aspect_ratio(
                 child_style,
                 &mut child_size,
-                Some(
-                    nodes
-                        .world
-                        .edge_percent_base(item.id, cell.width, cell.height),
-                ),
+                Some(writing.inline_size(cell.width, cell.height)),
                 child_fonts,
             );
         }
@@ -941,6 +929,7 @@ pub(super) fn place_grid_2d_items(
             cell,
             child_style,
             child_fonts,
+            writing,
             scope,
         ) {
             let inherited = if child_style.is_subgrid_columns() || child_style.is_subgrid_rows() {
@@ -981,7 +970,8 @@ pub(super) fn grid_intrinsic_size(
     tracks: &[f32],
     child_sizes: &[Size],
     children: &[StableNodeId],
-    content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
@@ -994,11 +984,7 @@ pub(super) fn grid_intrinsic_size(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(*child, content.width, content.height),
-                    ),
+                    Some(edge_base),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })
@@ -1120,6 +1106,8 @@ pub(super) fn apply_grid_main_sizes(
     sizes: &mut [Size],
     direction: FlexDirection,
     content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     tracks: &[GridTrack],
     viewport: LayoutViewport,
@@ -1138,11 +1126,7 @@ pub(super) fn apply_grid_main_sizes(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(*child, content.width, content.height),
-                    ),
+                    Some(edge_base),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })

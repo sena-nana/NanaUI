@@ -171,7 +171,6 @@ impl RuntimeLayoutEngine {
         #[cfg(any(test, feature = "benchmark"))]
         plan_stats::note_scope(dirty.len(), affected.len());
         let scope = ScopeContext {
-            world,
             affected: &affected,
             retained: &*retained,
         };
@@ -1064,7 +1063,6 @@ impl<'a> LayoutInputMap<'a> {
 }
 
 struct ScopeContext<'a> {
-    world: &'a UiWorld,
     affected: &'a HashSet<StableNodeId>,
     retained: &'a DocumentLayoutCache,
 }
@@ -1078,6 +1076,8 @@ fn subtree_unchanged(
     containing: Size,
     child_style: &nana_ui_core::LayoutStyle,
     child_fonts: FontSizeContext,
+    // The parent's: it is the child's containing block.
+    writing: nana_ui_core::WritingContext,
     scope: Option<&ScopeContext<'_>>,
 ) -> bool {
     let Some(scope) = scope else {
@@ -1095,16 +1095,10 @@ fn subtree_unchanged(
         child_fonts,
     );
     scope.retained.used_padding.get(&child).copied()
-        == Some(
-            child_style.resolved_padding_against_fonts(
-                Some(
-                    scope
-                        .world
-                        .edge_percent_base(child, containing.width, containing.height),
-                ),
-                child_fonts,
-            ),
-        )
+        == Some(child_style.resolved_padding_against_fonts(
+            Some(writing.inline_size(containing.width, containing.height)),
+            child_fonts,
+        ))
         && cached.x == origin.x + relative_x
         && cached.y == origin.y + relative_y
         && cached.width == size.width

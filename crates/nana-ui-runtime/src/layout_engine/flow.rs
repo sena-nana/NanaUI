@@ -280,6 +280,8 @@ pub(super) fn pack_floated_children(
     floated: &[StableNodeId],
     content_origin: Point,
     content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     viewport: LayoutViewport,
     child_font_px: f32,
     nodes: &mut LayoutInputMap<'_>,
@@ -309,14 +311,7 @@ pub(super) fn pack_floated_children(
             scope,
         )?;
         let child_fonts = fonts_of(child_style, child_font_px);
-        let margin = child_style.resolved_margin_against_fonts(
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(*child, content.width, content.height),
-            ),
-            child_fonts,
-        );
+        let margin = child_style.resolved_margin_against_fonts(Some(edge_base), child_fonts);
         let outer_w = child_size.width + margin.left + margin.right;
         // A float's own `clear` uses packed bottoms of earlier floats, same
         // contract as in-flow clear (not the pre-pack max of each float).

@@ -2567,6 +2567,12 @@ pub struct LayoutInput {
     pub parent: Option<StableNodeId>,
     pub children: Arc<Vec<StableNodeId>>,
     pub style: Arc<LayoutStyle>,
+    /// The writing mode and direction this node lays out in, after
+    /// inheritance.
+    pub writing: nana_ui_core::WritingContext,
+    /// Its containing block's (its parent's): the frame its own percentage
+    /// margins and paddings resolve in.
+    pub containing_writing: nana_ui_core::WritingContext,
     pub text_metrics: Option<TextMetrics>,
     pub modal: Option<ModalLayoutInput>,
 }

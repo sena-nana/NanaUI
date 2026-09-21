@@ -370,7 +370,10 @@ impl AppContext {
         Ok(())
     }
 
-    pub(super) fn scoped_scroll_retention_targets(&self, document: DocumentId) -> Vec<StableNodeId> {
+    pub(super) fn scoped_scroll_retention_targets(
+        &self,
+        document: DocumentId,
+    ) -> Vec<StableNodeId> {
         let mut visited = HashSet::new();
         let mut targets = HashSet::new();
         for &id in &self.last_layout_scope {

@@ -84,6 +84,14 @@ impl UiWorld {
             direction: layout.dir.unwrap_or(inherited.direction),
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
         };
+        // Written before the early return: a node that declares its own
+        // writing mode resolves to the same style when its parent's changes,
+        // but its containing block is still the parent.
+        self.record_mut(id).inherited_writing = if parent.is_some() {
+            inherited.writing_context()
+        } else {
+            nana_ui_core::WritingContext::default()
+        };
         {
             let resolved = &self.record(id).resolved;
             if resolved.0.as_ref() == &next && resolved.1 == self.palette_epoch {

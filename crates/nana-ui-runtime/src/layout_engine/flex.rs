@@ -8,6 +8,8 @@ pub(super) fn distribute_flex_main(
     sizes: &mut [Size],
     direction: FlexDirection,
     content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     viewport: LayoutViewport,
     parent_font_px: f32,
@@ -37,14 +39,7 @@ pub(super) fn distribute_flex_main(
             continue;
         };
         let fonts = fonts_of(style.as_ref(), parent_font_px);
-        let margin = style.resolved_margin_against_fonts(
-            Some(
-                nodes
-                    .world
-                    .edge_percent_base(*child, content.width, content.height),
-            ),
-            fonts,
-        );
+        let margin = style.resolved_margin_against_fonts(Some(edge_base), fonts);
         let (margin_main, min_main, max_main) = match direction {
             FlexDirection::Row => (
                 margin.left + margin.right,
@@ -83,11 +78,7 @@ pub(super) fn distribute_flex_main(
                 value = content_box_main_border_size(
                     style.as_ref(),
                     direction,
-                    Some(
-                        nodes
-                            .world
-                            .edge_percent_base(*child, content.width, content.height),
-                    ),
+                    Some(edge_base),
                     value,
                     fonts,
                 );
@@ -104,11 +95,7 @@ pub(super) fn distribute_flex_main(
                     value = content_box_main_border_size(
                         style.as_ref(),
                         direction,
-                        Some(
-                            nodes
-                                .world
-                                .edge_percent_base(*child, content.width, content.height),
-                        ),
+                        Some(edge_base),
                         value,
                         fonts,
                     );
@@ -296,7 +283,8 @@ pub(super) fn main_occupied(
     children: &[StableNodeId],
     sizes: &[Size],
     direction: FlexDirection,
-    content: Size,
+    // Percent base of the children's margins: the container's inline size.
+    edge_base: f32,
     gap: f32,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
@@ -305,11 +293,7 @@ pub(super) fn main_occupied(
     for (id, size) in children.iter().zip(sizes) {
         let margin = match nodes.style(*id) {
             Some(style) => style.resolved_margin_against_fonts(
-                Some(
-                    nodes
-                        .world
-                        .edge_percent_base(*id, content.width, content.height),
-                ),
+                Some(edge_base),
                 fonts_of(style.as_ref(), parent_font_px),
             ),
             None => Default::default(),

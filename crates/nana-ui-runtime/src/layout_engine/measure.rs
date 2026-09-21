@@ -33,8 +33,8 @@ pub(super) fn intrinsic_size(
 fn resolved_size_specs(
     style: &nana_ui_core::LayoutStyle,
     available: Size,
-    // What the node's percentage margins resolve against. See
-    // `UiWorld::edge_percent_base`.
+    // What the node's percentage margins resolve against: its containing
+    // block's inline size. See `UiWorld::containing_writing`.
     edge_base: f32,
     viewport: LayoutViewport,
     fonts: FontSizeContext,
@@ -165,20 +165,17 @@ pub(super) fn intrinsic_size_scoped(
     let style_arc = node.style.clone();
     let child_ids = node.children.clone();
     let text_metrics = node.text_metrics;
+    let (writing, containing_writing) = (node.writing, node.containing_writing);
     let style = style_arc.as_ref();
     if style.omits_box() {
         return Ok(Size::default());
     }
     let fonts = fonts_of(style, parent_font_px);
     let child_font_px = fonts.element_px;
-    let padding = style.resolved_padding_against_fonts(
-        Some(
-            nodes
-                .world
-                .edge_percent_base(id, available.width, available.height),
-        ),
-        fonts,
-    );
+    // Percent edges and sizes resolve against the containing block's inline
+    // size, in the containing block's writing mode.
+    let edge_base = containing_writing.inline_size(available.width, available.height);
+    let padding = style.resolved_padding_against_fonts(Some(edge_base), fonts);
     let border = style.resolved_border_edges();
     let chrome = Size::new(
         padding.left + padding.right + border.left + border.right,
@@ -186,14 +183,7 @@ pub(super) fn intrinsic_size_scoped(
     );
     // Measure descendants against this node's declared content box, not its
     // parent's full budget. Percent padding still resolves against the parent.
-    let margin = style.resolved_margin_against_fonts(
-        Some(
-            nodes
-                .world
-                .edge_percent_base(id, available.width, available.height),
-        ),
-        fonts,
-    );
+    let margin = style.resolved_margin_against_fonts(Some(edge_base), fonts);
     let content_axis = |spec: Option<LengthSpec>, available: f32, margins: f32, chrome: f32| {
         let resolved = resolve_axis(
             demote_fill_spec_if_indefinite(spec, available),
@@ -252,9 +242,6 @@ pub(super) fn intrinsic_size_scoped(
     // in the change closure, and each one dropped its cached intrinsic and
     // re-measured all of its children -- a full sibling scan per level, to
     // arrive at a size its own style had already fixed.
-    let edge_base = nodes
-        .world
-        .edge_percent_base(id, available.width, available.height);
     let (spec_width, spec_height) =
         resolved_size_specs(style, available, edge_base, viewport, fonts);
     if spec_width.is_some() && spec_height.is_some() {
@@ -290,7 +277,7 @@ pub(super) fn intrinsic_size_scoped(
             &style_arc,
             &child_ids,
             text_metrics,
-            nodes.world.layout_writing(id),
+            writing,
         )
         // An ancestor can rewrite a child's effective style without touching
         // the child (overlay hosting, an open menu surface), which would move
@@ -314,7 +301,7 @@ pub(super) fn intrinsic_size_scoped(
         && flow_children
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
-    let direction = used_flow_direction(style, nodes.world.layout_writing(id), ifc);
+    let direction = used_flow_direction(style, writing, ifc);
     let mut child_sizes = Vec::with_capacity(flow_children.len());
     for child in &flow_children {
         // Resolving the child style is a map lookup plus an `Arc` clone, so keep
@@ -358,16 +345,16 @@ pub(super) fn intrinsic_size_scoped(
         FlexDirection::Row => style.active_grid_columns(),
         FlexDirection::Column => style.active_grid_rows(),
     };
+    // This node is every child's containing block.
+    let child_edge_base = writing
+        .logical_size(content_available.width, content_available.height)
+        .0;
     let child_margin = |child, nodes: &LayoutInputMap<'_>| {
         nodes
             .style(child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(nodes.world.edge_percent_base(
-                        child,
-                        content_available.width,
-                        content_available.height,
-                    )),
+                    Some(child_edge_base),
                     fonts_of(&style, child_font_px),
                 )
             })
@@ -376,7 +363,7 @@ pub(super) fn intrinsic_size_scoped(
     let children = if uses_2d_grid(style, &flow_children, nodes) {
         let grid = layout_grid_2d(
             style,
-            nodes.world.layout_writing(id),
+            writing,
             &flow_children,
             &child_sizes,
             content_available,
@@ -385,7 +372,7 @@ pub(super) fn intrinsic_size_scoped(
             None,
         );
         // Columns run along the inline axis, rows along the block one.
-        let (width, height) = nodes.world.layout_writing(id).physical_size(
+        let (width, height) = writing.physical_size(
             grid_axis_extent(&grid.col_sizes, grid.col_gap),
             grid_axis_extent(&grid.row_sizes, grid.row_gap),
         );
@@ -409,7 +396,7 @@ pub(super) fn intrinsic_size_scoped(
             &resolved,
             &child_sizes,
             &flow_children,
-            content_available,
+            child_edge_base,
             gap,
             child_font_px,
             nodes,
@@ -421,6 +408,7 @@ pub(super) fn intrinsic_size_scoped(
             &flow_children,
             &child_sizes,
             content_available,
+            child_edge_base,
             gap,
             cross_gap,
             grid_tracks,
@@ -586,7 +574,7 @@ pub(super) fn intrinsic_size_scoped(
                 viewport,
                 parent_font_px,
                 style: Arc::clone(&style_arc),
-                writing: nodes.world.layout_writing(id),
+                writing,
                 children: Arc::clone(&child_ids),
                 text_metrics,
                 child_available: content_available,
