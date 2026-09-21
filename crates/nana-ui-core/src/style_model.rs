@@ -140,6 +140,18 @@ pub enum SemanticColorRole {
     /// focus fill is a tint, and the on-accent foreground where it is nearly
     /// solid.
     FocusText,
+    /// A second, warmer accent for the few marks that should pop against the
+    /// accent family — a lead action, a badge, the tail of a title rule. It is
+    /// a fill: its foreground is [`Self::HighlightText`], never body text on
+    /// a surface. Built-in palettes set it to the accent, so a theme that
+    /// never names it looks exactly as before.
+    Highlight,
+    /// [`Self::Highlight`] under the pointer.
+    HighlightHover,
+    /// [`Self::Highlight`] while pressed.
+    HighlightPressed,
+    /// Foreground on top of the three highlight fills.
+    HighlightText,
     Success,
     Warning,
     WarningSoft,
@@ -206,6 +218,10 @@ impl SemanticColorRole {
             "accent-soft-pressed" => Self::AccentSoftPressed,
             "accent-on-soft" => Self::AccentOnSoft,
             "accent-text" | "on-accent" => Self::AccentText,
+            "highlight" => Self::Highlight,
+            "highlight-hover" => Self::HighlightHover,
+            "highlight-pressed" => Self::HighlightPressed,
+            "highlight-text" | "on-highlight" => Self::HighlightText,
             "success" => Self::Success,
             "warning" => Self::Warning,
             "warning-soft" => Self::WarningSoft,
@@ -301,6 +317,14 @@ pub struct SemanticPalette {
     pub focus_surface: SemanticColor,
     pub focus_border: SemanticColor,
     pub focus_text: SemanticColor,
+    /// See [`SemanticColorRole::Highlight`].
+    pub highlight: SemanticColor,
+    /// See [`SemanticColorRole::HighlightHover`].
+    pub highlight_hover: SemanticColor,
+    /// See [`SemanticColorRole::HighlightPressed`].
+    pub highlight_pressed: SemanticColor,
+    /// See [`SemanticColorRole::HighlightText`].
+    pub highlight_text: SemanticColor,
     pub success: SemanticColor,
     pub warning: SemanticColor,
     pub danger: SemanticColor,
@@ -343,6 +367,10 @@ impl SemanticPalette {
             // other — a lighter fill clears the 3:1 step more easily and makes
             // the label worse — so the label lifts to white, at 5.80:1.
             focus_text: SemanticColor::rgba(1.0, 1.0, 1.0, 1.0),
+            highlight: ACCENT_DARK.base,
+            highlight_hover: ACCENT_DARK.strong,
+            highlight_pressed: ACCENT_DARK.strong,
+            highlight_text: ACCENT_DARK.text,
             success: SemanticColor::rgb8(63, 185, 80),
             warning: SemanticColor::rgb8(212, 168, 91),
             danger: SemanticColor::rgb8(244, 113, 116),
@@ -376,6 +404,10 @@ impl SemanticPalette {
             focus_border: ACCENT_LIGHT.strong,
             // A 0.90 fill is nearly solid accent, so the label moves onto it.
             focus_text: ACCENT_LIGHT.text,
+            highlight: ACCENT_LIGHT.base,
+            highlight_hover: ACCENT_LIGHT.strong,
+            highlight_pressed: ACCENT_LIGHT.strong,
+            highlight_text: ACCENT_LIGHT.text,
             success: SemanticColor::rgb8(16, 126, 57),
             warning: SemanticColor::rgb8(184, 119, 28),
             danger: SemanticColor::rgb8(201, 60, 60),
@@ -440,6 +472,10 @@ impl SemanticPalette {
             SemanticColorRole::FocusSurface => &mut self.focus_surface.a,
             SemanticColorRole::FocusBorder => &mut self.focus_border.a,
             SemanticColorRole::FocusText => &mut self.focus_text.a,
+            SemanticColorRole::Highlight => &mut self.highlight.a,
+            SemanticColorRole::HighlightHover => &mut self.highlight_hover.a,
+            SemanticColorRole::HighlightPressed => &mut self.highlight_pressed.a,
+            SemanticColorRole::HighlightText => &mut self.highlight_text.a,
             SemanticColorRole::Success => &mut self.success.a,
             SemanticColorRole::Warning => &mut self.warning.a,
             SemanticColorRole::Danger => &mut self.danger.a,
@@ -481,6 +517,10 @@ impl SemanticPalette {
             SemanticColorRole::FocusSurface => self.focus_surface,
             SemanticColorRole::FocusBorder => self.focus_border,
             SemanticColorRole::FocusText => self.focus_text,
+            SemanticColorRole::Highlight => self.highlight,
+            SemanticColorRole::HighlightHover => self.highlight_hover,
+            SemanticColorRole::HighlightPressed => self.highlight_pressed,
+            SemanticColorRole::HighlightText => self.highlight_text,
             SemanticColorRole::Success => self.success,
             SemanticColorRole::Warning => self.warning,
             SemanticColorRole::WarningSoft => SemanticColor {
@@ -609,6 +649,44 @@ impl Default for ControlSemantics {
 mod tests {
     use super::{OpacityTokens, SemanticColor, SemanticColorRole, SemanticPalette, StyleModelRef};
     use crate::theme::ThemeMode;
+
+    /// `Highlight` is opt-in: a built-in theme that never names it must look
+    /// exactly as it did before the role existed, so it resolves to the accent
+    /// family. A theme that does set it gets its own values back, and the token
+    /// names reach it.
+    #[test]
+    fn highlight_defaults_to_the_accent_pair_and_round_trips() {
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let palette = SemanticPalette::for_mode(mode);
+            let opacity = OpacityTokens::for_mode(mode);
+            assert_eq!(
+                palette.get_in(SemanticColorRole::Highlight, opacity),
+                palette.accent
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::HighlightHover, opacity),
+                palette.accent_strong
+            );
+            assert_eq!(
+                palette.get_in(SemanticColorRole::HighlightText, opacity),
+                palette.accent_text
+            );
+            let yellow = SemanticColor::rgb8(255, 214, 64);
+            let custom = SemanticPalette {
+                highlight: yellow,
+                ..palette
+            };
+            assert_eq!(custom.get_in(SemanticColorRole::Highlight, opacity), yellow);
+        }
+        assert_eq!(
+            SemanticColorRole::from_css_token_name("highlight"),
+            Some(SemanticColorRole::Highlight)
+        );
+        assert_eq!(
+            SemanticColorRole::from_css_token_name("on-highlight"),
+            Some(SemanticColorRole::HighlightText)
+        );
+    }
 
     #[test]
     fn semantic_color_rgb8_normalizes() {
