@@ -5258,7 +5258,13 @@ impl VerticalEditorFrame {
     /// The box the painter lays the editor's value out in: its block-start
     /// edge where text-space block 0 lands, and — for a wrapping editor — the
     /// content height, which is the line budget the editor geometry wrapped
-    /// at. `block_extent` is how wide the column stack is.
+    /// and aligned at. `block_extent` is how wide the column stack is.
+    ///
+    /// A single-line field's geometry has no line budget, so its line starts
+    /// at line-left and aligns nowhere. Its box is then exactly as long as the
+    /// line, leaving the painter's own `start` alignment no slack to move the
+    /// glyphs off the carets; where the line sits in the field is the scroll's
+    /// business ([`UiWorld::vertical_editor_frame`]).
     pub(crate) fn text_bounds(
         &self,
         block_extent: f32,
@@ -5278,7 +5284,7 @@ impl VerticalEditorFrame {
             height: if multiline {
                 self.content.height
             } else {
-                inline_extent.max(self.content.height)
+                inline_extent
             },
         }
     }
@@ -5346,10 +5352,15 @@ impl UiWorld {
                 block.clamp(0.0, (block_extent - content.width).max(0.0)),
             )
         } else {
-            (
-                (caret_inline - content.height + 1.0).clamp(0.0, max_inline),
-                -(content.width - line) * 0.5,
-            )
+            // A line shorter than the field sits at its inline-start: the top,
+            // or the bottom of a vertical RTL field (CSS Writing Modes §2.1),
+            // which is a negative scroll. A longer one follows the caret.
+            let inline = if writing.inline_reversed() && inline_extent <= content.height {
+                -(content.height - inline_extent)
+            } else {
+                (caret_inline - content.height + 1.0).clamp(0.0, max_inline)
+            };
+            (inline, -(content.width - line) * 0.5)
         };
         Some(VerticalEditorFrame {
             content,

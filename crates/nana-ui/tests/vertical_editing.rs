@@ -234,3 +234,149 @@ fn a_vertical_text_input_centres_its_column() {
         text.bounds
     );
 }
+
+/// #59: a vertical RTL field starts its line at the bottom (CSS Writing Modes
+/// §2.1), and draws its value where its carets are.
+///
+/// A single-line field's geometry has no line budget, so the painter is given
+/// a box exactly as long as the line — no slack for its own `start` alignment
+/// to move the glyphs off the carets — and the frame puts that box against the
+/// bottom. A wrapping area's geometry and painter share the content height as
+/// their budget, so both align each column's `start` to the bottom themselves.
+#[test]
+fn a_vertical_rtl_editor_starts_its_lines_at_the_bottom() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let rtl_vertical = |style: &mut nana_ui_core::LayoutStyle, height: f32| {
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.dir = Some(nana_ui_core::DirSpec::Rtl);
+        style.font_size = Some(16.0);
+        style.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        style.height = Some(nana_ui_core::LengthSpec::Px(height));
+        style.padding_top = Some(nana_ui_core::LengthSpec::Px(0.0));
+        style.padding_bottom = Some(nana_ui_core::LengthSpec::Px(0.0));
+    };
+
+    // Single line.
+    let mut field = TextInput::new("縦書き");
+    rtl_vertical(Arc::make_mut(&mut field.style.layout), 160.0);
+    let field = cx.create_component(doc, field).unwrap();
+    let node = field.stable_id();
+    settle(&mut cx, doc, &[node]);
+    assert!(cx.focus_node(doc, node).unwrap());
+    cx.select_focused_text_range(doc, 0, 0).unwrap();
+    settle(&mut cx, doc, &[node]);
+    let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
+    let Some(ComponentGeometry::TextInput { text, .. }) = cx.world().component_geometry(node)
+    else {
+        panic!("an editor")
+    };
+    let bottom = content.y + content.height;
+    assert!(
+        (text.bounds.y + text.bounds.height - bottom).abs() < 0.5,
+        "the line ends flush with the bottom: {:?} in {content:?}",
+        text.bounds
+    );
+    assert!(
+        (text.bounds.height - 48.0).abs() < 0.5,
+        "exactly as long as the line, no slack to align in: {:?}",
+        text.bounds
+    );
+    let at = caret(&cx, node);
+    assert!(
+        at.y >= text.bounds.y - 0.5 && at.y <= bottom + 0.5,
+        "the caret is on the drawn line: {at:?} vs {:?}",
+        text.bounds
+    );
+    // A click just above the bottom hits the end of the line, through the
+    // same frame — negative inline scroll and all.
+    let mut shaper = NanaTextShaper::default();
+    cx.text_editor_pointer_press(
+        doc,
+        node,
+        1,
+        at.x + at.width / 2.0,
+        bottom - 2.0,
+        false,
+        false,
+        Duration::ZERO,
+        &mut shaper,
+    )
+    .unwrap();
+    cx.text_editor_pointer_release(1);
+    assert_eq!(
+        cx.read(field, |view| view.state.selection.focus).unwrap(),
+        "縦書き".len()
+    );
+
+    // Wrapping area: six ideographs to a 100px column, so the second column
+    // holds two and sits against the bottom.
+    let mut area = TextArea::new("一二三四五六七八");
+    rtl_vertical(Arc::make_mut(&mut area.style.layout), 100.0);
+    let area = cx.create_component(doc, area).unwrap();
+    let area_node = area.stable_id();
+    settle(&mut cx, doc, &[area_node]);
+    assert!(cx.focus_node(doc, area_node).unwrap());
+    cx.select_focused_text_range(doc, "一二三四五六".len(), "一二三四五六".len())
+        .unwrap();
+    settle(&mut cx, doc, &[area_node]);
+    let (content, _) = cx.world().text_input_pointer_context(area_node).unwrap();
+    let before_seven = caret(&cx, area_node);
+    assert!(
+        (before_seven.y - (content.y + content.height - 32.0)).abs() < 0.5,
+        "七八 is flush with the bottom, so 七 starts 32px above it: {before_seven:?} in {content:?}"
+    );
+}
+
+/// #59: arrow keys in a vertical RTL editor follow the paragraph's reading
+/// direction the way they do in a horizontal RTL one, turned a quarter.
+///
+/// The paragraph reads from the bottom, so ↑ is onward: past the top of a
+/// column it goes on at the foot of the next, as ← past the left of an RTL
+/// line goes on at the right of the next. ↓ is back the other way. Within a
+/// column the step is visual, and CJK still sits top to bottom.
+#[test]
+fn arrow_keys_in_a_vertical_rtl_editor_follow_its_reading_direction() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let mut area = TextArea::new("一二三四五六七八");
+    {
+        let style = Arc::make_mut(&mut area.style.layout);
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.dir = Some(nana_ui_core::DirSpec::Rtl);
+        style.font_size = Some(16.0);
+        style.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        style.height = Some(nana_ui_core::LengthSpec::Px(100.0));
+        style.padding_top = Some(nana_ui_core::LengthSpec::Px(0.0));
+        style.padding_bottom = Some(nana_ui_core::LengthSpec::Px(0.0));
+    }
+    let area = cx.create_component(doc, area).unwrap();
+    let node = area.stable_id();
+    settle(&mut cx, doc, &[node]);
+    assert!(cx.focus_node(doc, node).unwrap());
+    cx.select_focused_text_range(doc, 0, 0).unwrap();
+    settle(&mut cx, doc, &[node]);
+    let mut shaper = NanaTextShaper::default();
+    let plain = InputModifiers::default();
+
+    // Down the first column, glyph by glyph.
+    press(&mut cx, doc, "ArrowDown", plain, &mut shaper);
+    assert_eq!(focus_of(&cx, area), "一".len());
+    // Back up to its top, then on past it: the foot of the next column.
+    press(&mut cx, doc, "ArrowUp", plain, &mut shaper);
+    assert_eq!(focus_of(&cx, area), 0);
+    press(&mut cx, doc, "ArrowUp", plain, &mut shaper);
+    assert_eq!(
+        focus_of(&cx, area),
+        "一二三四五六七八".len(),
+        "onward past the top of 一…六 is the foot of 七八"
+    );
+    // ↓ from the foot of 七八 goes back past its logical start, the
+    // other way.
+    press(&mut cx, doc, "ArrowDown", plain, &mut shaper);
+    assert_eq!(
+        focus_of(&cx, area),
+        0,
+        "back past the foot of 七八 is the top of the first column"
+    );
+}
