@@ -80,28 +80,6 @@ impl WritingModeSpec {
     }
 }
 
-/// CSS 逻辑边长手（`*-inline-start` 等）。按 writing-mode + direction 映射到 physical。
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct LogicalInsets {
-    #[serde(default)]
-    pub inline_start: Option<LengthSpec>,
-    #[serde(default)]
-    pub inline_end: Option<LengthSpec>,
-    #[serde(default)]
-    pub block_start: Option<LengthSpec>,
-    #[serde(default)]
-    pub block_end: Option<LengthSpec>,
-}
-
-impl LogicalInsets {
-    pub fn is_empty(&self) -> bool {
-        self.inline_start.is_none()
-            && self.inline_end.is_none()
-            && self.block_start.is_none()
-            && self.block_end.is_none()
-    }
-}
-
 /// 交叉轴对齐（`align-items` / `align-self`）。
 ///
 /// `Baseline` 用字号近似第一行基线（`0.8em`）；无字号时回退 Start。
@@ -2928,6 +2906,12 @@ pub struct LogicalEdges {
     pub generations: [u32; 8],
     #[serde(default)]
     pub next_gen: u32,
+    /// Physical edges (top, right, bottom, left as bits 0–3) the last
+    /// [`Self::resolve_into`] wrote from a logical edge, so a later context in
+    /// which no logical edge lands there clears them instead of leaving the old
+    /// value behind.
+    #[serde(default)]
+    pub derived: u8,
 }
 
 /// Index of a logical edge in [`LogicalEdges::generations`].
@@ -3058,6 +3042,54 @@ impl LogicalEdges {
     pub fn used_right(&self, context: crate::WritingContext) -> Option<LengthSpec> {
         self.used(crate::PhysicalEdge::Right, context)
     }
+
+    /// Writes the used value of every physical edge a declaration here
+    /// decides, in `context`, and leaves the rest alone.
+    ///
+    /// An edge a logical edge lands on takes the later of that and its own
+    /// physical declaration. An edge with only a recorded physical declaration
+    /// takes it. An edge this wrote from a logical edge last time, and which
+    /// nothing lands on now, is cleared — the logical edge moved away. Any
+    /// other edge keeps what the style already had, so a physical edge set
+    /// directly on a hand-built style survives.
+    pub fn resolve_into(
+        &mut self,
+        context: crate::WritingContext,
+        top: &mut Option<LengthSpec>,
+        right: &mut Option<LengthSpec>,
+        bottom: &mut Option<LengthSpec>,
+        left: &mut Option<LengthSpec>,
+    ) {
+        let landings = [
+            (context.inline_start(), self.inline_start),
+            (context.inline_end(), self.inline_end),
+            (context.block_start(), self.block_start),
+            (context.block_end(), self.block_end),
+        ];
+        let edges = [
+            (crate::PhysicalEdge::Top, top),
+            (crate::PhysicalEdge::Right, right),
+            (crate::PhysicalEdge::Bottom, bottom),
+            (crate::PhysicalEdge::Left, left),
+        ];
+        let mut derived = 0u8;
+        for (edge, field) in edges {
+            let bit = 1u8 << Self::phys_slot(edge);
+            let lands = landings
+                .iter()
+                .any(|(landing, value)| *landing == edge && value.is_some());
+            let recorded = self.generations[4 + Self::phys_slot(edge)] > 0;
+            if lands {
+                *field = self.used(edge, context);
+                derived |= bit;
+            } else if recorded {
+                *field = self.phys(edge);
+            } else if self.derived & bit != 0 {
+                *field = None;
+            }
+        }
+        self.derived = derived;
+    }
 }
 
 /// 可测布局意图（Style Model Layout 盒切片）。
@@ -3164,15 +3196,6 @@ pub struct LayoutStyle {
     pub offset_left: Option<LengthSpec>,
     #[serde(default)]
     pub logical_inset: LogicalEdges,
-    /// Logical padding longhands including block axis; baked by writing-mode.
-    #[serde(default)]
-    pub padding_logical: LogicalInsets,
-    /// Logical margin longhands including block axis.
-    #[serde(default)]
-    pub margin_logical: LogicalInsets,
-    /// Logical inset longhands (`inset-inline-start` …).
-    #[serde(default)]
-    pub inset_logical: LogicalInsets,
     pub width: Option<LengthSpec>,
     pub height: Option<LengthSpec>,
     /// `min-width`：保留 [`LengthSpec`]（px / `%` / calc / em / viewport），布局时解析。
@@ -3442,9 +3465,6 @@ impl Default for LayoutStyle {
             offset_bottom: None,
             offset_left: None,
             logical_inset: LogicalEdges::default(),
-            padding_logical: LogicalInsets::default(),
-            margin_logical: LogicalInsets::default(),
-            inset_logical: LogicalInsets::default(),
             width: None,
             height: None,
             min_width: None,
@@ -4133,41 +4153,29 @@ impl LayoutStyle {
     /// Map stored logical edges onto used `padding_*` / `margin_*` /
     /// `offset_*` for the box's current [`Self::writing_context`].
     ///
-    /// Physical-only styles (no logical specs) are left untouched so
-    /// hand-built `LayoutStyle { padding_left, .. }` stays intact. A style that
-    /// mixes the two has its physical edges derived here, so it records its
-    /// physical declarations with [`LogicalEdges::set_phys`] for cascade order.
+    /// Only the edges a declaration decides are written (see
+    /// [`LogicalEdges::resolve_into`]), so hand-built physical edges survive.
+    /// A style that wants cascade order between a logical and a physical
+    /// declaration of one edge records the physical one with
+    /// [`LogicalEdges::set_phys`].
     pub fn resolve_logical_box_edges(&mut self) {
         let context = self.writing_context();
-        let resolve = |edges: &LogicalEdges,
-                       top: &mut Option<LengthSpec>,
-                       right: &mut Option<LengthSpec>,
-                       bottom: &mut Option<LengthSpec>,
-                       left: &mut Option<LengthSpec>| {
-            if !edges.has_logical() {
-                return;
-            }
-            *top = edges.used(crate::PhysicalEdge::Top, context);
-            *right = edges.used(crate::PhysicalEdge::Right, context);
-            *bottom = edges.used(crate::PhysicalEdge::Bottom, context);
-            *left = edges.used(crate::PhysicalEdge::Left, context);
-        };
-        resolve(
-            &self.logical_padding,
+        self.logical_padding.resolve_into(
+            context,
             &mut self.padding_top,
             &mut self.padding_right,
             &mut self.padding_bottom,
             &mut self.padding_left,
         );
-        resolve(
-            &self.logical_margin,
+        self.logical_margin.resolve_into(
+            context,
             &mut self.margin_top,
             &mut self.margin_right,
             &mut self.margin_bottom,
             &mut self.margin_left,
         );
-        resolve(
-            &self.logical_inset,
+        self.logical_inset.resolve_into(
+            context,
             &mut self.offset_top,
             &mut self.offset_right,
             &mut self.offset_bottom,
@@ -4298,18 +4306,6 @@ impl LayoutStyle {
             self.logical_inset.phys_right,
             self.logical_inset.phys_bottom,
             self.logical_inset.phys_left,
-            self.padding_logical.inline_start,
-            self.padding_logical.inline_end,
-            self.padding_logical.block_start,
-            self.padding_logical.block_end,
-            self.margin_logical.inline_start,
-            self.margin_logical.inline_end,
-            self.margin_logical.block_start,
-            self.margin_logical.block_end,
-            self.inset_logical.inline_start,
-            self.inset_logical.inline_end,
-            self.inset_logical.block_start,
-            self.inset_logical.block_end,
             self.width,
             self.height,
             self.min_width,
@@ -4400,83 +4396,30 @@ impl LayoutStyle {
         crate::WritingContext::new(self.resolved_writing_mode(), self.resolved_direction())
     }
 
-    /// Bake logical padding/margin/inset onto physical fields for the current
-    /// writing-mode + direction.
+    /// Resolve the logical padding / margin / inset onto physical edges for
+    /// the current writing mode and direction. The same as
+    /// [`Self::resolve_logical_box_edges`], kept for the builder API's name.
     pub fn bake_logical_edges(&mut self) {
-        let map = self.writing_context();
-        bake_logical_insets(
-            &self.padding_logical,
-            map,
-            &mut self.padding_top,
-            &mut self.padding_right,
-            &mut self.padding_bottom,
-            &mut self.padding_left,
-        );
-        bake_logical_insets(
-            &self.margin_logical,
-            map,
-            &mut self.margin_top,
-            &mut self.margin_right,
-            &mut self.margin_bottom,
-            &mut self.margin_left,
-        );
-        bake_logical_insets(
-            &self.inset_logical,
-            map,
-            &mut self.offset_top,
-            &mut self.offset_right,
-            &mut self.offset_bottom,
-            &mut self.offset_left,
-        );
         self.resolve_logical_box_edges();
     }
 
-    fn unbake_logical_edges(&mut self) {
-        let map = self.writing_context();
-        unbake_logical_insets(
-            &self.padding_logical,
-            map,
-            &mut self.padding_top,
-            &mut self.padding_right,
-            &mut self.padding_bottom,
-            &mut self.padding_left,
-        );
-        unbake_logical_insets(
-            &self.margin_logical,
-            map,
-            &mut self.margin_top,
-            &mut self.margin_right,
-            &mut self.margin_bottom,
-            &mut self.margin_left,
-        );
-        unbake_logical_insets(
-            &self.inset_logical,
-            map,
-            &mut self.offset_top,
-            &mut self.offset_right,
-            &mut self.offset_bottom,
-            &mut self.offset_left,
-        );
-    }
-
-    /// Update CSS `direction` and re-bake logical longhands onto physical sides.
+    /// Update CSS `direction` and re-resolve logical edges onto physical ones.
     pub fn set_writing_direction(&mut self, next: DirSpec) {
         if self.dir == Some(next) {
             return;
         }
-        self.unbake_logical_edges();
         self.dir = Some(next);
-        self.bake_logical_edges();
+        self.resolve_logical_box_edges();
     }
 
-    /// Update CSS `writing-mode` and re-bake logical longhands onto physical sides.
+    /// Update CSS `writing-mode` and re-resolve logical edges onto physical
+    /// ones.
     pub fn set_writing_mode(&mut self, next: WritingModeSpec) {
         if self.writing_mode == Some(next) {
             return;
         }
-        self.unbake_logical_edges();
         self.writing_mode = Some(next);
-        self.bake_logical_edges();
+        self.resolve_logical_box_edges();
     }
 
     /// Vue/CSS explicit width/height/min-*/border-radius overlay ControlSize tokens.
@@ -4923,65 +4866,6 @@ fn resolve_max_size(
         other => other
             .resolve_non_negative_fonts(percent_base, viewport, fonts)
             .filter(|v| v.is_finite()),
-    }
-}
-
-fn physical_slot<'a>(
-    edge: crate::PhysicalEdge,
-    top: &'a mut Option<LengthSpec>,
-    right: &'a mut Option<LengthSpec>,
-    bottom: &'a mut Option<LengthSpec>,
-    left: &'a mut Option<LengthSpec>,
-) -> &'a mut Option<LengthSpec> {
-    match edge {
-        crate::PhysicalEdge::Top => top,
-        crate::PhysicalEdge::Right => right,
-        crate::PhysicalEdge::Bottom => bottom,
-        crate::PhysicalEdge::Left => left,
-    }
-}
-
-fn bake_logical_insets(
-    logical: &LogicalInsets,
-    map: crate::WritingContext,
-    top: &mut Option<LengthSpec>,
-    right: &mut Option<LengthSpec>,
-    bottom: &mut Option<LengthSpec>,
-    left: &mut Option<LengthSpec>,
-) {
-    if let Some(value) = logical.inline_start {
-        *physical_slot(map.inline_start(), top, right, bottom, left) = Some(value);
-    }
-    if let Some(value) = logical.inline_end {
-        *physical_slot(map.inline_end(), top, right, bottom, left) = Some(value);
-    }
-    if let Some(value) = logical.block_start {
-        *physical_slot(map.block_start(), top, right, bottom, left) = Some(value);
-    }
-    if let Some(value) = logical.block_end {
-        *physical_slot(map.block_end(), top, right, bottom, left) = Some(value);
-    }
-}
-
-fn unbake_logical_insets(
-    logical: &LogicalInsets,
-    map: crate::WritingContext,
-    top: &mut Option<LengthSpec>,
-    right: &mut Option<LengthSpec>,
-    bottom: &mut Option<LengthSpec>,
-    left: &mut Option<LengthSpec>,
-) {
-    if logical.inline_start.is_some() {
-        *physical_slot(map.inline_start(), top, right, bottom, left) = None;
-    }
-    if logical.inline_end.is_some() {
-        *physical_slot(map.inline_end(), top, right, bottom, left) = None;
-    }
-    if logical.block_start.is_some() {
-        *physical_slot(map.block_start(), top, right, bottom, left) = None;
-    }
-    if logical.block_end.is_some() {
-        *physical_slot(map.block_end(), top, right, bottom, left) = None;
     }
 }
 
@@ -5912,8 +5796,12 @@ mod tests {
             writing_mode: Some(WritingModeSpec::VerticalRl),
             ..Default::default()
         };
-        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
-        layout.padding_logical.inline_start = Some(LengthSpec::Px(3.0));
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::InlineStart, Some(LengthSpec::Px(3.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(8.0)));
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(3.0)));
@@ -5927,17 +5815,46 @@ mod tests {
             writing_mode: Some(WritingModeSpec::VerticalLr),
             ..Default::default()
         };
-        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
-        layout.padding_logical.block_end = Some(LengthSpec::Px(2.0));
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::BlockEnd, Some(LengthSpec::Px(2.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_left, Some(LengthSpec::Px(8.0)));
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(2.0)));
     }
 
     #[test]
+    fn a_hand_built_physical_edge_survives_a_logical_one_on_another_edge() {
+        // A builder sets the physical top directly, without recording it, and
+        // a logical inline-start: only the edge the logical one lands on is
+        // derived.
+        let mut layout = LayoutStyle {
+            padding_top: Some(LengthSpec::Px(5.0)),
+            ..Default::default()
+        };
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::InlineStart, Some(LengthSpec::Px(3.0)));
+        layout.bake_logical_edges();
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(5.0)));
+        assert_eq!(layout.padding_left, Some(LengthSpec::Px(3.0)));
+        // In RTL the inline-start moves to the right, and the left it no
+        // longer lands on is cleared rather than left holding 3px.
+        layout.set_writing_direction(DirSpec::Rtl);
+        assert_eq!(layout.padding_right, Some(LengthSpec::Px(3.0)));
+        assert!(layout.padding_left.is_none());
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(5.0)));
+    }
+
+    #[test]
     fn writing_mode_rebakes_logical_padding_from_top_to_right() {
         let mut layout = LayoutStyle::default();
-        layout.padding_logical.block_start = Some(LengthSpec::Px(8.0));
+        layout
+            .logical_padding
+            .set(super::LogicalEdge::BlockStart, Some(LengthSpec::Px(8.0)));
         layout.bake_logical_edges();
         assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
         layout.set_writing_mode(WritingModeSpec::VerticalRl);

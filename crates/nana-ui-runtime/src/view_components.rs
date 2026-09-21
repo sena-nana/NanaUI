@@ -4586,7 +4586,10 @@ mod spacing_tests {
             .padding_xy(12.0, 10.0)
             .with_layout(|layout| {
                 layout.logical_padding.set_start(Some(LengthSpec::Px(30.0)));
-                layout.padding_logical.block_end = Some(LengthSpec::Px(40.0));
+                layout.logical_padding.set(
+                    nana_ui_core::LogicalEdge::BlockEnd,
+                    Some(LengthSpec::Px(40.0)),
+                );
             })
             .padding(0.0);
         let mut layout = (*stack.node_style().layout).clone();
@@ -4661,7 +4664,6 @@ fn replace_padding_xy(layout: &mut nana_ui_core::LayoutStyle, x: f32, y: f32) {
     use nana_ui_core::LengthSpec;
     layout.padding = None;
     layout.logical_padding = Default::default();
-    layout.padding_logical = Default::default();
     layout.padding_left = Some(LengthSpec::Px(x.max(0.0)));
     layout.padding_right = layout.padding_left;
     layout.padding_top = Some(LengthSpec::Px(y.max(0.0)));

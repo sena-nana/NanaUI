@@ -153,7 +153,6 @@ impl UiWorld {
             let layout = Arc::make_mut(&mut source_style.layout);
             layout.padding = None;
             layout.logical_padding = Default::default();
-            layout.padding_logical = Default::default();
             layout.padding_top = Some(nana_ui_core::LengthSpec::Px(padding.top));
             layout.padding_right = Some(nana_ui_core::LengthSpec::Px(padding.right));
             layout.padding_bottom = Some(nana_ui_core::LengthSpec::Px(padding.bottom));
