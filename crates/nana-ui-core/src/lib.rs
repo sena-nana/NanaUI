@@ -58,7 +58,7 @@ pub use box_layout::{
     DisplaySpec, FilterDropShadow, FlexDirection, FlexWrap, FloatSpec, FontFeatureSetting,
     FontSizeContext, GradientStop, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto,
     GridTemplateAreas, GridTrack, GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom,
-    LengthSpec, LineHeightSpec, LinearGradient, LogicalInlineEdges, LogicalInsets,
+    LengthSpec, LineHeightSpec, LinearGradient, LogicalEdge, LogicalEdges, LogicalInsets,
     MAX_BACKGROUND_LAYERS, MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle,
     OverflowSpec, OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,

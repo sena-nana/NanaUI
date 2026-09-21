@@ -114,9 +114,9 @@ mod tests {
         let style = nana_ui_core::LayoutStyle::default();
         let _pointer_events: Option<nana_ui_core::PointerEventsSpec> = style.pointer_events;
         let _transform_3d: Option<nana_ui_core::PaintMat4> = style.transform_3d;
-        let _logical_padding: nana_ui_core::LogicalInlineEdges = style.logical_padding;
-        let _logical_margin: nana_ui_core::LogicalInlineEdges = style.logical_margin;
-        let _logical_inset: nana_ui_core::LogicalInlineEdges = style.logical_inset;
+        let _logical_padding: nana_ui_core::LogicalEdges = style.logical_padding;
+        let _logical_margin: nana_ui_core::LogicalEdges = style.logical_margin;
+        let _logical_inset: nana_ui_core::LogicalEdges = style.logical_inset;
     }
 
     /// Compile cfg: Android is an experimental host OS, not a product UI target.

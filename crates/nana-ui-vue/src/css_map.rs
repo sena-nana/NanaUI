@@ -67,12 +67,15 @@
 //! `writing-mode: horizontal-tb | vertical-rl | vertical-lr` 写入
 //! [`LayoutStyle::writing_mode`]（`horizontal-tb` 清除 unsupported；竖排不再 fail-closed）。
 //! `sideways-*` 置 [`LayoutStyle::unsupported_writing_mode`]。`unicode-bidi` 隔离 /
-//! 完整 IFC 双向仍 **fail-closed**（勿假装 bidi isolation）。逻辑 inline 仍走
-//! [`LogicalInlineEdges`]；竖排轴 remap 由 layout bake 消费 `writing_mode`。
+//! 完整 IFC 双向仍 **fail-closed**（勿假装 bidi isolation）。逻辑边
+//! （`*-inline*` / `*-block*`）与它们竞争的物理边一起记进 [`LogicalEdges`]，
+//! 按声明先后定胜负；落在哪条物理边由最终的 `writing-mode` + `direction`
+//! 经 `WritingContext` 决定（竖排 rtl 的 inline-start 在底端）。
 //!
 //! Layout length / padding / alignment live on `LayoutStyle`; Scene host consumes them
 //!（feature `scene-view`）。
 
+use nana_ui_core::PhysicalEdge;
 #[cfg(test)]
 use nana_ui_core::box_layout::PaintTransform;
 pub use nana_ui_core::box_layout::{
@@ -80,7 +83,7 @@ pub use nana_ui_core::box_layout::{
     DirSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec, FontSizeContext, GridAutoFlow,
     GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
-    LogicalInlineEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
+    LogicalEdge, LogicalEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
     TextShadowSpec, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
     resolve_grid_column_widths, resolve_grid_track_sizes,
 };
@@ -2054,30 +2057,49 @@ impl LayoutStyleCss for LayoutStyle {
                     parse_box_edge_length,
                 );
                 self.logical_padding
-                    .set_phys_left(self.padding_left.or(self.padding));
+                    .set_phys(PhysicalEdge::Top, self.padding_top.or(self.padding));
                 self.logical_padding
-                    .set_phys_right(self.padding_right.or(self.padding));
+                    .set_phys(PhysicalEdge::Right, self.padding_right.or(self.padding));
+                self.logical_padding
+                    .set_phys(PhysicalEdge::Bottom, self.padding_bottom.or(self.padding));
+                self.logical_padding
+                    .set_phys(PhysicalEdge::Left, self.padding_left.or(self.padding));
             }
             // Longhand margin/padding % — including top/bottom — use containing-block width
             // at layout time (store LengthSpec; do not drop % when percent_w is None).
-            "padding-top" => self.padding_top = parse_box_edge_length(val),
+            "padding-top" => {
+                self.padding_top = parse_box_edge_length(val);
+                self.logical_padding
+                    .set_phys(PhysicalEdge::Top, self.padding_top);
+            }
             "padding-right" => {
                 self.padding_right = parse_box_edge_length(val);
                 self.logical_padding.set_phys_right(self.padding_right);
             }
-            "padding-bottom" => self.padding_bottom = parse_box_edge_length(val),
+            "padding-bottom" => {
+                self.padding_bottom = parse_box_edge_length(val);
+                self.logical_padding
+                    .set_phys(PhysicalEdge::Bottom, self.padding_bottom);
+            }
             "padding-left" => {
                 self.padding_left = parse_box_edge_length(val);
                 self.logical_padding.set_phys_left(self.padding_left);
             }
             // Logical padding kept until used-value resolve (final `direction`).
             "padding-inline" => {
-                apply_logical_inline_edges(val, &mut self.logical_padding, parse_box_edge_length);
+                apply_logical_edges(
+                    val,
+                    &mut self.logical_padding,
+                    LogicalEdge::InlineStart,
+                    LogicalEdge::InlineEnd,
+                    parse_box_edge_length,
+                );
             }
-            "padding-block" => apply_logical_pair_shorthand(
+            "padding-block" => apply_logical_edges(
                 val,
-                &mut self.padding_top,
-                &mut self.padding_bottom,
+                &mut self.logical_padding,
+                LogicalEdge::BlockStart,
+                LogicalEdge::BlockEnd,
                 parse_box_edge_length,
             ),
             "padding-inline-start" => {
@@ -2086,8 +2108,14 @@ impl LayoutStyleCss for LayoutStyle {
             "padding-inline-end" => {
                 self.logical_padding.set_end(parse_box_edge_length(val));
             }
-            "padding-block-start" => self.padding_top = parse_box_edge_length(val),
-            "padding-block-end" => self.padding_bottom = parse_box_edge_length(val),
+            "padding-block-start" => {
+                self.logical_padding
+                    .set(LogicalEdge::BlockStart, parse_box_edge_length(val));
+            }
+            "padding-block-end" => {
+                self.logical_padding
+                    .set(LogicalEdge::BlockEnd, parse_box_edge_length(val));
+            }
             "margin" => {
                 apply_box_edge_shorthand(
                     val,
@@ -2099,27 +2127,46 @@ impl LayoutStyleCss for LayoutStyle {
                     parse_margin_length,
                 );
                 self.logical_margin
-                    .set_phys_left(self.margin_left.or(self.margin));
+                    .set_phys(PhysicalEdge::Top, self.margin_top.or(self.margin));
                 self.logical_margin
-                    .set_phys_right(self.margin_right.or(self.margin));
+                    .set_phys(PhysicalEdge::Right, self.margin_right.or(self.margin));
+                self.logical_margin
+                    .set_phys(PhysicalEdge::Bottom, self.margin_bottom.or(self.margin));
+                self.logical_margin
+                    .set_phys(PhysicalEdge::Left, self.margin_left.or(self.margin));
             }
-            "margin-top" => self.margin_top = parse_margin_length(val),
+            "margin-top" => {
+                self.margin_top = parse_margin_length(val);
+                self.logical_margin
+                    .set_phys(PhysicalEdge::Top, self.margin_top);
+            }
             "margin-right" => {
                 self.margin_right = parse_margin_length(val);
                 self.logical_margin.set_phys_right(self.margin_right);
             }
-            "margin-bottom" => self.margin_bottom = parse_margin_length(val),
+            "margin-bottom" => {
+                self.margin_bottom = parse_margin_length(val);
+                self.logical_margin
+                    .set_phys(PhysicalEdge::Bottom, self.margin_bottom);
+            }
             "margin-left" => {
                 self.margin_left = parse_margin_length(val);
                 self.logical_margin.set_phys_left(self.margin_left);
             }
             "margin-inline" => {
-                apply_logical_inline_edges(val, &mut self.logical_margin, parse_margin_length);
+                apply_logical_edges(
+                    val,
+                    &mut self.logical_margin,
+                    LogicalEdge::InlineStart,
+                    LogicalEdge::InlineEnd,
+                    parse_margin_length,
+                );
             }
-            "margin-block" => apply_logical_pair_shorthand(
+            "margin-block" => apply_logical_edges(
                 val,
-                &mut self.margin_top,
-                &mut self.margin_bottom,
+                &mut self.logical_margin,
+                LogicalEdge::BlockStart,
+                LogicalEdge::BlockEnd,
                 parse_margin_length,
             ),
             "margin-inline-start" => {
@@ -2128,8 +2175,14 @@ impl LayoutStyleCss for LayoutStyle {
             "margin-inline-end" => {
                 self.logical_margin.set_end(parse_margin_length(val));
             }
-            "margin-block-start" => self.margin_top = parse_margin_length(val),
-            "margin-block-end" => self.margin_bottom = parse_margin_length(val),
+            "margin-block-start" => {
+                self.logical_margin
+                    .set(LogicalEdge::BlockStart, parse_margin_length(val));
+            }
+            "margin-block-end" => {
+                self.logical_margin
+                    .set(LogicalEdge::BlockEnd, parse_margin_length(val));
+            }
             "width" => assign_parsed_length(&mut self.width, val, LengthSpec::parse),
             "height" => {
                 // Keep Fill for 100% even without percent base (定高链 P0-4)。
@@ -2482,12 +2535,20 @@ impl LayoutStyleCss for LayoutStyle {
             // `perspective-origin` skipped: parent perspective is fail-closed,
             // so there is no stored vanishing point to offset.
             "perspective-origin" => {}
-            "top" => self.offset_top = parse_inset_length(val),
+            "top" => {
+                self.offset_top = parse_inset_length(val);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Top, self.offset_top);
+            }
             "right" => {
                 self.offset_right = parse_inset_length(val);
                 self.logical_inset.set_phys_right(self.offset_right);
             }
-            "bottom" => self.offset_bottom = parse_inset_length(val),
+            "bottom" => {
+                self.offset_bottom = parse_inset_length(val);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Bottom, self.offset_bottom);
+            }
             "left" => {
                 self.offset_left = parse_inset_length(val);
                 self.logical_inset.set_phys_left(self.offset_left);
@@ -2500,17 +2561,30 @@ impl LayoutStyleCss for LayoutStyle {
                     &mut self.offset_bottom,
                     &mut self.offset_left,
                 );
-                self.logical_inset.set_phys_left(self.offset_left);
-                self.logical_inset.set_phys_right(self.offset_right);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Top, self.offset_top);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Right, self.offset_right);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Bottom, self.offset_bottom);
+                self.logical_inset
+                    .set_phys(PhysicalEdge::Left, self.offset_left);
             }
             // Logical inset kept until used-value resolve (final `direction`).
             "inset-inline" => {
-                apply_logical_inline_edges(val, &mut self.logical_inset, parse_inset_length);
+                apply_logical_edges(
+                    val,
+                    &mut self.logical_inset,
+                    LogicalEdge::InlineStart,
+                    LogicalEdge::InlineEnd,
+                    parse_inset_length,
+                );
             }
-            "inset-block" => apply_logical_pair_shorthand(
+            "inset-block" => apply_logical_edges(
                 val,
-                &mut self.offset_top,
-                &mut self.offset_bottom,
+                &mut self.logical_inset,
+                LogicalEdge::BlockStart,
+                LogicalEdge::BlockEnd,
                 parse_inset_length,
             ),
             "inset-inline-start" => {
@@ -2519,8 +2593,14 @@ impl LayoutStyleCss for LayoutStyle {
             "inset-inline-end" => {
                 self.logical_inset.set_end(parse_inset_length(val));
             }
-            "inset-block-start" => self.offset_top = parse_inset_length(val),
-            "inset-block-end" => self.offset_bottom = parse_inset_length(val),
+            "inset-block-start" => {
+                self.logical_inset
+                    .set(LogicalEdge::BlockStart, parse_inset_length(val));
+            }
+            "inset-block-end" => {
+                self.logical_inset
+                    .set(LogicalEdge::BlockEnd, parse_inset_length(val));
+            }
             "text-overflow" if val.eq_ignore_ascii_case("ellipsis") => {
                 self.text_overflow_ellipsis = true;
             }
@@ -3100,47 +3180,27 @@ fn apply_css_writing_mode(layout: &mut LayoutStyle, val: &str) {
     }
 }
 
-/// Store inline-axis logical pair; used left/right come from later resolve.
-fn apply_logical_inline_edges(
+/// A logical two-value shorthand (`padding-inline`, `margin-block`, …): one
+/// value sets both edges, two set `start` then `end`. The physical edges they
+/// land on are decided later, by the box's final writing mode and direction.
+fn apply_logical_edges(
     val: &str,
-    edges: &mut LogicalInlineEdges,
+    edges: &mut LogicalEdges,
+    start: LogicalEdge,
+    end: LogicalEdge,
     parse_edge: fn(&str) -> Option<LengthSpec>,
 ) {
     let parts: Vec<_> = val.split_whitespace().collect();
     match parts.len() {
         1 => {
             if let Some(v) = parse_edge(parts[0]) {
-                edges.set_start(Some(v));
-                edges.set_end(Some(v));
+                edges.set(start, Some(v));
+                edges.set(end, Some(v));
             }
         }
         n if n >= 2 => {
-            edges.set_start(parse_edge(parts[0]));
-            edges.set_end(parse_edge(parts[1]));
-        }
-        _ => {}
-    }
-}
-
-/// CSS Logical Properties 1–2 值简写：`start` / `end` → 两 physical 边。
-/// 单值两边同值；双值分别为 start、end。不改动未映射轴（与 MDN 轴简写一致）。
-fn apply_logical_pair_shorthand(
-    val: &str,
-    start: &mut Option<LengthSpec>,
-    end: &mut Option<LengthSpec>,
-    parse_edge: fn(&str) -> Option<LengthSpec>,
-) {
-    let parts: Vec<_> = val.split_whitespace().collect();
-    match parts.len() {
-        1 => {
-            if let Some(v) = parse_edge(parts[0]) {
-                *start = Some(v);
-                *end = Some(v);
-            }
-        }
-        n if n >= 2 => {
-            *start = parse_edge(parts[0]);
-            *end = parse_edge(parts[1]);
+            edges.set(start, parse_edge(parts[0]));
+            edges.set(end, parse_edge(parts[1]));
         }
         _ => {}
     }
@@ -5833,18 +5893,83 @@ mod tests {
     }
 
     #[test]
-    fn writing_mode_vertical_rl_maps_padding_inline_start_to_block_axis() {
-        let mut layout = LayoutStyle::default();
-        layout.apply_css_text(
-            "writing-mode: vertical-rl; padding-inline-start: 12px",
+    fn logical_edges_land_on_the_physical_edge_the_writing_mode_puts_them_on() {
+        // (css, expected top, right, bottom, left)
+        let px = |v: f32| Some(LengthSpec::Px(v));
+        let cases = [
+            // `vertical-rl`: inline-start is the top, block-start the right.
+            (
+                "writing-mode: vertical-rl; padding-inline-start: 12px",
+                [px(12.0), None, None, None],
+            ),
+            (
+                "writing-mode: vertical-rl; padding-block-start: 7px",
+                [None, px(7.0), None, None],
+            ),
+            // `vertical-rl` + RTL: the line starts at the bottom (CSS Writing
+            // Modes §2.1); block-start does not move.
+            (
+                "writing-mode: vertical-rl; direction: rtl; padding-inline: 1px 2px",
+                [px(2.0), None, px(1.0), None],
+            ),
+            // `vertical-lr`: block-start is the left.
+            (
+                "writing-mode: vertical-lr; padding-block: 3px 4px",
+                [None, px(4.0), None, px(3.0)],
+            ),
+            // Horizontal: block edges are top and bottom, as before.
+            (
+                "padding-block: 5px 6px; padding-inline-end: 8px",
+                [px(5.0), px(8.0), px(6.0), None],
+            ),
+        ];
+        for (css, [top, right, bottom, left]) in cases {
+            let mut layout = LayoutStyle::default();
+            layout.apply_css_text(css, None, None);
+            layout.resolve_logical_box_edges();
+            assert_eq!(
+                (
+                    layout.padding_top,
+                    layout.padding_right,
+                    layout.padding_bottom,
+                    layout.padding_left
+                ),
+                (top, right, bottom, left),
+                "{css}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_declaration_wins_between_a_logical_and_a_physical_edge() {
+        let mut physical_last = LayoutStyle::default();
+        physical_last.apply_css_text(
+            "writing-mode: vertical-rl; padding-inline-start: 12px; padding-top: 4px",
             None,
             None,
         );
-        assert!(!layout.unsupported_writing_mode);
-        assert_eq!(layout.writing_mode, Some(WritingModeSpec::VerticalRl));
-        // LogicalInlineEdges still bakes inline-start as physical left until
-        // layout consumes writing_mode for the vertical axis.
-        assert_eq!(layout.padding_left, Some(LengthSpec::Px(12.0)));
+        physical_last.resolve_logical_box_edges();
+        assert_eq!(physical_last.padding_top, Some(LengthSpec::Px(4.0)));
+
+        let mut logical_last = LayoutStyle::default();
+        logical_last.apply_css_text(
+            "writing-mode: vertical-rl; padding-top: 4px; padding-inline-start: 12px",
+            None,
+            None,
+        );
+        logical_last.resolve_logical_box_edges();
+        assert_eq!(logical_last.padding_top, Some(LengthSpec::Px(12.0)));
+
+        // `margin-block-start` in `vertical-lr` lands on the left, and a
+        // later `margin: 0` shorthand overrides it.
+        let mut shorthand_last = LayoutStyle::default();
+        shorthand_last.apply_css_text(
+            "writing-mode: vertical-lr; margin-block-start: 9px; margin: 0",
+            None,
+            None,
+        );
+        shorthand_last.resolve_logical_box_edges();
+        assert_eq!(shorthand_last.margin_left, Some(LengthSpec::Px(0.0)));
     }
 
     #[test]

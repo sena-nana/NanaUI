@@ -2893,94 +2893,170 @@ impl ParentBox {
     }
 }
 
-/// Specified `*-inline-start/end` plus the physical left/right they compete with.
+/// The four logical edges of one box property (`padding`, `margin`, `inset`)
+/// and the four physical edges they compete with.
 ///
-/// Cascade order is preserved with generation stamps so a later longhand
-/// (logical or physical) wins the used edge after the final `direction`.
+/// Which physical edge a logical one lands on is only known once the final
+/// `writing-mode` and `direction` are — `padding-inline-start` is the left
+/// edge in `horizontal-tb` LTR, the right one in RTL, the top in a vertical
+/// mode and the bottom in a vertical RTL one. So both are kept as specified and
+/// resolved through [`crate::WritingContext`] when the box's context is final
+/// ([`LayoutStyle::resolve_logical_box_edges`]).
+///
+/// Cascade order between a logical and a physical declaration of the same edge
+/// is kept with generation stamps: the later one wins, whichever kind it is.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-pub struct LogicalInlineEdges {
-    pub start: Option<LengthSpec>,
-    pub end: Option<LengthSpec>,
-    pub phys_left: Option<LengthSpec>,
+pub struct LogicalEdges {
+    #[serde(default, alias = "start")]
+    pub inline_start: Option<LengthSpec>,
+    #[serde(default, alias = "end")]
+    pub inline_end: Option<LengthSpec>,
+    #[serde(default)]
+    pub block_start: Option<LengthSpec>,
+    #[serde(default)]
+    pub block_end: Option<LengthSpec>,
+    #[serde(default)]
+    pub phys_top: Option<LengthSpec>,
+    #[serde(default)]
     pub phys_right: Option<LengthSpec>,
     #[serde(default)]
-    pub start_gen: u32,
+    pub phys_bottom: Option<LengthSpec>,
     #[serde(default)]
-    pub end_gen: u32,
+    pub phys_left: Option<LengthSpec>,
+    /// Generation of each field above, in the same order.
     #[serde(default)]
-    pub phys_left_gen: u32,
-    #[serde(default)]
-    pub phys_right_gen: u32,
+    pub generations: [u32; 8],
     #[serde(default)]
     pub next_gen: u32,
 }
 
-impl LogicalInlineEdges {
+/// Index of a logical edge in [`LogicalEdges::generations`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalEdge {
+    InlineStart = 0,
+    InlineEnd = 1,
+    BlockStart = 2,
+    BlockEnd = 3,
+}
+
+impl LogicalEdges {
     pub fn has_logical(&self) -> bool {
-        self.start.is_some() || self.end.is_some()
+        self.inline_start.is_some()
+            || self.inline_end.is_some()
+            || self.block_start.is_some()
+            || self.block_end.is_some()
     }
 
-    fn bump(&mut self) -> u32 {
+    fn stamp(&mut self, slot: usize) {
         self.next_gen = self.next_gen.saturating_add(1);
-        self.next_gen
+        self.generations[slot] = self.next_gen;
+    }
+
+    pub fn set(&mut self, edge: LogicalEdge, spec: Option<LengthSpec>) {
+        *match edge {
+            LogicalEdge::InlineStart => &mut self.inline_start,
+            LogicalEdge::InlineEnd => &mut self.inline_end,
+            LogicalEdge::BlockStart => &mut self.block_start,
+            LogicalEdge::BlockEnd => &mut self.block_end,
+        } = spec;
+        self.stamp(edge as usize);
     }
 
     pub fn set_start(&mut self, spec: Option<LengthSpec>) {
-        self.start = spec;
-        self.start_gen = self.bump();
+        self.set(LogicalEdge::InlineStart, spec);
     }
 
     pub fn set_end(&mut self, spec: Option<LengthSpec>) {
-        self.end = spec;
-        self.end_gen = self.bump();
+        self.set(LogicalEdge::InlineEnd, spec);
+    }
+
+    /// Records a physical declaration of `edge`, so a logical one declared
+    /// before it loses and one declared after wins.
+    pub fn set_phys(&mut self, edge: crate::PhysicalEdge, spec: Option<LengthSpec>) {
+        let slot = 4 + Self::phys_slot(edge);
+        *self.phys_mut(edge) = spec;
+        self.stamp(slot);
     }
 
     pub fn set_phys_left(&mut self, spec: Option<LengthSpec>) {
-        self.phys_left = spec;
-        self.phys_left_gen = self.bump();
+        self.set_phys(crate::PhysicalEdge::Left, spec);
     }
 
     pub fn set_phys_right(&mut self, spec: Option<LengthSpec>) {
-        self.phys_right = spec;
-        self.phys_right_gen = self.bump();
+        self.set_phys(crate::PhysicalEdge::Right, spec);
     }
 
-    fn pick(
-        logical: Option<LengthSpec>,
-        logical_gen: u32,
-        phys: Option<LengthSpec>,
-        phys_gen: u32,
-    ) -> Option<LengthSpec> {
-        match (logical, phys) {
-            (None, None) => None,
-            (Some(v), None) => Some(v),
-            (None, Some(v)) => Some(v),
-            (Some(lv), Some(pv)) => {
-                if phys_gen >= logical_gen {
-                    Some(pv)
-                } else {
-                    Some(lv)
-                }
-            }
+    const fn phys_slot(edge: crate::PhysicalEdge) -> usize {
+        match edge {
+            crate::PhysicalEdge::Top => 0,
+            crate::PhysicalEdge::Right => 1,
+            crate::PhysicalEdge::Bottom => 2,
+            crate::PhysicalEdge::Left => 3,
         }
     }
 
-    pub fn used_left(&self, rtl: bool) -> Option<LengthSpec> {
-        let (logical, logical_gen) = if rtl {
-            (self.end, self.end_gen)
-        } else {
-            (self.start, self.start_gen)
-        };
-        Self::pick(logical, logical_gen, self.phys_left, self.phys_left_gen)
+    fn phys_mut(&mut self, edge: crate::PhysicalEdge) -> &mut Option<LengthSpec> {
+        match edge {
+            crate::PhysicalEdge::Top => &mut self.phys_top,
+            crate::PhysicalEdge::Right => &mut self.phys_right,
+            crate::PhysicalEdge::Bottom => &mut self.phys_bottom,
+            crate::PhysicalEdge::Left => &mut self.phys_left,
+        }
     }
 
-    pub fn used_right(&self, rtl: bool) -> Option<LengthSpec> {
-        let (logical, logical_gen) = if rtl {
-            (self.start, self.start_gen)
-        } else {
-            (self.end, self.end_gen)
-        };
-        Self::pick(logical, logical_gen, self.phys_right, self.phys_right_gen)
+    fn phys(&self, edge: crate::PhysicalEdge) -> Option<LengthSpec> {
+        match edge {
+            crate::PhysicalEdge::Top => self.phys_top,
+            crate::PhysicalEdge::Right => self.phys_right,
+            crate::PhysicalEdge::Bottom => self.phys_bottom,
+            crate::PhysicalEdge::Left => self.phys_left,
+        }
+    }
+
+    /// The used value of the physical `edge` in `context`: the later of its
+    /// own declaration and the logical edge that lands on it.
+    pub fn used(
+        &self,
+        edge: crate::PhysicalEdge,
+        context: crate::WritingContext,
+    ) -> Option<LengthSpec> {
+        let logical = [
+            (
+                context.inline_start(),
+                self.inline_start,
+                LogicalEdge::InlineStart,
+            ),
+            (
+                context.inline_end(),
+                self.inline_end,
+                LogicalEdge::InlineEnd,
+            ),
+            (
+                context.block_start(),
+                self.block_start,
+                LogicalEdge::BlockStart,
+            ),
+            (context.block_end(), self.block_end, LogicalEdge::BlockEnd),
+        ]
+        .into_iter()
+        .find(|(landing, _, _)| *landing == edge)
+        .map(|(_, value, which)| (value, self.generations[which as usize]));
+        let physical = (self.phys(edge), self.generations[4 + Self::phys_slot(edge)]);
+        match (logical, physical) {
+            (Some((Some(value), logical_gen)), (Some(phys), phys_gen)) => {
+                Some(if phys_gen >= logical_gen { phys } else { value })
+            }
+            (Some((Some(value), _)), (None, _)) => Some(value),
+            (_, (phys, _)) => phys,
+        }
+    }
+
+    pub fn used_left(&self, context: crate::WritingContext) -> Option<LengthSpec> {
+        self.used(crate::PhysicalEdge::Left, context)
+    }
+
+    pub fn used_right(&self, context: crate::WritingContext) -> Option<LengthSpec> {
+        self.used(crate::PhysicalEdge::Right, context)
     }
 }
 
@@ -3067,7 +3143,7 @@ pub struct LayoutStyle {
     pub padding_left: Option<LengthSpec>,
     /// Specified `padding-inline-*` plus physical left/right they compete with.
     #[serde(default)]
-    pub logical_padding: LogicalInlineEdges,
+    pub logical_padding: LogicalEdges,
     /// Uniform margin shorthand residue（`%` 合同同 padding）。
     pub margin: Option<LengthSpec>,
     pub margin_top: Option<LengthSpec>,
@@ -3075,7 +3151,7 @@ pub struct LayoutStyle {
     pub margin_bottom: Option<LengthSpec>,
     pub margin_left: Option<LengthSpec>,
     #[serde(default)]
-    pub logical_margin: LogicalInlineEdges,
+    pub logical_margin: LogicalEdges,
     /// Inset：`relative` / `absolute` / `fixed` 用（`Px` 或 `%`；measure 时相对 CB 解析）。
     /// `Static` 忽略；`sticky` defer。
     #[serde(default)]
@@ -3087,7 +3163,7 @@ pub struct LayoutStyle {
     #[serde(default)]
     pub offset_left: Option<LengthSpec>,
     #[serde(default)]
-    pub logical_inset: LogicalInlineEdges,
+    pub logical_inset: LogicalEdges,
     /// Logical padding longhands including block axis; baked by writing-mode.
     #[serde(default)]
     pub padding_logical: LogicalInsets,
@@ -3354,18 +3430,18 @@ impl Default for LayoutStyle {
             padding_right: None,
             padding_bottom: None,
             padding_left: None,
-            logical_padding: LogicalInlineEdges::default(),
+            logical_padding: LogicalEdges::default(),
             margin: None,
             margin_top: None,
             margin_right: None,
             margin_bottom: None,
             margin_left: None,
-            logical_margin: LogicalInlineEdges::default(),
+            logical_margin: LogicalEdges::default(),
             offset_top: None,
             offset_right: None,
             offset_bottom: None,
             offset_left: None,
-            logical_inset: LogicalInlineEdges::default(),
+            logical_inset: LogicalEdges::default(),
             padding_logical: LogicalInsets::default(),
             margin_logical: LogicalInsets::default(),
             inset_logical: LogicalInsets::default(),
@@ -4054,25 +4130,49 @@ impl LayoutStyle {
         matches!(self.dir, Some(DirSpec::Rtl))
     }
 
-    /// Map stored logical inline edges onto used `padding_*` / `margin_*` /
-    /// `offset_*` left/right using the current [`Self::dir`].
+    /// Map stored logical edges onto used `padding_*` / `margin_*` /
+    /// `offset_*` for the box's current [`Self::writing_context`].
     ///
-    /// Physical-only styles (no logical inline specs) are left untouched so
-    /// hand-built `LayoutStyle { padding_left, .. }` stays intact.
+    /// Physical-only styles (no logical specs) are left untouched so
+    /// hand-built `LayoutStyle { padding_left, .. }` stays intact. A style that
+    /// mixes the two has its physical edges derived here, so it records its
+    /// physical declarations with [`LogicalEdges::set_phys`] for cascade order.
     pub fn resolve_logical_box_edges(&mut self) {
-        let rtl = self.is_rtl();
-        if self.logical_padding.has_logical() {
-            self.padding_left = self.logical_padding.used_left(rtl);
-            self.padding_right = self.logical_padding.used_right(rtl);
-        }
-        if self.logical_margin.has_logical() {
-            self.margin_left = self.logical_margin.used_left(rtl);
-            self.margin_right = self.logical_margin.used_right(rtl);
-        }
-        if self.logical_inset.has_logical() {
-            self.offset_left = self.logical_inset.used_left(rtl);
-            self.offset_right = self.logical_inset.used_right(rtl);
-        }
+        let context = self.writing_context();
+        let resolve = |edges: &LogicalEdges,
+                       top: &mut Option<LengthSpec>,
+                       right: &mut Option<LengthSpec>,
+                       bottom: &mut Option<LengthSpec>,
+                       left: &mut Option<LengthSpec>| {
+            if !edges.has_logical() {
+                return;
+            }
+            *top = edges.used(crate::PhysicalEdge::Top, context);
+            *right = edges.used(crate::PhysicalEdge::Right, context);
+            *bottom = edges.used(crate::PhysicalEdge::Bottom, context);
+            *left = edges.used(crate::PhysicalEdge::Left, context);
+        };
+        resolve(
+            &self.logical_padding,
+            &mut self.padding_top,
+            &mut self.padding_right,
+            &mut self.padding_bottom,
+            &mut self.padding_left,
+        );
+        resolve(
+            &self.logical_margin,
+            &mut self.margin_top,
+            &mut self.margin_right,
+            &mut self.margin_bottom,
+            &mut self.margin_left,
+        );
+        resolve(
+            &self.logical_inset,
+            &mut self.offset_top,
+            &mut self.offset_right,
+            &mut self.offset_bottom,
+            &mut self.offset_left,
+        );
     }
 
     /// Fill unset inherited typography from `parent` (CSS inheritance).
@@ -4165,14 +4265,22 @@ impl LayoutStyle {
             self.padding_right,
             self.padding_bottom,
             self.padding_left,
-            self.logical_padding.start,
-            self.logical_padding.end,
-            self.logical_padding.phys_left,
+            self.logical_padding.inline_start,
+            self.logical_padding.inline_end,
+            self.logical_padding.block_start,
+            self.logical_padding.block_end,
+            self.logical_padding.phys_top,
             self.logical_padding.phys_right,
-            self.logical_margin.start,
-            self.logical_margin.end,
-            self.logical_margin.phys_left,
+            self.logical_padding.phys_bottom,
+            self.logical_padding.phys_left,
+            self.logical_margin.inline_start,
+            self.logical_margin.inline_end,
+            self.logical_margin.block_start,
+            self.logical_margin.block_end,
+            self.logical_margin.phys_top,
             self.logical_margin.phys_right,
+            self.logical_margin.phys_bottom,
+            self.logical_margin.phys_left,
             self.margin,
             self.margin_top,
             self.margin_right,
@@ -4182,10 +4290,14 @@ impl LayoutStyle {
             self.offset_right,
             self.offset_bottom,
             self.offset_left,
-            self.logical_inset.start,
-            self.logical_inset.end,
-            self.logical_inset.phys_left,
+            self.logical_inset.inline_start,
+            self.logical_inset.inline_end,
+            self.logical_inset.block_start,
+            self.logical_inset.block_end,
+            self.logical_inset.phys_top,
             self.logical_inset.phys_right,
+            self.logical_inset.phys_bottom,
+            self.logical_inset.phys_left,
             self.padding_logical.inline_start,
             self.padding_logical.inline_end,
             self.padding_logical.block_start,
