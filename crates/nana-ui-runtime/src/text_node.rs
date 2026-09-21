@@ -412,7 +412,6 @@ pub(crate) fn nana_text_constraints(
     style: &ComputedStyle,
     constraints: &TextShapeConstraints,
     alignment: TextHorizontalAlignment,
-    kind: TextKind,
 ) -> NanaTextConstraints {
     let mut nana = NanaTextConstraints {
         max_width_px: constraints.max_width,
@@ -439,7 +438,7 @@ pub(crate) fn nana_text_constraints(
     // there to select and to hit-test. So the engine only gets it when
     // truncation was actually asked for; `max_lines` travels on its own and
     // clamps either way.
-    let vertical = nana.lays_out_vertically(kind);
+    let vertical = nana.wants_vertical_writing();
     let stacking = if vertical {
         &mut nana.max_width_px
     } else {

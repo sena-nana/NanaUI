@@ -1871,7 +1871,9 @@ fn derive_diagnostic_decorations(
 ///
 /// Editing geometry must remain available outside a clipped viewport so the
 /// Runtime can scroll the caret into view, so the viewport's height and any
-/// clamping never reach it. Single-line fields keep their unwrapped
+/// clamping never reach it — except as the line budget of a vertical
+/// multiline editor, which wraps down its height as a horizontal one wraps
+/// across its width. Single-line fields keep their unwrapped
 /// presentation even if their authored style omits nowrap.
 ///
 /// Every caret, selection and hit probe of an editor has to be asked under
@@ -1882,6 +1884,7 @@ fn derive_diagnostic_decorations(
 pub(super) fn text_input_presentation_constraints(
     constraints: crate::TextShapeConstraints,
     multiline: bool,
+    vertical: bool,
 ) -> crate::TextShapeConstraints {
     crate::TextShapeConstraints {
         max_width: if multiline {
@@ -1889,7 +1892,13 @@ pub(super) fn text_input_presentation_constraints(
         } else {
             None
         },
-        max_height: None,
+        // The height a vertical multiline editor wraps down (#59). Anything
+        // else it would only clip or truncate by.
+        max_height: if multiline && vertical {
+            constraints.max_height
+        } else {
+            None
+        },
         wrap: multiline && constraints.wrap,
         ellipsis: false,
         max_lines: None,
@@ -1907,8 +1916,11 @@ pub(super) fn shape_text_input_presentation(
     previous_overlays: &crate::components::TextOverlayMetrics,
     shaper: &mut impl TextShaper,
 ) -> TextInputPresentation {
-    let presentation_constraints =
-        text_input_presentation_constraints(constraints, source.multiline);
+    let presentation_constraints = text_input_presentation_constraints(
+        constraints,
+        source.multiline,
+        style.writing_mode.is_vertical(),
+    );
     shaper.with_text_probes(&source.text, style, presentation_constraints, |shaper| {
         shape_text_input_probes(
             id,
@@ -2424,7 +2436,13 @@ fn shape_text_input_probes(
             style,
             presentation_constraints,
         );
-        content_size.height = content_size.height.max(last_y + last_height);
+        // Text space is line space: in a vertical editor (#59) `y` runs
+        // across the columns, which is the page's width.
+        if style.writing_mode.is_vertical() {
+            content_size.width = content_size.width.max(last_y + last_height);
+        } else {
+            content_size.height = content_size.height.max(last_y + last_height);
+        }
     }
     TextInputPresentation {
         content_size,
@@ -3269,18 +3287,19 @@ impl UiWorld {
             },
             // A vertical paragraph's lines run down the box, so its height is
             // the line budget the way a horizontal one's width is: always
-            // given once the box is measured. An editor still lays out
-            // horizontally (#59) and keeps the horizontal rule.
-            max_height: (!is_text_input
-                && (vertical
-                    || source
+            // given once the box is measured. A vertical editor wraps down its
+            // height when it wraps at all — a multiline one, as a horizontal
+            // editor wraps across its width (#59).
+            max_height: ((vertical && (!is_text_input || text_input_multiline))
+                || (!is_text_input
+                    && (source
                         .layout
                         .height
                         .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
-                    || source
-                        .layout
-                        .max_height
-                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)))
+                        || source
+                            .layout
+                            .max_height
+                            .is_some_and(nana_ui_core::LengthSpec::is_definite_declared))))
             .then(|| {
                 (layout.height - padding.top - padding.bottom - border.top - border.bottom).max(0.0)
             }),
@@ -3897,7 +3916,7 @@ impl UiWorld {
                     kind,
                     source,
                     &crate::text_node::nana_text_style(&style),
-                    &crate::text_node::nana_text_constraints(&style, &constraints, alignment, kind),
+                    &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
                     &mut node_work,
                 );
                 // Rich text measures its inline runs out of the Runtime's
@@ -4535,12 +4554,18 @@ impl UiWorld {
         }
         let multiline = self.text_input_kind(id)?;
         let node = self.nodes.get(id)?;
+        let style = node.resolved.0.as_ref().clone();
+        let vertical = style.writing_mode.is_vertical();
         Some((
-            node.resolved.0.as_ref().clone(),
+            style,
             // The geometry the editor is drawn from, so a probe reads the same
             // layout the caret is painted in -- and the host does not hold two
             // of them for one node.
-            text_input_presentation_constraints(self.text_shape_constraints(id), multiline),
+            text_input_presentation_constraints(
+                self.text_shape_constraints(id),
+                multiline,
+                vertical,
+            ),
         ))
     }
 }
@@ -5155,5 +5180,167 @@ mod counting_probe_tests {
         assert_eq!(adapter.wrap_layouts, 1);
         assert_eq!(host.shapes, 1);
         assert_eq!(host.batches, 1);
+    }
+}
+
+/// How a vertical editor's text space lands on the page (#59).
+///
+/// An editor's geometry — caret, selection, preedit, hit-testing — is in the
+/// line space `nana-text` lays out in: `x` down a column, `y` across the
+/// columns from the block-start one. This is the one place that turns it onto
+/// the page and back, so the component geometry a frame draws and the point a
+/// pointer hits cannot disagree about where a glyph is.
+///
+/// Scrolling is kept in line space too: `inline_scroll` down the columns,
+/// `block_scroll` across them. A single-line field centres its one column in
+/// the box, which is a negative block scroll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct VerticalEditorFrame {
+    pub(crate) content: LayoutBox,
+    /// `vertical-rl`: columns stack from the right edge.
+    pub(crate) right_to_left: bool,
+    pub(crate) inline_scroll: f32,
+    pub(crate) block_scroll: f32,
+}
+
+impl VerticalEditorFrame {
+    /// Page x of a text-space block coordinate.
+    fn page_x(&self, block: f32) -> f32 {
+        let block = block - self.block_scroll;
+        if self.right_to_left {
+            self.content.x + self.content.width - block
+        } else {
+            self.content.x + block
+        }
+    }
+
+    /// A text-space rectangle (`x`/`width` along the line, `y`/`height`
+    /// across it) on the page.
+    pub(crate) fn field_rect(&self, rect: LayoutBox) -> LayoutBox {
+        let near = self.page_x(rect.y);
+        let far = self.page_x(rect.y + rect.height);
+        LayoutBox {
+            x: near.min(far),
+            y: self.content.y + rect.x - self.inline_scroll,
+            width: rect.height,
+            height: rect.width,
+        }
+    }
+
+    /// A page point in text space. The inverse of [`Self::field_rect`].
+    pub(crate) fn text_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let block = if self.right_to_left {
+            self.content.x + self.content.width - x
+        } else {
+            x - self.content.x
+        };
+        (
+            y - self.content.y + self.inline_scroll,
+            block + self.block_scroll,
+        )
+    }
+
+    /// The box the painter lays the editor's value out in: its block-start
+    /// edge where text-space block 0 lands, and — for a wrapping editor — the
+    /// content height, which is the line budget the editor geometry wrapped
+    /// at. `block_extent` is how wide the column stack is.
+    pub(crate) fn text_bounds(
+        &self,
+        block_extent: f32,
+        inline_extent: f32,
+        multiline: bool,
+    ) -> LayoutBox {
+        let width = block_extent.max(self.content.width);
+        let start = self.page_x(0.0);
+        LayoutBox {
+            x: if self.right_to_left {
+                start - width
+            } else {
+                start
+            },
+            y: self.content.y - self.inline_scroll,
+            width,
+            height: if multiline {
+                self.content.height
+            } else {
+                inline_extent.max(self.content.height)
+            },
+        }
+    }
+}
+
+impl UiWorld {
+    /// How far PageUp/PageDown move an editor: its viewport across its
+    /// lines — the content box's height, or its width for a vertical editor,
+    /// whose lines stack across the page (#59).
+    pub fn text_input_page_extent(&self, id: StableNodeId) -> f32 {
+        let vertical = self
+            .computed_style(id)
+            .is_some_and(|style| style.writing_mode.is_vertical());
+        self.text_input_pointer_context(id)
+            .map_or(0.0, |(content, _)| {
+                if vertical {
+                    content.width
+                } else {
+                    content.height
+                }
+            })
+    }
+
+    /// The frame a vertical editor's text space is drawn and hit in, or
+    /// `None` for a horizontal one (#59).
+    ///
+    /// Scrolled the way a horizontal editor is: a single-line field follows
+    /// its caret down the column, a focused multiline one reveals the caret
+    /// from the scroll offset it was left at — `y` along the columns, `x`
+    /// across them.
+    pub(crate) fn vertical_editor_frame(&self, id: StableNodeId) -> Option<VerticalEditorFrame> {
+        let mode = self.computed_style(id)?.writing_mode;
+        if !mode.is_vertical() {
+            return None;
+        }
+        let (content, requested) = self.text_input_pointer_context(id)?;
+        let presentation = self.nodes.text_input_presentation(id)?;
+        let multiline = self
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.accessibility.multiline);
+        let focused = self.input.focused.get(&self.record(id).document) == Some(&id);
+        let line = presentation.line_height.max(1.0);
+        let block_extent = presentation.content_size.width;
+        let inline_extent = presentation.content_size.height;
+        let (caret_inline, caret_block) = (presentation.caret_x, presentation.caret_y);
+        let max_inline = (inline_extent - content.height).max(0.0);
+        let (inline_scroll, block_scroll) = if multiline {
+            let mut inline = requested.y;
+            let mut block = requested.x;
+            if focused {
+                if caret_inline < inline {
+                    inline = caret_inline;
+                } else if caret_inline + 1.0 > inline + content.height {
+                    inline = caret_inline + 1.0 - content.height;
+                }
+                if caret_block < block {
+                    block = caret_block;
+                } else if caret_block + line > block + content.width {
+                    block = caret_block + line - content.width;
+                }
+            }
+            (
+                inline.clamp(0.0, max_inline),
+                block.clamp(0.0, (block_extent - content.width).max(0.0)),
+            )
+        } else {
+            (
+                (caret_inline - content.height + 1.0).clamp(0.0, max_inline),
+                -(content.width - line) * 0.5,
+            )
+        };
+        Some(VerticalEditorFrame {
+            content,
+            right_to_left: mode.block_start_is_right(),
+            inline_scroll,
+            block_scroll,
+        })
     }
 }

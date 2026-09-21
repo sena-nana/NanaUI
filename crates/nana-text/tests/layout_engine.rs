@@ -2143,58 +2143,48 @@ fn a_language_change_moves_the_engine_epoch_and_a_repeat_does_not() {
     );
 }
 
-/// #59: editable text asked for a vertical writing mode is still laid out
-/// horizontally — an editor does not yet move a caret across columns — and
-/// **says so** all the way out to the pass counters, where a frame, a devtools
-/// panel or a gate can notice it. Every other kind honours the request.
+/// #59: a vertical request whose runs were shaped horizontally — a caller
+/// driving `Shaper` and `Layouter` itself with a request that did not say
+/// vertical — is laid out horizontally and **says so**, on the layout and in
+/// the layouter's counters, rather than passing horizontal metrics off as
+/// vertical ones. The engine shapes from the same constraints it lays out
+/// with, so it never gets here, editors included.
 #[test]
-fn a_vertical_editor_falls_back_horizontally_and_is_counted_out_to_the_pass() {
-    let mut engine = text_engine(&["nana-test-vf"]);
-    let source = TextSource::new("AB");
-    let style = style(&["nana-test-vf"], 16.0);
+fn horizontally_shaped_runs_asked_to_stand_in_columns_fall_back_and_say_so() {
+    let mut fonts = fonts(UI);
+    let style = style(UI, 16.0);
+    let source = TextSource::new("中文");
+    let horizontal = TextConstraints::default();
     let vertical = TextConstraints {
-        max_width_px: Some(200.0),
         writing_mode: WritingModeSpec::VerticalRl,
         ..TextConstraints::default()
     };
+    let mut shaper = Shaper::default();
+    let shaped = shaper.shape(&mut fonts, &ShapeRequest::new(&source, &style, &horizontal));
+    assert!(!shaped.vertical);
+    let mut layouter = Layouter::default();
+    let laid = layouter.layout(&LayoutRequest::new(
+        TextKind::Paragraph,
+        &source,
+        &shaped,
+        &style,
+        &vertical,
+    ));
+    assert!(laid.unsupported_writing_mode);
+    assert!(!laid.is_vertical());
+    assert_eq!(layouter.counters().vertical_writing_fallbacks, 1);
+
+    // Through the engine an editor is shaped for the columns it is laid out
+    // in, and nothing falls back.
+    let mut engine = text_engine(UI);
     let mut counters = TextWorkCounters::default();
-    let laid = engine.layout(
+    let editor = engine.layout(
         TextKind::Editable,
         &source,
         &style,
         &vertical,
         &mut counters,
     );
-    assert!(
-        laid.unsupported_writing_mode,
-        "the layout says it could not do what was asked"
-    );
-    assert!(!laid.is_vertical());
-    assert!(
-        laid.runs
-            .iter()
-            .all(|run| run.orientation == RunOrientation::Horizontal),
-        "and its geometry is plainly the horizontal one"
-    );
-    let label = engine.layout(TextKind::Label, &source, &style, &vertical, &mut counters);
-    assert!(label.is_vertical(), "a label is not an editor");
-    assert_eq!(
-        counters.vertical_writing_fallbacks, 1,
-        "and the pass carries that out where somebody can see it: {counters:?}"
-    );
-
-    // Horizontal asks for nothing it cannot do, so it reports nothing.
-    let mut horizontal_counters = TextWorkCounters::default();
-    let horizontal = engine.layout(
-        TextKind::Label,
-        &source,
-        &style,
-        &TextConstraints {
-            max_width_px: Some(200.0),
-            ..TextConstraints::default()
-        },
-        &mut horizontal_counters,
-    );
-    assert!(!horizontal.unsupported_writing_mode);
-    assert_eq!(horizontal_counters.vertical_writing_fallbacks, 0);
+    assert!(editor.is_vertical());
+    assert_eq!(counters.vertical_writing_fallbacks, 0, "{counters:?}");
 }

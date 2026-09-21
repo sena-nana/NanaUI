@@ -144,13 +144,11 @@ pub struct TextLayout {
     pub bounds: TextRect,
     #[serde(default)]
     pub overflow: OverflowFlags,
-    /// Set when the constraints asked for a vertical writing mode that this
-    /// layout did not honour (#59): editable text, which is still laid out
-    /// horizontally (see [`TextConstraints::lays_out_vertically`](crate::TextConstraints::lays_out_vertically)).
-    ///
-    /// The geometry is then horizontal-tb, and says so rather than passing
-    /// horizontal metrics off as vertical ones. A consumer that cannot accept
-    /// horizontal fallback checks this flag.
+    /// Set when the constraints asked for a vertical writing mode but the
+    /// runs were shaped horizontally (#59) — a caller that shaped through
+    /// [`Shaper`](crate::shaping::Shaper) itself with a request that did not
+    /// say vertical. The engine never does that; the flag is what keeps a
+    /// mismatch from passing horizontal metrics off as vertical ones.
     #[serde(default)]
     pub unsupported_writing_mode: bool,
 }

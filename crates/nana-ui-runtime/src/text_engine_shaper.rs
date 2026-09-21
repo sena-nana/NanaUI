@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use nana_text::{
     Affinity, EditorGeometry, SharedTextEngine, TextConstraints as NanaTextConstraints,
-    TextEngine as _, TextKind, TextSource, TextStyle as NanaTextStyle, TextWorkCounters,
+    TextEngine as _, TextSource, TextStyle as NanaTextStyle, TextWorkCounters,
 };
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
@@ -86,12 +86,8 @@ impl NanaTextEngineShaper {
         create: bool,
     ) -> Option<&EditorGeometry> {
         let nana_style = nana_text_style(style);
-        let nana_constraints = nana_text_constraints(
-            style,
-            &constraints,
-            TextHorizontalAlignment::Start,
-            TextKind::Editable,
-        );
+        let nana_constraints =
+            nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start);
         let mut entry = match self.editors.iter().rposition(|entry| entry.id == id) {
             Some(index) => {
                 let entry = self.editors.remove(index);
@@ -292,7 +288,7 @@ impl NanaTextEngineShaper {
             kind,
             &source,
             &nana_text_style(style),
-            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind),
+            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start),
             &mut self.work,
         );
         self.work.text_source_clones += 1;
@@ -333,12 +329,20 @@ fn is_caret_boundary(text: &str, offset: usize) -> bool {
     nana_text::editable::navigation::is_grapheme_boundary(text, offset)
 }
 
+/// An editor's page size: its paragraphs stack down the page, or across it
+/// as columns in a vertical writing mode (#59), where each paragraph's
+/// metrics are already a column stack's width and length.
 fn metrics_of_geometry(geometry: &EditorGeometry) -> TextMetrics {
     let mut metrics = TextMetrics::default();
     for (index, (_, _, layout)) in geometry.paragraph_layouts().enumerate() {
         let paragraph = text_metrics_of_layout(layout);
-        metrics.width = metrics.width.max(paragraph.width);
-        metrics.height += paragraph.height;
+        if layout.is_vertical() {
+            metrics.width += paragraph.width;
+            metrics.height = metrics.height.max(paragraph.height);
+        } else {
+            metrics.width = metrics.width.max(paragraph.width);
+            metrics.height += paragraph.height;
+        }
         if index == 0 {
             metrics.ascent = paragraph.ascent;
         }
@@ -436,13 +440,13 @@ impl TextShaper for NanaTextEngineShaper {
         let constraints = TextShapeConstraints::default();
         let source = TextSource::new(text.value.as_str());
         let kind = text_kind(&constraints);
-        // Across a line, by name: every caller sizes something an editor
-        // draws (a completion row, an indent or column guide), and editors lay
-        // out horizontally whatever `writing-mode` says (#59). Measured in the
+        // Across a line, by name: every caller sizes a horizontal piece of
+        // editor chrome — a completion row, an indent or column guide — which
+        // stays horizontal in a vertical editor too (#59). Measured in the
         // node's vertical mode it would return a length down a column.
         let nana_constraints = NanaTextConstraints {
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
-            ..nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind)
+            ..nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start)
         };
         let layout = nana_text::lock_text_engine(&self.engine).layout(
             kind,

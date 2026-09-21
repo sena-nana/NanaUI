@@ -286,6 +286,33 @@ fn horizontal_rightwards(intent: TextCaretIntent) -> Option<bool> {
     }
 }
 
+/// An arrow key, as the editor's line space sees it (#59).
+///
+/// A host names the key it saw. Editor geometry is in line space, where
+/// Left/Right step along a line and Up/Down cross to the neighbouring one; in a
+/// vertical writing mode the line runs down the page, so the physical keys
+/// trade places: Up/Down walk the column, and Left/Right cross columns —
+/// towards the next one on the left in `vertical-rl`, on the right in
+/// `vertical-lr`. Word and line intents are logical already and pass through.
+fn line_space_intent(
+    intent: TextCaretIntent,
+    mode: nana_ui_core::WritingModeSpec,
+) -> TextCaretIntent {
+    if !mode.is_vertical() {
+        return intent;
+    }
+    let next_column_is_left = mode.block_start_is_right();
+    match intent {
+        TextCaretIntent::Up => TextCaretIntent::Left,
+        TextCaretIntent::Down => TextCaretIntent::Right,
+        TextCaretIntent::Left if next_column_is_left => TextCaretIntent::Down,
+        TextCaretIntent::Left => TextCaretIntent::Up,
+        TextCaretIntent::Right if next_column_is_left => TextCaretIntent::Up,
+        TextCaretIntent::Right => TextCaretIntent::Down,
+        other => other,
+    }
+}
+
 /// Nearest char boundary at or below `offset` (clamped to the value length).
 fn clamp_focus(value: &str, offset: usize) -> usize {
     crate::text_editing::clamp_boundary(value, offset)
@@ -549,6 +576,12 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
+        let intent = self
+            .world
+            .computed_style(focused.node)
+            .map_or(intent, |style| {
+                line_space_intent(intent, style.writing_mode)
+            });
         let state = self.editor_state(focused.node, focused.kind)?;
         // 折叠视图：无折叠态区间时为 None，全部按原始值解析（零成本）。
         let fold_view = self.world.text_display_view(focused.node);
@@ -606,10 +639,7 @@ impl AppContext {
         );
         if state.has_additional_selections() {
             self.text_edit.caret_goal_x = None;
-            let page_height = self
-                .world
-                .text_input_pointer_context(focused.node)
-                .map_or(0.0, |(content, _)| content.height);
+            let page_height = self.world.text_input_page_extent(focused.node);
             let geometric = (vertical && focused.multiline)
                 || (horizontal_rightwards(intent).is_some()
                     && editor_draws_its_value(&self.world, focused.node, probe_value));
@@ -707,10 +737,7 @@ impl AppContext {
                     style,
                     constraints,
                 };
-                let page_height = self
-                    .world
-                    .text_input_pointer_context(focused.node)
-                    .map_or(0.0, |(content, _)| content.height);
+                let page_height = self.world.text_input_page_extent(focused.node);
                 let by_point = geometry.vertical_by_point(
                     probe_value,
                     selection,
@@ -733,10 +760,7 @@ impl AppContext {
                 } else {
                     // One viewport height of visual lines: the content box
                     // is the editor's viewport.
-                    let page_height = self
-                        .world
-                        .text_input_pointer_context(focused.node)
-                        .map_or(0.0, |(content, _)| content.height);
+                    let page_height = self.world.text_input_page_extent(focused.node);
                     page_caret_focus(
                         probe_value,
                         selection,
@@ -2211,7 +2235,13 @@ impl AppContext {
             style,
             constraints,
         };
-        let (local_x, local_y) = EditorGeometry::localize(content, scroll, x, y);
+        // A vertical editor's text space is line space (#59): the point is
+        // turned into it by the same frame its caret and selection are drawn
+        // through.
+        let (local_x, local_y) = match self.world.vertical_editor_frame(node) {
+            Some(frame) => frame.text_point(x, y),
+            None => EditorGeometry::localize(content, scroll, x, y),
+        };
         let hit = match geometry.shaper.text_hit_at_point(
             node,
             &geometry.text,

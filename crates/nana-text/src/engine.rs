@@ -157,7 +157,7 @@ impl NativeTextEngine {
         constraints: &TextConstraints,
     ) -> IntrinsicWidths {
         let source = self.fold_lines(source, constraints);
-        let shaped = self.shape(TextKind::Paragraph, source, base, constraints);
+        let shaped = self.shape(source, base, constraints);
         self.layouter.intrinsic_widths(&LayoutRequest::new(
             TextKind::Paragraph,
             source,
@@ -169,14 +169,12 @@ impl NativeTextEngine {
 
     fn shape(
         &mut self,
-        kind: TextKind,
         source: &TextSource,
         base: &TextStyle,
         constraints: &TextConstraints,
     ) -> Arc<ShapedText> {
-        let request = ShapeRequest::new(source, base, constraints)
-            .with_language(self.language.as_ref())
-            .with_vertical(constraints.lays_out_vertically(kind));
+        let request =
+            ShapeRequest::new(source, base, constraints).with_language(self.language.as_ref());
         self.shaper.shape(&mut self.fonts, &request)
     }
 
@@ -196,7 +194,6 @@ impl NativeTextEngine {
 
     fn shape_ellipsis(
         &mut self,
-        kind: TextKind,
         base: &TextStyle,
         constraints: &TextConstraints,
     ) -> Arc<ShapedText> {
@@ -204,7 +201,7 @@ impl NativeTextEngine {
         // so the shape cache still answers this from one entry however many
         // nodes truncate this frame.
         let ellipsis = self.ellipsis.clone();
-        self.shape(kind, &ellipsis, base, constraints)
+        self.shape(&ellipsis, base, constraints)
     }
 
     /// Metrics of the base style's own face, which every line box then starts
@@ -247,10 +244,10 @@ impl TextEngine for NativeTextEngine {
     ) -> Arc<TextLayout> {
         let before = self.shaper.counters();
         let source = self.fold_lines(source, constraints);
-        let shaped = self.shape(kind, source, base, constraints);
+        let shaped = self.shape(source, base, constraints);
         let ellipsis = constraints
             .ellipsis
-            .then(|| self.shape_ellipsis(kind, base, constraints));
+            .then(|| self.shape_ellipsis(base, constraints));
         let strut = self.strut_metrics(base, constraints.scale.px_per_logical);
 
         let layouts_before = self.layouter.counters();

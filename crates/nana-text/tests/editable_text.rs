@@ -1491,3 +1491,68 @@ fn arrow_keys_reach_every_position_inside_whitespace_hung_at_a_wrap() {
     }
     assert_eq!(back, (0..=text.len()).collect());
 }
+
+// ---- vertical writing (#59) -------------------------------------------------
+
+/// A vertical editor works in line space: `x` down a column, `y` across the
+/// columns from the block-start one. Carets, line moves, hit tests and
+/// selections are the horizontal machinery unchanged, answering in those
+/// coordinates; turning them onto the page is the caller's one mapping.
+#[test]
+fn a_vertical_editor_moves_hits_and_selects_in_line_space() {
+    let text = "一二三四\n五六";
+    let mut editor = Editor::new(UI, text, None);
+    editor.constraints = TextConstraints {
+        // Two 16px ideographs to a column: the box height is the line
+        // budget, and its width is only where the columns stack.
+        max_width_px: Some(400.0),
+        max_height_px: Some(32.0),
+        writing_mode: nana_ui_core::WritingModeSpec::VerticalRl,
+        wrap: Some(TextWrapBreak::Word),
+        ..editor.constraints
+    };
+    editor.sync();
+    assert_eq!(editor.geometry.line_count(), 3, "一二 | 三四 | 五六");
+    assert!(
+        editor
+            .geometry
+            .paragraph_layouts()
+            .all(|(_, _, layout)| layout.is_vertical() && !layout.unsupported_writing_mode),
+        "an editor honours the vertical writing mode like any other text"
+    );
+    let column = 16.0 * 1.2;
+
+    // Down the first column, then across into the second at the same depth.
+    let second = editor.geometry.caret_rect(3, Affinity::Downstream).unwrap();
+    assert!((second.x_px - 16.0).abs() < 0.5 && second.y_px.abs() < 0.01);
+    assert!((second.height_px - column).abs() < 0.01, "a column wide");
+    editor.session.set_selection(0, 0, Affinity::Downstream);
+    editor.motion(Motion::LineDown, false);
+    assert_eq!(
+        editor.session.selection().focus,
+        "一二".len(),
+        "三 heads the next column"
+    );
+    editor.motion(Motion::LineDown, false);
+    assert_eq!(
+        editor.session.selection().focus,
+        "一二三四\n".len(),
+        "and 五 the one after, across the paragraph break"
+    );
+    editor.motion(Motion::Right, false);
+    assert_eq!(
+        editor.session.selection().focus,
+        "一二三四\n五".len(),
+        "the along-the-line step walks down the column"
+    );
+
+    // A point a little past 三's cell, in the second column, is before 四.
+    let hit = editor.geometry.hit_test(17.0, column * 1.5);
+    assert_eq!(hit.offset, "一二三".len());
+
+    // 二三 spans a column break: one rectangle per column, in line space.
+    let rects = editor.geometry.selection_rects(3..9);
+    assert_eq!(rects.len(), 2, "{rects:?}");
+    assert!((rects[0].x - 16.0).abs() < 0.5 && rects[0].y.abs() < 0.01);
+    assert!(rects[1].x.abs() < 0.01 && (rects[1].y - column).abs() < 0.01);
+}

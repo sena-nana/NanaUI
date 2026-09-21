@@ -2275,6 +2275,21 @@ fn mount_rich_text(
                 layout.height = Some(LengthSpec::Px(180.0));
                 text
             });
+            // The same writing mode on an editor: its value, caret and
+            // selection are laid out and hit in the same columns.
+            let vertical_editor = ui.parked({
+                let mut area = TextArea::new("竖排编辑：「光标」沿列移动。\nABC 与 123 侧卧。")
+                    .height(180.0);
+                let layout = Arc::make_mut(&mut area.style.layout);
+                layout.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+                layout.width = Some(LengthSpec::Px(160.0));
+                area
+            });
+            let vertical_row = ui.parked(HostStack::row(24.0));
+            ui.nest(vertical_row, |ui| {
+                ui.adopt(vertical);
+                ui.adopt(vertical_editor);
+            });
             let markdown = ui.parked(state.markdown.clone());
             let link_status = ui.parked(styled_text(
                 state
@@ -2311,7 +2326,7 @@ fn mount_rich_text(
             ui.nest(root, |ui| {
                 ui.adopt(heading);
                 ui.adopt(hint);
-                ui.adopt(vertical);
+                ui.adopt(vertical_row);
                 ui.adopt(markdown);
                 ui.adopt(link_status);
                 ui.adopt(editor_title);

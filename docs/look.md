@@ -38,7 +38,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 应用也可以关掉捆绑字体、用 `register_host_font_bytes` / `register_host_font_file` 把自有字体载入同一套 FontSystem（与捆绑 Noto 并列）。未注册仍回落捆绑或系统字体。
 
-字距走 `nana-text` shaping（tracking，不是事后平移）。`font-feature-settings` / `font-kerning` 进 shaper；`font-variation-settings` 兑现已声明且字体存在的轴（`wght` 并进 `font-weight`，`wdth` 与自定义轴如 `BEVL` 走同一份 `FontVariations`；字体没有的轴跳过，不改写成 `wght`）。`word-break: break-all|break-word` 与 `line-break: anywhere` 改 wrap；`keep-all` / `strict` / `loose` 不支持，声明被跳过。`writing-mode: vertical-rl | vertical-lr` 下文字按列排（CJK 直立、拉丁侧卧），可编辑文本除外。`@font-face` 在 stylesheet 解析时只收集规则；`url(...)` 的加载与字体注册发生在 `inject_stylesheet`（宿主适配器，`scene-view`），不在 CSS parse。CSS `font-family`（及 weight/style）会映射到刚载入的 face，坏 src 丢掉该 face，不用系统字体顶替。
+字距走 `nana-text` shaping（tracking，不是事后平移）。`font-feature-settings` / `font-kerning` 进 shaper；`font-variation-settings` 兑现已声明且字体存在的轴（`wght` 并进 `font-weight`，`wdth` 与自定义轴如 `BEVL` 走同一份 `FontVariations`；字体没有的轴跳过，不改写成 `wght`）。`word-break: break-all|break-word` 与 `line-break: anywhere` 改 wrap；`keep-all` / `strict` / `loose` 不支持，声明被跳过。`writing-mode: vertical-rl | vertical-lr` 下文字按列排（CJK 直立、拉丁侧卧），编辑器也在列里编辑。`@font-face` 在 stylesheet 解析时只收集规则；`url(...)` 的加载与字体注册发生在 `inject_stylesheet`（宿主适配器，`scene-view`），不在 CSS parse。CSS `font-family`（及 weight/style）会映射到刚载入的 face，坏 src 丢掉该 face，不用系统字体顶替。
 
 ## 控件尺寸
 

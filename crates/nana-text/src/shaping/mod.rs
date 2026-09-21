@@ -43,10 +43,8 @@ use std::ops::Range;
 ///
 /// Built from [`TextConstraints`] with [`Self::new`], which takes only the
 /// fields shaping depends on (direction and device scale) — width, wrap,
-/// max lines and the rest cannot reach the cache key. Vertical shaping is
-/// opted into with [`Self::with_vertical`], because whether a vertical writing
-/// mode is honoured depends on the text kind as well as the constraints (see
-/// [`TextConstraints::lays_out_vertically`]).
+/// max lines and the rest cannot reach the cache key — plus whether the lines
+/// are vertical, which decides every run's orientation.
 #[derive(Debug, Clone, Copy)]
 pub struct ShapeRequest<'a> {
     pub source: &'a TextSource,
@@ -73,14 +71,8 @@ impl<'a> ShapeRequest<'a> {
             direction: constraints.base_direction,
             language: None,
             scale: constraints.scale,
-            vertical: false,
+            vertical: constraints.wants_vertical_writing(),
         }
-    }
-
-    #[must_use]
-    pub fn with_vertical(mut self, vertical: bool) -> Self {
-        self.vertical = vertical;
-        self
     }
 
     #[must_use]

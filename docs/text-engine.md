@@ -672,7 +672,7 @@ advance 比较；layout 全程保留浮点，**不**向整数像素取整——�
 | --- | --- |
 | 制表位 | `tab_width` 已进 `LayoutKey`，但没有任何一行应用制表位；`\t` 按普通字符塑形 |
 | `justify` | `TextAlignSpec` 没有这个关键字，产品无从表达，明确延期 |
-| 竖排编辑（#59） | 可编辑文本仍横排兜底并计数，见上 |
+| 竖排编辑器装饰（#59） | 行号栏、minimap、参考线、行尾诊断、浮窗在竖排编辑器里不画，见上 |
 | CSS 空白折叠 | 完全不做：连续空格原样保留，因此 `preserve_lines: false` 下 CRLF 折成**两个**空格，与手写两个空格是同一回事；要折叠的调用方自己规范化文本（那时挪动偏移是它自己的事） |
 
 UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phase 4 在 Runtime 上验证；
@@ -686,7 +686,7 @@ UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phas
 
 ### writing mode 与 #59
 
-`vertical-rl` / `vertical-lr` 真正按列排（`TextKind::Editable` 除外，见下）。做法是**在行相对
+`vertical-rl` / `vertical-lr` 真正按列排，可编辑文本也一样。做法是**在行相对
 坐标里排竖排，只在边界上转一次坐标**，断行、对齐、截断、缓存都不知道页面被转了过来：
 
 - **朝向**：`font/unicode.rs` 用 ICU 的 `Vertical_Orientation`（UAX #50）给每个字素簇定朝向。
@@ -706,18 +706,35 @@ UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phas
   `vertical-rl` 从盒子右缘往左叠列。Runtime 的 `text_metrics_of_layout` 读 `physical_size`，竖排
   不报 ascent（列挂在中线上，交给按字母基线对齐的盒布局只会错位）。
 - **Runtime 约束**：竖排文本量完盒子后总把内容高度作为 `max_height`（与横排总给宽度对称），
-  宽度只在要截断时给——`nana_text_constraints` 按 `lays_out_vertically` 决定哪一维是截断预算。
+  宽度只在要截断时给——`nana_text_constraints` 按写作方向决定哪一维是截断预算。
   直立 run 的步进是竖排度量，不写进横排富文本读的逐字宽度缓存；单字快路径也不回答竖排。
 - **画笔**：列中线整像素对齐；直立字形放在 `(中线 + offset_x, pen − offset_y)`，侧卧 run 把
   em box 居中在中线上、以 `GlyphSynthesis::ROTATE_CW` 光栅化（进栅格键）。entry 以自己的列堆栈
   右缘为锚，盒子多出来的宽度加在绘制原点上，所以盒子只变宽时实例整份复用。
 
-**可编辑文本**仍横排兜底：跨列的光标移动、选区与命中测试还没做，把字形竖着画而光标按横排几何
-画只会更糟。此时 `TextLayout::unsupported_writing_mode` 置位、`vertical_writing_fallbacks`
-计数，场景里编辑器的文本图元也按 `horizontal-tb` 画。`sideways-*` 与 `text-orientation` 由盒
-布局在更早处拒绝，到不了这里。
+**可编辑文本**同样在行空间里工作。`EditorGeometry` 的每个查询（`caret_rect`、`hit_test`、
+`selection_rects`、行移动 `vertical`、沿行移动 `visual_move`）都用各段 layout 自己的坐标——竖排时
+`x` 沿列向下、`y` 跨列——一行代码不分方向；段落沿块方向叠，多段编辑器就是多组列。截断预算看的也是
+堆叠方向（`splits_paragraphs` 读 `block_budget_px`），竖排的高度只是列长，不妨碍按段增量排版。
+Runtime 在边界上换算一次，全部由 `VerticalEditorFrame` 负责：
 
-**静态可选文本**（`user-select`）的选区不走编辑器几何（那份是横排的）：竖排节点直接读 Runtime
+- **几何**：光标、选区、预编辑、多光标从文本空间经 `field_rect` 画到页面（光标变成横跨一列的
+  横条，预编辑下划线画在列的块起始一侧）；编辑器值的文本区域由 `text_bounds` 给出，右缘（`vertical-rl`）
+  与光标的锚点重合，多行时高度就是折列用的内容高度，画笔与编辑几何按同一预算折列。单行输入框把
+  那一列在盒子里水平居中（一个负的块向滚动）。
+- **指针**：页面点经 `text_point` 转回文本空间再做命中，与画几何是同一个换算。
+- **方向键**：宿主报的是物理键。竖排时 `line_space_intent` 把它们换到行空间：上下沿列走（行空间的
+  左右），左右跨列（`vertical-rl` 左键去下一列）；词、行首尾等逻辑意图原样通过。PageUp/PageDown 的
+  一页是跨列方向的视口宽度（`text_input_page_extent`）。
+- **滚动**：沿列与跨列两个量都在行空间，聚焦的多行编辑器按横排同样的规则把光标滚进视口。
+- **不画的东西**：行号栏、minimap、缩进 / 列参考线、行尾诊断文案、补全 / hover / 签名浮窗这些
+  按横排行摆的代码编辑器装饰没有诚实的竖排版本，竖排编辑器里一律不画，而不是横着画在列上。
+
+`TextLayout::unsupported_writing_mode` 与 `vertical_writing_fallbacks` 仍在，只剩一种来源：调用方
+自己用 `Shaper` 按横排整形、又拿竖排约束去 `Layouter` 排版。引擎按同一份约束整形与排版，不会走到
+这里。`sideways-*` 与 `text-orientation` 由盒布局在更早处拒绝，到不了这里。
+
+**静态可选文本**（`user-select`）的选区不走编辑器几何：竖排节点直接读 Runtime
 保留、画笔也在画的那份 layout，指针点经 `TextLayout::line_space_point` 转进行空间做 `hit_test`，
 `selection_rects` 经 `page_rect` 转回页面，锚点与画笔同为内容盒右缘（`vertical-rl`）。
 
@@ -733,12 +750,12 @@ lines_created / runs_placed / ellipsis_runs_used
 constraint_only_relayouts                   同一份 shaped、新约束
 shape_runs_reused_for_layout                被 layout 读走而不是重塑形的 run
 label_fast_paths / paragraph_paths          走了哪条路（只记真正建出的 layout）
-vertical_writing_fallbacks                  竖排请求被横排兜底的次数（只剩可编辑文本）
+vertical_writing_fallbacks                  竖排请求被横排兜底的次数（整形与排版方向不一致时）
 ```
 
-`vertical_writing_fallbacks` 会折进 `TextWorkCounters`（#59）：编辑器的横排兜底本身是对的——
-光标与字形对不上更糟——但它**在屏幕上是看不见的**，所以必须在计数器里响。`> 0` 就是「这一帧
-有编辑器要了竖排而没拿到」。`TextLayout::unsupported_writing_mode` 是同一件事的
+`vertical_writing_fallbacks` 会折进 `TextWorkCounters`（#59）：横排兜底本身是对的——把横排度量
+当竖排报回去更糟——但它**在屏幕上是看不见的**，所以必须在计数器里响。经过引擎它恒为 0；`> 0`
+说明有调用方绕过引擎、整形与排版用了不同的写作方向。`TextLayout::unsupported_writing_mode` 是同一件事的
 逐节点版本，随保留 layout 一路带到场景上。
 
 对账测试断言 `lines_created` / `runs_placed` 等于它们声称描述的 layout 的行数与 run 数，
@@ -2016,7 +2033,7 @@ caret 不再跳位。
 | caret affinity（RTL / BiDi 边界） | **记录行为，不是合同** | 边界 affinity 是引擎定义而非规范定义的。Phase 0 把参照引擎的答案记成 golden 并配 `caret_x_px` 容差。 |
 | 五个计数器 | 只有参照路径在喂 | 按设计没有产品生产者，靠对账测试防止空转。 |
 | script 标注 | 参照引擎为 `ScriptTag::UNKNOWN` | 参照引擎不导出 per-run script。Phase 2 的 shaper 已填上（见「Shaping」）。 |
-| 竖排（#59） | Phase 0 不做，且 fail-closed | Phase 3 的 layout 遇到 `vertical-*` 按横排排出并置位 `unsupported_writing_mode`。#59 之后只剩可编辑文本这样兜底，其余按列排，见「writing mode 与 #59」。 |
+| 竖排（#59） | Phase 0 不做，且 fail-closed | Phase 3 的 layout 遇到 `vertical-*` 按横排排出并置位 `unsupported_writing_mode`。#59 之后一律按列排（编辑器也是），见「writing mode 与 #59」。 |
 | 多字体 fallback | 语料里覆盖了但很窄 | 语料的 fallback 是 VF→Noto 的 `A`/`B`，证明 `FontId` 能在 run 中途变、`FALLBACK_FONT` 会置位。按 script / 语言 / emoji 驱动的候选选择由 Phase 1 字体层提供（见「字体层」），参照引擎不走它。 |
 | #33 workload | 合同级保留，不是 perf 门禁 | 见上一节。 |
 

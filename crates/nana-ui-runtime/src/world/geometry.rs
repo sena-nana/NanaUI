@@ -1072,7 +1072,7 @@ impl UiWorld {
                             .as_rgba_array(),
                     )
                 });
-                Some(crate::ComponentGeometry::TextInput {
+                let geometry = crate::ComponentGeometry::TextInput {
                     resize_grip: matches!(visual, StandardVisual::TextInput { editor_options, .. } if editor_options.resize_vertical).then_some(LayoutBox {
                         x: bounds.x + (bounds.width - 14.0).max(0.0), y: bounds.y + (bounds.height - 14.0).max(0.0),
                         width: bounds.width.min(14.0), height: bounds.height.min(14.0),
@@ -1217,6 +1217,16 @@ impl UiWorld {
                     additional_caret_color,
                     preedit_color: self.style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                     steppers,
+                };
+                Some(match self.vertical_editor_frame(id) {
+                    Some(frame) => vertical_text_input_geometry(
+                        geometry,
+                        &frame,
+                        presentation,
+                        multiline,
+                        focused,
+                    ),
+                    None => geometry,
                 })
             }
             StandardVisual::Switch {
@@ -2650,5 +2660,126 @@ impl UiWorld {
             StandardVisual::KeymapLayer => Some(keymap_geometry(content, self.style_model)),
             _ => None,
         }
+    }
+}
+
+/// A vertical editor's component geometry (#59): the value, caret, selection
+/// and preedit turned from text space onto the page through `frame`, and the
+/// code-editor chrome dropped.
+///
+/// Gutters, guides, minimaps, inline diagnostics and anchored popups are laid
+/// out against horizontal lines — a line-number column, a label after the
+/// line's end, a popup under the caret's line — and there is no honest column
+/// version of them to fall back to, so a vertical editor has none rather than
+/// ones drawn across its columns.
+fn vertical_text_input_geometry(
+    geometry: crate::ComponentGeometry,
+    frame: &VerticalEditorFrame,
+    presentation: &TextInputPresentation,
+    multiline: bool,
+    focused: bool,
+) -> crate::ComponentGeometry {
+    let crate::ComponentGeometry::TextInput {
+        resize_grip,
+        mut text,
+        additional_caret_color,
+        swatch_border_color,
+        whitespace_color,
+        line_labels_color,
+        line_labels_font_size,
+        background,
+        border,
+        border_width,
+        focus_ring,
+        selection_color,
+        caret_color,
+        preedit_color,
+        steppers,
+        ..
+    } = geometry
+    else {
+        return geometry;
+    };
+    let line = presentation.line_height.max(1.0);
+    let caret_at = |(inline, block): (f32, f32)| {
+        frame.field_rect(LayoutBox {
+            x: inline,
+            y: block,
+            width: 1.0,
+            height: line,
+        })
+    };
+    text.bounds = frame.text_bounds(
+        presentation.content_size.width,
+        presentation.content_size.height,
+        multiline,
+    );
+    // The preedit underline runs beside the column, on its block-start side:
+    // the right of a `vertical-rl` column, where CJK sets its sidelines.
+    let preedit = presentation
+        .preedit_lines
+        .iter()
+        .map(|rect| {
+            frame.field_rect(LayoutBox {
+                height: 2.0,
+                width: rect.width.max(1.0),
+                ..*rect
+            })
+        })
+        .collect();
+    crate::ComponentGeometry::TextInput {
+        resize_grip,
+        text,
+        multiline,
+        selection: presentation
+            .selection_lines
+            .iter()
+            .map(|rect| frame.field_rect(*rect))
+            .collect(),
+        caret: focused.then(|| caret_at((presentation.caret_x, presentation.caret_y))),
+        additional_carets: if focused {
+            presentation
+                .additional_carets
+                .iter()
+                .copied()
+                .map(caret_at)
+                .collect()
+        } else {
+            Vec::new()
+        },
+        additional_caret_color,
+        preedit,
+        diagnostic_markers: Vec::new(),
+        diagnostic_labels: Vec::new(),
+        match_markers: Vec::new(),
+        swatch_markers: Vec::new(),
+        swatch_border_color,
+        atom_chips: Vec::new(),
+        caret_line: None,
+        bracket_markers: Vec::new(),
+        occurrence_markers: Vec::new(),
+        drop_indicator: None,
+        whitespace_marks: Vec::new(),
+        whitespace_color,
+        wrap_guides: Vec::new(),
+        indent_guides: Vec::new(),
+        line_labels: Vec::new(),
+        folds: crate::components::TextFoldGeometry::default(),
+        git_marks: crate::components::TextGitGutterGeometry::default(),
+        line_labels_color,
+        line_labels_font_size,
+        completion_popup: None,
+        hover_popup: None,
+        signature_popup: None,
+        minimap: None,
+        sticky_line: None,
+        background,
+        border,
+        border_width,
+        focus_ring,
+        selection_color,
+        caret_color,
+        preedit_color,
+        steppers,
     }
 }

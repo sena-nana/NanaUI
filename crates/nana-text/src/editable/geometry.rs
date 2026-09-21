@@ -5,7 +5,7 @@
 //! display text (committed + preedit)
 //!   → paragraphs split at '\n'
 //!   → unchanged paragraphs keep their layout; the rest lay out again
-//!   → stacked vertically
+//!   → stacked along the block axis (down the page, or across it as columns)
 //!   → hit_test / caret_rect / selection_rects / line and visual moves
 //! ```
 //!
@@ -14,11 +14,18 @@
 //! so a paragraph laid out on its own has the same lines as it does inside the
 //! whole text; [`EditorGeometry::sync`] then only has to find which
 //! paragraphs' bytes changed. Constraints that act on the text as a whole —
-//! `max_lines`, `max_height_px`, ellipsis — or that fold line feeds into spaces
+//! `max_lines`, the stacking budget, ellipsis — or that fold line feeds into spaces
 //! keep the text as one paragraph instead.
 //!
 //! Queries never shape or lay out. A caret blink, a selection change or a hit
 //! test reads the retained layouts and nothing else.
+//!
+//! Every query is in **line space**, the layouts' own coordinates: `x` along a
+//! line, `y` across the stack of lines. For horizontal text that is the page.
+//! A vertical editor (#59) answers in the same coordinates — `x` down a
+//! column, `y` across the columns from the block-start one — and its caller
+//! turns them onto the page, so caret movement, hit-testing and selection are
+//! one implementation whichever way the page is turned.
 
 use super::session::EditSession;
 use super::state::{Composition, EditRevisions};
@@ -180,10 +187,16 @@ impl Clone for EditorGeometry {
 
 /// Whether `constraints` let the text be laid out one paragraph at a time
 /// with the same result as all at once.
+///
+/// The budget that truncates is the one lines *stack* along — the height, or
+/// the width of a vertical editor (#59), whose height is only how long a
+/// column grows.
 fn splits_paragraphs(constraints: &TextConstraints) -> bool {
     constraints.preserve_lines
         && constraints.max_lines.is_none()
-        && constraints.max_height_px.is_none()
+        && constraints
+            .block_budget_px(constraints.wants_vertical_writing())
+            .is_none()
         && !constraints.ellipsis
 }
 

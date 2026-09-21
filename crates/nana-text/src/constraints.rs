@@ -1,7 +1,6 @@
 //! What the container asks of a layout. Not style, and not device pixels
 //! policy — see [`TextScale`] for where the device scale stops.
 
-use crate::style::TextKind;
 use nana_ui_core::{
     DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec,
 };
@@ -102,21 +101,10 @@ impl TextConstraints {
         self.wrap.is_some()
     }
 
-    /// True when the caller asked for a vertical writing mode.
+    /// True when the caller asked for a vertical writing mode, which every
+    /// kind of text honours — editable text included (#59).
     pub fn wants_vertical_writing(&self) -> bool {
         self.writing_mode.is_vertical()
-    }
-
-    /// True when text of `kind` is actually laid out as vertical lines.
-    ///
-    /// Everything but editable text is (#59). An editor still lays out
-    /// horizontally: caret movement, selection and hit-testing across columns
-    /// are their own piece of work, and a caret drawn against horizontal
-    /// geometry while the glyphs stand in columns would be worse than either.
-    /// That fallback is reported, never silent: see
-    /// [`TextLayout::unsupported_writing_mode`](crate::TextLayout::unsupported_writing_mode).
-    pub fn lays_out_vertically(&self, kind: TextKind) -> bool {
-        self.wants_vertical_writing() && kind != TextKind::Editable
     }
 
     /// The budget a line may grow to along its own direction, in logical px:
