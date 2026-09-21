@@ -459,17 +459,21 @@ pub(super) fn place_node_scoped(
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
     let direction = used_flow_direction(style, ifc);
     let writing = style.writing_context();
-    // Inline-start on the right. A vertical RTL box's inline-start is the
-    // bottom, which this does not yet reverse.
-    let rtl_inline = writing.inline_start() == nana_ui_core::PhysicalEdge::Right;
-    let reverse_main = !grid_2d
-        && !ifc
-        && if direction.is_row() {
-            let block_rev = writing.block_reversed();
-            style.flex_reverse != (rtl_inline || block_rev)
-        } else {
-            style.flex_reverse
-        };
+    // Content along the main axis starts at its far end: an RTL inline axis
+    // (the right, or the bottom of a vertical one) or `vertical-rl`'s block
+    // axis. An inline formatting context reverses its lines' items instead
+    // (below), because it wraps first.
+    let reverse_main =
+        !grid_2d && !ifc && style.flex_reverse != writing.physical_axis_reversed(direction);
+    // The cross axis is the inline one, and it runs backwards: cross-start is
+    // the right of an RTL column container, or the bottom of a vertical RTL
+    // row one. A block cross axis is packed by `pack_block_from_end` instead.
+    let cross = if direction.is_row() {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
+    };
+    let cross_inline_reversed = writing.carries_inline(cross) && writing.inline_reversed();
     if reverse_main {
         flow.reverse();
         positioned.reverse();
@@ -586,9 +590,8 @@ pub(super) fn place_node_scoped(
         if reverse_main {
             justify = flip_justify_for_reverse(justify);
         }
-        plan_sequential &= justify == JustifySpec::Start
-            && grid_tracks.is_none()
-            && !(rtl_inline && direction.is_column());
+        plan_sequential &=
+            justify == JustifySpec::Start && grid_tracks.is_none() && !cross_inline_reversed;
         let full_main = main_extent(content, direction);
         let mut line_slots = if wrapping {
             if ifc && style.resolved_writing_mode().is_horizontal() {
@@ -649,7 +652,7 @@ pub(super) fn place_node_scoped(
                 .iter()
                 .map(|&index| child_sizes[index])
                 .collect();
-            if ifc && rtl_inline {
+            if ifc && writing.inline_reversed() {
                 line_flow.reverse();
                 line_sizes.reverse();
             }
@@ -827,11 +830,11 @@ pub(super) fn place_node_scoped(
                 );
                 let align = {
                     let specified = child_style.resolved_align_self(style.align_items);
-                    // On a column flex container the cross axis IS the inline
-                    // axis, so `direction: rtl` moves cross-start to the right.
-                    // A row container's cross axis is the block axis, which rtl
-                    // does not touch.
-                    if rtl_inline && direction.is_column() {
+                    // When the cross axis IS the inline axis — a horizontal
+                    // column container, a vertical row one — `direction: rtl`
+                    // moves cross-start to its far end. A block cross axis is
+                    // not touched by `direction`.
+                    if cross_inline_reversed {
                         flip_inline_align(specified)
                     } else {
                         specified

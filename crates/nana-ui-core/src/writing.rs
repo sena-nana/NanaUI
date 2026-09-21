@@ -116,6 +116,25 @@ impl WritingContext {
         matches!(self.block_start(), PhysicalEdge::Right)
     }
 
+    /// True when the page axis `physical` (`Row` = horizontal) carries the
+    /// inline axis: the horizontal one in `horizontal-tb`, the vertical one in
+    /// a vertical mode.
+    pub const fn carries_inline(self, physical: FlexDirection) -> bool {
+        matches!(physical, FlexDirection::Row) != self.is_vertical()
+    }
+
+    /// True when content along the page axis `physical` starts at its far
+    /// end — the right or the bottom — because the logical axis on it is
+    /// reversed: an RTL inline axis, a vertical RTL one, or `vertical-rl`'s
+    /// block axis.
+    pub const fn physical_axis_reversed(self, physical: FlexDirection) -> bool {
+        if self.carries_inline(physical) {
+            self.inline_reversed()
+        } else {
+            self.block_reversed()
+        }
+    }
+
     /// The page axis a `flex-direction: row` runs along: the inline axis.
     pub const fn inline_flex_direction(self) -> FlexDirection {
         if self.is_vertical() {
@@ -237,6 +256,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_page_axis_is_reversed_by_the_logical_axis_on_it() {
+        let reversed = |mode, direction, physical| {
+            WritingContext::new(mode, direction).physical_axis_reversed(physical)
+        };
+        use FlexDirection::{Column, Row};
+        // Horizontal: the row is the inline axis, the column the block one.
+        assert!(!reversed(WritingModeSpec::HorizontalTb, DirSpec::Ltr, Row));
+        assert!(reversed(WritingModeSpec::HorizontalTb, DirSpec::Rtl, Row));
+        assert!(!reversed(
+            WritingModeSpec::HorizontalTb,
+            DirSpec::Rtl,
+            Column
+        ));
+        // `vertical-rl`: the row is the block axis, from the right.
+        assert!(reversed(WritingModeSpec::VerticalRl, DirSpec::Ltr, Row));
+        assert!(!reversed(WritingModeSpec::VerticalRl, DirSpec::Ltr, Column));
+        // …and with RTL the column — the inline axis — runs from the bottom.
+        assert!(reversed(WritingModeSpec::VerticalRl, DirSpec::Rtl, Column));
+        assert!(reversed(WritingModeSpec::VerticalLr, DirSpec::Rtl, Column));
+        assert!(!reversed(WritingModeSpec::VerticalLr, DirSpec::Rtl, Row));
     }
 
     #[test]

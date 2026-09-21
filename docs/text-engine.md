@@ -701,7 +701,9 @@ UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phas
 - **排版**：`max_width_px` / `max_height_px` 永远是**物理**盒子；`TextConstraints::inline_budget_px`
   / `block_budget_px` 把它们换成行预算与堆叠预算——竖排时高度管一列多长、宽度管能叠几列。
   竖排的基线是列中线（`baseline_y_px = top + height/2`），行盒高度就是列宽。`LineBox` / run 的几何
-  仍是行相对的：`x` 沿列向下，`y` 从块起始列算起。
+  仍是行相对的：`x` 沿列向下，`y` 从块起始列算起。行空间从 line-left（竖排的顶端）量起、不随
+  `direction` 变；`direction: rtl` 只把 `start` 对齐挪到 line-right——竖排时就是底端。换算由
+  `nana_ui_core::WritingContext` 统一给出，盒布局、画笔、编辑器用的是同一个。
 - **映射**：`TextLayout::physical_x_of_block` 与 `physical_size` 是逻辑到页面的唯一换算；
   `vertical-rl` 从盒子右缘往左叠列。Runtime 的 `text_metrics_of_layout` 读 `physical_size`，竖排
   不报 ascent（列挂在中线上，交给按字母基线对齐的盒布局只会错位）。

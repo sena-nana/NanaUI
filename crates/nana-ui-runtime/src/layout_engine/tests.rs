@@ -3141,14 +3141,71 @@ fn rtl_row_flex_cross_axis_stays_block_axis() {
     assert!((boxes["b"].y - 0.0).abs() < 0.5, "got {:?}", boxes["b"]);
 }
 
+/// A vertical RTL box's inline axis runs from the bottom (CSS Writing Modes
+/// §2.1): the first inline, and the first item of a `flex-direction: row`
+/// container, sit at the foot of the column.
 #[test]
-fn writing_mode_vertical_rtl_skips_inline_reverse() {
+fn writing_mode_vertical_rtl_starts_the_inline_axis_at_the_bottom() {
     let inline = |id: &str| StyleLayoutNode {
         id: id.into(),
         style: LayoutStyle {
             display: Some(DisplaySpec::InlineBlock),
             width: Some(LengthSpec::Px(20.0)),
-            height: Some(LengthSpec::Px(40.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let container = |display, direction| StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(display),
+            direction,
+            width: Some(LengthSpec::Px(80.0)),
+            height: Some(LengthSpec::Px(80.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            dir: Some(DirSpec::Rtl),
+            align_items: AlignSpec::Start,
+            ..LayoutStyle::default()
+        },
+        children: vec![inline("a"), inline("b")],
+        text: None,
+    };
+    for (what, tree) in [
+        (
+            "inline formatting context",
+            container(DisplaySpec::Block, None),
+        ),
+        (
+            "flex-direction: row",
+            container(DisplaySpec::Flex, Some(FlexDirection::Row)),
+        ),
+    ] {
+        let boxes = box_map(&tree, 80.0, 80.0);
+        assert!(
+            (boxes["a"].y - 60.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
+            "{what}: the first item sits at the bottom, the next above it, got a={:?} b={:?}",
+            boxes["a"],
+            boxes["b"]
+        );
+        assert!(
+            (boxes["a"].x - 60.0).abs() < 0.5,
+            "{what}: block-start is still the right, got {:?}",
+            boxes["a"]
+        );
+    }
+}
+
+/// In a vertical RTL `flex-direction: column` container the cross axis is the
+/// inline one, so `align-items: start` is the bottom.
+#[test]
+fn writing_mode_vertical_rtl_column_flex_puts_cross_start_at_the_bottom() {
+    let item = |id: &str, height: f32| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(20.0)),
+            height: Some(LengthSpec::Px(height)),
             ..LayoutStyle::default()
         },
         children: Vec::new(),
@@ -3157,20 +3214,28 @@ fn writing_mode_vertical_rtl_skips_inline_reverse() {
     let tree = StyleLayoutNode {
         id: "root".into(),
         style: LayoutStyle {
-            display: Some(DisplaySpec::Block),
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Column),
             width: Some(LengthSpec::Px(80.0)),
             height: Some(LengthSpec::Px(80.0)),
             writing_mode: Some(WritingModeSpec::VerticalRl),
             dir: Some(DirSpec::Rtl),
+            align_items: AlignSpec::Start,
             ..LayoutStyle::default()
         },
-        children: vec![inline("a"), inline("b")],
+        children: vec![item("a", 20.0), item("b", 30.0)],
         text: None,
     };
     let boxes = box_map(&tree, 80.0, 80.0);
     assert!(
-        (boxes["a"].y - 0.0).abs() < 0.5 && (boxes["b"].y - 40.0).abs() < 0.5,
-        "RTL + vertical is skipped: inlines still go top-to-bottom, got a={:?} b={:?}",
+        (boxes["a"].y - 60.0).abs() < 0.5 && (boxes["b"].y - 50.0).abs() < 0.5,
+        "cross-start is the bottom, got a={:?} b={:?}",
+        boxes["a"],
+        boxes["b"]
+    );
+    assert!(
+        boxes["a"].x > boxes["b"].x,
+        "the main axis is the block one, from the right: a={:?} b={:?}",
         boxes["a"],
         boxes["b"]
     );

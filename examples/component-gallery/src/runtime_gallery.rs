@@ -2285,10 +2285,22 @@ fn mount_rich_text(
                 layout.width = Some(LengthSpec::Px(160.0));
                 area
             });
+            // `direction: rtl` in a vertical mode starts the line at the
+            // bottom; CJK still reads down the column.
+            let vertical_rtl = ui.parked({
+                let mut text =
+                    hugging_text("行首在底端", SemanticColorRole::Muted, 16.0, 400);
+                let layout = Arc::make_mut(&mut text.style.layout);
+                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
+                layout.dir = Some(nana_ui::runtime::DirSpec::Rtl);
+                layout.height = Some(LengthSpec::Px(180.0));
+                text
+            });
             let vertical_row = ui.parked(HostStack::row(24.0));
             ui.nest(vertical_row, |ui| {
                 ui.adopt(vertical);
                 ui.adopt(vertical_editor);
+                ui.adopt(vertical_rtl);
             });
             let markdown = ui.parked(state.markdown.clone());
             let link_status = ui.parked(styled_text(

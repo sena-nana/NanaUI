@@ -839,9 +839,12 @@ impl<'a> Builder<'a> {
             return 0.0;
         };
         let slack = max_width - width_px;
-        // A vertical line starts at the top whatever `direction` says, as the
-        // box layout's own inline axis does.
-        let rtl = self.input.constraints.base_direction == DirSpec::Rtl && !self.input.vertical;
+        // Line space runs from line-left — the left, or the top of a vertical
+        // line — whatever the direction; `start` / `end` are flow-relative, so
+        // an RTL line starts at line-right: the right, or the bottom of a
+        // vertical line (CSS Writing Modes §2.1), as the box layout's inline
+        // axis does.
+        let rtl = self.input.constraints.base_direction == DirSpec::Rtl;
         match self.input.constraints.align {
             TextAlignSpec::Start => {
                 if rtl {

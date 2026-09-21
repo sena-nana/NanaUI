@@ -1942,6 +1942,51 @@ fn a_vertical_paragraph_wraps_against_the_box_height_and_stacks_columns_right_to
     assert!(lr_centres[0] < lr_centres[1], "{lr_centres:?}");
 }
 
+/// #59: `direction: rtl` in a vertical mode puts the line's start at the
+/// bottom (CSS Writing Modes §2.1) — while CJK still reads down the column,
+/// because line space always runs from line-left, the top.
+#[test]
+fn a_vertical_rtl_line_starts_at_the_bottom_and_still_reads_down() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let constraints = |direction| TextConstraints {
+        max_height_px: Some(100.0),
+        writing_mode: WritingModeSpec::VerticalRl,
+        base_direction: direction,
+        ..TextConstraints::default()
+    };
+    let ltr = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "中文",
+        &style,
+        &constraints(DirSpec::Ltr),
+    );
+    let rtl = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "中文",
+        &style,
+        &constraints(DirSpec::Rtl),
+    );
+    assert!(ltr.lines[0].bounds.x.abs() < 0.01, "LTR starts at the top");
+    assert!(
+        (rtl.lines[0].bounds.right() - 100.0).abs() < 0.01,
+        "RTL ends flush with the bottom of the column: {:?}",
+        rtl.lines[0].bounds
+    );
+    // Reading order is unchanged: 中 above 文.
+    let run = &rtl.runs[rtl.lines[0].runs.start as usize];
+    let cells: Vec<_> = run
+        .glyph_cells()
+        .map(|(start, glyph)| (start, glyph.cluster))
+        .collect();
+    assert!(
+        cells[0].0 < cells[1].0 && cells[0].1 < cells[1].1,
+        "{cells:?}"
+    );
+}
+
 /// #59: an upright run is shaped top-to-bottom, so the face's `vert` feature
 /// swaps in the vertical forms of punctuation. A corner bracket drawn with its
 /// horizontal glyph in a column points the wrong way.

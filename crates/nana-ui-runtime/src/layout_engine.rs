@@ -1163,12 +1163,11 @@ fn pack_block_from_end(style: &LayoutStyle, direction: FlexDirection) -> bool {
     style.writing_context().block_reversed() && direction.is_column()
 }
 
-/// `text-align` as the justification of an inline formatting context's line.
-///
-/// Only a right-hand inline-start reverses it today: a vertical RTL line,
-/// whose inline-start is the bottom, still starts at the top here.
+/// `text-align` as the justification of an inline formatting context's line:
+/// `start` / `end` follow the inline axis, which runs from the right in RTL and
+/// from the bottom in a vertical RTL box.
 fn ifc_justify(align: TextAlignSpec, context: nana_ui_core::WritingContext) -> JustifySpec {
-    align.to_justify(context.inline_start() == nana_ui_core::PhysicalEdge::Right)
+    align.to_justify(context.inline_reversed())
 }
 
 fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {
