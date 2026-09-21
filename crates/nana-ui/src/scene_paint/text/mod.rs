@@ -3818,7 +3818,12 @@ mod tests {
             [cos, sin, -sin, cos, 0.0, 0.0]
         };
         let pressed = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
-        text_frame(&device, &queue, &mut pipeline, &labels(clip::IDENTITY_AFFINE));
+        text_frame(
+            &device,
+            &queue,
+            &mut pipeline,
+            &labels(clip::IDENTITY_AFFINE),
+        );
         let warm = pipeline.glyph_counters();
         // A wobble through upright, and a press that springs back: the
         // container leaves the identity and returns to it on every pass.
