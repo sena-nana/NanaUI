@@ -715,7 +715,11 @@ UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phas
 **可编辑文本**仍横排兜底：跨列的光标移动、选区与命中测试还没做，把字形竖着画而光标按横排几何
 画只会更糟。此时 `TextLayout::unsupported_writing_mode` 置位、`vertical_writing_fallbacks`
 计数，场景里编辑器的文本图元也按 `horizontal-tb` 画。`sideways-*` 与 `text-orientation` 由盒
-布局在更早处拒绝，到不了这里。静态竖排文本的选区与命中测试同样还按横排几何算。
+布局在更早处拒绝，到不了这里。
+
+**静态可选文本**（`user-select`）的选区不走编辑器几何（那份是横排的）：竖排节点直接读 Runtime
+保留、画笔也在画的那份 layout，指针点经 `TextLayout::line_space_point` 转进行空间做 `hit_test`，
+`selection_rects` 经 `page_rect` 转回页面，锚点与画笔同为内容盒右缘（`vertical-rl`）。
 
 ### 计数器
 

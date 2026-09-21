@@ -176,6 +176,30 @@ impl TextLayout {
         }
     }
 
+    /// A line-space rectangle — what [`Self::selection_rects`] and the line
+    /// bounds are in — on the page of a box `box_width_px` wide. Horizontal
+    /// layouts return it unchanged.
+    pub fn page_rect(&self, rect: TextRect, box_width_px: f32) -> TextRect {
+        if !self.is_vertical() {
+            return rect;
+        }
+        let near = self.physical_x_of_block(rect.y, box_width_px);
+        let far = self.physical_x_of_block(rect.y + rect.height, box_width_px);
+        TextRect::new(near.min(far), rect.x, rect.height, rect.width)
+    }
+
+    /// A page point inside a box `box_width_px` wide, in line space: what
+    /// [`Self::hit_test`] reads. The inverse of [`Self::page_rect`]; horizontal
+    /// layouts return it unchanged.
+    pub fn line_space_point(&self, x: f32, y: f32, box_width_px: f32) -> (f32, f32) {
+        if !self.is_vertical() {
+            return (x, y);
+        }
+        // Mirroring about the box is its own inverse, so the block→page map
+        // turns a page x back into a block coordinate too.
+        (y, self.physical_x_of_block(x, box_width_px))
+    }
+
     /// Width and height the text occupies on the page: the longest line and
     /// the summed line boxes, crossed over for a vertical layout.
     ///
@@ -240,6 +264,44 @@ mod tests {
         let joined = degenerate.union(TextRect::new(0.0, 0.0, 2.0, 2.0));
         assert_eq!(joined.x, 0.0);
         assert_eq!(joined.width, 6.0);
+    }
+
+    fn vertical(mode: nana_ui_core::WritingModeSpec) -> TextLayout {
+        TextLayout {
+            id: TextLayoutId::default(),
+            kind: TextKind::Paragraph,
+            revision: TextRevision::default(),
+            font_generation: FontGeneration::default(),
+            constraints: TextConstraints {
+                writing_mode: mode,
+                ..TextConstraints::default()
+            },
+            runs: Vec::new(),
+            lines: Vec::new(),
+            bounds: TextRect::default(),
+            overflow: OverflowFlags::NONE,
+            unsupported_writing_mode: false,
+        }
+    }
+
+    #[test]
+    fn line_space_and_page_space_are_each_others_inverse() {
+        let rl = vertical(nana_ui_core::WritingModeSpec::VerticalRl);
+        // The second column (block 20..40) from 10 to 30 down it, in a box
+        // 100 wide: `vertical-rl` puts it 40 in from the right edge.
+        let page = rl.page_rect(TextRect::new(10.0, 20.0, 20.0, 20.0), 100.0);
+        assert_eq!(page, TextRect::new(60.0, 10.0, 20.0, 20.0));
+        assert_eq!(rl.line_space_point(70.0, 15.0, 100.0), (15.0, 30.0));
+
+        let lr = vertical(nana_ui_core::WritingModeSpec::VerticalLr);
+        let page = lr.page_rect(TextRect::new(10.0, 20.0, 20.0, 20.0), 100.0);
+        assert_eq!(page, TextRect::new(20.0, 10.0, 20.0, 20.0));
+        assert_eq!(lr.line_space_point(30.0, 15.0, 100.0), (15.0, 30.0));
+
+        let horizontal = vertical(nana_ui_core::WritingModeSpec::HorizontalTb);
+        let rect = TextRect::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(horizontal.page_rect(rect, 100.0), rect);
+        assert_eq!(horizontal.line_space_point(5.0, 6.0, 100.0), (5.0, 6.0));
     }
 
     #[test]

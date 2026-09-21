@@ -200,3 +200,68 @@ fn a_vertical_text_node_is_measured_as_columns_and_painted_from_that_layout() {
         "two columns are wider than one: {short_bounds:?}"
     );
 }
+
+/// #59: selecting vertical text hits and highlights the column the glyphs
+/// are drawn in.
+///
+/// Static selection is otherwise answered by editor geometry, which stays
+/// horizontal; asked of a column it would select along an invisible
+/// horizontal line and paint the highlight across the page.
+#[test]
+fn selecting_vertical_text_follows_the_column() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx.create_component(doc, Stack::row(0.0)).unwrap();
+    let text = "一二三四五六七八";
+    let mut label = Text::new(text);
+    {
+        let style = std::sync::Arc::make_mut(&mut label.style.layout);
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.user_select = Some(nana_ui_core::UserSelectSpec::Text);
+        style.font_size = Some(16.0);
+        style.height = Some(nana_ui_core::LengthSpec::Px(64.0));
+    }
+    let label = cx.create_component(doc, label).unwrap();
+    cx.append_child(root, label).unwrap();
+    let (root, label) = (root.stable_id(), label.stable_id());
+    settle(&mut cx, doc, &[root, label]);
+    cx.rebuild_hit_test(doc);
+
+    let bounds = cx.world().layout_box(label).expect("laid out");
+    let (_, layout) = cx.world().text_layout(label).expect("retained");
+    assert!(layout.is_vertical());
+    assert_eq!(layout.lines.len(), 2, "four ideographs to a 64px column");
+
+    // Down the right-hand column, which `vertical-rl` fills first: from the
+    // top of 一 to the middle of 三.
+    let column_x = bounds.x + bounds.width - 5.0;
+    let mut shaper = NanaTextShaper::default();
+    assert!(
+        cx.document_text_pointer_press(doc, 1, column_x, bounds.y + 1.0, &mut shaper)
+            .unwrap()
+    );
+    cx.document_text_pointer_drag(doc, 1, column_x, bounds.y + 40.0, &mut shaper)
+        .unwrap();
+    cx.document_text_pointer_release(1);
+    assert_eq!(
+        cx.document_selected_text(doc).as_deref(),
+        Some("一二"),
+        "the drag ran down the first column"
+    );
+
+    let selection = cx
+        .world()
+        .document_text_selection(doc)
+        .expect("a selection");
+    assert_eq!(selection.lines.len(), 1, "{:?}", selection.lines);
+    let highlight = selection.lines[0];
+    assert!(
+        highlight.height > highlight.width,
+        "a highlight down a column is tall, not wide: {highlight:?}"
+    );
+    assert!(
+        (highlight.x + highlight.width - bounds.width).abs() < 0.5,
+        "and it is the rightmost column: {highlight:?} in {bounds:?}"
+    );
+    assert!(highlight.y.abs() < 0.5 && (highlight.height - 32.0).abs() < 0.5);
+}

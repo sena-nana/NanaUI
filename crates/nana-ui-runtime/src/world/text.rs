@@ -4447,6 +4447,21 @@ impl UiWorld {
         if end > text.len() || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
             return Vec::new();
         }
+        if let Some((layout, box_width)) = self.vertical_document_text(node) {
+            return layout
+                .selection_rects(start..end)
+                .into_iter()
+                .map(|rect| {
+                    let rect = layout.page_rect(rect, box_width);
+                    LayoutBox {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    }
+                })
+                .collect();
+        }
         let style = self.computed_style(node).cloned().unwrap_or_default();
         shaper.text_highlights(
             node,
@@ -4455,6 +4470,27 @@ impl UiWorld {
             &style,
             self.text_shape_constraints(node),
         )
+    }
+
+    /// The layout a vertical, document-selectable text node was measured
+    /// with, and the width of the box it is painted in (#59).
+    ///
+    /// Static selection is otherwise answered by the shaper's editor geometry,
+    /// which lays text out as an *editor* would — and editors stay horizontal.
+    /// Asked of a column, it would hit-test and highlight a horizontal line
+    /// that is not on screen. The retained layout is the one the painter
+    /// draws, so its line space, turned onto the page by the same rule the
+    /// painter uses, is where the glyphs are.
+    pub(crate) fn vertical_document_text(
+        &self,
+        node: StableNodeId,
+    ) -> Option<(Arc<nana_text::TextLayout>, f32)> {
+        let (_, layout) = self.text_layout(node)?;
+        if !layout.is_vertical() {
+            return None;
+        }
+        let content = self.component_content_box(node)?;
+        Some((Arc::clone(layout), content.width))
     }
 
     pub(crate) fn refresh_document_text_highlights(&mut self, shaper: &mut dyn TextShaper) {

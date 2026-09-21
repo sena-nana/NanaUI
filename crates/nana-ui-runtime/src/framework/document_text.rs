@@ -227,6 +227,15 @@ impl AppContext {
             .unwrap_or((x, y));
         let local_x = layout_x - content.x + scroll.x;
         let local_y = layout_y - content.y + scroll.y;
+        if let Some((layout, box_width)) = self.world.vertical_document_text(node) {
+            let (inline, block) = layout.line_space_point(local_x, local_y, box_width);
+            return Some(
+                layout
+                    .hit_test_text(&shaped.value, inline, block)
+                    .caret
+                    .byte,
+            );
+        }
         // 静态可选文本只有 anchor / focus，没有 caret 可画，命中的 affinity
         // 在这里没有去处。
         if let Some(hit) =
