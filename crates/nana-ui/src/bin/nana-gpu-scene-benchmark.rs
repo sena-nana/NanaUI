@@ -726,7 +726,10 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         frame += 1;
     };
     let text = warm_text.map(|(warm, warm_misses)| {
-        shaping.paint_misses = painter.text_shape_cache_stats().1 - warm_misses;
+        shaping.paint_misses = painter
+            .text_shape_cache_stats()
+            .1
+            .saturating_sub(warm_misses);
         text_counters_per_frame(
             warm,
             painter.text_glyph_counters(),

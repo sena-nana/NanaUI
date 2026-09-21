@@ -1233,17 +1233,35 @@ impl TextPipeline {
             bounds.width.max(measured_width) + pad_x * 2.0,
             laid_out_height + pad_y * 2.0,
         );
+        // Where the paragraph starts, in the whole pixels its run row carries
+        // and the sub-pixel phase its glyphs are rasterized for. A translated
+        // run's whole pixels are relative to the translation's own, which the
+        // presentation row carries: a scroll that lands on whole pixels then
+        // moves the one row every label under it shares, and not a run.
+        //
+        // The phase is taken from the paragraph's own position plus only the
+        // *fraction* of the translation. Adding the whole translation first
+        // and splitting afterwards rounds differently at every scroll
+        // position, so the phase's last bit would change on a whole-pixel
+        // horizontal scroll and every label would be resolved again.
+        let (whole, phase) = if translation {
+            let [tx, ty] = pipeline::whole_translation(affine, scale);
+            let x = aligned[0] * scale + (affine[4] * scale - tx);
+            let whole_x = x.floor();
+            (
+                [whole_x, top_px - ty],
+                [(x - whole_x).to_bits(), 0f32.to_bits()],
+            )
+        } else {
+            let x = aligned[0] * raster;
+            let whole_x = x.floor();
+            ([whole_x, top_px], [(x - whole_x).to_bits(), 0f32.to_bits()])
+        };
         // An axis-aligned run is clipped by the batch's scissor. Rotated or
         // projective text carries the same homography as Quad, applied per
         // glyph corner in the vertex stage, and a rounded or polygonal clip
         // needs the fragment test the scissor cannot express — neither of
         // which is a reason to resolve the paragraph differently.
-        let paint_origin = if translation {
-            let [world_x, _] = clip::transform_point(affine, aligned[0], aligned[1]);
-            [world_x * scale, top_px]
-        } else {
-            [aligned[0] * raster, top_px]
-        };
         let mut flags = 0;
         if !translation {
             // The corners no longer land on the texel grid, so nearest
@@ -1269,26 +1287,6 @@ impl TextPipeline {
             self.target.nodes_culled += 1;
             return None;
         }
-        // The whole-pixel half of the origin is presentation: it moves with
-        // the paragraph and never changes a bitmap. The remainder is not —
-        // it is the sub-pixel phase every glyph in this paragraph was
-        // rasterized for, so it is resolved into the instances and named by
-        // the entry key.
-        let whole = [paint_origin[0].floor(), paint_origin[1].floor()];
-        let phase = [
-            (paint_origin[0] - whole[0]).to_bits(),
-            (paint_origin[1] - whole[1]).to_bits(),
-        ];
-        // A translated run's origin is relative to the translation's whole
-        // pixels, which the presentation row carries. A scroll that lands on
-        // whole pixels then moves the one row every label under it shares,
-        // and not a single run row.
-        let whole = if translation {
-            let [x, y] = pipeline::whole_translation(affine, scale);
-            [whole[0] - x, whole[1] - y]
-        } else {
-            whole
-        };
         let index = self.target.live_runs;
         if index == self.target.runs.len() {
             self.target.runs.push(TextRun {
@@ -1675,7 +1673,10 @@ impl TextPipeline {
                         match atlas.insert(device, raster_key, &image, raster, uploads) {
                             Some(placed) => placed,
                             None => {
-                                unplaced = true;
+                                // Waiting for room, not too big for any page:
+                                // one that can never fit would only fail again,
+                                // and rebuild its paragraph every frame doing so.
+                                unplaced |= atlas.could_hold(&image);
                                 continue;
                             }
                         }
@@ -3350,6 +3351,7 @@ mod tests {
         opacity: f32,
         affine: [f32; 6],
         top: f32,
+        left: f32,
     }
 
     impl<'a> Label<'a> {
@@ -3365,6 +3367,7 @@ mod tests {
                 opacity: 1.0,
                 affine: clip::IDENTITY_AFFINE,
                 top: 0.0,
+                left: 0.0,
             }
         }
     }
@@ -3380,7 +3383,7 @@ mod tests {
         for label in labels {
             pipeline.prepare(
                 device,
-                LogicalRect::from_xywh(0.0, label.top, 480.0, 32.0),
+                LogicalRect::from_xywh(label.left, label.top, 480.0, 32.0),
                 LogicalRect::from_xywh(0.0, 0.0, 512.0, 256.0),
                 1.0,
                 label.content,
@@ -3935,6 +3938,35 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_pixel_horizontal_scroll_keeps_every_glyph() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // Labels at fractional x, as flex layout leaves them. Scrolled by
+        // whole pixels their glyphs are the same glyphs at the same phase, so
+        // not one of them may be resolved again — however the float that
+        // carries the scroll happens to round.
+        let labels = |offset: f32| {
+            (0..12)
+                .map(|index| Label {
+                    left: 0.709 + index as f32 * 38.766,
+                    affine: [1.0, 0.0, 0.0, 1.0, -offset, 0.0],
+                    ..Label::new("Row", index + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
+        let warm = pipeline.glyph_counters();
+        for step in 1..40 {
+            text_frame(&device, &queue, &mut pipeline, &labels(step as f32 * 7.0));
+        }
+        assert_eq!(
+            pipeline.glyph_counters().text_instance_rebuilds,
+            warm.text_instance_rebuilds,
+            "a whole-pixel horizontal scroll must not re-resolve a label"
+        );
+    }
+
+    #[test]
     fn a_fractional_vertical_scroll_keeps_every_glyph() {
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
@@ -4442,6 +4474,32 @@ mod tests {
             pipeline.glyph_counters().text_instance_rebuilds,
             steady.text_instance_rebuilds,
             "and once whole it is retained like any other"
+        );
+    }
+
+    #[test]
+    fn a_glyph_too_big_for_any_page_does_not_rebuild_its_paragraph_every_frame() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::with_atlas_limits(
+            &device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            GlyphAtlasLimits {
+                page_edge: 64,
+                byte_budget: 64 * 64 * 4 + 8,
+            },
+        );
+        // 16 px at 6x is a glyph no 64 px page can hold, next frame or ever.
+        // Waiting for room would rebuild the paragraph on every frame for a
+        // glyph that is never coming.
+        prepare_label(&device, &queue, &mut pipeline, "Wide", 6.0);
+        let warm = pipeline.glyph_counters();
+        for _ in 0..4 {
+            prepare_label(&device, &queue, &mut pipeline, "Wide", 6.0);
+        }
+        assert_eq!(
+            pipeline.glyph_counters().text_instance_rebuilds,
+            warm.text_instance_rebuilds,
+            "a glyph that can never be placed is not a reason to try again"
         );
     }
 
