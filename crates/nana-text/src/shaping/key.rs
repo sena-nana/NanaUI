@@ -2,7 +2,7 @@
 //!
 //! In: text content, span ranges and their shaping-relevant style (family,
 //! size, weight, slant, letter spacing, features, variations, kerning),
-//! direction, language, device scale, font generation.
+//! direction, vertical shaping, language, device scale, font generation.
 //!
 //! Out, deliberately: widget identity, [`TextRevision`](crate::TextRevision)
 //! (two sources with equal text share an entry), line height, every
@@ -61,6 +61,7 @@ pub(crate) struct ShapeKey {
     /// style shapes those bytes. Which composition segment it is does not.
     spans: Vec<(Range<usize>, bool, StyleKey)>,
     rtl: bool,
+    vertical: bool,
     language: Option<LanguageTag>,
     scale_bits: u32,
     /// The font system and its generation: `FontId`s in a result are only
@@ -82,6 +83,7 @@ impl ShapeKey {
         base: &TextStyle,
         spans: &[TextSpan],
         rtl: bool,
+        vertical: bool,
         language: Option<&LanguageTag>,
         scale: f32,
         epoch: FontEpoch,
@@ -101,6 +103,7 @@ impl ShapeKey {
                 })
                 .collect(),
             rtl,
+            vertical,
             language: language.cloned(),
             scale_bits: canonical_f32_bits(scale),
             epoch,
@@ -125,6 +128,7 @@ impl Hash for ShapeKey {
         self.base.hash(state);
         self.spans.hash(state);
         self.rtl.hash(state);
+        self.vertical.hash(state);
         self.language.hash(state);
         self.scale_bits.hash(state);
         self.epoch.hash(state);
@@ -135,6 +139,7 @@ impl PartialEq for ShapeKey {
     fn eq(&self, other: &Self) -> bool {
         self.text_hash == other.text_hash
             && self.rtl == other.rtl
+            && self.vertical == other.vertical
             && self.scale_bits == other.scale_bits
             && self.epoch == other.epoch
             && self.base == other.base

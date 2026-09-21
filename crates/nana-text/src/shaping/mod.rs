@@ -41,9 +41,12 @@ use std::ops::Range;
 
 /// One shaping call's inputs.
 ///
-/// Built from [`TextConstraints`] with [`Self::new`], which takes only the two
+/// Built from [`TextConstraints`] with [`Self::new`], which takes only the
 /// fields shaping depends on (direction and device scale) — width, wrap,
-/// max lines and the rest cannot reach the cache key.
+/// max lines and the rest cannot reach the cache key. Vertical shaping is
+/// opted into with [`Self::with_vertical`], because whether a vertical writing
+/// mode is honoured depends on the text kind as well as the constraints (see
+/// [`TextConstraints::lays_out_vertically`]).
 #[derive(Debug, Clone, Copy)]
 pub struct ShapeRequest<'a> {
     pub source: &'a TextSource,
@@ -53,6 +56,9 @@ pub struct ShapeRequest<'a> {
     pub direction: DirSpec,
     pub language: Option<&'a LanguageTag>,
     pub scale: TextScale,
+    /// Shape for a vertical line (#59): each cluster upright or sideways by
+    /// UAX #50, upright ones top-to-bottom.
+    pub vertical: bool,
 }
 
 impl<'a> ShapeRequest<'a> {
@@ -67,7 +73,14 @@ impl<'a> ShapeRequest<'a> {
             direction: constraints.base_direction,
             language: None,
             scale: constraints.scale,
+            vertical: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_vertical(mut self, vertical: bool) -> Self {
+        self.vertical = vertical;
+        self
     }
 
     #[must_use]
@@ -98,6 +111,11 @@ pub struct ShapedText {
     pub runs: Vec<ShapedRun>,
     pub paragraphs: Vec<ShapedParagraph>,
     pub font_generation: FontGeneration,
+    /// Shaped for a vertical line. Layout takes the writing mode from here,
+    /// not from its own constraints, so it can never lay horizontally shaped
+    /// runs out as a column or the other way round.
+    #[serde(default)]
+    pub vertical: bool,
 }
 
 impl ShapedText {

@@ -120,8 +120,9 @@ pub struct LayoutCounters {
     pub label_fast_paths: usize,
     /// Layouts created by walking paragraphs, break opportunities and wrapping.
     pub paragraph_paths: usize,
-    /// Layouts that asked for a writing mode this engine does not implement
-    /// and were laid out horizontally instead (#59).
+    /// Layouts that asked for a vertical writing mode and were laid out
+    /// horizontally instead: editable text, which does not yet edit in
+    /// columns (#59).
     pub vertical_writing_fallbacks: usize,
 }
 
@@ -252,7 +253,8 @@ impl Layouter {
         self.counters.ellipsis_runs_used += work.ellipsis_runs_used;
         self.counters.shape_runs_reused_for_layout += work.shape_runs_reused;
 
-        let unsupported_writing_mode = request.constraints.wants_vertical_writing();
+        let unsupported_writing_mode =
+            request.constraints.wants_vertical_writing() && !request.shaped.vertical;
         if unsupported_writing_mode {
             self.counters.vertical_writing_fallbacks += 1;
         }
@@ -308,15 +310,16 @@ fn line_input<'r>(
             DirSpec::Rtl => RunDirection::Rtl,
         },
         ellipsis,
+        vertical: request.shaped.vertical,
     }
 }
 
 /// When a label may skip the paragraph machinery entirely.
 ///
 /// A label degrades to the paragraph path as soon as it stops being one line of
-/// plain text: any wrap mode, a multi-line or zero `max_lines`, a height
-/// budget, a writing mode this engine has to fall back on, or a source the
-/// paragraph path would cut into more than one segment.
+/// plain text: any wrap mode, a multi-line or zero `max_lines`, a stacking
+/// budget (the box's height, or its width for a vertical label), or a source
+/// the paragraph path would cut into more than one segment.
 ///
 /// That last question is asked of [`segments`] rather than re-derived, so an
 /// authored newline, a forced break and a *trailing* newline — which adds no
@@ -327,8 +330,10 @@ fn uses_label_fast_path(request: &LayoutRequest<'_>) -> bool {
     request.kind == TextKind::Label
         && !request.constraints.wraps()
         && matches!(request.constraints.max_lines, None | Some(1))
-        && request.constraints.max_height_px.is_none()
-        && !request.constraints.wants_vertical_writing()
+        && request
+            .constraints
+            .block_budget_px(request.shaped.vertical)
+            .is_none()
         && segments(request.source.text(), &request.shaped.paragraphs).len() == 1
 }
 

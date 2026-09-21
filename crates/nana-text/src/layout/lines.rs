@@ -144,6 +144,11 @@ pub(super) struct LineInput<'a> {
     pub empty_line_height_px: f32,
     pub base_direction: RunDirection,
     pub ellipsis: Option<&'a Ellipsis>,
+    /// Lines run top to bottom and stack across (#59). The runs were shaped
+    /// for it, so every advance is already a length along the line; what
+    /// changes here is which box dimension budgets what, and where the
+    /// baseline sits.
+    pub vertical: bool,
 }
 
 /// Work the line builder did, for the counters.
@@ -219,8 +224,17 @@ impl<'a> Builder<'a> {
             prefix.push(total);
         }
         let scale = input.constraints.scale.px_per_logical;
-        let max_width_px = input.constraints.max_width_px.map(|width| width * scale);
-        let max_height_px = input.constraints.max_height_px.map(|height| height * scale);
+        // `max_width_px` / `max_height_px` below are the line budget and the
+        // stacking budget: the box's width and height for horizontal lines,
+        // its height and width for vertical ones.
+        let max_width_px = input
+            .constraints
+            .inline_budget_px(input.vertical)
+            .map(|width| width * scale);
+        let max_height_px = input
+            .constraints
+            .block_budget_px(input.vertical)
+            .map(|height| height * scale);
         let policy = BreakPolicy::of(input.constraints);
         Self {
             input,
@@ -635,8 +649,15 @@ impl<'a> Builder<'a> {
             Some(strut) => (strut.metrics.ascent_px, strut.metrics.descent_px),
             None => (ascent_px, descent_px),
         };
-        let half_leading = (height_px - (strut_ascent + strut_descent)) * 0.5;
-        let baseline_y_px = top_y_px + half_leading + strut_ascent;
+        // A vertical line's dominant baseline is the central one: upright
+        // glyphs hang from the column's centre line, and sideways runs centre
+        // their em box on it.
+        let baseline_y_px = if self.input.vertical {
+            top_y_px + height_px * 0.5
+        } else {
+            let half_leading = (height_px - (strut_ascent + strut_descent)) * 0.5;
+            top_y_px + half_leading + strut_ascent
+        };
 
         let run_start = self.runs.len() as u32;
         // Hung whitespace is drawn but not measured, and rule L1 put it at the
@@ -761,6 +782,7 @@ impl<'a> Builder<'a> {
             direction: run.direction,
             bidi_level: run.bidi_level,
             script: run.script,
+            orientation: run.orientation,
             font: run.font,
             font_size_px: run.font_size_px,
             glyphs: run.glyphs[piece.glyphs.clone()].to_vec(),
@@ -817,7 +839,9 @@ impl<'a> Builder<'a> {
             return 0.0;
         };
         let slack = max_width - width_px;
-        let rtl = self.input.constraints.base_direction == DirSpec::Rtl;
+        // A vertical line starts at the top whatever `direction` says, as the
+        // box layout's own inline axis does.
+        let rtl = self.input.constraints.base_direction == DirSpec::Rtl && !self.input.vertical;
         match self.input.constraints.align {
             TextAlignSpec::Start => {
                 if rtl {

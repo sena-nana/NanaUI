@@ -10,7 +10,7 @@ use crate::font::{
     FontFeatures, FontInstance, FontQuery, FontSelection, FontSystem, FontVariations, LanguageTag,
 };
 use crate::id::{FontGeneration, FontId, ShapeRunId};
-use crate::shape::{GlyphFlags, RunDirection, ScriptTag, ShapedGlyph, ShapedRun};
+use crate::shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 use crate::source::{SnappedSpans, TextSpan};
 use crate::style::TextStyle;
 use nana_ui_core::{DirSpec, FontKerningSpec};
@@ -54,6 +54,7 @@ struct Item {
     font: Option<FontId>,
     level: u8,
     script: Option<ScriptTag>,
+    orientation: RunOrientation,
 }
 
 /// A piece of an item after fallback: its range, the face it shapes with, the
@@ -132,6 +133,7 @@ impl Shaper {
             request.style,
             request.source.spans(),
             rtl,
+            request.vertical,
             request.language,
             scale,
             epoch,
@@ -165,6 +167,7 @@ impl Shaper {
                 runs: Vec::new(),
                 paragraphs,
                 font_generation: generation,
+                vertical: request.vertical,
             };
         }
 
@@ -223,8 +226,9 @@ impl Shaper {
             }
         }
 
-        // Items: maximal cluster sequences sharing segment, face, level and
-        // script, broken at paragraph separators (which shape to nothing).
+        // Items: maximal cluster sequences sharing segment, face, level,
+        // script and orientation, broken at paragraph separators (which shape
+        // to nothing).
         let mut items: Vec<Item> = Vec::new();
         let mut segment_index = 0;
         let mut last_level = None;
@@ -248,12 +252,18 @@ impl Shaper {
                 continue;
             }
             let font = cluster_fonts[index];
+            let orientation = match (request.vertical, cluster.upright) {
+                (false, _) => RunOrientation::Horizontal,
+                (true, true) => RunOrientation::Upright,
+                (true, false) => RunOrientation::Sideways,
+            };
             match items.last_mut() {
                 Some(item)
                     if item.segment == segment_index
                         && item.font == font
                         && item.level == level
                         && item.script == scripts[index]
+                        && item.orientation == orientation
                         && item.range.end == cluster.range.start =>
                 {
                     item.range.end = cluster.range.end;
@@ -264,6 +274,7 @@ impl Shaper {
                     font,
                     level,
                     script: scripts[index],
+                    orientation,
                 }),
             }
         }
@@ -289,6 +300,7 @@ impl Shaper {
             runs,
             paragraphs,
             font_generation: generation,
+            vertical: request.vertical,
         }
     }
 
@@ -314,6 +326,7 @@ impl Shaper {
             text,
             range,
             rtl: RunDirection::from_bidi_level(item.level).is_rtl(),
+            vertical: item.orientation == RunOrientation::Upright,
             script: item.script,
             language: language.map(LanguageTag::as_str),
             features: features.as_slice(),
@@ -536,6 +549,7 @@ impl Shaper {
             direction: RunDirection::from_bidi_level(item.level),
             bidi_level: item.level,
             script: item.script.unwrap_or_default(),
+            orientation: item.orientation,
             font: piece.font,
             font_size_px: size_px,
             advance_px: glyphs.iter().map(|glyph| glyph.advance_px).sum(),

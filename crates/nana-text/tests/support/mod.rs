@@ -9,8 +9,8 @@ pub mod corpus;
 
 use nana_text::{
     FontGeneration, FontId, GlyphFlags, LineBox, LineBreakCause, LineMetrics, OverflowFlags,
-    RunDirection, RunMetrics, ScriptTag, ShapeRunId, ShapedGlyph, ShapedRun, TextConstraints,
-    TextKind, TextLayout, TextLayoutId, TextRect, TextRevision,
+    RunDirection, RunMetrics, RunOrientation, ScriptTag, ShapeRunId, ShapedGlyph, ShapedRun,
+    TextConstraints, TextKind, TextLayout, TextLayoutId, TextRect, TextRevision,
 };
 
 pub const GLYPH_ADVANCE: f32 = 10.0;
@@ -57,6 +57,7 @@ pub fn run(
         direction,
         bidi_level,
         script: ScriptTag::LATIN,
+        orientation: RunOrientation::Horizontal,
         font: FontId::from_parts(font, 1),
         font_size_px: 16.0,
         glyphs,

@@ -16,6 +16,18 @@
 //! wrap mode, `max_lines` or the alignment re-runs *this* module only, which is
 //! what makes a resize storm cost line work rather than shaping work.
 //!
+//! # Vertical writing
+//!
+//! A vertical line is laid out exactly like a horizontal one, in line-relative
+//! coordinates: shaping already split it by UAX #50 into upright runs (shaped
+//! top-to-bottom, with the font's vertical metrics) and sideways runs (shaped
+//! as horizontal text, drawn rotated), and gave every glyph its advance along
+//! the line. Line breaking, alignment and truncation run unchanged on those
+//! advances. Only three things know the page is turned: which box dimension
+//! budgets a line and which the stack ([`TextConstraints::inline_budget_px`](crate::TextConstraints::inline_budget_px)),
+//! the baseline (central, not alphabetic) and the final mapping to the page
+//! ([`TextLayout::physical_x_of_block`]).
+//!
 //! `unicode-linebreak` is named only from the private [`breaks`] module, the
 //! same rule `harfrust` and `unicode-bidi` follow in
 //! [`shaping`](crate::shaping).
@@ -24,12 +36,15 @@
 //!
 //! - **`justify`**: `nana_ui_core::TextAlignSpec` has no justify keyword, so
 //!   the product cannot ask for one. Deferred rather than half-built.
-//! - **Vertical writing**: `vertical-rl` / `vertical-lr` (#59) need glyph
-//!   orientation and vertical font metrics that neither this module nor the IR
-//!   carries. A vertical request is laid out horizontally and says so:
+//! - **Vertical editing**: `vertical-rl` / `vertical-lr` lay out as columns
+//!   (see *Vertical writing* below) for every kind of text but
+//!   [`TextKind::Editable`](crate::TextKind::Editable), whose caret movement and
+//!   selection across columns are not built. An editor asked for vertical
+//!   text is laid out horizontally and says so:
 //!   [`TextLayout::unsupported_writing_mode`] is set and
-//!   [`LayoutCounters::vertical_writing_fallbacks`] counts it. Horizontal
-//!   metrics are never reported as if they were vertical ones.
+//!   [`LayoutCounters::vertical_writing_fallbacks`] counts it.
+//!   `sideways-*` and `text-orientation` never reach this module: the box
+//!   layout refuses them before a text node sees them.
 //! - **Caret and editing**: those are derivations on the finished IR
 //!   ([`crate::edit`]), not engine state.
 

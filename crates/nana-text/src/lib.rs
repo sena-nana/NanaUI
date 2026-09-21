@@ -75,6 +75,6 @@ pub use layout::{
     LineBreakCause, OverflowFlags, StaleLayout, TextLayout, TextLayoutStore, TextRect,
 };
 pub use metrics::{LineMetrics, RunMetrics};
-pub use shape::{GlyphFlags, RunDirection, ScriptTag, ShapedGlyph, ShapedRun};
+pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 pub use source::{CompositionSegment, TextSource, TextSpan};
 pub use style::{TextKind, TextStyle};

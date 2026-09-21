@@ -23,6 +23,10 @@ pub struct RawGlyph {
     pub glyph_id: u32,
     /// Byte offset into the whole text.
     pub cluster: u32,
+    /// Advance **along the line**. For a [`ShapeInput::vertical`] item that is
+    /// the glyph's vertical advance, turned positive: HarfRust reports it as a
+    /// negative `y_advance`, and a line breaker that measured it that way
+    /// would think every upright glyph shrinks the line.
     pub x_advance: f32,
     pub y_advance: f32,
     pub x_offset: f32,
@@ -35,6 +39,10 @@ pub struct ShapeInput<'a> {
     pub text: &'a str,
     pub range: Range<usize>,
     pub rtl: bool,
+    /// Shape top-to-bottom with the face's vertical metrics and `vert` forms:
+    /// an upright run of a vertical line (#59). Overrides `rtl`, which a
+    /// vertical direction has no room for.
+    pub vertical: bool,
     pub script: Option<ScriptTag>,
     pub language: Option<&'a str>,
     pub features: &'a [FeatureValue],
@@ -106,7 +114,9 @@ impl FaceShapers {
             flags |= BufferFlags::END_OF_TEXT;
         }
         buffer.set_flags(flags);
-        buffer.set_direction(if input.rtl {
+        buffer.set_direction(if input.vertical {
+            Direction::TopToBottom
+        } else if input.rtl {
             Direction::RightToLeft
         } else {
             Direction::LeftToRight
@@ -146,13 +156,20 @@ impl FaceShapers {
                 .glyph_infos()
                 .iter()
                 .zip(output.glyph_positions())
-                .map(|(info, position)| RawGlyph {
-                    glyph_id: info.glyph_id,
-                    cluster: info.cluster,
-                    x_advance: position.x_advance as f32 * scale,
-                    y_advance: position.y_advance as f32 * scale,
-                    x_offset: position.x_offset as f32 * scale,
-                    y_offset: position.y_offset as f32 * scale,
+                .map(|(info, position)| {
+                    let (along, across) = if input.vertical {
+                        (-position.y_advance, position.x_advance)
+                    } else {
+                        (position.x_advance, position.y_advance)
+                    };
+                    RawGlyph {
+                        glyph_id: info.glyph_id,
+                        cluster: info.cluster,
+                        x_advance: along as f32 * scale,
+                        y_advance: across as f32 * scale,
+                        x_offset: position.x_offset as f32 * scale,
+                        y_offset: position.y_offset as f32 * scale,
+                    }
                 })
                 .collect(),
         )

@@ -35,6 +35,41 @@ impl RunDirection {
     }
 }
 
+/// How a run's glyphs stand in its line (#59).
+///
+/// Horizontal text has one orientation. A vertical line mixes two, split by
+/// UAX #50: CJK stands upright and advances down the line, Latin lies on its
+/// side and is drawn rotated 90° clockwise.
+///
+/// Every orientation keeps [`ShapedGlyph::advance_px`] as the advance **along
+/// the line** — the inline axis — so line breaking, alignment and truncation
+/// read one number whatever the writing mode. What differs is how a glyph's
+/// offsets and the line's baseline turn into a physical position, which is the
+/// painter's job and is spelled out on each variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunOrientation {
+    /// Shaped left-to-right or right-to-left along a horizontal line. The
+    /// glyph's origin is `(pen + offset_x, baseline − offset_y)`.
+    #[default]
+    Horizontal,
+    /// Shaped top-to-bottom with the font's vertical metrics and `vert`
+    /// forms. The pen runs down the line's centre; the glyph's *horizontal*
+    /// origin is `(centre + offset_x, pen − offset_y)`, because HarfRust
+    /// reports vertical offsets relative to it.
+    Upright,
+    /// Shaped left-to-right as horizontal text, then drawn rotated 90°
+    /// clockwise: the run's own baseline runs down the line, and its em box is
+    /// centred on the line's centre.
+    Sideways,
+}
+
+impl RunOrientation {
+    pub const fn is_vertical(self) -> bool {
+        !matches!(self, Self::Horizontal)
+    }
+}
+
 /// An ISO 15924 script tag, e.g. `*b"Latn"`.
 ///
 /// Four bytes rather than a string: it is an id, and run keys need it `Copy`.
@@ -138,13 +173,16 @@ pub struct ShapedRun {
     pub bidi_level: u8,
     #[serde(default)]
     pub script: ScriptTag,
+    #[serde(default)]
+    pub orientation: RunOrientation,
     pub font: FontId,
     pub font_size_px: f32,
     pub glyphs: Vec<ShapedGlyph>,
     /// As reported by the engine, never re-derived from `glyphs`. A run whose
     /// advance disagrees with the sum of its glyphs is a finding.
     pub advance_px: f32,
-    /// Left edge of the run in layout space.
+    /// Start edge of the run along the line, in layout space: the left edge
+    /// of a horizontal line, the top of a vertical one.
     ///
     /// Assigned by **layout**, not by shaping: a shape cache keeps every other
     /// field across a relayout and layout rewrites this one. It is stored

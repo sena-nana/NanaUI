@@ -15,8 +15,8 @@ use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem};
 use nana_text::layout::{LayoutCacheBudget, LayoutRequest, Layouter};
 use nana_text::shaping::{ShapeRequest, Shaper};
 use nana_text::{
-    Affinity, CaretPosition, LineBreakCause, NativeTextEngine, OverflowFlags, TextConstraints,
-    TextEngine, TextKind, TextLayout, TextSource, TextStyle, TextWorkCounters,
+    Affinity, CaretPosition, LineBreakCause, NativeTextEngine, OverflowFlags, RunOrientation,
+    TextConstraints, TextEngine, TextKind, TextLayout, TextSource, TextStyle, TextWorkCounters,
 };
 use nana_ui_core::{DirSpec, LineHeightSpec, TextAlignSpec, TextWrapBreak, WritingModeSpec};
 use std::sync::Arc;
@@ -1801,41 +1801,181 @@ fn intrinsic_widths_report_the_longest_word_and_the_unwrapped_paragraph() {
 
 // ---- writing mode --------------------------------------------------------
 
+/// #59: `vertical-rl` lays CJK out upright down a column and Latin sideways,
+/// each with an advance along the line.
 #[test]
-fn a_vertical_writing_mode_is_fail_closed_and_says_so_on_the_layout() {
+fn a_vertical_line_stands_cjk_upright_and_lays_latin_on_its_side() {
     let mut engine = text_engine(UI);
     let style = style(UI, 16.0);
+    // Horizontal first: the vertical shaping below must not be answered from
+    // this entry of the shape cache.
     let horizontal = lay_out(
         &mut engine,
         TextKind::Paragraph,
-        "one\ntwo",
+        "中文ab",
         &style,
-        &TextConstraints {
-            preserve_lines: true,
-            ..TextConstraints::default()
-        },
+        &TextConstraints::default(),
     );
-    assert!(!horizontal.unsupported_writing_mode);
+    assert!(!horizontal.is_vertical());
+    assert!(
+        horizontal
+            .runs
+            .iter()
+            .all(|run| run.orientation == RunOrientation::Horizontal)
+    );
 
     let vertical = lay_out(
         &mut engine,
         TextKind::Paragraph,
-        "one\ntwo",
+        "中文ab",
         &style,
         &TextConstraints {
-            preserve_lines: true,
             writing_mode: WritingModeSpec::VerticalRl,
             ..TextConstraints::default()
         },
     );
-    assert!(
-        vertical.unsupported_writing_mode,
-        "vertical writing is not implemented and must not pretend otherwise"
+    assert!(vertical.is_vertical());
+    assert!(!vertical.unsupported_writing_mode);
+    assert_eq!(engine.layout_counters().vertical_writing_fallbacks, 0);
+    let orientations: Vec<_> = vertical.runs.iter().map(|run| run.orientation).collect();
+    assert_eq!(
+        orientations,
+        [RunOrientation::Upright, RunOrientation::Sideways]
     );
-    assert_eq!(engine.layout_counters().vertical_writing_fallbacks, 1);
+    // An upright ideograph advances one em down the column (the face's
+    // `vmtx`), never a negative or zero length a line breaker would misread.
+    for glyph in &vertical.runs[0].glyphs {
+        assert!(
+            (glyph.advance_px - 16.0).abs() < 0.5,
+            "upright advance is the vertical one: {glyph:?}"
+        );
+    }
+    // Sideways Latin keeps its horizontal advances.
+    assert_eq!(
+        vertical.runs[1].advance_px, horizontal.runs[1].advance_px,
+        "a sideways run is the horizontal shaping, turned"
+    );
+    assert_eq!(vertical.runs[1].origin_x_px, vertical.runs[0].advance_px);
+
+    // On the page the column is one line box wide and as tall as its text.
+    let (width, height) = vertical.physical_size();
+    assert!((width - 16.0 * 1.2).abs() < 0.01, "one column: {width}");
+    let length = vertical.runs.iter().map(|run| run.advance_px).sum::<f32>();
+    assert!((height - length).abs() < 0.01, "{height} vs {length}");
+    // The baseline is the column's centre line.
+    let line = &vertical.lines[0];
     assert!(
-        vertical.lines[1].metrics.top_y_px > vertical.lines[0].metrics.top_y_px,
-        "the fallback geometry is the horizontal one, plainly"
+        (line.metrics.baseline_y_px - (line.metrics.top_y_px + line.metrics.height_px / 2.0)).abs()
+            < 0.01
+    );
+}
+
+/// #59: the box's **height** is the line budget of a vertical paragraph and
+/// its width only anchors the columns; `vertical-rl` stacks them from the
+/// right edge.
+#[test]
+fn a_vertical_paragraph_wraps_against_the_box_height_and_stacks_columns_right_to_left() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let text = "中文中文中文";
+    let constraints = TextConstraints {
+        // Wide enough for all six on one horizontal line: if this were the
+        // line budget, nothing would wrap.
+        max_width_px: Some(200.0),
+        max_height_px: Some(40.0),
+        wrap: Some(TextWrapBreak::Word),
+        writing_mode: WritingModeSpec::VerticalRl,
+        ..TextConstraints::default()
+    };
+    let laid = lay_out(&mut engine, TextKind::Paragraph, text, &style, &constraints);
+    assert_eq!(
+        line_texts(&laid, text),
+        ["中文", "中文", "中文"],
+        "two 16px ideographs fit a 40px column, three do not"
+    );
+    assert_every_character_is_on_a_line(&laid, text);
+    let (width, height) = laid.physical_size();
+    assert!(
+        (width - 3.0 * 16.0 * 1.2).abs() < 0.01,
+        "three columns: {width}"
+    );
+    assert!(
+        height <= 40.0 + 0.01,
+        "no column is longer than the box: {height}"
+    );
+
+    // Columns stack from the right edge of the box, first column rightmost.
+    let centres: Vec<f32> = laid
+        .lines
+        .iter()
+        .map(|line| laid.physical_x_of_block(line.metrics.baseline_y_px, 200.0))
+        .collect();
+    assert!(
+        (centres[0] - (200.0 - 16.0 * 1.2 / 2.0)).abs() < 0.01,
+        "{centres:?}"
+    );
+    assert!(
+        centres[0] > centres[1] && centres[1] > centres[2],
+        "{centres:?}"
+    );
+
+    // `vertical-lr` stacks the same columns from the left edge.
+    let lr = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        text,
+        &style,
+        &TextConstraints {
+            writing_mode: WritingModeSpec::VerticalLr,
+            ..constraints
+        },
+    );
+    let lr_centres: Vec<f32> = lr
+        .lines
+        .iter()
+        .map(|line| lr.physical_x_of_block(line.metrics.baseline_y_px, 200.0))
+        .collect();
+    assert!(
+        (lr_centres[0] - 16.0 * 1.2 / 2.0).abs() < 0.01,
+        "{lr_centres:?}"
+    );
+    assert!(lr_centres[0] < lr_centres[1], "{lr_centres:?}");
+}
+
+/// #59: an upright run is shaped top-to-bottom, so the face's `vert` feature
+/// swaps in the vertical forms of punctuation. A corner bracket drawn with its
+/// horizontal glyph in a column points the wrong way.
+#[test]
+fn upright_punctuation_takes_its_vertical_form() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let glyph_of = |layout: &TextLayout| layout.runs[0].glyphs[0].glyph_id;
+    let horizontal = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "「",
+        &style,
+        &TextConstraints::default(),
+    );
+    let vertical = lay_out(
+        &mut engine,
+        TextKind::Label,
+        "「",
+        &style,
+        &TextConstraints {
+            writing_mode: WritingModeSpec::VerticalRl,
+            ..TextConstraints::default()
+        },
+    );
+    assert_eq!(vertical.runs[0].orientation, RunOrientation::Upright);
+    assert_ne!(
+        glyph_of(&horizontal),
+        glyph_of(&vertical),
+        "the vertical corner bracket is a different glyph"
+    );
+    assert!(
+        engine.layout_counters().label_fast_paths >= 2,
+        "a one-line vertical label still takes the fast path"
     );
 }
 
@@ -2003,17 +2143,12 @@ fn a_language_change_moves_the_engine_epoch_and_a_repeat_does_not() {
     );
 }
 
-/// #59: a vertical request is laid out horizontally, and **says so** all the
-/// way out to the pass counters.
-///
-/// The fallback itself is the right answer — reporting horizontal metrics as
-/// if they were vertical ones would be worse — but it is invisible on screen.
-/// The flag on the layout was set and counted inside the layouter and read by
-/// nobody; carrying it into `TextWorkCounters` is what lets a frame, a
-/// devtools panel or a gate notice that a document asked for something this
-/// engine does not implement.
+/// #59: editable text asked for a vertical writing mode is still laid out
+/// horizontally — an editor does not yet move a caret across columns — and
+/// **says so** all the way out to the pass counters, where a frame, a devtools
+/// panel or a gate can notice it. Every other kind honours the request.
 #[test]
-fn a_vertical_request_falls_back_horizontally_and_is_counted_out_to_the_pass() {
+fn a_vertical_editor_falls_back_horizontally_and_is_counted_out_to_the_pass() {
     let mut engine = text_engine(&["nana-test-vf"]);
     let source = TextSource::new("AB");
     let style = style(&["nana-test-vf"], 16.0);
@@ -2023,11 +2158,26 @@ fn a_vertical_request_falls_back_horizontally_and_is_counted_out_to_the_pass() {
         ..TextConstraints::default()
     };
     let mut counters = TextWorkCounters::default();
-    let laid = engine.layout(TextKind::Label, &source, &style, &vertical, &mut counters);
+    let laid = engine.layout(
+        TextKind::Editable,
+        &source,
+        &style,
+        &vertical,
+        &mut counters,
+    );
     assert!(
         laid.unsupported_writing_mode,
         "the layout says it could not do what was asked"
     );
+    assert!(!laid.is_vertical());
+    assert!(
+        laid.runs
+            .iter()
+            .all(|run| run.orientation == RunOrientation::Horizontal),
+        "and its geometry is plainly the horizontal one"
+    );
+    let label = engine.layout(TextKind::Label, &source, &style, &vertical, &mut counters);
+    assert!(label.is_vertical(), "a label is not an editor");
     assert_eq!(
         counters.vertical_writing_fallbacks, 1,
         "and the pass carries that out where somebody can see it: {counters:?}"

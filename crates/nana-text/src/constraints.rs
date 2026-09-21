@@ -1,6 +1,7 @@
 //! What the container asks of a layout. Not style, and not device pixels
 //! policy — see [`TextScale`] for where the device scale stops.
 
+use crate::style::TextKind;
 use nana_ui_core::{
     DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec,
 };
@@ -27,6 +28,9 @@ impl Default for TextScale {
 /// Container constraints for one layout.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TextConstraints {
+    /// The physical box width, in logical px — also in a vertical writing
+    /// mode, where it bounds how many columns stack rather than how long a
+    /// line grows. See [`Self::inline_budget_px`].
     #[serde(default)]
     pub max_width_px: Option<f32>,
     #[serde(default)]
@@ -50,7 +54,8 @@ pub struct TextConstraints {
     pub preserve_lines: bool,
     #[serde(default)]
     pub base_direction: DirSpec,
-    /// Inline alignment of each line inside [`Self::max_width_px`].
+    /// Inline alignment of each line inside the inline budget
+    /// ([`Self::inline_budget_px`]).
     ///
     /// `Start` / `End` are logical and follow [`Self::base_direction`];
     /// `Left` / `Right` are physical. With no `max_width_px` there is no box to
@@ -97,10 +102,46 @@ impl TextConstraints {
         self.wrap.is_some()
     }
 
-    /// True when the caller asked for a writing mode the layout engine does not
-    /// implement. See [`TextLayout::unsupported_writing_mode`](crate::TextLayout::unsupported_writing_mode).
+    /// True when the caller asked for a vertical writing mode.
     pub fn wants_vertical_writing(&self) -> bool {
         self.writing_mode.is_vertical()
+    }
+
+    /// True when text of `kind` is actually laid out as vertical lines.
+    ///
+    /// Everything but editable text is (#59). An editor still lays out
+    /// horizontally: caret movement, selection and hit-testing across columns
+    /// are their own piece of work, and a caret drawn against horizontal
+    /// geometry while the glyphs stand in columns would be worse than either.
+    /// That fallback is reported, never silent: see
+    /// [`TextLayout::unsupported_writing_mode`](crate::TextLayout::unsupported_writing_mode).
+    pub fn lays_out_vertically(&self, kind: TextKind) -> bool {
+        self.wants_vertical_writing() && kind != TextKind::Editable
+    }
+
+    /// The budget a line may grow to along its own direction, in logical px:
+    /// the box's width for horizontal lines, its height for vertical ones.
+    ///
+    /// [`Self::max_width_px`] and [`Self::max_height_px`] are always the
+    /// **physical** box, whatever the writing mode; this and
+    /// [`Self::block_budget_px`] are where they turn into line and stacking
+    /// budgets, so no caller has to swap them by hand.
+    pub fn inline_budget_px(&self, vertical: bool) -> Option<f32> {
+        if vertical {
+            self.max_height_px
+        } else {
+            self.max_width_px
+        }
+    }
+
+    /// The budget lines may stack to, in logical px. See
+    /// [`Self::inline_budget_px`].
+    pub fn block_budget_px(&self, vertical: bool) -> Option<f32> {
+        if vertical {
+            self.max_width_px
+        } else {
+            self.max_height_px
+        }
     }
 }
 

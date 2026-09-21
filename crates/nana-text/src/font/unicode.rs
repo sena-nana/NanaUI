@@ -1,12 +1,14 @@
 //! Unicode properties fallback needs, via ICU4X. The only file allowed to name
 //! `icu_properties`.
 //!
-//! Nothing here is a hand-written table: script, `Emoji_Presentation` and
-//! `Default_Ignorable_Code_Point` come from ICU's compiled data, grapheme
-//! clusters from `unicode-segmentation`.
+//! Nothing here is a hand-written table: script, `Emoji_Presentation`,
+//! `Default_Ignorable_Code_Point` and `Vertical_Orientation` (UAX #50) come
+//! from ICU's compiled data, grapheme clusters from `unicode-segmentation`.
 
 use crate::shape::ScriptTag;
-use icu_properties::props::{DefaultIgnorableCodePoint, EmojiPresentation, Script};
+use icu_properties::props::{
+    DefaultIgnorableCodePoint, EmojiPresentation, Script, VerticalOrientation,
+};
 use icu_properties::{CodePointMapData, CodePointSetData, PropertyNamesShort};
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -24,12 +26,27 @@ pub struct ClusterInfo {
     /// Asks for emoji presentation: VS16, or an `Emoji_Presentation` base not
     /// forced to text by VS15.
     pub emoji: bool,
+    /// Stands upright in vertical text, by UAX #50 on the cluster's base
+    /// character. See [`is_upright_in_vertical`].
+    pub upright: bool,
 }
 
 /// True for codepoints a face need not map to render a cluster: ZWJ, variation
 /// selectors, bidi controls and the like.
 pub fn is_default_ignorable(ch: char) -> bool {
     CodePointSetData::new::<DefaultIgnorableCodePoint>().contains(ch)
+}
+
+/// True when `ch` is set upright in a vertical line (`text-orientation:
+/// mixed`), false when it is set sideways.
+///
+/// UAX #50 `U` and `Tu` are upright; `R` is sideways. `Tr` — the brackets,
+/// the prolonged sound mark, the dashes — is upright too: those need a
+/// vertical *form*, which the `vert` feature (or HarfRust's Unicode vertical
+/// presentation-form fallback) substitutes on an upright run, and which a
+/// rotated run would never ask for.
+pub fn is_upright_in_vertical(ch: char) -> bool {
+    CodePointMapData::<VerticalOrientation>::new().get(ch) != VerticalOrientation::Rotated
 }
 
 fn specific_script(ch: char) -> Option<ScriptTag> {
@@ -70,6 +87,7 @@ pub fn clusters(text: &str) -> Vec<ClusterInfo> {
                 range: start..start + grapheme.len(),
                 script,
                 emoji,
+                upright: grapheme.chars().next().is_some_and(is_upright_in_vertical),
             }
         })
         .collect()
@@ -95,6 +113,27 @@ mod tests {
         // ZWJ sequence and VS16 heart are emoji; the bare heart is text by
         // default; VS15 forces the grinning face to text.
         assert_eq!(emoji, [false, false, false, true, true, false, false]);
+    }
+
+    #[test]
+    fn vertical_orientation_follows_uax_50() {
+        // U: Han, kana, emoji. Tu: ideographic full stop. Tr: corner bracket
+        // and the prolonged sound mark.
+        for upright in ['中', 'あ', '😀', '。', '「', 'ー'] {
+            assert!(is_upright_in_vertical(upright), "{upright} is upright");
+        }
+        // R: Latin, digits, Arabic, the ASCII space.
+        for sideways in ['a', '1', 'ب', ' '] {
+            assert!(!is_upright_in_vertical(sideways), "{sideways} is sideways");
+        }
+        let clusters = clusters("中a");
+        assert_eq!(
+            clusters
+                .iter()
+                .map(|cluster| cluster.upright)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
     }
 
     #[test]

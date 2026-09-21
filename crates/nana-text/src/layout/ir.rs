@@ -118,6 +118,14 @@ pub struct LineBox {
 
 /// The immutable layout result.
 ///
+/// Geometry is **line-relative**: `x` runs along a line and `y` across the
+/// stack of lines. For horizontal text that is the page. For a vertical layout
+/// ([`Self::is_vertical`]) `x` runs down a column and `y` counts from the
+/// block-start column; [`Self::physical_x_of_block`] and
+/// [`Self::physical_size`] are the one place that turns it into the page,
+/// so line breaking, alignment, truncation and the caches never learn which
+/// way the page is turned.
+///
 /// It carries the [`TextRevision`] and [`FontGeneration`] it was produced
 /// under, so checking whether it is stale is an O(1) comparison instead of
 /// re-fingerprinting the text.
@@ -136,17 +144,70 @@ pub struct TextLayout {
     pub bounds: TextRect,
     #[serde(default)]
     pub overflow: OverflowFlags,
-    /// Set when the constraints asked for a vertical writing mode (#59).
+    /// Set when the constraints asked for a vertical writing mode that this
+    /// layout did not honour (#59): editable text, which is still laid out
+    /// horizontally (see [`TextConstraints::lays_out_vertically`](crate::TextConstraints::lays_out_vertically)).
     ///
-    /// The geometry in this layout is then horizontal-tb: the engine does not
-    /// own glyph orientation or vertical font metrics, so it says so rather
-    /// than reporting horizontal metrics as if they were vertical ones. A
-    /// consumer that cannot accept horizontal fallback checks this flag.
+    /// The geometry is then horizontal-tb, and says so rather than passing
+    /// horizontal metrics off as vertical ones. A consumer that cannot accept
+    /// horizontal fallback checks this flag.
     #[serde(default)]
     pub unsupported_writing_mode: bool,
 }
 
 impl TextLayout {
+    /// True when the lines of this layout are vertical columns.
+    pub fn is_vertical(&self) -> bool {
+        self.constraints.wants_vertical_writing() && !self.unsupported_writing_mode
+    }
+
+    /// The page x of a block-axis coordinate of a vertical layout, inside a
+    /// box `box_width_px` wide.
+    ///
+    /// `vertical-rl` stacks its columns from the box's right edge leftwards,
+    /// so it anchors to the box and needs its width; `vertical-lr` stacks from
+    /// the left edge and does not. Horizontal layouts return `block` as is —
+    /// there the block axis is `y`, and a caller should not be asking.
+    pub fn physical_x_of_block(&self, block: f32, box_width_px: f32) -> f32 {
+        if self.is_vertical() && self.constraints.writing_mode.block_start_is_right() {
+            box_width_px - block
+        } else {
+            block
+        }
+    }
+
+    /// Width and height the text occupies on the page: the longest line and
+    /// the summed line boxes, crossed over for a vertical layout.
+    ///
+    /// Summed line boxes rather than [`Self::bounds`], whose extent along the
+    /// line follows alignment: a centred line starts inside the box, and
+    /// reporting its right edge as the text's width would size a shrink-wrapped
+    /// container by its own previous width.
+    pub fn physical_size(&self) -> (f32, f32) {
+        let finite = |value: f32| {
+            if value.is_finite() {
+                value.max(0.0)
+            } else {
+                0.0
+            }
+        };
+        let along = self
+            .lines
+            .iter()
+            .map(|line| finite(line.metrics.width_px))
+            .fold(0.0, f32::max);
+        let across = self
+            .lines
+            .iter()
+            .map(|line| finite(line.metrics.height_px))
+            .sum();
+        if self.is_vertical() {
+            (across, along)
+        } else {
+            (along, across)
+        }
+    }
+
     pub fn glyph_count(&self) -> usize {
         self.runs.iter().map(|run| run.glyphs.len()).sum()
     }
