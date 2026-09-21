@@ -104,8 +104,10 @@ fn check_plan_children(
 /// This is the one place that reproduces the container's per-child arithmetic
 /// rather than calling into the placement loop, so it is deliberately narrow:
 /// `ContainerPlan::sequential` already excluded wrapping, space-distributing
-/// justification, reversed flow, grid tracks, auto main margins, non-Start/
-/// Stretch cross alignment and any grow/shrink redistribution. Anything this
+/// justification, grid tracks, auto main margins, non-Start/Stretch cross
+/// alignment and any grow/shrink redistribution. Like the loop it is
+/// flow-relative — the cursor and each child's leading margin are read from
+/// the start edge — and turns a reversed axis onto the page the same way. Anything this
 /// function meets that it cannot express, it refuses by returning `false`, and
 /// the caller falls back to a full container relayout.
 #[allow(clippy::too_many_arguments)]
@@ -122,6 +124,8 @@ fn replay_sequential_suffix(
     let direction = plan.main_direction;
     let container_align = plan.style.align_items;
     let container_cross = cross_extent(plan.content, direction);
+    let full_main = main_extent(plan.content, direction);
+    let (main_reversed, cross_reversed) = (plan.main_reversed, plan.cross_reversed);
     let count = plan.child_count();
     let mut cursor = plan.entries.borrow()[from].cursor_before;
     let mut replayed: Vec<PlannedChild> = Vec::with_capacity(count - from);
@@ -194,8 +198,34 @@ fn replay_sequential_suffix(
             Some(child_style.edge_percent_base(plan.content.width, plan.content.height)),
             child_fonts,
         );
-        let cross_offset = cross_start_margin(margin, direction);
-        let main_start = cursor + main_start_margin(margin, direction);
+        let (main_lead, main_trail) = if main_reversed {
+            (
+                main_end_margin(margin, direction),
+                main_start_margin(margin, direction),
+            )
+        } else {
+            (
+                main_start_margin(margin, direction),
+                main_end_margin(margin, direction),
+            )
+        };
+        let cross_lead = if cross_reversed {
+            cross_end_margin(margin, direction)
+        } else {
+            cross_start_margin(margin, direction)
+        };
+        // Flow-relative to the page, exactly as the placement loop does it.
+        let cross_offset = if cross_reversed {
+            container_cross - cross_lead - cross_extent(child_size, direction)
+        } else {
+            cross_lead
+        };
+        let flow_main = cursor + main_lead;
+        let main_start = if main_reversed {
+            full_main - flow_main - main_extent(child_size, direction)
+        } else {
+            flow_main
+        };
         let child_origin = match direction {
             FlexDirection::Row => Point {
                 x: plan.content_origin.x + main_start,
@@ -207,10 +237,7 @@ fn replay_sequential_suffix(
             },
         };
         let cursor_before = cursor;
-        cursor += main_extent(child_size, direction)
-            + main_start_margin(margin, direction)
-            + main_end_margin(margin, direction)
-            + plan.gap;
+        cursor += main_extent(child_size, direction) + main_lead + main_trail + plan.gap;
         if !subtree_unchanged(
             child,
             child_origin,
@@ -414,7 +441,10 @@ pub(super) fn place_node_scoped(
                     id, plan, from, viewport, nodes, intrinsic, output, scope,
                 )? {
                     #[cfg(any(test, feature = "benchmark"))]
-                    super::plan_stats::note_plan_reused();
+                    {
+                        super::plan_stats::note_plan_reused();
+                        super::plan_stats::note_suffix_replayed();
+                    }
                     return Ok(());
                 }
             }
@@ -540,10 +570,8 @@ pub(super) fn place_node_scoped(
         && nodes.world.children_layout_style_is_local(id);
     let mut plan_entries: Option<Vec<PlannedChild>> =
         cacheable.then(|| Vec::with_capacity(flow.len()));
-    // Narrowed to false by anything the suffix replay cannot express. The
-    // replay advances a physical cursor from the left / top, so it cannot
-    // express a reversed axis.
-    let mut plan_sequential = cacheable && !main_reversed && !cross_reversed;
+    // Narrowed to false by anything the suffix replay cannot express.
+    let mut plan_sequential = cacheable;
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
             .copied()
@@ -1015,6 +1043,8 @@ pub(super) fn place_node_scoped(
                 child_font_px,
                 child_available: content,
                 main_direction: direction,
+                main_reversed,
+                cross_reversed,
                 entries: RefCell::new(entries),
             }),
         );

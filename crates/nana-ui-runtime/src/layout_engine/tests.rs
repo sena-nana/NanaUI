@@ -4027,6 +4027,52 @@ fn diff_shapes() -> Vec<DiffShape> {
             container: column(|_| {}),
             row: auto_margin_row,
         },
+        // Reversed axes: placement is flow-relative and turned onto the page
+        // where an origin is written, and the sequential replay does the same.
+        // `margined_row`'s top and bottom margins differ, so on a reversed
+        // column the leading margin is the bottom one.
+        DiffShape {
+            name: "column-reverse-margins",
+            container: column(|s| {
+                s.flex_reverse = true;
+                s.gap = Some(LengthSpec::Px(3.0));
+            }),
+            row: margined_row,
+        },
+        DiffShape {
+            name: "column-rtl-cross-start-right",
+            container: column(|s| s.dir = Some(DirSpec::Rtl)),
+            row: plain_row,
+        },
+        DiffShape {
+            name: "row-rtl",
+            container: LayoutStyle {
+                width: Some(LengthSpec::Px(400.0)),
+                height: Some(LengthSpec::Px(80.0)),
+                direction: Some(FlexDirection::Row),
+                dir: Some(DirSpec::Rtl),
+                ..LayoutStyle::default()
+            },
+            row: plain_row,
+        },
+        DiffShape {
+            name: "vertical-rl-row",
+            container: column(|s| {
+                s.direction = Some(FlexDirection::Row);
+                s.writing_mode = Some(WritingModeSpec::VerticalRl);
+            }),
+            row: margined_row,
+        },
+        DiffShape {
+            name: "vertical-rl-rtl-row",
+            container: column(|s| {
+                s.direction = Some(FlexDirection::Row);
+                s.writing_mode = Some(WritingModeSpec::VerticalRl);
+                s.dir = Some(DirSpec::Rtl);
+                s.gap = Some(LengthSpec::Px(2.0));
+            }),
+            row: margined_row,
+        },
         DiffShape {
             name: "row-plain",
             container: LayoutStyle {
@@ -4195,6 +4241,80 @@ fn scoped_step_matches_full(
         );
     }
     step
+}
+
+/// A reversed axis keeps the sequential replay: a child's position still
+/// depends only on the children before it, measured back from the far edge.
+/// Edit one row mid-list and the container plan has to be reused — and agree
+/// with a full recompute — on every reversed shape.
+#[test]
+fn reversed_axes_keep_the_sequential_replay() {
+    const ROWS: usize = 12;
+    let viewport = LayoutViewport::new(320.0, 400.0);
+    let reversed = [
+        "column-reverse-margins",
+        "column-rtl-cross-start-right",
+        "vertical-rl-row",
+        "vertical-rl-rtl-row",
+    ];
+    for shape in diff_shapes()
+        .into_iter()
+        .filter(|shape| reversed.contains(&shape.name))
+    {
+        let (mut world, document) = diff_tree(&shape, ROWS);
+        let mut retained = RetainedLayoutCache::default();
+        let _ = world.take_system_work();
+        let emitted = RuntimeLayoutEngine
+            .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+            .unwrap();
+        write_changed_boxes(&mut world, &emitted);
+        let _ = world.take_system_work();
+        for (step, height) in [26.0f32, 14.0].into_iter().enumerate() {
+            let row = ROWS / 2;
+            let mut style = (shape.row)(row);
+            style.height = Some(LengthSpec::Px(height));
+            let mut queue = MutationQueue::new();
+            queue.set_style(
+                id(3 + row as u64 * 2),
+                NodeStyle {
+                    layout: Arc::new(style),
+                    ..NodeStyle::default()
+                },
+            );
+            world.commit(queue).unwrap();
+            super::plan_stats::reset();
+            let work = world.take_system_work();
+            let emitted = RuntimeLayoutEngine
+                .layout_document_scoped(
+                    &world,
+                    document,
+                    viewport,
+                    &work.layout,
+                    &mut retained,
+                    false,
+                )
+                .unwrap();
+            let replayed = super::plan_stats::suffixes_replayed();
+            write_changed_boxes(&mut world, &emitted);
+            let _ = world.take_system_work();
+            // The full comparison, after the counter was read.
+            let expected = full_boxes(&world, document, viewport);
+            let cached = &retained.documents[&document].boxes;
+            for (node, box_) in &expected {
+                assert_eq!(
+                    cached.get(node).copied().unwrap_or_default(),
+                    *box_,
+                    "{} step {step}: scoped layout diverged at {node:?}",
+                    shape.name
+                );
+            }
+            assert!(
+                replayed > 0,
+                "{} step {step}: the container must replay its suffix, not relayout",
+                shape.name
+            );
+        }
+    }
 }
 
 /// The equivalence itself: for every container shape, a sequence of changes at

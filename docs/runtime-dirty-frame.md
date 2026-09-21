@@ -238,11 +238,13 @@ p50 ms，1 个脏节点，`dirty-frame-after-round2.json`：
 
 顺序累加的容器里，第 k 个子节点改尺寸只会让 k 之后的子节点整体平移，`[0, k)` 一步都不动。
 `ContainerPlan` 因此多存两样东西：每个子节点的 `cursor_before`（主轴前缀和），以及一个
-`sequential` 标记——记录当时这个容器是不是纯粹的从左到右累加。
+`sequential` 标记——记录当时这个容器是不是纯粹地从主轴起点顺序累加。
 
 `sequential` 排除掉一切会让兄弟之间互相耦合的东西：换行、会分配剩余空间的 `justify-content`、
-反向流、grid 轨道、auto 主轴 margin、baseline/center/end 的交叉轴对齐，以及任何 grow/shrink
-再分配。最后一条是**从数据判定**的，不是从样式推理的：记录时逐个检查"用到的主轴尺寸是否
+grid 轨道、auto 主轴 margin、baseline/center/end 的交叉轴对齐，以及任何 grow/shrink
+再分配。反向轴（RTL、`vertical-rl` 的块轴、`*-reverse`）**不在**排除之列：摆放是流相对的
+（游标与领先 margin 都从起点边量起），只在写 origin 时经 `WritingContext` 从远端量回来，
+子节点 k 的位置照样只依赖 k 之前的兄弟；重放照同一条规则换算。最后一条是**从数据判定**的，不是从样式推理的：记录时逐个检查"用到的主轴尺寸是否
 等于 intrinsic"，相等就说明这一趟没有分配过剩余空间。
 
 命中时只重放 `[k, n)`：前缀原样保留，`entries` 通过 `RefCell` 就地更新那一段，所以尾部编辑
@@ -275,6 +277,13 @@ p50 ms，1 个脏节点，`dirty-frame-after-round2.json`：
 | 后缀平移（沿用缓存 origin） | `column-plain row 12 height 26: diverged at StableNodeId(41)` |
 | 对齐守卫（放行 End/Center/Baseline） | `column-plain align-self-only edit: diverged at StableNodeId(15)` |
 | grow/shrink 守卫 | `column-plain grow-only edit: diverged at StableNodeId(26)` |
+| 重放里的反向换算（主轴当成不反向） | `column-reverse-margins row 23 height 26: diverged at StableNodeId(49)` |
+| 反向轴不启用重放（旧限制） | `column-reverse-margins step 0: the container must replay its suffix, not relayout` |
+
+后两条是反向轴启用重放时加的：差分哈内斯多了 `column-reverse-margins`（上下 margin 不等，
+反向时领先的是下 margin）、RTL 行、RTL 列、`vertical-rl` 行、`vertical-rl` + rtl 行五种形状；
+`reversed_axes_keep_the_sequential_replay` 用专门的 `suffixes_replayed` 计数器断言确实走了重放——
+`plans_reused` 还统计「整份计划原样复用」，别的容器会让它大于 0，区分不出重放是否发生。
 
 第三条不是我预先想到的——是哈内斯在第一次跑重放时直接抓出来的：计划记录时容器没有剩余
 空间，grow 因此不起作用，`used == intrinsic` 成立；随后一次编辑加上 `flex-grow` 就开始分配

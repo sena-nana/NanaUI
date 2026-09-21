@@ -500,6 +500,7 @@ pub mod plan_stats {
 
     thread_local! {
         static PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
+        static SUFFIXES_REPLAYED: Cell<usize> = const { Cell::new(0) };
         static MEASURE_PLANS_REUSED: Cell<usize> = const { Cell::new(0) };
         static CHILDREN_MEASURED: Cell<usize> = const { Cell::new(0) };
         static CONTAINERS_UNCACHEABLE: Cell<usize> = const { Cell::new(0) };
@@ -537,6 +538,7 @@ pub mod plan_stats {
 
     pub fn reset() {
         PLANS_REUSED.with(|cell| cell.set(0));
+        SUFFIXES_REPLAYED.with(|cell| cell.set(0));
         MEASURE_PLANS_REUSED.with(|cell| cell.set(0));
         CHILDREN_MEASURED.with(|cell| cell.set(0));
         CONTAINERS_UNCACHEABLE.with(|cell| cell.set(0));
@@ -547,6 +549,18 @@ pub mod plan_stats {
 
     pub(crate) fn note_plan_reused() {
         PLANS_REUSED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    /// A reuse that replayed a sequential container's suffix, rather than
+    /// finding nothing changed.
+    pub(crate) fn note_suffix_replayed() {
+        SUFFIXES_REPLAYED.with(|cell| cell.set(cell.get() + 1));
+    }
+
+    /// Containers that kept their prefix and replayed only the children from
+    /// the first changed one on.
+    pub fn suffixes_replayed() -> usize {
+        SUFFIXES_REPLAYED.with(Cell::get)
     }
 
     pub(crate) fn note_measure_plan_reused() {
@@ -642,17 +656,24 @@ struct ContainerPlan {
     /// Available size each child's intrinsic measurement was taken against.
     child_available: Size,
     main_direction: FlexDirection,
+    /// The main and cross axes run from their far page edge — the right or
+    /// the bottom. Placement is flow-relative (every cursor and margin is read
+    /// from the start edge) and only turned onto the page where an origin is
+    /// written; the replay turns it the same way.
+    main_reversed: bool,
+    cross_reversed: bool,
     /// Origin of the container's content box.
     content_origin: Point,
     /// Main-axis gap between children.
     gap: f32,
-    /// True when this container placed its children as a plain left-to-right
-    /// accumulation, so child `i`'s position depends only on the children
-    /// before it. Everything that would couple siblings is excluded: wrapping,
-    /// a `justify-content` that distributes free space, reversed flow, grid
-    /// tracks, auto main margins, baseline or center/end cross alignment, and
-    /// any flex grow/shrink redistribution (detected from the data -- every
-    /// child's used main size equalled its intrinsic).
+    /// True when this container placed its children as a plain accumulation
+    /// from the main-start edge, so child `i`'s position depends only on the
+    /// children before it — on a reversed axis too, where it is measured back
+    /// from the far edge. Everything that would couple siblings is excluded:
+    /// wrapping, a `justify-content` that distributes free space, grid tracks,
+    /// auto main margins, baseline or center/end cross alignment, and any flex
+    /// grow/shrink redistribution (detected from the data -- every child's
+    /// used main size equalled its intrinsic).
     ///
     /// Under that shape a resized child shifts exactly the children after it,
     /// so the pass can keep the prefix and replay only the suffix.
