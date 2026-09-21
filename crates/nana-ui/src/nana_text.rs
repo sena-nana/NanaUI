@@ -684,6 +684,21 @@ mod tests {
             (single.width - 16.0 * 1.2).abs() < 0.01,
             "one column is one line box wide, not {across}: {single:?}"
         );
+
+        // An editor's offsets are across a line whatever the node asks for:
+        // its geometry is horizontal.
+        let offset = shaper.horizontal_offset(
+            node(),
+            &TextContent {
+                value: "やや".into(),
+            },
+            "や".len(),
+            &vertical,
+        );
+        assert!(
+            (offset - across).abs() < 0.01,
+            "an editor offset is the horizontal advance {across}, got {offset}"
+        );
     }
 
     /// The Runtime's own advance cache is not the engine's layout cache: it

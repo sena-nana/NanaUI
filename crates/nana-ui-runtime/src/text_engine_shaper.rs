@@ -436,11 +436,19 @@ impl TextShaper for NanaTextEngineShaper {
         let constraints = TextShapeConstraints::default();
         let source = TextSource::new(text.value.as_str());
         let kind = text_kind(&constraints);
+        // Across a line, by name: every caller sizes something an editor
+        // draws (a completion row, an indent or column guide), and editors lay
+        // out horizontally whatever `writing-mode` says (#59). Measured in the
+        // node's vertical mode it would return a length down a column.
+        let nana_constraints = NanaTextConstraints {
+            writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
+            ..nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind)
+        };
         let layout = nana_text::lock_text_engine(&self.engine).layout(
             kind,
             &source,
             &nana_text_style(style),
-            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind),
+            &nana_constraints,
             &mut self.work,
         );
         self.work.text_source_clones += 1;
