@@ -1103,12 +1103,28 @@ impl TextPipeline {
         };
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];
-        if clip::is_translation_projective(affine, persp) {
-            let line_logical = laid_out_height;
+        // The line box's top lands on a whole pixel of the grid its glyphs are
+        // placed on: the device grid for a translation, the entry's own raster
+        // grid, before the homography, for anything else.
+        //
+        // The second is the same snap in the space a projected run is
+        // resolved in, and that is what keeps an entry across the switch: at
+        // an identity transform both put the paragraph at the same sub-pixel
+        // phase, so a label whose container starts or stops turning, scaling
+        // or pressing keeps its glyphs — its run row changes its flags and
+        // nothing else. Unsnapped, every such transition rebuilt every label
+        // under the container, and a press made the label jump by a fraction
+        // of a pixel on its first frame.
+        let line_logical = laid_out_height;
+        if translation {
             let [_, wy] = clip::transform_point_projective(affine, persp, aligned[0], aligned[1]);
             let (top_px, _) =
                 clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
             aligned[1] += top_px / scale - wy;
+        } else {
+            let (top_px, _) =
+                clip::snap_centered_origin(aligned[1] + line_logical * 0.5, line_logical, raster);
+            aligned[1] = top_px / raster;
         }
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
@@ -3782,6 +3798,48 @@ mod tests {
             2,
             "and one rebuild per step"
         );
+    }
+
+    #[test]
+    fn a_container_that_starts_or_stops_turning_keeps_its_labels_glyphs() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let labels = |affine: [f32; 6]| {
+            (0..12)
+                .map(|index| Label {
+                    top: 3.3 + index as f32 * 17.6,
+                    affine,
+                    ..Label::new("Row content", index + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        let turned = |degrees: f32| {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            [cos, sin, -sin, cos, 0.0, 0.0]
+        };
+        let pressed = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
+        text_frame(&device, &queue, &mut pipeline, &labels(clip::IDENTITY_AFFINE));
+        let warm = pipeline.glyph_counters();
+        // A wobble through upright, and a press that springs back: the
+        // container leaves the identity and returns to it on every pass.
+        for affine in [
+            turned(2.0),
+            turned(-2.0),
+            clip::IDENTITY_AFFINE,
+            turned(3.0),
+            pressed(0.97),
+            pressed(0.985),
+            clip::IDENTITY_AFFINE,
+        ] {
+            text_frame(&device, &queue, &mut pipeline, &labels(affine));
+        }
+        let after = pipeline.glyph_counters();
+        assert_eq!(
+            after.text_instance_rebuilds, warm.text_instance_rebuilds,
+            "entering or leaving a transform is presentation: the glyphs are \
+             resolved at the same phase either side of it"
+        );
+        assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
     }
 
     #[test]
