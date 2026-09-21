@@ -678,7 +678,7 @@ pub(super) fn layout_grid_2d(
             .style(item.id)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(content.width),
+                    Some(style.edge_percent_base(content.width, content.height)),
                     fonts_of(&style, fonts.element_px),
                 )
             })
@@ -864,7 +864,10 @@ pub(super) fn place_grid_2d_items(
             intrinsic,
             scope,
         )?;
-        let margin = child_style.resolved_margin_against_fonts(Some(cell.width), child_fonts);
+        let margin = child_style.resolved_margin_against_fonts(
+            Some(child_style.edge_percent_base(cell.width, cell.height)),
+            child_fonts,
+        );
         let inline_lead = margin_at(margin, writing.inline_start());
         let block_lead = margin_at(margin, writing.block_start());
         let inner_inline =
@@ -911,7 +914,7 @@ pub(super) fn place_grid_2d_items(
             fill_auto_height_from_aspect_ratio(
                 child_style,
                 &mut child_size,
-                Some(cell.width),
+                Some(child_style.edge_percent_base(cell.width, cell.height)),
                 child_fonts,
             );
         }
@@ -1119,7 +1122,7 @@ pub(super) fn apply_grid_main_sizes(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(content.width),
+                    Some(style.edge_percent_base(content.width, content.height)),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })

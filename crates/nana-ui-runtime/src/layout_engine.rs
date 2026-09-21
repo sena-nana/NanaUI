@@ -1047,7 +1047,10 @@ fn subtree_unchanged(
         child_fonts,
     );
     scope.retained.used_padding.get(&child).copied()
-        == Some(child_style.resolved_padding_against_fonts(Some(containing.width), child_fonts))
+        == Some(child_style.resolved_padding_against_fonts(
+            Some(child_style.edge_percent_base(containing.width, containing.height)),
+            child_fonts,
+        ))
         && cached.x == origin.x + relative_x
         && cached.y == origin.y + relative_y
         && cached.width == size.width

@@ -3043,6 +3043,44 @@ fn a_vertical_grid_lays_columns_down_the_inline_axis_and_rows_from_the_right() {
     near(&rtl, "c", (50.0, 160.0, 30.0, 40.0));
 }
 
+/// Percentage margins resolve against the containing block's inline size
+/// (CSS Box Model §5): its height in a vertical writing mode, not its width.
+#[test]
+fn percentage_margins_resolve_against_the_inline_size_in_a_vertical_mode() {
+    let child = StyleLayoutNode {
+        id: "a".into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(20.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            margin_top: Some(LengthSpec::Percent(10.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(100.0)),
+            height: Some(LengthSpec::Px(200.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            align_items: AlignSpec::Start,
+            ..LayoutStyle::default()
+        },
+        children: vec![child],
+        text: None,
+    };
+    let boxes = box_map(&tree, 100.0, 200.0);
+    assert!(
+        (boxes["a"].y - 20.0).abs() < 0.5,
+        "10% of the 200px inline size, not of the 100px width: {:?}",
+        boxes["a"]
+    );
+}
+
 /// Tracks wider than the content box overflow past the inline-start edge —
 /// the left one in RTL. Clamping the mirrored x at zero piles every
 /// overflowing column onto the first instead.

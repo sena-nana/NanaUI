@@ -311,7 +311,7 @@ pub(super) fn wrap_intrinsic_size(
                 continue;
             };
             let margin = style.resolved_margin_against_fonts(
-                Some(available.width),
+                Some(style.edge_percent_base(available.width, available.height)),
                 fonts_of(style.as_ref(), parent_font_px),
             );
             let main = packing_main_size(

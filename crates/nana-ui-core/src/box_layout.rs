@@ -4390,6 +4390,19 @@ impl LayoutStyle {
         self.writing_mode.unwrap_or(WritingModeSpec::HorizontalTb)
     }
 
+    /// The base percentage margins and paddings resolve against: the inline
+    /// size of the containing block (CSS Box Model §5, CSS Writing Modes §7.2)
+    /// — its width in `horizontal-tb`, its height in a vertical mode.
+    ///
+    /// Read in this box's own writing mode, which it inherits from its
+    /// containing block unless it sets one itself; an orthogonal flow's own
+    /// box is the one case where the two differ.
+    pub fn edge_percent_base(&self, containing_width: f32, containing_height: f32) -> f32 {
+        self.writing_context()
+            .logical_size(containing_width, containing_height)
+            .0
+    }
+
     /// The writing mode and direction this box lays out in: where its
     /// inline and block axes run and start. See [`crate::WritingContext`].
     pub fn writing_context(&self) -> crate::WritingContext {

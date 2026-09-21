@@ -179,8 +179,10 @@ fn replay_sequential_suffix(
             return Ok(false);
         }
         let child_fonts = fonts_of(child_style, plan.child_font_px);
-        let margin =
-            child_style.resolved_margin_against_fonts(Some(plan.content.width), child_fonts);
+        let margin = child_style.resolved_margin_against_fonts(
+            Some(child_style.edge_percent_base(plan.content.width, plan.content.height)),
+            child_fonts,
+        );
         let mut child_size = child_intrinsic;
         if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
             let cross_available = container_cross - cross_margin(margin, direction);
@@ -189,7 +191,7 @@ fn replay_sequential_suffix(
         fill_auto_height_from_aspect_ratio(
             child_style,
             &mut child_size,
-            Some(plan.content.width),
+            Some(child_style.edge_percent_base(plan.content.width, plan.content.height)),
             child_fonts,
         );
         let cross_offset = cross_start_margin(margin, direction);
@@ -318,7 +320,10 @@ pub(super) fn place_node_scoped(
         },
     );
 
-    let padding = style.resolved_padding_against_fonts(Some(containing.width), fonts);
+    let padding = style.resolved_padding_against_fonts(
+        Some(style.edge_percent_base(containing.width, containing.height)),
+        fonts,
+    );
     nodes.used_padding.insert(id, padding);
 
     if let Some(modal) = modal.as_ref() {
@@ -700,7 +705,7 @@ pub(super) fn place_node_scoped(
                         .style(*child)
                         .map(|style| {
                             style.resolved_margin_against_fonts(
-                                Some(content.width),
+                                Some(style.edge_percent_base(content.width, content.height)),
                                 fonts_of(style.as_ref(), child_font_px),
                             )
                         })
@@ -834,8 +839,10 @@ pub(super) fn place_node_scoped(
                         cross_cursor = cross_cursor.max(clear_y);
                     }
                 }
-                let mut margin =
-                    child_style.resolved_margin_against_fonts(Some(content.width), child_fonts);
+                let mut margin = child_style.resolved_margin_against_fonts(
+                    Some(child_style.edge_percent_base(content.width, content.height)),
+                    child_fonts,
+                );
                 let line_box_cross = if line_count > 1 {
                     line_cross
                 } else {
@@ -857,7 +864,7 @@ pub(super) fn place_node_scoped(
                 fill_auto_height_from_aspect_ratio(
                     child_style,
                     &mut child_size,
-                    Some(content.width),
+                    Some(child_style.edge_percent_base(content.width, content.height)),
                     child_fonts,
                 );
                 let cross_offset = match align {

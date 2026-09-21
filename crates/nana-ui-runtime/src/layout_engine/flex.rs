@@ -37,7 +37,10 @@ pub(super) fn distribute_flex_main(
             continue;
         };
         let fonts = fonts_of(style.as_ref(), parent_font_px);
-        let margin = style.resolved_margin_against_fonts(Some(content.width), fonts);
+        let margin = style.resolved_margin_against_fonts(
+            Some(style.edge_percent_base(content.width, content.height)),
+            fonts,
+        );
         let (margin_main, min_main, max_main) = match direction {
             FlexDirection::Row => (
                 margin.left + margin.right,
@@ -76,7 +79,7 @@ pub(super) fn distribute_flex_main(
                 value = content_box_main_border_size(
                     style.as_ref(),
                     direction,
-                    Some(content.width),
+                    Some(style.edge_percent_base(content.width, content.height)),
                     value,
                     fonts,
                 );
@@ -93,7 +96,7 @@ pub(super) fn distribute_flex_main(
                     value = content_box_main_border_size(
                         style.as_ref(),
                         direction,
-                        Some(content.width),
+                        Some(style.edge_percent_base(content.width, content.height)),
                         value,
                         fonts,
                     );
@@ -290,7 +293,7 @@ pub(super) fn main_occupied(
     for (id, size) in children.iter().zip(sizes) {
         let margin = match nodes.style(*id) {
             Some(style) => style.resolved_margin_against_fonts(
-                Some(content.width),
+                Some(style.edge_percent_base(content.width, content.height)),
                 fonts_of(style.as_ref(), parent_font_px),
             ),
             None => Default::default(),

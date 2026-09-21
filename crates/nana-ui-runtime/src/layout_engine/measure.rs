@@ -39,7 +39,10 @@ fn resolved_size_specs(
     // `Fill` sizes the border box to the containing block minus the node's own
     // margins — negative margins widen it, matching the stretch path below;
     // percentages keep resolving against the raw containing block.
-    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
+    let margin = style.resolved_margin_against_fonts(
+        Some(style.edge_percent_base(available.width, available.height)),
+        fonts,
+    );
     let width = resolve_axis(
         demote_fill_spec_if_indefinite(style.width, available.width),
         available.width,
@@ -166,7 +169,10 @@ pub(super) fn intrinsic_size_scoped(
     }
     let fonts = fonts_of(style, parent_font_px);
     let child_font_px = fonts.element_px;
-    let padding = style.resolved_padding_against_fonts(Some(available.width), fonts);
+    let padding = style.resolved_padding_against_fonts(
+        Some(style.edge_percent_base(available.width, available.height)),
+        fonts,
+    );
     let border = style.resolved_border_edges();
     let chrome = Size::new(
         padding.left + padding.right + border.left + border.right,
@@ -174,7 +180,10 @@ pub(super) fn intrinsic_size_scoped(
     );
     // Measure descendants against this node's declared content box, not its
     // parent's full budget. Percent padding still resolves against the parent.
-    let margin = style.resolved_margin_against_fonts(Some(available.width), fonts);
+    let margin = style.resolved_margin_against_fonts(
+        Some(style.edge_percent_base(available.width, available.height)),
+        fonts,
+    );
     let content_axis = |spec: Option<LengthSpec>, available: f32, margins: f32, chrome: f32| {
         let resolved = resolve_axis(
             demote_fill_spec_if_indefinite(spec, available),
@@ -338,7 +347,9 @@ pub(super) fn intrinsic_size_scoped(
             .style(child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(content_available.width),
+                    Some(
+                        style.edge_percent_base(content_available.width, content_available.height),
+                    ),
                     fonts_of(&style, child_font_px),
                 )
             })
