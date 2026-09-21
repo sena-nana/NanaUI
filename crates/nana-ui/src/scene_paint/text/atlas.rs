@@ -515,6 +515,14 @@ impl GlyphAtlasManager {
         }
     }
 
+    /// Whether a glyph of this size could be placed at all, on an empty page.
+    /// A glyph that cannot is not waiting for room; asking again next frame
+    /// would only fail again.
+    pub(super) fn could_hold(&self, image: &GlyphImage) -> bool {
+        let limit = self.limits.page_edge.min(self.max_edge);
+        image.width + GLYPH_PADDING * 2 <= limit && image.height + GLYPH_PADDING * 2 <= limit
+    }
+
     /// Reserve a `cell`-sized rectangle, opening a page or evicting cold
     /// glyphs until one fits.
     fn allocate(
@@ -629,17 +637,21 @@ impl GlyphAtlasManager {
     /// instances are built from handles after every placement is final, so a
     /// glyph relocated mid-frame is invisible to the draw that follows.
     ///
-    /// Refused unless every live glyph's bitmap is still cached, because a
-    /// relocation that could not be re-uploaded would blank a glyph this frame
-    /// is drawing. Refusing leaves the atlas exactly as it was.
+    /// All or nothing. The live set is packed into fresh allocators first and
+    /// committed only if every glyph fits; otherwise the atlas is left exactly
+    /// as it was. A repack that kept what fitted and dropped the rest would be
+    /// an eviction nobody counted: the placement epoch would not move, an
+    /// entry holding a dropped handle would never be repaired, and it would
+    /// sample whatever glyph is given that rectangle next. It is also refused
+    /// unless every live glyph's bitmap is still cached, because a relocation
+    /// that could not be re-uploaded would blank a glyph.
     fn compact(
         &mut self,
         kind: AtlasPageKind,
         raster: &GlyphRasterCache,
         uploads: &mut GlyphUploadQueue,
     ) -> bool {
-        let frame = self.frame;
-        let mut live: Vec<(bool, u32, Arc<GlyphImage>)> = Vec::new();
+        let mut live: Vec<(u32, Arc<GlyphImage>)> = Vec::new();
         for (index, slot) in self.slots.iter().enumerate() {
             let Some(entry) = slot.live.as_ref() else {
                 continue;
@@ -650,47 +662,54 @@ impl GlyphAtlasManager {
             let Some(image) = raster.peek(&entry.key) else {
                 return false;
             };
-            live.push((entry.last_used == frame, index as u32, image));
+            live.push((index as u32, image));
         }
         if live.is_empty() {
             return false;
         }
-        // The frame in flight first, then tallest first. Order decides who
-        // survives a repack that does not fit everything back, and a glyph
-        // this frame already placed must not be the one dropped: its run holds
-        // a handle to it, and losing it would leave a hole in text that is
-        // being drawn right now. Within each group, tallest first, because a
-        // shelf allocator strands short shelves under tall glyphs and placing
-        // the tall ones into an empty page is the point of repacking.
-        live.sort_unstable_by_key(|(hot, index, image)| {
-            (
-                std::cmp::Reverse(*hot),
-                std::cmp::Reverse(image.height),
-                *index,
-            )
-        });
-        for page in &mut self.pages {
-            if page.kind == kind {
-                page.allocator.clear();
-            }
-        }
-        // Past this point every `AllocId` of this kind names a rectangle the
-        // packer has forgotten, so nothing may hand one back to it. Entries are
-        // either re-placed with a fresh id below, or released without one.
-        for (_, index, image) in live {
+        // Tallest first: a shelf allocator strands short shelves under tall
+        // glyphs, and placing the tall ones into an empty page is the point of
+        // repacking.
+        live.sort_unstable_by_key(|(index, image)| (std::cmp::Reverse(image.height), *index));
+        let mut trial: Vec<(usize, BucketedAtlasAllocator)> = self
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| page.kind == kind)
+            .map(|(index, page)| {
+                (
+                    index,
+                    BucketedAtlasAllocator::new(size2(page.edge as i32, page.edge as i32)),
+                )
+            })
+            .collect();
+        let mut placed = Vec::with_capacity(live.len());
+        for (index, image) in live {
             let cell = [
                 image.width + GLYPH_PADDING * 2,
                 image.height + GLYPH_PADDING * 2,
             ];
-            let Some((page, alloc, min)) = self.try_pages(kind, cell) else {
-                // The same glyphs in a better order no longer fit the same
-                // pages. Releasing the entry is fail-safe rather than
-                // best-effort: its handle goes stale, so a run already holding
-                // it drops that glyph for this frame instead of sampling the
-                // rectangle someone else is about to be given.
-                self.release_slot(index, false);
-                continue;
+            let size = size2(cell[0] as i32, cell[1] as i32);
+            let Some((page, allocation)) = trial
+                .iter_mut()
+                .find_map(|(page, allocator)| Some((*page, allocator.allocate(size)?)))
+            else {
+                return false;
             };
+            let min = allocation.rectangle.min;
+            placed.push((
+                index,
+                image,
+                cell,
+                page as u32,
+                allocation.id,
+                [min.x as u32, min.y as u32],
+            ));
+        }
+        for (page, allocator) in trial {
+            self.pages[page].allocator = allocator;
+        }
+        for (index, image, cell, page, alloc, min) in placed {
             let origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];
             if let Some(slot) = self.slots.get_mut(index as usize)
                 && let Some(entry) = slot.live.as_mut()
@@ -1197,6 +1216,80 @@ mod tests {
             placed.iter().any(|(_, id)| id.is_none()),
             "the page has to have run out for this to be testing anything"
         );
+        assert_no_overlap(&atlas);
+    }
+
+    /// Mask glyphs of assorted sizes, a deterministic function of the id.
+    struct Assorted;
+
+    impl GlyphRasterizer for Assorted {
+        fn rasterize(&mut self, request: &GlyphRasterRequest) -> Option<GlyphImage> {
+            let glyph = request.key.glyph;
+            let width = 2 + glyph.wrapping_mul(7919) % 15;
+            let height = 2 + glyph.wrapping_mul(104_729) % 19;
+            Some(GlyphImage {
+                format: GlyphImageFormat::Mask,
+                width,
+                height,
+                left: 0,
+                top: height as i32,
+                data: vec![255; (width * height) as usize],
+            })
+        }
+    }
+
+    #[test]
+    fn a_repack_that_cannot_fit_every_glyph_changes_nothing() {
+        let (device, _queue) = crate::test_gpu::device();
+        let (mut atlas, mut raster, mut uploads) = small_atlas(&device);
+        atlas.begin_frame(raster.generation());
+        // Fill the page in arrival order, placing only what fits without
+        // evicting. Packed tallest-first, this set no longer fits the page it
+        // arrived into: the order a shelf allocator sees decides how much of
+        // it strands.
+        let mut placed = Vec::new();
+        for glyph in 0..400 {
+            let key = key(glyph);
+            let image = raster
+                .get_or_rasterize(&mut Assorted, key)
+                .expect("assorted glyphs rasterize");
+            let size = size2(
+                (image.width + GLYPH_PADDING * 2) as i32,
+                (image.height + GLYPH_PADDING * 2) as i32,
+            );
+            let pages = || {
+                atlas
+                    .pages
+                    .iter()
+                    .filter(|page| page.kind == AtlasPageKind::Mask && page.edge > 1)
+            };
+            let fits = pages().next().is_none()
+                || pages().any(|page| page.allocator.clone().allocate(size).is_some());
+            if fits && let Some((id, _)) = atlas.insert(&device, key, &image, &raster, &mut uploads)
+            {
+                placed.push(id);
+            }
+        }
+        assert!(placed.len() > 20, "the page must be full of glyphs");
+        let before = atlas.live_rects();
+        let counters = atlas.counters();
+        assert!(
+            !atlas.compact(AtlasPageKind::Mask, &raster, &mut uploads),
+            "the fixture is one tallest-first packing cannot fit back"
+        );
+        assert_eq!(
+            atlas.live_rects(),
+            before,
+            "a repack that cannot place every glyph must leave every glyph where it was"
+        );
+        assert_eq!(atlas.counters().evictions, counters.evictions);
+        assert_eq!(atlas.counters().relocations, counters.relocations);
+        for id in placed {
+            assert!(
+                atlas.entry(id).is_some(),
+                "no handle a frame is drawing through may go stale"
+            );
+        }
         assert_no_overlap(&atlas);
     }
 }
