@@ -441,12 +441,20 @@ pub(super) fn layout_grid_2d(
     nodes: &LayoutInputMap<'_>,
     inherited: Option<&InheritedGridTracks>,
 ) -> Grid2DLayout {
-    let mut col_gap = style
-        .resolved_column_gap_against_fonts(Some(content.width).filter(|width| *width > 0.0), fonts);
+    // Columns are tracks along the inline axis and rows along the block one
+    // (CSS Grid §3): the page's width and height in `horizontal-tb`, its
+    // height and width in a vertical mode. Everything below sizes tracks on
+    // those logical extents; `place_grid_2d_items` turns them onto the page.
+    let writing = style.writing_context();
+    let (content_inline, content_block) = writing.logical_size(content.width, content.height);
+    let mut col_gap = style.resolved_column_gap_against_fonts(
+        Some(content_inline).filter(|inline| *inline > 0.0),
+        fonts,
+    );
     let mut row_gap = style.resolved_row_gap_against_fonts(
-        Some(content.height)
-            .filter(|height| *height > 0.0)
-            .or(Some(content.width).filter(|width| *width > 0.0)),
+        Some(content_block)
+            .filter(|block| *block > 0.0)
+            .or(Some(content_inline).filter(|inline| *inline > 0.0)),
         fonts,
     );
     let mut col_tracks = if style.is_subgrid_columns() {
@@ -461,7 +469,7 @@ pub(super) fn layout_grid_2d(
             Vec::new()
         }
     } else {
-        explicit_column_tracks(style, content.width, col_gap)
+        explicit_column_tracks(style, content_inline, col_gap)
     };
     let mut row_tracks = if style.is_subgrid_rows() {
         if let Some(sizes) = inherited
@@ -474,7 +482,7 @@ pub(super) fn layout_grid_2d(
             Vec::new()
         }
     } else {
-        explicit_row_tracks(style, content.height, row_gap)
+        explicit_row_tracks(style, content_block, row_gap)
     };
     let explicit_cols = col_tracks.len();
     let explicit_rows = row_tracks.len();
@@ -486,9 +494,9 @@ pub(super) fn layout_grid_2d(
 
     let default_placement = GridPlacement::default();
     let col_repeat_names =
-        expanded_repeat_line_names(style.grid_columns_repeat.as_ref(), content.width, col_gap);
+        expanded_repeat_line_names(style.grid_columns_repeat.as_ref(), content_inline, col_gap);
     let row_repeat_names =
-        expanded_repeat_line_names(style.grid_rows_repeat.as_ref(), content.height, row_gap);
+        expanded_repeat_line_names(style.grid_rows_repeat.as_ref(), content_block, row_gap);
     let col_names = col_repeat_names
         .as_deref()
         .or(style.grid_column_line_names.as_deref());
@@ -675,20 +683,24 @@ pub(super) fn layout_grid_2d(
                 )
             })
             .unwrap_or_default();
+        let (inline, block) = writing.logical_size(item.intrinsic.width, item.intrinsic.height);
+        let inline_margins =
+            margin_at(margin, writing.inline_start()) + margin_at(margin, writing.inline_end());
+        let block_margins =
+            margin_at(margin, writing.block_start()) + margin_at(margin, writing.block_end());
         if item.col_span == 1 && item.col < col_auto.len() {
-            col_auto[item.col] =
-                col_auto[item.col].max(item.intrinsic.width + margin.left + margin.right);
+            col_auto[item.col] = col_auto[item.col].max(inline + inline_margins);
         }
         if item.row_span == 1 && item.row < row_auto.len() {
-            row_auto[item.row] =
-                row_auto[item.row].max(item.intrinsic.height + margin.top + margin.bottom);
+            row_auto[item.row] = row_auto[item.row].max(block + block_margins);
         }
     }
-    let col_sizes = resolve_grid_track_sizes(&col_tracks, content.width, col_gap, &col_auto);
-    let mut row_sizes = resolve_grid_track_sizes(&row_tracks, content.height, row_gap, &row_auto);
-    // Leftover definite height goes to *empty* auto rows so `height:100%` /
-    // empty stretch have a cell, without inflating content-sized auto rows.
-    distribute_auto_track_leftover(&row_tracks, &mut row_sizes, content.height, row_gap);
+    let col_sizes = resolve_grid_track_sizes(&col_tracks, content_inline, col_gap, &col_auto);
+    let mut row_sizes = resolve_grid_track_sizes(&row_tracks, content_block, row_gap, &row_auto);
+    // Leftover definite block extent goes to *empty* auto rows so
+    // `height:100%` / empty stretch have a cell, without inflating
+    // content-sized auto rows.
+    distribute_auto_track_leftover(&row_tracks, &mut row_sizes, content_block, row_gap);
     Grid2DLayout {
         col_sizes,
         row_sizes,
@@ -787,11 +799,16 @@ pub(super) fn align_in_grid_cell(
 /// Mirror an inline-axis start/end pair. `direction: rtl` makes inline-start the
 /// physical right edge, so `justify-*: start` must resolve rightwards. Center,
 /// stretch and baseline have no side to swap.
-pub(super) fn flip_inline_align(align: AlignSpec) -> AlignSpec {
-    match align {
-        AlignSpec::Start => AlignSpec::End,
-        AlignSpec::End => AlignSpec::Start,
-        other => other,
+/// A resolved margin on one page edge.
+pub(super) fn margin_at(
+    margin: nana_ui_core::PaddingSpec,
+    edge: nana_ui_core::PhysicalEdge,
+) -> f32 {
+    match edge {
+        nana_ui_core::PhysicalEdge::Top => margin.top,
+        nana_ui_core::PhysicalEdge::Right => margin.right,
+        nana_ui_core::PhysicalEdge::Bottom => margin.bottom,
+        nana_ui_core::PhysicalEdge::Left => margin.left,
     }
 }
 
@@ -809,33 +826,33 @@ pub(super) fn place_grid_2d_items(
 ) -> Result<(), UiWorldError> {
     let col_off = grid_track_offsets(&grid.col_sizes, grid.col_gap);
     let row_off = grid_track_offsets(&grid.row_sizes, grid.row_gap);
-    // `direction: rtl` puts inline-start on the right: column 1 is the rightmost
-    // track, and a track block narrower than the content box packs to the right.
-    // Mirroring the resolved offsets keeps one track-sizing pass rather than a
-    // second RTL-only placement path. Vertical writing modes make the inline
-    // axis vertical, and RTL is skipped there (see `docs/layout.md`).
-    let rtl_inline = style.writing_context().inline_start() == nana_ui_core::PhysicalEdge::Right;
+    // Cells and items are placed flow-relative — columns from the
+    // inline-start edge, rows from the block-start one, `justify-self` along
+    // the inline axis and `align-self` along the block one, all as authored —
+    // and turned onto the page by the writing context. An RTL grid's first
+    // column is the rightmost; a track block narrower than the content box
+    // packs against the start edge, and one wider overflows past the *end*
+    // edge (no clamp: fixed-px tracks are never shrunk, so ordinary grids get
+    // here).
+    let writing = style.writing_context();
+    let box_extents = writing.logical_size(content.width, content.height);
+    let page = |rect| {
+        let (x, y, width, height) = writing.flow_rect_to_page(rect, box_extents);
+        (Point { x, y }, Size::new(width, height))
+    };
     for item in &grid.items {
         let Some(child_style) = nodes.style(item.id) else {
             continue;
         };
         let child_style = child_style.as_ref();
         let child_fonts = fonts_of(child_style, child_font_px);
-        let cell_y = row_off.get(item.row).copied().unwrap_or(0.0);
-        let cell_w = grid_span_extent(&grid.col_sizes, item.col, item.col_span, grid.col_gap);
-        let cell_h = grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
-        let inline_x = col_off.get(item.col).copied().unwrap_or(0.0);
-        let cell_x = if rtl_inline {
-            // No clamp: a track block wider than the content box overflows past
-            // the inline-*start* edge, which in RTL is the left one. Clamping at
-            // zero stacks every overflowing column on top of the first instead
-            // of letting them run off the edge, and fixed-px tracks are never
-            // shrunk by track sizing, so ordinary authored grids reach this.
-            content.width - inline_x - cell_w
-        } else {
-            inline_x
-        };
-        let cell = Size::new(cell_w, cell_h);
+        let cell_inline = col_off.get(item.col).copied().unwrap_or(0.0);
+        let cell_block = row_off.get(item.row).copied().unwrap_or(0.0);
+        let cell_inline_size =
+            grid_span_extent(&grid.col_sizes, item.col, item.col_span, grid.col_gap);
+        let cell_block_size =
+            grid_span_extent(&grid.row_sizes, item.row, item.row_span, grid.row_gap);
+        let (_, cell) = page((cell_inline, cell_block, cell_inline_size, cell_block_size));
         // Final tracks are the containing block for item padding and descendants.
         let measured = intrinsic_size_scoped(
             item.id,
@@ -847,44 +864,60 @@ pub(super) fn place_grid_2d_items(
             intrinsic,
             scope,
         )?;
-        let margin = child_style.resolved_margin_against_fonts(Some(cell_w), child_fonts);
-        let inner_w = (cell_w - margin.left - margin.right).max(0.0);
-        let inner_h = (cell_h - margin.top - margin.bottom).max(0.0);
-        let justify = {
-            let specified = child_style.resolved_justify_self(style.justify_items);
-            if rtl_inline {
-                flip_inline_align(specified)
-            } else {
-                specified
-            }
-        };
+        let margin = child_style.resolved_margin_against_fonts(Some(cell.width), child_fonts);
+        let inline_lead = margin_at(margin, writing.inline_start());
+        let block_lead = margin_at(margin, writing.block_start());
+        let inner_inline =
+            (cell_inline_size - inline_lead - margin_at(margin, writing.inline_end())).max(0.0);
+        let inner_block =
+            (cell_block_size - block_lead - margin_at(margin, writing.block_end())).max(0.0);
+        let justify = child_style.resolved_justify_self(style.justify_items);
         let align = child_style.resolved_align_self(style.align_items);
-        let stretch_x = justify == AlignSpec::Stretch && size_is_indefinite(child_style.width);
+        let (inline_spec, block_spec) = if writing.is_vertical() {
+            (child_style.height, child_style.width)
+        } else {
+            (child_style.width, child_style.height)
+        };
+        // An aspect ratio fills the height from a definite width, so a
+        // horizontal item with one is not stretched down its block axis.
         let ratio_filled_height = aspect_ratio_is_usable(child_style)
             && child_style
                 .width
                 .is_some_and(LengthSpec::is_definite_declared);
-        let stretch_y = align == AlignSpec::Stretch
-            && size_is_indefinite(child_style.height)
-            && !ratio_filled_height;
+        let stretch_inline = justify == AlignSpec::Stretch && size_is_indefinite(inline_spec);
+        let stretch_block = align == AlignSpec::Stretch
+            && size_is_indefinite(block_spec)
+            && !(ratio_filled_height && !writing.is_vertical());
         // Measurement already resolved declared lengths, min/max and box-sizing
         // against the final cell. Re-resolving here would drop content-box chrome.
-        let measured_w = measured.width;
-        let measured_h = measured.height;
-        let (off_x, used_w) = align_in_grid_cell(justify, measured_w, inner_w, stretch_x);
-        let (off_y, used_h) = align_in_grid_cell(align, measured_h, inner_h, stretch_y);
-        let mut child_size = Size::new(used_w, used_h);
-        if !stretch_y {
+        let (measured_inline, measured_block) =
+            writing.logical_size(measured.width, measured.height);
+        let (off_inline, used_inline) =
+            align_in_grid_cell(justify, measured_inline, inner_inline, stretch_inline);
+        let (off_block, used_block) =
+            align_in_grid_cell(align, measured_block, inner_block, stretch_block);
+        let (offset, mut child_size) = page((
+            cell_inline + inline_lead + off_inline,
+            cell_block + block_lead + off_block,
+            used_inline,
+            used_block,
+        ));
+        let stretch_height = if writing.is_vertical() {
+            stretch_inline
+        } else {
+            stretch_block
+        };
+        if !stretch_height {
             fill_auto_height_from_aspect_ratio(
                 child_style,
                 &mut child_size,
-                Some(cell_w),
+                Some(cell.width),
                 child_fonts,
             );
         }
         let child_origin = Point {
-            x: content_origin.x + cell_x + margin.left + off_x,
-            y: content_origin.y + cell_y + margin.top + off_y,
+            x: content_origin.x + offset.x,
+            y: content_origin.y + offset.y,
         };
         if !subtree_unchanged(
             item.id,

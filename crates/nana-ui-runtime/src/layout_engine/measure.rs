@@ -354,10 +354,12 @@ pub(super) fn intrinsic_size_scoped(
             nodes,
             None,
         );
-        Size::new(
+        // Columns run along the inline axis, rows along the block one.
+        let (width, height) = style.writing_context().physical_size(
             grid_axis_extent(&grid.col_sizes, grid.col_gap),
             grid_axis_extent(&grid.row_sizes, grid.row_gap),
-        )
+        );
+        Size::new(width, height)
     } else if let Some(tracks) = grid_tracks.filter(|tracks| !tracks.is_empty()) {
         let auto_sizes = auto_track_contributions(
             &flow_children,

@@ -158,6 +158,53 @@ impl WritingContext {
         }
     }
 
+    /// A page size as `(inline, block)`: the extents along the inline and
+    /// block axes.
+    pub const fn logical_size(self, width: f32, height: f32) -> (f32, f32) {
+        if self.is_vertical() {
+            (height, width)
+        } else {
+            (width, height)
+        }
+    }
+
+    /// `(inline, block)` extents as a page `(width, height)`.
+    pub const fn physical_size(self, inline: f32, block: f32) -> (f32, f32) {
+        if self.is_vertical() {
+            (block, inline)
+        } else {
+            (inline, block)
+        }
+    }
+
+    /// A flow-relative rectangle — offsets from the inline-start and
+    /// block-start edges of a box `(box_inline, box_block)` large, and sizes
+    /// along those axes — on the page, relative to the box's top-left, as
+    /// `(x, y, width, height)`. A reversed axis measures back from its far
+    /// edge, so this is the one place `direction` and `vertical-rl` turn
+    /// flow-relative layout onto the page.
+    pub fn flow_rect_to_page(
+        self,
+        (inline, block, inline_size, block_size): (f32, f32, f32, f32),
+        (box_inline, box_block): (f32, f32),
+    ) -> (f32, f32, f32, f32) {
+        let along = if self.inline_reversed() {
+            box_inline - inline - inline_size
+        } else {
+            inline
+        };
+        let across = if self.block_reversed() {
+            box_block - block - block_size
+        } else {
+            block
+        };
+        if self.is_vertical() {
+            (across, along, block_size, inline_size)
+        } else {
+            (along, across, inline_size, block_size)
+        }
+    }
+
     // ---- line-relative ------------------------------------------------------
 
     /// Page x of a block-axis coordinate of a vertical layout, inside a box
@@ -279,6 +326,41 @@ mod tests {
         assert!(reversed(WritingModeSpec::VerticalRl, DirSpec::Rtl, Column));
         assert!(reversed(WritingModeSpec::VerticalLr, DirSpec::Rtl, Column));
         assert!(!reversed(WritingModeSpec::VerticalLr, DirSpec::Rtl, Row));
+    }
+
+    #[test]
+    fn flow_rects_land_from_the_start_edges() {
+        let rect = (10.0, 20.0, 30.0, 5.0);
+        let page = |mode, direction| {
+            WritingContext::new(mode, direction).flow_rect_to_page(rect, (100.0, 50.0))
+        };
+        assert_eq!(
+            page(WritingModeSpec::HorizontalTb, DirSpec::Ltr),
+            (10.0, 20.0, 30.0, 5.0)
+        );
+        // RTL: 10 in from the right edge of a 100-wide box.
+        assert_eq!(
+            page(WritingModeSpec::HorizontalTb, DirSpec::Rtl),
+            (60.0, 20.0, 30.0, 5.0)
+        );
+        // `vertical-rl`: inline down from the top, block 20 in from the right
+        // of a 50-wide box.
+        assert_eq!(
+            page(WritingModeSpec::VerticalRl, DirSpec::Ltr),
+            (25.0, 10.0, 5.0, 30.0)
+        );
+        // …and with RTL, inline up from the bottom of a 100-tall box.
+        assert_eq!(
+            page(WritingModeSpec::VerticalRl, DirSpec::Rtl),
+            (25.0, 60.0, 5.0, 30.0)
+        );
+        assert_eq!(
+            page(WritingModeSpec::VerticalLr, DirSpec::Ltr),
+            (20.0, 10.0, 5.0, 30.0)
+        );
+        let context = WritingContext::new(WritingModeSpec::VerticalLr, DirSpec::Ltr);
+        assert_eq!(context.logical_size(40.0, 70.0), (70.0, 40.0));
+        assert_eq!(context.physical_size(70.0, 40.0), (40.0, 70.0));
     }
 
     #[test]

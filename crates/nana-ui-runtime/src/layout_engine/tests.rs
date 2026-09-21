@@ -2989,6 +2989,60 @@ fn rtl_grid_mirrors_column_order_and_justify_self() {
     );
 }
 
+/// Grid columns are tracks along the inline axis and rows along the block one
+/// (CSS Grid §3). In `vertical-rl` the columns run down the page and the rows
+/// stack from the right; with `direction: rtl` the columns start at the
+/// bottom.
+#[test]
+fn a_vertical_grid_lays_columns_down_the_inline_axis_and_rows_from_the_right() {
+    let cell = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            justify_self: Some(AlignSpec::Stretch),
+            align_self: Some(AlignSpec::Stretch),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let grid = |dir| StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Grid),
+            width: Some(LengthSpec::Px(100.0)),
+            height: Some(LengthSpec::Px(200.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            dir: Some(dir),
+            grid_columns: Some(vec![GridTrack::Px(40.0), GridTrack::Px(60.0)]),
+            grid_rows: Some(vec![GridTrack::Px(20.0), GridTrack::Px(30.0)]),
+            ..LayoutStyle::default()
+        },
+        children: vec![cell("a"), cell("b"), cell("c")],
+        text: None,
+    };
+    let near = |boxes: &HashMap<String, LayoutBox>, id: &str, expected: (f32, f32, f32, f32)| {
+        let got = boxes[id];
+        assert!(
+            (got.x - expected.0).abs() < 0.5
+                && (got.y - expected.1).abs() < 0.5
+                && (got.width - expected.2).abs() < 0.5
+                && (got.height - expected.3).abs() < 0.5,
+            "{id}: expected {expected:?}, got {got:?}"
+        );
+    };
+    // Auto-flow fills row 1 (the rightmost 20px), column by column down the
+    // page, then row 2 (the 30px to its left).
+    let ltr = box_map(&grid(DirSpec::Ltr), 100.0, 200.0);
+    near(&ltr, "a", (80.0, 0.0, 20.0, 40.0));
+    near(&ltr, "b", (80.0, 40.0, 20.0, 60.0));
+    near(&ltr, "c", (50.0, 0.0, 30.0, 40.0));
+    // RTL: column 1 is at the bottom of the 200px inline axis.
+    let rtl = box_map(&grid(DirSpec::Rtl), 100.0, 200.0);
+    near(&rtl, "a", (80.0, 160.0, 20.0, 40.0));
+    near(&rtl, "b", (80.0, 100.0, 20.0, 60.0));
+    near(&rtl, "c", (50.0, 160.0, 30.0, 40.0));
+}
+
 /// Tracks wider than the content box overflow past the inline-start edge —
 /// the left one in RTL. Clamping the mirrored x at zero piles every
 /// overflowing column onto the first instead.
