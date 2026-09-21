@@ -325,6 +325,12 @@ impl GlyphAtlasManager {
         }
     }
 
+    /// Bumped whenever a placement moved or died: what a retained instance's
+    /// rectangle is stamped with, and what says it must be re-read.
+    pub(super) fn placement_epoch(&self) -> u64 {
+        self.evictions.wrapping_add(self.relocations)
+    }
+
     /// Claim `id` on behalf of a retained block.
     pub(super) fn retain(&mut self, id: GlyphAtlasEntryId) {
         let Some(slot) = self.slots.get_mut(id.index as usize) else {

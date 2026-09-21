@@ -614,13 +614,8 @@ pub(super) struct TextPipelineTarget {
     physical_size: [u32; 2],
     frame: u64,
     frame_gpu_allocations: usize,
-    instance_rebuilds: u64,
-    instance_patches: u64,
-    instance_upload_bytes: u64,
-    presentation_upload_bytes: u64,
-    nodes_considered: u64,
-    nodes_skipped: u64,
-    nodes_culled: u64,
+    /// Everything but the entry lifecycle, which the store counts itself.
+    counters: TargetCounters,
 }
 
 /// The monotonic counters one render target accumulates.
@@ -662,16 +657,10 @@ impl TextPipelineTarget {
     fn counters(&self) -> TargetCounters {
         let entries = self.entries.counters();
         TargetCounters {
-            instance_rebuilds: self.instance_rebuilds,
-            instance_patches: self.instance_patches,
-            instance_upload_bytes: self.instance_upload_bytes,
-            presentation_upload_bytes: self.presentation_upload_bytes,
-            nodes_considered: self.nodes_considered,
-            nodes_skipped: self.nodes_skipped,
-            nodes_culled: self.nodes_culled,
             entries_created: entries.created,
             entries_destroyed: entries.destroyed,
             entries_reused: entries.reused,
+            ..self.counters
         }
     }
 
@@ -696,13 +685,7 @@ impl TextPipelineTarget {
             physical_size: [0; 2],
             frame: 0,
             frame_gpu_allocations: 0,
-            instance_rebuilds: 0,
-            instance_patches: 0,
-            instance_upload_bytes: 0,
-            presentation_upload_bytes: 0,
-            nodes_considered: 0,
-            nodes_skipped: 0,
-            nodes_culled: 0,
+            counters: TargetCounters::default(),
         }
     }
 }
@@ -849,8 +832,7 @@ impl TextPipeline {
     /// draw commands from an earlier frame must rebuild them when this
     /// changes: its instances name rectangles that are no longer that glyph's.
     pub(super) fn placement_epoch(&self) -> u64 {
-        let counters = self.atlas.counters();
-        counters.evictions.wrapping_add(counters.relocations)
+        self.atlas.placement_epoch()
     }
 
     /// Shape-cache counters for tests: (hits, misses, evictions). None until
@@ -1244,19 +1226,16 @@ impl TextPipeline {
         // and splitting afterwards rounds differently at every scroll
         // position, so the phase's last bit would change on a whole-pixel
         // horizontal scroll and every label would be resolved again.
-        let (whole, phase) = if translation {
+        //
+        // Vertically there is no phase: the line box top is a whole pixel.
+        let (x, y) = if translation {
             let [tx, ty] = pipeline::whole_translation(affine, scale);
-            let x = aligned[0] * scale + (affine[4] * scale - tx);
-            let whole_x = x.floor();
-            (
-                [whole_x, top_px - ty],
-                [(x - whole_x).to_bits(), 0f32.to_bits()],
-            )
+            (aligned[0] * scale + (affine[4] * scale - tx), top_px - ty)
         } else {
-            let x = aligned[0] * raster;
-            let whole_x = x.floor();
-            ([whole_x, top_px], [(x - whole_x).to_bits(), 0f32.to_bits()])
+            (aligned[0] * raster, top_px)
         };
+        let whole = [x.floor(), y];
+        let phase = [(x - whole[0]).to_bits(), 0f32.to_bits()];
         // An axis-aligned run is clipped by the batch's scissor. Rotated or
         // projective text carries the same homography as Quad, applied per
         // glyph corner in the vertex stage, and a rounded or polygonal clip
@@ -1282,9 +1261,9 @@ impl TextPipeline {
         let reachable = transformed_ink(ink, affine, persp)
             .intersection(clip)
             .is_some();
-        self.target.nodes_considered += 1;
+        self.target.counters.nodes_considered += 1;
         if !reachable {
-            self.target.nodes_culled += 1;
+            self.target.counters.nodes_culled += 1;
             return None;
         }
         let index = self.target.live_runs;
@@ -1335,7 +1314,7 @@ impl TextPipeline {
                 if !stale {
                     return true;
                 }
-                target.instance_patches += 1;
+                target.counters.instance_patches += 1;
                 target.entries.repair(*id, epoch, |handle| {
                     atlas.entry(handle).map(|entry| (entry.origin, entry.size))
                 })
@@ -1346,7 +1325,7 @@ impl TextPipeline {
                 // the ones these instances were resolved from. Nothing below
                 // this line reads a glyph.
                 self.target.entries.note_reuse();
-                self.target.nodes_skipped += 1;
+                self.target.counters.nodes_skipped += 1;
                 id
             }
             None => self.build_entry(
@@ -1627,10 +1606,7 @@ impl TextPipeline {
         // epoch from *after* that would declare those rectangles current and
         // nothing would ever repair them. Stamped with this one, the flush
         // re-reads them through the handles.
-        let epoch = {
-            let counters = atlas.counters();
-            counters.evictions.wrapping_add(counters.relocations)
-        };
+        let epoch = atlas.placement_epoch();
         // A glyph the atlas could not place this frame. The entry draws what
         // it has and asks again next frame, when the frame that crowded it
         // out may be gone; without this it would be missing for good, since
@@ -1646,7 +1622,7 @@ impl TextPipeline {
             .begin_build(key, resolved.glyphs.len() as u32, |handle| {
                 atlas.release(handle)
             });
-        target.instance_rebuilds += 1;
+        target.counters.instance_rebuilds += 1;
         let mut placed = 0u32;
         let mut segments: Vec<EntrySegment> = Vec::new();
         for run in &resolved.runs {
@@ -1806,8 +1782,7 @@ impl TextPipeline {
             target.arena.repack(total);
             target.entries.invalidate_arena();
         }
-        let counters = atlas.counters();
-        let epoch = counters.evictions.wrapping_add(counters.relocations);
+        let epoch = atlas.placement_epoch();
         let placeholders = [
             atlas.placeholder_page(AtlasPageKind::Mask),
             atlas.placeholder_page(AtlasPageKind::Color),
@@ -1874,13 +1849,13 @@ impl TextPipeline {
                     let intact = target.entries.repair(entry_id, epoch, |handle| {
                         atlas.entry(handle).map(|entry| (entry.origin, entry.size))
                     });
-                    target.instance_patches += 1;
+                    target.counters.instance_patches += 1;
                     if !intact && let Some(entry) = target.entries.get_mut(entry_id) {
                         entry.damaged = true;
                     }
                 }
                 if target.entries.bind_run(entry_id, slot) {
-                    target.instance_patches += 1;
+                    target.counters.instance_patches += 1;
                     dirty = true;
                 }
                 let entry = target.entries.get(entry_id).expect("looked up above");
@@ -2024,8 +1999,8 @@ impl TextPipeline {
             },
             work,
         );
-        target.instance_upload_bytes += bytes.instances as u64;
-        target.presentation_upload_bytes += bytes.presentation as u64;
+        target.counters.instance_upload_bytes += bytes.instances as u64;
+        target.counters.presentation_upload_bytes += bytes.presentation as u64;
         target.frame_gpu_allocations += target.gpu.take_allocations();
     }
 
@@ -3212,8 +3187,7 @@ mod tests {
                 ),
             );
         }
-        let counters = pipeline.atlas.counters();
-        let epoch = counters.evictions.wrapping_add(counters.relocations);
+        let epoch = pipeline.atlas.placement_epoch();
         let entry = pipeline.target.entries.get_mut(id).expect("just built");
         entry.atlas_epoch = epoch;
         entry.segments = segments;

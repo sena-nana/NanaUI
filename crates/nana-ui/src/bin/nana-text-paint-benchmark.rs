@@ -56,6 +56,10 @@ const PARAGRAPH_TEXT: &str = "Retained text keeps what a paragraph resolved to b
 /// Distinct ideographs [`Workload::AtlasPressure`] draws from, and the sizes
 /// it cycles through: together far more glyph area than the atlas budget.
 const PRESSURE_POOL: u32 = 20_000;
+
+/// What [`Workload::MutateRandom`] cuts its text from: any start below 16 and
+/// any length up to 14 stays inside it.
+const HEX_TWICE: &str = "0123456789abcdef0123456789abcdef";
 const PRESSURE_SIZES: [f32; 6] = [32.0, 44.0, 56.0, 72.0, 88.0, 104.0];
 
 /// Label counts Issue #98 asks for.
@@ -707,19 +711,11 @@ fn mutate(
                 let pick = xorshift(&mut state);
                 let row = rows[(pick % rows.len() as u64) as usize];
                 let length = 1 + (xorshift(&mut state) % 14) as usize;
+                let start = pick as usize % 16;
                 queue.set_text(
                     row,
                     TextContent {
-                        value: "Item "
-                            .chars()
-                            .chain(
-                                "0123456789abcdef"
-                                    .chars()
-                                    .cycle()
-                                    .skip(pick as usize % 16)
-                                    .take(length),
-                            )
-                            .collect(),
+                        value: format!("Item {}", &HEX_TWICE[start..start + length]),
                     },
                 );
             }
