@@ -3241,6 +3241,84 @@ fn writing_mode_vertical_rtl_column_flex_puts_cross_start_at_the_bottom() {
     );
 }
 
+/// An RTL row that wraps fills its first line with its *first* items, laid
+/// from the right: placement is flow-relative, and the page is only turned
+/// when an origin is written. (Reversing the item list before wrapping put
+/// the last items on the first line.)
+#[test]
+fn rtl_wrapping_row_fills_its_first_line_with_its_first_items() {
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            flex_wrap: FlexWrap::Wrap,
+            width: Some(LengthSpec::Px(100.0)),
+            height: Some(LengthSpec::Px(40.0)),
+            align_items: AlignSpec::Start,
+            dir: Some(DirSpec::Rtl),
+            ..LayoutStyle::default()
+        },
+        children: (1..=5)
+            .map(|index| px_box(&format!("item{index}"), 30.0, 20.0))
+            .collect(),
+        text: None,
+    };
+    let boxes = box_map(&tree, 100.0, 40.0);
+    // Three 30px items to a 100px line: 1 2 3 on the first, 4 5 on the next.
+    for (id, x, y) in [
+        ("item1", 70.0, 0.0),
+        ("item2", 40.0, 0.0),
+        ("item3", 10.0, 0.0),
+        ("item4", 70.0, 20.0),
+        ("item5", 40.0, 20.0),
+    ] {
+        assert!(
+            (boxes[id].x - x).abs() < 0.5 && (boxes[id].y - y).abs() < 0.5,
+            "{id} at ({x}, {y}), got {:?}",
+            boxes[id]
+        );
+    }
+}
+
+/// In `vertical-rl` the cross axis of a `flex-direction: row` container is
+/// the block axis, which starts at the right: `align-items: start` puts every
+/// item against the right edge, not the line against it and a narrower item
+/// at the line's far side.
+#[test]
+fn vertical_rl_cross_start_is_the_right_edge_for_every_item() {
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(100.0)),
+            height: Some(LengthSpec::Px(100.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            align_items: AlignSpec::Start,
+            ..LayoutStyle::default()
+        },
+        children: vec![px_box("wide", 40.0, 30.0), px_box("narrow", 20.0, 30.0)],
+        text: None,
+    };
+    let boxes = box_map(&tree, 100.0, 100.0);
+    assert!(
+        (boxes["wide"].x - 60.0).abs() < 0.5,
+        "got {:?}",
+        boxes["wide"]
+    );
+    assert!(
+        (boxes["narrow"].x - 80.0).abs() < 0.5,
+        "the narrow item hugs the right edge too, got {:?}",
+        boxes["narrow"]
+    );
+    assert!(
+        (boxes["narrow"].y - 30.0).abs() < 0.5,
+        "got {:?}",
+        boxes["narrow"]
+    );
+}
+
 #[test]
 fn writing_mode_vertical_shaper_keeps_horizontal_metrics() {
     let metrics = crate::MeasureTextShaper.shape(

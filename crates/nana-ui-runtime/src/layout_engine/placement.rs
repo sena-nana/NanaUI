@@ -458,24 +458,31 @@ pub(super) fn place_node_scoped(
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
     let direction = used_flow_direction(style, ifc);
+    // Flow-relative placement. Every position below is measured from the
+    // main-start and cross-start edges of the content box, in flow order —
+    // lines filled first item first, `justify-content` / `align-items` /
+    // `align-content` read as authored — and turned onto the page once, where
+    // a child's origin is written. A reversed axis is only that last step:
+    // an RTL inline axis (the right, or the bottom of a vertical one),
+    // `vertical-rl`'s block axis from the right, or `flex-direction: *-reverse`.
+    // Nothing else knows the page is turned: no list is reversed, no
+    // alignment keyword flipped, no line packed from the other end.
     let writing = style.writing_context();
-    // Content along the main axis starts at its far end: an RTL inline axis
-    // (the right, or the bottom of a vertical one) or `vertical-rl`'s block
-    // axis. An inline formatting context reverses its lines' items instead
-    // (below), because it wraps first.
-    let reverse_main =
-        !grid_2d && !ifc && style.flex_reverse != writing.physical_axis_reversed(direction);
-    // The cross axis is the inline one, and it runs backwards: cross-start is
-    // the right of an RTL column container, or the bottom of a vertical RTL
-    // row one. A block cross axis is packed by `pack_block_from_end` instead.
     let cross = if direction.is_row() {
         FlexDirection::Column
     } else {
         FlexDirection::Row
     };
-    let cross_inline_reversed = writing.carries_inline(cross) && writing.inline_reversed();
-    if reverse_main {
-        flow.reverse();
+    let main_reversed = !grid_2d
+        && if ifc {
+            writing.physical_axis_reversed(direction)
+        } else {
+            style.flex_reverse != writing.physical_axis_reversed(direction)
+        };
+    let cross_reversed = !grid_2d && writing.physical_axis_reversed(cross);
+    // A triggered menu lays out its positioned items in list order, which was
+    // the reversed flow order before placement went flow-relative; keep it.
+    if main_reversed && !ifc {
         positioned.reverse();
     }
     let parent_box = gap_containing_block(style, content);
@@ -528,12 +535,10 @@ pub(super) fn place_node_scoped(
         && nodes.world.children_layout_style_is_local(id);
     let mut plan_entries: Option<Vec<PlannedChild>> =
         cacheable.then(|| Vec::with_capacity(flow.len()));
-    // Narrowed to false by anything the suffix replay cannot express.
-    // The sequential replay pins children to cross-start and only accepts
-    // Start/Stretch alignment, so it cannot express an rtl column container
-    // whose cross-start is the right edge. (An rtl *row* container already
-    // fails the `justify == Start` check below, because rtl flips justify.)
-    let mut plan_sequential = cacheable && !reverse_main;
+    // Narrowed to false by anything the suffix replay cannot express. The
+    // replay advances a physical cursor from the left / top, so it cannot
+    // express a reversed axis.
+    let mut plan_sequential = cacheable && !main_reversed && !cross_reversed;
     let plan_intrinsics: Option<HashMap<StableNodeId, Size>> = cacheable.then(|| {
         flow.iter()
             .copied()
@@ -582,16 +587,12 @@ pub(super) fn place_node_scoped(
             FlexDirection::Row => style.active_grid_columns(),
             FlexDirection::Column => style.active_grid_rows(),
         };
-        let mut justify = if ifc {
+        let justify = if ifc {
             ifc_justify(style.text_align, writing)
         } else {
             style.justify_content
         };
-        if reverse_main {
-            justify = flip_justify_for_reverse(justify);
-        }
-        plan_sequential &=
-            justify == JustifySpec::Start && grid_tracks.is_none() && !cross_inline_reversed;
+        plan_sequential &= justify == JustifySpec::Start && grid_tracks.is_none();
         let full_main = main_extent(content, direction);
         let mut line_slots = if wrapping {
             if ifc && style.resolved_writing_mode().is_horizontal() {
@@ -645,17 +646,13 @@ pub(super) fn place_node_scoped(
         let mut packed: Vec<(Vec<StableNodeId>, Vec<Size>, f32, f32, f32, f32, bool)> =
             Vec::with_capacity(line_slots.len());
         for slot in &line_slots {
-            let mut line_flow: Vec<StableNodeId> =
+            let line_flow: Vec<StableNodeId> =
                 slot.indices.iter().map(|&index| flow[index]).collect();
             let mut line_sizes: Vec<Size> = slot
                 .indices
                 .iter()
                 .map(|&index| child_sizes[index])
                 .collect();
-            if ifc && writing.inline_reversed() {
-                line_flow.reverse();
-                line_sizes.reverse();
-            }
             let mut line_content = content;
             set_main_extent(&mut line_content, direction, slot.main_available);
             let line_tracks = grid_tracks.map(|tracks| {
@@ -711,25 +708,25 @@ pub(super) fn place_node_scoped(
                     cross_extent(*size, direction) + cross_margin(margin, direction)
                 })
                 .fold(0.0, f32::max);
+            // A float-narrowed line's start, measured from main-start: its
+            // physical left offset, or the room its right end leaves when the
+            // main axis runs from the right.
+            let line_start = if main_reversed {
+                full_main - slot.main_start - slot.main_available
+            } else {
+                slot.main_start
+            };
             packed.push((
                 line_flow,
                 line_sizes,
                 line_cross,
-                slot.main_start,
+                line_start,
                 slot.main_available,
                 slot.cross_y,
                 slot.pin_cross,
             ));
         }
-        let from_block_end = pack_block_from_end(style, direction);
-        if from_block_end {
-            packed.reverse();
-        }
-        let align_content = if from_block_end {
-            flip_justify_for_reverse(style.align_content)
-        } else {
-            style.align_content
-        };
+        let align_content = style.align_content;
         let line_count = packed.len();
         let container_cross = cross_extent(content, direction);
         let (mut cross_cursor, extra_cross_gap) = if line_count > 1 {
@@ -750,14 +747,38 @@ pub(super) fn place_node_scoped(
             } else {
                 justify_offsets(align_content, container_cross, total, cross_gap, line_count)
             }
-        } else if from_block_end {
-            let line_cross = packed
-                .first()
-                .map(|(_, _, cross, _, _, _, _)| *cross)
-                .unwrap_or(0.0);
-            ((container_cross - line_cross).max(0.0), cross_gap)
         } else {
             (0.0, cross_gap)
+        };
+        // A child's margins on the side its axis starts from, and on the
+        // other: on a reversed axis the leading margin is the physical end one.
+        let main_lead = |margin| {
+            if main_reversed {
+                main_end_margin(margin, direction)
+            } else {
+                main_start_margin(margin, direction)
+            }
+        };
+        let main_trail = |margin| {
+            if main_reversed {
+                main_start_margin(margin, direction)
+            } else {
+                main_end_margin(margin, direction)
+            }
+        };
+        let cross_lead = |margin| {
+            if cross_reversed {
+                cross_end_margin(margin, direction)
+            } else {
+                cross_start_margin(margin, direction)
+            }
+        };
+        let cross_trail = |margin| {
+            if cross_reversed {
+                cross_start_margin(margin, direction)
+            } else {
+                cross_end_margin(margin, direction)
+            }
         };
         for (
             line_flow,
@@ -828,18 +849,7 @@ pub(super) fn place_node_scoped(
                     line_box_cross,
                     child_size,
                 );
-                let align = {
-                    let specified = child_style.resolved_align_self(style.align_items);
-                    // When the cross axis IS the inline axis — a horizontal
-                    // column container, a vertical row one — `direction: rtl`
-                    // moves cross-start to its far end. A block cross axis is
-                    // not touched by `direction`.
-                    if cross_inline_reversed {
-                        flip_inline_align(specified)
-                    } else {
-                        specified
-                    }
-                };
+                let align = child_style.resolved_align_self(style.align_items);
                 let cross_available = line_box_cross - cross_margin(margin, direction);
                 if align == AlignSpec::Stretch && !cross_axis_is_definite(child_style, direction) {
                     set_cross_extent(&mut child_size, direction, cross_available.max(0.0));
@@ -851,9 +861,7 @@ pub(super) fn place_node_scoped(
                     child_fonts,
                 );
                 let cross_offset = match align {
-                    AlignSpec::Start | AlignSpec::Stretch => {
-                        cross_cursor + cross_start_margin(margin, direction)
-                    }
+                    AlignSpec::Start | AlignSpec::Stretch => cross_cursor + cross_lead(margin),
                     AlignSpec::Baseline => {
                         let base = child_style
                             .baseline_from_ascent(child_fonts.element_px, nodes.text_ascent(child));
@@ -861,7 +869,7 @@ pub(super) fn place_node_scoped(
                     }
                     AlignSpec::Center => {
                         cross_cursor
-                            + cross_start_margin(margin, direction)
+                            + cross_lead(margin)
                             + ((cross_available - cross_extent(child_size, direction)) / 2.0)
                                 .max(0.0)
                     }
@@ -869,11 +877,23 @@ pub(super) fn place_node_scoped(
                         cross_cursor
                             + (line_box_cross
                                 - cross_extent(child_size, direction)
-                                - cross_end_margin(margin, direction))
+                                - cross_trail(margin))
                             .max(0.0)
                     }
                 };
-                let main_start = line_origin_main + cursor + main_start_margin(margin, direction);
+                // Flow-relative to the page: a reversed axis measures back
+                // from its far edge.
+                let flow_main = line_origin_main + cursor + main_lead(margin);
+                let main_start = if main_reversed {
+                    full_main - flow_main - main_extent(child_size, direction)
+                } else {
+                    flow_main
+                };
+                let cross_offset = if cross_reversed {
+                    container_cross - cross_offset - cross_extent(child_size, direction)
+                } else {
+                    cross_offset
+                };
                 let child_origin = match direction {
                     FlexDirection::Row => Point {
                         x: content_origin.x + main_start,
@@ -941,8 +961,8 @@ pub(super) fn place_node_scoped(
                     )?;
                 }
                 cursor += main_extent(child_size, direction)
-                    + main_start_margin(margin, direction)
-                    + main_end_margin(margin, direction)
+                    + main_lead(margin)
+                    + main_trail(margin)
                     + effective_gap;
             }
             cross_cursor += line_cross + extra_cross_gap;

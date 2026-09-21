@@ -1157,17 +1157,18 @@ fn used_flow_direction(style: &LayoutStyle, ifc: bool) -> FlexDirection {
     context.physical_flex_direction(css)
 }
 
-/// `vertical-rl` packs lines from the physical right (block-start) when the
-/// cross axis is horizontal.
-fn pack_block_from_end(style: &LayoutStyle, direction: FlexDirection) -> bool {
-    style.writing_context().block_reversed() && direction.is_column()
-}
-
-/// `text-align` as the justification of an inline formatting context's line:
-/// `start` / `end` follow the inline axis, which runs from the right in RTL and
-/// from the bottom in a vertical RTL box.
+/// `text-align` as the flow-relative justification of an inline formatting
+/// context's line: `start` / `end` are the inline axis's own, and the physical
+/// `left` / `right` land on whichever end of it the page puts there — the end
+/// of an RTL line for `left`, its start for `right`.
 fn ifc_justify(align: TextAlignSpec, context: nana_ui_core::WritingContext) -> JustifySpec {
-    align.to_justify(context.inline_reversed())
+    let reversed = context.inline_reversed();
+    let physical = align.to_justify(reversed);
+    if reversed {
+        flip_justify_for_reverse(physical)
+    } else {
+        physical
+    }
 }
 
 fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {
