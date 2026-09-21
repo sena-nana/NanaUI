@@ -90,6 +90,52 @@ type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32);
 const RETIRE_INTERVAL: u64 = 64;
 const RETIRE_AFTER_FRAMES: u64 = 240;
 
+/// Raster factors a magnifying transform can earn a paragraph, half an octave
+/// apart. Magnification, not minification: text a transform shrinks is drawn
+/// from its device-scale bitmaps, which is what every press and zoom-in
+/// animation in a shell does, and a bitmap a little larger than its quad is
+/// what bilinear sampling handles well.
+const RASTER_STEPS: [f32; 5] = [
+    1.0,
+    std::f32::consts::SQRT_2,
+    2.0,
+    2.0 * std::f32::consts::SQRT_2,
+    4.0,
+];
+/// How far past the midpoint between two steps a magnification must travel
+/// before the step an entry holds gives way, in steps. A zoom that settles
+/// near a boundary does not flip between two bitmaps as it jitters, and a zoom
+/// animation rasterizes each step it passes once rather than once per frame.
+const RASTER_HYSTERESIS: f32 = 0.25;
+/// Largest em a raster step may ask for, in raster px. Past this a magnified
+/// glyph is not worth an atlas region the size of a tile.
+const MAX_RASTER_EM_PX: f32 = 256.0;
+
+/// The raster step for text under `affine`, given the step it held.
+///
+/// The device scale is not an input: it is the DPI policy, applied whatever
+/// this says. This is the *scene* scale policy — separate, bucketed and
+/// hysteretic, so a transform animation cannot open a raster size per frame.
+fn raster_step(affine: [f32; 6], held: Option<u8>, em_px: f32) -> u8 {
+    let [a, b, c, d, _, _] = affine;
+    let magnification = (a * a + b * b).max(c * c + d * d).sqrt();
+    let top = (RASTER_STEPS.len() - 1) as u8;
+    let ceiling = if em_px > 0.0 && em_px.is_finite() {
+        ((2.0 * (MAX_RASTER_EM_PX / em_px).log2()).floor()).clamp(0.0, f32::from(top)) as u8
+    } else {
+        0
+    };
+    if !magnification.is_finite() || magnification <= 0.0 {
+        return held.unwrap_or(0).min(ceiling);
+    }
+    let wanted = 2.0 * magnification.log2();
+    let step = match held {
+        Some(held) if (wanted - f32::from(held)).abs() <= 0.5 + RASTER_HYSTERESIS => held,
+        _ => wanted.round().clamp(0.0, f32::from(top)) as u8,
+    };
+    step.min(ceiling)
+}
+
 /// The counters Issue #97 asks the text path to answer with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TextGlyphCounters {
@@ -502,6 +548,8 @@ struct RunPresentation {
     opacity: f32,
     flags: u32,
     presentation: u32,
+    /// Physical px per logical px the entry's instances are in.
+    raster: f32,
 }
 
 /// One text draw command's head, or one run folded into an earlier one.
@@ -917,6 +965,24 @@ impl TextPipeline {
         // Rich text is included: since #99 the span colors are not part of the
         // layout key, and what a span paints is baked into the instances this
         // entry already holds under the same primitive revision.
+        //
+        // Text under a magnifying transform is resolved finer than the device
+        // scale — see [`raster_step`] — so the scale an entry is compared at
+        // is the raster one. A translation never magnifies, and costs no
+        // lookup to find that out.
+        let translation = clip::is_translation_projective(affine, persp);
+        let step = if translation {
+            0
+        } else {
+            let held = self
+                .target
+                .entries
+                .lookup(entry_key)
+                .and_then(|id| self.target.entries.get(id))
+                .map(|entry| entry.raster_step);
+            raster_step(affine, held, size * scale)
+        };
+        let raster = scale * RASTER_STEPS[usize::from(step)];
         let retained = self
             .target
             .entries
@@ -927,7 +993,7 @@ impl TextPipeline {
                     && revision != UNTRACKED_REVISION
                     && entry.revision == revision
                     && entry.colors == colors.fingerprint
-                    && entry.scale_bits == scale.to_bits()
+                    && entry.scale_bits == raster.to_bits()
                     && entry.font_generation == self.font_generation
             })
             .map(|(id, entry)| (id, entry.layout, entry.measured))
@@ -1072,12 +1138,11 @@ impl TextPipeline {
         // glyph corner in the vertex stage, and a rounded or polygonal clip
         // needs the fragment test the scissor cannot express — neither of
         // which is a reason to resolve the paragraph differently.
-        let translation = clip::is_translation_projective(affine, persp);
         let paint_origin = if translation {
             let [world_x, world_y] = clip::transform_point(affine, aligned[0], aligned[1]);
             [world_x * scale, world_y * scale]
         } else {
-            [aligned[0] * scale, aligned[1] * scale]
+            [aligned[0] * raster, aligned[1] * raster]
         };
         let mut flags = 0;
         if !translation {
@@ -1124,6 +1189,7 @@ impl TextPipeline {
                     opacity: 1.0,
                     flags: 0,
                     presentation: 0,
+                    raster: 1.0,
                 },
                 next: NO_RUN,
                 last: index as u32,
@@ -1141,7 +1207,7 @@ impl TextPipeline {
                         hash,
                         colors.fingerprint,
                         phase,
-                        scale.to_bits(),
+                        raster.to_bits(),
                         self.font_generation,
                     )
                 })
@@ -1180,7 +1246,7 @@ impl TextPipeline {
                 entry_key,
                 hash,
                 phase,
-                scale,
+                (raster, step),
                 default_color,
                 &colors,
                 revision,
@@ -1203,6 +1269,7 @@ impl TextPipeline {
             opacity: opacity.clamp(0.0, 1.0),
             flags,
             presentation,
+            raster,
         };
         run.next = NO_RUN;
         run.last = index as u32;
@@ -1359,10 +1426,12 @@ impl TextPipeline {
         key: EntryKey,
         hash: u64,
         phase: [u32; 2],
-        // Logical-to-physical, applied to the layout's coordinates here and
+        // Logical-to-raster px, applied to the layout's coordinates here and
         // nowhere else: it is not in the layout key, so 1x and 2x resolve the
-        // same paragraph into different glyphs.
-        scale: f32,
+        // same paragraph into different glyphs. The device scale times the
+        // raster step, which is kept on the entry for the next frame's
+        // hysteresis.
+        (scale, step): (f32, u8),
         default_color: [f32; 4],
         colors: &SpanColors,
         revision: u64,
@@ -1537,6 +1606,7 @@ impl TextPipeline {
         entry.font_generation = fonts;
         entry.revision = revision;
         entry.scale_bits = scale.to_bits();
+        entry.raster_step = step;
         entry.atlas_epoch = epoch;
         entry.segments = segments;
         entry.run = NO_RUN;
@@ -1906,6 +1976,7 @@ impl RunPresentation {
             self.flags,
             self.color,
             self.opacity,
+            self.raster,
         )
     }
 }
@@ -3034,6 +3105,7 @@ mod tests {
                     opacity: 1.0,
                     flags: 0,
                     presentation: 0,
+                    raster: 1.0,
                 },
                 next: NO_RUN,
                 last: index as u32,
@@ -3657,7 +3729,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scene_scale_animation_does_not_open_a_new_raster_size_every_frame() {
+    fn a_scene_scale_animation_rasterizes_each_step_it_passes_once_not_each_frame() {
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
         let label = Label::new("Zooming", 1);
@@ -3673,6 +3745,9 @@ mod tests {
         );
         let warm = pipeline.glyph_counters();
         let (_, warm_misses, _) = pipeline.shape_cache_stats();
+        let glyphs = warm.glyph_rasterized;
+        // Twenty-three frames from 1.0 to 2.1: a zoom animation that passes
+        // two raster steps (√2 and 2) on its way.
         for step in 1..24 {
             text_frame(
                 &device,
@@ -3686,21 +3761,154 @@ mod tests {
         }
         let after = pipeline.glyph_counters();
         let (_, misses, _) = pipeline.shape_cache_stats();
-        // The DPI scale is what decides the raster size; a scene transform is
-        // presentation. Letting the two share a policy is what turns a zoom
-        // into a bitmap per frame and a cache that never stops growing.
         assert_eq!(
             misses, warm_misses,
-            "a scene scale must not reshape the paragraph"
+            "a scene scale must not lay the paragraph out again"
+        );
+        // The DPI scale decides the raster size frame by frame; a scene
+        // transform only moves it in half-octave steps. Letting the two share
+        // a policy is what turns a zoom into a bitmap per frame and a cache
+        // that never stops growing.
+        // Per step, at most what the first frame rasterized: sub-pixel bins
+        // can merge two of a paragraph's glyphs at a larger size.
+        let rasterized = after.glyph_rasterized - warm.glyph_rasterized;
+        assert!(
+            rasterized > glyphs && rasterized <= 2 * glyphs,
+            "one raster size per step passed, not one per frame: {rasterized} \
+             glyphs for two steps of a {glyphs}-glyph label"
         );
         assert_eq!(
-            after.glyph_rasterized, warm.glyph_rasterized,
-            "nor open a raster size bucket per step"
+            after.text_instance_rebuilds - warm.text_instance_rebuilds,
+            2,
+            "and one rebuild per step"
+        );
+    }
+
+    #[test]
+    fn a_magnification_hovering_at_a_step_boundary_does_not_flip_bitmaps() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let label = Label::new("Hover", 1);
+        // √(√2) is exactly half-way between the first two steps.
+        let boundary = 2f32.powf(0.25);
+        let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 8.0, 8.0];
+        text_frame(
+            &device,
+            &queue,
+            &mut pipeline,
+            &[Label {
+                affine: scaled(boundary * 1.02),
+                ..label
+            }],
+        );
+        let warm = pipeline.glyph_counters();
+        for frame in 0..20 {
+            let jitter = if frame % 2 == 0 { 0.97 } else { 1.03 };
+            text_frame(
+                &device,
+                &queue,
+                &mut pipeline,
+                &[Label {
+                    affine: scaled(boundary * jitter),
+                    ..label
+                }],
+            );
+        }
+        assert_eq!(
+            pipeline.glyph_counters().text_instance_rebuilds,
+            warm.text_instance_rebuilds,
+            "a scale jittering across a step boundary keeps the step it holds"
+        );
+    }
+
+    #[test]
+    fn text_a_transform_magnifies_is_rasterized_at_the_size_it_is_seen() {
+        let (device, queue) = test_device();
+        // The same text twice: 16 px under `scale(2)`, and 32 px upright. A
+        // magnified paragraph drawn from its 16 px bitmaps would be a blurred
+        // copy of the second; drawn from bitmaps rasterized at the size it is
+        // seen, it is the second.
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let canvas = LogicalRect::from_xywh(0.0, 0.0, 256.0, 96.0);
+        let zoomed = paint_text_with(
+            &device,
+            &queue,
+            &mut pipeline,
+            ("Sharp", 16.0),
+            LogicalRect::from_xywh(0.0, 0.0, 120.0, 40.0),
+            canvas,
+            [2.0, 0.0, 0.0, 2.0, 0.0, 0.0],
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            [256, 96],
+        );
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let upright = paint_text_with(
+            &device,
+            &queue,
+            &mut pipeline,
+            ("Sharp", 32.0),
+            LogicalRect::from_xywh(0.0, 0.0, 240.0, 80.0),
+            canvas,
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            [256, 96],
+        );
+        let (zoomed, upright) = (zoomed.as_chunks::<4>().0, upright.as_chunks::<4>().0);
+        let differing = zoomed
+            .iter()
+            .zip(upright)
+            .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 24))
+            .count();
+        let inked = upright.iter().filter(|pixel| inked(**pixel)).count();
+        assert!(inked > 200, "the reference must paint something");
+        assert!(
+            differing * 20 < inked,
+            "text under scale(2) must be the 32 px glyphs, not 16 px ones \
+             stretched: {differing} of {inked} inked pixels differ"
+        );
+    }
+
+    #[test]
+    fn raster_steps_are_half_octaves_held_with_hysteresis_and_capped_by_size() {
+        let scaled = |factor: f32| [factor, 0.0, 0.0, factor, 0.0, 0.0];
+        assert_eq!(raster_step(scaled(1.0), None, 16.0), 0);
+        assert_eq!(
+            raster_step(scaled(0.5), None, 16.0),
+            0,
+            "shrinking never re-rasterizes"
+        );
+        assert_eq!(raster_step(scaled(2.0), None, 16.0), 2);
+        assert_eq!(raster_step(scaled(1.4), None, 16.0), 1);
+        let turned = [0.0, 2.0, -2.0, 0.0, 0.0, 0.0];
+        assert_eq!(
+            raster_step(turned, None, 16.0),
+            2,
+            "a rotation keeps its scale"
         );
         assert_eq!(
-            after.text_instance_rebuilds, warm.text_instance_rebuilds,
-            "nor rebuild the entry"
+            raster_step(scaled(1.25), Some(0), 16.0),
+            0,
+            "held below the step"
         );
+        assert_eq!(raster_step(scaled(1.25), Some(1), 16.0), 1, "and above it");
+        assert_eq!(
+            raster_step(scaled(1.3), Some(0), 16.0),
+            1,
+            "until it is clearly past"
+        );
+        assert_eq!(
+            raster_step(scaled(64.0), None, 16.0),
+            4,
+            "four times at most"
+        );
+        assert_eq!(
+            raster_step(scaled(4.0), None, 128.0),
+            2,
+            "and never an em past what a tile is worth"
+        );
+        assert_eq!(raster_step(scaled(f32::NAN), Some(2), 16.0), 2);
     }
 
     #[test]
@@ -4349,7 +4557,34 @@ mod tests {
         persp: [f32; 2],
         fragment_clip: clip::FragmentClip,
     ) -> Vec<u8> {
-        pipeline.begin_frame([64, 64]);
+        paint_text_with(
+            device,
+            queue,
+            pipeline,
+            ("Hi", 16.0),
+            bounds,
+            clip,
+            affine,
+            persp,
+            fragment_clip,
+            [64, 64],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_text_with(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        (content, size): (&str, f32),
+        bounds: LogicalRect,
+        clip: LogicalRect,
+        affine: [f32; 6],
+        persp: [f32; 2],
+        fragment_clip: clip::FragmentClip,
+        canvas: [u32; 2],
+    ) -> Vec<u8> {
+        pipeline.begin_frame(canvas);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-ui text affine prepare"),
         });
@@ -4360,9 +4595,9 @@ mod tests {
                 bounds,
                 clip,
                 1.0,
-                "Hi",
+                content,
                 Some([1.0, 1.0, 1.0, 1.0]),
-                16.0,
+                size,
                 None,
                 None,
                 None,
@@ -4399,8 +4634,8 @@ mod tests {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui text affine target"),
             size: wgpu::Extent3d {
-                width: 64,
-                height: 64,
+                width: canvas[0],
+                height: canvas[1],
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -4434,13 +4669,13 @@ mod tests {
                 PhysicalRect {
                     x: 0,
                     y: 0,
-                    width: 64,
-                    height: 64,
+                    width: canvas[0],
+                    height: canvas[1],
                 },
                 None,
             );
         }
-        readback_rgba(device, queue, encoder, &texture, 64, 64)
+        readback_rgba(device, queue, encoder, &texture, canvas[0], canvas[1])
     }
 
     #[allow(clippy::too_many_arguments)]

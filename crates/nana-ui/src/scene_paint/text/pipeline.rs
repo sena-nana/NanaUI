@@ -181,7 +181,12 @@ pub(super) struct TextRunGpu {
     /// Linear RGB with its own alpha, opacity not yet applied.
     pub color: [f32; 4],
     pub opacity: f32,
-    pad: [f32; 3],
+    /// Physical px per logical px the instances were resolved at: the device
+    /// scale, times the raster step a magnifying transform earned the entry.
+    /// Only a projected run reads it, to take its corners back to logical
+    /// space before the homography.
+    pub raster: f32,
+    pad: [f32; 2],
 }
 
 /// The transform and clip a run paints under. 160 bytes, deduplicated.
@@ -638,7 +643,8 @@ impl TextRunGpu {
         flags: 0,
         color: [0.0; 4],
         opacity: 0.0,
-        pad: [0.0; 3],
+        raster: 1.0,
+        pad: [0.0; 2],
     };
 
     pub(super) fn new(
@@ -647,6 +653,7 @@ impl TextRunGpu {
         flags: u32,
         color: [f32; 4],
         opacity: f32,
+        raster: f32,
     ) -> Self {
         Self {
             origin,
@@ -654,7 +661,8 @@ impl TextRunGpu {
             flags,
             color,
             opacity,
-            pad: [0.0; 3],
+            raster,
+            pad: [0.0; 2],
         }
     }
 }

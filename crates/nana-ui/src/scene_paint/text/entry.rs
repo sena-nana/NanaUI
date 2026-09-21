@@ -13,7 +13,7 @@
 //! layout unchanged  ── the laid-out paragraph is the same one
 //! colors unchanged  ── its rich spans still paint what they painted
 //! phase unchanged   ── the bitmaps were rasterized for this sub-pixel offset
-//! scale unchanged   ── they were placed at this device scale
+//! scale unchanged   ── they were placed at this device scale and raster step
 //! fonts unchanged   ── the face set still issues these face ids
 //! atlas unchanged   ── the rectangles are still these glyphs'
 //! ```
@@ -86,7 +86,13 @@ pub(super) struct TextGpuEntry {
     /// so the shape key does not have to be assembled and hashed to find that
     /// out. `u64::MAX` is "no primitive said", which never matches.
     pub revision: u64,
+    /// Physical px per logical px the glyphs were resolved at: the device
+    /// scale times [`Self::raster_step`]'s factor.
     pub scale_bits: u32,
+    /// The magnification step a transform above this text earned it, held
+    /// between frames so a zoom that hovers near a step boundary does not
+    /// rasterize the paragraph again every time it crosses it.
+    pub raster_step: u8,
     /// What the paragraph measured: the widest line and the height the lines
     /// laid out to, in **logical** px — the layout is laid out there and the
     /// device scale only reaches the glyph coordinates. A pure function of the
@@ -355,6 +361,7 @@ impl EntryStore {
                     font_generation: 0,
                     revision: u64::MAX,
                     scale_bits: 0,
+                    raster_step: 0,
                     measured: [0.0; 2],
                     atlas_epoch: 0,
                     block,

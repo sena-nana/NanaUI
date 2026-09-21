@@ -22,9 +22,11 @@ struct TextRun {
     // Linear RGB with its own alpha, opacity not yet applied.
     color: vec4<f32>,
     opacity: f32,
+    // Physical px per logical px the instances were resolved at: the device
+    // scale, times the raster step a magnifying transform earned the entry.
+    raster: f32,
     pad0: f32,
     pad1: f32,
-    pad2: f32,
 }
 
 // The transform and clip a run paints under. Deduplicated: a shell's labels
@@ -110,6 +112,10 @@ fn atlas_uv(texel: vec2<u32>, content: u32) -> vec2<f32> {
 // translation skips it: the run origin already carries the whole-pixel
 // translation and the instance the sub-pixel remainder its bitmap was
 // rasterized for, so touching the corner at all would only round it again.
+//
+// A projected run's instances are in the run's raster px, which a magnified
+// entry makes finer than device px, so they are taken back to logical space
+// by the raster scale and out again by the device scale.
 fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     let paint = local + run.origin;
     if (run.flags & RUN_PROJECT) == 0u {
@@ -117,7 +123,7 @@ fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     }
     let presentation = text_presentations[run.presentation];
     let scale = presentation.clip_inv_ef.w;
-    let p = paint / scale;
+    let p = paint / run.raster;
     let xp = presentation.affine.x * p.x + presentation.affine.z * p.y + presentation.project.x;
     let yp = presentation.affine.y * p.x + presentation.affine.w * p.y + presentation.project.y;
     let w = presentation.project.z * p.x + presentation.project.w * p.y + 1.0;
