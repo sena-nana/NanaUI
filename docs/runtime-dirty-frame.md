@@ -285,6 +285,10 @@ grid 轨道、auto 主轴 margin、baseline/center/end 的交叉轴对齐，以�
 `reversed_axes_keep_the_sequential_replay` 用专门的 `suffixes_replayed` 计数器断言确实走了重放——
 `plans_reused` 还统计「整份计划原样复用」，别的容器会让它大于 0，区分不出重放是否发生。
 
+量出来的效果见 [反向轴上的顺序回放](performance-data/dirty-frame-reversed-axes-2026-09-21/README.md)：
+基准新增 `layout-rtl` / `layout-reverse` 两种形状与 `layout_plan` 计数；RTL 与 `column-reverse` 列表改最后一行
+从 O(N)（8,002 节点 0.72 ms）降到与 LTR 相同的常数 0.007 ms，约 100 倍。
+
 第三条不是我预先想到的——是哈内斯在第一次跑重放时直接抓出来的：计划记录时容器没有剩余
 空间，grow 因此不起作用，`used == intrinsic` 成立；随后一次编辑加上 `flex-grow` 就开始分配
 了。"从数据判定没有再分配"对**当时**成立，对**将来**不成立，所以 grow/shrink 必须按样式

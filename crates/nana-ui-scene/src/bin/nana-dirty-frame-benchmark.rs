@@ -10,7 +10,8 @@
 //!
 //! Two axes beyond the grid, because conflating either one hides the answer:
 //!
-//! - `--shape paint|layout|nested|nested-auto|layout-auto`. A bare
+//! - `--shape paint|layout|nested|nested-auto|layout-auto|layout-rtl|layout-reverse`.
+//!   A bare
 //!   background-role swap dirties style and render but schedules no layout; a
 //!   height change also schedules layout, and layout invalidation propagates to
 //!   ancestors. They scale completely differently. (A Vue hover is NOT the
@@ -18,7 +19,10 @@
 //!   the second.) The `nested*` shapes edit a LABEL inside a row instead, so
 //!   the row's own size cannot move; the `*-auto` shapes make the list
 //!   container content-sized, which is what takes it off the definite-size
-//!   short circuit in `intrinsic_size_scoped`.
+//!   short circuit in `intrinsic_size_scoped`. `layout-rtl` is `layout` in an
+//!   RTL list (its cross axis — the inline one — runs from the right) and
+//!   `layout-reverse` stacks the list bottom-up (`column-reverse`): the two
+//!   reversed axes a container's sequential replay has to express.
 //! - `--position head|tail|spread`. Resizing the FIRST row genuinely shifts
 //!   every row below it, so O(total nodes) there is work that is owed and
 //!   proves nothing. Resizing the LAST rows shifts nothing, so any cost that
@@ -38,7 +42,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_text::TextWorkCounters;
-use nana_ui_core::{FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole};
+use nana_ui_core::{DirSpec, FlexDirection, LayoutStyle, LengthSpec, SemanticColorRole};
 use nana_ui_runtime::{
     AppContext, DocumentId, FrameStage, LayoutViewport, MeasureTextShaper, MutationQueue,
     NanaTextEngineShaper, NodeKind, NodeStyle, StableNodeId, StageStatus, TextContent, TextShaper,
@@ -78,6 +82,7 @@ struct Cell {
     /// subtree expansion `project_accessibility_delta` performs internally.
     projected: Projected,
     layout_substages_ms: LayoutSubstages,
+    layout_plan: LayoutPlan,
     text_shape: TextShapePass,
     text_work: TextWork,
 }
@@ -111,6 +116,16 @@ struct Projected {
 }
 
 /// Attribution inside the single `FrameStage::Layout` number.
+/// What the layout engine's retained container plans saved, per frame (mean
+/// over samples). `children_measured` is the sibling scan a plan exists to
+/// avoid: constant when the plan held, O(rows) when the container relaid out.
+#[derive(Serialize)]
+struct LayoutPlan {
+    children_measured: f64,
+    plans_reused: f64,
+    suffixes_replayed: f64,
+}
+
 #[derive(Serialize)]
 struct LayoutSubstages {
     tooltips_ms: f64,
@@ -190,6 +205,8 @@ struct TextShapePass {
 
 #[derive(Serialize)]
 struct Stat {
+    /// The least disturbed sample: what to compare A/B on a loaded machine.
+    min: f64,
     p50: f64,
     p95: f64,
     mean: f64,
@@ -206,6 +223,7 @@ impl Stat {
         };
         let mean = samples.iter().map(|d| ms(*d)).sum::<f64>() / samples.len() as f64;
         Self {
+            min: ms(samples[0]),
             p50: at(0.5),
             p95: at(0.95),
             mean,
@@ -268,6 +286,8 @@ fn build(shape: Shape, rows: usize) -> RuntimeDocument {
                 // container's own height then depends on its children.
                 height: (!shape.container_hugs()).then_some(LengthSpec::Fill),
                 direction: Some(FlexDirection::Column),
+                flex_reverse: shape == Shape::LayoutReverse,
+                dir: (shape == Shape::LayoutRtl).then_some(DirSpec::Rtl),
                 ..LayoutStyle::default()
             }),
             ..NodeStyle::default()
@@ -327,6 +347,15 @@ enum Shape {
     /// is last, so nothing below it moves and the only work owed is the
     /// container's new total.
     LayoutAuto,
+    /// `Layout` in an RTL list: the container is `direction: rtl`, so its
+    /// cross axis — the inline one — starts at the right edge. The rows fill
+    /// the width, so nothing moves on screen; what it measures is that a
+    /// reversed axis keeps the placement plan's sequential replay.
+    LayoutRtl,
+    /// `Layout` in a `column-reverse` list: the main axis runs bottom-up, so
+    /// resizing the first row moves every row *above* it and the tail rows
+    /// sit at the top.
+    LayoutReverse,
 }
 
 impl Shape {
@@ -371,6 +400,8 @@ impl Shape {
             "nested" => Some(Self::Nested),
             "nested-auto" => Some(Self::NestedAuto),
             "layout-auto" => Some(Self::LayoutAuto),
+            "layout-rtl" => Some(Self::LayoutRtl),
+            "layout-reverse" => Some(Self::LayoutReverse),
             _ => None,
         }
     }
@@ -382,6 +413,8 @@ impl Shape {
             Self::Nested => "nested",
             Self::NestedAuto => "nested-auto",
             Self::LayoutAuto => "layout-auto",
+            Self::LayoutRtl => "layout-rtl",
+            Self::LayoutReverse => "layout-reverse",
         }
     }
 }
@@ -395,15 +428,17 @@ fn dirty(context: &mut AppContext, shape: Shape, targets: &[usize], toggled: boo
                 background: toggled.then_some(SemanticColorRole::Hover),
                 ..NodeStyle::default()
             },
-            Shape::Layout | Shape::LayoutAuto => NodeStyle {
-                layout: Arc::new(LayoutStyle {
-                    width: Some(LengthSpec::Px(300.0)),
-                    height: Some(LengthSpec::Px(if toggled { 22.0 } else { 20.0 })),
-                    direction: Some(FlexDirection::Row),
-                    ..LayoutStyle::default()
-                }),
-                ..NodeStyle::default()
-            },
+            Shape::Layout | Shape::LayoutAuto | Shape::LayoutRtl | Shape::LayoutReverse => {
+                NodeStyle {
+                    layout: Arc::new(LayoutStyle {
+                        width: Some(LengthSpec::Px(300.0)),
+                        height: Some(LengthSpec::Px(if toggled { 22.0 } else { 20.0 })),
+                        direction: Some(FlexDirection::Row),
+                        ..LayoutStyle::default()
+                    }),
+                    ..NodeStyle::default()
+                }
+            }
             Shape::Nested | Shape::NestedAuto => NodeStyle {
                 layout: Arc::new(LayoutStyle {
                     width: Some(LengthSpec::Px(if toggled { 90.0 } else { 80.0 })),
@@ -544,6 +579,7 @@ fn measure_with(
         (0..13).map(|_| Vec::with_capacity(samples)).collect();
     let mut stage_status = [StageStatus::Skipped; 13];
     let mut counters = WorkCounters::default();
+    let mut plan_totals = [0usize; 3];
     let mut substage_totals = [Duration::ZERO; 4];
     let mut text_shape_totals = text_shape_stats::TextShapePassStats::default();
     let mut text_work_totals = TextWorkCounters::default();
@@ -560,6 +596,7 @@ fn measure_with(
         dirty(runtime.context_mut(), shape, &targets, hovered);
         let _ = runtime.context_mut().take_layout_substage_totals();
         text_shape_stats::reset();
+        nana_ui_runtime::plan_stats::reset();
         let started = Instant::now();
         let update = runtime.flush(viewport, shaper).unwrap();
         let elapsed = started.elapsed();
@@ -570,8 +607,16 @@ fn measure_with(
             "dirty frame reported idle at rows={rows} dirty={dirty_rows}"
         );
         let substages = runtime.context_mut().take_layout_substage_totals();
+        let plan = [
+            nana_ui_runtime::plan_stats::children_measured(),
+            nana_ui_runtime::plan_stats::plans_reused(),
+            nana_ui_runtime::plan_stats::suffixes_replayed(),
+        ];
         if iteration < warmup {
             continue;
+        }
+        for (total, count) in plan_totals.iter_mut().zip(plan) {
+            *total += count;
         }
         for (total, elapsed) in substage_totals.iter_mut().zip(substages) {
             *total += elapsed;
@@ -654,6 +699,11 @@ fn measure_with(
         stages_ms,
         counters: counters.into(),
         projected,
+        layout_plan: LayoutPlan {
+            children_measured: plan_totals[0] as f64 / samples as f64,
+            plans_reused: plan_totals[1] as f64 / samples as f64,
+            suffixes_replayed: plan_totals[2] as f64 / samples as f64,
+        },
         layout_substages_ms: LayoutSubstages {
             tooltips_ms: ms_mean(substage_totals[0], samples),
             engine_ms: ms_mean(substage_totals[1], samples),
@@ -753,6 +803,8 @@ fn main() {
                     Shape::Nested,
                     Shape::NestedAuto,
                     Shape::LayoutAuto,
+                    Shape::LayoutRtl,
+                    Shape::LayoutReverse,
                 ]
             },
             |shape| vec![shape],

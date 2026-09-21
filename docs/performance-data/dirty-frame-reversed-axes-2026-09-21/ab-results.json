@@ -1,0 +1,662 @@
+{
+ "layout|tail|250|before": {
+  "min": 0.007083,
+  "p50": 0.007875,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout|tail|250|after": {
+  "min": 0.00675,
+  "p50": 0.007583,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout|tail|500|before": {
+  "min": 0.007417,
+  "p50": 0.008375,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout|tail|500|after": {
+  "min": 0.006959,
+  "p50": 0.007833,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout|tail|1000|before": {
+  "min": 0.007208,
+  "p50": 0.007917,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout|tail|1000|after": {
+  "min": 0.006959,
+  "p50": 0.007291,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout|tail|2000|before": {
+  "min": 0.006834,
+  "p50": 0.007042,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout|tail|2000|after": {
+  "min": 0.006875,
+  "p50": 0.007666000000000001,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout|tail|4000|before": {
+  "min": 0.006958,
+  "p50": 0.007208,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout|tail|4000|after": {
+  "min": 0.006958,
+  "p50": 0.007166,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout|head|250|before": {
+  "min": 0.720417,
+  "p50": 0.774375,
+  "plan": {
+   "children_measured": 250.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout|head|250|after": {
+  "min": 0.726084,
+  "p50": 0.784,
+  "plan": {
+   "children_measured": 250.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout|head|500|before": {
+  "min": 1.524625,
+  "p50": 1.6327909999999999,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout|head|500|after": {
+  "min": 1.478458,
+  "p50": 1.5866669999999998,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout|head|1000|before": {
+  "min": 3.3067499999999996,
+  "p50": 3.4735,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout|head|1000|after": {
+  "min": 3.308125,
+  "p50": 3.460291,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout|head|2000|before": {
+  "min": 8.001083000000001,
+  "p50": 8.520042,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout|head|2000|after": {
+  "min": 8.043333,
+  "p50": 8.482583,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout|head|4000|before": {
+  "min": 19.5665,
+  "p50": 20.397709,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout|head|4000|after": {
+  "min": 19.578208,
+  "p50": 20.508499999999998,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-rtl|tail|250|before": {
+  "min": 0.044167,
+  "p50": 0.049291,
+  "plan": {
+   "children_measured": 251.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-rtl|tail|250|after": {
+  "min": 0.006875,
+  "p50": 0.007709000000000001,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-rtl|tail|500|before": {
+  "min": 0.08191699999999999,
+  "p50": 0.090458,
+  "plan": {
+   "children_measured": 501.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-rtl|tail|500|after": {
+  "min": 0.006916,
+  "p50": 0.007708,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-rtl|tail|1000|before": {
+  "min": 0.15725,
+  "p50": 0.177291,
+  "plan": {
+   "children_measured": 1001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-rtl|tail|1000|after": {
+  "min": 0.006833,
+  "p50": 0.007375,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-rtl|tail|2000|before": {
+  "min": 0.32675,
+  "p50": 0.35729099999999997,
+  "plan": {
+   "children_measured": 2001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-rtl|tail|2000|after": {
+  "min": 0.007,
+  "p50": 0.007834,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-rtl|tail|4000|before": {
+  "min": 0.725167,
+  "p50": 0.781833,
+  "plan": {
+   "children_measured": 4001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-rtl|tail|4000|after": {
+  "min": 0.007,
+  "p50": 0.007791,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-rtl|head|250|before": {
+  "min": 0.767209,
+  "p50": 0.8206249999999999,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-rtl|head|250|after": {
+  "min": 0.728916,
+  "p50": 0.7820830000000001,
+  "plan": {
+   "children_measured": 250.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-rtl|head|500|before": {
+  "min": 1.578875,
+  "p50": 1.674125,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-rtl|head|500|after": {
+  "min": 1.5404579999999999,
+  "p50": 1.611459,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-rtl|head|1000|before": {
+  "min": 3.420916,
+  "p50": 3.630333,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-rtl|head|1000|after": {
+  "min": 3.297542,
+  "p50": 3.494916,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-rtl|head|2000|before": {
+  "min": 8.349583,
+  "p50": 8.723417000000001,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-rtl|head|2000|after": {
+  "min": 8.088625,
+  "p50": 8.419333,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-rtl|head|4000|before": {
+  "min": 20.045291,
+  "p50": 21.001416,
+  "plan": {
+   "children_measured": 8000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-rtl|head|4000|after": {
+  "min": 19.353083,
+  "p50": 20.239041999999998,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-reverse|tail|250|before": {
+  "min": 0.044166,
+  "p50": 0.049459,
+  "plan": {
+   "children_measured": 251.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-reverse|tail|250|after": {
+  "min": 0.007,
+  "p50": 0.007833,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-reverse|tail|500|before": {
+  "min": 0.081625,
+  "p50": 0.092542,
+  "plan": {
+   "children_measured": 501.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-reverse|tail|500|after": {
+  "min": 0.006875,
+  "p50": 0.007625,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-reverse|tail|1000|before": {
+  "min": 0.164167,
+  "p50": 0.17775000000000002,
+  "plan": {
+   "children_measured": 1001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-reverse|tail|1000|after": {
+  "min": 0.006958,
+  "p50": 0.00775,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-reverse|tail|2000|before": {
+  "min": 0.330125,
+  "p50": 0.356791,
+  "plan": {
+   "children_measured": 2001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-reverse|tail|2000|after": {
+  "min": 0.007,
+  "p50": 0.007834,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-reverse|tail|4000|before": {
+  "min": 0.718625,
+  "p50": 0.785292,
+  "plan": {
+   "children_measured": 4001.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-reverse|tail|4000|after": {
+  "min": 0.007125,
+  "p50": 0.007958000000000002,
+  "plan": {
+   "children_measured": 1.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-reverse|head|250|before": {
+  "min": 0.764458,
+  "p50": 0.8260000000000001,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-reverse|head|250|after": {
+  "min": 0.7373329999999999,
+  "p50": 0.791708,
+  "plan": {
+   "children_measured": 250.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 502
+ },
+ "layout-reverse|head|500|before": {
+  "min": 1.583958,
+  "p50": 1.67775,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-reverse|head|500|after": {
+  "min": 1.5343749999999998,
+  "p50": 1.602125,
+  "plan": {
+   "children_measured": 500.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 1002
+ },
+ "layout-reverse|head|1000|before": {
+  "min": 3.444125,
+  "p50": 3.643125,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-reverse|head|1000|after": {
+  "min": 3.264375,
+  "p50": 3.45325,
+  "plan": {
+   "children_measured": 1000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 2002
+ },
+ "layout-reverse|head|2000|before": {
+  "min": 8.2195,
+  "p50": 8.526333000000001,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-reverse|head|2000|after": {
+  "min": 7.8564169999999995,
+  "p50": 8.223542,
+  "plan": {
+   "children_measured": 2000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 4002
+ },
+ "layout-reverse|head|4000|before": {
+  "min": 20.468458,
+  "p50": 21.535167,
+  "plan": {
+   "children_measured": 8000.0,
+   "plans_reused": 1.0,
+   "suffixes_replayed": 0.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ },
+ "layout-reverse|head|4000|after": {
+  "min": 19.294584,
+  "p50": 20.127583,
+  "plan": {
+   "children_measured": 4000.0,
+   "plans_reused": 2.0,
+   "suffixes_replayed": 1.0
+  },
+  "layout_nodes": 4,
+  "nodes": 8002
+ }
+}
