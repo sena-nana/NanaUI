@@ -1191,17 +1191,25 @@ impl TextPipeline {
         // nothing else. Unsnapped, every such transition rebuilt every label
         // under the container, and a press made the label jump by a fraction
         // of a pixel on its first frame.
+        //
+        // The snapped top is kept as the whole pixel it is. Carried back
+        // through logical px and out again it comes back as 1.9999999 as
+        // often as 2.0, and `floor` turns that into a line one pixel higher
+        // with a phase of 0.9999999: a label that jumps a pixel on some
+        // frames of a scroll and is re-resolved on each of them.
         let line_logical = laid_out_height;
-        if translation {
+        let top_px = if translation {
             let [_, wy] = clip::transform_point_projective(affine, persp, aligned[0], aligned[1]);
             let (top_px, _) =
                 clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
             aligned[1] += top_px / scale - wy;
+            top_px
         } else {
             let (top_px, _) =
                 clip::snap_centered_origin(aligned[1] + line_logical * 0.5, line_logical, raster);
             aligned[1] = top_px / raster;
-        }
+            top_px
+        };
         if fragment_clip == clip::FragmentClip::REJECT {
             return None;
         }
@@ -1231,10 +1239,10 @@ impl TextPipeline {
         // needs the fragment test the scissor cannot express — neither of
         // which is a reason to resolve the paragraph differently.
         let paint_origin = if translation {
-            let [world_x, world_y] = clip::transform_point(affine, aligned[0], aligned[1]);
-            [world_x * scale, world_y * scale]
+            let [world_x, _] = clip::transform_point(affine, aligned[0], aligned[1]);
+            [world_x * scale, top_px]
         } else {
-            [aligned[0] * raster, aligned[1] * raster]
+            [aligned[0] * raster, top_px]
         };
         let mut flags = 0;
         if !translation {
@@ -3924,6 +3932,34 @@ mod tests {
                 "and moves one presentation row, not twelve run rows: {moved} bytes"
             );
         }
+    }
+
+    #[test]
+    fn a_fractional_vertical_scroll_keeps_every_glyph() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // A trackpad scrolls by fractions of a pixel. Vertically that is free:
+        // a translated line box is snapped to whole pixels, so its glyphs are
+        // at the same vertical phase wherever the scroll left it.
+        let labels = |offset: f32| {
+            (0..12)
+                .map(|index| Label {
+                    top: 3.3 + index as f32 * 17.6,
+                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, -offset],
+                    ..Label::new("Row content", index + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
+        let warm = pipeline.glyph_counters();
+        for step in 1..24 {
+            text_frame(&device, &queue, &mut pipeline, &labels(step as f32 * 0.37));
+        }
+        assert_eq!(
+            pipeline.glyph_counters().text_instance_rebuilds,
+            warm.text_instance_rebuilds,
+            "a fractional vertical scroll must not re-resolve a label"
+        );
     }
 
     #[test]
