@@ -181,12 +181,22 @@ pub(super) fn capacity_for(glyphs: u32) -> u32 {
 
 /// Whether a block of `capacity` slots may keep holding `glyphs`.
 ///
-/// Growing within it is the point of the slack. Shrinking is allowed down to
-/// half, so a paragraph that flickers between two lengths does not move every
-/// time, but one that lost most of its text gives the space back.
+/// Growing within it is the point of the slack. Shrinking only happens when
+/// the block is more than twice what the paragraph needs *and* that is a real
+/// amount of memory. A block that moves costs more than its own bytes: it
+/// lands away from its neighbours in the arena, so the draw it belonged to
+/// splits, and enough splits repack — rewrite — every block there is. A cell
+/// whose text keeps changing length therefore settles at the largest class it
+/// has needed rather than moving on every change; a paragraph that lost most
+/// of a page of text still gives the space back.
 fn block_fits(capacity: u32, glyphs: u32) -> bool {
-    glyphs <= capacity && capacity <= capacity_for(glyphs).saturating_mul(2)
+    glyphs <= capacity
+        && (capacity <= capacity_for(glyphs).saturating_mul(2) || capacity - glyphs <= SHRINK_SLACK)
 }
+
+/// Vacant slots a block may carry before shrinking is worth moving it: a
+/// kilobyte and a half of instances.
+const SHRINK_SLACK: u32 = 64;
 
 /// The entries, their instances and the atlas handles behind them.
 ///
@@ -887,16 +897,28 @@ mod tests {
             );
         }
         build(&mut store, key(1), capacity + 1, 0);
-        assert_ne!(
-            store.get(id).expect("live").capacity,
-            capacity,
+        let grown = {
+            let entry = store.get(id).expect("live");
+            (entry.block, entry.capacity)
+        };
+        assert!(
+            grown.1 > capacity,
             "outgrowing it moves the paragraph to a bigger class"
         );
         build(&mut store, key(1), 1, 0);
+        let entry = store.get(id).expect("live");
+        assert_eq!(
+            (entry.block, entry.capacity),
+            grown,
+            "a short label that shrinks again keeps its block: moving it would \
+             cost more than the few slots it frees"
+        );
+        build(&mut store, key(1), 600, 0);
+        build(&mut store, key(1), 20, 0);
         assert_eq!(
             store.get(id).expect("live").capacity,
-            capacity_for(1),
-            "and losing most of its text gives the space back"
+            capacity_for(20),
+            "but a paragraph that lost most of a page gives the space back"
         );
     }
 
