@@ -53,12 +53,12 @@ state: settings-page
   quad #19/0 280.00,207.60 76.00x26.00 opacity=1.00 bg=none border=none border_width=0.00 radius=7.00/7.00/7.00/7.00 shadow=none
   text #19/2 292.00,207.60 52.00x26.00 opacity=1.00 color=#9ca3afff size=13.00 weight=500 line_height=Absolute(16.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   quad #28/0 60.00,247.60 300.00x54.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
-  text #25/2 61.00,260.60 145.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  text #26/2 61.00,275.60 145.00x13.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #24/0 214.00,258.60 145.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
-  text #24/2 224.00,258.60 87.00x32.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
-  quad #24/4 319.00,266.60 30.00x16.00 opacity=1.00 bg=#4991d78c border=#4991d78c border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
-  quad #24/5 336.00,269.60 10.00x10.00 opacity=1.00 bg=#ffffff8c border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
+  text #25/2 61.00,260.60 260.00x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  text #26/2 61.00,275.60 260.00x13.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #24/0 329.00,258.60 30.00x32.00 opacity=1.00 bg=none border=none border_width=0.00 radius=6.00/6.00/6.00/6.00 shadow=none
+  text #24/2 329.00,258.60 0.00x32.00 opacity=1.00 color=#5a616eff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
+  quad #24/4 329.00,266.60 30.00x16.00 opacity=1.00 bg=#4991d78c border=#4991d78c border_width=1.00 radius=8.00/8.00/8.00/8.00 shadow=none
+  quad #24/5 346.00,269.60 10.00x10.00 opacity=1.00 bg=#ffffff8c border=none border_width=0.00 radius=5.00/5.00/5.00/5.00 shadow=none
   quad #33/0 60.00,301.60 300.00x50.00 opacity=1.00 bg=none border=#eef0f3ff border_width=1.00 radius=0.00/0.00/0.00/0.00 shadow=none
   text #30/2 61.00,312.60 265.63x13.00 opacity=1.00 color=#1a1a1fff size=13.00 weight=500 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false
   text #31/2 61.00,327.60 265.63x13.00 opacity=1.00 color=#5a616eff size=12.00 weight=400 line_height=Absolute(13.0) tracking=0.00 italic=false underline=false line_through=false spans=0 shadow=false

@@ -753,12 +753,13 @@ fn palette_fields(palette: &SemanticPalette) -> [(&'static str, SemanticColor); 
     ]
 }
 
-fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 22] {
+fn metrics_fields(metrics: ThemeMetrics) -> [(&'static str, f32); 23] {
     [
         ("metrics.radius_xs", metrics.radius_xs),
         ("metrics.radius_sm", metrics.radius_sm),
         ("metrics.radius_md", metrics.radius_md),
         ("metrics.radius_lg", metrics.radius_lg),
+        ("metrics.radius_xl", metrics.radius_xl),
         (
             "metrics.compact_control_height",
             metrics.compact_control_height,

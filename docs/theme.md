@@ -812,23 +812,26 @@ cargo run --release --locked -p nana-ui-runtime --features benchmark \
 | F4（安装 = 全文档失效） | 未动。这是 #100 §7 的 dependency class |
 | typography / spacing 的调用点收敛 | 未做。合同建立了，但 `ControlSize::text_size()` 这类仍对 `type_scale` 常量解析——和 Phase 0 对 metrics 做的那一轮是同一形状的工作，只是换一个类别，留给 #107 |
 | focus ring 的 2px 描边与 4px 外扩 | **几何**仍是 `nana-ui-scene` 里的字面量；颜色已经是 `palette.focus_border`。`BorderTokens` 只有 `hairline` 一档，没有替这两个尺寸发明档位——按 `ChromeRadii` 的先例搬运需要动 `ExtractedNode`，那是 chrome recipe 的活。实际是**五处、两种外扩**（3.0 与 4.0），不是文里写的一种 |
+| `sidebar-section` 焦点底色覆盖整个 200x86 区块 | 可聚焦的节点就是整个 section，所以这是如实渲染。要只高亮 header，得把可聚焦节点从 section 根移到 header——那是行为变更（焦点顺序、命中），不是指示器变更 |
 
 ### 7.9.1 §7 之后补做的（consumer 驱动）
 
-一个 L3 消费方（NanaLive）装完整 `ThemeDefinition` 时撞上的三件事，都是 §7 留下的洞而不是新需求，所以就地补了，没有等 #105 / #110：
+一个 L3 消费方（NanaLive）装完整 `ThemeDefinition` 时撞上的几件事，都是 §7 留下的洞而不是新需求，所以就地补了，没有等 #105 / #110：
 
 | 补做 | 原来的样子 |
 | --- | --- |
 | **L3 re-export 面** | `ThemeDefinition` / `CompiledTheme` 导出了，它们**由之构成的 token 结构体一个都没有**。消费方能拿着一份定义调 `.compile()`，却没法构造或修改它：每个 `with_*` builder 收的类型都叫不出名字，`ThemeId` / `ThemeSchemaVersion` / `ThemeGeneration` 三个 identity 字段全够不到。`nana_ui::theme` 现在镜像 `nana_ui_core::lib` 的那一份清单，外加 `SemanticColorMix` / `PaintStyle` / `BoxShadowSpec`。 |
 | **`ThemeMetrics::switch`** | switch 轨道的 30×16 与 8 的标签间距是 `world/geometry.rs` 里四个字面量，主题够不到；scene 画笔另有一份手抄的 `38.0`（= 30+8）算标签内缩，改轨道会静默失配。`SwitchMetrics` 按 `ScrollbarMetrics` 的先例组合进 `ThemeMetrics`。同时 `Switch::project` 无条件写 `control_padding_x`，盖掉调用方的内边距——这是唯一一个没法退出的 intent 字段，没有标签的 switch 因此只剩 2pt 内容盒、轨道画成一条缝。清掉 `control_padding_x` 也不算退出:它本来就是 `None`,那行会立刻写回去。所以判据换成**调用方是否已经在这条边上花了数字**——花了就说明它想要那个值,组件默认不该盖掉,这正是 `Button::layout` 对「调用方交出整个盒子」讲的同一条规则。 |
 | **`SemanticPaint::foreground_secondary`** | 行内次要文字（detail、hint、placeholder、单位）由 `world/geometry.rs` 直接读 `palette.muted`，不看节点状态。聚焦行铺 `focus_surface`、标签跟到 `focus_text`，而那行灰字仍然是对着**原来**那层表面解出来的：浅色 1.09:1。单一 `muted` 取值无解——它同时要在白卡上够安静。所以状态自己说：`FOCUS_SURFACE` 一并给出 secondary，默认 `None` 仍解析成 `Muted`，静息渲染逐字节不变。 |
+| **`NodeStyle::corner_radii`** | 逐角圆角只有 `paint.border_radii`，收的是长度。两块拼成一体的形状（外侧大角、接缝小角）只能在构造期把 `radius_*` 花成数字，结果「圆角」设置一改，同一个窗口里所有单值圆角都跟着动，这些拼块留在原地。`corner_radii: Option<[RadiusTier; 4]>` 是 `radius` 的四角形式，同一条 intent 解析路径、同一次装主题时重解析；设了就压过 `radius`，和画的时候 `border_radii` 压过 `border_radius` 一致。 |
+| **无标签的 `Switch` 就是它的轨道** | 行尾开关没有文字给节点撑宽度：默认 `Fill` 在行里铺一块看不见的命中区（NanaUI 自己的设置页就是这样，标题和说明被挤到半行宽、被截断），尺寸档位的内边距又吃掉内容盒。每个调用方都得手写轨道宽并清零 padding，而那个数字不跟后来装的主题。现在标签与提示都为空时，默认宽度取安装的 `switch.track_width`、不加内边距；`Switch` 同时打开 `wants_metrics_reproject`——提示行的高度本来就在 `project` 里按安装值花掉，却从没重投影过。这一条改了 8 张像素、6 条语义基线（都是设置页里那个行尾开关），是有意的视觉变化。 |
+| **`RadiusTier::Xl`** | 四档到 `Lg`（页面级表面）为止。浮在页面上的轨道（Dock、工具条）要比旁边的卡片圆一档才读得出是另一个对象，消费方只能写 `lg + 8` 这种不跟主题的数。`ThemeMetrics::radius_xl` 默认 `space::PAGE_TIGHT`（20），`serde(default)` 保证旧 metrics 能加载；`AppearanceSettings` 不单独存它，按默认间距跟在 `lg` 之上，调高 `lg` 不会把它甩在后面。 |
 
 顺手把 `world/geometry.rs` 的 15 个 design number 收到 10，并把该文件 **全部** 直读 `palette.<field>` 改成走 `style_model.color(role)`——语义意图从此只有一条解析路径。落到已有档位、不发明新档位：key badge 28/8/12/64 → `ControlSize::Small` / `space::MD` / `type_scale::META` / `space::XXXL * 4`，chart strip 2 → `XXS`，ListItem 间距 8 与折叠下限 16 → `MD` / `XXXL`，Range 私有的 6/8/10 三档 → `SM`/`MD`/`LG`，Progress 6 → `space::SM` 且圆角改成 `girth / 2.0`（原本是与之相等却可以各走各的 `3.0`），LevelMeter 4 → `XS`，EmptyState 22 → `PAGE_TIGHT + XXS`，XYPad 轴线 1 → `HAIRLINE`，ReorderList 8 → `MD`。StatusBadge 与 ValidationMessage 各自那份 `indicator_slot * 10.0 / 24.0` 合并成一个具名 `STATUS_DOT_FRACTION`——24 是幻影分母，两份幻影分母就是两个 badge 开始漂移的方式。
 
 剩在 `world/geometry.rs` 的 10 个都需要**新**的 token 类别，不属于就地补做：交互状态的 alpha（0.55 / 0.78 / 0.70 / 0.42 / 0.12）归 #105 的状态矩阵，`(size - 1.0).max(10.0)` 这类字阶降级与 `* 1.2` 的行高比例归 #107，TextInput 编辑器 chrome 那一簇归 #110。
 
-全程 614 张像素基线与 146 条语义基线**零变化**——这一轮是取值不变的搬运，不是视觉改动。
-| `sidebar-section` 焦点底色覆盖整个 200x86 区块 | 可聚焦的节点就是整个 section，所以这是如实渲染。要只高亮 header，得把可聚焦节点从 section 根移到 header——那是行为变更（焦点顺序、命中），不是指示器变更 |
+前三条和 geometry 收敛那一轮，614 张像素基线与 146 条语义基线**零变化**——那是取值不变的搬运，不是视觉改动。
 
 ### 7.10 复现
 

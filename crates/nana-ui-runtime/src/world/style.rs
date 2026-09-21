@@ -149,6 +149,9 @@ impl UiWorld {
         metrics: nana_ui_core::ThemeMetrics,
     ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
         let radius = style.radius.map(|tier| tier.resolve(metrics));
+        let corners = style
+            .corner_radii
+            .map(|tiers| tiers.map(|tier| nana_ui_core::LengthSpec::Px(tier.resolve(metrics))));
         let control = style.control_height.map(|height| {
             (
                 matches!(height, nana_ui_core::ControlHeight::Exact(_)),
@@ -189,6 +192,8 @@ impl UiWorld {
             ))
         });
         let radius_settled = radius.is_none_or(|value| style.layout.border_radius == Some(value));
+        let corners_settled =
+            corners.is_none_or(|value| style.layout.paint.border_radii == Some(value));
         let padding_x_settled = padding_x.is_none_or(|length| {
             style.layout.padding_left == Some(length) && style.layout.padding_right == Some(length)
         });
@@ -218,6 +223,7 @@ impl UiWorld {
         let aspect_width_settled =
             aspect_width.is_none_or(|length| style.layout.width == Some(length));
         if radius_settled
+            && corners_settled
             && control_settled
             && padding_x_settled
             && padding_y_settled
@@ -231,6 +237,9 @@ impl UiWorld {
         let target = Arc::make_mut(&mut layout);
         if let Some(value) = radius {
             target.border_radius = Some(value);
+        }
+        if let Some(value) = corners {
+            target.paint.border_radii = Some(value);
         }
         if let Some((exact, length)) = control {
             if exact {
@@ -299,6 +308,7 @@ impl UiWorld {
         for &id in ids {
             let style = &self.record(id).style;
             if style.radius.is_none()
+                && style.corner_radii.is_none()
                 && style.control_height.is_none()
                 && style.control_padding_x.is_none()
                 && style.control_padding_y.is_none()

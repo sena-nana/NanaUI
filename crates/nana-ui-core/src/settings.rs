@@ -158,6 +158,9 @@ impl AppearanceSettings {
             radius_sm: self.radius_sm,
             radius_md: self.radius_md,
             radius_lg: self.radius_lg,
+            // Not a setting of its own: it keeps its default distance above
+            // `lg`, so raising `lg` cannot leave the rounder step behind it.
+            radius_xl: self.radius_lg + (UI_METRICS.radius_xl - UI_METRICS.radius_lg),
             ..UI_METRICS
         }
     }
@@ -789,6 +792,10 @@ mod tests {
                 appearance.radius_lg()
             ),
             (4.0, 8.0, 18.0)
+        );
+        assert!(
+            appearance.metrics().radius_xl > appearance.metrics().radius_lg,
+            "raising lg must not leave the rounder step behind it"
         );
 
         assert!(appearance.set_standard_radius(80.0));

@@ -116,6 +116,12 @@ pub struct ThemeMetrics {
     pub radius_sm: f32,
     pub radius_md: f32,
     pub radius_lg: f32,
+    /// One step rounder than [`Self::radius_lg`]: chrome that floats as a
+    /// rail over a page and has to read as its own object beside the cards
+    /// next to it. `serde(default)` so a metrics blob written before this
+    /// field still loads.
+    #[serde(default = "default_radius_xl")]
+    pub radius_xl: f32,
     pub compact_control_height: f32,
     pub control_height: f32,
     /// Horizontal inset of a small control. Matches
@@ -209,6 +215,9 @@ pub enum RadiusTier {
     Md,
     /// Page-level surfaces and workspace corners.
     Lg,
+    /// Floating rails — a dock, a tool strip — one step rounder than the
+    /// cards beside them.
+    Xl,
 }
 
 impl RadiusTier {
@@ -218,6 +227,7 @@ impl RadiusTier {
             Self::Sm => metrics.radius_sm,
             Self::Md => metrics.radius_md,
             Self::Lg => metrics.radius_lg,
+            Self::Xl => metrics.radius_xl,
         }
     }
 }
@@ -350,6 +360,10 @@ fn default_large_control_padding_x() -> f32 {
     space::XXL
 }
 
+fn default_radius_xl() -> f32 {
+    UI_METRICS.radius_xl
+}
+
 /// The four radius steps, already resolved against the installed theme.
 ///
 /// This travels on the extracted node so the renderer never resolves a tier.
@@ -393,6 +407,7 @@ pub const UI_METRICS: ThemeMetrics = ThemeMetrics {
     radius_sm: space::SM,
     radius_md: space::LG,
     radius_lg: space::XXL,
+    radius_xl: space::PAGE_TIGHT,
     compact_control_height: 28.0,
     control_height: 32.0,
     compact_control_padding_x: space::MD,
@@ -576,5 +591,15 @@ mod tests {
         let restored: super::ThemeMetrics =
             serde_json::from_value(value).expect("legacy metrics restore");
         assert_eq!(restored.large_control_padding_x, super::space::XXL);
+    }
+
+    #[test]
+    fn a_metrics_blob_without_the_xl_radius_still_loads() {
+        let encoded = serde_json::to_string(&super::UI_METRICS).expect("metrics serializes");
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).expect("json");
+        value.as_object_mut().expect("object").remove("radius_xl");
+        let restored: super::ThemeMetrics =
+            serde_json::from_value(value).expect("legacy metrics restore");
+        assert_eq!(restored, super::UI_METRICS);
     }
 }

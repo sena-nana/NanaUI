@@ -1636,6 +1636,18 @@ pub struct NodeStyle {
     /// it — which is why the Appearance radius setting could not reach a
     /// control. When this is set it wins over `layout.border_radius`.
     pub radius: Option<nana_ui_core::RadiusTier>,
+    /// Per-corner radius steps — top-left, top-right, bottom-right,
+    /// bottom-left — resolved against the installed
+    /// [`nana_ui_core::ThemeMetrics`] into `layout.paint.border_radii`.
+    ///
+    /// The four-corner form of [`Self::radius`], for shapes whose corners are
+    /// not all the same step: two blocks joined edge to edge keep large outer
+    /// corners and small inner ones. Spending `paint.border_radii` directly
+    /// fixes those numbers at construction, so an Appearance radius change
+    /// would move every uniform corner in the window and leave these behind.
+    /// When set it wins over [`Self::radius`], as `border_radii` already wins
+    /// over `border_radius` when the box is painted.
+    pub corner_radii: Option<[nana_ui_core::RadiusTier; 4]>,
     /// Control-size step for this node's own box, resolved against the
     /// installed [`nana_ui_core::ThemeMetrics`]. Sibling of [`Self::radius`].
     ///
@@ -1679,6 +1691,7 @@ impl NodeStyle {
             background: None,
             border: None,
             radius: None,
+            corner_radii: None,
             control_height: None,
             control_padding_x: None,
             control_padding_y: None,
@@ -1693,6 +1706,12 @@ impl NodeStyle {
     /// Name the radius step instead of spending it. See [`Self::radius`].
     pub fn radius(mut self, tier: nana_ui_core::RadiusTier) -> Self {
         self.radius = Some(tier);
+        self
+    }
+
+    /// Name a radius step per corner. See [`Self::corner_radii`].
+    pub fn corner_radii(mut self, tiers: [nana_ui_core::RadiusTier; 4]) -> Self {
+        self.corner_radii = Some(tiers);
         self
     }
 

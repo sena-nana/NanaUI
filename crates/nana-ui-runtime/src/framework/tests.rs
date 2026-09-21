@@ -3911,6 +3911,116 @@ fn an_installed_radius_reaches_a_control_that_named_the_tier() {
     );
 }
 
+/// Per-corner steps follow the installed theme the way a uniform one does.
+///
+/// Two blocks joined edge to edge keep large outer corners and small inner
+/// ones, and the only per-corner control was `paint.border_radii`, which takes
+/// lengths. Spending the installed `radius_*` into it at construction left
+/// those shapes behind when the Appearance radius changed, while every uniform
+/// corner in the same window moved.
+#[test]
+fn named_corner_steps_follow_an_installed_radius() {
+    use nana_ui_core::RadiusTier::{Lg, Xs};
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let block = context
+        .create_component(
+            document,
+            crate::Stack::column(0.0)
+                .style(crate::NodeStyle::default().corner_radii([Lg, Xs, Xs, Lg])),
+        )
+        .unwrap();
+    let corners_of = |context: &AppContext| {
+        context.world().extract_nodes(&[block.stable_id()])[0]
+            .source_style
+            .layout
+            .resolved_border_radii(100.0, 100.0)
+    };
+    let defaults = nana_ui_core::UI_METRICS;
+    assert_eq!(
+        corners_of(&context),
+        [
+            defaults.radius_lg,
+            defaults.radius_xs,
+            defaults.radius_xs,
+            defaults.radius_lg
+        ]
+    );
+
+    let mut metrics = defaults;
+    metrics.radius_lg = 30.0;
+    metrics.radius_xs = 1.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(corners_of(&context), [30.0, 1.0, 1.0, 30.0]);
+}
+
+/// A switch with no label is its track.
+///
+/// A row's trailing toggle has no text to give its node a width, so the
+/// default `Fill` stretched an invisible hit box across the row and the size
+/// step's inset ate the content box. Every caller had to spend the track width
+/// and zero the padding by hand — and a number spent there stayed behind when
+/// the installed track changed.
+#[test]
+fn a_switch_with_no_label_is_its_track() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let row = context
+        .create_component(document, crate::Stack::row(0.0))
+        .unwrap();
+    let switch = context
+        .create_component(document, crate::Switch::new("", true))
+        .unwrap();
+    context.append_child(row, switch).unwrap();
+    let measure = |context: &mut AppContext| {
+        context
+            .layout_document(document, crate::LayoutViewport::new(320.0, 80.0))
+            .unwrap();
+        let node = context
+            .world()
+            .layout_box(switch.stable_id())
+            .unwrap()
+            .width;
+        let control = match context.world().extract_nodes(&[switch.stable_id()])[0]
+            .component_geometry
+            .as_deref()
+        {
+            Some(crate::ComponentGeometry::Switch { control, .. }) => control.width,
+            other => panic!("a switch derives switch geometry, got {other:?}"),
+        };
+        (node, control)
+    };
+    let track = nana_ui_core::SWITCH_METRICS.track_width;
+    assert_eq!(measure(&mut context), (track, track));
+
+    let mut metrics = nana_ui_core::UI_METRICS;
+    metrics.switch.track_width = 44.0;
+    assert!(
+        context
+            .set_style_tokens(
+                nana_ui_core::ThemeMode::Dark,
+                metrics,
+                nana_ui_core::SemanticPalette::dark(),
+                nana_ui_core::SemanticPalette::dark().surface,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        measure(&mut context),
+        (44.0, 44.0),
+        "the box follows the installed track, not the one it was built with"
+    );
+}
+
 /// Issue #101 F1: the switch track follows the **installed** theme.
 ///
 /// Its width, height and label gap used to be four literals in

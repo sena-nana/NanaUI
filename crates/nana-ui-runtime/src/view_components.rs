@@ -451,6 +451,7 @@ impl Button {
                 background: None,
                 border: None,
                 radius: Some(nana_ui_core::RadiusTier::Sm),
+                corner_radii: None,
                 control_height: Some(nana_ui_core::ControlHeight::Min(
                     nana_ui_core::ControlSize::Medium,
                 )),
@@ -517,6 +518,7 @@ impl Button {
         self.style.control_height = None;
         self.style.control_padding_x = None;
         self.style.radius = None;
+        self.style.corner_radii = None;
         self
     }
 
@@ -1512,6 +1514,7 @@ impl TextInput {
         self.style.control_height = None;
         self.style.control_padding_x = None;
         self.style.radius = None;
+        self.style.corner_radii = None;
         self
     }
 
@@ -3360,6 +3363,12 @@ impl ComponentView for Switch {
         }
     }
 
+    /// The hint row's height and a bare switch's width are spent from the
+    /// installed metrics in `project`, which no layout intent re-resolves.
+    fn wants_metrics_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         if world.text(id).is_some_and(|text| !text.is_empty()) {
             mutations.set_text(
@@ -3396,15 +3405,25 @@ impl ComponentView for Switch {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
+        // A switch with nothing to say beside it — a row's trailing toggle —
+        // is its track. There is no text to give the node a width, so `Fill`
+        // would stretch an invisible hit box across the row, and nothing to
+        // inset, so the control padding would only eat the track.
+        let bare = self.label.is_empty() && self.hint.is_none();
+        let metrics = world.theme_metrics();
         let mut effective_style = self.style.clone();
         {
             let layout = Arc::make_mut(&mut effective_style.layout);
             if layout.width.is_none() {
-                layout.width = Some(nana_ui_core::LengthSpec::Fill);
+                layout.width = Some(if bare {
+                    nana_ui_core::LengthSpec::Px(metrics.switch.track_width)
+                } else {
+                    nana_ui_core::LengthSpec::Fill
+                });
             }
             if self.hint.is_some() && layout.height.is_none() {
                 layout.min_height = Some(nana_ui_core::LengthSpec::Px(
-                    self.size.height_in(world.theme_metrics()) + nana_ui_core::space::LG,
+                    self.size.height_in(metrics) + nana_ui_core::space::LG,
                 ));
             }
         }
@@ -3435,7 +3454,7 @@ impl ComponentView for Switch {
         let authored_inset = effective_style.layout.padding.is_some()
             || effective_style.layout.padding_left.is_some()
             || effective_style.layout.padding_right.is_some();
-        if effective_style.control_padding_x.is_none() && !authored_inset {
+        if effective_style.control_padding_x.is_none() && !authored_inset && !bare {
             effective_style.control_padding_x = Some(self.size.into());
         }
         if self.invalid {
