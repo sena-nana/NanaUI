@@ -96,9 +96,16 @@ enum Workload {
     /// Wrapped paragraphs, one per [`LABELS_PER_PARAGRAPH`] labels, beside a
     /// ticking label.
     Paragraphs,
-    /// One label in a hundred turns into large ideographs from a pool much
-    /// bigger than the atlas, at a size that changes every frame: the atlas
-    /// fills, evicts and keeps drawing.
+    /// The same one label in a hundred gets four new large ideographs every
+    /// frame, from a pool much bigger than the atlas and at a size that
+    /// changes every frame: a stream of new glyphs through a working set that
+    /// does fit. The atlas fills, evicts the glyphs those labels stopped
+    /// showing, and keeps drawing everything else from its entries.
+    ///
+    /// Not a working set larger than the atlas. A screen that shows more
+    /// glyph area than the budget has to evict what it is drawing, every
+    /// frame, whatever the renderer does; that is a capacity question, not
+    /// a retention one.
     AtlasPressure,
     /// `Static`, painted into two windows that share one device.
     MultiWindow,
@@ -720,7 +727,7 @@ fn mutate(
         Workload::AtlasPressure => {
             let size = PRESSURE_SIZES[frame % PRESSURE_SIZES.len()];
             let stride = 100;
-            for (turn, row) in rows.iter().skip(frame % stride).step_by(stride).enumerate() {
+            for (turn, row) in rows.iter().step_by(stride).enumerate() {
                 let first = ((frame * 131 + turn * 7) as u32 * 4) % PRESSURE_POOL;
                 let value = (0..4)
                     .filter_map(|offset| char::from_u32(0x4e00 + (first + offset) % PRESSURE_POOL))
