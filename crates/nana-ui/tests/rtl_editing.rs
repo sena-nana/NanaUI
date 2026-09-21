@@ -128,3 +128,118 @@ fn an_rtl_text_area_aligns_its_lines_to_the_right_in_geometry_and_paint() {
         "the first letter starts at the right edge: {caret:?} in {content:?}"
     );
 }
+
+fn text_and_content(cx: &AppContext, node: StableNodeId) -> (LayoutBox, LayoutBox) {
+    let (content, _) = cx.world().text_input_pointer_context(node).unwrap();
+    let Some(ComponentGeometry::TextInput { text, .. }) = cx.world().component_geometry(node)
+    else {
+        panic!("an editor")
+    };
+    (text.bounds, content)
+}
+
+/// A line longer than an RTL field shows its start — the right end — and
+/// scrolls only as far as the caret needs, the LTR rule mirrored.
+#[test]
+fn an_overflowing_rtl_field_shows_the_start_of_its_line() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let value = "שלום עולם שלום עולם שלום עולם";
+    let mut view = TextInput::new(value);
+    {
+        let style = Arc::make_mut(&mut view.style.layout);
+        style.dir = Some(DirSpec::Rtl);
+        style.width = Some(LengthSpec::Px(100.0));
+    }
+    let input = cx.create_component(doc, view).unwrap();
+    let node = input.stable_id();
+    settle(&mut cx, doc, &[node]);
+    assert!(cx.focus_node(doc, node).unwrap());
+
+    cx.select_focused_text_range(doc, 0, 0).unwrap();
+    settle(&mut cx, doc, &[node]);
+    let (text, content) = text_and_content(&cx, node);
+    assert!(
+        text.width > content.width,
+        "the fixture overflows: {text:?}"
+    );
+    assert!(
+        (text.x + text.width - (content.x + content.width)).abs() < 0.5,
+        "the start of the line, at its right end, is in view: {text:?} in {content:?}"
+    );
+
+    // After the first word the caret is a little left of the right end: the
+    // start stays in view rather than the view ending at the caret.
+    let first_word = "שלום ".len();
+    cx.select_focused_text_range(doc, first_word, first_word)
+        .unwrap();
+    settle(&mut cx, doc, &[node]);
+    let (text, content) = text_and_content(&cx, node);
+    assert!(
+        (text.x + text.width - (content.x + content.width)).abs() < 0.5,
+        "a caret near the start keeps the start in view: {text:?} in {content:?}"
+    );
+
+    // At the logical end — the left end — the line scrolls to show it.
+    cx.select_focused_text_range(doc, value.len(), value.len())
+        .unwrap();
+    settle(&mut cx, doc, &[node]);
+    let (text, content) = text_and_content(&cx, node);
+    assert!(
+        (text.x - content.x).abs() < 0.5,
+        "the far end scrolled into view: {text:?} in {content:?}"
+    );
+}
+
+/// The same, a quarter turn: a vertical RTL field longer than its box keeps
+/// its caret in view near either end of the column, and those are different
+/// views of it.
+#[test]
+fn an_overflowing_vertical_rtl_field_keeps_either_end_of_its_column_in_view() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let value = "一二三四五六七八九十";
+    let mut view = TextInput::new(value);
+    {
+        let style = Arc::make_mut(&mut view.style.layout);
+        style.dir = Some(DirSpec::Rtl);
+        style.writing_mode = Some(WritingModeSpec::VerticalRl);
+        style.font_size = Some(16.0);
+        style.width = Some(LengthSpec::Px(60.0));
+        style.height = Some(LengthSpec::Px(80.0));
+    }
+    let input = cx.create_component(doc, view).unwrap();
+    let node = input.stable_id();
+    settle(&mut cx, doc, &[node]);
+    assert!(cx.focus_node(doc, node).unwrap());
+    let mut views = Vec::new();
+    // Before 一 is the top of the column; before 十 is near its foot. (Both
+    // ends of the paragraph sit at line-left — the top — for CJK in an RTL
+    // paragraph, as `abc` ends at the left of an RTL line.)
+    for offset in [0, value.len() - "十".len()] {
+        cx.select_focused_text_range(doc, offset, offset).unwrap();
+        settle(&mut cx, doc, &[node]);
+        let (text, content) = text_and_content(&cx, node);
+        assert!(
+            text.height > content.height,
+            "the fixture overflows: {text:?}"
+        );
+        let Some(ComponentGeometry::TextInput {
+            caret: Some(caret), ..
+        }) = cx.world().component_geometry(node)
+        else {
+            panic!("a focused editor")
+        };
+        assert!(
+            caret.y >= content.y - 0.5
+                && caret.y + caret.height <= content.y + content.height + 0.5,
+            "the caret at {offset} is in view: {caret:?} in {content:?}"
+        );
+        assert!(
+            text.y <= content.y + 0.5 && text.y + text.height >= content.y + content.height - 0.5,
+            "and the column covers the box, no gap at either end: {text:?} in {content:?}"
+        );
+        views.push(text.y);
+    }
+    assert_ne!(views[0], views[1], "the two ends are different scrolls");
+}

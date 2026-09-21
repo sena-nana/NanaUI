@@ -5430,14 +5430,20 @@ impl UiWorld {
             }
             (inline.clamp(0.0, max_inline), block.clamp(0.0, max_block))
         } else {
-            // A line shorter than the field sits at its inline-start: the left,
-            // the right of an RTL field, the top — or the bottom of a vertical
-            // RTL one (CSS Writing Modes §2.1) — which on a reversed axis is a
-            // negative scroll. A longer line follows the caret.
-            let inline = if writing.inline_reversed() && inline_extent <= content_inline {
+            // The line sits against the field's inline-start edge — the left,
+            // the right of an RTL field, the top, or the bottom of a vertical
+            // RTL one (CSS Writing Modes §2.1) — and scrolls only as far as it
+            // takes to show the caret. Line space runs from line-left, so on a
+            // reversed axis the start is the line's far end: a line shorter than
+            // the field is a negative scroll, and a longer one shows its far end
+            // until the caret heads off the near one. Both are the LTR rule
+            // mirrored, so neither keeps any state beyond the caret.
+            let inline = if !writing.inline_reversed() {
+                (caret_inline - content_inline + 1.0).clamp(0.0, max_inline)
+            } else if inline_extent <= content_inline {
                 -(content_inline - inline_extent)
             } else {
-                (caret_inline - content_inline + 1.0).clamp(0.0, max_inline)
+                caret_inline.clamp(0.0, max_inline)
             };
             (inline, -(content_block - line) * 0.5)
         };
