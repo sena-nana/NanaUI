@@ -3337,6 +3337,39 @@ fn an_installed_panel_padding_reaches_a_card_that_named_the_surface() {
     assert_eq!(pad_of(&context), (Some(px(24.0)), Some(px(20.0))));
 }
 
+/// `colors_from_style` hands one button's colours to its style and leaves every
+/// other icon button on its kind: a Primary beside it still paints its Accent
+/// square, and the opted-in one paints no resting fill with the glyph and
+/// hover wash its style names.
+#[test]
+fn an_icon_button_opts_into_its_own_colors_without_touching_its_siblings() {
+    use nana_ui_core::SemanticColorRole as Role;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let plain = context
+        .create_component(
+            document,
+            crate::IconButton::new(nana_ui_core::Icon::Add, "Plain")
+                .kind(nana_ui_core::ButtonKind::Primary),
+        )
+        .unwrap();
+    let mut own = crate::IconButton::new(nana_ui_core::Icon::Add, "Own")
+        .kind(nana_ui_core::ButtonKind::Primary)
+        .colors_from_style();
+    own.style.background = None;
+    own.style.foreground = Some(Role::AccentText);
+    own.style.interaction.hovered.background = Some(Role::AccentStrong);
+    let own = context.create_component(document, own).unwrap();
+    let style_of = |id| context.world().extract_nodes(&[id])[0].source_style.clone();
+    let plain = style_of(plain.stable_id());
+    assert_eq!(plain.background, Some(Role::Accent));
+    assert_eq!(plain.foreground, Some(Role::AccentText));
+    let own = style_of(own.stable_id());
+    assert_eq!(own.background, None);
+    assert_eq!(own.foreground, Some(Role::AccentText));
+    assert_eq!(own.interaction.hovered.background, Some(Role::AccentStrong));
+}
+
 #[test]
 fn an_installed_icon_button_size_reaches_the_square() {
     let mut context = AppContext::new();
