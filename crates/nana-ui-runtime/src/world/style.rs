@@ -83,14 +83,23 @@ impl UiWorld {
             line_break: layout.line_break.unwrap_or(inherited.line_break),
             direction: layout.dir.unwrap_or(inherited.direction),
             writing_mode: layout.writing_mode.unwrap_or(inherited.writing_mode),
+            text_orientation: layout
+                .text_orientation
+                .unwrap_or(inherited.text_orientation),
         };
         // Written before the early return: a node that declares its own
         // writing mode resolves to the same style when its parent's changes,
         // but its containing block is still the parent.
-        self.record_mut(id).inherited_writing = if parent.is_some() {
-            inherited.writing_context()
+        // The computed values, not the used context: `upright` makes this
+        // node's used direction `ltr`, but its children inherit `direction`.
+        let record = self.record_mut(id);
+        (record.inherited_writing, record.inherited_orientation) = if parent.is_some() {
+            (
+                nana_ui_core::WritingContext::new(inherited.writing_mode, inherited.direction),
+                inherited.text_orientation,
+            )
         } else {
-            nana_ui_core::WritingContext::default()
+            Default::default()
         };
         {
             let resolved = &self.record(id).resolved;

@@ -13,7 +13,7 @@ use crate::id::{FontGeneration, FontId, ShapeRunId};
 use crate::shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
 use crate::source::{SnappedSpans, TextSpan};
 use crate::style::TextStyle;
-use nana_ui_core::{DirSpec, FontKerningSpec};
+use nana_ui_core::{DirSpec, FontKerningSpec, TextOrientationSpec};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -126,7 +126,9 @@ impl Shaper {
             self.counters.text_bytes_hashed += request.source.text().len();
         }
         let scale = request.scale.px_per_logical;
-        let rtl = request.direction == DirSpec::Rtl;
+        let orientation = used_orientation(request);
+        // `upright` reads the text as left-to-right (CSS Writing Modes §5.1).
+        let rtl = request.direction == DirSpec::Rtl && orientation != TextOrientationSpec::Upright;
         let key = ShapeKey::new(
             request.source,
             text_hash,
@@ -134,6 +136,7 @@ impl Shaper {
             request.source.spans(),
             rtl,
             request.vertical,
+            orientation,
             request.language,
             scale,
             epoch,
@@ -160,7 +163,13 @@ impl Shaper {
         generation: FontGeneration,
     ) -> ShapedText {
         let text = request.source.text();
+        let orientation = used_orientation(request);
         let mut levels = bidi::resolve(text, rtl);
+        if orientation == TextOrientationSpec::Upright {
+            // Every character is a strong left-to-right one: an upright column
+            // reads top to bottom whatever its script.
+            levels.levels.fill(0);
+        }
         let paragraphs = std::mem::take(&mut levels.paragraphs);
         if text.is_empty() {
             return ShapedText {
@@ -252,10 +261,19 @@ impl Shaper {
                 continue;
             }
             let font = cluster_fonts[index];
-            let orientation = match (request.vertical, cluster.upright) {
-                (false, _) => RunOrientation::Horizontal,
-                (true, true) => RunOrientation::Upright,
-                (true, false) => RunOrientation::Sideways,
+            let orientation = if !request.vertical {
+                RunOrientation::Horizontal
+            } else {
+                let upright = match orientation {
+                    TextOrientationSpec::Mixed => cluster.upright,
+                    TextOrientationSpec::Upright => true,
+                    TextOrientationSpec::Sideways => false,
+                };
+                if upright {
+                    RunOrientation::Upright
+                } else {
+                    RunOrientation::Sideways
+                }
             };
             match items.last_mut() {
                 Some(item)
@@ -664,6 +682,17 @@ fn style_segments<'a>(
         }
     }
     segments
+}
+
+/// The `text-orientation` shaping honours: the request's in a vertical line,
+/// `mixed` otherwise, so a horizontal request's cache key does not depend on
+/// a value it ignores.
+fn used_orientation(request: &ShapeRequest<'_>) -> TextOrientationSpec {
+    if request.vertical {
+        request.orientation
+    } else {
+        TextOrientationSpec::Mixed
+    }
 }
 
 #[cfg(test)]

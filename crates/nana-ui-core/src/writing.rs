@@ -25,7 +25,7 @@
 //! CJK top to bottom (line-relative) and sits against the bottom edge
 //! (flow-relative).
 
-use crate::box_layout::{DirSpec, FlexDirection, WritingModeSpec};
+use crate::box_layout::{DirSpec, FlexDirection, TextOrientationSpec, WritingModeSpec};
 use serde::{Deserialize, Serialize};
 
 /// One side of a box on the page.
@@ -61,6 +61,19 @@ impl WritingContext {
 
     pub const fn new(mode: WritingModeSpec, direction: DirSpec) -> Self {
         Self { mode, direction }
+    }
+
+    /// The context a box with these computed values lays out in:
+    /// `text-orientation: upright` in a vertical mode makes the used
+    /// `direction` `ltr` (CSS Writing Modes §5.1). What descendants inherit is
+    /// still the computed direction.
+    pub const fn used(
+        mode: WritingModeSpec,
+        direction: DirSpec,
+        orientation: TextOrientationSpec,
+    ) -> Self {
+        let upright = matches!(orientation, TextOrientationSpec::Upright) && mode.is_vertical();
+        Self::new(mode, if upright { DirSpec::Ltr } else { direction })
     }
 
     pub const fn is_vertical(self) -> bool {

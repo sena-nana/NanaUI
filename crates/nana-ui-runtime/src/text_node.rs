@@ -329,6 +329,7 @@ pub(crate) fn classify_computed_style_change(
         || previous.font_variations != next.font_variations
         || previous.font_kerning != next.font_kerning
         || previous.direction != next.direction
+        || previous.text_orientation != next.text_orientation
     {
         dirty |= TextDirty::SHAPE_STYLE;
     }
@@ -422,13 +423,15 @@ pub(crate) fn nana_text_constraints(
         max_lines: constraints.max_lines,
         ellipsis: constraints.ellipsis,
         preserve_lines: constraints.preserve_lines,
-        base_direction: style.direction,
+        // The used direction: `text-orientation: upright` reads `ltr`.
+        base_direction: style.writing_context().direction,
         align: match alignment {
             TextHorizontalAlignment::Start => TextAlignSpec::Start,
             TextHorizontalAlignment::Center => TextAlignSpec::Center,
             TextHorizontalAlignment::End => TextAlignSpec::End,
         },
         writing_mode: style.writing_mode,
+        text_orientation: style.text_orientation,
         ..NanaTextConstraints::default()
     };
     // The box dimension lines *stack* along — the height, or the width of a

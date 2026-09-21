@@ -9045,6 +9045,50 @@ fn accessibility_delta_removes_and_restores_hidden_subtrees_atomically() {
     assert_eq!(visible.updated[1].children, vec![node(3)]);
 }
 
+/// #59: an ancestor's writing mode reaches its text's accessibility node, so
+/// assistive technology walks a column top to bottom. The text itself does
+/// not change or move, so only the inherited writing context can say so.
+#[test]
+fn accessibility_delta_carries_an_inherited_writing_mode() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(node(1), document(1), NodeKind::Document);
+    queue.create(
+        node(2),
+        document(1),
+        NodeKind::Element { tag: "div".into() },
+    );
+    queue.create(node(3), document(1), NodeKind::Text);
+    queue.insert(node(1), node(2), None);
+    queue.insert(node(2), node(3), None);
+    world.commit(queue).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let _ = world.project_accessibility_delta(&work);
+
+    let mut vertical = MutationQueue::new();
+    vertical.set_style(
+        node(2),
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                writing_mode: Some(nana_ui_core::WritingModeSpec::VerticalRl),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(vertical).unwrap();
+    let work = world.take_system_work();
+    world.resolve_styles(&work.style).unwrap();
+    let delta = world.project_accessibility_delta(&work);
+    let text = delta
+        .updated
+        .iter()
+        .find(|entry| entry.id == node(3))
+        .expect("the text's accessibility node is updated");
+    assert!(text.writing.is_vertical());
+}
+
 #[test]
 fn pointer_capture_and_event_routes_share_runtime_hierarchy_and_lifetime() {
     let mut world = UiWorld::new();

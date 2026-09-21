@@ -204,7 +204,7 @@ impl UiWorld {
         if !self.is_mounted(id) {
             return None;
         }
-        let (parent, children, kind, state, text_value, document, visible, box_visible) = {
+        let (parent, children, kind, state, text_value, document, visible, box_visible, writing) = {
             let node = self.nodes.get(id)?;
             (
                 node.hierarchy.parent,
@@ -223,6 +223,7 @@ impl UiWorld {
                 node.document,
                 node.resolved.0.visible,
                 node.resolved.0.box_visible,
+                node.resolved.0.writing_context(),
             )
         };
         // Keep a neutral structural container so visible descendants never
@@ -303,6 +304,7 @@ impl UiWorld {
             numeric_value: state.numeric_value,
             focused: visible && self.input.focused.get(&document) == Some(&id),
             bounds,
+            writing,
         })
     }
 }

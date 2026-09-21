@@ -32,6 +32,7 @@ fn node(value: u64) -> AccessibilityNode {
         numeric_value: None,
         focused: false,
         bounds: LayoutBox::default(),
+        writing: Default::default(),
     }
 }
 

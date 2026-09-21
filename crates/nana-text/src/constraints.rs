@@ -2,7 +2,8 @@
 //! policy — see [`TextScale`] for where the device scale stops.
 
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec,
+    DirSpec, LineBreakSpec, TextAlignSpec, TextOrientationSpec, TextWrapBreak, WordBreakSpec,
+    WritingModeSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +64,9 @@ pub struct TextConstraints {
     pub align: TextAlignSpec,
     #[serde(default)]
     pub writing_mode: WritingModeSpec,
+    /// How a vertical line sets its glyphs (#59). Ignored in `horizontal-tb`.
+    #[serde(default)]
+    pub text_orientation: TextOrientationSpec,
     /// Tab expansion in spaces. Explicit because an unstated tab width is just
     /// whichever default the backend happens to carry.
     #[serde(default = "default_tab_width")]
@@ -89,6 +93,7 @@ impl Default for TextConstraints {
             base_direction: DirSpec::default(),
             align: TextAlignSpec::default(),
             writing_mode: WritingModeSpec::default(),
+            text_orientation: TextOrientationSpec::default(),
             // Not `u8::default()`. A zero tab width is not a tab width.
             tab_width: default_tab_width(),
             scale: TextScale::default(),

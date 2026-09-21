@@ -15,10 +15,13 @@ use nana_text::font::{FaceDescriptor, FallbackPolicy, FontSystem};
 use nana_text::layout::{LayoutCacheBudget, LayoutRequest, Layouter};
 use nana_text::shaping::{ShapeRequest, Shaper};
 use nana_text::{
-    Affinity, CaretPosition, LineBreakCause, NativeTextEngine, OverflowFlags, RunOrientation,
-    TextConstraints, TextEngine, TextKind, TextLayout, TextSource, TextStyle, TextWorkCounters,
+    Affinity, CaretPosition, GlyphFlags, LineBreakCause, NativeTextEngine, OverflowFlags,
+    RunOrientation, TextConstraints, TextEngine, TextKind, TextLayout, TextSource, TextStyle,
+    TextWorkCounters,
 };
-use nana_ui_core::{DirSpec, LineHeightSpec, TextAlignSpec, TextWrapBreak, WritingModeSpec};
+use nana_ui_core::{
+    DirSpec, LineHeightSpec, TextAlignSpec, TextOrientationSpec, TextWrapBreak, WritingModeSpec,
+};
 use std::sync::Arc;
 
 use support::corpus::{fixture_bytes, fixture_family};
@@ -1867,6 +1870,138 @@ fn a_vertical_line_stands_cjk_upright_and_lays_latin_on_its_side() {
     assert!(
         (line.metrics.baseline_y_px - (line.metrics.top_y_px + line.metrics.height_px / 2.0)).abs()
             < 0.01
+    );
+}
+
+/// #59: `text-orientation` decides every cluster of a vertical line:
+/// `mixed` asks UAX #50, `upright` stands Latin up too, `sideways` lays CJK
+/// on its side. Each is its own shaping, never another's cache entry, and a
+/// horizontal line ignores it.
+#[test]
+fn text_orientation_decides_how_a_vertical_line_sets_every_cluster() {
+    let mut engine = text_engine(UI);
+    let style = style(UI, 16.0);
+    let mut orientations = |writing_mode, text_orientation| {
+        let layout = lay_out(
+            &mut engine,
+            TextKind::Paragraph,
+            "中文ab",
+            &style,
+            &TextConstraints {
+                writing_mode,
+                text_orientation,
+                ..TextConstraints::default()
+            },
+        );
+        layout
+            .runs
+            .iter()
+            .map(|run| run.orientation)
+            .collect::<Vec<_>>()
+    };
+    use RunOrientation::{Horizontal, Sideways, Upright};
+    let vertical = WritingModeSpec::VerticalRl;
+    assert_eq!(
+        orientations(vertical, TextOrientationSpec::Mixed),
+        [Upright, Sideways]
+    );
+    assert_eq!(
+        orientations(vertical, TextOrientationSpec::Upright),
+        [Upright, Upright]
+    );
+    assert_eq!(
+        orientations(vertical, TextOrientationSpec::Sideways),
+        [Sideways, Sideways]
+    );
+    assert_eq!(
+        orientations(WritingModeSpec::HorizontalTb, TextOrientationSpec::Upright),
+        [Horizontal, Horizontal]
+    );
+}
+
+/// #59: a fallback face with no vertical metrics (`vhea` / `vmtx`) still
+/// stands its glyphs up with a usable advance. Noto Sans Arabic has none, so
+/// an upright Arabic letter's column step is synthesized by HarfRust from the
+/// face's `hhea` extents -- ascender minus descender, the face's own line
+/// height, never a zero or negative length a line breaker would misread --
+/// and the text stays vertical rather than falling back to a horizontal line.
+#[test]
+fn a_face_without_vertical_metrics_still_stands_upright_with_a_sane_advance() {
+    let mut engine = text_engine(UI_AND_ARABIC);
+    let style = style(UI_AND_ARABIC, 16.0);
+    let layout = lay_out(
+        &mut engine,
+        TextKind::Paragraph,
+        "中ب",
+        &style,
+        &TextConstraints {
+            writing_mode: WritingModeSpec::VerticalRl,
+            text_orientation: TextOrientationSpec::Upright,
+            ..TextConstraints::default()
+        },
+    );
+    assert!(layout.is_vertical());
+    assert!(!layout.unsupported_writing_mode);
+    assert_eq!(engine.layout_counters().vertical_writing_fallbacks, 0);
+    assert_eq!(layout.runs.len(), 2, "{:?}", layout.runs);
+    let (han, arabic) = (&layout.runs[0], &layout.runs[1]);
+    assert_ne!(
+        han.font, arabic.font,
+        "the letter came from the fallback face"
+    );
+    assert_eq!(arabic.orientation, RunOrientation::Upright);
+    for glyph in &arabic.glyphs {
+        assert!(!glyph.flags.contains(GlyphFlags::MISSING), "{glyph:?}");
+        assert!(
+            glyph.advance_px.is_finite() && glyph.advance_px >= 0.0,
+            "{glyph:?}"
+        );
+    }
+    // One cluster (the letter and its dot) steps down the column by the
+    // face's extent. `hhea`: ascender 1374, descender -738, 1000 units per em.
+    let extent = 16.0 * (1374.0 + 738.0) / 1000.0;
+    assert!(
+        (arabic.advance_px - extent).abs() < 0.01,
+        "the synthesized vertical advance is the face's extent: {arabic:?}"
+    );
+}
+
+/// #59: an upright column reads top to bottom whatever the script: `upright`
+/// makes every character a strong left-to-right one, so right-to-left text
+/// and an RTL base direction no longer reorder it.
+#[test]
+fn an_upright_column_reads_right_to_left_scripts_top_to_bottom() {
+    let mut engine = text_engine(UI_AND_ARABIC);
+    let style = style(UI_AND_ARABIC, 16.0);
+    let levels = |engine: &mut NativeTextEngine, text_orientation| {
+        let layout = lay_out(
+            engine,
+            TextKind::Paragraph,
+            "سلام中",
+            &style,
+            &TextConstraints {
+                writing_mode: WritingModeSpec::VerticalRl,
+                text_orientation,
+                base_direction: DirSpec::Rtl,
+                ..TextConstraints::default()
+            },
+        );
+        layout
+            .runs
+            .iter()
+            .map(|run| run.bidi_level)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        levels(&mut engine, TextOrientationSpec::Mixed)
+            .iter()
+            .any(|level| level % 2 == 1),
+        "mixed keeps the bidi levels"
+    );
+    let upright = levels(&mut engine, TextOrientationSpec::Upright);
+    assert!(
+        upright.iter().all(|level| *level == 0),
+        "upright reads everything left to right: {upright:?}"
     );
 }
 

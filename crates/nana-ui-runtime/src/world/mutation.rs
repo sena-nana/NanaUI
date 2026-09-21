@@ -1312,9 +1312,12 @@ impl UiWorld {
                     || previous.layout.word_break != style.layout.word_break
                     || previous.layout.line_break != style.layout.line_break
                     // Writing mode and direction inherit into layout, not just
-                    // text: a descendant container lays out along them too.
+                    // text: a descendant container lays out along them too, and
+                    // the INPUT bit re-projects the accessibility nodes that
+                    // report which way their text reads.
                     || previous.layout.dir != style.layout.dir
-                    || previous.layout.writing_mode != style.layout.writing_mode;
+                    || previous.layout.writing_mode != style.layout.writing_mode
+                    || previous.layout.text_orientation != style.layout.text_orientation;
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.selection_background != style.layout.selection_background

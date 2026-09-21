@@ -693,11 +693,20 @@ UiWorld 里「只改颜色 / transform 的帧不产生 layout request」由 Phas
   `U` / `Tu` / `Tr` 直立，`R` 侧卧（`text-orientation: mixed`）。`Tr`（括号、长音符、破折号）也按
   直立处理：它们要的是竖排**字形**，由直立 run 上的 `vert` 替换（或 HarfRust 的 Unicode 竖排
   表现形式兜底）给出。朝向进 item 切分，与字体、bidi 级、script 并列。
+  `text-orientation`（`nana_ui_core::TextOrientationSpec`，Rust 的 `LayoutStyle::text_orientation` 与
+  CSS 同一个枚举，随 `writing-mode` 继承、经 `TextConstraints::text_orientation` 进 `ShapeRequest`）
+  决定用不用这张表：`mixed` 按上面逐簇定，`upright` 全部直立，`sideways` 全部侧卧。`upright` 还把
+  每个字符当强 LTR（bidi 级一律为 0），并让这个盒子的**使用值** `direction` 变成 `ltr`
+  （CSS Writing Modes §5.1，由 `WritingContext::used` 统一给出，盒布局、逻辑边、文本约束、画笔
+  读的是同一个值）；后代继承的仍是计算值。横排时不起作用，整形缓存键里也按 `mixed` 记。
 - **整形**：直立 run 用 HarfRust `TopToBottom` 整形——字体的 `vmtx` / `vhea`、`vert` / `vkna`
   替换字形都由它负责；`y_advance` 为负，入 IR 时转成沿行的正长度，偏移保留 HarfRust 的约定
   （相对横排原点，已减去竖排原点 `(h_advance/2, v_origin_y)`）。侧卧 run 就是横排整形，由画笔
   顺时针转 90°。`ShapedRun::orientation` 记下是哪一种；`ShapedGlyph::advance_px` 在三种朝向下
   都是**沿行**的步进。`ShapedText::vertical` 是排版取写作方向的唯一来源，整形缓存键带上它。
+  字体没有 `vhea` / `vmtx`（包括 fallback 进来的字体，如 Noto Sans Arabic）时，直立字形的沿列
+  步进由 HarfRust 按 `hhea` 的 ascender − descender 合成——就是这张字体的行高，恒为正，
+  不会是 0 或负数；文本仍是竖排，不退回横排。
 - **排版**：`max_width_px` / `max_height_px` 永远是**物理**盒子；`TextConstraints::inline_budget_px`
   / `block_budget_px` 把它们换成行预算与堆叠预算——竖排时高度管一列多长、宽度管能叠几列。
   竖排的基线是列中线（`baseline_y_px = top + height/2`），行盒高度就是列宽。`LineBox` / run 的几何
@@ -729,6 +738,12 @@ RTL 贴右、竖排贴顶、竖排 rtl 贴底，都是一个滚动量）。单�
   与光标的锚点重合，多行时高度就是折列用的内容高度，画笔与编辑几何按同一预算折列。单行输入框把
   那一列在盒子里水平居中（一个负的块向滚动）。
 - **指针**：页面点经 `text_point` 转回文本空间再做命中，与画几何是同一个换算。
+- **IME**：宿主交给输入法的 cursor area 是编辑器画出来的光标（`ComponentGeometry::TextInput`
+  的 `caret`），原生宿主与 Vue 宿主同一个来源——竖排时就是横跨一列的那条横条，候选窗贴着正在
+  编辑的字，而不是贴着整个输入框。
+- **无障碍**：accesskit 的 `TextRun` 按 inline 起点带 `text_direction`：横排 LTR / RTL，竖排
+  `TopToBottom`，竖排 rtl `BottomToTop`；值是逻辑顺序的文字。逐字符的位置与宽度（`character_positions`
+  / `character_widths`）还没有给，横排也一样。
 - **方向键**：意图（`TextCaretIntent`）约定在行空间里：左右沿行、上下跨行。宿主报的是物理键，
   所以它在把修饰键折成意图**之前**先问 `AppContext::focused_text_line_space_key`，竖排时把物理键
   换成行空间的键：上下沿列走，左右跨列（`vertical-rl` 左键去下一列）。换的是键而不是做好的意图，
@@ -753,7 +768,7 @@ RTL 贴右、竖排贴顶、竖排 rtl 贴底，都是一个滚动量）。单�
 
 `TextLayout::unsupported_writing_mode` 与 `vertical_writing_fallbacks` 仍在，只剩一种来源：调用方
 自己用 `Shaper` 按横排整形、又拿竖排约束去 `Layouter` 排版。引擎按同一份约束整形与排版，不会走到
-这里。`sideways-*` 与 `text-orientation` 由盒布局在更早处拒绝，到不了这里。
+这里。`writing-mode: sideways-*` 由盒布局在更早处拒绝（`unsupported_writing_mode`），到不了这里。
 
 **静态可选文本**（`user-select`）的选区不走编辑器几何：竖排节点直接读 Runtime
 保留、画笔也在画的那份 layout，指针点经 `TextLayout::line_space_point` 转进行空间做 `hit_test`，

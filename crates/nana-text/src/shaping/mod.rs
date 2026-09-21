@@ -35,7 +35,7 @@ use crate::id::FontGeneration;
 use crate::shape::ShapedRun;
 use crate::source::TextSource;
 use crate::style::TextStyle;
-use nana_ui_core::DirSpec;
+use nana_ui_core::{DirSpec, TextOrientationSpec};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -55,8 +55,12 @@ pub struct ShapeRequest<'a> {
     pub language: Option<&'a LanguageTag>,
     pub scale: TextScale,
     /// Shape for a vertical line (#59): each cluster upright or sideways by
-    /// UAX #50, upright ones top-to-bottom.
+    /// [`Self::orientation`], upright ones top-to-bottom.
     pub vertical: bool,
+    /// CSS `text-orientation`: which clusters of a vertical line stand
+    /// upright. `mixed` asks UAX #50 per cluster; `upright` also reads the
+    /// text as left-to-right. Ignored when not [`Self::vertical`].
+    pub orientation: TextOrientationSpec,
 }
 
 impl<'a> ShapeRequest<'a> {
@@ -72,6 +76,7 @@ impl<'a> ShapeRequest<'a> {
             language: None,
             scale: constraints.scale,
             vertical: constraints.wants_vertical_writing(),
+            orientation: constraints.text_orientation,
         }
     }
 

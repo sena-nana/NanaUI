@@ -1952,10 +1952,23 @@ impl VueHost {
                 purpose: nana_ui_platform::TextInputPurpose::Normal,
             });
         }
-        let cursor_area =
-            crate::get_layout_box_from(&self.layout_boxes, &document, target).map(|layout| {
-                nana_ui_core::LogicalRect::new(layout.x, layout.y, layout.width, layout.height)
-            });
+        // The caret, as the native host reports it: candidates open beside
+        // the line or column being edited, not beside the whole field. The
+        // Runtime draws it relative to its own box; carry that offset onto
+        // the box this host reports for the node.
+        let field = crate::get_layout_box_from(&self.layout_boxes, &document, target);
+        let caret = document
+            .text_input_caret(target)
+            .zip(document.layout_box(target));
+        let cursor_area = field.map(|field| match caret {
+            Some((caret, runtime)) => nana_ui_core::LogicalRect::new(
+                field.x + caret.x - runtime.x,
+                field.y + caret.y - runtime.y,
+                caret.width,
+                caret.height,
+            ),
+            None => nana_ui_core::LogicalRect::new(field.x, field.y, field.width, field.height),
+        });
         Some(nana_ui_platform::TextInputRequest {
             enabled: true,
             cursor_area,

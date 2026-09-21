@@ -80,6 +80,21 @@ impl WritingModeSpec {
     }
 }
 
+/// CSS `text-orientation`: how a vertical line sets its glyphs. It does
+/// nothing in `horizontal-tb`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum TextOrientationSpec {
+    /// Each character by its Unicode `Vertical_Orientation` (UAX #50): CJK
+    /// upright, Latin and digits on their side.
+    #[default]
+    Mixed,
+    /// Every character upright, and the text read as left-to-right: the used
+    /// `direction` is `ltr` (CSS Writing Modes §5.1).
+    Upright,
+    /// Every character on its side, as a horizontal line turned 90°.
+    Sideways,
+}
+
 /// 交叉轴对齐（`align-items` / `align-self`）。
 ///
 /// `Baseline` 用字号近似第一行基线（`0.8em`）；无字号时回退 Start。
@@ -3138,6 +3153,9 @@ pub struct LayoutStyle {
     /// Vertical / sideways `writing-mode` is fail-closed (no axis remap).
     #[serde(default)]
     pub unsupported_writing_mode: bool,
+    /// CSS `text-orientation`. `None` = inherit, then `mixed`.
+    #[serde(default)]
+    pub text_orientation: Option<TextOrientationSpec>,
     /// `row-reverse` / `column-reverse`：主轴起点对调（measure 反转子项序）。
     #[serde(default)]
     pub flex_reverse: bool,
@@ -3455,6 +3473,7 @@ impl Default for LayoutStyle {
             dir: None,
             writing_mode: None,
             unsupported_writing_mode: false,
+            text_orientation: None,
             flex_reverse: false,
             order: 0,
             flex_wrap: FlexWrap::NoWrap,
@@ -4432,7 +4451,11 @@ impl LayoutStyle {
     /// The writing mode and direction this box lays out in: where its
     /// inline and block axes run and start. See [`crate::WritingContext`].
     pub fn writing_context(&self) -> crate::WritingContext {
-        crate::WritingContext::new(self.resolved_writing_mode(), self.resolved_direction())
+        crate::WritingContext::used(
+            self.resolved_writing_mode(),
+            self.resolved_direction(),
+            self.text_orientation.unwrap_or_default(),
+        )
     }
 
     /// Resolve the logical padding / margin / inset onto physical edges for
@@ -4458,6 +4481,16 @@ impl LayoutStyle {
             return;
         }
         self.writing_mode = Some(next);
+        self.resolve_logical_box_edges();
+    }
+
+    /// Update CSS `text-orientation` (`None` inherits) and re-resolve logical
+    /// edges: `upright` changes the used direction of a vertical box.
+    pub fn set_text_orientation(&mut self, next: Option<TextOrientationSpec>) {
+        if self.text_orientation == next {
+            return;
+        }
+        self.text_orientation = next;
         self.resolve_logical_box_edges();
     }
 

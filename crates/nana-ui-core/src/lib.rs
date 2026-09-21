@@ -62,10 +62,10 @@ pub use box_layout::{
     MAX_BOX_SHADOWS, MaskImage, MixBlendMode, OutlineSpec, OutlineStyle, OverflowSpec,
     OverflowWrapSpec, PaddingSpec, PaintMat4, PaintStyle, PaintTransform, ParentBox,
     PointerEventsSpec, PositionSpec, RadialGradient, TEXT_APPROX_ASCENT_EM, TextAlignSpec,
-    TextDecorationLine, TextShadowSpec, TextWrapBreak, TransformBox, TransformOrigin,
-    UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec, WritingModeSpec,
-    glyph_box_center_from_line_top, icon_y_on_text_glyph_center, resolve_grid_column_widths,
-    resolve_grid_track_sizes, text_line_box_height_px,
+    TextDecorationLine, TextOrientationSpec, TextShadowSpec, TextWrapBreak, TransformBox,
+    TransformOrigin, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WordBreakSpec,
+    WritingModeSpec, glyph_box_center_from_line_top, icon_y_on_text_glyph_center,
+    resolve_grid_column_widths, resolve_grid_track_sizes, text_line_box_height_px,
 };
 pub use date::{CivilDate, DayCell, MonthGrid, WeekStart, Weekday, days_in_month, is_leap_year};
 pub use dialog::{DialogClosePolicy, DialogCloseTrigger, DialogSize};

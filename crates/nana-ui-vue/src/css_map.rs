@@ -84,8 +84,8 @@ pub use nana_ui_core::box_layout::{
     GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas, GridTrack,
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthAtom, LengthSpec, LineHeightSpec,
     LogicalEdge, LogicalEdges, OverflowSpec, PaddingSpec, ParentBox, PositionSpec, TextAlignSpec,
-    TextShadowSpec, UserSelectSpec, ViewportAxis, VisibilitySpec, WhiteSpaceSpec, WritingModeSpec,
-    resolve_grid_column_widths, resolve_grid_track_sizes,
+    TextOrientationSpec, TextShadowSpec, UserSelectSpec, ViewportAxis, VisibilitySpec,
+    WhiteSpaceSpec, WritingModeSpec, resolve_grid_column_widths, resolve_grid_track_sizes,
 };
 pub use nana_ui_core::{
     FontFeatureSetting, FontKerningSpec, FontVariationSetting, LineBreakSpec, WordBreakSpec,
@@ -2661,6 +2661,7 @@ impl LayoutStyleCss for LayoutStyle {
             }
             "direction" => apply_css_direction(self, val),
             "writing-mode" => apply_css_writing_mode(self, val),
+            "text-orientation" => apply_css_text_orientation(self, val),
             // Fail-closed: do not pretend bidi isolation or IFC bidi.
             "unicode-bidi" => {}
             "float" => {
@@ -3118,12 +3119,14 @@ fn apply_position_inset_shorthand(
     }
 }
 
-/// `direction` / `writing-mode` must be applied before logical box properties
-/// in the same declaration batch so inline start/end map against used dir.
+/// `direction` / `writing-mode` / `text-orientation` must be applied before
+/// logical box properties in the same declaration batch so inline start/end
+/// map against the used direction (`text-orientation: upright` makes it `ltr`
+/// in a vertical mode).
 pub(crate) fn css_key_is_direction_or_writing_mode(key: &str) -> bool {
     matches!(
         normalize_css_prop_key(key).as_str(),
-        "direction" | "writing-mode"
+        "direction" | "writing-mode" | "text-orientation"
     )
 }
 
@@ -3178,6 +3181,20 @@ fn apply_css_writing_mode(layout: &mut LayoutStyle, val: &str) {
         }
         _ => {}
     }
+}
+
+/// CSS `text-orientation` (#59). An unknown keyword is an invalid
+/// declaration and is dropped, as in CSS: the previous value stays.
+fn apply_css_text_orientation(layout: &mut LayoutStyle, val: &str) {
+    let next = match val.trim().to_ascii_lowercase().as_str() {
+        "mixed" | "initial" => Some(TextOrientationSpec::Mixed),
+        "upright" => Some(TextOrientationSpec::Upright),
+        // `sideways-right` is the CSS Writing Modes 3 draft's name for it.
+        "sideways" | "sideways-right" => Some(TextOrientationSpec::Sideways),
+        "inherit" | "unset" => None,
+        _ => return,
+    };
+    layout.set_text_orientation(next);
 }
 
 /// A logical two-value shorthand (`padding-inline`, `margin-block`, …): one
@@ -5771,6 +5788,30 @@ mod tests {
         layout.apply_css_text("padding-inline-start: 12px; direction: rtl", None, None);
         assert_eq!(layout.padding_right, Some(LengthSpec::Px(12.0)));
         assert!(layout.padding_left.is_none());
+    }
+
+    #[test]
+    fn text_orientation_is_stored_and_moves_logical_edges_with_the_used_direction() {
+        let mut layout = LayoutStyle::default();
+        layout.apply_css_text(
+            "writing-mode: vertical-rl; direction: rtl; padding-inline-start: 8px",
+            None,
+            None,
+        );
+        assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(8.0)));
+        // `upright` makes the used direction `ltr`: inline-start is the top.
+        layout.apply_css_text("text-orientation: upright", None, None);
+        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Upright));
+        assert_eq!(layout.padding_top, Some(LengthSpec::Px(8.0)));
+        assert!(layout.padding_bottom.is_none());
+        layout.apply_css_text("text-orientation: sideways-right", None, None);
+        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Sideways));
+        assert_eq!(layout.padding_bottom, Some(LengthSpec::Px(8.0)));
+        // An unknown keyword is dropped; `inherit` goes back to the parent's.
+        layout.apply_css_text("text-orientation: diagonal", None, None);
+        assert_eq!(layout.text_orientation, Some(TextOrientationSpec::Sideways));
+        layout.apply_css_text("text-orientation: inherit", None, None);
+        assert_eq!(layout.text_orientation, None);
     }
 
     #[test]

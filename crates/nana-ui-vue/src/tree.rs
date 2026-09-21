@@ -2761,6 +2761,21 @@ impl NanaTreeDocument {
         })
     }
 
+    /// The focused editor's caret as the Runtime draws it, in the same space
+    /// as [`Self::layout_box`]: a thin bar across a horizontal line, or across
+    /// a column in vertical text (#59). What the IME anchors its candidates to.
+    pub(crate) fn text_input_caret(&self, node: NodeHandle) -> Option<nana_ui_runtime::LayoutBox> {
+        match self
+            .runtime
+            .component_geometry(StableNodeId::try_from(node).ok()?)?
+        {
+            nana_ui_runtime::ComponentGeometry::TextInput {
+                caret: Some(caret), ..
+            } => Some(caret),
+            _ => None,
+        }
+    }
+
     pub fn has_engine_layout_box(&self, node: NodeHandle) -> bool {
         self.layout_box(node)
             .is_some_and(|box_| box_.width > 0.0 || box_.height > 0.0)

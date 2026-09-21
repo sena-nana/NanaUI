@@ -201,6 +201,54 @@ fn a_vertical_text_node_is_measured_as_columns_and_painted_from_that_layout() {
     );
 }
 
+/// #59: `text-orientation` inherits like `writing-mode` and reaches the
+/// engine as the same enum a Rust caller sets: under an `upright` column
+/// Latin stands up too, and the node lays out in the used direction `ltr`.
+#[test]
+fn an_inherited_upright_orientation_stands_every_character_up() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = Stack::row(0.0).with_layout(|style| {
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.dir = Some(nana_ui_core::DirSpec::Rtl);
+        style.text_orientation = Some(nana_ui_core::TextOrientationSpec::Upright);
+    });
+    let root = cx.create_component(doc, root).unwrap();
+    let label = cx.create_component(doc, Text::new("縦ab")).unwrap();
+    cx.append_child(root, label).unwrap();
+    let (root, label) = (root.stable_id(), label.stable_id());
+    settle(&mut cx, doc, &[root, label]);
+
+    let mut scene = UiScene::new();
+    scene.apply_delta(cx.world().extract_document(doc), []);
+    let (_, retained) = text_primitive(&scene, label);
+    let layout = retained
+        .expect("a plain text node retains its layout")
+        .layout;
+    assert!(layout.is_vertical());
+    assert_eq!(
+        layout.constraints.text_orientation,
+        nana_ui_core::TextOrientationSpec::Upright
+    );
+    assert_eq!(
+        layout.constraints.base_direction,
+        nana_ui_core::DirSpec::Ltr,
+        "upright makes the used direction ltr"
+    );
+    assert!(
+        layout
+            .runs
+            .iter()
+            .all(|run| run.orientation == nana_text::RunOrientation::Upright),
+        "{:?}",
+        layout
+            .runs
+            .iter()
+            .map(|run| run.orientation)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// #59: selecting vertical text hits and highlights the column the glyphs
 /// are drawn in.
 ///

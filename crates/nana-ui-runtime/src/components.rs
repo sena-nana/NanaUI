@@ -1846,13 +1846,15 @@ pub struct ComputedStyle {
     pub direction: nana_ui_core::DirSpec,
     /// CSS `writing-mode` after inherit (initial `horizontal-tb`).
     pub writing_mode: nana_ui_core::WritingModeSpec,
+    /// CSS `text-orientation` after inherit (initial `mixed`).
+    pub text_orientation: nana_ui_core::TextOrientationSpec,
 }
 
 impl ComputedStyle {
     /// The writing mode and direction this node lays out in, after
     /// inheritance. See [`nana_ui_core::WritingContext`].
     pub fn writing_context(&self) -> nana_ui_core::WritingContext {
-        nana_ui_core::WritingContext::new(self.writing_mode, self.direction)
+        nana_ui_core::WritingContext::used(self.writing_mode, self.direction, self.text_orientation)
     }
 }
 
@@ -1886,6 +1888,7 @@ impl Default for ComputedStyle {
             line_break: LineBreakSpec::Auto,
             direction: nana_ui_core::DirSpec::Ltr,
             writing_mode: nana_ui_core::WritingModeSpec::HorizontalTb,
+            text_orientation: nana_ui_core::TextOrientationSpec::Mixed,
         }
     }
 }
@@ -2804,6 +2807,9 @@ pub struct AccessibilityNode {
     pub numeric_value: Option<f64>,
     pub focused: bool,
     pub bounds: LayoutBox,
+    /// The writing mode and direction its text reads in (#59): which way an
+    /// assistive technology walks a text run.
+    pub writing: nana_ui_core::WritingContext,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -358,6 +358,7 @@ struct ShapeKey {
     align: u8,
     direction: u8,
     writing_mode: u8,
+    text_orientation: u8,
     preserve_lines: bool,
     font_features: Vec<nana_ui_core::FontFeatureSetting>,
 }
@@ -388,6 +389,7 @@ struct ShapeKeyRef<'a> {
     align: u8,
     direction: u8,
     writing_mode: u8,
+    text_orientation: u8,
     preserve_lines: bool,
     font_features: &'a [nana_ui_core::FontFeatureSetting],
 }
@@ -417,6 +419,7 @@ impl ShapeKeyRef<'_> {
         self.font_features.hash(&mut hasher);
         self.direction.hash(&mut hasher);
         self.writing_mode.hash(&mut hasher);
+        self.text_orientation.hash(&mut hasher);
         self.preserve_lines.hash(&mut hasher);
         // The top bit belongs to [`PARAGRAPH_IS_RETAINED`], so a hash can
         // never be mistaken for a Runtime handle. What this costs is one bit
@@ -449,6 +452,7 @@ impl ShapeKeyRef<'_> {
             font_features: self.font_features.to_vec(),
             direction: self.direction,
             writing_mode: self.writing_mode,
+            text_orientation: self.text_orientation,
             preserve_lines: self.preserve_lines,
         }
     }
@@ -478,6 +482,7 @@ impl ShapeKey {
             && self.font_features == other.font_features
             && self.direction == other.direction
             && self.writing_mode == other.writing_mode
+            && self.text_orientation == other.text_orientation
             && self.preserve_lines == other.preserve_lines
     }
 }
@@ -974,6 +979,11 @@ impl TextPipeline {
                         nana_ui_core::WritingModeSpec::VerticalRl => 1,
                         nana_ui_core::WritingModeSpec::VerticalLr => 2,
                     },
+                    text_orientation: match opentype.text_orientation {
+                        nana_ui_core::TextOrientationSpec::Mixed => 0,
+                        nana_ui_core::TextOrientationSpec::Upright => 1,
+                        nana_ui_core::TextOrientationSpec::Sideways => 2,
+                    },
                     preserve_lines: opentype.preserve_lines,
                     font_features,
                 };
@@ -1326,6 +1336,7 @@ impl TextPipeline {
             base_direction: opentype.direction,
             align,
             writing_mode: opentype.writing_mode,
+            text_orientation: opentype.text_orientation,
             scale: nana_text::TextScale {
                 px_per_logical: 1.0,
             },
@@ -3293,6 +3304,7 @@ mod tests {
             align: 0,
             direction: 0,
             writing_mode: 0,
+            text_orientation: 0,
             preserve_lines: false,
             font_features: &[],
         }

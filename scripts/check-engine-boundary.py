@@ -58,6 +58,7 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "LineBreakSpec",
     "LineHeightSpec",
     "TextAlignSpec",
+    "TextOrientationSpec",
     "TextWrapBreak",
     "WordBreakSpec",
     "WritingContext",

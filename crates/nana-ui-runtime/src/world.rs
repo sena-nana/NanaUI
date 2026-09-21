@@ -2644,9 +2644,12 @@ impl UiWorld {
 fn record_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
     let declared = &record.resolved_layout;
     let inherited = record.inherited_writing;
-    nana_ui_core::WritingContext::new(
+    nana_ui_core::WritingContext::used(
         declared.writing_mode.unwrap_or(inherited.mode),
         declared.dir.unwrap_or(inherited.direction),
+        declared
+            .text_orientation
+            .unwrap_or(record.inherited_orientation),
     )
 }
 
@@ -2655,7 +2658,12 @@ fn record_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
 /// block's frame.
 fn record_containing_writing(record: &NodeRecord) -> nana_ui_core::WritingContext {
     if record.hierarchy.parent.is_some() {
-        record.inherited_writing
+        let parent = record.inherited_writing;
+        nana_ui_core::WritingContext::used(
+            parent.mode,
+            parent.direction,
+            record.inherited_orientation,
+        )
     } else {
         record_writing(record)
     }

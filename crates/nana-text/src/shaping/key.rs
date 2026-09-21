@@ -18,7 +18,7 @@ use crate::font::{FontFeatures, FontVariations, LanguageTag, canonical_f32_bits}
 use crate::id::FontGeneration;
 use crate::source::{TextSource, TextSpan};
 use crate::style::TextStyle;
-use nana_ui_core::FontKerningSpec;
+use nana_ui_core::{FontKerningSpec, TextOrientationSpec};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::sync::Arc;
@@ -62,6 +62,7 @@ pub(crate) struct ShapeKey {
     spans: Vec<(Range<usize>, bool, StyleKey)>,
     rtl: bool,
     vertical: bool,
+    orientation: TextOrientationSpec,
     language: Option<LanguageTag>,
     scale_bits: u32,
     /// The font system and its generation: `FontId`s in a result are only
@@ -84,6 +85,7 @@ impl ShapeKey {
         spans: &[TextSpan],
         rtl: bool,
         vertical: bool,
+        orientation: TextOrientationSpec,
         language: Option<&LanguageTag>,
         scale: f32,
         epoch: FontEpoch,
@@ -104,6 +106,7 @@ impl ShapeKey {
                 .collect(),
             rtl,
             vertical,
+            orientation,
             language: language.cloned(),
             scale_bits: canonical_f32_bits(scale),
             epoch,
@@ -129,6 +132,7 @@ impl Hash for ShapeKey {
         self.spans.hash(state);
         self.rtl.hash(state);
         self.vertical.hash(state);
+        self.orientation.hash(state);
         self.language.hash(state);
         self.scale_bits.hash(state);
         self.epoch.hash(state);
@@ -140,6 +144,7 @@ impl PartialEq for ShapeKey {
         self.text_hash == other.text_hash
             && self.rtl == other.rtl
             && self.vertical == other.vertical
+            && self.orientation == other.orientation
             && self.scale_bits == other.scale_bits
             && self.epoch == other.epoch
             && self.base == other.base

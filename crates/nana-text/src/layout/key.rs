@@ -29,7 +29,8 @@ use crate::id::TextRevision;
 use crate::shaping::ShapedText;
 use crate::style::TextKind;
 use nana_ui_core::{
-    DirSpec, LineBreakSpec, TextAlignSpec, TextWrapBreak, WordBreakSpec, WritingModeSpec,
+    DirSpec, LineBreakSpec, TextAlignSpec, TextOrientationSpec, TextWrapBreak, WordBreakSpec,
+    WritingModeSpec,
 };
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -52,6 +53,7 @@ struct ConstraintsKey {
     base_direction: u8,
     align: u8,
     writing_mode: u8,
+    text_orientation: u8,
     /// Keyed although no line applies tab stops yet: the field is a declared
     /// constraint, and a key that ignores one is a cache that hands back the
     /// wrong layout the day it starts mattering.
@@ -73,6 +75,7 @@ impl ConstraintsKey {
             base_direction,
             align,
             writing_mode,
+            text_orientation,
             tab_width,
             scale,
         } = *constraints;
@@ -113,6 +116,11 @@ impl ConstraintsKey {
                 WritingModeSpec::HorizontalTb => 0,
                 WritingModeSpec::VerticalRl => 1,
                 WritingModeSpec::VerticalLr => 2,
+            },
+            text_orientation: match text_orientation {
+                TextOrientationSpec::Mixed => 0,
+                TextOrientationSpec::Upright => 1,
+                TextOrientationSpec::Sideways => 2,
             },
             tab_width,
             scale: canonical_f32_bits(scale.px_per_logical),

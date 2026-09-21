@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use accesskit::ActionData;
 use accesskit::{
-    Action, Invalid, Node, NodeId, Orientation, Rect, Role, TextPosition,
+    Action, Invalid, Node, NodeId, Orientation, Rect, Role, TextDirection, TextPosition,
     TextSelection as AccessKitTextSelection, Toggled, TreeId, TreeInfo, TreeUpdate,
 };
 #[cfg(all(feature = "hosted", not(target_os = "android")))]
@@ -1021,6 +1021,7 @@ fn project_node(
         let value = node.value.as_deref().unwrap_or_default();
         let mut text_run = Node::new(Role::TextRun);
         text_run.set_value(value.to_string());
+        text_run.set_text_direction(text_direction(node.writing));
         text_run.set_character_lengths(
             value
                 .chars()
@@ -1030,6 +1031,17 @@ fn project_node(
         entries.push((text_run_id, text_run));
     }
     entries
+}
+
+/// Which way a text run reads, from its inline-start edge: a vertical column
+/// reads top to bottom, or bottom to top under `direction: rtl` (#59).
+const fn text_direction(writing: nana_ui_core::WritingContext) -> TextDirection {
+    match writing.inline_start() {
+        nana_ui_core::PhysicalEdge::Left => TextDirection::LeftToRight,
+        nana_ui_core::PhysicalEdge::Right => TextDirection::RightToLeft,
+        nana_ui_core::PhysicalEdge::Top => TextDirection::TopToBottom,
+        nana_ui_core::PhysicalEdge::Bottom => TextDirection::BottomToTop,
+    }
 }
 
 const fn supports_click(role: AccessibilityRole) -> bool {
@@ -1248,6 +1260,7 @@ mod tests {
             numeric_value: None,
             focused: false,
             bounds: LayoutBox::default(),
+            writing: Default::default(),
         }
     }
 
@@ -1777,6 +1790,45 @@ mod tests {
     }
 
     #[cfg(all(feature = "hosted", not(target_os = "android")))]
+    #[test]
+    fn a_text_run_reads_the_way_its_writing_mode_runs() {
+        use nana_ui_core::{DirSpec, WritingContext, WritingModeSpec};
+        let direction = |writing| {
+            let root = node(1, None, &[2]);
+            let mut input = node(2, Some(1), &[]);
+            input.role = AccessibilityRole::TextInput;
+            input.editable = true;
+            input.value = Some("縦書き".into());
+            input.writing = writing;
+            let (projector, update) = AccessibilityProjector::new(vec![root, input], true, 1.0);
+            let text_run_id = projector.text_runs[&StableNodeId::new(2).unwrap()];
+            let text_run = &update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == text_run_id)
+                .unwrap()
+                .1;
+            text_run.text_direction()
+        };
+        let context = WritingContext::new;
+        assert_eq!(
+            direction(context(WritingModeSpec::HorizontalTb, DirSpec::Ltr)),
+            Some(TextDirection::LeftToRight)
+        );
+        assert_eq!(
+            direction(context(WritingModeSpec::HorizontalTb, DirSpec::Rtl)),
+            Some(TextDirection::RightToLeft)
+        );
+        assert_eq!(
+            direction(context(WritingModeSpec::VerticalRl, DirSpec::Ltr)),
+            Some(TextDirection::TopToBottom)
+        );
+        assert_eq!(
+            direction(context(WritingModeSpec::VerticalLr, DirSpec::Rtl)),
+            Some(TextDirection::BottomToTop)
+        );
+    }
+
     #[test]
     fn unicode_text_run_selection_round_trips_without_byte_index_loss() {
         let root = node(1, None, &[2]);

@@ -4,7 +4,7 @@ use nana_ui_core::{
     AlignSpec, BoxSizing, CalcBinOp, CalcExpr, ClearSpec, DirSpec, DisplaySpec, FlexDirection,
     FlexWrap, FloatSpec, GridLine, GridPlacement, GridRepeatAuto, GridTrack,
     GridTrackListUnsupported, JustifySpec, LayoutStyle, LengthSpec, LineHeightSpec, PositionSpec,
-    WhiteSpaceSpec, WritingModeSpec,
+    TextOrientationSpec, WhiteSpaceSpec, WritingModeSpec,
 };
 
 use crate::{
@@ -5657,6 +5657,52 @@ fn a_container_inherits_its_parents_writing_mode() {
             boxes[id]
         );
     }
+}
+
+/// `text-orientation: upright` makes a vertical box's used direction `ltr`
+/// (CSS Writing Modes §5.1): under a `vertical-rl; direction: rtl` parent that
+/// sets it, a row starts at the top again instead of the bottom -- inherited,
+/// like the writing mode itself.
+#[test]
+fn an_upright_vertical_box_lays_out_left_to_right() {
+    let layout = |orientation| {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Block),
+                width: Some(LengthSpec::Px(200.0)),
+                height: Some(LengthSpec::Px(200.0)),
+                writing_mode: Some(WritingModeSpec::VerticalRl),
+                dir: Some(DirSpec::Rtl),
+                text_orientation: orientation,
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "row".into(),
+                style: LayoutStyle {
+                    display: Some(DisplaySpec::Flex),
+                    direction: Some(FlexDirection::Row),
+                    width: Some(LengthSpec::Px(40.0)),
+                    height: Some(LengthSpec::Px(100.0)),
+                    align_items: AlignSpec::Start,
+                    ..LayoutStyle::default()
+                },
+                children: vec![px_box("a", 20.0, 20.0)],
+                text: None,
+            }],
+            text: None,
+        };
+        let boxes = box_map(&tree, 200.0, 200.0);
+        boxes["a"].y - boxes["row"].y
+    };
+    assert!(
+        (layout(None) - 80.0).abs() < 0.5,
+        "rtl starts at the bottom"
+    );
+    assert!(
+        layout(Some(TextOrientationSpec::Upright)).abs() < 0.5,
+        "upright reads ltr: the row starts at the top"
+    );
 }
 
 /// A box's logical edges land in the writing context it inherits, not only in

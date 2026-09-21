@@ -403,6 +403,8 @@ pub struct SceneTextOpenType {
     /// CSS `writing-mode` after inherit. Vertical text — an editor's value
     /// included — is laid out and painted in columns (#59).
     pub writing_mode: WritingModeSpec,
+    /// CSS `text-orientation` after inherit (#59).
+    pub text_orientation: nana_ui_core::TextOrientationSpec,
 }
 
 impl SceneTextOpenType {
@@ -413,8 +415,10 @@ impl SceneTextOpenType {
             kerning: style.font_kerning,
             word_break: style.word_break,
             line_break: style.line_break,
-            direction: style.direction,
+            // The used direction: `text-orientation: upright` reads `ltr`.
+            direction: style.writing_context().direction,
             writing_mode: style.writing_mode,
+            text_orientation: style.text_orientation,
             // Not on `ComputedStyle`: `white-space` is a box-layout property,
             // so the caller that has the layout style sets it.
             preserve_lines: false,

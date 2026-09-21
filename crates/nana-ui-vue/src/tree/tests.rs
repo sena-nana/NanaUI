@@ -2023,6 +2023,59 @@ fn nana_chip_dismissible_assembles_close_and_keeps_roles() {
     assert!(doc.runtime.interaction(close).unwrap().focusable);
 }
 
+/// #59: the IME anchors its candidates to the caret the Runtime draws — a
+/// thin bar across the line, or across the column in vertical text — not to
+/// the whole field.
+#[test]
+fn a_focused_textarea_reports_its_caret_for_the_ime() {
+    let caret = |writing_mode: Option<nana_ui_core::WritingModeSpec>| {
+        let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+        let area = doc.create_element("textarea");
+        doc.insert(area, doc.mount_root(), None);
+        let mut bridge = crate::MessageBridge::new();
+        bridge.register(
+            area.0,
+            crate::WidgetKind::Textarea,
+            crate::WidgetProps {
+                value: "縦書き".into(),
+                ..Default::default()
+            },
+        );
+        doc.sync_semantic_styles(&bridge.snapshot());
+        doc.set_text_input_state(area, TextInputState::new("縦書き"));
+        if let Some(mode) = writing_mode {
+            let id = StableNodeId::try_from(area).unwrap();
+            let mut style = doc.runtime.node_style(id).unwrap().clone();
+            std::sync::Arc::make_mut(&mut style.layout).writing_mode = Some(mode);
+            doc.commit_pending_with(|mutations| mutations.set_style(id, style))
+                .unwrap();
+        }
+        doc.apply_layout_boxes(&[(
+            area,
+            LayoutBox {
+                handle: area,
+                x: 10.0,
+                y: 20.0,
+                width: 200.0,
+                height: 120.0,
+            },
+        )]);
+        doc.set_focus(area);
+        doc.text_input_caret(area)
+            .expect("a focused editor draws a caret")
+    };
+    let horizontal = caret(None);
+    assert!(
+        horizontal.width < horizontal.height && horizontal.height < 120.0,
+        "a bar standing in the line: {horizontal:?}"
+    );
+    let vertical = caret(Some(nana_ui_core::WritingModeSpec::VerticalRl));
+    assert!(
+        vertical.width > vertical.height && vertical.width < 200.0,
+        "a bar lying across the column: {vertical:?}"
+    );
+}
+
 #[test]
 fn migrated_controls_project_one_retained_visual_and_accessibility_state() {
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);

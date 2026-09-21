@@ -94,11 +94,13 @@ pub(crate) struct NodeRecord {
     /// projection diffs against.
     pub resolved_layout: Arc<nana_ui_core::LayoutStyle>,
     pub resolved: ResolvedStyle,
-    /// The writing mode and direction this node inherits: its parent's, as
-    /// last resolved. Kept beside the record, not only inside the parent's
-    /// `ComputedStyle`, so layout reads a node's writing context and its
-    /// containing block's without a parent lookup or an `Arc` deref.
+    /// The writing mode, direction and text orientation this node inherits:
+    /// its parent's computed values, as last resolved. Kept beside the
+    /// record, not only inside the parent's `ComputedStyle`, so layout reads a
+    /// node's writing context and its containing block's without a parent
+    /// lookup or an `Arc` deref.
     pub inherited_writing: nana_ui_core::WritingContext,
+    pub inherited_orientation: nana_ui_core::TextOrientationSpec,
     pub text: TextContent,
     pub text_metrics: TextMetrics,
     pub layout: LayoutBox,
@@ -122,6 +124,7 @@ impl NodeRecord {
             resolved_layout: NodeStyle::default().layout,
             resolved: ResolvedStyle::interned_default(),
             inherited_writing: nana_ui_core::WritingContext::default(),
+            inherited_orientation: nana_ui_core::TextOrientationSpec::Mixed,
             text: TextContent::default(),
             text_metrics: TextMetrics::default(),
             layout: LayoutBox::default(),
