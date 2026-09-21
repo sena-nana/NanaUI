@@ -24,7 +24,7 @@ use nana_ui::runtime::{
     DocumentId, FlexDirection, FlexWrap, LayoutStyle, LayoutViewport, LengthSpec, MutationQueue,
     NodeKind, NodeStyle, RuntimeDocument, SemanticColorRole, StableNodeId, TextContent,
 };
-use nana_ui::{NanaTextShaper, ScenePaintViewport, SceneWgpuPainter};
+use nana_ui::{NanaTextShaper, RenderTargetId, ScenePaintViewport, SceneWgpuPainter};
 use nana_ui_core::{PaintTransform, TransformOrigin};
 use serde::Serialize;
 
@@ -41,6 +41,22 @@ const DISTINCT_LABELS: usize = 64;
 
 /// Labels inside the panel [`Workload::TransformPanel`] animates.
 const PANEL_ROWS: usize = 8;
+
+/// One wrapped paragraph's box, for [`Workload::Paragraphs`]: four or five
+/// lines of body text.
+const PARAGRAPH: [f32; 2] = [416.0, 96.0];
+/// Labels per paragraph when a cell's label count is read as paragraphs. A
+/// paragraph holds about as many glyphs as this many labels.
+const LABELS_PER_PARAGRAPH: usize = 8;
+const PARAGRAPH_TEXT: &str = "Retained text keeps what a paragraph resolved to between \
+    frames, so a frame that moves something else on screen does not walk its \
+    glyphs again. Wrapping, alignment and ellipsis are decided once, when the \
+    text or its box changes, and never because a neighbour animated.";
+
+/// Distinct ideographs [`Workload::AtlasPressure`] draws from, and the sizes
+/// it cycles through: together far more glyph area than the atlas budget.
+const PRESSURE_POOL: u32 = 20_000;
+const PRESSURE_SIZES: [f32; 6] = [32.0, 44.0, 56.0, 72.0, 88.0, 104.0];
 
 /// Label counts Issue #98 asks for.
 const LABEL_GRID: [usize; 4] = [1, 100, 1_000, 10_000];
@@ -68,6 +84,27 @@ enum Workload {
     TransformPanel,
     /// One label in a hundred gets new text.
     Mutate,
+    /// One label in a hundred, chosen at random each frame, gets text of a
+    /// random length: the churn a live table or a log view produces, where
+    /// paragraphs grow and shrink rather than being swapped like for like.
+    MutateRandom,
+    /// A text-heavy table: every cell its own string of digits, dates and
+    /// names, beside a ticking label.
+    Table,
+    /// The same table scrolling by whole pixels.
+    TableScroll,
+    /// Wrapped paragraphs, one per [`LABELS_PER_PARAGRAPH`] labels, beside a
+    /// ticking label.
+    Paragraphs,
+    /// One label in a hundred turns into large ideographs from a pool much
+    /// bigger than the atlas, at a size that changes every frame: the atlas
+    /// fills, evicts and keeps drawing.
+    AtlasPressure,
+    /// `Static`, painted into two windows that share one device.
+    MultiWindow,
+    /// The container zooms from 1x to 2x: a scene scale animation, which may
+    /// re-rasterize at a few half-octave steps and never once per frame.
+    Zoom,
 }
 
 impl Workload {
@@ -80,15 +117,44 @@ impl Workload {
             Self::Transform => "transform",
             Self::TransformPanel => "transform-panel",
             Self::Mutate => "mutate-1pct",
+            Self::MutateRandom => "mutate-random-1pct",
+            Self::Table => "table",
+            Self::TableScroll => "table-scroll",
+            Self::Paragraphs => "paragraphs",
+            Self::AtlasPressure => "atlas-pressure",
+            Self::MultiWindow => "multi-window",
+            Self::Zoom => "zoom",
         }
     }
+
+    const ALL: [Self; 14] = [
+        Self::Static,
+        Self::StaticUnique,
+        Self::Color,
+        Self::Opacity,
+        Self::Transform,
+        Self::TransformPanel,
+        Self::Mutate,
+        Self::MutateRandom,
+        Self::Table,
+        Self::TableScroll,
+        Self::Paragraphs,
+        Self::AtlasPressure,
+        Self::MultiWindow,
+        Self::Zoom,
+    ];
 
     /// Whether the workload is an animation, and therefore worth running at
     /// each of [`RATE_GRID`].
     fn animated(self) -> bool {
         matches!(
             self,
-            Self::Color | Self::Opacity | Self::Transform | Self::TransformPanel
+            Self::Color
+                | Self::Opacity
+                | Self::Transform
+                | Self::TransformPanel
+                | Self::TableScroll
+                | Self::Zoom
         )
     }
 }
@@ -202,15 +268,7 @@ fn main() {
         if !only_labels.is_empty() && !only_labels.contains(&labels) {
             continue;
         }
-        for workload in [
-            Workload::Static,
-            Workload::StaticUnique,
-            Workload::Color,
-            Workload::Opacity,
-            Workload::Transform,
-            Workload::TransformPanel,
-            Workload::Mutate,
-        ] {
+        for workload in Workload::ALL {
             if !only_workload.is_empty() && !only_workload.iter().any(|id| id == workload.id()) {
                 continue;
             }
@@ -260,15 +318,15 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue, String)> {
     Some((device, queue, format!("{} ({:?})", info.name, info.backend)))
 }
 
-/// A viewport that holds `labels` boxes of [`LABEL`], roughly square.
-fn viewport_for(labels: usize) -> [u32; 2] {
-    let area = labels as f32 * LABEL[0] * LABEL[1];
-    let width = (area.sqrt().max(LABEL[0]) / LABEL[0]).ceil() * LABEL[0];
-    let columns = (width / LABEL[0]).max(1.0);
-    let rows = (labels as f32 / columns).ceil().max(1.0);
+/// A viewport that holds `count` boxes of `cell`, roughly square.
+fn viewport_for(count: usize, cell: [f32; 2]) -> [u32; 2] {
+    let area = count as f32 * cell[0] * cell[1];
+    let width = (area.sqrt().max(cell[0]) / cell[0]).ceil() * cell[0];
+    let columns = (width / cell[0]).max(1.0);
+    let rows = (count as f32 / columns).ceil().max(1.0);
     [
         (width as u32).clamp(320, 8192),
-        ((rows * LABEL[1]) as u32).clamp(240, 8192),
+        ((rows * cell[1]) as u32).clamp(240, 8192),
     ]
 }
 
@@ -280,7 +338,12 @@ fn run(
     frames: usize,
     depth: usize,
 ) -> Cell {
-    let physical = viewport_for(labels);
+    let (count, cell) = if workload == Workload::Paragraphs {
+        ((labels / LABELS_PER_PARAGRAPH).max(1), PARAGRAPH)
+    } else {
+        (labels, LABEL)
+    };
+    let physical = viewport_for(count, cell);
     let document_id = DocumentId::new(1).expect("document");
     let mut document = RuntimeDocument::new(document_id);
     let root = StableNodeId::new(1).expect("root");
@@ -309,7 +372,7 @@ fn run(
     build.create(ticker, document_id, NodeKind::Text);
     build.insert(column, ticker, None);
     build.set_text(ticker, TextContent { value: ".".into() });
-    build.set_style(ticker, label_style());
+    build.set_style(ticker, label_style(LABEL));
     // The panel `TransformPanel` animates. Only that workload builds it, so
     // every other row keeps the tree it has always been measured on.
     let panel = StableNodeId::new(2_000_000).expect("panel");
@@ -318,8 +381,8 @@ fn run(
         build.insert(column, panel, None);
         build.set_style(panel, panel_style(None));
     }
-    let mut rows = Vec::with_capacity(labels);
-    for index in 0..labels {
+    let mut rows = Vec::with_capacity(count);
+    for index in 0..count {
         let label = StableNodeId::new(4 + index as u64).expect("label");
         let parent = if workload == Workload::TransformPanel && index < PANEL_ROWS {
             panel
@@ -334,7 +397,7 @@ fn run(
                 value: label_text(workload, index),
             },
         );
-        build.set_style(label, label_style());
+        build.set_style(label, label_style(cell));
         rows.push(label);
     }
     document
@@ -346,6 +409,9 @@ fn run(
     let mut shaper = NanaTextShaper::default();
     let mut painter = SceneWgpuPainter::new(device, queue, FORMAT);
     let target = color_target(device, physical);
+    // The second window of `MultiWindow`: its own surface, the same device,
+    // the same painter — so the same atlas and the same shaped paragraphs.
+    let second = (workload == Workload::MultiWindow).then(|| color_target(device, physical));
     let paint_viewport = ScenePaintViewport {
         logical_size: [physical[0] as f32, physical[1] as f32],
         physical_size: physical,
@@ -381,16 +447,36 @@ fn run(
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-text-paint-benchmark"),
         });
-        painter
-            .paint(
-                document.scene(),
-                &mut encoder,
-                &target,
-                paint_viewport,
-                None,
-                None,
-            )
+        let mut frame_batch = std::time::Duration::ZERO;
+        let mut frame_upload = std::time::Duration::ZERO;
+        for (window, view) in std::iter::once(&target).chain(second.as_ref()).enumerate() {
+            // One window paints the way a single-window host does, so these
+            // cells stay comparable with every earlier report.
+            if second.is_none() {
+                painter.paint(
+                    document.scene(),
+                    &mut encoder,
+                    view,
+                    paint_viewport,
+                    None,
+                    None,
+                )
+            } else {
+                painter.paint_target(
+                    RenderTargetId(window as u64),
+                    document.scene(),
+                    &mut encoder,
+                    view,
+                    paint_viewport,
+                    None,
+                    None,
+                )
+            }
             .expect("paint");
+            let timings = painter.last_gpu_timings().expect("timed frame");
+            frame_batch += timings.batch;
+            frame_upload += timings.gpu_upload;
+        }
         queue.submit([encoder.finish()]);
         if frame + 1 == WARMUP_FRAMES {
             warm = Some(painter.text_glyph_counters());
@@ -399,9 +485,8 @@ fn run(
         }
         if frame >= WARMUP_FRAMES {
             flush.push(flush_elapsed.as_secs_f64() * 1000.0);
-            let timings = painter.last_gpu_timings().expect("timed frame");
-            batch.push(timings.batch.as_secs_f64() * 1000.0);
-            upload.push(timings.gpu_upload.as_secs_f64() * 1000.0);
+            batch.push(frame_batch.as_secs_f64() * 1000.0);
+            upload.push(frame_upload.as_secs_f64() * 1000.0);
         }
     }
     let warm = warm.expect("warm counters");
@@ -472,6 +557,39 @@ fn run(
         end.text_retained_layouts_drawn,
         warm.text_retained_layouts_drawn,
     );
+    delta(
+        "text_gpu_entries_created",
+        end.text_gpu_entries_created,
+        warm.text_gpu_entries_created,
+    );
+    delta(
+        "glyph_atlas_evict",
+        end.glyph_atlas_evict,
+        warm.glyph_atlas_evict,
+    );
+    delta(
+        "atlas_relocations",
+        end.atlas_relocations,
+        warm.atlas_relocations,
+    );
+    delta(
+        "atlas_stale_handle_rejects",
+        end.atlas_stale_handle_rejects,
+        warm.atlas_stale_handle_rejects,
+    );
+    delta(
+        "glyph_raster_cache_hit",
+        end.glyph_raster_cache_hit,
+        warm.glyph_raster_cache_hit,
+    );
+    counters.insert(
+        "glyph_atlas_pages".to_string(),
+        f64::from(end.glyph_atlas_pages),
+    );
+    counters.insert(
+        "glyph_atlas_bytes".to_string(),
+        end.glyph_atlas_bytes as f64,
+    );
     counters.insert(
         "text_gpu_entries_active".to_string(),
         end.text_gpu_entries_active as f64,
@@ -511,7 +629,11 @@ fn mutate(
 ) {
     let mut queue = MutationQueue::new();
     match workload {
-        Workload::Static | Workload::StaticUnique => {
+        Workload::Static
+        | Workload::StaticUnique
+        | Workload::Table
+        | Workload::Paragraphs
+        | Workload::MultiWindow => {
             // Not a text change *to the labels*: the label beside an animation
             // is what a shell spends its frames on.
             queue.set_text(
@@ -572,6 +694,60 @@ fn mutate(
                 );
             }
         }
+        Workload::MutateRandom => {
+            let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ (frame as u64).wrapping_mul(0x2545_f491);
+            for _ in 0..rows.len().div_ceil(100) {
+                let pick = xorshift(&mut state);
+                let row = rows[(pick % rows.len() as u64) as usize];
+                let length = 1 + (xorshift(&mut state) % 14) as usize;
+                queue.set_text(
+                    row,
+                    TextContent {
+                        value: "Item "
+                            .chars()
+                            .chain(
+                                "0123456789abcdef"
+                                    .chars()
+                                    .cycle()
+                                    .skip(pick as usize % 16)
+                                    .take(length),
+                            )
+                            .collect(),
+                    },
+                );
+            }
+        }
+        Workload::AtlasPressure => {
+            let size = PRESSURE_SIZES[frame % PRESSURE_SIZES.len()];
+            let stride = 100;
+            for (turn, row) in rows.iter().skip(frame % stride).step_by(stride).enumerate() {
+                let first = ((frame * 131 + turn * 7) as u32 * 4) % PRESSURE_POOL;
+                let value = (0..4)
+                    .filter_map(|offset| char::from_u32(0x4e00 + (first + offset) % PRESSURE_POOL))
+                    .collect();
+                queue.set_text(*row, TextContent { value });
+                let mut style = label_style(LABEL);
+                Arc::make_mut(&mut style.layout).font_size = Some(size);
+                queue.set_style(*row, style);
+            }
+        }
+        Workload::TableScroll => {
+            // Whole pixels, the way a scroll lands on a 1x display.
+            let offset = Some(PaintTransform {
+                f: -((frame % 40) as f32),
+                ..PaintTransform::default()
+            });
+            queue.set_style(column, column_style(None, offset));
+        }
+        Workload::Zoom => {
+            let factor = 1.0 + (frame % 60) as f32 / 60.0;
+            let zoomed = Some(PaintTransform {
+                a: factor,
+                d: factor,
+                ..PaintTransform::default()
+            });
+            queue.set_style(column, column_style(None, zoomed));
+        }
     }
     document
         .context_mut()
@@ -583,15 +759,37 @@ fn mutate(
 fn label_text(workload: Workload, index: usize) -> String {
     match workload {
         Workload::StaticUnique => format!("Row {index}"),
+        Workload::Table | Workload::TableScroll => table_cell(index),
+        Workload::Paragraphs => PARAGRAPH_TEXT.to_string(),
         _ => format!("Row {}", index % DISTINCT_LABELS),
     }
 }
 
-fn label_style() -> NodeStyle {
+/// One cell of a text-heavy table: the column decides what kind of text, the
+/// row makes it unique.
+fn table_cell(index: usize) -> String {
+    let row = index / 5;
+    match index % 5 {
+        0 => format!("#{row:05}"),
+        1 => format!("Account {}", row * 37 % 9973),
+        2 => format!("{}.{:02}", row * 7919 % 100_000, row % 100),
+        3 => format!("2026-{:02}-{:02}", 1 + row % 12, 1 + row % 28),
+        _ => ["Active", "Pending", "Closed", "Review"][row % 4].to_string(),
+    }
+}
+
+fn xorshift(state: &mut u64) -> u64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn label_style(cell: [f32; 2]) -> NodeStyle {
     NodeStyle {
         layout: Arc::new(LayoutStyle {
-            width: Some(LengthSpec::Px(LABEL[0])),
-            height: Some(LengthSpec::Px(LABEL[1])),
+            width: Some(LengthSpec::Px(cell[0])),
+            height: Some(LengthSpec::Px(cell[1])),
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()
@@ -655,7 +853,7 @@ fn color_target(device: &wgpu::Device, physical: [u32; 2]) -> wgpu::TextureView 
 
 fn print_table(cells: &[Cell]) {
     println!(
-        "{:<12} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10} {:>10}",
+        "{:<18} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10} {:>10}",
         "workload",
         "labels",
         "Hz",
@@ -670,7 +868,7 @@ fn print_table(cells: &[Cell]) {
     for cell in cells {
         let get = |name: &str| cell.counters.get(name).copied().unwrap_or_default();
         println!(
-            "{:<12} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>9.3}m {:>9.3}m",
+            "{:<18} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>9.3}m {:>9.3}m",
             cell.workload,
             cell.labels,
             cell.frames,
