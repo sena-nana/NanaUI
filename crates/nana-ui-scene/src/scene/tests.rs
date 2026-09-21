@@ -7437,6 +7437,39 @@ fn img_content_image_and_two_background_layers_travel_on_quad() {
     }
 }
 
+/// A one-sided border whose colour comes from a semantic role strokes that
+/// side only. The per-side widths used to be read without the resolved
+/// colour, came back all zero, and the quad fell back to stroking every side
+/// at the uniform width — a settings row's divider painted as a frame.
+#[test]
+fn a_role_coloured_bottom_border_strokes_only_the_bottom() {
+    let mut painted = node(1, None, &[]);
+    painted.source_style = NodeStyle {
+        layout: Arc::new(nana_ui_core::LayoutStyle {
+            border_width: Some(0.0),
+            border_bottom_width: Some(1.0),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    style_mut(&mut painted).border_color = Some([0.8, 0.9, 1.0, 1.0]);
+
+    let mut scene = UiScene::new();
+    scene.apply_delta([painted], []);
+    let primitive = scene
+        .primitive(PrimitiveId {
+            node: id(1),
+            slot: 0,
+        })
+        .expect("surface quad");
+    match &primitive.kind {
+        ScenePrimitiveKind::Quad { surface, .. } => {
+            assert_eq!(surface.border_widths, [0.0, 0.0, 1.0, 0.0]);
+        }
+        other => panic!("expected quad, got {other:?}"),
+    }
+}
+
 #[test]
 fn border_image_travels_on_quad() {
     let mut painted = node(1, None, &[]);

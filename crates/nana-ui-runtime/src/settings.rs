@@ -85,6 +85,8 @@ impl SettingsRow {
         self
     }
 
+    /// Draw a hairline under this row, separating it from the next one. The
+    /// last row of a group draws none: the group's own edge already ends it.
     pub fn divided(mut self, divided: bool) -> Self {
         self.divided = divided;
         self
@@ -154,7 +156,12 @@ impl SettingsRow {
         let mut style = self.style.clone();
         style.foreground = Some(SemanticColorRole::Text);
         style.background = None;
-        style.border = self.divided.then_some(SemanticColorRole::BorderSoft);
+        // A divider, not a box. This used to set the uniform `border_width`,
+        // which strokes all four sides: stacked rows overlapped their edges
+        // into something that passed for dividers, but a card holding one row
+        // got a square frame inside its rounded corners.
+        let divider = self.divided && !self.last_in_group;
+        style.border = divider.then_some(SemanticColorRole::BorderSoft);
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Percent(100.0));
         layout.direction = Some(if stacked {
@@ -184,11 +191,10 @@ impl SettingsRow {
         } else {
             ROW_PADDING_Y
         }));
-        layout.border_width = Some(if self.divided {
-            nana_ui_core::HAIRLINE
-        } else {
-            0.0
-        });
+        // Only the bottom edge is named; the others fall back to the unset
+        // uniform width, which is none.
+        layout.border_width = None;
+        layout.border_bottom_width = divider.then_some(nana_ui_core::HAIRLINE);
         layout.font_size = Some(nana_ui_core::type_scale::BODY);
         layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::BODY));
         layout.font_weight = Some(nana_ui_core::type_scale::MEDIUM);
@@ -2506,6 +2512,24 @@ mod tests {
         }
     }
 
+    /// `divided` separates a row from the next one. It used to stroke all four
+    /// sides, so a card holding a single row showed a square frame inside its
+    /// rounded corners.
+    #[test]
+    fn a_divided_row_draws_a_line_under_itself_not_a_frame() {
+        let mut context = AppContext::new();
+        let row = context
+            .create_component(document(), SettingsRow::new("独立捕获窗口").divided(true))
+            .unwrap();
+        let style = context.world().node_style(row.stable_id()).unwrap();
+        let edges = style.layout.resolved_border_edges();
+        assert_eq!(
+            (edges.top, edges.right, edges.bottom, edges.left),
+            (0.0, 0.0, nana_ui_core::HAIRLINE, 0.0)
+        );
+        assert_eq!(style.border, Some(SemanticColorRole::BorderSoft));
+    }
+
     #[test]
     fn settings_row_keeps_slots_and_chrome_flags() {
         let mut context = AppContext::new();
@@ -2545,8 +2569,8 @@ mod tests {
             style.layout.padding_top,
             Some(LengthSpec::Px(ROW_GROUP_PADDING_Y))
         );
-        assert_eq!(style.layout.border_width, Some(1.0));
-        assert_eq!(style.border, Some(SemanticColorRole::BorderSoft));
+        // Last in its group: the group edge ends it, so no divider.
+        assert_eq!(style.border, None);
         assert!(!context.world().interaction(id).unwrap().pointer_events);
         let accessibility = context.world().accessibility(id).unwrap();
         assert_eq!(accessibility.label.as_deref(), Some("标题栏跟随侧边栏透明"));

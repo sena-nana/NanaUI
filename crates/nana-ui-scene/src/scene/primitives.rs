@@ -269,7 +269,14 @@ impl UiScene {
                                 Some(StandardVisual::Switch { .. })
                             );
                             if !component_owns_border {
-                                let edges = style.paint_border_edges();
+                                // Same colour the uniform width above was
+                                // taken for. Without it a border named by a
+                                // `SemanticColorRole` has no colour on the
+                                // layout, every side reads as zero, and the
+                                // quad falls back to stroking all four at the
+                                // uniform width — a one-sided border painted
+                                // as a frame.
+                                let edges = style.paint_border_edges_with(surface_border_color);
                                 surface.border_widths =
                                     [edges.top, edges.right, edges.bottom, edges.left];
                                 surface.border_colors = style.paint_border_edge_colors();
