@@ -540,9 +540,20 @@ impl GlyphAtlasManager {
                     continue;
                 }
             }
-            if !self.evict_coldest(kind) {
-                return None;
+            if self.evict_coldest(kind) {
+                continue;
             }
+            // Only this frame's glyphs are left and this one still does not
+            // fit. Past the occupancy gate that can still be fragmentation —
+            // the holes evicted glyphs left are shaped for them, not for this
+            // one — so a repack gets one last try per frame.
+            if self.compacted_frame[slot] != self.frame {
+                self.compacted_frame[slot] = self.frame;
+                if self.compact(kind, raster, uploads) {
+                    continue;
+                }
+            }
+            return None;
         }
     }
 
@@ -654,6 +665,9 @@ impl GlyphAtlasManager {
                 // it drops that glyph for this frame instead of sampling the
                 // rectangle someone else is about to be given.
                 self.release_slot(index, false);
+                // Moves the placement epoch, so an entry holding the handle
+                // is repaired rather than trusted.
+                self.evictions += 1;
                 continue;
             };
             let origin = [min[0] + GLYPH_PADDING, min[1] + GLYPH_PADDING];

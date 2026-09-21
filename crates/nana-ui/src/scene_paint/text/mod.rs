@@ -1434,6 +1434,10 @@ impl TextPipeline {
         if resolved.is_empty() {
             return None;
         }
+        // Stamped from before the glyphs are placed: a repack while this
+        // paragraph faults its own glyphs in moves ones it already wrote, and
+        // the flush must re-read those rather than trust them.
+        let epoch = self.placement_epoch();
         let Self {
             resolved,
             rasterizer,
@@ -1511,8 +1515,6 @@ impl TextPipeline {
             }
         }
         target.frame_gpu_allocations += atlas.page_count() - pages_before;
-        let counters = atlas.counters();
-        let epoch = counters.evictions.wrapping_add(counters.relocations);
         target.entries.finish_build(id, placed);
         let fonts = self.font_generation;
         let entry = self.target.entries.get_mut(id).expect("just built");
@@ -3838,9 +3840,11 @@ mod tests {
     #[test]
     fn an_eviction_recovers_the_entry_it_hit_without_reshaping_anything() {
         let (device, queue) = test_device();
-        // One page that either paragraph fits in with room to spare and the
-        // two together do not, so each one's entry keeps losing its placements
-        // to the other.
+        // One page that either paragraph fits in and the two together do not,
+        // so each one's entry keeps losing its placements to the other. Fits,
+        // not with room to spare: a paragraph fills most of the page, so the
+        // holes the other one's evicted glyphs leave are the wrong shape and
+        // only a repack places the last few.
         let mut pipeline = TextPipeline::with_atlas_limits(
             &device,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -3886,6 +3890,14 @@ mod tests {
             Some(fresh_ink),
             "the paragraph comes back whole: a rejected handle costs its glyphs, \
              never the wrong ones"
+        );
+        // The box only proves the ends are inked. A glyph written before a
+        // repack that moved it would still ink the same box while sampling
+        // whatever the repack put at its old rectangle.
+        assert!(
+            recovered == fresh,
+            "every glyph samples its own rectangle, including the ones a repack \
+             moved while the paragraph was still faulting glyphs in"
         );
         assert_eq!(
             misses, warm_misses,
