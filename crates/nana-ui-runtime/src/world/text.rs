@@ -4957,6 +4957,18 @@ impl UiWorld {
         let width = (node.layout.width - border * 2.0 - padding.left - padding.right).max(0.0);
         let height = (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
         let current = self.record(id).scroll_offset;
+        // A vertical editor keeps its scroll in line space (#59): `y` down the
+        // columns, `x` across them from the block-start one. Down the page is
+        // down the columns either way, but a `vertical-rl` editor's columns
+        // run leftwards, so a wheel that asks to see what is to the right is
+        // asking to go back towards the first column.
+        let delta = match self.computed_style(id).map(|style| style.writing_mode) {
+            Some(mode) if mode.is_vertical() && mode.block_start_is_right() => ScrollOffset {
+                x: -delta.x,
+                ..delta
+            },
+            _ => delta,
+        };
         Some(ScrollOffset {
             x: (current.x + delta.x).clamp(0.0, (presentation.content_size.width - width).max(0.0)),
             y: (current.y + delta.y)

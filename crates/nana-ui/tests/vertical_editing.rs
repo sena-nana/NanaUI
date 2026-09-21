@@ -3,8 +3,35 @@
 //! and crosses columns with Left/Right, and a click lands on the glyph under
 //! it — end to end, through the real engine.
 
-use nana_ui::{NanaTextShaper, runtime::*};
+use nana_ui::{NanaTextShaper, RuntimeInputAdapter, runtime::*};
+use nana_ui_platform::{InputEvent, InputModifiers};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// A physical key press, as a platform reports it.
+fn press(
+    cx: &mut AppContext,
+    doc: DocumentId,
+    key: &str,
+    modifiers: InputModifiers,
+    shaper: &mut NanaTextShaper,
+) {
+    let event = InputEvent::Keyboard {
+        pressed: true,
+        key: key.into(),
+        code: key.into(),
+        text: None,
+        repeat: false,
+        modifiers,
+    };
+    RuntimeInputAdapter::default()
+        .dispatch_with_shaper(cx, doc, &event, Duration::ZERO, Some(shaper))
+        .unwrap();
+}
+
+fn focus_of(cx: &AppContext, area: Entity<TextArea>) -> usize {
+    cx.read(area, |view| view.state.selection.focus).unwrap()
+}
 
 fn settle(cx: &mut AppContext, doc: DocumentId, ids: &[StableNodeId]) {
     let mut shaper = NanaTextShaper::default();
@@ -69,22 +96,15 @@ fn a_vertical_text_area_edits_in_columns() {
         "the first column is the rightmost, its caret at the top: {at_start:?} in {content:?}"
     );
 
-    // Down walks the column.
-    cx.move_focused_text_caret(doc, TextCaretIntent::Down, false, Some(&mut shaper))
-        .unwrap();
-    let state = cx.read(area, |view| view.state.clone()).unwrap();
-    assert_eq!(
-        state.selection.focus,
-        "一".len(),
-        "one glyph down the column"
-    );
+    // The physical ↓ key walks the column.
+    let plain = InputModifiers::default();
+    press(&mut cx, doc, "ArrowDown", plain, &mut shaper);
+    assert_eq!(focus_of(&cx, area), "一".len(), "one glyph down the column");
 
-    // Left crosses to the next column, at the same depth.
-    cx.move_focused_text_caret(doc, TextCaretIntent::Left, false, Some(&mut shaper))
-        .unwrap();
-    let state = cx.read(area, |view| view.state.clone()).unwrap();
+    // ← crosses to the next column, at the same depth.
+    press(&mut cx, doc, "ArrowLeft", plain, &mut shaper);
     assert_eq!(
-        state.selection.focus,
+        focus_of(&cx, area),
         "一二三四五".len(),
         "五 heads the second column, so one down it is after 五"
     );
@@ -112,8 +132,69 @@ fn a_vertical_text_area_edits_in_columns() {
     )
     .unwrap();
     cx.text_editor_pointer_release(1);
-    let state = cx.read(area, |view| view.state.clone()).unwrap();
-    assert_eq!(state.selection.focus, "一二三四五六".len());
+    assert_eq!(focus_of(&cx, area), "一二三四五六".len());
+
+    // Modifiers follow the key into line space. Cmd+↓ runs to the end of
+    // the line along the column, as Cmd+→ does in a horizontal editor — its
+    // logical line, like there — not to the end of the document…
+    let meta = InputModifiers {
+        meta: true,
+        ..InputModifiers::default()
+    };
+    press(&mut cx, doc, "ArrowDown", meta, &mut shaper);
+    assert_eq!(focus_of(&cx, area), "一二三四五六七八".len());
+    press(&mut cx, doc, "ArrowUp", meta, &mut shaper);
+    assert_eq!(focus_of(&cx, area), 0, "and Cmd+↑ to its start");
+    // …while Cmd+← in `vertical-rl` heads for the last column: the end of
+    // the text, as Cmd+↓ is in a horizontal editor. Cmd+→ goes back to the
+    // start.
+    press(&mut cx, doc, "ArrowLeft", meta, &mut shaper);
+    assert_eq!(focus_of(&cx, area), "一二三四五六七八\n九十".len());
+    press(&mut cx, doc, "ArrowRight", meta, &mut shaper);
+    assert_eq!(focus_of(&cx, area), 0);
+}
+
+/// #59: a wheel scrolls a vertical editor the way the page is turned. Its
+/// scroll offset is in line space — `y` down the columns, `x` across them from
+/// the first — and a `vertical-rl` editor's columns run leftwards, so the
+/// wheel's horizontal delta runs the other way.
+#[test]
+fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    // Far more columns than the box is wide.
+    let mut view = TextArea::new("一二三四五六七八九十".repeat(8));
+    {
+        let style = Arc::make_mut(&mut view.style.layout);
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.font_size = Some(16.0);
+        style.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        style.height = Some(nana_ui_core::LengthSpec::Px(64.0));
+    }
+    let area = cx.create_component(doc, view).unwrap();
+    let node = area.stable_id();
+    settle(&mut cx, doc, &[node]);
+    let bounds = cx.world().layout_box(node).unwrap();
+    let wheel = |delta_x: f32| InputEvent::Wheel {
+        x: bounds.x + bounds.width / 2.0,
+        y: bounds.y + bounds.height / 2.0,
+        delta_x,
+        delta_y: 0.0,
+        line_delta: false,
+        modifiers: InputModifiers::default(),
+    };
+    let mut adapter = RuntimeInputAdapter::default();
+    // A platform's positive horizontal delta scrolls the page leftwards,
+    // which in `vertical-rl` is going on through the text.
+    adapter.dispatch(&mut cx, doc, &wheel(40.0)).unwrap();
+    let scrolled = cx.world().scroll_offset(node).unwrap_or_default();
+    assert!(
+        scrolled.x > 0.0,
+        "towards the later columns on the left: {scrolled:?}"
+    );
+    // And rightwards comes back to the first column.
+    adapter.dispatch(&mut cx, doc, &wheel(-400.0)).unwrap();
+    assert_eq!(cx.world().scroll_offset(node).unwrap_or_default().x, 0.0);
 }
 
 /// A single-line vertical field centres its one column across the box, the

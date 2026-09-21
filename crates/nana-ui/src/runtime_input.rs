@@ -1400,6 +1400,10 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
+        // Arrow keys in the editor's line space (#59): a vertical editor's
+        // Up/Down walk its column and Left/Right cross columns, with every
+        // modifier below carried along by translating the key itself.
+        let key = context.focused_text_line_space_key(document, key);
         if key == "Tab"
             && focused.multiline
             && !modifiers.control

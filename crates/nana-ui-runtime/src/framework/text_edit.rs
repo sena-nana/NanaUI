@@ -286,33 +286,6 @@ fn horizontal_rightwards(intent: TextCaretIntent) -> Option<bool> {
     }
 }
 
-/// An arrow key, as the editor's line space sees it (#59).
-///
-/// A host names the key it saw. Editor geometry is in line space, where
-/// Left/Right step along a line and Up/Down cross to the neighbouring one; in a
-/// vertical writing mode the line runs down the page, so the physical keys
-/// trade places: Up/Down walk the column, and Left/Right cross columns —
-/// towards the next one on the left in `vertical-rl`, on the right in
-/// `vertical-lr`. Word and line intents are logical already and pass through.
-fn line_space_intent(
-    intent: TextCaretIntent,
-    mode: nana_ui_core::WritingModeSpec,
-) -> TextCaretIntent {
-    if !mode.is_vertical() {
-        return intent;
-    }
-    let next_column_is_left = mode.block_start_is_right();
-    match intent {
-        TextCaretIntent::Up => TextCaretIntent::Left,
-        TextCaretIntent::Down => TextCaretIntent::Right,
-        TextCaretIntent::Left if next_column_is_left => TextCaretIntent::Down,
-        TextCaretIntent::Left => TextCaretIntent::Up,
-        TextCaretIntent::Right if next_column_is_left => TextCaretIntent::Up,
-        TextCaretIntent::Right => TextCaretIntent::Down,
-        other => other,
-    }
-}
-
 /// Nearest char boundary at or below `offset` (clamped to the value length).
 fn clamp_focus(value: &str, offset: usize) -> usize {
     crate::text_editing::clamp_boundary(value, offset)
@@ -446,6 +419,42 @@ impl AppContext {
     ///
     /// Composite search surfaces (palettes, menus, dropdowns) own their
     /// navigation and are deliberately not plain editors.
+    /// An arrow key as the focused editor's line space names it (#59).
+    ///
+    /// Caret intents are in line space, where Left/Right step along a line and
+    /// Up/Down cross to the neighbouring one. A host names the key it saw, so
+    /// it asks this **before** it folds modifiers into intents: in a vertical
+    /// writing mode the line runs down the page and the physical keys trade
+    /// places — Up/Down walk the column, Left/Right cross columns, towards
+    /// the next one on the left in `vertical-rl` and on the right in
+    /// `vertical-lr`. Translating the key rather than the finished intent is
+    /// what carries every modifier along: Cmd+Up becomes the column's start
+    /// and Cmd+Left in `vertical-rl` the document's end, Alt+Up/Down move by
+    /// word, and the line-block gestures move to the keys that cross columns.
+    ///
+    /// Anything that is not an arrow key, and every key of a horizontal
+    /// editor, comes back unchanged.
+    pub fn focused_text_line_space_key<'k>(&self, document: DocumentId, key: &'k str) -> &'k str {
+        let Some(mode) = self
+            .focused_text_editor(document)
+            .and_then(|focused| self.world.computed_style(focused.node))
+            .map(|style| style.writing_mode)
+            .filter(|mode| mode.is_vertical())
+        else {
+            return key;
+        };
+        let next_column_is_left = mode.block_start_is_right();
+        match key {
+            "ArrowUp" => "ArrowLeft",
+            "ArrowDown" => "ArrowRight",
+            "ArrowLeft" if next_column_is_left => "ArrowDown",
+            "ArrowLeft" => "ArrowUp",
+            "ArrowRight" if next_column_is_left => "ArrowUp",
+            "ArrowRight" => "ArrowDown",
+            other => other,
+        }
+    }
+
     pub fn focused_text_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
         if self.has_focused_ime_composition(document) {
             return None;
@@ -576,12 +585,6 @@ impl AppContext {
         if !focused.accepts_selection {
             return Ok(false);
         }
-        let intent = self
-            .world
-            .computed_style(focused.node)
-            .map_or(intent, |style| {
-                line_space_intent(intent, style.writing_mode)
-            });
         let state = self.editor_state(focused.node, focused.kind)?;
         // 折叠视图：无折叠态区间时为 None，全部按原始值解析（零成本）。
         let fold_view = self.world.text_display_view(focused.node);
