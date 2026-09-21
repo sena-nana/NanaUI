@@ -84,13 +84,21 @@ MIT OR Apache-2.0。它的一段代码仍在本仓库里，见「照抄了什么
 
 ## 照抄了什么
 
-一处，已就地署名：
+两处，已就地署名：
 
 - **`SubpixelBin::split`**（`crates/nana-ui/src/scene_paint/text/glyph.rs`）是
   cosmic-text `SubpixelBin::new` 的移植——阈值、分支顺序、向整像素的进位都保持
   原样。这是**故意的**：迁移之所以看不出来，正是因为一个字形还落在它原来的那个
   亚像素桶里。Copyright (c) 2022 System76，MIT OR Apache-2.0，与 NanaUI 同一对
   许可证，保留署名即满足 MIT 的要求。
+
+- **DirectWrite 的灰度 / ClearType 覆盖率校正**：`GAMMA_INCORRECT_TARGET_RATIOS`
+  系数表与 `gamma_ratios` 的归一化（`crates/nana-ui/src/scene_paint/text/gamma.rs`），
+  以及着色器里的 `enhance_contrast`、`apply_alpha_correction`、亮色字的对比度衰减
+  （`crates/nana-ui/src/scene_paint/shader/text_atlas.wgsl` 的 `corrected_coverage`）移植自 Windows Terminal AtlasEngine 的 `dwrite.cpp` /
+  `dwrite.hlsl`（`https://github.com/microsoft/terminal`），Copyright (c) Microsoft
+  Corporation，MIT。之后「gamma 空间结果 → 线性混合所需覆盖率」那一步是本仓库自己的，
+  背景取前景反色的假设与 Skia `SkTMaskGamma_build_correcting_lut` 相同（思路，未照抄）。
 
 另有两处是**行为兼容，不是照抄源码**，记在这里免得以后被误认：
 

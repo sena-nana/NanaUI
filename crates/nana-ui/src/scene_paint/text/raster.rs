@@ -36,13 +36,20 @@ pub(super) enum GlyphImageFormat {
     Mask,
     /// Four bytes per pixel, straight (non-premultiplied) sRGB.
     ColorRgba,
+    /// Four bytes per pixel: the coverage of the pixel's red, green and blue
+    /// subpixels in screen order, then an unused byte.
+    ///
+    /// Stored sRGB-*encoded*. These share the color pages, whose format
+    /// decodes on sampling, so encoding them here is what makes the shader
+    /// read back the coverage the rasterizer produced.
+    SubpixelRgb,
 }
 
 impl GlyphImageFormat {
     pub(super) const fn bytes_per_pixel(self) -> usize {
         match self {
             Self::Mask => 1,
-            Self::ColorRgba => 4,
+            Self::ColorRgba | Self::SubpixelRgb => 4,
         }
     }
 }
@@ -197,6 +204,27 @@ impl SwashGlyphRasterizer {
         font
     }
 
+    /// The bytes behind a face id this rasterizer issued, for a backend that
+    /// scales the same face by other means.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) fn face_data(
+        &self,
+        font: GlyphFontId,
+    ) -> Option<(nana_text::FontId, nana_text::font::FontData)> {
+        let face = *self.faces.get(font.0 as usize)?;
+        let engine = crate::text_engine::lock_engine(&self.engine);
+        Some((face, engine.fonts().face_data(face)?))
+    }
+
+    /// The axis coordinates behind a variation id, empty for the default
+    /// instance.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(super) fn coords(&self, variation: GlyphVariationId) -> &[AxisCoord] {
+        self.variations
+            .get(&variation.0)
+            .map_or(&[], |coords| coords)
+    }
+
     #[cfg(test)]
     pub(super) fn face_count(&self) -> usize {
         self.faces.len()
@@ -208,7 +236,6 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         let key = &request.key;
         let face = *self.faces.get(key.font.0 as usize)?;
         let glyph_id = u16::try_from(key.glyph).ok()?;
-        let GlyphRenderMode::Mask = key.mode;
         // The blob is cloned out of the engine rather than scaled under its
         // lock: a glyph that misses must not hold the lock every other
         // window's layout needs. `FontData` shares the bytes, so this is a
@@ -246,8 +273,14 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
             swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),
             swash::scale::Source::Outline,
         ]);
+        let format = match key.mode {
+            GlyphRenderMode::Mask => swash::zeno::Format::Alpha,
+            GlyphRenderMode::SubpixelRgb | GlyphRenderMode::SubpixelBgr => {
+                swash::zeno::Format::Subpixel
+            }
+        };
         render
-            .format(swash::zeno::Format::Alpha)
+            .format(format)
             .offset(subpixel_offset(key, snap_to_pixel));
         let mut transform = None;
         if key.synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
@@ -279,18 +312,19 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         let pixels = (width as usize).saturating_mul(height as usize);
         let format = match image.content {
             swash::scale::image::Content::Mask => GlyphImageFormat::Mask,
-            // A subpixel mask is three coverages plus padding, i.e. the same
-            // four bytes per pixel a color bitmap has. Treating it as a mask
-            // would read a quarter of it; the backend does not emit one under
-            // the alpha format requested above, and this keeps the byte count
-            // honest if it ever does.
-            swash::scale::image::Content::Color | swash::scale::image::Content::SubpixelMask => {
-                GlyphImageFormat::ColorRgba
-            }
+            swash::scale::image::Content::Color => GlyphImageFormat::ColorRgba,
+            swash::scale::image::Content::SubpixelMask => GlyphImageFormat::SubpixelRgb,
         };
         let bytes = pixels * format.bytes_per_pixel();
         if image.data.len() < bytes {
             return None;
+        }
+        let mut data = image.data[..bytes].to_vec();
+        if format == GlyphImageFormat::SubpixelRgb {
+            for pixel in data.as_chunks_mut::<4>().0 {
+                let rgb = [pixel[0], pixel[1], pixel[2]];
+                encode_subpixel(pixel, rgb, key.mode);
+            }
         }
         Some(GlyphImage {
             format,
@@ -298,16 +332,40 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
             height,
             left: image.placement.left,
             top: image.placement.top,
-            data: image.data[..bytes].to_vec(),
+            data,
         })
     }
 }
 
+/// Write one pixel of [`GlyphImageFormat::SubpixelRgb`] from its subpixel
+/// coverages in red, green, blue order: reordered for a BGR panel and
+/// sRGB-encoded.
+pub(super) fn encode_subpixel(pixel: &mut [u8; 4], rgb: [u8; 3], mode: GlyphRenderMode) {
+    let [r, g, b] = match mode {
+        GlyphRenderMode::SubpixelBgr => [rgb[2], rgb[1], rgb[0]],
+        _ => rgb,
+    };
+    *pixel = [r, g, b, 0].map(|value| SRGB_ENCODE[usize::from(value)]);
+}
+
+/// Linear 8-bit coverage to the sRGB-encoded byte that decodes back to it.
+static SRGB_ENCODE: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|value| {
+        let c = value as f32 / 255.0;
+        let encoded = if c <= 0.003_130_8 {
+            c * 12.92
+        } else {
+            1.055 * c.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    })
+});
+
 /// The fractional pen offset a glyph is rendered at, snapped whole for a face
 /// that has nothing to shift.
 fn subpixel_offset(key: &GlyphRasterKey, snap: bool) -> swash::zeno::Vector {
-    let x = f32::from(key.subpixel_x.quarters()) * 0.25;
-    let y = f32::from(key.subpixel_y.quarters()) * 0.25;
+    let x = key.subpixel_x.as_float();
+    let y = key.subpixel_y.as_float();
     if snap {
         swash::zeno::Vector::new(x.round(), y.round())
     } else {

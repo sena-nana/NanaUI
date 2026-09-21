@@ -71,7 +71,10 @@ impl AtlasPageKind {
     fn of(format: GlyphImageFormat) -> Self {
         match format {
             GlyphImageFormat::Mask => Self::Mask,
-            GlyphImageFormat::ColorRgba => Self::Color,
+            // Subpixel coverage is four bytes a texel too, and shares the
+            // color pages rather than costing a third binding; see
+            // `GlyphImageFormat::SubpixelRgb` for why its bytes are encoded.
+            GlyphImageFormat::ColorRgba | GlyphImageFormat::SubpixelRgb => Self::Color,
         }
     }
 
@@ -139,6 +142,8 @@ pub(super) struct AtlasEntry {
     /// Bitmap offset from the pen, the rasterizer's convention.
     pub left: i32,
     pub top: i32,
+    /// A color-page texel holds subpixel coverage rather than color.
+    pub subpixel: bool,
 }
 
 struct Slot {
@@ -419,6 +424,7 @@ impl GlyphAtlasManager {
             size: [image.width, image.height],
             left: image.left,
             top: image.top,
+            subpixel: image.format == GlyphImageFormat::SubpixelRgb,
         };
         let live = LiveEntry {
             key,

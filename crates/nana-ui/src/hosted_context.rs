@@ -740,7 +740,10 @@ impl HostedGpuContext {
         let capabilities = surface.get_capabilities(&adapter);
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
-        let required_features = adapter.features() & required_features;
+        // Dual-source blending is what subpixel (ClearType) text draws with;
+        // taken whenever the adapter has it, like the caller's own features.
+        let required_features =
+            adapter.features() & (required_features | wgpu::Features::DUAL_SOURCE_BLENDING);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("NanaUI hosted shared device"),

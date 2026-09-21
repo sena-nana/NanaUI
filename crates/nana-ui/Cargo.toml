@@ -43,7 +43,7 @@ rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui-co
 # product glyphs (user, keyboard, message, play …) should not have to
 # hand-author `IconData`. Unreferenced constants are dropped by the linker.
 icons-tabler = ["dep:nana-icons-tabler"]
-gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:swash", "nana-ui-platform/fetch", "dep:wgpu"]
+gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:swash", "nana-ui-platform/fetch", "dep:wgpu", "dep:windows"]
 hosted = [
     "gpu",
     "accesskit-tree",
@@ -97,7 +97,9 @@ accesskit_unix = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 accesskit_windows = { workspace = true, optional = true }
-windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_Dxgi"] }
+# `gpu`: DirectWrite glyph rasterization and the system's ClearType settings
+# (`scene_paint/text/raster_dwrite.rs`). `hosted`: DirectComposition.
+windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "Win32_Graphics_DirectComposition", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Dxgi", "Win32_UI_WindowsAndMessaging"] }
 
 [[example]]
 name = "hosted-gpu-demo"

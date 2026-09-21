@@ -31,10 +31,13 @@
 
 mod atlas;
 mod entry;
+mod gamma;
 mod glyph;
 mod pipeline;
 mod raster;
 mod raster_cache;
+#[cfg(windows)]
+mod raster_dwrite;
 mod upload;
 
 use nana_text::{TextEngine as _, TextLayout};
@@ -55,7 +58,12 @@ use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
     TextPresentationGpu, TextRunGpu, TextTargetGpu,
 };
-use self::raster::SwashGlyphRasterizer;
+/// The glyph rasterizer this platform draws with: DirectWrite on Windows,
+/// so text there matches every native app; swash elsewhere.
+#[cfg(windows)]
+type PlatformRasterizer = self::raster_dwrite::DWriteGlyphRasterizer;
+#[cfg(not(windows))]
+type PlatformRasterizer = self::raster::SwashGlyphRasterizer;
 use self::raster_cache::GlyphRasterCache;
 use self::upload::GlyphUploadQueue;
 
@@ -690,12 +698,36 @@ impl TextPipelineTarget {
     }
 }
 
+/// The order of a panel's color subpixels, left to right. Only Windows
+/// reports one; elsewhere only tests construct it.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SubpixelOrder {
+    Rgb,
+    Bgr,
+}
+
+impl SubpixelOrder {
+    /// The order the system draws its own text with, when it draws it with
+    /// subpixel coverage: ClearType's panel order on Windows while the user
+    /// has it on, `None` everywhere else. Read once per process.
+    pub(crate) fn system() -> Option<Self> {
+        #[cfg(windows)]
+        {
+            static ORDER: std::sync::OnceLock<Option<SubpixelOrder>> = std::sync::OnceLock::new();
+            *ORDER.get_or_init(raster_dwrite::system_subpixel_order)
+        }
+        #[cfg(not(windows))]
+        None
+    }
+}
+
 pub(super) struct TextPipeline {
     /// The `nana-text` engine this painter lays paragraphs out through, and
     /// the one whose faces its rasterizer scales. One per process, so a
     /// paragraph shaped for one window is already shaped for the next.
     engine: nana_text::SharedTextEngine,
-    rasterizer: SwashGlyphRasterizer,
+    rasterizer: PlatformRasterizer,
     raster: GlyphRasterCache,
     atlas: GlyphAtlasManager,
     uploads: GlyphUploadQueue,
@@ -721,6 +753,9 @@ pub(super) struct TextPipeline {
     draws: Cell<u64>,
     /// What closed render targets did before they closed.
     closed: TargetCounters,
+    /// What upright text on an opaque backdrop is resolved as: `Mask`
+    /// unless the host turned subpixel text on and the device can draw it.
+    subpixel: GlyphRenderMode,
 }
 
 impl TextPipeline {
@@ -743,7 +778,7 @@ impl TextPipeline {
         let target = TextPipelineTarget::new(gpu.new_target(device));
         Self {
             engine: crate::text_engine::nana_text_engine(),
-            rasterizer: SwashGlyphRasterizer::new(crate::text_engine::nana_text_engine()),
+            rasterizer: PlatformRasterizer::new(crate::text_engine::nana_text_engine()),
             raster,
             atlas,
             uploads: GlyphUploadQueue::default(),
@@ -756,7 +791,34 @@ impl TextPipeline {
             retained_layouts_drawn: 0,
             draws: Cell::new(0),
             closed: TargetCounters::default(),
+            subpixel: GlyphRenderMode::Mask,
         }
+    }
+
+    /// Resolve upright text on an opaque backdrop with per-subpixel coverage
+    /// for a panel of this order, or stop. A device that cannot blend two
+    /// sources keeps grayscale whatever is asked. Returns whether the mode
+    /// changed.
+    ///
+    /// Entries resolved under the other mode fail their validity check and
+    /// are resolved again on their next frame, so the switch needs no sweep.
+    pub(super) fn set_subpixel(
+        &mut self,
+        device: &wgpu::Device,
+        order: Option<SubpixelOrder>,
+    ) -> bool {
+        let mode = match order {
+            Some(_) if !TextGpu::supports_subpixel(device) => GlyphRenderMode::Mask,
+            Some(SubpixelOrder::Rgb) => GlyphRenderMode::SubpixelRgb,
+            Some(SubpixelOrder::Bgr) => GlyphRenderMode::SubpixelBgr,
+            None => GlyphRenderMode::Mask,
+        };
+        if mode == self.subpixel {
+            return false;
+        }
+        self.gpu.set_subpixel(device, mode != GlyphRenderMode::Mask);
+        self.subpixel = mode;
+        true
     }
 
     pub(super) fn begin_frame(&mut self, physical_size: [u32; 2]) {
@@ -943,6 +1005,10 @@ impl TextPipeline {
         entry_key: EntryKey,
         revision: u64,
         text_layout: Option<&nana_ui_runtime::RetainedTextLayout>,
+        // Nothing between this text and the window's own opaque surface:
+        // not inside an offscreen group, whose transparent texture would
+        // take subpixel coverage as colored alpha.
+        opaque_backdrop: bool,
     ) -> Option<PreparedText> {
         if content.is_empty() || bounds.width <= 0.0 || bounds.height <= 0.0 {
             return None;
@@ -1266,6 +1332,13 @@ impl TextPipeline {
             self.target.counters.nodes_culled += 1;
             return None;
         }
+        // Subpixel coverage only where the blend lands on the surface it was
+        // rasterized for: an upright run, straight onto the window.
+        let mode = if translation && opaque_backdrop {
+            self.subpixel
+        } else {
+            GlyphRenderMode::Mask
+        };
         let index = self.target.live_runs;
         if index == self.target.runs.len() {
             self.target.runs.push(TextRun {
@@ -1296,6 +1369,7 @@ impl TextPipeline {
                         phase,
                         raster.to_bits(),
                         self.font_generation,
+                        mode,
                     )
                 })
             })
@@ -1334,6 +1408,7 @@ impl TextPipeline {
                 hash,
                 phase,
                 (raster, step),
+                mode,
                 default_color,
                 &colors,
                 revision,
@@ -1519,6 +1594,7 @@ impl TextPipeline {
         // raster step, which is kept on the entry for the next frame's
         // hysteresis.
         (scale, step): (f32, u8),
+        mode: GlyphRenderMode,
         default_color: [f32; 4],
         colors: &SpanColors,
         revision: u64,
@@ -1575,7 +1651,7 @@ impl TextPipeline {
                         variation,
                         size,
                         synthesis,
-                        GlyphRenderMode::Mask,
+                        mode,
                         colors.color_at(glyph.cluster as usize),
                         PlacedGlyph {
                             glyph: glyph.glyph_id,
@@ -1661,6 +1737,9 @@ impl TextPipeline {
                 atlas.retain(handle);
                 let content = match placement.kind {
                     AtlasPageKind::Mask => CONTENT_MASK,
+                    AtlasPageKind::Color if placement.subpixel => {
+                        CONTENT_COLOR | pipeline::INSTANCE_SUBPIXEL
+                    }
                     AtlasPageKind::Color => CONTENT_COLOR,
                 };
                 let (mask_page, color_page) = match placement.kind {
@@ -1691,6 +1770,7 @@ impl TextPipeline {
         entry.colors = colors.fingerprint;
         entry.phase = phase;
         entry.font_generation = fonts;
+        entry.mode = mode;
         entry.revision = revision;
         entry.scale_bits = scale.to_bits();
         entry.raster_step = step;
@@ -2214,7 +2294,7 @@ impl SpanColors {
 /// rasterized a quarter turn clockwise.
 fn resolve_vertical(
     layout: &TextLayout,
-    rasterizer: &mut SwashGlyphRasterizer,
+    rasterizer: &mut PlatformRasterizer,
     resolved: &mut NanaGlyphBuffer,
     colors: &SpanColors,
     generation: u32,
@@ -2429,6 +2509,7 @@ mod tests {
                         },
                         UNTRACKED_REVISION,
                         None,
+                        true,
                     )
                     .expect("label must prepare");
                 let entry = pipeline
@@ -2527,6 +2608,7 @@ mod tests {
                 },
                 UNTRACKED_REVISION,
                 None,
+                true,
             )
             .expect("rtl latin must prepare");
         let layout = pipeline
@@ -2890,6 +2972,7 @@ mod tests {
             },
             UNTRACKED_REVISION,
             handle,
+            true,
         );
         pipeline.flush_runs();
         pipeline.upload(device, queue, None);
@@ -2996,6 +3079,7 @@ mod tests {
             },
             UNTRACKED_REVISION,
             None,
+            true,
         );
         pipeline.flush_runs();
         pipeline.upload(device, queue, None);
@@ -3089,6 +3173,7 @@ mod tests {
                 },
                 UNTRACKED_REVISION,
                 None,
+                true,
             )
             .expect("label must prepare");
         pipeline.flush_runs();
@@ -3386,6 +3471,7 @@ mod tests {
                 label.key,
                 UNTRACKED_REVISION,
                 None,
+                true,
             );
         }
         pipeline.flush_runs();
@@ -4183,6 +4269,7 @@ mod tests {
                 },
                 UNTRACKED_REVISION,
                 None,
+                true,
             );
             pipeline.flush_runs();
             pipeline.upload(&device, &queue, None);
@@ -4792,6 +4879,7 @@ mod tests {
                 *key,
                 UNTRACKED_REVISION,
                 None,
+                true,
             );
             let Some(prepared) = prepared else {
                 continue;
@@ -4933,6 +5021,7 @@ mod tests {
                 },
                 UNTRACKED_REVISION,
                 None,
+                true,
             )
             .expect("text must prepare");
         // Placements are handles until the run is flushed; nothing is on the
@@ -5038,6 +5127,7 @@ mod tests {
                 },
                 UNTRACKED_REVISION,
                 None,
+                true,
             )
             .expect("block text must prepare");
         pipeline.flush_runs();

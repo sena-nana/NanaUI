@@ -24,6 +24,7 @@ use std::ops::Range;
 use bytemuck::{Pod, Zeroable};
 
 use super::atlas::GlyphAtlasManager;
+use super::gamma::TextContrast;
 use crate::scene_paint::clip;
 use crate::scene_paint::color::orthographic;
 
@@ -35,8 +36,10 @@ pub(super) const CONTENT_COLOR: u32 = 1;
 /// a rich span, clear for the overwhelming majority of glyphs — which is what
 /// lets a plain label's color change be a four-float write.
 pub(super) const INSTANCE_OWN_COLOR: u32 = 2;
-/// Bits above these two are the run index.
-pub(super) const INSTANCE_RUN_SHIFT: u32 = 2;
+/// A [`CONTENT_COLOR`] glyph whose texels are subpixel coverage, not color.
+pub(super) const INSTANCE_SUBPIXEL: u32 = 4;
+/// Bits above these three are the run index.
+pub(super) const INSTANCE_RUN_SHIFT: u32 = 3;
 
 /// Bilinear sampling: the quad no longer lands on the texel grid.
 pub(super) const RUN_LINEAR: u32 = 1;
@@ -49,10 +52,15 @@ const INITIAL_INSTANCES: usize = 512;
 const INITIAL_RUNS: usize = 64;
 const INITIAL_PRESENTATIONS: usize = 8;
 
-const TEXT_SHADER: &str = concat!(
-    include_str!("../shader/color.wgsl"),
-    include_str!("../shader/text_atlas.wgsl"),
-    r#"
+/// The text program: `$prelude`, the shared vertex stage and `shade`, then
+/// `$fragment`'s entry point.
+macro_rules! text_shader {
+    ($prelude:literal, $fragment:literal) => {
+        concat!(
+            $prelude,
+            include_str!("../shader/color.wgsl"),
+            include_str!("../shader/text_atlas.wgsl"),
+            r#"
 struct VsIn {
     @builtin(vertex_index) vertex: u32,
     @location(0) origin: vec2<i32>,
@@ -73,12 +81,20 @@ struct VsOut {
     // a paragraph, so reading the row again per fragment would be a dependent
     // load for a value that cannot vary.
     @location(4) @interpolate(flat) run_flags: u32,
+    // `color`, sRGB-encoded: what the coverage correction reads, the same
+    // for every fragment of a glyph.
+    @location(5) @interpolate(flat) encoded: vec3<f32>,
 }
 
 @vertex
 fn vs_main(input: VsIn) -> VsOut {
-    let run = text_runs[input.control >> 2u];
-    let content = input.control & 1u;
+    let run = text_runs[input.control >> 3u];
+    // The page, then whether a color-page texel is subpixel coverage.
+    let page = input.control & 1u;
+    var content = page;
+    if (input.control & 4u) != 0u {
+        content = CONTENT_SUBPIXEL;
+    }
     let width = input.dim & 0xffffu;
     let height = (input.dim & 0xffff0000u) >> 16u;
     let corner = vec2<u32>(input.vertex & 1u, (input.vertex >> 1u) & 1u);
@@ -96,15 +112,22 @@ fn vs_main(input: VsIn) -> VsOut {
     var out: VsOut;
     out.position = globals.transform * vec4<f32>(world, 0.0, 1.0);
     out.color = color;
-    out.uv = atlas_uv(texel, content);
+    out.uv = atlas_uv(texel, page);
     out.world_pos = world;
     out.content = content;
     out.run_flags = (run.presentation << 3u) | (run.flags & 7u);
+    out.encoded = linear_to_srgb3(color.rgb);
     return out;
 }
 
-@fragment
-fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+// What a fragment paints: the color, and the per-channel alpha it paints
+// with. Equal channels for everything but subpixel coverage.
+struct TextShade {
+    color: vec3<f32>,
+    alpha: vec4<f32>,
+}
+
+fn shade(input: VsOut) -> TextShade {
     let flags = input.run_flags & 7u;
     if (flags & RUN_CLIP) != 0u {
         let presentation = text_presentations[input.run_flags >> 3u];
@@ -124,24 +147,90 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
         }
     }
     let linear = (flags & RUN_LINEAR) != 0u;
-    if input.content == 0u {
+    var out: TextShade;
+    if input.content == CONTENT_MASK {
         var coverage = 0.0;
         if linear {
             coverage = textureSampleLevel(mask_atlas, atlas_linear, input.uv, 0.0).x;
         } else {
             coverage = textureSampleLevel(mask_atlas, atlas_nearest, input.uv, 0.0).x;
         }
-        return vec4<f32>(input.color.rgb, input.color.a * coverage);
+        // One coverage against the foreground's luma, as DirectWrite's
+        // grayscale blend does.
+        let fg = input.encoded;
+        let corrected = corrected_coverage(
+            vec3<f32>(coverage),
+            fg,
+            vec3<f32>(dot(fg, vec3<f32>(0.25, 0.5, 0.25))),
+            vec3<f32>(dot(fg, vec3<f32>(0.2126, 0.7152, 0.0722))),
+            globals.contrast.x,
+        ).x;
+        out.color = input.color.rgb;
+        out.alpha = vec4<f32>(input.color.a * corrected);
+        return out;
     }
-    // A color bitmap carries its own color; only the run's alpha applies, so a
-    // faded or shadowed emoji fades instead of painting at full strength.
     var sampled = vec4<f32>(0.0);
     if linear {
         sampled = textureSampleLevel(color_atlas, atlas_linear, input.uv, 0.0);
     } else {
         sampled = textureSampleLevel(color_atlas, atlas_nearest, input.uv, 0.0);
     }
-    return vec4<f32>(sampled.rgb, sampled.a * input.color.a);
+    if input.content == CONTENT_SUBPIXEL {
+        // Coverage per subpixel, stored encoded so the page's sRGB decode
+        // hands back the rasterizer's own values.
+        // Each subpixel against its own channel of the foreground, as
+        // ClearType's blend does.
+        let fg = input.encoded;
+        let corrected = corrected_coverage(sampled.rgb, fg, fg, fg, globals.contrast.y);
+        out.color = input.color.rgb;
+        out.alpha = vec4<f32>(corrected, max(corrected.r, max(corrected.g, corrected.b)))
+            * input.color.a;
+        return out;
+    }
+    // A color bitmap carries its own color; only the run's alpha applies, so a
+    // faded or shadowed emoji fades instead of painting at full strength.
+    out.color = sampled.rgb;
+    out.alpha = vec4<f32>(sampled.a * input.color.a);
+    return out;
+}
+"#,
+            $fragment,
+        )
+    };
+}
+
+/// The program for targets that blend one output. Subpixel glyphs are never
+/// resolved for it; were one drawn, it would paint as grayscale.
+const TEXT_SHADER: &str = text_shader!(
+    "",
+    r#"
+@fragment
+fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
+    let shaded = shade(input);
+    return vec4<f32>(shaded.color, shaded.alpha.a);
+}
+"#
+);
+
+/// The program for subpixel text: the second blend source carries a coverage
+/// per color channel, so the blend unit mixes each subpixel on its own.
+/// Every other glyph gives the same alpha to all four, which is exactly
+/// straight alpha blending.
+const TEXT_SHADER_DUAL_SOURCE: &str = text_shader!(
+    "enable dual_source_blending;\n",
+    r#"
+struct DualOut {
+    @location(0) @blend_src(0) color: vec4<f32>,
+    @location(0) @blend_src(1) alpha: vec4<f32>,
+}
+
+@fragment
+fn fs_main(input: VsOut) -> DualOut {
+    let shaded = shade(input);
+    var out: DualOut;
+    out.color = vec4<f32>(shaded.color, 1.0);
+    out.alpha = shaded.alpha;
+    return out;
 }
 "#
 );
@@ -150,6 +239,8 @@ fn fs_main(input: VsOut) -> @location(0) vec4<f32> {
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 struct Globals {
     transform: [f32; 16],
+    /// [`TextContrast::to_gpu`].
+    contrast: [f32; 8],
 }
 
 /// One glyph: 24 bytes, against the 60 a vertex-per-corner quad would cost.
@@ -238,7 +329,13 @@ pub(super) struct TextTargetGpu {
 
 pub(super) struct TextGpu {
     pipeline: wgpu::RenderPipeline,
+    /// The dual-source program, while subpixel text is on.
+    dual_source: Option<wgpu::RenderPipeline>,
+    layout: wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
     globals_layout: wgpu::BindGroupLayout,
+    /// The platform's text parameters, read once when the painter is made.
+    contrast: TextContrast,
 }
 
 impl TextGpu {
@@ -252,7 +349,7 @@ impl TextGpu {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -271,52 +368,53 @@ impl TextGpu {
             bind_group_layouts: &[Some(&globals_layout), Some(atlas.layout())],
             immediate_size: 0,
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nana-ui.scene.text.shader"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(TEXT_SHADER)),
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.text.pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<GlyphInstance>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array!(
-                        0 => Sint32x2,
-                        1 => Uint32,
-                        2 => Uint32,
-                        3 => Uint32,
-                        4 => Uint32,
-                    ),
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = build_pipeline(
+            device,
+            &layout,
+            format,
+            TEXT_SHADER,
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
         Self {
             pipeline,
+            dual_source: None,
+            layout,
+            format,
             globals_layout,
+            contrast: TextContrast::system(),
         }
+    }
+
+    /// Whether subpixel glyphs can be drawn: the device blends two sources.
+    pub(super) fn supports_subpixel(device: &wgpu::Device) -> bool {
+        device
+            .features()
+            .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+    }
+
+    /// Switch to the program that can draw subpixel glyphs, or back. Every
+    /// glyph draws through the one that is current, so the switch is a whole
+    /// frame's worth of text at once. Only for a device that
+    /// [`supports_subpixel`](Self::supports_subpixel).
+    pub(super) fn set_subpixel(&mut self, device: &wgpu::Device, enabled: bool) {
+        // `src0 * src1 + dst * (1 - src1)`, channel by channel.
+        let per_channel = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Src1,
+            dst_factor: wgpu::BlendFactor::OneMinusSrc1,
+            operation: wgpu::BlendOperation::Add,
+        };
+        self.dual_source = enabled.then(|| {
+            build_pipeline(
+                device,
+                &self.layout,
+                self.format,
+                TEXT_SHADER_DUAL_SOURCE,
+                wgpu::BlendState {
+                    color: per_channel,
+                    alpha: per_channel,
+                },
+            )
+        });
     }
 
     pub(super) fn new_target(&self, device: &wgpu::Device) -> TextTargetGpu {
@@ -345,6 +443,7 @@ impl TextGpu {
                 0,
                 bytemuck::bytes_of(&Globals {
                     transform: orthographic(physical_size[0], physical_size[1]),
+                    contrast: self.contrast.to_gpu(),
                 }),
             );
             target.uploaded_size = Some(physical_size);
@@ -449,7 +548,7 @@ impl TextGpu {
         if segment.count == 0 {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(self.dual_source.as_ref().unwrap_or(&self.pipeline));
         let Some(globals) = target.globals_bind_group.as_ref() else {
             return;
         };
@@ -488,6 +587,57 @@ pub(super) struct ArenaWrite {
 pub(super) struct TextUploadBytes {
     pub instances: usize,
     pub presentation: usize,
+}
+
+fn build_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    source: &'static str,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("nana-ui.scene.text.shader"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(source)),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.text.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<GlyphInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array!(
+                    0 => Sint32x2,
+                    1 => Uint32,
+                    2 => Uint32,
+                    3 => Uint32,
+                    4 => Uint32,
+                ),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn storage_entry(binding: u32, min: u64) -> wgpu::BindGroupLayoutEntry {

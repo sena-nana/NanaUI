@@ -282,10 +282,22 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let theme = self.program.theme_mode();
         let window_background = self.program.window_background();
         let fetch_host = self.program.resource_fetch_host(id);
+        // Subpixel text only onto a surface the compositor shows opaque: over
+        // a transparent material the per-channel coverage would be composited
+        // as colored alpha.
+        let opaque = self
+            .window_contexts
+            .get(&id)
+            .is_some_and(|host| host.surface.alpha_mode() == wgpu::CompositeAlphaMode::Opaque);
         let painter = self.painter_mut(format);
         // Painters are shared per format, so every window supplies its own
-        // egress, including none.
+        // egress, including none, and its own surface's text mode.
         painter.set_resource_fetch_host(fetch_host);
+        painter.set_subpixel_text(
+            opaque
+                .then(crate::scene_paint::SubpixelOrder::system)
+                .flatten(),
+        );
         let paint = painter.paint_target(
             crate::RenderTargetId(id.0),
             scene.as_ref(),

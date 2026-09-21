@@ -8726,6 +8726,15 @@ fn one_painter_draws_an_outline_a_layer_beneath_it_and_its_shadow() {
 /// Paint one node carrying `painter` at the origin of a `w × h` viewport and
 /// read the frame back.
 fn paint_one_painter(painter: impl nana_ui_runtime::Painter, w: u32, h: u32) -> Vec<u8> {
+    paint_one_painter_with(painter, w, h, |_| {})
+}
+
+fn paint_one_painter_with(
+    painter: impl nana_ui_runtime::Painter,
+    w: u32,
+    h: u32,
+    configure: impl FnOnce(&mut SceneWgpuPainter),
+) -> Vec<u8> {
     use nana_ui_runtime::Stack;
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -8753,6 +8762,7 @@ fn paint_one_painter(painter: impl nana_ui_runtime::Painter, w: u32, h: u32) -> 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    configure(&mut painter);
     let viewport = ScenePaintViewport {
         logical_size: [w as f32, h as f32],
         physical_size: [w, h],
@@ -9029,6 +9039,115 @@ fn a_multiply_blend_darkens_what_is_under_it() {
     assert!(yellow[0] > 200 && yellow[1] > 200, "{yellow:?}");
     // Yellow × magenta = red.
     assert!(is_red_slot(multiplied), "{multiplied:?}");
+}
+
+/// Black text on a white ground, optionally inside a painter layer, painted
+/// with subpixel text set to `order`.
+fn paint_subpixel_text(order: Option<super::SubpixelOrder>, layered: bool) -> Vec<u8> {
+    use nana_ui_runtime::PaintText;
+    paint_one_painter_with(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&full_rect(160.0, 40.0), [1.0, 1.0, 1.0, 1.0]);
+            if layered {
+                cx.push_layer(1.0, nana_ui_runtime::BlendMode::Normal);
+            }
+            cx.text(
+                LayoutBox {
+                    x: 4.0,
+                    y: 4.0,
+                    width: 152.0,
+                    height: 32.0,
+                },
+                PaintText::new("Minimum wHo")
+                    .size(15.0)
+                    .paint([0.0, 0.0, 0.0, 1.0]),
+            );
+            if layered {
+                cx.pop_layer();
+            }
+        }),
+        160,
+        40,
+        |painter| painter.set_subpixel_text(order),
+    )
+}
+
+/// The widest spread between one pixel's color channels.
+fn channel_spread(pixels: &[u8]) -> u8 {
+    pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]))
+        .max()
+        .unwrap_or(0)
+}
+
+fn device_blends_two_sources() -> bool {
+    test_device()
+        .0
+        .features()
+        .contains(wgpu::Features::DUAL_SOURCE_BLENDING)
+}
+
+#[test]
+fn grayscale_text_paints_equal_channels() {
+    let pixels = paint_subpixel_text(None, false);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|p| p[0] < 128),
+        "text was drawn"
+    );
+    assert!(channel_spread(&pixels) <= 1, "{}", channel_spread(&pixels));
+}
+
+#[test]
+fn subpixel_text_gives_each_channel_its_own_coverage() {
+    if !device_blends_two_sources() {
+        return;
+    }
+    let pixels = paint_subpixel_text(Some(super::SubpixelOrder::Rgb), false);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|p| p[0] < 128),
+        "text was drawn"
+    );
+    assert!(
+        channel_spread(&pixels) > 32,
+        "stem edges fringe per subpixel: {}",
+        channel_spread(&pixels)
+    );
+}
+
+#[test]
+fn a_bgr_panel_gets_the_rgb_coverage_mirrored() {
+    if !device_blends_two_sources() {
+        return;
+    }
+    let rgb = paint_subpixel_text(Some(super::SubpixelOrder::Rgb), false);
+    let bgr = paint_subpixel_text(Some(super::SubpixelOrder::Bgr), false);
+    for (a, b) in rgb
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bgr.as_chunks::<4>().0.iter())
+    {
+        assert!(
+            a[0].abs_diff(b[2]) <= 1 && a[2].abs_diff(b[0]) <= 1 && a[1].abs_diff(b[1]) <= 1,
+            "{a:?} vs {b:?}"
+        );
+    }
+}
+
+#[test]
+fn subpixel_text_inside_an_offscreen_group_stays_grayscale() {
+    if !device_blends_two_sources() {
+        return;
+    }
+    let pixels = paint_subpixel_text(Some(super::SubpixelOrder::Rgb), true);
+    assert!(
+        pixels.as_chunks::<4>().0.iter().any(|p| p[0] < 128),
+        "text was drawn"
+    );
+    assert!(channel_spread(&pixels) <= 1, "{}", channel_spread(&pixels));
 }
 
 #[test]

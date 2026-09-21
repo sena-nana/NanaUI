@@ -24,7 +24,8 @@ pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
             .expect("GPU tests require a WGPU adapter");
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("nana-ui test device"),
-                required_features: wgpu::Features::empty(),
+                // What the hosted context asks for too, when the adapter has it.
+                required_features: adapter.features() & wgpu::Features::DUAL_SOURCE_BLENDING,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,

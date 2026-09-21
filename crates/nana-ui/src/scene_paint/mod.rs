@@ -18,6 +18,7 @@ mod motion;
 mod quad;
 mod text;
 
+pub(crate) use self::text::SubpixelOrder;
 pub use self::text::TextGlyphCounters;
 pub(crate) mod url_texture_cache;
 mod validate;
@@ -309,6 +310,21 @@ impl SceneWgpuPainter {
     /// filled only after the host calls [`Self::record_submit`].
     pub fn last_gpu_timings(&self) -> Option<GpuStageTimings> {
         self.last_gpu_timings
+    }
+
+    /// Draw upright text that lands straight on the target with per-subpixel
+    /// (ClearType / LCD) coverage for a panel of this order, or go back to
+    /// grayscale with `None`.
+    ///
+    /// Only for a target whose pixels reach the screen opaque: the blend
+    /// writes a coverage per channel, which a compositor would read as
+    /// colored alpha. Text inside an offscreen group stays grayscale either
+    /// way. A device without dual-source blending ignores the request.
+    pub(crate) fn set_subpixel_text(&mut self, order: Option<SubpixelOrder>) {
+        if self.text.set_subpixel(&self.device, order) {
+            // The retained batch holds instances resolved under the old mode.
+            self.prepared_batch = None;
+        }
     }
 
     /// Text shape-cache counters from the last `paint`: (hits, misses,
@@ -931,6 +947,7 @@ impl SceneWgpuPainter {
                         let node = primitive.node.get();
                         let slot = id.slot;
                         let mut pass = 0u32;
+                        let opaque_backdrop = group_depth == 0;
                         let mut push_text =
                             |commands: &mut Vec<DrawCommand>,
                              batching: &mut Batching,
@@ -967,6 +984,7 @@ impl SceneWgpuPainter {
                                     text::EntryKey { node, slot, pass },
                                     primitive.revision,
                                     layout.as_ref(),
+                                    opaque_backdrop,
                                 );
                                 pass += 1;
                                 if let Some(prepared) = prepared {

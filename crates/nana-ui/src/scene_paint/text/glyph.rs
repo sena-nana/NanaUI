@@ -73,13 +73,17 @@ impl GlyphSynthesis {
 ///
 /// The *request*, not the result: a color face answers a [`Mask`](Self::Mask)
 /// request with a color bitmap, and [`super::raster::GlyphImage::format`] is
-/// what actually came back. The variants beyond `Mask` are the extension
-/// points #97 leaves open — an LCD or SDF backend is a new arm here plus a new
-/// [`super::atlas::AtlasPageKind`], not a change to `nana-text`'s API.
+/// what actually came back.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum GlyphRenderMode {
     /// Grayscale coverage, with color faces passed through as color bitmaps.
     Mask,
+    /// Per-subpixel (LCD / ClearType) coverage for a panel whose subpixels
+    /// run red, green, blue left to right. Color faces still answer with
+    /// color bitmaps.
+    SubpixelRgb,
+    /// The same for a panel whose subpixels run blue, green, red.
+    SubpixelBgr,
 }
 
 /// Fractional pen placement, quantized to quarter pixels.
@@ -128,11 +132,7 @@ impl SubpixelBin {
         }
     }
 
-    pub(super) const fn quarters(self) -> u8 {
-        self.0
-    }
-
-    #[cfg(test)]
+    /// The pen offset this bin rasterizes at, in pixels.
     pub(super) fn as_float(self) -> f32 {
         f32::from(self.0) * 0.25
     }

@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 
 use super::atlas::GlyphAtlasEntryId;
+use super::glyph::GlyphRenderMode;
 use super::pipeline::{DrawSegment, GlyphInstance};
 
 /// Which draw of which node an entry belongs to.
@@ -79,6 +80,9 @@ pub(super) struct TextGpuEntry {
     pub phase: [u32; 2],
     /// Font-set generation the face ids were issued under.
     pub font_generation: u64,
+    /// Grayscale or subpixel: the bitmaps differ, so a paragraph that moves
+    /// into an offscreen group, or out of one, is resolved again.
+    pub mode: GlyphRenderMode,
     /// The scene rebuild that wrote the primitive these glyphs were resolved
     /// from, and the device scale they were resolved at. Together with
     /// `font_generation` they are the cheap half of `layout`: if none of them
@@ -150,8 +154,10 @@ impl TextGpuEntry {
         phase: [u32; 2],
         scale_bits: u32,
         fonts: u64,
+        mode: GlyphRenderMode,
     ) -> bool {
         !self.damaged
+            && self.mode == mode
             && self.layout == layout
             && self.colors == colors
             && self.phase == phase
@@ -369,6 +375,7 @@ impl EntryStore {
                     colors: 0,
                     phase: [0; 2],
                     font_generation: 0,
+                    mode: GlyphRenderMode::Mask,
                     revision: u64::MAX,
                     scale_bits: 0,
                     raster_step: 0,

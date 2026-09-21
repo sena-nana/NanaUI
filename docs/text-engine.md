@@ -1439,9 +1439,9 @@ bind group、一个顶点缓冲），以及同 device 的窗口之间不再各�
 
 | 项 | 状态 |
 | --- | --- |
-| 逻辑 `TextLayout` 与 raster scale 解耦 | 塑形仍在物理 px 上做（hinting 要求如此），所以 DPI 变化会重塑形一次。renderer 这一侧已经只把 scale 放进栅格键；真正的解耦要等 #99 把 `nana-text` 的逻辑 layout 接上来 |
+| 逻辑 `TextLayout` 与 raster scale 解耦 | #99 已做：layout 在逻辑 px 上排，device scale 只在 resolve 时进栅格尺寸与亚像素档，DPI 变化只重栅格化、不重排 |
 | 持久 GPU instance / 零 prepare | #98 做了，见下一节 |
-| SDF / MSDF / LCD | #97 非目标。`GlyphRenderMode` 与 `AtlasPageKind` 是留好的扩展点 |
+| SDF / MSDF / LCD | LCD 已做（Windows ClearType），见「清晰度」一节；SDF / MSDF 仍未做 |
 | 跨 Device 共享 CPU 位图 | 一个 painter 一个 raster cache。同 Device 多窗口共享（`swap_target` 只换 per-target 缓冲），换 Device 会重栅格化一次 |
 
 ## 保留期文本（Phase 7，#98）
@@ -1966,6 +1966,96 @@ ticker 的文字是定宽的（`tick 0007`）。`tick 9 → tick 10` 会把同�
 | run 表不缩 | 每个 entry 一个固定 run 行（48 B），槽号只增不减，一万个标签的峰值是 480 KB。缩它要改写 instance 里的行号，收益不值 |
 | 行级裁剪 | entry 与视口无关，所以一段超长不换行的文字现在把整段 instance 都交给 scissor 去裁。段落级的裁剪在 `prepare` 里按 ink 做 |
 | 每节点的固定开销 | 一万个文本节点的帧里 painter 自己的逐节点循环与文本无关，quad / icon 同样付，见上文各条 |
+
+## 清晰度：覆盖率校正、DirectWrite 与 ClearType
+
+反馈是「文字发虚」。读码后按影响排序，原因与处理如下。
+
+### 1. 覆盖率在线性空间混合，没有 gamma / 对比度校正（主因，全平台）
+
+surface 是 sRGB 格式，混合单元在线性光里做；而栅格器给的覆盖率是几何面积，直接当线性
+alpha 用，黑字白底一个半覆盖的边缘像素显示成 sRGB 0.74——笔画变细、边缘是一圈灰雾。
+成熟引擎都不这么做：
+
+| 引擎 | 做法 |
+| --- | --- |
+| DirectWrite / Windows Terminal / Zed | gamma 空间混合；着色器里 enhanced contrast + 按前景亮度的 alpha correction，参数来自 `IDWriteRenderingParams` |
+| Skia / Chrome | 按文字亮度预烘焙 gamma+contrast LUT，假设背景是前景的反色 |
+| glyphon（cosmic-text 生态） | `ColorMode::Web`：在 gamma 空间混合，模仿浏览器 |
+
+我们的目标是线性的、而且全管线都依赖这一点，不能改成 gamma 空间混合。所以
+`corrected_coverage`（`shader/text_atlas.wgsl`，CPU 表述在 `text/gamma.rs`）分两步：
+先照 DirectWrite 算出 gamma 空间里该用的覆盖率（enhanced contrast → alpha correction，
+移植自 Windows Terminal，见 `third-party.md`），再按 Skia 的假设（背景 = 前景反色）
+反解出**线性混合要落到同一个颜色**所需的覆盖率。黑字白底、白字黑底两端是精确的，中间
+连续无跳变。参数：Windows 读系统（ClearType 调谐器改的就是它），其它平台用 DirectWrite
+的出厂值 gamma 1.8 / 灰度对比度 1.0 / ClearType 对比度 0.5。
+
+效果（`gamma.rs` 单测钉住）：黑字白底半覆盖像素 0.74 → 0.54；白字黑底反而略细于线性
+混合，与 DirectWrite 一致。彩色字形（emoji）不校正。
+
+### 2. hinting：不需要改
+
+原计划换成 skrifa 的「只竖直方向」light hinting。核查后不需要：swash 0.2.10 内部已经是
+skrifa，且固定用 `Lcd + preserve_linear_metrics`（即只竖直方向、保留线性 advance，CFF
+也走 PostScript hinter）。与 Vello 的唯一差别是 `symmetric_rendering: true`，它只作用于
+TrueType 字节码解释器；默认的 NotoSansSC 不带 hinting 指令，走 autohinter，不受影响；
+受影响的 Segoe UI / 微软雅黑这类 ClearType 调校字体在 Windows 上已由下一节的
+DirectWrite 接管。竖直方向本来就对齐：baseline 取整、行框顶边整像素，y 亚像素档恒为 0。
+
+### 3. Windows：DirectWrite 栅格化（`text/raster_dwrite.rs`）
+
+`PlatformRasterizer` 在 Windows 上是 `DWriteGlyphRasterizer`：outline 字形交给
+DirectWrite，字干、竖直 grid-fit 与系统原生应用一致。face 仍是 `nana-text` 字体层给的那
+一个——字节经 `IDWriteInMemoryFontFileLoader` 交给 DirectWrite，变体坐标走
+`IDWriteFontResource::CreateFontFace`，伪粗 / 伪斜用 `DWRITE_FONT_SIMULATIONS`。渲染模式
+取 `GetRecommendedRenderingMode` 但只保留 `NATURAL_SYMMETRIC` / `OUTLINE`：GDI 兼容与
+aliased 模式会把字形吸到整像素，跟不上四分之一像素的亚像素档。
+
+交回 swash 的：彩色字体（`IsColorFont`）、纯位图字体、竖排里横躺的字形（`ROTATE_CW`）、
+`PIXEL_FONT`，以及 DirectWrite 任何一步失败。face 表仍由 swash 那一侧持有，两个后端
+发出的 `GlyphFontId` 不会漂开。
+
+### 4. ClearType 子像素渲染
+
+- `GlyphRenderMode::{SubpixelRgb, SubpixelBgr}` → `GlyphImageFormat::SubpixelRgb`：每像素
+  三个子像素覆盖率 + 最大值。**放进 color 页**而不是再开一种页：color 页是 `Rgba8UnormSrgb`，
+  所以写入前先做 sRGB 编码，采样时硬件解码回原值。实例用 `INSTANCE_SUBPIXEL` 位标记。
+- 着色器拆成共享的 `shade()` 与两个入口：单输出（原来的）与双源混合
+  （`enable dual_source_blending`，`src0 * src1 + dst * (1 - src1)` 逐通道）。灰度与彩色
+  字形在双源管线里给四个通道同一个 alpha，恰好等于直通 alpha 混合，所以一帧里所有文字
+  走同一条管线。
+- 什么时候用子像素（其余一律灰度，与 Chrome / WinUI 一致）：系统开着 ClearType 且面板
+  报告 RGB/BGR 排列（`SubpixelOrder::system()`，进程内读一次）、device 有
+  `DUAL_SOURCE_BLENDING`（宿主在适配器支持时总是请求）、窗口 surface 的 alpha 模式是
+  `Opaque`（Mica / Acrylic 等透明材质窗口是灰度，否则 DWM 合成时出彩边）、run 是纯平移、
+  且不在离屏组里（`group_depth == 0`）。
+- 模式进了条目的有效性判据（`TextGpuEntry::mode`），一段文字进出不透明度组时会重新
+  resolve；`set_subpixel_text` 切换时丢掉保留的 batch。
+
+### 验证
+
+- 像素：component-gallery 快照（`metal-apple-m4`）先把干净 HEAD 录进私有基线（与仓库基线
+  614/614 逐字节一致），再对它跑改动：552 张变化，62 张不变（都是不含字的），据此重录。
+- 双源管线在 Metal 上真跑：`subpixel_text_gives_each_channel_its_own_coverage`、
+  `a_bgr_panel_gets_the_rgb_coverage_mirrored`（逐像素严格镜像）、
+  `subpixel_text_inside_an_offscreen_group_stays_grayscale`、
+  `grayscale_text_paints_equal_channels`。
+- DirectWrite 后端：`cargo xwin check/clippy --target x86_64-pc-windows-msvc` 通过；
+  `raster_dwrite.rs` 的单测（灰度单通道、ClearType 三通道且 BGR 镜像、亚像素偏移生效、
+  系统参数范围）只在 Windows 上编译，由 CI 的 `windows-latest` 跑。
+- **Windows 上的最终观感没有人眼看过**：本机是 macOS。
+
+### 没做的
+
+| 项 | 状态 |
+| --- | --- |
+| 系统设置变化后刷新 | ClearType 开关 / 面板排列 / gamma 在进程内读一次（painter 创建时）；改了 ClearType 调谐器要重启应用 |
+| 多显示器各自的参数 | 用的是主显示器的 `CreateRenderingParams`，没有按窗口所在显示器取 `CreateMonitorRenderingParams` |
+| 透明窗口上的 ClearType | 故意不做，理由见上 |
+| DirectWrite 彩色字形 | 走 swash；`TranslateColorGlyphRun` 未接 |
+| 缩小变换下的模糊 | scale < 1（按压动画）仍从 device scale 的位图双线性采样，未按缩放重栅格化 |
+| macOS 的调参 | 用 DirectWrite 出厂值；没有逐项对照 CoreText |
 
 ## #33 迁移基准
 

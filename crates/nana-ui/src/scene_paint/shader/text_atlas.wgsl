@@ -4,6 +4,10 @@
 // true by construction rather than by two declarations agreeing.
 struct Globals {
     transform: mat4x4<f32>,
+    // DirectWrite's alpha correction coefficients for the platform gamma.
+    gamma_ratios: vec4<f32>,
+    // x: grayscale enhanced contrast, y: ClearType enhanced contrast.
+    contrast: vec4<f32>,
 }
 
 @group(0) @binding(0)
@@ -59,6 +63,11 @@ const RUN_CLIP: u32 = 2u;
 // through the homography.
 const RUN_PROJECT: u32 = 4u;
 
+// What a fragment samples, as the vertex stage hands it over.
+const CONTENT_MASK: u32 = 0u;
+const CONTENT_COLOR: u32 = 1u;
+const CONTENT_SUBPIXEL: u32 = 2u;
+
 @group(0) @binding(1)
 var<storage, read> text_runs: array<TextRun>;
 
@@ -82,6 +91,42 @@ fn srgb_to_linear(c: f32) -> f32 {
         return c / 12.92;
     }
     return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn srgb_to_linear3(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb3(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
+
+// Coverage → the alpha a linear blend needs to show what DirectWrite's
+// gamma-space blend would, per channel. See `text/gamma.rs`, which states the
+// grayscale case on the CPU.
+//
+// `fg` is the sRGB-encoded foreground; `f` the brightness DirectWrite corrects
+// against; `src` what each channel blends toward, whose opposite is the
+// background assumed. Enhance contrast and alpha correction are ported from
+// Windows Terminal's AtlasEngine `dwrite.hlsl`, Copyright (c) Microsoft
+// Corporation, MIT.
+fn corrected_coverage(
+    coverage: vec3<f32>,
+    fg: vec3<f32>,
+    f: vec3<f32>,
+    src: vec3<f32>,
+    contrast: f32,
+) -> vec3<f32> {
+    let k = contrast * saturate(4.0 * (0.75 - dot(fg, vec3<f32>(0.30, 0.59, 0.11))));
+    let g = globals.gamma_ratios;
+    var a = coverage * (k + 1.0) / (coverage * k + 1.0);
+    a = a + a * (1.0 - a) * ((g.x * f + g.y) * a + (g.z * f + g.w));
+    let dst = vec3<f32>(1.0) - src;
+    let low = srgb_to_linear3(dst);
+    let span = srgb_to_linear3(src) - low;
+    let flat = abs(src - dst) < vec3<f32>(1.0 / 256.0);
+    let shown = srgb_to_linear3(mix(dst, src, a));
+    return select(saturate((shown - low) / select(span, vec3<f32>(1.0), flat)), a, flat);
 }
 
 // Scene colors are sRGB-encoded and the target is linear, so the conversion is
