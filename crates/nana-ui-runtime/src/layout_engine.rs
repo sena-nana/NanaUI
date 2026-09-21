@@ -171,6 +171,7 @@ impl RuntimeLayoutEngine {
         #[cfg(any(test, feature = "benchmark"))]
         plan_stats::note_scope(dirty.len(), affected.len());
         let scope = ScopeContext {
+            world,
             affected: &affected,
             retained: &*retained,
         };
@@ -656,6 +657,10 @@ struct ContainerPlan {
     /// Available size each child's intrinsic measurement was taken against.
     child_available: Size,
     main_direction: FlexDirection,
+    /// The writing mode and direction the container laid out in, inherited.
+    /// An ancestor can change it without touching this container's own style,
+    /// so the plan compares it with the other inputs.
+    writing: nana_ui_core::WritingContext,
     /// The main and cross axes run from their far page edge — the right or
     /// the bottom. Placement is flow-relative (every cursor and margin is read
     /// from the start edge) and only turned onto the page where an origin is
@@ -703,8 +708,10 @@ impl ContainerPlan {
         viewport: LayoutViewport,
         style: &Arc<nana_ui_core::LayoutStyle>,
         children: &Arc<Vec<StableNodeId>>,
+        writing: nana_ui_core::WritingContext,
     ) -> bool {
-        self.origin == origin
+        self.writing == writing
+            && self.origin == origin
             && self.size == size
             && self.containing == containing
             && self.parent_font_px == parent_font_px
@@ -831,6 +838,9 @@ struct MeasurePlan {
     /// The container's effective style, compared by pointer with a value
     /// fallback.
     style: Arc<nana_ui_core::LayoutStyle>,
+    /// The writing mode and direction the container measured in, inherited;
+    /// see [`ContainerPlan::writing`].
+    writing: nana_ui_core::WritingContext,
     /// The container's child list, compared by pointer. A structural edit
     /// copy-on-writes this `Arc`, so a different pointer is a different list.
     children: Arc<Vec<StableNodeId>>,
@@ -913,8 +923,10 @@ impl MeasurePlan {
         style: &Arc<nana_ui_core::LayoutStyle>,
         children: &Arc<Vec<StableNodeId>>,
         text_metrics: Option<crate::TextMetrics>,
+        writing: nana_ui_core::WritingContext,
     ) -> bool {
-        self.available == available
+        self.writing == writing
+            && self.available == available
             && self.parent_direction == parent_direction
             && self.viewport == viewport
             && self.parent_font_px == parent_font_px
@@ -1038,6 +1050,7 @@ impl<'a> LayoutInputMap<'a> {
 }
 
 struct ScopeContext<'a> {
+    world: &'a UiWorld,
     affected: &'a HashSet<StableNodeId>,
     retained: &'a DocumentLayoutCache,
 }
@@ -1068,10 +1081,16 @@ fn subtree_unchanged(
         child_fonts,
     );
     scope.retained.used_padding.get(&child).copied()
-        == Some(child_style.resolved_padding_against_fonts(
-            Some(child_style.edge_percent_base(containing.width, containing.height)),
-            child_fonts,
-        ))
+        == Some(
+            child_style.resolved_padding_against_fonts(
+                Some(
+                    scope
+                        .world
+                        .edge_percent_base(child, containing.width, containing.height),
+                ),
+                child_fonts,
+            ),
+        )
         && cached.x == origin.x + relative_x
         && cached.y == origin.y + relative_y
         && cached.width == size.width
@@ -1172,8 +1191,11 @@ fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::Par
 /// IFC always follows the writing-mode inline axis. Flex `row`/`column` are
 /// remapped through writing-mode; block containers without an explicit
 /// `flex-direction` stack along the block axis.
-fn used_flow_direction(style: &LayoutStyle, ifc: bool) -> FlexDirection {
-    let context = style.writing_context();
+fn used_flow_direction(
+    style: &LayoutStyle,
+    context: nana_ui_core::WritingContext,
+    ifc: bool,
+) -> FlexDirection {
     if ifc {
         return context.inline_flex_direction();
     }

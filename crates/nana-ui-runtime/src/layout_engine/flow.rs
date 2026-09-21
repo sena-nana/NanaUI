@@ -310,7 +310,11 @@ pub(super) fn pack_floated_children(
         )?;
         let child_fonts = fonts_of(child_style, child_font_px);
         let margin = child_style.resolved_margin_against_fonts(
-            Some(child_style.edge_percent_base(content.width, content.height)),
+            Some(
+                nodes
+                    .world
+                    .edge_percent_base(*child, content.width, content.height),
+            ),
             child_fonts,
         );
         let outer_w = child_size.width + margin.left + margin.right;

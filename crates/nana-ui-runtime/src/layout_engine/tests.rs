@@ -4261,6 +4261,9 @@ fn scoped_step_matches_full(
     label: &str,
 ) -> ScopedStep {
     let work = world.take_system_work();
+    // Layout reads inherited writing context from the resolved style, as the
+    // frame pipeline resolves it before layout.
+    world.resolve_styles(&work.style).unwrap();
     super::plan_stats::reset();
     let emitted = RuntimeLayoutEngine
         .layout_document_scoped(world, document, viewport, &work.layout, retained, false)
@@ -4363,6 +4366,79 @@ fn reversed_axes_keep_the_sequential_replay() {
             );
         }
     }
+}
+
+/// An ancestor's `direction` reaches a row that never declared one: the row
+/// inherits RTL and its label moves to the right end, while the row's own
+/// style, its child list and its label's size are all unchanged. Only the
+/// inherited writing context tells the row's cached placement plan it is
+/// stale.
+#[test]
+fn an_inherited_direction_change_retires_a_descendant_containers_plan() {
+    const ROWS: usize = 6;
+    let viewport = LayoutViewport::new(320.0, 400.0);
+    let shape = DiffShape {
+        name: "rows-of-labels",
+        container: LayoutStyle {
+            width: Some(LengthSpec::Px(300.0)),
+            height: Some(LengthSpec::Px(400.0)),
+            direction: Some(FlexDirection::Column),
+            ..LayoutStyle::default()
+        },
+        row: |_| LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Row),
+            width: Some(LengthSpec::Px(300.0)),
+            height: Some(LengthSpec::Px(20.0)),
+            ..LayoutStyle::default()
+        },
+    };
+    let (mut world, document) = diff_tree(&shape, ROWS);
+    let mut retained = RetainedLayoutCache::default();
+    let _ = world.take_system_work();
+    let emitted = RuntimeLayoutEngine
+        .layout_document_scoped(&world, document, viewport, &[], &mut retained, true)
+        .unwrap();
+    write_changed_boxes(&mut world, &emitted);
+    let _ = world.take_system_work();
+    // A scoped pass first, so every row has a plan to be tempted by.
+    let mut queue = MutationQueue::new();
+    let mut row = (shape.row)(0);
+    row.height = Some(LengthSpec::Px(22.0));
+    queue.set_style(
+        id(3),
+        NodeStyle {
+            layout: Arc::new(row),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(&mut world, document, viewport, &mut retained, "prime");
+    let label_before = retained.documents[&document].boxes[&id(6)];
+
+    let mut container = shape.container.clone();
+    container.dir = Some(DirSpec::Rtl);
+    let mut queue = MutationQueue::new();
+    queue.set_style(
+        id(2),
+        NodeStyle {
+            layout: Arc::new(container),
+            ..NodeStyle::default()
+        },
+    );
+    world.commit(queue).unwrap();
+    scoped_step_matches_full(
+        &mut world,
+        document,
+        viewport,
+        &mut retained,
+        "container turned rtl",
+    );
+    let label_after = retained.documents[&document].boxes[&id(6)];
+    assert!(
+        label_after.x > label_before.x,
+        "the row inherited rtl and its label moved right: {label_before:?} -> {label_after:?}"
+    );
 }
 
 /// The equivalence itself: for every container shape, a sequence of changes at
@@ -5539,4 +5615,101 @@ fn constrained_auto_height_contains_wrapped_markdown_and_flow_actions() {
             );
         }
     }
+}
+
+/// `writing-mode` and `direction` inherit (CSS Writing Modes §3): a container
+/// that declares neither lays out in its parent's. A row inside a
+/// `vertical-rl` box runs down the page.
+#[test]
+fn a_container_inherits_its_parents_writing_mode() {
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(200.0)),
+            writing_mode: Some(WritingModeSpec::VerticalRl),
+            ..LayoutStyle::default()
+        },
+        children: vec![StyleLayoutNode {
+            id: "inner".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Row),
+                width: Some(LengthSpec::Px(100.0)),
+                height: Some(LengthSpec::Px(100.0)),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![px_box("a", 20.0, 20.0), px_box("b", 20.0, 20.0)],
+            text: None,
+        }],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 200.0);
+    let inner = boxes["inner"];
+    // Down the inner box's inline axis, against its right (block-start) edge.
+    for (id, y) in [("a", 0.0), ("b", 20.0)] {
+        assert!(
+            (boxes[id].y - (inner.y + y)).abs() < 0.5
+                && (boxes[id].x - (inner.x + inner.width - 20.0)).abs() < 0.5,
+            "{id} at y={y} against the right edge of {inner:?}, got {:?}",
+            boxes[id]
+        );
+    }
+}
+
+/// Percentage margins resolve against the containing block's inline size in
+/// the containing block's own writing mode (CSS Writing Modes §7.3). A box
+/// that sets a writing mode orthogonal to its parent's still resolves against
+/// the parent's inline axis.
+#[test]
+fn an_orthogonal_box_resolves_percentage_margins_on_its_parents_inline_axis() {
+    let case = |parent_mode, child_mode, width: f32, height: f32| {
+        let tree = StyleLayoutNode {
+            id: "root".into(),
+            style: LayoutStyle {
+                display: Some(DisplaySpec::Flex),
+                direction: Some(FlexDirection::Column),
+                width: Some(LengthSpec::Px(width)),
+                height: Some(LengthSpec::Px(height)),
+                writing_mode: Some(parent_mode),
+                align_items: AlignSpec::Start,
+                ..LayoutStyle::default()
+            },
+            children: vec![StyleLayoutNode {
+                id: "a".into(),
+                style: LayoutStyle {
+                    width: Some(LengthSpec::Px(20.0)),
+                    height: Some(LengthSpec::Px(20.0)),
+                    margin_top: Some(LengthSpec::Percent(10.0)),
+                    writing_mode: Some(child_mode),
+                    ..LayoutStyle::default()
+                },
+                children: Vec::new(),
+                text: None,
+            }],
+            text: None,
+        };
+        box_map(&tree, width, height)["a"].y
+    };
+    // Horizontal parent 200 wide: 10% of its width, whatever the child sets.
+    let vertical_child = case(
+        WritingModeSpec::HorizontalTb,
+        WritingModeSpec::VerticalRl,
+        200.0,
+        100.0,
+    );
+    assert!((vertical_child - 20.0).abs() < 0.5, "got {vertical_child}");
+    // Vertical parent 200 tall: 10% of its height.
+    let horizontal_child = case(
+        WritingModeSpec::VerticalRl,
+        WritingModeSpec::HorizontalTb,
+        100.0,
+        200.0,
+    );
+    assert!(
+        (horizontal_child - 20.0).abs() < 0.5,
+        "got {horizontal_child}"
+    );
 }

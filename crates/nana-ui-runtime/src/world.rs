@@ -1737,6 +1737,38 @@ impl UiWorld {
         }
     }
 
+    /// The writing mode and direction `id` lays out in: its own
+    /// `writing-mode` / `direction`, or else its parent's — inherited, as CSS
+    /// inherits them.
+    ///
+    /// The layout style carries only what a node declares; the computed style
+    /// carries what it inherits. Reading the declared value first keeps a node
+    /// that sets its own writing mode right even before its style has been
+    /// resolved.
+    pub(crate) fn layout_writing(&self, id: StableNodeId) -> nana_ui_core::WritingContext {
+        let Some(record) = self.nodes.get(id) else {
+            return nana_ui_core::WritingContext::default();
+        };
+        let declared = &record.resolved_layout;
+        let inherited = &record.resolved.0;
+        nana_ui_core::WritingContext::new(
+            declared.writing_mode.unwrap_or(inherited.writing_mode),
+            declared.dir.unwrap_or(inherited.direction),
+        )
+    }
+
+    /// What `id`'s percentage margins and paddings resolve against, inside a
+    /// containing block `width` × `height`: that block's inline size (CSS Box
+    /// Model §5) in the block's own writing mode — its parent's. A node that
+    /// sets a writing mode orthogonal to its parent's still resolves against
+    /// the parent's inline axis.
+    pub(crate) fn edge_percent_base(&self, id: StableNodeId, width: f32, height: f32) -> f32 {
+        let containing = self.parent_id(id).unwrap_or(id);
+        self.layout_writing(containing)
+            .logical_size(width, height)
+            .0
+    }
+
     pub(crate) fn parent_id(&self, id: StableNodeId) -> Option<StableNodeId> {
         self.nodes.get(id)?.hierarchy.parent
     }

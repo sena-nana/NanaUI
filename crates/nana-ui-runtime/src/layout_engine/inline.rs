@@ -32,7 +32,11 @@ pub(super) fn pack_wrap_lines(
             line_main = 0.0;
         }
         let margin = style.resolved_margin_against_fonts(
-            Some(style.edge_percent_base(content.width, content.height)),
+            Some(
+                nodes
+                    .world
+                    .edge_percent_base(*child, content.width, content.height),
+            ),
             fonts_of(style.as_ref(), parent_font_px),
         );
         let main = packing_main_size(
@@ -40,7 +44,9 @@ pub(super) fn pack_wrap_lines(
             sizes[index],
             direction,
             content_main,
-            style.edge_percent_base(content.width, content.height),
+            nodes
+                .world
+                .edge_percent_base(*child, content.width, content.height),
             viewport,
             parent_font_px,
             grid_tracks.and_then(|tracks| tracks.get(index).copied()),
@@ -318,7 +324,11 @@ pub(super) fn wrap_intrinsic_size(
                 continue;
             };
             let margin = style.resolved_margin_against_fonts(
-                Some(style.edge_percent_base(available.width, available.height)),
+                Some(nodes.world.edge_percent_base(
+                    children[index],
+                    available.width,
+                    available.height,
+                )),
                 fonts_of(style.as_ref(), parent_font_px),
             );
             let main = packing_main_size(
@@ -326,7 +336,9 @@ pub(super) fn wrap_intrinsic_size(
                 sizes[index],
                 direction,
                 content_main,
-                style.edge_percent_base(available.width, available.height),
+                nodes
+                    .world
+                    .edge_percent_base(children[index], available.width, available.height),
                 viewport,
                 parent_font_px,
                 grid_tracks.and_then(|tracks| tracks.get(index).copied()),

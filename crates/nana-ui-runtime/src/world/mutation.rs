@@ -1271,7 +1271,11 @@ impl UiWorld {
                         != style.layout.font_variation_settings
                     || previous.layout.font_kerning != style.layout.font_kerning
                     || previous.layout.word_break != style.layout.word_break
-                    || previous.layout.line_break != style.layout.line_break;
+                    || previous.layout.line_break != style.layout.line_break
+                    // Writing mode and direction inherit into layout, not just
+                    // text: a descendant container lays out along them too.
+                    || previous.layout.dir != style.layout.dir
+                    || previous.layout.writing_mode != style.layout.writing_mode;
                 let inherited_paint_changed = previous.foreground != style.foreground
                     || previous.layout.color != style.layout.color
                     || previous.layout.selection_background != style.layout.selection_background

@@ -434,6 +434,7 @@ pub(super) fn collapse_unoccupied_tracks(
 
 pub(super) fn layout_grid_2d(
     style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
     flow: &[StableNodeId],
     child_sizes: &[Size],
     content: Size,
@@ -445,7 +446,6 @@ pub(super) fn layout_grid_2d(
     // (CSS Grid §3): the page's width and height in `horizontal-tb`, its
     // height and width in a vertical mode. Everything below sizes tracks on
     // those logical extents; `place_grid_2d_items` turns them onto the page.
-    let writing = style.writing_context();
     let (content_inline, content_block) = writing.logical_size(content.width, content.height);
     let mut col_gap = style.resolved_column_gap_against_fonts(
         Some(content_inline).filter(|inline| *inline > 0.0),
@@ -678,7 +678,11 @@ pub(super) fn layout_grid_2d(
             .style(item.id)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(style.edge_percent_base(content.width, content.height)),
+                    Some(
+                        nodes
+                            .world
+                            .edge_percent_base(item.id, content.width, content.height),
+                    ),
                     fonts_of(&style, fonts.element_px),
                 )
             })
@@ -814,6 +818,7 @@ pub(super) fn margin_at(
 
 pub(super) fn place_grid_2d_items(
     grid: &Grid2DLayout,
+    writing: nana_ui_core::WritingContext,
     content_origin: Point,
     content: Size,
     style: &LayoutStyle,
@@ -834,7 +839,6 @@ pub(super) fn place_grid_2d_items(
     // packs against the start edge, and one wider overflows past the *end*
     // edge (no clamp: fixed-px tracks are never shrunk, so ordinary grids get
     // here).
-    let writing = style.writing_context();
     let box_extents = writing.logical_size(content.width, content.height);
     let page = |rect| {
         let (x, y, width, height) = writing.flow_rect_to_page(rect, box_extents);
@@ -865,7 +869,11 @@ pub(super) fn place_grid_2d_items(
             scope,
         )?;
         let margin = child_style.resolved_margin_against_fonts(
-            Some(child_style.edge_percent_base(cell.width, cell.height)),
+            Some(
+                nodes
+                    .world
+                    .edge_percent_base(item.id, cell.width, cell.height),
+            ),
             child_fonts,
         );
         let inline_lead = margin_at(margin, writing.inline_start());
@@ -914,7 +922,11 @@ pub(super) fn place_grid_2d_items(
             fill_auto_height_from_aspect_ratio(
                 child_style,
                 &mut child_size,
-                Some(child_style.edge_percent_base(cell.width, cell.height)),
+                Some(
+                    nodes
+                        .world
+                        .edge_percent_base(item.id, cell.width, cell.height),
+                ),
                 child_fonts,
             );
         }
@@ -982,7 +994,11 @@ pub(super) fn grid_intrinsic_size(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(style.edge_percent_base(content.width, content.height)),
+                    Some(
+                        nodes
+                            .world
+                            .edge_percent_base(*child, content.width, content.height),
+                    ),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })
@@ -1122,7 +1138,11 @@ pub(super) fn apply_grid_main_sizes(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(style.edge_percent_base(content.width, content.height)),
+                    Some(
+                        nodes
+                            .world
+                            .edge_percent_base(*child, content.width, content.height),
+                    ),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })

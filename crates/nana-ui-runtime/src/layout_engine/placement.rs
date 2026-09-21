@@ -184,7 +184,11 @@ fn replay_sequential_suffix(
         }
         let child_fonts = fonts_of(child_style, plan.child_font_px);
         let margin = child_style.resolved_margin_against_fonts(
-            Some(child_style.edge_percent_base(plan.content.width, plan.content.height)),
+            Some(
+                nodes
+                    .world
+                    .edge_percent_base(child, plan.content.width, plan.content.height),
+            ),
             child_fonts,
         );
         let mut child_size = child_intrinsic;
@@ -195,7 +199,11 @@ fn replay_sequential_suffix(
         fill_auto_height_from_aspect_ratio(
             child_style,
             &mut child_size,
-            Some(child_style.edge_percent_base(plan.content.width, plan.content.height)),
+            Some(
+                nodes
+                    .world
+                    .edge_percent_base(child, plan.content.width, plan.content.height),
+            ),
             child_fonts,
         );
         let (main_lead, main_trail) = if main_reversed {
@@ -348,7 +356,11 @@ pub(super) fn place_node_scoped(
     );
 
     let padding = style.resolved_padding_against_fonts(
-        Some(style.edge_percent_base(containing.width, containing.height)),
+        Some(
+            nodes
+                .world
+                .edge_percent_base(id, containing.width, containing.height),
+        ),
         fonts,
     );
     nodes.used_padding.insert(id, padding);
@@ -399,6 +411,7 @@ pub(super) fn place_node_scoped(
             viewport,
             &style_arc,
             &child_ids,
+            nodes.world.layout_writing(id),
         )
         && !scope
             .affected
@@ -492,7 +505,10 @@ pub(super) fn place_node_scoped(
         && flow
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
-    let direction = used_flow_direction(style, ifc);
+    // The writing mode and direction this container lays out in, inherited
+    // from its ancestors when it declares none of its own.
+    let writing = nodes.world.layout_writing(id);
+    let direction = used_flow_direction(style, writing, ifc);
     // Flow-relative placement. Every position below is measured from the
     // main-start and cross-start edges of the content box, in flow order —
     // lines filled first item first, `justify-content` / `align-items` /
@@ -502,7 +518,6 @@ pub(super) fn place_node_scoped(
     // `vertical-rl`'s block axis from the right, or `flex-direction: *-reverse`.
     // Nothing else knows the page is turned: no list is reversed, no
     // alignment keyword flipped, no line packed from the other end.
-    let writing = style.writing_context();
     let cross = if direction.is_row() {
         FlexDirection::Column
     } else {
@@ -588,6 +603,7 @@ pub(super) fn place_node_scoped(
     if grid_2d {
         let grid = layout_grid_2d(
             style,
+            writing,
             &flow,
             &child_sizes,
             content,
@@ -597,6 +613,7 @@ pub(super) fn place_node_scoped(
         );
         place_grid_2d_items(
             &grid,
+            writing,
             content_origin,
             content,
             style,
@@ -733,7 +750,11 @@ pub(super) fn place_node_scoped(
                         .style(*child)
                         .map(|style| {
                             style.resolved_margin_against_fonts(
-                                Some(style.edge_percent_base(content.width, content.height)),
+                                Some(nodes.world.edge_percent_base(
+                                    *child,
+                                    content.width,
+                                    content.height,
+                                )),
                                 fonts_of(style.as_ref(), child_font_px),
                             )
                         })
@@ -868,7 +889,11 @@ pub(super) fn place_node_scoped(
                     }
                 }
                 let mut margin = child_style.resolved_margin_against_fonts(
-                    Some(child_style.edge_percent_base(content.width, content.height)),
+                    Some(
+                        nodes
+                            .world
+                            .edge_percent_base(child, content.width, content.height),
+                    ),
                     child_fonts,
                 );
                 let line_box_cross = if line_count > 1 {
@@ -892,7 +917,11 @@ pub(super) fn place_node_scoped(
                 fill_auto_height_from_aspect_ratio(
                     child_style,
                     &mut child_size,
-                    Some(child_style.edge_percent_base(content.width, content.height)),
+                    Some(
+                        nodes
+                            .world
+                            .edge_percent_base(child, content.width, content.height),
+                    ),
                     child_fonts,
                 );
                 let cross_offset = match align {
@@ -1043,6 +1072,7 @@ pub(super) fn place_node_scoped(
                 child_font_px,
                 child_available: content,
                 main_direction: direction,
+                writing,
                 main_reversed,
                 cross_reversed,
                 entries: RefCell::new(entries),
