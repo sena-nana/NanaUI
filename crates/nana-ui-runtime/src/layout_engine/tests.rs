@@ -5659,6 +5659,50 @@ fn a_container_inherits_its_parents_writing_mode() {
     }
 }
 
+/// A box's logical edges land in the writing context it inherits, not only in
+/// the one it declares: `padding-inline-start` on a box inside an RTL parent
+/// pads its right edge, even though the box was built (and its edges first
+/// resolved) without a `direction` of its own.
+#[test]
+fn logical_edges_land_in_the_inherited_direction() {
+    let mut inner = LayoutStyle {
+        display: Some(DisplaySpec::Flex),
+        direction: Some(FlexDirection::Row),
+        width: Some(LengthSpec::Px(100.0)),
+        height: Some(LengthSpec::Px(40.0)),
+        align_items: AlignSpec::Start,
+        ..LayoutStyle::default()
+    };
+    inner.logical_padding.set_start(Some(LengthSpec::Px(30.0)));
+    inner.bake_logical_edges();
+    assert_eq!(inner.padding_left, Some(LengthSpec::Px(30.0)));
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(100.0)),
+            dir: Some(DirSpec::Rtl),
+            align_items: AlignSpec::Start,
+            ..LayoutStyle::default()
+        },
+        children: vec![StyleLayoutNode {
+            id: "inner".into(),
+            style: inner,
+            children: vec![px_box("a", 20.0, 20.0)],
+            text: None,
+        }],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 100.0);
+    let inner = boxes["inner"];
+    let a = boxes["a"];
+    assert!(
+        (a.x - (inner.x + inner.width - 30.0 - 20.0)).abs() < 0.5,
+        "a starts 30px in from the right edge of {inner:?}, got {a:?}"
+    );
+}
+
 /// Percentage margins resolve against the containing block's inline size in
 /// the containing block's own writing mode (CSS Writing Modes §7.3). A box
 /// that sets a writing mode orthogonal to its parent's still resolves against

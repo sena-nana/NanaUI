@@ -4159,7 +4159,21 @@ impl LayoutStyle {
     /// declaration of one edge records the physical one with
     /// [`LogicalEdges::set_phys`].
     pub fn resolve_logical_box_edges(&mut self) {
-        let context = self.writing_context();
+        self.resolve_logical_box_edges_in(self.writing_context());
+    }
+
+    /// True when any padding / margin / inset edge was declared logically,
+    /// so its physical edge depends on the writing context.
+    pub fn has_logical_box_edges(&self) -> bool {
+        self.logical_padding.has_logical()
+            || self.logical_margin.has_logical()
+            || self.logical_inset.has_logical()
+    }
+
+    /// [`Self::resolve_logical_box_edges`] against an explicit context: the
+    /// one the box inherits when it declares no `writing-mode` / `direction`
+    /// of its own.
+    pub fn resolve_logical_box_edges_in(&mut self, context: crate::WritingContext) {
         self.logical_padding.resolve_into(
             context,
             &mut self.padding_top,

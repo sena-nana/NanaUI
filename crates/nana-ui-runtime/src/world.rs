@@ -1671,6 +1671,10 @@ impl UiWorld {
     /// - `menu_branch_open` / `parent_triggered_overlay`, when the parent is a
     ///   menu surface.
     ///
+    /// Logical edges landed in an inherited writing context are derived from
+    /// an ancestor too, but they do not escape: changing an ancestor's
+    /// `writing-mode` or `direction` marks its whole subtree LAYOUT-dirty.
+    ///
     /// Reporting false is always safe: it only costs the caller its fast path.
     pub(crate) fn children_layout_style_is_local(&self, parent: StableNodeId) -> bool {
         self.detached.is_empty()
@@ -1690,6 +1694,15 @@ impl UiWorld {
         {
             Arc::make_mut(&mut style).hidden = true;
             return style;
+        }
+        if style.has_logical_box_edges() {
+            // A box that inherits its writing mode or direction resolved its
+            // logical edges against its own declarations; land them against
+            // the context it actually lays out in.
+            let writing = self.layout_writing(id);
+            if writing != style.writing_context() {
+                Arc::make_mut(&mut style).resolve_logical_box_edges_in(writing);
+            }
         }
         if let Some(overlay) = self.parent_triggered_overlay(id) {
             let layout = Arc::make_mut(&mut style);
