@@ -1,4 +1,5 @@
-"""Issue #98 retained-text work-counter extractor / gate tests."""
+"""Issue #98 retained-text work-counter extractor / gate tests: the ticker
+(static steady), paint-only and compositor-only rows."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,21 +10,58 @@ from .reports import key_error_reason
 from .schema import load_catalog, load_scenario
 
 
-EXPECTED_TEXT_IDS = {"gpu-scene-text-retained"}
+TICKER_ID = "gpu-scene-text-retained"
+ANIMATED_IDS = {
+    "gpu-scene-text-paint-color": "color",
+    "gpu-scene-text-compositor-opacity": "opacity",
+    "gpu-scene-text-compositor-transform": "transform",
+}
+EXPECTED_TEXT_IDS = {TICKER_ID, *ANIMATED_IDS}
 
 
-def _quiet_text() -> dict[str, Any]:
-    """What one frame beside a ticking label owes: that label and nothing else."""
+def _quiet_text(scenario_id: str = TICKER_ID) -> dict[str, Any]:
+    """What one retained frame owes.
+
+    Beside a ticking label: that label and nothing else. Under a recolor, a
+    fade or a turn: nothing at all — the text is what it was.
+    """
+    if scenario_id == TICKER_ID:
+        return {
+            "glyph_resolve_requests": 6.0,
+            "glyph_rasterized": 1.0,
+            "glyph_upload_bytes": 112.0,
+            "text_instance_rebuilds": 1.0,
+            "text_instance_upload_bytes": 240.0,
+            "text_prepare_nodes_considered": 1000.0,
+            "text_prepare_nodes_skipped": 999.0,
+            "text_gpu_entries_active": 1000.0,
+            "text_nodes_shaped": 1.0,
+            "text_layouts_created": 1.0,
+            "paint_shape_cache_misses": 0.0,
+        }
     return {
-        "glyph_resolve_requests": 6.0,
-        "glyph_rasterized": 1.0,
-        "glyph_upload_bytes": 112.0,
-        "text_instance_rebuilds": 1.0,
-        "text_instance_upload_bytes": 240.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
         "text_prepare_nodes_considered": 1000.0,
-        "text_prepare_nodes_skipped": 999.0,
+        "text_prepare_nodes_skipped": 1000.0,
         "text_gpu_entries_active": 1000.0,
+        "text_nodes_shaped": 0.0,
+        "text_layouts_created": 0.0,
+        "paint_shape_cache_misses": 0.0,
     }
+
+
+def _blown(invariant: dict[str, Any]) -> float:
+    """A value that breaks `invariant` by a clear margin."""
+    value = float(invariant["value"])
+    if invariant["op"] == "lte":
+        return value + max(1.0, value) * 10.0
+    if invariant["op"] == "gte":
+        return 0.0 if value > 0 else -1.0
+    raise ValueError(f"unexpected op {invariant['op']!r} in {invariant['name']}")
 
 
 def _payload(scenario: dict[str, Any], text: dict[str, Any] | None) -> dict[str, Any]:
@@ -61,6 +99,8 @@ def _payload(scenario: dict[str, Any], text: dict[str, Any] | None) -> dict[str,
             for name in ("batch_ms", "gpu_upload_ms", "encode_ms", "submit_ms")
         },
     }
+    if params.get("text_animation") is not None:
+        report["materialization"]["text_animation"] = params["text_animation"]
     if text is not None:
         report["text_counters"] = text
     return report
@@ -82,14 +122,22 @@ def _self_test_retained_text(root: Path) -> list[str]:
     paths = {"gpu": Path("synthetic-retained-text")}
     for scenario_id in sorted(EXPECTED_TEXT_IDS):
         scenario = load_scenario(scenario_id, root)
-        if not scenario["params"].get("text_ticker"):
+        params = scenario["params"]
+        if scenario_id == TICKER_ID and not params.get("text_ticker"):
             errors.append(
                 f"{scenario_id} must set params.text_ticker: a frame the painter "
                 "answers from its prepared batch cannot fail a text gate"
             )
+        if scenario_id in ANIMATED_IDS and params.get("text_animation") != ANIMATED_IDS[
+            scenario_id
+        ]:
+            errors.append(
+                f"{scenario_id} must animate {ANIMATED_IDS[scenario_id]!r}, got "
+                f"{params.get('text_animation')!r}"
+            )
         quiet = extract_nana(
             scenario,
-            {"gpu": _payload(scenario, _quiet_text())},
+            {"gpu": _payload(scenario, _quiet_text(scenario_id))},
             source_paths=paths,
         )
         rows = evaluate_invariants(scenario, quiet)
@@ -121,15 +169,18 @@ def _self_test_retained_text(root: Path) -> list[str]:
         # Every budget has to be load-bearing on its own: a gate that only
         # fails when several counters blow at once is a gate with spare
         # invariants in it.
-        for counter, blown, what in (
-            ("text_instance_rebuilds", 1000.0, "every paragraph resolved again"),
-            ("text_instance_upload_bytes", 120_000.0, "the whole arena rewritten"),
-            ("glyph_rasterized", 500.0, "every glyph rasterized again"),
-            ("glyph_upload_bytes", 500_000.0, "the atlas reuploaded"),
-            ("text_prepare_nodes_skipped", 0.0, "no node answered by its entry"),
-        ):
-            noisy = _quiet_text()
-            noisy[counter] = blown
+        for invariant in scenario.get("invariants") or []:
+            counter = str(invariant["path"]).removeprefix("text_counters.")
+            if counter == str(invariant["path"]):
+                continue
+            noisy = _quiet_text(scenario_id)
+            if counter not in noisy:
+                errors.append(
+                    f"{scenario_id} gates {counter}, which the quiet frame of this "
+                    "self-test does not carry"
+                )
+                continue
+            noisy[counter] = _blown(invariant)
             loud = extract_nana(
                 scenario,
                 {"gpu": _payload(scenario, noisy)},
@@ -138,7 +189,40 @@ def _self_test_retained_text(root: Path) -> list[str]:
             if all(
                 row.get("status") == "ok" for row in evaluate_invariants(scenario, loud)
             ):
-                errors.append(f"{scenario_id} must fail on {what} ({counter}={blown})")
+                errors.append(
+                    f"{scenario_id} must fail {invariant['name']} on "
+                    f"{counter}={noisy[counter]}"
+                )
+        if scenario_id == TICKER_ID:
+            gated = {
+                str(row["path"]).removeprefix("text_counters.")
+                for row in scenario.get("invariants") or []
+            }
+            for counter in (
+                "text_instance_rebuilds",
+                "text_instance_upload_bytes",
+                "glyph_rasterized",
+                "glyph_upload_bytes",
+                "text_prepare_nodes_skipped",
+            ):
+                if counter not in gated:
+                    errors.append(f"{scenario_id} must gate {counter}")
+        else:
+            gated = {
+                str(row["path"]).removeprefix("text_counters.")
+                for row in scenario.get("invariants") or []
+            }
+            # The #98 paint-only and compositor-only gates, by name.
+            for counter in (
+                "text_nodes_shaped",
+                "text_layouts_created",
+                "paint_shape_cache_misses",
+                "glyph_rasterized",
+                "glyph_upload_bytes",
+                "text_instance_rebuilds",
+            ):
+                if counter not in gated:
+                    errors.append(f"{scenario_id} must gate {counter}")
 
         # A missing block is not a passing block.
         blind = extract_nana(
@@ -155,16 +239,21 @@ def _self_test_retained_text(root: Path) -> list[str]:
                 f"{scenario_id} must not read missing text_counters as satisfied"
             )
 
-        # The runner has to prove it ran the ticking scene.
-        silent = _payload(scenario, _quiet_text())
-        silent["materialization"]["text_ticker"] = False
+        # The runner has to prove it ran the moving scene.
+        silent = _payload(scenario, _quiet_text(scenario_id))
+        if scenario_id == TICKER_ID:
+            silent["materialization"]["text_ticker"] = False
+            echo = "text_ticker"
+        else:
+            silent["materialization"].pop("text_animation", None)
+            echo = "text_animation"
         try:
             extract_nana(scenario, {"gpu": silent}, source_paths=paths)
             errors.append(
-                f"{scenario_id} extract must reject a report that did not tick a label"
+                f"{scenario_id} extract must reject a report that did not move its labels"
             )
         except KeyError as exc:
-            if "text_ticker" not in key_error_reason(exc):
-                errors.append(f"ticker KeyError should name text_ticker: {exc}")
+            if echo not in key_error_reason(exc):
+                errors.append(f"{scenario_id} KeyError should name {echo}: {exc}")
 
     return errors

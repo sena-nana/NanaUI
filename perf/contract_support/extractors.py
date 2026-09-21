@@ -1136,7 +1136,7 @@ def _extract_nana_gpu_scene(
     # a gate that cannot fail.
     text = payload.get("text_counters")
     text_counters: dict[str, Any] = {}
-    if isinstance(text, dict) and params_text_ticker(scenario):
+    if isinstance(text, dict) and params_moves_text(scenario):
         text_counters["text_counters"] = {
             key: value for key, value in text.items() if isinstance(value, (int, float))
         }
@@ -1164,8 +1164,13 @@ def _extract_nana_gpu_scene(
 
 
 
-def params_text_ticker(scenario: Mapping[str, Any]) -> bool:
-    return bool(scenario.get("params", {}).get("text_ticker"))
+def params_moves_text(scenario: Mapping[str, Any]) -> bool:
+    """Whether the scenario changes something about its labels every frame:
+    their text (`text_ticker`) or how they are painted (`text_animation`). A
+    still scene is answered from the painter's prepared batch and would pass
+    every text gate by construction."""
+    params = scenario.get("params", {})
+    return bool(params.get("text_ticker")) or bool(params.get("text_animation"))
 
 
 
@@ -1199,6 +1204,12 @@ def _require_ui_only_materialization(
             "nana-gpu-scene-benchmark materialization.text_ticker="
             f"{echoed.get('text_ticker')!r} does not match scenario JSON "
             f"{params.get('text_ticker')!r}"
+        )
+    if echoed.get("text_animation") != params.get("text_animation"):
+        raise KeyError(
+            "nana-gpu-scene-benchmark materialization.text_animation="
+            f"{echoed.get('text_animation')!r} does not match scenario JSON "
+            f"{params.get('text_animation')!r}"
         )
     if bool(echoed.get("shared_gpu_view_slot")) != bool(params.get("shared_gpu_view_slot")):
         raise KeyError(

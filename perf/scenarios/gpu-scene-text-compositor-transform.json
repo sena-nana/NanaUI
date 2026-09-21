@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-text-compositor-transform",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [
+      1280,
+      800
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 320,
+      "height": 180
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view"
+    ],
+    "node_repeat": {
+      "text": 1000
+    },
+    "text_animation": "transform"
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_compositor_transform_shapes_nothing",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The Runtime measured no text node again: nothing about what any label says changed."
+    },
+    {
+      "name": "text_compositor_transform_lays_out_nothing",
+      "path": "text_counters.text_layouts_created",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No paragraph was laid out again, by the Runtime or by the painter."
+    },
+    {
+      "name": "text_compositor_transform_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The painter drew every label from a layout it already held."
+    },
+    {
+      "name": "text_compositor_transform_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No glyph bitmap was produced: the text and its size are what they were."
+    },
+    {
+      "name": "text_compositor_transform_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No atlas region reached the GPU."
+    },
+    {
+      "name": "text_compositor_transform_rebuilds_no_entry",
+      "path": "text_counters.text_instance_rebuilds",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Every label was answered by its retained entry; none was resolved again."
+    },
+    {
+      "name": "text_compositor_transform_answers_nodes_from_entries",
+      "path": "text_counters.text_prepare_nodes_skipped",
+      "op": "gte",
+      "value": 900,
+      "status": "required",
+      "note": "Nodes that reached a draw without resolving a glyph. Missing stays not-evaluable and must never be read as 0."
+    }
+  ],
+  "notes": "Issue #98 compositor-only gate. The list holding a thousand labels turns -1.5, 0 and +1.5 degrees in turn, so it enters and leaves the identity every third frame: the switch between a translated and a projected run. A transform is presentation: no shape, no layout, no raster, no atlas upload, no instance rebuild. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+}

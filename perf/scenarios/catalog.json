@@ -33,7 +33,10 @@
     "gpu-scene-host-textures-64"
   ],
   "nana_text_ids": [
-    "gpu-scene-text-retained"
+    "gpu-scene-text-retained",
+    "gpu-scene-text-paint-color",
+    "gpu-scene-text-compositor-opacity",
+    "gpu-scene-text-compositor-transform"
   ],
   "nana_motion_ids": [
     "compositor-steady",

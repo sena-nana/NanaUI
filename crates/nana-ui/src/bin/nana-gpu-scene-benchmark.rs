@@ -12,10 +12,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use nana_ui::runtime::{
-    Button, DocumentId, FlexDirection, FlexWrap, FrameProfile, FrameProfiler, GpuTextureView,
-    GpuView, GpuViewPalette, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph, LayoutStyle,
-    LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, StageStatus, Text,
+    Button, DocumentId, Entity, FlexDirection, FlexWrap, FrameProfile, FrameProfiler,
+    GpuTextureView, GpuView, GpuViewPalette, GpuWorkObservation, HOST_TEXTURE_RENDERER, IconGlyph,
+    LayoutStyle, LayoutViewport, LengthSpec, List, NodeStyle, RuntimeDocument, SemanticColorRole,
+    StageStatus, Text,
 };
+use nana_ui_core::{PaintTransform, TransformOrigin};
 use nana_ui::{
     ButtonKind, GpuStageTimings, HostTexture, HostTextureAlphaMode, HostTextureRegistry, Icon,
     NanaTextShaper, SceneGpuRendererRegistry, ScenePaintViewport, SceneWgpuPainter,
@@ -91,6 +93,10 @@ struct Materialization {
     /// Echoed so a runner cannot quietly measure a frame the painter answered
     /// from its prepared batch and call it a retained-text gate.
     text_ticker: bool,
+    /// Echoed for the same reason: a paint-only or compositor-only gate that
+    /// ran a still scene would pass by construction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text_animation: Option<TextAnimation>,
     ui_entity_count: usize,
     host_texture_resources: usize,
     scene_primitive_kinds: Vec<String>,
@@ -196,6 +202,24 @@ struct ScenarioParams {
     /// what a shell actually pays for is the frame *beside* an animation.
     #[serde(default)]
     text_ticker: bool,
+    /// Animate something about the text other than what it says, every
+    /// frame: its color, or its container's opacity or transform. These are
+    /// the #98 paint-only and compositor-only gates — the text never changes,
+    /// so every frame must be answered without shaping, laying out,
+    /// rasterizing or resolving a glyph.
+    #[serde(default)]
+    text_animation: Option<TextAnimation>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+enum TextAnimation {
+    /// Every label alternates between two foreground roles.
+    Color,
+    /// The list holding the labels fades.
+    Opacity,
+    /// The list holding the labels turns.
+    Transform,
 }
 
 impl ScenarioParams {
@@ -359,10 +383,26 @@ HostTexture evidence from a UiOnly encode is not Live2D. Required by #8 / not im
 fn text_counters_per_frame(
     warm: nana_ui::TextGlyphCounters,
     end: nana_ui::TextGlyphCounters,
+    shaping: TextShapingWork,
     frames: usize,
 ) -> BTreeMap<String, f64> {
     let per_frame = frames as f64;
     let mut out = BTreeMap::new();
+    // The #98 gates name these "shape runs created" and "layouts created".
+    // Both sides are counted: the Runtime measures text, and the painter lays
+    // out what arrives without a Runtime layout it can draw from.
+    out.insert(
+        "text_nodes_shaped".to_string(),
+        shaping.nodes_shaped as f64 / per_frame,
+    );
+    out.insert(
+        "text_layouts_created".to_string(),
+        shaping.layouts_created as f64 / per_frame,
+    );
+    out.insert(
+        "paint_shape_cache_misses".to_string(),
+        shaping.paint_misses as f64 / per_frame,
+    );
     let mut delta = |name: &str, after: u64, before: u64| {
         out.insert(
             name.to_string(),
@@ -450,6 +490,14 @@ fn run_scenario(scenario: ScenarioFile, args: &Args) -> Report {
     run_ui_only(scenario, args)
 }
 
+/// Shaping and layout the sampled frames asked for, Runtime and painter.
+#[derive(Default, Clone, Copy)]
+struct TextShapingWork {
+    nodes_shaped: usize,
+    layouts_created: usize,
+    paint_misses: usize,
+}
+
 fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let params = &scenario.params;
     let Some((device, queue, adapter)) = request_device(args.gpu_timestamps) else {
@@ -487,11 +535,14 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         })
         .collect::<Vec<_>>();
 
-    let (mut document, ticker) = match ui_document(params) {
+    let (mut document, handles) = match ui_document(params) {
         Ok(built) => built,
         Err(reason) => return unsupported(Some(scenario.id), "UiOnly", reason),
     };
-    let ticker = params.text_ticker.then_some(ticker).flatten();
+    let ticker = params
+        .text_ticker
+        .then(|| handles.texts.first().copied())
+        .flatten();
     let mut shaper = NanaTextShaper::default();
     let viewport = LayoutViewport::new(params.viewport[0] as f32, params.viewport[1] as f32);
     document
@@ -505,6 +556,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         node_repeat: params.node_repeat.clone(),
         shared_gpu_view_slot: params.shared_gpu_view_slot,
         text_ticker: params.text_ticker,
+        text_animation: params.text_animation,
         host_texture_resources: resource_count,
         ui_entity_count: document
             .context()
@@ -545,6 +597,7 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         .then(|| timestamps::TimestampProbe::new(&device));
     let mut sampled_at = None;
     let mut warm_text = None;
+    let mut shaping = TextShapingWork::default();
     let warmup_started = Instant::now();
     let warmup = Duration::from_secs(if args.sample_seconds.is_some() { 2 } else { 0 });
     let mut frame = 0usize;
@@ -557,13 +610,25 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         let sampling = frame >= WARMUP && warmup_started.elapsed() >= warmup;
         if sampling && sampled_at.is_none() {
             sampled_at = Some(Instant::now());
-            warm_text = Some(painter.text_glyph_counters());
+            warm_text = Some((
+                painter.text_glyph_counters(),
+                painter.text_shape_cache_stats().1,
+            ));
         }
         if let Some(ticker) = ticker {
+            // Fixed width. Going from `tick 9` to `tick 10` widens the label,
+            // and every label after it in the row moves by a fraction of a
+            // pixel — which is a real re-resolve (the glyphs' sub-pixel phase
+            // changed), but it is the cost of a reflow, not of retention, and
+            // whether a sample window happened to contain one would decide
+            // whether the gate passed.
             document
                 .context_mut()
-                .set_component(ticker, Text::new(format!("tick {frame}")))
+                .set_component(ticker, Text::new(format!("tick {:04}", frame % 10_000)))
                 .expect("ticker text");
+        }
+        if let Some(animation) = params.text_animation {
+            animate_text(&mut document, &handles, animation, frame);
         }
         let runtime_started = Instant::now();
         let (update, runtime_allocations) = allocations::measure(args.allocation_counts, || {
@@ -622,6 +687,9 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         );
         let gpu_sample = queries.as_mut().map(|probe| probe.read(&device, &queue));
         if sampling {
+            let runtime_text = document.context().world().last_text_work_counters();
+            shaping.nodes_shaped += runtime_text.text_nodes_shaped;
+            shaping.layouts_created += runtime_text.layouts_created;
             if args.allocation_counts {
                 allocation_report.observe(runtime_allocations, paint_allocations);
             }
@@ -657,8 +725,14 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         }
         frame += 1;
     };
-    let text = warm_text.map(|warm| {
-        text_counters_per_frame(warm, painter.text_glyph_counters(), batch.len().max(1))
+    let text = warm_text.map(|(warm, warm_misses)| {
+        shaping.paint_misses = painter.text_shape_cache_stats().1 - warm_misses;
+        text_counters_per_frame(
+            warm,
+            painter.text_glyph_counters(),
+            shaping,
+            batch.len().max(1),
+        )
     });
     Report {
         schema_version: 1,
@@ -704,9 +778,72 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     }
 }
 
-fn ui_document(
-    params: &ScenarioParams,
-) -> Result<(RuntimeDocument, Option<nana_ui::runtime::Entity<Text>>), String> {
+/// The nodes a scenario animates.
+struct DocumentHandles {
+    root: Entity<List>,
+    texts: Vec<Entity<Text>>,
+}
+
+/// Change the one thing `animation` names about the labels, for this frame.
+fn animate_text(
+    document: &mut RuntimeDocument,
+    handles: &DocumentHandles,
+    animation: TextAnimation,
+    frame: usize,
+) {
+    match animation {
+        TextAnimation::Color => {
+            let role = if frame.is_multiple_of(2) {
+                SemanticColorRole::Text
+            } else {
+                SemanticColorRole::Muted
+            };
+            for text in &handles.texts {
+                document
+                    .context_mut()
+                    .set_component(*text, Text::new(UI_ONLY_TEXT).color(role))
+                    .expect("recolor text");
+            }
+        }
+        TextAnimation::Opacity => {
+            let mut style = root_style();
+            Arc::make_mut(&mut style.layout).opacity =
+                Some(0.35 + 0.6 * ((frame % 32) as f32 / 32.0));
+            document
+                .context_mut()
+                .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
+                .expect("fade list");
+        }
+        TextAnimation::Transform => {
+            // -1.5°, upright, +1.5°: the list passes through the identity
+            // every third frame, which is the switch between a translated and
+            // a projected run. The cycle fits inside the warm-up, so a label
+            // that only turns into view at one end of it is built there
+            // rather than counted as a rebuild.
+            let angle = ((frame % 3) as f32 - 1.0) * 1.5f32.to_radians();
+            let (sin, cos) = angle.sin_cos();
+            let mut style = root_style();
+            let layout = Arc::make_mut(&mut style.layout);
+            layout.transform = Some(PaintTransform {
+                a: cos,
+                b: sin,
+                c: -sin,
+                d: cos,
+                ..PaintTransform::default()
+            });
+            layout.transform_origin = Some(TransformOrigin::default());
+            document
+                .context_mut()
+                .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
+                .expect("turn list");
+        }
+    }
+}
+
+const UI_ONLY_TEXT: &str = "UiOnly";
+const ROOT_LABEL: &str = "gpu-scene-ui";
+
+fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHandles), String> {
     if !params.ui_nodes.iter().any(|node| node == "list") {
         return Err("UiOnly ui_nodes must include list as the document root".into());
     }
@@ -726,12 +863,12 @@ fn ui_document(
         .context_mut()
         .create_component(
             document_id,
-            List::new().label("gpu-scene-ui").style(root_style()),
+            List::new().label(ROOT_LABEL).style(root_style()),
         )
         .expect("list");
     let mut texture_index = 0;
     let mut gpu_view_index = 0u64;
-    let mut ticker = None;
+    let mut texts = Vec::new();
     for kind in &params.ui_nodes {
         for _ in 0..params.repeat(kind) {
             match kind.as_str() {
@@ -739,13 +876,13 @@ fn ui_document(
                 "text" => {
                     let child = document
                         .context_mut()
-                        .create_component(document_id, Text::new("UiOnly"))
+                        .create_component(document_id, Text::new(UI_ONLY_TEXT))
                         .expect("text");
                     document
                         .context_mut()
                         .append_child(root, child)
                         .expect("text child");
-                    ticker.get_or_insert(child);
+                    texts.push(child);
                 }
                 "icon" => {
                     let child = document
@@ -824,7 +961,7 @@ fn ui_document(
             }
         }
     }
-    Ok((document, ticker))
+    Ok((document, DocumentHandles { root, texts }))
 }
 
 /// Wrapping row. A column would push every repeated node past the viewport, and

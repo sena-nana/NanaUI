@@ -41,16 +41,31 @@ DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——
 
 ## Issue #98 保留期文本
 
-`catalog.json` 的 `nana_text_ids` 目前只有 `gpu-scene-text-retained`：一千个文本节点，
-其中一个每帧换文本。它**不在** `harness_ids` 里，理由和 motion 那组一样——判据是这一帧
-让文本路径重做了什么（`text_counters.*`），不是公共 CI 的 GPU timing。
+`catalog.json` 的 `nana_text_ids` 是 #98 的三类文本门禁，都是一千个文本节点：
 
-`params.text_ticker` 是它能成立的前提：不换文本的话 painter 直接复用上一帧的批次，
-那一帧什么都没做，五条 counter 全是 0，门禁永远不会红。extractor 核对报告里回显的
-`text_ticker`，跑了不动的场景会被拒绝。
+| id | 每帧动的是什么 | 判据 |
+| --- | --- | --- |
+| `gpu-scene-text-retained` | 其中一个标签换文本 | 静止稳态：只重建那一个，不栅格化、不传 atlas、不重传别人的 instance |
+| `gpu-scene-text-paint-color` | 每个标签换前景色 | paint-only：不塑形、不排版、不栅格化、不传 atlas，也不重建 / 重传 instance |
+| `gpu-scene-text-compositor-opacity` | 装标签的列表淡入淡出 | compositor-only：同上 |
+| `gpu-scene-text-compositor-transform` | 装标签的列表转 −1.5° / 0° / +1.5° | compositor-only：同上，且每三帧进出一次恒等变换 |
+
+它们都**不在** `harness_ids` 里，理由和 motion 那组一样——判据是这一帧让文本路径重做了
+什么（`text_counters.*`），不是公共 CI 的 GPU timing。`text_counters` 里 Runtime 与画笔
+两侧都有：`text_nodes_shaped` / `text_layouts_created` 是 Runtime 这一帧重新测量的，
+`paint_shape_cache_misses` 是画笔拿不到 Runtime layout 时自己排的。
+
+场景必须真的在动：`params.text_ticker`（换文本）或 `params.text_animation`
+（`color` / `opacity` / `transform`）二选一。不动的话 painter 直接复用上一帧的批次，那一帧
+什么都没做，counter 全是 0，门禁永远不会红。extractor 核对报告里回显的这两个参数，跑了
+不动的场景会被拒绝。ticker 的文字是定宽的（`tick 0007`）：`tick 9 → tick 10` 会把同一行
+后面的标签挪一个数字宽，那是重排的成本，不是保留期的，不该由采样窗口碰没碰上它来决定门禁红绿。
 
 ```bash
-python3 perf/runners/nana/run.py --scenario gpu-scene-text-retained --output target/performance/issue98/nana-text-retained.json
+for id in gpu-scene-text-retained gpu-scene-text-paint-color \
+          gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform; do
+  python3 perf/runners/nana/run.py --scenario "$id" --output "target/performance/issue98/$id.json"
+done
 # 标签数 × 动画频率的完整报告（不是门禁，是可复现数字）
 cargo run --release --locked -p nana-ui --features gpu --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 ```

@@ -815,6 +815,9 @@ def _size2(value: Any) -> bool:
 
 
 
+# What `nana-gpu-scene-benchmark` can animate about the labels besides their
+# text: the #98 paint-only and compositor-only gates.
+_UI_ONLY_TEXT_ANIMATIONS = frozenset({"color", "opacity", "transform"})
 _UI_ONLY_NODE_KINDS = {"list", "text", "gpu-texture-view", "gpu-view", "icon", "button"}
 
 _UI_ONLY_GPU_NODE_KINDS = {"gpu-texture-view", "gpu-view"}
@@ -857,6 +860,17 @@ def _validate_gpu_scene_ui_only(params: Mapping[str, Any]) -> list[str]:
         errors.append("GpuScene UiOnly params.shared_gpu_view_slot must be a boolean")
     if "text_ticker" in params and not isinstance(params["text_ticker"], bool):
         errors.append("GpuScene UiOnly params.text_ticker must be a boolean")
+    if "text_animation" in params:
+        if params["text_animation"] not in _UI_ONLY_TEXT_ANIMATIONS:
+            errors.append(
+                "GpuScene UiOnly params.text_animation must be one of "
+                f"{sorted(_UI_ONLY_TEXT_ANIMATIONS)}"
+            )
+        if params.get("text_ticker"):
+            errors.append(
+                "GpuScene UiOnly params.text_animation and text_ticker are exclusive: "
+                "a gate that moves two things cannot say which one cost the work"
+            )
     return errors
 
 
