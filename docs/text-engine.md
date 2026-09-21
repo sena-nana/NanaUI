@@ -1828,25 +1828,118 @@ text_prepare_nodes_considered / skipped / culled
   按祖先记一份就够，但那要先证明「下面那段链没动」。再往下就是把整帧的绘制列表保留
   下来（damage 跟踪），那比上面任何一条都大。
 
+### 收尾：缺陷、两条策略、三类门禁（2026-09-21）
+
+对着 issue 的验收逐条过了一遍，又请独立的审查过了一遍改动，下面这些是过的时候发现的。
+每一条都有测试钉着，并且都做过故障注入——把修复撤掉，对应的测试会红。
+
+**缺陷**
+
+- **atlas 放不下的字形被永久丢掉。** `build_entry` 遇到 `atlas.insert` 失败就
+  `continue`，entry 却当作完整的保留下来；此后段落什么都没变，稳态帧就一直缺这个字。
+  现在标 `damaged`，下一帧重新解析。干净 HEAD 上
+  `an_eviction_recovers_the_entry_it_hit_without_reshaping_anything` 本来就是红的，
+  另一半原因是下一条。
+- **淘汰到无可淘汰时不再整理。** 被释放的空间可能卡在本帧字形之间错高的 shelf 上，
+  而整理只在淘汰**之前**试过一次。淘汰真的腾过地方时再整理一次；整页都是本帧字形时
+  立即放弃，不会循环。
+- **整理装不回去的字形被悄悄丢掉。** 整理按「最高的先放」重排，这个顺序并不保证
+  装得回原来那批——页面满的时候，固定种子的实验里多数情况装不回。装不下的字形过去被
+  直接释放，却不算作淘汰，placement epoch 可能不动，持有它的 entry 不会被修复，之后
+  采到分给别的字形的那块矩形。整理现在先在新的分配器上试排，**全部**装得下才提交，
+  否则 atlas 原样不动。
+- **放不下的字形分两种。** 暂时没地方的，下一帧再试（见第一条）；比整页还大的
+  （超过 1024 px 的展示字、emoji），下一帧也不会有地方——过去每帧都为它重建整个段落，
+  现在不再重试。
+- **整理搬动了同一次构建里已经写好的实例。** entry 的 atlas epoch 过去在构建**之后**
+  读，构建中途的一次整理搬走的矩形因此被标成「当前」，没人修复，采到别的字形。改成
+  构建前读。`flush_runs` 末尾加了只在测试里跑的审计：本帧画到的每个实例矩形必须等于
+  它的句柄现在指向的矩形——所有画字的测试都顺带测了这条失效规则。
+- **重建时还错了 atlas 引用计数。** `begin_build` 释放的是**新**字形数个旧句柄，段落
+  变短就漏还；关掉窗口时它的 entry 的引用则一个都不还。两处都修了（后者见多窗口）。
+- **小数滚动时文字偶尔上跳一像素。** 行框顶边对齐到整像素之后，又经逻辑坐标、平移、
+  设备尺度往返一趟，回来常常是 1.9999999；`floor` 之后原点少一、相位变成 0.9999999。
+  现在对齐出来的整像素直接作 paint 原点。12 个标签按 0.37 px 一步滚 23 帧：重建
+  16 → 0。
+- **整像素的水平滚动也在重建。** 相位过去取 `(x + e) × scale` 的小数部分；`e` 按整像素
+  变，`x` 是 flex 留下的小数，两者相加的舍入每个滚动位置都不一样，相位的最后一位随之
+  变，于是每个标签重解析。现在相位只取段落自己的位置加上平移的**小数部分**，整像素
+  部分另加。12 个标签按 7 px 一步横滚 39 帧：多余的重建 5 → 0。
+
+**余量与内存**
+
+- `capacity_for` 留的 1/8 余量过去从来没用上：`begin_build` 要求容量**精确相等**才留
+  块。现在容量取尺寸档（每倍四档），放得下就留；长大过的块只有超过需要两倍**且**空出
+  64 个槽以上才缩——一个长度来回变的单元格停在它需要过的最大档，因为搬一次家不只是
+  它自己的字节：它落到 arena 别处，draw 被拆开，拆够了就整 arena 重排。
+- CPU slab 的空洞过半时整理；arena 在重排时只用到四分之一就缩，GPU 缓冲随之双向替换
+  （缩只发生在重排里，而重排本来就重写每一块，替换不用搬旧字节）。
+
+**场景缩放是自己的策略**（§7）。DPI 决定栅格尺寸；场景变换过去一律画 DPI 尺寸的位图
+再拉伸，`scale(2)` 下的字永远是糊的。现在放大按半个八度一档（1、√2、2、2√2、4），
+档位记在 entry 上，越过两档中点再多四分之一档才换；只放大不缩小，旋转也不算。所以：
+按下、淡入缩放这类 0.9–1.0 的动画一个字形都不重栅格化；一次 1× → 2× 的缩放动画
+只在经过的两档各重栅格化一次；贴着档位边界抖动二十帧零重建；`scale(2)` 下 16 px 的
+字与直立 32 px 的字像素一致。档位的 em 不超过 256 raster px。
+
+**进出恒等变换不再整片重建。** 平移文字把行框对齐到设备像素，投影文字（旋转、缩放、
+按下）过去不对齐，于是容器开始或停止转动的那一帧两条路径算出不同的相位，下面每个标签
+重解析一遍，按下的第一帧标签还会跳一个亚像素。投影路径现在在自己的栅格空间里做同一个
+对齐，恒等时两者相位相同，切换只改 run 行的 flag。一千个标签、每三帧经过一次 0° 的
+旋转：每帧重建 90.5 → 0。
+
+成立条件是容器在恒等那一刻的平移落在整像素上（绕任意原点的旋转在 0° 时平移是 0，
+整像素滚动过的容器也满足）。平移带小数的容器开始或停止变换时，它下面的标签仍会重解析
+一次，并挪动那一点小数——投影路径的相位不能跟着平移走，否则绕中心旋转时平移每帧都变，
+就成了每帧重建。
+
+**整像素滚动只改一行。** 平移 run 的原点过去是屏幕上的整像素位置，滚一像素屏上每个
+标签的 run 行都要重写。现在平移的整像素部分放在 presentation 行（同一个滚动容器下的
+标签共用），run 行存相对它的原点，CPU 与着色器读同一个 `whole_translation`。
+一万个标签的 `table-scroll`：每帧 479 KB → 96 B。
+
+**多窗口的计数看得见了。** 重建、上传字节、entry 数这一半计数按 render target 存，
+而 `text_glyph_counters()` 过去只读正在画的那一个——`paint_target` 画完就把窗口状态
+收起来，第二个窗口做了什么从外面一个数都看不到。现在按所有活着的 target 加上已关闭的
+求和；关窗口时它的 entry 逐个还回 atlas 引用，总数不倒退。
+
+收尾这一轮的全矩阵（14 种 workload × 1 / 100 / 1k / 10k × 60 / 120 / 240）、四道门禁
+的真机报告和前后 A/B 在
+[performance-data/text-retained-2026-09-21](performance-data/text-retained-2026-09-21/)。
+A/B 的 14 个格子都在 −11% 到 +1.7% 之间；结构性的变化在计数里：一万标签整像素滚动
+的表格每帧 run/presentation 上传 479 KB → 96 B，两个窗口共享 Device 时第二个窗口
+一个字形都不重新栅格化，1% 的行持续换新汉字把 atlas 压满时其余 9 901 个标签仍由
+entry 回答、陈旧句柄 0。
+
 ### 怎么跑，怎么判
 
 ```bash
 cargo run --release --locked -p nana-ui --features gpu \
     --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 
-# #8 门禁那一行：一千个标签，其中一个每帧换文本
-python3 perf/runners/nana/run.py --scenario gpu-scene-text-retained \
-    --output target/performance/issue98/nana-text-retained.json
+# #8 的三类文本门禁
+for id in gpu-scene-text-retained gpu-scene-text-paint-color \
+          gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform; do
+  python3 perf/runners/nana/run.py --scenario "$id" --output "target/performance/issue98/$id.json"
+done
 python3 perf/contract.py --self-test
 ```
 
-`perf/scenarios/gpu-scene-text-retained.json` 的 `params.text_ticker` 是这条门禁能成立的
-前提：不换文本的话 painter 直接复用上一帧的批次，那一帧什么都没做，counter 全是 0，
-门禁也就永远不会红。extractor 会核对报告里回显的 `text_ticker`，跑了不动的场景不算数。
+| 门禁 | 每帧动的是什么 | 判据 |
+| --- | --- | --- |
+| `gpu-scene-text-retained` | 一千个标签里一个换文本 | `text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900` |
+| `gpu-scene-text-paint-color` | 每个标签换前景色 | 塑形、排版（Runtime 与画笔两侧）、栅格化、atlas 上传、instance 重建与上传全为 0；`skipped ≥ 900` |
+| `gpu-scene-text-compositor-opacity` | 容器淡入淡出 | 同上 |
+| `gpu-scene-text-compositor-transform` | 容器在 −1.5° / 0° / +1.5° 间转 | 同上，instance 上传除外（每三帧经过一次恒等） |
 
-五条判据各自独立成立（`retained_text_tests.py` 逐条打脸验证）：
-`text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、
-`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900`。
+场景必须真的在动：`text_ticker` 或 `text_animation` 二选一，extractor 核对报告里回显的
+值，跑了不动的场景不算数——不动的话 painter 直接复用上一帧的批次，counter 全是 0，
+门禁永远不会红。每条判据单独都能打红（`retained_text_tests.py` 按 invariant 逐条生成
+「打爆」的值验证）。
+
+ticker 的文字是定宽的（`tick 0007`）。`tick 9 → tick 10` 会把同一行后面的二十来个标签
+挪一个数字宽，它们的亚像素相位真的变了，那一帧就要重建它们——这是重排的成本，不是
+保留期的，但采样窗口碰没碰上它过去决定了门禁红不红（真机 2.6 > 1）。
 
 ### 与 #97 的像素差
 
@@ -1868,10 +1961,11 @@ python3 perf/contract.py --self-test
 
 | 项 | 状态 |
 | --- | --- |
-| 亚像素移动的零重建 | 移动不到整像素时字形的栅格相位真的变了，位图就是不一样的。要零重建只能量化相位，那会改现有渲染，这一期没有理由改 |
+| 水平方向亚像素移动的零重建 | 竖直方向已经零重建（行框顶边对齐整像素，见「收尾」）。水平方向移动不到整像素时字形的栅格相位真的变了，位图就是不一样的；要零重建只能量化相位或把滚动吸附到整像素，前者会改现有渲染，后者该由滚动容器决定，不该由画笔替它决定。触控板横向滚动因此每帧重解析被滚动的标签（不栅格化，raster cache 里有各个亚像素档） |
+| 随机长度的 churn 仍会整 arena 重排 | 块搬家会拆开 draw，拆够预算（每 1024 个槽一次）就整 arena 重排，重写每一块。这是「多一次 draw」与「重写 1024 个槽」之间有意的成本平衡；长度来回变的单元格已经停在最大档不再搬，剩下的是第一次长大。要彻底消掉它得让 draw 不依赖存储顺序（按 draw 顺序的索引表），那是另一个设计 |
+| run 表不缩 | 每个 entry 一个固定 run 行（48 B），槽号只增不减，一万个标签的峰值是 480 KB。缩它要改写 instance 里的行号，收益不值 |
 | 行级裁剪 | entry 与视口无关，所以一段超长不换行的文字现在把整段 instance 都交给 scissor 去裁。段落级的裁剪在 `prepare` 里按 ink 做 |
-| 逻辑 layout 与 raster scale 解耦 | 仍是 #99。DPI 变化换 shape key，也就换 entry |
-| 每节点的固定开销 | 一万个文本节点的帧里 6.75 ms 是 painter 自己的逐节点循环（见上表），与文本无关，quad / icon 同样付。文本自己剩 2.0 ms，其中 0.37 ms 是塑形键哈希——#99 把 `nana-text` 的 layout 句柄接上来之后，那一项可以换成一次代际比较 |
+| 每节点的固定开销 | 一万个文本节点的帧里 painter 自己的逐节点循环与文本无关，quad / icon 同样付，见上文各条 |
 
 ## #33 迁移基准
 

@@ -1,0 +1,870 @@
+{
+  "static@1000": {
+    "before_min_ms": 0.14912499999999998,
+    "after_min_ms": 0.14479200000000003,
+    "ratio": 0.9709438390611906,
+    "samples": {
+      "before": [
+        0.1505,
+        0.14912499999999998,
+        0.15083199999999997,
+        0.15083400000000002,
+        0.152042
+      ],
+      "after": [
+        0.15204099999999998,
+        0.14479200000000003,
+        0.151374,
+        0.148833,
+        0.150918
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 192.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      }
+    }
+  },
+  "static-unique@1000": {
+    "before_min_ms": 0.150332,
+    "after_min_ms": 0.148708,
+    "ratio": 0.9891972434345316,
+    "samples": {
+      "before": [
+        0.15087499999999998,
+        0.150417,
+        0.1515,
+        0.150332,
+        0.152374
+      ],
+      "after": [
+        0.15062599999999998,
+        0.15245799999999998,
+        0.14924900000000002,
+        0.150916,
+        0.148708
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 192.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      }
+    }
+  },
+  "color@1000": {
+    "before_min_ms": 0.855167,
+    "after_min_ms": 0.864293,
+    "ratio": 1.0106715998161762,
+    "samples": {
+      "before": [
+        0.8600409999999999,
+        0.879791,
+        0.855167,
+        0.8658759999999999,
+        0.8603750000000001
+      ],
+      "after": [
+        0.9418759999999999,
+        0.9076659999999999,
+        0.864293,
+        0.864666,
+        0.889417
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 48000.0,
+        "text_retained_layouts_drawn": 1000.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 48000.0,
+        "text_retained_layouts_drawn": 1000.0
+      }
+    }
+  },
+  "opacity@1000": {
+    "before_min_ms": 0.279333,
+    "after_min_ms": 0.274,
+    "ratio": 0.9809080917757659,
+    "samples": {
+      "before": [
+        0.283084,
+        0.28570900000000005,
+        0.279333,
+        0.283958,
+        0.28099999999999997
+      ],
+      "after": [
+        0.279917,
+        0.274,
+        0.274917,
+        0.28429099999999996,
+        0.277042
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 1001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "transform@1000": {
+    "before_min_ms": 0.657583,
+    "after_min_ms": 0.6688350000000001,
+    "ratio": 1.017111147946343,
+    "samples": {
+      "before": [
+        0.670834,
+        0.657583,
+        0.668959,
+        0.678708,
+        0.694875
+      ],
+      "after": [
+        0.6688350000000001,
+        0.695834,
+        0.7021670000000001,
+        0.6792499999999999,
+        0.702624
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 51213.6,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 73.65,
+        "text_prepare_nodes_skipped": 927.35,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 51990.8,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 73.65,
+        "text_prepare_nodes_skipped": 927.35,
+        "text_presentation_upload_bytes": 96.0,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "transform-panel@1000": {
+    "before_min_ms": 0.20470900000000003,
+    "after_min_ms": 0.20545800000000003,
+    "ratio": 1.0036588523220766,
+    "samples": {
+      "before": [
+        0.22133399999999998,
+        0.20858300000000002,
+        0.20966700000000002,
+        0.208666,
+        0.20470900000000003
+      ],
+      "after": [
+        0.21141700000000002,
+        0.210833,
+        0.20545800000000003,
+        0.213125,
+        0.212125
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 998.0166666666667,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 998.0166666666667,
+        "text_presentation_upload_bytes": 128.0,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "mutate-1pct@1000": {
+    "before_min_ms": 0.193667,
+    "after_min_ms": 0.19641699999999998,
+    "ratio": 1.0141996313259356,
+    "samples": {
+      "before": [
+        0.196626,
+        0.196416,
+        0.198541,
+        0.193667,
+        0.198668
+      ],
+      "after": [
+        0.19783400000000004,
+        0.19891599999999998,
+        0.19737500000000002,
+        0.199292,
+        0.19641699999999998
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.08333333333333333,
+        "glyph_resolve_requests": 72.16666666666667,
+        "glyph_upload_bytes": 7.975,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_instance_patches": 10.0,
+        "text_instance_rebuilds": 10.0,
+        "text_instance_upload_bytes": 6591.2,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 991.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 10.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 10.0,
+        "glyph_rasterized": 0.08333333333333333,
+        "glyph_resolve_requests": 72.16666666666667,
+        "glyph_upload_bytes": 7.975,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 1001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 10.0,
+        "text_instance_rebuilds": 10.0,
+        "text_instance_upload_bytes": 2400.0,
+        "text_prepare_nodes_considered": 1001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 991.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 10.0
+      }
+    }
+  },
+  "static@10000": {
+    "before_min_ms": 2.408958,
+    "after_min_ms": 2.402084,
+    "ratio": 0.997146484081499,
+    "samples": {
+      "before": [
+        2.4144159999999997,
+        2.408958,
+        2.491959,
+        2.417916,
+        2.459002
+      ],
+      "after": [
+        2.4705,
+        2.551542,
+        2.402084,
+        2.463374,
+        2.410166
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 192.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      }
+    }
+  },
+  "static-unique@10000": {
+    "before_min_ms": 2.526167,
+    "after_min_ms": 2.458959,
+    "ratio": 0.9733952664253789,
+    "samples": {
+      "before": [
+        2.5729999999999995,
+        2.677959,
+        2.6146670000000003,
+        2.5594999999999994,
+        2.526167
+      ],
+      "after": [
+        2.5899180000000004,
+        2.615751,
+        2.5370000000000004,
+        2.458959,
+        2.5488339999999994
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 144.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 192.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 1.0
+      }
+    }
+  },
+  "color@10000": {
+    "before_min_ms": 11.976417000000001,
+    "after_min_ms": 11.562498999999999,
+    "ratio": 0.9654389121554466,
+    "samples": {
+      "before": [
+        12.205876,
+        14.613374,
+        13.455083,
+        12.956124999999998,
+        11.976417000000001
+      ],
+      "after": [
+        12.330292000000002,
+        11.562498999999999,
+        15.519041,
+        13.825375999999999,
+        12.760624
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 480000.0,
+        "text_retained_layouts_drawn": 10000.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 480000.0,
+        "text_retained_layouts_drawn": 10000.0
+      }
+    }
+  },
+  "opacity@10000": {
+    "before_min_ms": 8.063791000000002,
+    "after_min_ms": 8.18571,
+    "ratio": 1.0151193154683695,
+    "samples": {
+      "before": [
+        8.292124000000001,
+        8.063791000000002,
+        8.438333,
+        8.399166999999998,
+        8.280790999999999
+      ],
+      "after": [
+        8.280707999999999,
+        8.296041,
+        8.226582,
+        8.18571,
+        8.213125
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10001.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "transform@10000": {
+    "before_min_ms": 14.766831999999999,
+    "after_min_ms": 13.148208,
+    "ratio": 0.8903878638288836,
+    "samples": {
+      "before": [
+        15.239875999999999,
+        15.263416000000001,
+        15.184874999999998,
+        14.766831999999999,
+        22.610833
+      ],
+      "after": [
+        15.301708999999999,
+        15.3995,
+        14.177125,
+        13.148208,
+        16.484751
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 565649.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 1036.975,
+        "text_prepare_nodes_skipped": 8964.025,
+        "text_presentation_upload_bytes": 86.4,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 556701.6,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 1036.975,
+        "text_prepare_nodes_skipped": 8964.025,
+        "text_presentation_upload_bytes": 118.4,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "transform-panel@10000": {
+    "before_min_ms": 4.935042,
+    "after_min_ms": 4.924291,
+    "ratio": 0.9978214977704344,
+    "samples": {
+      "before": [
+        6.171209000000001,
+        4.967459000000001,
+        4.935042,
+        5.054334,
+        4.950997999999999
+      ],
+      "after": [
+        5.077999,
+        5.157958,
+        4.924291,
+        4.925041,
+        5.065042
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 9998.016666666666,
+        "text_presentation_upload_bytes": 64.0,
+        "text_retained_layouts_drawn": 0.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.0,
+        "glyph_resolve_requests": 0.0,
+        "glyph_upload_bytes": 0.0,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 0.0,
+        "text_instance_rebuilds": 0.0,
+        "text_instance_upload_bytes": 0.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 2.9833333333333334,
+        "text_prepare_nodes_skipped": 9998.016666666666,
+        "text_presentation_upload_bytes": 128.0,
+        "text_retained_layouts_drawn": 0.0
+      }
+    }
+  },
+  "mutate-1pct@10000": {
+    "before_min_ms": 3.155208,
+    "after_min_ms": 2.9681680000000004,
+    "ratio": 0.9407202314395756,
+    "samples": {
+      "before": [
+        3.2174999999999994,
+        3.479458,
+        3.2495429999999996,
+        3.222542,
+        3.155208
+      ],
+      "after": [
+        2.9681680000000004,
+        3.187334,
+        3.367042,
+        3.2390010000000005,
+        3.1047910000000005
+      ]
+    },
+    "counters": {
+      "before": {
+        "glyph_rasterized": 0.08333333333333333,
+        "glyph_resolve_requests": 721.6666666666666,
+        "glyph_upload_bytes": 7.975,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_instance_patches": 100.0,
+        "text_instance_rebuilds": 100.0,
+        "text_instance_upload_bytes": 65902.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 9901.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 100.0
+      },
+      "after": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 100.0,
+        "glyph_rasterized": 0.08333333333333333,
+        "glyph_resolve_requests": 721.6666666666666,
+        "glyph_upload_bytes": 7.975,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_instance_patches": 100.0,
+        "text_instance_rebuilds": 100.0,
+        "text_instance_upload_bytes": 24000.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 9901.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 100.0
+      }
+    }
+  }
+}
