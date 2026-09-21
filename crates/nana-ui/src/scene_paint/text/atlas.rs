@@ -116,6 +116,16 @@ impl GlyphAtlasEntryId {
         index: u32::MAX,
         generation: 0,
     };
+
+    /// A handle to slot `index` at its first generation, for tests that
+    /// exercise the bookkeeping around handles without an atlas behind them.
+    #[cfg(test)]
+    pub(super) const fn for_test(index: u32) -> Self {
+        Self {
+            index,
+            generation: 1,
+        }
+    }
 }
 
 /// One glyph's placement. Read through [`GlyphAtlasManager::entry`].
@@ -511,6 +521,9 @@ impl GlyphAtlasManager {
         if cell[0] > limit || cell[1] > limit {
             return None;
         }
+        // Whether an eviction freed space since the last repack, so running
+        // out of victims can still be answered by one more repack.
+        let mut evicted = false;
         loop {
             if let Some(placed) = self.try_pages(kind, cell) {
                 return Some(placed);
@@ -540,9 +553,23 @@ impl GlyphAtlasManager {
                     continue;
                 }
             }
-            if !self.evict_coldest(kind) {
-                return None;
+            if self.evict_coldest(kind) {
+                evicted = true;
+                continue;
             }
+            // Every cold glyph is gone and this one still does not fit. The
+            // space they freed can be stranded between the frame's own
+            // glyphs on shelves of the wrong height — the page may be half
+            // empty — and the repack above ran before any of it was freed.
+            // One more, only when eviction really changed the page, so a page
+            // that is genuinely full of this frame's text gives up at once.
+            if evicted {
+                evicted = false;
+                if self.compact(kind, raster, uploads) {
+                    continue;
+                }
+            }
+            return None;
         }
     }
 

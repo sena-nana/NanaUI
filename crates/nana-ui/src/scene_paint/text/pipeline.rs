@@ -344,7 +344,12 @@ impl TextGpu {
             }
         }
         let mut bytes = TextUploadBytes::default();
-        if frame.arena_capacity > target.instance_capacity as u32 {
+        // Both ways: the arena only changes capacity inside a repack, which
+        // writes every block it places, so the replacement never has to
+        // carry bytes over from the buffer it replaces. Shrinking is what
+        // keeps a list that was once ten thousand rows long from holding
+        // that much GPU memory for the rest of the session.
+        if frame.arena_capacity != 0 && frame.arena_capacity != target.instance_capacity as u32 {
             target.instance_capacity = frame.arena_capacity as usize;
             target.instances = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.text.instances"),
@@ -593,6 +598,16 @@ impl GlyphInstance {
             uv: (origin[0] & 0xffff) | ((origin[1] & 0xffff) << 16),
             ..self
         }
+    }
+
+    /// The atlas rectangle this glyph samples, or `None` for a glyph that
+    /// covers nothing.
+    #[cfg(test)]
+    pub(super) fn placement(&self) -> Option<([u32; 2], [u32; 2])> {
+        (self.dim != 0).then_some((
+            [self.uv & 0xffff, self.uv >> 16],
+            [self.dim & 0xffff, self.dim >> 16],
+        ))
     }
 
     /// Keep the slot but cover nothing: the placement this glyph named is gone

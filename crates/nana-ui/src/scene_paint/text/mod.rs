@@ -73,9 +73,6 @@ const PIN_FRAMES: u64 = 2;
 /// The front is the oldest; if the oldest this many are all still on screen,
 /// so is everything behind them.
 const EVICT_PROBES: usize = 64;
-/// Frames between retirement sweeps, and how long an entry survives without
-/// being drawn. A tab switch that flips back and forth must not pay for
-/// either direction.
 /// What a caller passes when it cannot say whether the primitive changed.
 ///
 /// Such a frame assembles the shape key and hashes the paragraph, which is
@@ -87,6 +84,9 @@ pub(super) const UNTRACKED_REVISION: u64 = u64::MAX;
 /// perspective, the fragment clip and the device scale.
 type PresentationInputs = ([f32; 6], [f32; 2], clip::FragmentClip, u32);
 
+/// Frames between retirement sweeps, and how long an entry survives without
+/// being drawn. A tab switch that flips back and forth must not pay for
+/// either direction.
 const RETIRE_INTERVAL: u64 = 64;
 const RETIRE_AFTER_FRAMES: u64 = 240;
 
@@ -1258,14 +1258,6 @@ impl TextPipeline {
         index
     }
 
-    /// Turn one shaped paragraph into placed, atlas-resident glyphs, and keep
-    /// them.
-    ///
-    /// This is the only function that knows how the paragraph was laid out.
-    /// Everything it stores is in the renderer's own terms: an instance per
-    /// glyph in the run's own space, and the atlas handle it was read from so
-    /// a later relocation can be repaired instead of re-resolved.
-    #[allow(clippy::too_many_arguments)]
     /// Lay one paragraph out through the process-wide `nana-text` engine.
     ///
     /// Everything is passed in **logical** px and the layout scale is left at
@@ -1353,6 +1345,13 @@ impl TextPipeline {
         engine.layout(kind, &source, &style, &constraints, &mut counters)
     }
 
+    /// Turn one shaped paragraph into placed, atlas-resident glyphs, and keep
+    /// them.
+    ///
+    /// This is the only function that knows how the paragraph was laid out.
+    /// Everything it stores is in the renderer's own terms: an instance per
+    /// glyph in the run's own space, and the atlas handle it was read from so
+    /// a later relocation can be repaired instead of re-resolved.
     #[allow(clippy::too_many_arguments)]
     fn build_entry(
         &mut self,
@@ -1445,6 +1444,21 @@ impl TextPipeline {
             ..
         } = self;
         let pages_before = atlas.page_count();
+        // Read before the first placement, not after the last. Faulting a
+        // glyph in can repack the atlas, and a repack moves glyphs this same
+        // build already wrote instances for; stamping the entry with the
+        // epoch from *after* that would declare those rectangles current and
+        // nothing would ever repair them. Stamped with this one, the flush
+        // re-reads them through the handles.
+        let epoch = {
+            let counters = atlas.counters();
+            counters.evictions.wrapping_add(counters.relocations)
+        };
+        // A glyph the atlas could not place this frame. The entry draws what
+        // it has and asks again next frame, when the frame that crowded it
+        // out may be gone; without this it would be missing for good, since
+        // nothing else about the paragraph would change.
+        let mut unplaced = false;
         let inherited = pipeline::pack_srgb(default_color);
         let placeholders = [
             atlas.placeholder_page(AtlasPageKind::Mask),
@@ -1481,7 +1495,10 @@ impl TextPipeline {
                         };
                         match atlas.insert(device, raster_key, &image, raster, uploads) {
                             Some(placed) => placed,
-                            None => continue,
+                            None => {
+                                unplaced = true;
+                                continue;
+                            }
                         }
                     }
                 };
@@ -1511,8 +1528,6 @@ impl TextPipeline {
             }
         }
         target.frame_gpu_allocations += atlas.page_count() - pages_before;
-        let counters = atlas.counters();
-        let epoch = counters.evictions.wrapping_add(counters.relocations);
         target.entries.finish_build(id, placed);
         let fonts = self.font_generation;
         let entry = self.target.entries.get_mut(id).expect("just built");
@@ -1525,6 +1540,7 @@ impl TextPipeline {
         entry.atlas_epoch = epoch;
         entry.segments = segments;
         entry.run = NO_RUN;
+        entry.damaged = unplaced;
         if placed == 0 {
             return None;
         }
@@ -1730,6 +1746,43 @@ impl TextPipeline {
         }
         target.arena.note_breaks(breaks);
         target.flushed = target.live_runs;
+        #[cfg(test)]
+        self.audit_placements();
+    }
+
+    /// Every rectangle a drawn entry samples is the one its handle names now.
+    ///
+    /// Recomputed from the atlas rather than trusted from the epoch stamps,
+    /// so every test that draws text also tests the rule that decides when a
+    /// retained instance has to be repaired: an entry stamped current while
+    /// holding a rectangle the atlas has since moved would sample some other
+    /// glyph, and no counter would say so.
+    #[cfg(test)]
+    fn audit_placements(&self) {
+        let target = &self.target;
+        for run in &target.runs[..target.live_runs] {
+            let Some(entry) = target.entries.get(run.entry) else {
+                continue;
+            };
+            for (index, (instance, handle)) in target.entries.live_glyphs(entry).enumerate() {
+                let Some(drawn) = instance.placement() else {
+                    continue;
+                };
+                let current = self
+                    .atlas
+                    .entry(handle)
+                    .map(|placed| (placed.origin, placed.size));
+                assert_eq!(
+                    Some(drawn),
+                    current,
+                    "glyph {index} of entry {} samples a rectangle its handle no \
+                     longer names (entry epoch {}, atlas epoch {})",
+                    run.entry,
+                    entry.atlas_epoch,
+                    self.placement_epoch(),
+                );
+            }
+        }
     }
 
     /// Visit every run of every open command, in draw order.
@@ -1980,11 +2033,6 @@ impl SpanColors {
     }
 }
 
-/// The widest line and the summed line advances, in physical px.
-///
-/// Read off the line boxes rather than the layout's bounding box: `bounds` is
-/// the union of the line rectangles, which an aligned or RTL line offsets
-/// inside the box, and the caller wants the *content* extent.
 /// Resolves a vertical paragraph's glyphs onto the page (#59).
 ///
 /// Columns are placed against the paragraph's own column stack, not the box:
@@ -3774,8 +3822,8 @@ mod tests {
             ("New content", 1, "the same glyph count"),
             (
                 "New contents",
-                2,
-                "one more glyph, which may step its size class",
+                1,
+                "one more glyph, which the block's slack absorbs",
             ),
         ] {
             let warm = pipeline.glyph_counters();
@@ -3894,6 +3942,73 @@ mod tests {
         assert!(
             after.text_instance_rebuilds > warm.text_instance_rebuilds,
             "the entry the eviction hit is resolved again, and only that one"
+        );
+    }
+
+    #[test]
+    fn a_glyph_the_atlas_had_no_room_for_is_placed_once_there_is() {
+        let (device, queue) = test_device();
+        // Either paragraph alone fills a bit over half the page, so after the
+        // other one is evicted there is room to spare even for a packer that
+        // strands some of it.
+        let limits = GlyphAtlasLimits {
+            page_edge: 96,
+            byte_budget: 96 * 96 + 8,
+        };
+        const LOWER: &str = "abcdefghijklmnopqrstuvwxy";
+        const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXY";
+        let lower = EntryKey {
+            node: 1,
+            slot: 0,
+            pass: 0,
+        };
+        let upper = EntryKey {
+            node: 2,
+            slot: 0,
+            pass: 0,
+        };
+        let mut alone =
+            TextPipeline::with_atlas_limits(&device, wgpu::TextureFormat::Rgba8Unorm, limits);
+        let whole = ink_aabb(
+            &paint_labels(&device, &queue, &mut alone, &[(UPPER, upper, 0.0)]),
+            256,
+            64,
+        )
+        .expect("the paragraph paints on its own");
+        let mut pipeline =
+            TextPipeline::with_atlas_limits(&device, wgpu::TextureFormat::Rgba8Unorm, limits);
+        // Both at once: the page holds either paragraph and not the two, and
+        // every glyph in it is this frame's, so nothing can be evicted to make
+        // room. The second paragraph comes up short.
+        let crowded = paint_labels(
+            &device,
+            &queue,
+            &mut pipeline,
+            &[(LOWER, lower, 0.0), (UPPER, upper, 32.0)],
+        );
+        let short = ink_aabb(&crowded[256 * 4 * 32..], 256, 32);
+        assert_ne!(
+            short.map(|(x, _, right, _)| (x, right)),
+            Some((whole.0, whole.2)),
+            "the page must really be too small for both for this to test anything"
+        );
+        let (_, warm_misses, _) = pipeline.shape_cache_stats();
+        // The crowd is gone. Nothing about the paragraph changed, so only the
+        // entry remembering that it is incomplete can bring the rest back.
+        let recovered = paint_labels(&device, &queue, &mut pipeline, &[(UPPER, upper, 0.0)]);
+        assert_eq!(
+            ink_aabb(&recovered, 256, 64),
+            Some(whole),
+            "a paragraph the atlas could not finish must be finished once it can"
+        );
+        let (_, misses, _) = pipeline.shape_cache_stats();
+        assert_eq!(misses, warm_misses, "without laying anything out again");
+        let steady = pipeline.glyph_counters();
+        paint_labels(&device, &queue, &mut pipeline, &[(UPPER, upper, 0.0)]);
+        assert_eq!(
+            pipeline.glyph_counters().text_instance_rebuilds,
+            steady.text_instance_rebuilds,
+            "and once whole it is retained like any other"
         );
     }
 

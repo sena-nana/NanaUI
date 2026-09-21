@@ -154,13 +154,32 @@ impl TextGpuEntry {
     }
 }
 
-/// Slack an entry's block is padded to.
+/// Slots a block of `glyphs` is given: an eighth of slack, at least four,
+/// rounded up to a size class.
 ///
-/// An eighth, at least four slots. Typing a character into a field, a counter
-/// ticking from 9 to 10, a label gaining a word: most of them stay inside the
-/// block they already own, so the only bytes that move are that paragraph's.
+/// The slack is what lets typing a character into a field, a counter ticking
+/// from 9 to 10 or a label gaining a word stay inside the block it already
+/// owns (see [`EntryStore::begin_build`]), so the only bytes that move are
+/// that paragraph's. The classes — four per doubling — are what let a block
+/// one paragraph gave back be taken by the next one of about that length:
+/// both free lists are keyed by exact capacity, and without classes a list
+/// whose labels vary in length would only ever grow.
 pub(super) fn capacity_for(glyphs: u32) -> u32 {
-    glyphs + (glyphs / 8).max(4)
+    let need = glyphs.saturating_add((glyphs / 8).max(4));
+    if need <= 8 {
+        return 8;
+    }
+    let step = (1u32 << (31 - need.leading_zeros())) / 4;
+    need.div_ceil(step).saturating_mul(step)
+}
+
+/// Whether a block of `capacity` slots may keep holding `glyphs`.
+///
+/// Growing within it is the point of the slack. Shrinking is allowed down to
+/// half, so a paragraph that flickers between two lengths does not move every
+/// time, but one that lost most of its text gives the space back.
+fn block_fits(capacity: u32, glyphs: u32) -> bool {
+    glyphs <= capacity && capacity <= capacity_for(glyphs).saturating_mul(2)
 }
 
 /// The entries, their instances and the atlas handles behind them.
@@ -213,6 +232,19 @@ impl EntryStore {
             reused: self.reused,
             glyphs: self.live_glyphs,
         }
+    }
+
+    /// Each live glyph's instance with the atlas handle it was read through.
+    #[cfg(test)]
+    pub(super) fn live_glyphs(
+        &self,
+        entry: &TextGpuEntry,
+    ) -> impl Iterator<Item = (&GlyphInstance, GlyphAtlasEntryId)> {
+        let start = entry.block as usize;
+        let end = start + entry.glyphs as usize;
+        self.instances[start..end]
+            .iter()
+            .zip(self.handles[start..end].iter().copied())
     }
 
     /// The whole block, slack included: what a draw that spans it reads.
@@ -291,11 +323,16 @@ impl EntryStore {
                     .expect("an indexed entry is live");
                 self.live_glyphs -= u64::from(entry.glyphs);
                 let start = entry.block as usize;
-                let resize = (entry.capacity != capacity).then_some((entry.block, entry.capacity));
+                // The claims the *old* block made, which is its glyph count,
+                // not the new one: a paragraph rebuilt shorter would otherwise
+                // keep claiming the glyphs it dropped for as long as it lives.
+                let held = entry.glyphs.min(entry.capacity) as usize;
+                let resize =
+                    (!block_fits(entry.capacity, glyphs)).then_some((entry.block, entry.capacity));
                 entry.glyphs = glyphs;
                 entry.segments.clear();
                 entry.damaged = false;
-                for handle in &self.handles[start..start + glyphs.min(entry.capacity) as usize] {
+                for handle in &self.handles[start..start + held] {
                     release(*handle);
                 }
                 if let Some((block, released)) = resize {
@@ -436,6 +473,38 @@ impl EntryStore {
             self.vacant.push(id);
             self.destroyed += 1;
         }
+        self.compact_if_sparse();
+    }
+
+    /// Close the holes retired entries left, once they are most of the slab.
+    ///
+    /// Free blocks are only ever reused at their own size class, so a panel
+    /// of long paragraphs that closed leaves space no label will take. Without
+    /// this the slab stays at the largest amount of text the session ever
+    /// held. Only the store's own offsets move — an entry's arena placement
+    /// and its GPU bytes are untouched, because the block's contents are.
+    fn compact_if_sparse(&mut self) {
+        let free: usize = self
+            .free
+            .iter()
+            .map(|(capacity, blocks)| *capacity as usize * blocks.len())
+            .sum();
+        if self.instances.len() < MIN_COMPACT_SLOTS || free * 2 < self.instances.len() {
+            return;
+        }
+        let live = self.instances.len() - free;
+        let mut instances = Vec::with_capacity(live);
+        let mut handles = Vec::with_capacity(live);
+        for entry in self.entries.iter_mut().flatten() {
+            let start = entry.block as usize;
+            let end = start + entry.capacity as usize;
+            entry.block = instances.len() as u32;
+            instances.extend_from_slice(&self.instances[start..end]);
+            handles.extend_from_slice(&self.handles[start..end]);
+        }
+        self.instances = instances;
+        self.handles = handles;
+        self.free.clear();
     }
 
     /// Drop everything. For a font-set change, where no entry means what it
@@ -472,6 +541,10 @@ impl EntryStore {
         block
     }
 }
+
+/// Slab size below which holes are left alone: moving a few thousand
+/// instances to save a few thousand is not worth the copy.
+const MIN_COMPACT_SLOTS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct EntryCounters {
@@ -654,6 +727,12 @@ impl InstanceArena {
         self.generation = self.generation.wrapping_add(1);
         if total > self.capacity {
             self.capacity = total.next_power_of_two().max(MIN_ARENA);
+        } else if total.saturating_mul(4) < self.capacity {
+            // Every block is about to be written again anyway, so this is
+            // the one moment giving memory back costs nothing extra. A
+            // quarter, not a half, so a set that hovers around a power of two
+            // does not replace the buffer on every repack.
+            self.capacity = total.saturating_mul(2).next_power_of_two().max(MIN_ARENA);
         }
     }
 
@@ -722,5 +801,162 @@ impl RunSlots {
     /// Rows the table must hold for every live slot to be addressable.
     pub(super) fn len(&self) -> usize {
         self.next as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(node: u64) -> EntryKey {
+        EntryKey {
+            node,
+            slot: 0,
+            pass: 0,
+        }
+    }
+
+    /// Build `key` with `glyphs` live glyphs whose handles are `first..`.
+    fn build(store: &mut EntryStore, key: EntryKey, glyphs: u32, first: u32) -> Vec<u32> {
+        let mut released = Vec::new();
+        let id = store.begin_build(key, glyphs, |handle| {
+            released.push(handle);
+        });
+        for offset in 0..glyphs {
+            store.push_glyph(
+                id,
+                offset,
+                GlyphAtlasEntryId::for_test(first + offset),
+                GlyphInstance::VACANT,
+            );
+        }
+        store.finish_build(id, glyphs);
+        released
+            .into_iter()
+            .map(|handle| {
+                (0..u32::MAX)
+                    .find(|index| GlyphAtlasEntryId::for_test(*index) == handle)
+                    .expect("a test handle")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_rebuild_gives_back_every_claim_the_old_block_made() {
+        let mut store = EntryStore::default();
+        build(&mut store, key(1), 10, 100);
+        let released = build(&mut store, key(1), 3, 200);
+        assert_eq!(
+            released,
+            (100..110).collect::<Vec<_>>(),
+            "a paragraph rebuilt shorter must release all ten glyphs it held, \
+             or the atlas keeps counting claims nobody makes"
+        );
+        let released = build(&mut store, key(1), 12, 300);
+        assert_eq!(
+            released,
+            (200..203).collect::<Vec<_>>(),
+            "and rebuilt longer, only the three it held, never a vacant slot"
+        );
+    }
+
+    #[test]
+    fn a_paragraph_that_changes_length_within_its_slack_keeps_its_block() {
+        let mut store = EntryStore::default();
+        build(&mut store, key(1), 11, 0);
+        let id = store.lookup(key(1)).expect("built");
+        let (block, capacity) = {
+            let entry = store.get(id).expect("live");
+            (entry.block, entry.capacity)
+        };
+        for glyphs in [12, 10, capacity] {
+            build(&mut store, key(1), glyphs, 0);
+            let entry = store.get(id).expect("live");
+            assert_eq!(
+                (entry.block, entry.capacity),
+                (block, capacity),
+                "{glyphs} glyphs fit the block of {capacity} a paragraph of 11 was given"
+            );
+        }
+        build(&mut store, key(1), capacity + 1, 0);
+        assert_ne!(
+            store.get(id).expect("live").capacity,
+            capacity,
+            "outgrowing it moves the paragraph to a bigger class"
+        );
+        build(&mut store, key(1), 1, 0);
+        assert_eq!(
+            store.get(id).expect("live").capacity,
+            capacity_for(1),
+            "and losing most of its text gives the space back"
+        );
+    }
+
+    #[test]
+    fn size_classes_are_monotonic_and_leave_the_slack_they_promise() {
+        let mut previous = 0;
+        for glyphs in 0..5000u32 {
+            let capacity = capacity_for(glyphs);
+            assert!(capacity >= glyphs + (glyphs / 8).max(4), "{glyphs}");
+            assert!(capacity >= previous, "{glyphs}");
+            // A class step is a quarter of the power of two below what was
+            // asked for, so rounding up costs at most a quarter again.
+            let need = glyphs + (glyphs / 8).max(4);
+            assert!(
+                capacity <= (need + need / 4).max(8),
+                "{glyphs} -> {capacity}"
+            );
+            previous = capacity;
+        }
+    }
+
+    #[test]
+    fn retiring_most_of_the_slab_compacts_it_without_losing_a_survivor() {
+        let mut store = EntryStore::default();
+        for node in 0..400u64 {
+            build(&mut store, key(node), 20, node as u32 * 100);
+            let id = store.lookup(key(node)).expect("built");
+            store.get_mut(id).expect("live").last_used = if node % 10 == 0 { 9 } else { 1 };
+        }
+        let before = store.instances.len();
+        store.retire(5, |_| {}, |_| {}, |_, _, _| {});
+        assert!(
+            store.instances.len() * 4 < before,
+            "nine in ten retired, so the slab must shrink: {before} -> {}",
+            store.instances.len()
+        );
+        for node in (0..400u64).step_by(10) {
+            let id = store.lookup(key(node)).expect("a survivor");
+            let entry = store.get(id).expect("live");
+            let handles = store
+                .live_glyphs(entry)
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>();
+            let expected = (0..20)
+                .map(|offset| GlyphAtlasEntryId::for_test(node as u32 * 100 + offset))
+                .collect::<Vec<_>>();
+            assert_eq!(handles, expected, "node {node} still holds its own glyphs");
+        }
+    }
+
+    #[test]
+    fn a_repack_after_the_text_went_away_gives_the_buffer_back() {
+        let mut arena = InstanceArena::default();
+        arena.repack(40_000);
+        let peak = arena.capacity();
+        assert!(peak >= 40_000);
+        arena.repack(peak / 3);
+        assert_eq!(
+            arena.capacity(),
+            peak,
+            "a third of it is not worth a new buffer"
+        );
+        arena.repack(300);
+        assert!(
+            arena.capacity() < peak / 8,
+            "a list that closed must not keep its GPU memory: {}",
+            arena.capacity()
+        );
+        assert!(arena.capacity() >= 300);
     }
 }
