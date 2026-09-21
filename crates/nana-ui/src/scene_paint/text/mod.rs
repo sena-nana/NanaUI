@@ -1017,14 +1017,13 @@ impl TextPipeline {
         // paragraph is drawn right-aligned against its own column stack (see
         // `build_entry`), and the box adds whatever it has beyond that stack
         // on the left.
-        let mut aligned = match opentype.writing_mode {
-            nana_ui_core::WritingModeSpec::HorizontalTb => {
-                text_box_origin(bounds, vertical, laid_out_height)
-            }
-            nana_ui_core::WritingModeSpec::VerticalRl => {
-                [bounds.x + bounds.width - measured_width, bounds.y]
-            }
-            nana_ui_core::WritingModeSpec::VerticalLr => [bounds.x, bounds.y],
+        let writing = nana_ui_core::WritingContext::new(opentype.writing_mode, opentype.direction);
+        let mut aligned = if !writing.is_vertical() {
+            text_box_origin(bounds, vertical, laid_out_height)
+        } else if writing.block_reversed() {
+            [bounds.x + bounds.width - measured_width, bounds.y]
+        } else {
+            [bounds.x, bounds.y]
         };
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];

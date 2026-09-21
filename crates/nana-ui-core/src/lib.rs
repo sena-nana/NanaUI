@@ -44,6 +44,7 @@ pub mod virtual_table;
 pub mod virtual_tree;
 pub mod work;
 pub mod workspace_model;
+pub mod writing;
 
 pub use action::{
     ActionId, ActionPickerNavigation, CommandPaletteEvent, CommandPaletteItem, ContextPredicate,
@@ -173,3 +174,4 @@ pub use work::{FrameStage, GpuWorkObservation, ThemeWorkCounters, WorkCounters};
 pub use workspace_model::{
     WORKSPACE_REGION_TRANSITION_DURATION, WorkspaceModel, WorkspaceMutation,
 };
+pub use writing::{PhysicalEdge, WritingContext};

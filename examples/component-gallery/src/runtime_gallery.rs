@@ -2271,7 +2271,7 @@ fn mount_rich_text(
                     400,
                 );
                 let layout = Arc::make_mut(&mut text.style.layout);
-                layout.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
                 layout.height = Some(LengthSpec::Px(180.0));
                 text
             });
@@ -2281,7 +2281,7 @@ fn mount_rich_text(
                 let mut area = TextArea::new("竖排编辑：「光标」沿列移动。\nABC 与 123 侧卧。")
                     .height(180.0);
                 let layout = Arc::make_mut(&mut area.style.layout);
-                layout.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+                layout.writing_mode = Some(nana_ui::runtime::WritingModeSpec::VerticalRl);
                 layout.width = Some(LengthSpec::Px(160.0));
                 area
             });

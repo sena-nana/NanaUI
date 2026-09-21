@@ -78,34 +78,6 @@ impl WritingModeSpec {
     pub const fn is_vertical(self) -> bool {
         matches!(self, Self::VerticalRl | Self::VerticalLr)
     }
-
-    /// Block-start is the physical right edge (`vertical-rl`).
-    pub const fn block_start_is_right(self) -> bool {
-        matches!(self, Self::VerticalRl)
-    }
-
-    /// Physical flex direction of the inline axis (`flex-direction: row`).
-    pub const fn inline_flex_direction(self) -> FlexDirection {
-        if self.is_vertical() {
-            FlexDirection::Column
-        } else {
-            FlexDirection::Row
-        }
-    }
-
-    /// Map CSS `flex-direction` (row = inline, column = block) onto physical axes.
-    pub const fn physical_flex_direction(self, css: FlexDirection) -> FlexDirection {
-        match css {
-            FlexDirection::Row => self.inline_flex_direction(),
-            FlexDirection::Column => {
-                if self.is_vertical() {
-                    FlexDirection::Row
-                } else {
-                    FlexDirection::Column
-                }
-            }
-        }
-    }
 }
 
 /// CSS 逻辑边长手（`*-inline-start` 等）。按 writing-mode + direction 映射到 physical。
@@ -4310,19 +4282,16 @@ impl LayoutStyle {
         self.writing_mode.unwrap_or(WritingModeSpec::HorizontalTb)
     }
 
-    /// Inline-start is the physical left edge in `horizontal-tb` + LTR.
-    /// Vertical writing-mode uses [`Self::bake_logical_edges`] instead.
-    pub fn inline_start_is_left(&self) -> bool {
-        self.resolved_writing_mode().is_horizontal() && !self.resolved_direction().is_rtl()
+    /// The writing mode and direction this box lays out in: where its
+    /// inline and block axes run and start. See [`crate::WritingContext`].
+    pub fn writing_context(&self) -> crate::WritingContext {
+        crate::WritingContext::new(self.resolved_writing_mode(), self.resolved_direction())
     }
 
     /// Bake logical padding/margin/inset onto physical fields for the current
     /// writing-mode + direction.
     pub fn bake_logical_edges(&mut self) {
-        let map = logical_physical_map(
-            self.resolved_writing_mode(),
-            !self.resolved_direction().is_rtl(),
-        );
+        let map = self.writing_context();
         bake_logical_insets(
             &self.padding_logical,
             map,
@@ -4351,10 +4320,7 @@ impl LayoutStyle {
     }
 
     fn unbake_logical_edges(&mut self) {
-        let map = logical_physical_map(
-            self.resolved_writing_mode(),
-            !self.resolved_direction().is_rtl(),
-        );
+        let map = self.writing_context();
         unbake_logical_insets(
             &self.padding_logical,
             map,
@@ -4848,134 +4814,62 @@ fn resolve_max_size(
     }
 }
 
-#[derive(Clone, Copy)]
-enum PhysicalEdge {
-    Top,
-    Right,
-    Bottom,
-    Left,
-}
-
-#[derive(Clone, Copy)]
-struct LogicalPhysicalMap {
-    inline_start: PhysicalEdge,
-    inline_end: PhysicalEdge,
-    block_start: PhysicalEdge,
-    block_end: PhysicalEdge,
-}
-
-fn logical_physical_map(writing_mode: WritingModeSpec, ltr: bool) -> LogicalPhysicalMap {
-    match writing_mode {
-        WritingModeSpec::HorizontalTb => {
-            if ltr {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Left,
-                    inline_end: PhysicalEdge::Right,
-                    block_start: PhysicalEdge::Top,
-                    block_end: PhysicalEdge::Bottom,
-                }
-            } else {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Right,
-                    inline_end: PhysicalEdge::Left,
-                    block_start: PhysicalEdge::Top,
-                    block_end: PhysicalEdge::Bottom,
-                }
-            }
-        }
-        WritingModeSpec::VerticalRl => {
-            if ltr {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Top,
-                    inline_end: PhysicalEdge::Bottom,
-                    block_start: PhysicalEdge::Right,
-                    block_end: PhysicalEdge::Left,
-                }
-            } else {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Bottom,
-                    inline_end: PhysicalEdge::Top,
-                    block_start: PhysicalEdge::Right,
-                    block_end: PhysicalEdge::Left,
-                }
-            }
-        }
-        WritingModeSpec::VerticalLr => {
-            if ltr {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Top,
-                    inline_end: PhysicalEdge::Bottom,
-                    block_start: PhysicalEdge::Left,
-                    block_end: PhysicalEdge::Right,
-                }
-            } else {
-                LogicalPhysicalMap {
-                    inline_start: PhysicalEdge::Bottom,
-                    inline_end: PhysicalEdge::Top,
-                    block_start: PhysicalEdge::Left,
-                    block_end: PhysicalEdge::Right,
-                }
-            }
-        }
-    }
-}
-
 fn physical_slot<'a>(
-    edge: PhysicalEdge,
+    edge: crate::PhysicalEdge,
     top: &'a mut Option<LengthSpec>,
     right: &'a mut Option<LengthSpec>,
     bottom: &'a mut Option<LengthSpec>,
     left: &'a mut Option<LengthSpec>,
 ) -> &'a mut Option<LengthSpec> {
     match edge {
-        PhysicalEdge::Top => top,
-        PhysicalEdge::Right => right,
-        PhysicalEdge::Bottom => bottom,
-        PhysicalEdge::Left => left,
+        crate::PhysicalEdge::Top => top,
+        crate::PhysicalEdge::Right => right,
+        crate::PhysicalEdge::Bottom => bottom,
+        crate::PhysicalEdge::Left => left,
     }
 }
 
 fn bake_logical_insets(
     logical: &LogicalInsets,
-    map: LogicalPhysicalMap,
+    map: crate::WritingContext,
     top: &mut Option<LengthSpec>,
     right: &mut Option<LengthSpec>,
     bottom: &mut Option<LengthSpec>,
     left: &mut Option<LengthSpec>,
 ) {
     if let Some(value) = logical.inline_start {
-        *physical_slot(map.inline_start, top, right, bottom, left) = Some(value);
+        *physical_slot(map.inline_start(), top, right, bottom, left) = Some(value);
     }
     if let Some(value) = logical.inline_end {
-        *physical_slot(map.inline_end, top, right, bottom, left) = Some(value);
+        *physical_slot(map.inline_end(), top, right, bottom, left) = Some(value);
     }
     if let Some(value) = logical.block_start {
-        *physical_slot(map.block_start, top, right, bottom, left) = Some(value);
+        *physical_slot(map.block_start(), top, right, bottom, left) = Some(value);
     }
     if let Some(value) = logical.block_end {
-        *physical_slot(map.block_end, top, right, bottom, left) = Some(value);
+        *physical_slot(map.block_end(), top, right, bottom, left) = Some(value);
     }
 }
 
 fn unbake_logical_insets(
     logical: &LogicalInsets,
-    map: LogicalPhysicalMap,
+    map: crate::WritingContext,
     top: &mut Option<LengthSpec>,
     right: &mut Option<LengthSpec>,
     bottom: &mut Option<LengthSpec>,
     left: &mut Option<LengthSpec>,
 ) {
     if logical.inline_start.is_some() {
-        *physical_slot(map.inline_start, top, right, bottom, left) = None;
+        *physical_slot(map.inline_start(), top, right, bottom, left) = None;
     }
     if logical.inline_end.is_some() {
-        *physical_slot(map.inline_end, top, right, bottom, left) = None;
+        *physical_slot(map.inline_end(), top, right, bottom, left) = None;
     }
     if logical.block_start.is_some() {
-        *physical_slot(map.block_start, top, right, bottom, left) = None;
+        *physical_slot(map.block_start(), top, right, bottom, left) = None;
     }
     if logical.block_end.is_some() {
-        *physical_slot(map.block_end, top, right, bottom, left) = None;
+        *physical_slot(map.block_end(), top, right, bottom, left) = None;
     }
 }
 
@@ -5941,16 +5835,17 @@ mod tests {
 
     #[test]
     fn writing_mode_physical_flex_direction_swaps_row_and_column() {
+        let context = |mode| crate::WritingContext::new(mode, DirSpec::Ltr);
         assert_eq!(
-            WritingModeSpec::VerticalRl.physical_flex_direction(FlexDirection::Row),
+            context(WritingModeSpec::VerticalRl).physical_flex_direction(FlexDirection::Row),
             FlexDirection::Column
         );
         assert_eq!(
-            WritingModeSpec::VerticalLr.physical_flex_direction(FlexDirection::Column),
+            context(WritingModeSpec::VerticalLr).physical_flex_direction(FlexDirection::Column),
             FlexDirection::Row
         );
         assert_eq!(
-            WritingModeSpec::HorizontalTb.physical_flex_direction(FlexDirection::Row),
+            context(WritingModeSpec::HorizontalTb).physical_flex_direction(FlexDirection::Row),
             FlexDirection::Row
         );
     }

@@ -814,7 +814,7 @@ pub(super) fn place_grid_2d_items(
     // Mirroring the resolved offsets keeps one track-sizing pass rather than a
     // second RTL-only placement path. Vertical writing modes make the inline
     // axis vertical, and RTL is skipped there (see `docs/layout.md`).
-    let rtl_inline = style.is_rtl() && !style.resolved_writing_mode().is_vertical();
+    let rtl_inline = style.writing_context().inline_start() == nana_ui_core::PhysicalEdge::Right;
     for item in &grid.items {
         let Some(child_style) = nodes.style(item.id) else {
             continue;

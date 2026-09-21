@@ -435,15 +435,15 @@ impl AppContext {
     /// Anything that is not an arrow key, and every key of a horizontal
     /// editor, comes back unchanged.
     pub fn focused_text_line_space_key<'k>(&self, document: DocumentId, key: &'k str) -> &'k str {
-        let Some(mode) = self
+        let Some(writing) = self
             .focused_text_editor(document)
             .and_then(|focused| self.world.computed_style(focused.node))
-            .map(|style| style.writing_mode)
-            .filter(|mode| mode.is_vertical())
+            .map(crate::ComputedStyle::writing_context)
+            .filter(|writing| writing.is_vertical())
         else {
             return key;
         };
-        let next_column_is_left = mode.block_start_is_right();
+        let next_column_is_left = writing.block_reversed();
         match key {
             "ArrowUp" => "ArrowLeft",
             "ArrowDown" => "ArrowRight",

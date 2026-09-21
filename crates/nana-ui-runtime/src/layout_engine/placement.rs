@@ -458,11 +458,14 @@ pub(super) fn place_node_scoped(
             .iter()
             .any(|id| nodes.style(*id).is_some_and(|s| s.is_inline_level()));
     let direction = used_flow_direction(style, ifc);
-    let rtl_inline = style.is_rtl() && !style.resolved_writing_mode().is_vertical();
+    let writing = style.writing_context();
+    // Inline-start on the right. A vertical RTL box's inline-start is the
+    // bottom, which this does not yet reverse.
+    let rtl_inline = writing.inline_start() == nana_ui_core::PhysicalEdge::Right;
     let reverse_main = !grid_2d
         && !ifc
         && if direction.is_row() {
-            let block_rev = style.resolved_writing_mode().block_start_is_right();
+            let block_rev = writing.block_reversed();
             style.flex_reverse != (rtl_inline || block_rev)
         } else {
             style.flex_reverse
@@ -576,11 +579,7 @@ pub(super) fn place_node_scoped(
             FlexDirection::Column => style.active_grid_rows(),
         };
         let mut justify = if ifc {
-            ifc_justify(
-                style.text_align,
-                style.is_rtl(),
-                style.resolved_writing_mode(),
-            )
+            ifc_justify(style.text_align, writing)
         } else {
             style.justify_content
         };

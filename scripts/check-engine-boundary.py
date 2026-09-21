@@ -60,6 +60,7 @@ NANA_TEXT_CORE_ALLOWLIST = {
     "TextAlignSpec",
     "TextWrapBreak",
     "WordBreakSpec",
+    "WritingContext",
     "WritingModeSpec",
 }
 

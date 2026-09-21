@@ -7,6 +7,7 @@ use crate::id::{FontGeneration, TextLayoutId, TextRevision};
 use crate::metrics::LineMetrics;
 use crate::shape::{RunDirection, ShapedRun};
 use crate::style::TextKind;
+use nana_ui_core::{WritingContext, WritingModeSpec};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
@@ -159,43 +160,41 @@ impl TextLayout {
         self.constraints.wants_vertical_writing() && !self.unsupported_writing_mode
     }
 
-    /// The page x of a block-axis coordinate of a vertical layout, inside a
-    /// box `box_width_px` wide.
-    ///
-    /// `vertical-rl` stacks its columns from the box's right edge leftwards,
-    /// so it anchors to the box and needs its width; `vertical-lr` stacks from
-    /// the left edge and does not. Horizontal layouts return `block` as is —
-    /// there the block axis is `y`, and a caller should not be asking.
-    pub fn physical_x_of_block(&self, block: f32, box_width_px: f32) -> f32 {
-        if self.is_vertical() && self.constraints.writing_mode.block_start_is_right() {
-            box_width_px - block
+    /// The writing context the page mapping below is made in: the one
+    /// [`nana_ui_core::WritingContext`] the box layout, the painter and the
+    /// editors map through too. A layout that fell back to horizontal lines
+    /// maps as horizontal, whatever it asked for.
+    pub fn writing_context(&self) -> WritingContext {
+        let mode = if self.is_vertical() {
+            self.constraints.writing_mode
         } else {
-            block
-        }
+            WritingModeSpec::HorizontalTb
+        };
+        WritingContext::new(mode, self.constraints.base_direction)
+    }
+
+    /// The page x of a block-axis coordinate of a vertical layout, inside a
+    /// box `box_width_px` wide. See [`WritingContext::block_to_page_x`].
+    pub fn physical_x_of_block(&self, block: f32, box_width_px: f32) -> f32 {
+        self.writing_context().block_to_page_x(block, box_width_px)
     }
 
     /// A line-space rectangle — what [`Self::selection_rects`] and the line
     /// bounds are in — on the page of a box `box_width_px` wide. Horizontal
     /// layouts return it unchanged.
     pub fn page_rect(&self, rect: TextRect, box_width_px: f32) -> TextRect {
-        if !self.is_vertical() {
-            return rect;
-        }
-        let near = self.physical_x_of_block(rect.y, box_width_px);
-        let far = self.physical_x_of_block(rect.y + rect.height, box_width_px);
-        TextRect::new(near.min(far), rect.x, rect.height, rect.width)
+        let (x, y, width, height) = self
+            .writing_context()
+            .line_rect_to_page((rect.x, rect.y, rect.width, rect.height), box_width_px);
+        TextRect::new(x, y, width, height)
     }
 
     /// A page point inside a box `box_width_px` wide, in line space: what
     /// [`Self::hit_test`] reads. The inverse of [`Self::page_rect`]; horizontal
     /// layouts return it unchanged.
     pub fn line_space_point(&self, x: f32, y: f32, box_width_px: f32) -> (f32, f32) {
-        if !self.is_vertical() {
-            return (x, y);
-        }
-        // Mirroring about the box is its own inverse, so the block→page map
-        // turns a page x back into a block coordinate too.
-        (y, self.physical_x_of_block(x, box_width_px))
+        self.writing_context()
+            .page_point_to_line(x, y, box_width_px)
     }
 
     /// Width and height the text occupies on the page: the longest line and

@@ -4962,8 +4962,8 @@ impl UiWorld {
         // down the columns either way, but a `vertical-rl` editor's columns
         // run leftwards, so a wheel that asks to see what is to the right is
         // asking to go back towards the first column.
-        let delta = match self.computed_style(id).map(|style| style.writing_mode) {
-            Some(mode) if mode.is_vertical() && mode.block_start_is_right() => ScrollOffset {
+        let delta = match self.computed_style(id).map(ComputedStyle::writing_context) {
+            Some(writing) if writing.is_vertical() && writing.block_reversed() => ScrollOffset {
                 x: -delta.x,
                 ..delta
             },
@@ -5201,7 +5201,9 @@ mod counting_probe_tests {
 /// line space `nana-text` lays out in: `x` down a column, `y` across the
 /// columns from the block-start one. This is the one place that turns it onto
 /// the page and back, so the component geometry a frame draws and the point a
-/// pointer hits cannot disagree about where a glyph is.
+/// pointer hits cannot disagree about where a glyph is. The axes themselves
+/// are [`nana_ui_core::WritingContext`]'s, the same line-relative map the
+/// painter and `nana-text` use; this adds the content box and the scroll.
 ///
 /// Scrolling is kept in line space too: `inline_scroll` down the columns,
 /// `block_scroll` across them. A single-line field centres its one column in
@@ -5209,8 +5211,7 @@ mod counting_probe_tests {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct VerticalEditorFrame {
     pub(crate) content: LayoutBox,
-    /// `vertical-rl`: columns stack from the right edge.
-    pub(crate) right_to_left: bool,
+    pub(crate) writing: nana_ui_core::WritingContext,
     pub(crate) inline_scroll: f32,
     pub(crate) block_scroll: f32,
 }
@@ -5218,38 +5219,40 @@ pub(crate) struct VerticalEditorFrame {
 impl VerticalEditorFrame {
     /// Page x of a text-space block coordinate.
     fn page_x(&self, block: f32) -> f32 {
-        let block = block - self.block_scroll;
-        if self.right_to_left {
-            self.content.x + self.content.width - block
-        } else {
-            self.content.x + block
-        }
+        self.content.x
+            + self
+                .writing
+                .block_to_page_x(block - self.block_scroll, self.content.width)
     }
 
     /// A text-space rectangle (`x`/`width` along the line, `y`/`height`
     /// across it) on the page.
     pub(crate) fn field_rect(&self, rect: LayoutBox) -> LayoutBox {
-        let near = self.page_x(rect.y);
-        let far = self.page_x(rect.y + rect.height);
+        let (x, y, width, height) = self.writing.line_rect_to_page(
+            (
+                rect.x - self.inline_scroll,
+                rect.y - self.block_scroll,
+                rect.width,
+                rect.height,
+            ),
+            self.content.width,
+        );
         LayoutBox {
-            x: near.min(far),
-            y: self.content.y + rect.x - self.inline_scroll,
-            width: rect.height,
-            height: rect.width,
+            x: self.content.x + x,
+            y: self.content.y + y,
+            width,
+            height,
         }
     }
 
     /// A page point in text space. The inverse of [`Self::field_rect`].
     pub(crate) fn text_point(&self, x: f32, y: f32) -> (f32, f32) {
-        let block = if self.right_to_left {
-            self.content.x + self.content.width - x
-        } else {
-            x - self.content.x
-        };
-        (
-            y - self.content.y + self.inline_scroll,
-            block + self.block_scroll,
-        )
+        let (inline, block) = self.writing.page_point_to_line(
+            x - self.content.x,
+            y - self.content.y,
+            self.content.width,
+        );
+        (inline + self.inline_scroll, block + self.block_scroll)
     }
 
     /// The box the painter lays the editor's value out in: its block-start
@@ -5265,7 +5268,7 @@ impl VerticalEditorFrame {
         let width = block_extent.max(self.content.width);
         let start = self.page_x(0.0);
         LayoutBox {
-            x: if self.right_to_left {
+            x: if self.writing.block_reversed() {
                 start - width
             } else {
                 start
@@ -5307,8 +5310,8 @@ impl UiWorld {
     /// from the scroll offset it was left at — `y` along the columns, `x`
     /// across them.
     pub(crate) fn vertical_editor_frame(&self, id: StableNodeId) -> Option<VerticalEditorFrame> {
-        let mode = self.computed_style(id)?.writing_mode;
-        if !mode.is_vertical() {
+        let writing = self.computed_style(id)?.writing_context();
+        if !writing.is_vertical() {
             return None;
         }
         let (content, requested) = self.text_input_pointer_context(id)?;
@@ -5350,7 +5353,7 @@ impl UiWorld {
         };
         Some(VerticalEditorFrame {
             content,
-            right_to_left: mode.block_start_is_right(),
+            writing,
             inline_scroll,
             block_scroll,
         })

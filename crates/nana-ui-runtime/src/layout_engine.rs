@@ -20,7 +20,7 @@ use nana_ui_core::box_layout::text_line_box_height_px;
 use nana_ui_core::{
     AlignSpec, BoxSizing, ClearSpec, DisplaySpec, FlexDirection, FlexWrap, FloatSpec,
     FontSizeContext, GridAutoFlow, GridLine, GridPlacement, GridRepeatAuto, GridTemplateAreas,
-    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec, WritingModeSpec,
+    GridTrack, JustifySpec, LayoutStyle, LengthSpec, PositionSpec, TextAlignSpec,
     resolve_grid_track_sizes,
 };
 
@@ -1149,23 +1149,26 @@ fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::Par
 /// remapped through writing-mode; block containers without an explicit
 /// `flex-direction` stack along the block axis.
 fn used_flow_direction(style: &LayoutStyle, ifc: bool) -> FlexDirection {
-    let mode = style.resolved_writing_mode();
+    let context = style.writing_context();
     if ifc {
-        return mode.inline_flex_direction();
+        return context.inline_flex_direction();
     }
     let css = style.direction.unwrap_or(FlexDirection::Column);
-    mode.physical_flex_direction(css)
+    context.physical_flex_direction(css)
 }
 
 /// `vertical-rl` packs lines from the physical right (block-start) when the
 /// cross axis is horizontal.
 fn pack_block_from_end(style: &LayoutStyle, direction: FlexDirection) -> bool {
-    style.resolved_writing_mode().block_start_is_right() && direction.is_column()
+    style.writing_context().block_reversed() && direction.is_column()
 }
 
-fn ifc_justify(align: TextAlignSpec, rtl: bool, writing_mode: WritingModeSpec) -> JustifySpec {
-    // Vertical writing-mode skips RTL so inline-start stays physical top.
-    align.to_justify(rtl && !writing_mode.is_vertical())
+/// `text-align` as the justification of an inline formatting context's line.
+///
+/// Only a right-hand inline-start reverses it today: a vertical RTL line,
+/// whose inline-start is the bottom, still starts at the top here.
+fn ifc_justify(align: TextAlignSpec, context: nana_ui_core::WritingContext) -> JustifySpec {
+    align.to_justify(context.inline_start() == nana_ui_core::PhysicalEdge::Right)
 }
 
 fn flip_justify_for_reverse(justify: JustifySpec) -> JustifySpec {

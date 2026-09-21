@@ -1835,6 +1835,14 @@ pub struct ComputedStyle {
     pub writing_mode: nana_ui_core::WritingModeSpec,
 }
 
+impl ComputedStyle {
+    /// The writing mode and direction this node lays out in, after
+    /// inheritance. See [`nana_ui_core::WritingContext`].
+    pub fn writing_context(&self) -> nana_ui_core::WritingContext {
+        nana_ui_core::WritingContext::new(self.writing_mode, self.direction)
+    }
+}
+
 impl Default for ComputedStyle {
     fn default() -> Self {
         Self {
