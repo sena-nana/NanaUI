@@ -1795,6 +1795,8 @@ mod tests {
                     viewport_height: body_box.height,
                     content_width: body_box.width,
                     content_height: body_box.height + 80.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
                 },
             )
             .unwrap();

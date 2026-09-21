@@ -103,7 +103,7 @@ impl AppContext {
                     scroll,
                     ScrollOffset {
                         x: current.x,
-                        y: (row.y - viewport.y - anchor.viewport_y).max(0.0),
+                        y: row.y - viewport.y - anchor.viewport_y,
                     },
                 );
             }
@@ -149,7 +149,7 @@ impl AppContext {
         entity: Entity<ScrollView>,
         offset: ScrollOffset,
     ) -> Result<bool, FrameworkError> {
-        if !offset.x.is_finite() || !offset.y.is_finite() || offset.x < 0.0 || offset.y < 0.0 {
+        if !offset.x.is_finite() || !offset.y.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
         let axes = self.read(entity, |scroll| scroll.axes)?;
@@ -211,6 +211,8 @@ impl AppContext {
 
         // Scrolling does not write back into `LayoutBox`, so a child's box is
         // its position within the content, independent of the current offset.
+        // The offset is physical, so this reads the same on an axis whose
+        // origin is the right / bottom; `scroll_to` clamps to the range.
         let axis = |target_start: f32,
                     target_extent: f32,
                     view_start: f32,
@@ -219,10 +221,10 @@ impl AppContext {
             let leading = target_start - view_start;
             let trailing = leading + target_extent;
             if leading - margin < current {
-                (leading - margin).max(0.0)
+                leading - margin
             } else if trailing + margin > current + view_extent {
                 // Never scroll so far that the leading edge leaves the viewport.
-                (trailing + margin - view_extent).min(leading).max(0.0)
+                (trailing + margin - view_extent).min(leading)
             } else {
                 current
             }
@@ -286,8 +288,8 @@ impl AppContext {
         self.scroll_to(
             entity,
             ScrollOffset {
-                x: (current.x + delta.x).max(0.0),
-                y: (current.y + delta.y).max(0.0),
+                x: current.x + delta.x,
+                y: current.y + delta.y,
             },
         )
     }
@@ -346,28 +348,6 @@ impl AppContext {
         (x || y).then_some((x, y))
     }
 
-    pub(super) fn write_scroll_metrics(
-        &mut self,
-        id: StableNodeId,
-        metrics: ScrollMetrics,
-    ) -> Result<bool, FrameworkError> {
-        if self.world.scroll_metrics(id) == Some(metrics) {
-            return Ok(false);
-        }
-        let mut mutations = MutationQueue::new();
-        mutations.set_scroll_metrics(id, Some(metrics));
-        self.world.commit(mutations)?;
-        Ok(true)
-    }
-
-    pub(super) fn ensure_scroll_metrics(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
-        let Some(metrics) = self.scroll_metrics_from_layout(id) else {
-            return Ok(());
-        };
-        self.write_scroll_metrics(id, metrics)?;
-        Ok(())
-    }
-
     /// Move a [`ScrollView`] or L1 overflow scroller by `delta`. Returns
     /// `false` at a clamped edge so the caller can bubble.
     pub(crate) fn scroll_node_by(
@@ -383,9 +363,18 @@ impl AppContext {
             .get(&id)
             .is_some_and(|view| view.is::<TextArea>())
         {
-            let Some(next) = self.world.text_scroll_by_target(id, delta) else {
+            // An editor scrolls once it has shaped a value to scroll over.
+            if self.world.text_scroll_metrics(id).is_none() {
                 return Ok(false);
-            };
+            }
+            let current = self.world.scroll_offset(id).unwrap_or_default();
+            let next = self.world.clamp_scroll_offset(
+                id,
+                ScrollOffset {
+                    x: current.x + delta.x,
+                    y: current.y + delta.y,
+                },
+            );
             if self.world.scroll_offset(id).unwrap_or_default() == next {
                 return Ok(false);
             }
@@ -410,18 +399,17 @@ impl AppContext {
         let Some((scrolls_x, scrolls_y)) = self.overflow_axes(id) else {
             return Ok(false);
         };
-        self.ensure_scroll_metrics(id)?;
         let current = self.world.scroll_offset(id).unwrap_or_default();
         let next = self.world.clamp_scroll_offset(
             id,
             ScrollOffset {
                 x: if scrolls_x {
-                    (current.x + delta.x).max(0.0)
+                    current.x + delta.x
                 } else {
                     current.x
                 },
                 y: if scrolls_y {
-                    (current.y + delta.y).max(0.0)
+                    current.y + delta.y
                 } else {
                     current.y
                 },

@@ -126,6 +126,13 @@ pub type NodeMap<V> = HashMap<StableNodeId, V, BuildIdHasher>;
 /// [`HashSet`] of nodes, hashed by [`IdHasher`].
 pub type NodeSet = HashSet<StableNodeId, BuildIdHasher>;
 
+/// See [`UiWorld::is_scroll_container`].
+fn scroll_container(layout: &nana_ui_core::LayoutStyle, visual: Option<&StandardVisual>) -> bool {
+    layout.overflow_x.scrolls()
+        || layout.overflow_y.scrolls()
+        || matches!(visual, Some(StandardVisual::Scrollbar { .. }))
+}
+
 /// Deepest retained tree the frame pipeline accepts.
 ///
 /// Style resolution walks ancestors, layout and hit-test walk descendants, and
@@ -485,6 +492,19 @@ pub struct UiWorld {
     /// Input changes that cannot be represented by scroll translation alone.
     non_scroll_hit_dirty: HashSet<StableNodeId>,
     scroll_content_bounds: RefCell<scroll_bounds::ContentBoundsIndex>,
+    /// Every node styled `overflow: auto | scroll` (what a `ScrollView`
+    /// projects too). Despawned ids are dropped when a commit re-measures.
+    scroll_containers: NodeSet,
+    /// Scroll containers whose style changed in the commit being applied,
+    /// or that stopped scrolling.
+    scroll_restyled: Vec<StableNodeId>,
+    /// The commit being applied wrote a box or moved a node.
+    scroll_layout_touched: bool,
+    /// Offsets the commit being applied set, as requested.
+    scroll_requested: Vec<(StableNodeId, ScrollOffset)>,
+    /// Scroll containers whose offset that re-measure clamped, for the
+    /// framework to announce. Drained by `take_scroll_reclamped`.
+    scroll_reclamped: HashSet<StableNodeId>,
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
@@ -653,6 +673,11 @@ impl UiWorld {
             scroll_hit_updates: Vec::new(),
             non_scroll_hit_dirty: HashSet::new(),
             scroll_content_bounds: RefCell::new(scroll_bounds::ContentBoundsIndex::default()),
+            scroll_containers: NodeSet::default(),
+            scroll_restyled: Vec::new(),
+            scroll_layout_touched: false,
+            scroll_requested: Vec::new(),
+            scroll_reclamped: HashSet::new(),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
@@ -1267,13 +1292,60 @@ impl UiWorld {
         self.nodes.get(id).map(|node| node.scroll_offset)
     }
 
+    /// The scrolling area a scroll offset is clamped to. A multiline text
+    /// editor's follows its shaped value, so it is always current; every
+    /// other container's is the one last published for it.
     pub fn scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
-        self.nodes.scroll_metrics(id).copied()
+        self.text_scroll_metrics(id)
+            .or_else(|| self.nodes.scroll_metrics(id).copied())
     }
 
+    /// A box styled `overflow: auto | scroll`, or a `ScrollView` (its
+    /// scrollbar visual) whatever chrome restyled its overflow — a workspace
+    /// region borrowing it as its surface, say.
+    pub(crate) fn is_scroll_container(&self, id: StableNodeId) -> bool {
+        self.nodes
+            .get(id)
+            .is_some_and(|record| scroll_container(&record.style.layout, self.nodes.visual(id)))
+    }
+
+    /// The scrolling area of `id`'s laid-out box over its descendants' boxes.
+    pub(crate) fn layout_scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
+        let viewport = self.layout_box(id)?;
+        if viewport.width <= 0.0 || viewport.height <= 0.0 {
+            return None;
+        }
+        let extent = self.scroll_content_extent(id);
+        Some(ScrollMetrics::scrolling_area(
+            viewport,
+            [extent.left, extent.top, extent.right, extent.bottom],
+            self.scroll_far_start_axes(id),
+        ))
+    }
+
+    /// Which page axes of scroll container `id` start at the right / bottom
+    /// (`[horizontal, vertical]`), where its scroll origin then sits: an RTL
+    /// inline axis, `vertical-rl`'s block axis, a `*-reverse` flex main axis.
+    pub fn scroll_far_start_axes(&self, id: StableNodeId) -> [bool; 2] {
+        crate::layout_engine::far_start_axes(self, id)
+    }
+
+    /// Clamp to the scrolling area. A container nothing has published
+    /// metrics for yet is measured here, so its range is never guessed; one
+    /// with no laid-out box has nothing to scroll past its origin.
     pub fn clamp_scroll_offset(&self, id: StableNodeId, offset: ScrollOffset) -> ScrollOffset {
-        self.scroll_metrics(id)
-            .map_or(offset, |metrics| metrics.clamp(offset))
+        let measured = || {
+            self.is_scroll_container(id)
+                .then(|| self.layout_scroll_metrics(id))
+                .flatten()
+        };
+        match self.scroll_metrics(id).or_else(measured) {
+            Some(metrics) => metrics.clamp(offset),
+            None => ScrollOffset {
+                x: offset.x.max(0.0),
+                y: offset.y.max(0.0),
+            },
+        }
     }
 
     pub fn node_style(&self, id: StableNodeId) -> Option<&NodeStyle> {
@@ -1630,6 +1702,19 @@ impl UiWorld {
                 .invalidate_text(id, crate::text_node::TextDirty::CONSTRAINT);
         }
         changed
+    }
+
+    /// Record which page axes layout placed `id`'s children from the far
+    /// end. Returns whether that changed, which moves the scroll origin.
+    pub(crate) fn write_layout_far_start(&mut self, id: StableNodeId, far: [bool; 2]) -> bool {
+        let record = self.record_mut(id);
+        let changed = record.layout_far_start != Some(far);
+        record.layout_far_start = Some(far);
+        changed
+    }
+
+    pub(crate) fn layout_far_start(&self, id: StableNodeId) -> Option<[bool; 2]> {
+        self.nodes.get(id)?.layout_far_start
     }
 
     /// Padding resolved by the layout pass, including its containing block and font.

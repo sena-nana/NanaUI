@@ -2249,12 +2249,11 @@ impl TextArea {
         self
     }
 
+    /// The physical scroll offset, clamped by the Runtime to the editor's
+    /// scrolling area: negative across a `vertical-rl` editor's columns.
     pub fn scroll_offset(mut self, offset: ScrollOffset) -> Self {
         if offset.x.is_finite() && offset.y.is_finite() {
-            self.scroll_offset = ScrollOffset {
-                x: offset.x.max(0.0),
-                y: offset.y.max(0.0),
-            };
+            self.scroll_offset = offset;
         }
         self
     }

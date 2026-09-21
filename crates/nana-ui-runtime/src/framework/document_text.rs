@@ -284,9 +284,8 @@ impl AppContext {
 mod tests {
     use super::*;
     use crate::{
-        Button, ComputedStyle, LayoutBox, MeasureTextShaper, NodeStyle, ScrollAxes, ScrollMetrics,
-        ScrollOffset, ScrollView, Stack, Text, TextContent, TextMetrics, TextShapeConstraints,
-        TextShaper,
+        Button, ComputedStyle, LayoutBox, MeasureTextShaper, NodeStyle, ScrollAxes, ScrollOffset,
+        ScrollView, Stack, Text, TextContent, TextMetrics, TextShapeConstraints, TextShaper,
     };
     use nana_ui_core::{LengthSpec, UserSelectSpec};
     use std::sync::Arc;
@@ -471,6 +470,11 @@ mod tests {
             .create_component(document, selectable_text("Hello copy", None, None))
             .unwrap();
         context.append_child(scroll, label).unwrap();
+        // Content below the label, so the scrolling area reaches 200.
+        let spacer = context
+            .create_component(document, Stack::column(0.0))
+            .unwrap();
+        context.append_child(scroll, spacer).unwrap();
         let mut mutations = MutationQueue::new();
         mutations.write_layout(
             scroll.stable_id(),
@@ -490,14 +494,14 @@ mod tests {
                 height: 32.0,
             },
         );
-        mutations.set_scroll_metrics(
-            scroll.stable_id(),
-            Some(ScrollMetrics {
-                viewport_width: 200.0,
-                viewport_height: 80.0,
-                content_width: 200.0,
-                content_height: 200.0,
-            }),
+        mutations.write_layout(
+            spacer.stable_id(),
+            LayoutBox {
+                x: 0.0,
+                y: 112.0,
+                width: 200.0,
+                height: 88.0,
+            },
         );
         context.commit_mutations(mutations).unwrap();
         context

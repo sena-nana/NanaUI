@@ -164,21 +164,21 @@ fn scoped_scroll_targets_follow_document_order_and_skip_unrelated_branches() {
         .unwrap();
     context.last_layout_scope = vec![leaf.id, leaf.id, foreign.id];
     assert_eq!(
-        context.scoped_scroll_metric_targets(document),
+        context.scoped_scroll_retention_targets(document),
         vec![first.id, inner.id]
     );
     context.last_layout_scope.push(second.id);
     assert_eq!(
-        context.scoped_scroll_metric_targets(document),
+        context.scoped_scroll_retention_targets(document),
         vec![second.id, first.id, inner.id]
     );
     context.last_layout_scope = vec![root.id];
-    assert!(context.scoped_scroll_metric_targets(document).is_empty());
+    assert!(context.scoped_scroll_retention_targets(document).is_empty());
     let mut mutations = MutationQueue::new();
     mutations.park_subtree(first.id);
     context.commit_mutations(mutations).unwrap();
     context.last_layout_scope = vec![leaf.id];
-    assert!(context.scoped_scroll_metric_targets(document).is_empty());
+    assert!(context.scoped_scroll_retention_targets(document).is_empty());
 }
 
 #[test]
@@ -2518,6 +2518,8 @@ fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
                     viewport_height: 100.0,
                     content_width: 100.0,
                     content_height: 250.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
                 },
             )
             .unwrap()
@@ -2540,6 +2542,8 @@ fn native_scroll_view_projects_axes_and_typed_runtime_offset() {
                     viewport_height: 100.0,
                     content_width: 100.0,
                     content_height: 130.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
                 },
             )
             .unwrap()

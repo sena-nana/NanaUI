@@ -1306,12 +1306,14 @@ fn overflow_auto_clips_descendant_hit_testing() {
     assert_ne!(world.hit_test(document(1), 10.0, 85.0), Some(node(3)));
     assert_eq!(world.hit_test(document(1), 10.0, 25.0), Some(node(2)));
 
+    // The item ends at 100 in a 50px port: 50 is as far as it scrolls.
     let mut scroll = MutationQueue::new();
     scroll.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: 80.0 });
     world.commit(scroll).unwrap();
+    assert_eq!(world.scroll_offset(node(2)).unwrap().y, 50.0);
     world.take_system_work();
     world.rebuild_hit_test(document(1));
-    assert_eq!(world.hit_test(document(1), 10.0, 5.0), Some(node(3)));
+    assert_eq!(world.hit_test(document(1), 10.0, 35.0), Some(node(3)));
     assert_eq!(world.layout_box(node(3)).unwrap().y, 80.0);
 }
 
@@ -9383,8 +9385,27 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
         document(1),
         NodeKind::Element { tag: "item".into() },
     );
+    // Content reaching 200 down, beside the port's hit column, so an offset
+    // of 60 is inside the scrolling area.
+    queue.create(
+        node(4),
+        document(1),
+        NodeKind::Element {
+            tag: "spacer".into(),
+        },
+    );
     queue.insert(node(1), node(2), None);
     queue.insert(node(2), node(3), None);
+    queue.insert(node(2), node(4), None);
+    queue.write_layout(
+        node(4),
+        LayoutBox {
+            x: 90.0,
+            y: 0.0,
+            width: 10.0,
+            height: 200.0,
+        },
+    );
     queue.write_layout(
         node(2),
         LayoutBox {
@@ -9472,6 +9493,8 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
             viewport_height: 50.0,
             content_width: 100.0,
             content_height: 100.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         }),
     );
     world.commit(metrics).unwrap();
@@ -9484,7 +9507,13 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
 
     let generation = world.generation();
     let mut invalid = MutationQueue::new();
-    invalid.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: -1.0 });
+    invalid.set_scroll_offset(
+        node(2),
+        ScrollOffset {
+            x: 0.0,
+            y: f32::NAN,
+        },
+    );
     assert_eq!(
         world.commit(invalid),
         Err(UiWorldError::InvalidScrollOffset(node(2)))
@@ -9499,13 +9528,37 @@ fn scroll_offset_moves_descendant_hit_testing_without_rewriting_layout() {
             viewport_height: 50.0,
             content_width: 100.0,
             content_height: 100.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         }),
     );
     assert_eq!(
         world.commit(invalid_metrics),
         Err(UiWorldError::InvalidScrollMetrics(node(2)))
     );
+    let mut positive_origin = MutationQueue::new();
+    positive_origin.set_scroll_metrics(
+        node(2),
+        Some(ScrollMetrics {
+            viewport_width: 100.0,
+            viewport_height: 50.0,
+            content_width: 100.0,
+            content_height: 100.0,
+            origin_x: 0.0,
+            origin_y: 1.0,
+        }),
+    );
+    assert_eq!(
+        world.commit(positive_origin),
+        Err(UiWorldError::InvalidScrollMetrics(node(2)))
+    );
     assert_eq!(world.generation(), generation);
+
+    // An offset before the origin is not an error, just out of range.
+    let mut before_origin = MutationQueue::new();
+    before_origin.set_scroll_offset(node(2), ScrollOffset { x: 0.0, y: -1.0 });
+    world.commit(before_origin).unwrap();
+    assert_eq!(world.scroll_offset(node(2)).unwrap().y, 0.0);
 }
 
 #[test]

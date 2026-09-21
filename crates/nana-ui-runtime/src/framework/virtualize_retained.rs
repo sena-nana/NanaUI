@@ -665,8 +665,12 @@ impl AppContext {
             .or_else(|| metrics.map(|metrics| metrics.viewport_height))
             .unwrap_or(0.0)
             .max(0.0);
+        // Virtual content is indexed from the scrolling area's left / top
+        // edge. That is the offset itself, except on an axis starting at the
+        // right / bottom, whose offsets run negative from its origin there.
+        let origin = metrics.map_or_else(ScrollOffset::default, ScrollMetrics::min_offset);
         Ok(VirtualViewport {
-            offset: [offset.x, offset.y],
+            offset: [offset.x - origin.x, offset.y - origin.y],
             extent: [width, height],
             overscan,
         })

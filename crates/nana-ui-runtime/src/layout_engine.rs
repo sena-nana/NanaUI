@@ -247,6 +247,7 @@ impl RuntimeLayoutEngine {
             retained.boxes.insert(*id, *box_);
         }
         retained.used_padding.extend(nodes.used_padding.drain());
+        retained.far_start.extend(nodes.far_start.drain());
         retained.placements.extend(nodes.placements.drain());
         for (id, plan) in nodes.container_plans.drain() {
             match plan {
@@ -291,6 +292,7 @@ impl RuntimeLayoutEngine {
             retained.boxes.retain(|id, _| world.contains(*id));
             retained.placements.retain(|id, _| world.contains(*id));
             retained.used_padding.retain(|id, _| world.contains(*id));
+            retained.far_start.retain(|id, _| world.contains(*id));
             retained.container_plans.retain(|id, _| world.contains(*id));
             retained.measure_plans.retain(|id, _| world.contains(*id));
         }
@@ -418,9 +420,16 @@ impl RetainedLayoutCache {
             cache.boxes.remove(&id);
             cache.placements.remove(&id);
             cache.used_padding.remove(&id);
+            cache.far_start.remove(&id);
             cache.container_plans.remove(&id);
             cache.measure_plans.remove(&id);
         }
+    }
+
+    /// Which page axes the last placement of `id` laid its children out
+    /// from the far (right / bottom) end: `[horizontal, vertical]`.
+    pub(crate) fn far_start(&self, document: DocumentId, id: StableNodeId) -> Option<[bool; 2]> {
+        self.documents.get(&document)?.far_start.get(&id).copied()
     }
 
     pub(crate) fn used_padding(
@@ -471,6 +480,8 @@ struct DocumentLayoutCache {
     materialized_inputs: usize,
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
     pub(crate) used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    /// Per container, the page axes placement starts at the far end.
+    far_start: HashMap<StableNodeId, [bool; 2]>,
     /// Cached in-flow child placement per container. See [`ContainerPlan`].
     container_plans: HashMap<StableNodeId, ContainerPlan>,
     /// Cached intrinsic measurement per content-sized container. See
@@ -484,6 +495,7 @@ impl DocumentLayoutCache {
         self.placements.clear();
         self.boxes.clear();
         self.used_padding.clear();
+        self.far_start.clear();
         self.container_plans.clear();
         self.measure_plans.clear();
         self.materialized_inputs = 0;
@@ -963,6 +975,7 @@ struct LayoutInputMap<'a> {
     materialized: usize,
     placements: HashMap<StableNodeId, (Point, Size, f32)>,
     used_padding: HashMap<StableNodeId, nana_ui_core::PaddingSpec>,
+    far_start: HashMap<StableNodeId, [bool; 2]>,
     /// Container plans rebuilt this pass. Merged into the retained cache at the
     /// end; containers that took the fast path record nothing, so their
     /// existing plan simply stays. `None` retires a plan recorded when the
@@ -982,6 +995,7 @@ impl<'a> LayoutInputMap<'a> {
             materialized: 0,
             placements: HashMap::new(),
             used_padding: HashMap::new(),
+            far_start: HashMap::new(),
             container_plans: HashMap::new(),
             measure_plans: HashMap::new(),
         }
@@ -1184,6 +1198,76 @@ fn gap_containing_block(style: &LayoutStyle, content: Size) -> nana_ui_core::Par
         Some(_) => Some(content.height).filter(|value| *value > 0.0),
     };
     nana_ui_core::ParentBox::new(Some(content.width).filter(|value| *value > 0.0), height)
+}
+
+/// Whether placement lays the container's main and cross axes out from their
+/// far page end — the right or the bottom: an RTL inline axis (the right, or
+/// the bottom of a vertical one), `vertical-rl`'s block axis from the right,
+/// or `flex-direction: *-reverse`. A 2D grid places on the page as authored.
+fn flow_axes_reversed(
+    style: &LayoutStyle,
+    writing: nana_ui_core::WritingContext,
+    direction: FlexDirection,
+    ifc: bool,
+    grid_2d: bool,
+) -> (bool, bool) {
+    if grid_2d {
+        return (false, false);
+    }
+    let cross = if direction.is_row() {
+        FlexDirection::Column
+    } else {
+        FlexDirection::Row
+    };
+    let main = if ifc {
+        writing.physical_axis_reversed(direction)
+    } else {
+        style.flex_reverse != writing.physical_axis_reversed(direction)
+    };
+    (main, writing.physical_axis_reversed(cross))
+}
+
+/// Which page axes of container `id` start at their far end: `[horizontal,
+/// vertical]`, true where the content starts at the right / bottom and
+/// overflows toward the left / top. The scroll origin sits on that start edge.
+///
+/// Placement records it as it lays the children out, so this is what the
+/// boxes actually did. Before a first layout it is read off the container's
+/// own style, which differs only for a reversed non-flex container that turns
+/// out to be an inline formatting context (whose lines ignore `*-reverse`).
+pub(crate) fn far_start_axes(world: &UiWorld, id: StableNodeId) -> [bool; 2] {
+    if let Some(placed) = world.layout_far_start(id) {
+        return placed;
+    }
+    let Some(style) = world.layout_style(id) else {
+        return [false; 2];
+    };
+    let writing = world.layout_writing(id);
+    let grid = style.display.is_some_and(DisplaySpec::is_grid_container);
+    let direction = used_flow_direction(&style, writing, false);
+    let reversed = flow_axes_reversed(&style, writing, direction, false, grid);
+    page_far_start(writing, direction, grid, reversed)
+}
+
+/// The page axes `[horizontal, vertical]` a placement starting its main /
+/// cross axes at their far ends (`reversed`) turns into. A grid turns its
+/// tracks onto the page by the writing context alone.
+fn page_far_start(
+    writing: nana_ui_core::WritingContext,
+    direction: FlexDirection,
+    grid_2d: bool,
+    (main, cross): (bool, bool),
+) -> [bool; 2] {
+    if grid_2d {
+        [
+            writing.physical_axis_reversed(FlexDirection::Row),
+            writing.physical_axis_reversed(FlexDirection::Column),
+        ]
+    } else if direction.is_row() {
+        [main, cross]
+    } else {
+        [cross, main]
+    }
 }
 
 /// Physical main axis for this formatting context.

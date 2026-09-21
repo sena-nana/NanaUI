@@ -518,18 +518,12 @@ pub(super) fn place_node_scoped(
     // `vertical-rl`'s block axis from the right, or `flex-direction: *-reverse`.
     // Nothing else knows the page is turned: no list is reversed, no
     // alignment keyword flipped, no line packed from the other end.
-    let cross = if direction.is_row() {
-        FlexDirection::Column
-    } else {
-        FlexDirection::Row
-    };
-    let main_reversed = !grid_2d
-        && if ifc {
-            writing.physical_axis_reversed(direction)
-        } else {
-            style.flex_reverse != writing.physical_axis_reversed(direction)
-        };
-    let cross_reversed = !grid_2d && writing.physical_axis_reversed(cross);
+    let (main_reversed, cross_reversed) =
+        flow_axes_reversed(style, writing, direction, ifc, grid_2d);
+    nodes.far_start.insert(
+        id,
+        page_far_start(writing, direction, grid_2d, (main_reversed, cross_reversed)),
+    );
     // A triggered menu lays out its positioned items in list order, which was
     // the reversed flow order before placement went flow-relative; keep it.
     if main_reversed && !ifc {

@@ -1390,6 +1390,11 @@ impl UiWorld {
                             metrics.content_height
                         },
                         if horizontal { offset.x } else { offset.y },
+                        if horizontal {
+                            metrics.origin_x
+                        } else {
+                            metrics.origin_y
+                        },
                         if horizontal { bounds.x } else { bounds.y },
                         along,
                         chrome,
@@ -1445,6 +1450,7 @@ impl UiWorld {
                             },
                         ),
                         thumb_radius: chrome.thumb_radius(),
+                        min_offset: track.min_offset,
                         max_offset: track.max_offset,
                     })
                 };

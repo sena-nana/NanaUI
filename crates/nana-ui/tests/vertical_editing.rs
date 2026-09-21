@@ -155,9 +155,9 @@ fn a_vertical_text_area_edits_in_columns() {
 }
 
 /// #59: a wheel scrolls a vertical editor the way the page is turned. Its
-/// scroll offset is in line space — `y` down the columns, `x` across them from
-/// the first — and a `vertical-rl` editor's columns run leftwards, so the
-/// wheel's horizontal delta runs the other way.
+/// scroll offset is physical, like every scroll container's: a `vertical-rl`
+/// editor's columns start at the right and its later ones overflow to the
+/// left, so reaching them takes a negative `x`, from 0 at the first column.
 #[test]
 fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     let mut cx = AppContext::new();
@@ -186,11 +186,44 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     let mut adapter = RuntimeInputAdapter::default();
     // A platform's positive horizontal delta scrolls the page leftwards,
     // which in `vertical-rl` is going on through the text.
+    let metrics = cx.world().scroll_metrics(node).expect("measured editor");
+    assert!(metrics.origin_x < 0.0, "columns overflow left: {metrics:?}");
+    assert_eq!(metrics.max_offset().x, 0.0);
     adapter.dispatch(&mut cx, doc, &wheel(40.0)).unwrap();
     let scrolled = cx.world().scroll_offset(node).unwrap_or_default();
     assert!(
-        scrolled.x > 0.0,
+        scrolled.x < 0.0,
         "towards the later columns on the left: {scrolled:?}"
+    );
+    // As far as the last column, and no further.
+    adapter.dispatch(&mut cx, doc, &wheel(4_000.0)).unwrap();
+    assert_eq!(
+        cx.world().scroll_offset(node).unwrap_or_default().x,
+        metrics.origin_x
+    );
+    // And the editor is drawn and hit scrolled that far: a click at its left
+    // edge lands in the last column, the end of the text.
+    let mut shaper = NanaTextShaper::default();
+    let text_box = cx.world().text_input_pointer_context(node).unwrap().0;
+    cx.text_editor_pointer_press(
+        doc,
+        node,
+        1,
+        text_box.x + 1.0,
+        text_box.y + text_box.height - 1.0,
+        false,
+        false,
+        Duration::ZERO,
+        &mut shaper,
+    )
+    .unwrap();
+    cx.text_editor_pointer_release(1);
+    let end = "一二三四五六七八九十".repeat(8).len();
+    let area = Entity::<TextArea>::from_stable_id(node);
+    assert!(
+        focus_of(&cx, area) > end * 3 / 4,
+        "a click at the left edge lands among the last columns: {}",
+        focus_of(&cx, area)
     );
     // And rightwards comes back to the first column.
     adapter.dispatch(&mut cx, doc, &wheel(-400.0)).unwrap();

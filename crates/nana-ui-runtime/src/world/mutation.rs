@@ -276,11 +276,9 @@ impl<'a> ValidationPlan<'a> {
                 }
                 UiMutation::SetScrollOffset { id, offset } => {
                     self.require_exists(*id)?;
-                    if !offset.x.is_finite()
-                        || !offset.y.is_finite()
-                        || offset.x < 0.0
-                        || offset.y < 0.0
-                    {
+                    // Negative on an axis whose scroll origin is the right /
+                    // bottom edge; the metrics clamp decides the range.
+                    if !offset.x.is_finite() || !offset.y.is_finite() {
                         return Err(UiWorldError::InvalidScrollOffset(*id));
                     }
                 }
@@ -295,6 +293,9 @@ impl<'a> ValidationPlan<'a> {
                         ]
                         .into_iter()
                         .any(|extent| !extent.is_finite() || extent < 0.0)
+                            || [metrics.origin_x, metrics.origin_y]
+                                .into_iter()
+                                .any(|origin| !origin.is_finite() || origin > 0.0)
                     }) {
                         return Err(UiWorldError::InvalidScrollMetrics(*id));
                     }
@@ -1075,18 +1076,49 @@ impl UiWorld {
         // maxima. Insert's new parent is invalidated independently below.
         match mutation {
             UiMutation::WriteLayout { id, .. } => {
-                self.invalidate_scroll_content(*id);
+                // Marked with the commit's other writes when it ends.
+                self.defer_scroll_content(*id);
+                self.scroll_layout_touched = true;
             }
             UiMutation::Detach { id }
             | UiMutation::ParkSubtree { root: id }
-            | UiMutation::DespawnSubtree { root: id } => self.invalidate_scroll_topology(*id, None),
+            | UiMutation::DespawnSubtree { root: id } => {
+                self.invalidate_scroll_topology(*id, None);
+                self.scroll_layout_touched = true;
+            }
             UiMutation::Insert { parent, child, .. } => {
                 self.invalidate_scroll_topology(*child, Some(*parent));
+                self.scroll_layout_touched = true;
             }
-            UiMutation::SetStyle { id, style }
-                if self.record(*id).style.layout.omits_box() != style.layout.omits_box() =>
-            {
-                self.invalidate_scroll_content(*id);
+            UiMutation::SetStyle { id, style } => {
+                let layout = &self.record(*id).style.layout;
+                // A paint-only restyle shares the layout style it replaces.
+                if !Arc::ptr_eq(layout, &style.layout) {
+                    let omits_box = layout.omits_box() != style.layout.omits_box();
+                    let visual = self.nodes.visual(*id);
+                    let was = scroll_container(layout, visual);
+                    let now = scroll_container(&style.layout, visual);
+                    // By value: a `ScrollView` re-projects an equal style in
+                    // a fresh `Arc` on every update.
+                    let restyled = (was || now) && **layout != *style.layout;
+                    if omits_box {
+                        self.invalidate_scroll_content(*id);
+                        self.scroll_layout_touched = true;
+                    }
+                    // A container that starts or stops scrolling, or
+                    // restyles, is re-measured even when no box moved.
+                    if restyled {
+                        self.track_scroll_container(*id, now);
+                    }
+                }
+            }
+            UiMutation::SetStandardVisual { id, visual } => {
+                let layout = &self.record(*id).style.layout;
+                let was = scroll_container(layout, self.nodes.visual(*id));
+                let now = scroll_container(layout, visual.as_ref());
+                if was != now {
+                    self.track_scroll_container(*id, now);
+                }
             }
             _ => {}
         }
@@ -1463,27 +1495,13 @@ impl UiWorld {
                 );
             }
             UiMutation::SetScrollOffset { id, offset } => {
-                let offset = self.clamp_scroll_offset(*id, *offset);
-                let previous = self.record(*id).scroll_offset;
-                if previous != offset {
-                    self.record_mut(*id).scroll_offset = offset;
-                    // Hit-index patch + Scene extract of this scroller only.
-                    // Descendants keep LayoutBox; paint uses scroll_offset.
-                    self.scroll_hit_updates
-                        .push((*id, [previous.x - offset.x, previous.y - offset.y]));
-                    self.mark_scroll_compatible(*id, DirtyMask::INPUT | DirtyMask::RENDER);
-                }
+                self.scroll_to_clamped(*id, *offset);
+                // Clamped again once the commit's boxes are measured, so an
+                // offset restored with the content it scrolls to survives.
+                self.scroll_requested.push((*id, *offset));
             }
             UiMutation::SetScrollMetrics { id, metrics } => {
-                self.nodes.set_scroll_metrics(*id, *metrics);
-                let current = self.record(*id).scroll_offset;
-                let clamped = self.clamp_scroll_offset(*id, current);
-                if current != clamped {
-                    self.record_mut(*id).scroll_offset = clamped;
-                    self.scroll_hit_updates
-                        .push((*id, [current.x - clamped.x, current.y - clamped.y]));
-                    self.mark_scroll_compatible(*id, DirtyMask::INPUT | DirtyMask::RENDER);
-                }
+                self.store_scroll_metrics(*id, *metrics);
             }
             UiMutation::SetInteraction { id, interaction } => {
                 self.record_mut(*id).interaction = *interaction;
@@ -2296,7 +2314,114 @@ impl UiWorld {
         for mutation in queue.as_slice() {
             self.apply(mutation, &mut report);
         }
+        self.flush_scroll_content();
+        self.remeasure_scroll_containers();
+        for (id, offset) in std::mem::take(&mut self.scroll_requested) {
+            if self.contains(id) {
+                self.scroll_to_clamped(id, offset);
+            }
+        }
         Ok(report)
+    }
+
+    /// Move `id` to `offset` clamped to its scrolling area.
+    fn scroll_to_clamped(&mut self, id: StableNodeId, offset: ScrollOffset) {
+        let offset = self.clamp_scroll_offset(id, offset);
+        let previous = self.record(id).scroll_offset;
+        if previous != offset {
+            self.record_mut(id).scroll_offset = offset;
+            // Hit-index patch + Scene extract of this scroller only.
+            // Descendants keep LayoutBox; paint uses scroll_offset.
+            self.scroll_hit_updates
+                .push((id, [previous.x - offset.x, previous.y - offset.y]));
+            self.mark_scroll_compatible(id, DirtyMask::INPUT | DirtyMask::RENDER);
+        }
+    }
+
+    /// Store `id`'s scrolling area and clamp its offset into it.
+    fn store_scroll_metrics(&mut self, id: StableNodeId, metrics: Option<ScrollMetrics>) -> bool {
+        self.nodes.set_scroll_metrics(id, metrics);
+        let current = self.record(id).scroll_offset;
+        let clamped = self.clamp_scroll_offset(id, current);
+        if current == clamped {
+            return false;
+        }
+        self.record_mut(id).scroll_offset = clamped;
+        self.scroll_hit_updates
+            .push((id, [current.x - clamped.x, current.y - clamped.y]));
+        self.mark_scroll_compatible(id, DirtyMask::INPUT | DirtyMask::RENDER);
+        true
+    }
+
+    /// Re-measure every scroll container whose content this commit moved,
+    /// so none keeps a scrolling area its layout has left behind — whoever
+    /// wrote the boxes. The content index already knows which: a container
+    /// something under it moved is dirty there, so this costs one check per
+    /// scroll container, not a walk per written box. A text editor's area
+    /// follows its shaped value instead.
+    fn remeasure_scroll_containers(&mut self) {
+        let touched = std::mem::take(&mut self.scroll_layout_touched);
+        if !touched && self.scroll_restyled.is_empty() {
+            return;
+        }
+        let mut stale = std::mem::take(&mut self.scroll_restyled);
+        if touched {
+            self.scroll_containers
+                .retain(|id| self.nodes.get(*id).is_some());
+            let index = self.scroll_content_bounds.borrow();
+            // All of them before any is measured: measuring an outer
+            // container refreshes the inner ones' entries with it.
+            stale.extend(
+                self.scroll_containers
+                    .iter()
+                    .copied()
+                    .filter(|id| index.stale(*id)),
+            );
+        }
+        for id in stale {
+            if !self.contains(id) {
+                continue;
+            }
+            let scrolls = self.is_scroll_container(id);
+            if scrolls && self.text_scroll_metrics(id).is_some() {
+                continue;
+            }
+            // Nothing to measure before a box is laid out: keep what was
+            // published. A container that stopped scrolling drops its area.
+            let metrics = if scrolls {
+                match self.layout_scroll_metrics(id) {
+                    Some(metrics) => Some(metrics),
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            if self.nodes.scroll_metrics(id).copied() != metrics
+                && self.store_scroll_metrics(id, metrics)
+            {
+                self.scroll_reclamped.insert(id);
+            }
+        }
+    }
+
+    fn track_scroll_container(&mut self, id: StableNodeId, scrolls: bool) {
+        if scrolls {
+            self.scroll_containers.insert(id);
+        } else {
+            self.scroll_containers.remove(&id);
+        }
+        self.scroll_restyled.push(id);
+    }
+
+    /// Scroll containers whose offset a re-measure clamped since the last
+    /// call, still in the world.
+    pub(crate) fn take_scroll_reclamped(&mut self) -> Vec<StableNodeId> {
+        let mut ids = std::mem::take(&mut self.scroll_reclamped)
+            .into_iter()
+            .filter(|id| self.contains(*id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
     }
 }
 

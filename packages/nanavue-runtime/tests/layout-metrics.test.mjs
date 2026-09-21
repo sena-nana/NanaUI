@@ -122,6 +122,9 @@ describe("layoutMetrics from layoutBox", () => {
     assert.equal(node.scrollTop, 40);
     assert.equal(node.scrollLeft, 12);
     assert.deepEqual(scrolls.get(7), { x: 12, y: 40 });
+    // An RTL scroller's scrollLeft runs negative (CSSOM); the host clamps.
+    node.scrollLeft = -30;
+    assert.deepEqual(scrolls.get(7), { x: -30, y: 40 });
     node.scrollTop = "nope";
     assert.equal(node.scrollTop, 0);
 

@@ -290,7 +290,13 @@ impl AppContext {
                     .layout_cache
                     .used_padding(document, id)
                     .is_some_and(|padding| self.world.write_layout_padding(id, padding));
-                if padding_changed || self.world.layout_box(id) != Some(layout) {
+                // A turned scroll origin re-measures even when no box moved.
+                let far_start_changed = self
+                    .layout_cache
+                    .far_start(document, id)
+                    .is_some_and(|far| self.world.write_layout_far_start(id, far));
+                if padding_changed || far_start_changed || self.world.layout_box(id) != Some(layout)
+                {
                     mutations.write_layout(id, layout);
                 }
             }
@@ -324,7 +330,7 @@ impl AppContext {
                 }
             }
             completed(2);
-            self.publish_document_scroll_metrics(document, force_full)?;
+            self.apply_document_scroll_retention(document, force_full)?;
             completed(3);
             Ok(report)
         })();
@@ -332,11 +338,23 @@ impl AppContext {
         result
     }
 
-    pub(super) fn publish_document_scroll_metrics(
+    /// After a layout pass, whose commit already re-measured the scroll
+    /// containers: announce the `ScrollView` offsets it clamped, then apply
+    /// follow-end / anchor retention.
+    pub(super) fn apply_document_scroll_retention(
         &mut self,
         document: DocumentId,
         force_full: bool,
     ) -> Result<(), FrameworkError> {
+        for id in self.world.take_scroll_reclamped() {
+            if !self.is_scroll_view(id) {
+                continue;
+            }
+            let offset = self.world.scroll_offset(id).unwrap_or_default();
+            self.update(Entity::<ScrollView>::from_stable_id(id), |_, cx| {
+                cx.emit(ScrollChanged { offset });
+            })?;
+        }
         let targets = if force_full {
             self.world
                 .document_order(document)
@@ -344,23 +362,15 @@ impl AppContext {
                 .filter(|id| self.is_scroll_view(*id))
                 .collect()
         } else {
-            self.scoped_scroll_metric_targets(document)
+            self.scoped_scroll_retention_targets(document)
         };
-        let updates = targets
-            .into_iter()
-            .filter_map(|id| {
-                let metrics = self.scroll_metrics_from_layout(id)?;
-                Some((Entity::<ScrollView>::from_stable_id(id), metrics))
-            })
-            .collect::<Vec<_>>();
-        for (entity, metrics) in updates {
-            self.set_scroll_metrics(entity, metrics)?;
-            self.apply_scroll_retention(entity)?;
+        for id in targets {
+            self.apply_scroll_retention(Entity::<ScrollView>::from_stable_id(id))?;
         }
         Ok(())
     }
 
-    pub(super) fn scoped_scroll_metric_targets(&self, document: DocumentId) -> Vec<StableNodeId> {
+    pub(super) fn scoped_scroll_retention_targets(&self, document: DocumentId) -> Vec<StableNodeId> {
         let mut visited = HashSet::new();
         let mut targets = HashSet::new();
         for &id in &self.last_layout_scope {
@@ -421,22 +431,6 @@ impl AppContext {
             }
         }
         ordered
-    }
-
-    pub(super) fn scroll_metrics_from_layout(&self, id: StableNodeId) -> Option<ScrollMetrics> {
-        let viewport = self.world.layout_box(id)?;
-        if viewport.width <= 0.0 || viewport.height <= 0.0 {
-            return None;
-        }
-        let (right, bottom) = self.world.scroll_content_extent(id);
-        let content_width = viewport.width.max(right - viewport.x);
-        let content_height = viewport.height.max(bottom - viewport.y);
-        Some(ScrollMetrics {
-            viewport_width: viewport.width,
-            viewport_height: viewport.height,
-            content_width: content_width.max(0.0),
-            content_height: content_height.max(0.0),
-        })
     }
 
     /// Re-queue LAYOUT after a host drained a frame without measuring.

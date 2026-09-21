@@ -1142,7 +1142,8 @@ pub struct ScrollbarBar {
     pub track_background: Option<[f32; 4]>,
     pub thumb_background: [f32; 4],
     pub thumb_radius: f32,
-    /// Largest content offset this axis can reach.
+    /// Smallest and largest content offsets this axis can reach.
+    pub min_offset: f32,
     pub max_offset: f32,
 }
 
@@ -1166,6 +1167,7 @@ impl ScrollbarBar {
                 length: self.track.width,
                 thumb_origin: self.thumb.x,
                 thumb_length: self.thumb.width,
+                min_offset: self.min_offset,
                 max_offset: self.max_offset,
             },
             nana_ui_core::ScrollbarAxis::Vertical => nana_ui_core::ScrollbarTrack {
@@ -1173,6 +1175,7 @@ impl ScrollbarBar {
                 length: self.track.height,
                 thumb_origin: self.thumb.y,
                 thumb_length: self.thumb.height,
+                min_offset: self.min_offset,
                 max_offset: self.max_offset,
             },
         }
@@ -2583,12 +2586,22 @@ pub struct ScrollOffset {
 
 /// Derived scrollport and content extents in logical pixels. Absence means
 /// the layout backend has not measured this scroll container yet.
+///
+/// A [`ScrollOffset`] is physical: the content is drawn translated by
+/// `-offset`, and `0` shows the scrollport's own box. An axis whose start edge
+/// is the right or the bottom (`direction: rtl`, `vertical-rl`'s block axis,
+/// `*-reverse` flex) overflows toward the left or the top, so its offsets run
+/// negative, from `origin_x` / `origin_y` up to `0` — CSSOM's negative
+/// `scrollLeft` / `scrollTop`. Every other axis has an origin of `0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScrollMetrics {
     pub viewport_width: f32,
     pub viewport_height: f32,
     pub content_width: f32,
     pub content_height: f32,
+    /// Smallest reachable offset on each axis; never positive.
+    pub origin_x: f32,
+    pub origin_y: f32,
 }
 
 /// Exclusive overlay state attached to an overlay host. `active` must be a
@@ -2600,18 +2613,68 @@ pub struct OverlayHostState {
 }
 
 impl ScrollMetrics {
+    /// The scrolling area (CSSOM View) of a scrollport `viewport` whose
+    /// descendant boxes span `content` (`[left, top, right, bottom]`, in the
+    /// same space; an empty span has `left > right`). Each axis is the
+    /// scrollport stretched to the content overflowing past its end edge and
+    /// nothing past its start edge — the left / top, or the right / bottom
+    /// where `far_start` says the axis starts there. Content on the start
+    /// side is unreachable, as in CSS.
+    pub fn scrolling_area(viewport: LayoutBox, content: [f32; 4], far_start: [bool; 2]) -> Self {
+        let axis = |start: f32, length: f32, low: f32, high: f32, far: bool| {
+            if far {
+                let extent = length.max(start + length - low);
+                (extent, length - extent)
+            } else {
+                (length.max(high - start).max(0.0), 0.0)
+            }
+        };
+        let (content_width, origin_x) = axis(
+            viewport.x,
+            viewport.width,
+            content[0],
+            content[2],
+            far_start[0],
+        );
+        let (content_height, origin_y) = axis(
+            viewport.y,
+            viewport.height,
+            content[1],
+            content[3],
+            far_start[1],
+        );
+        Self {
+            viewport_width: viewport.width,
+            viewport_height: viewport.height,
+            content_width,
+            content_height,
+            origin_x,
+            origin_y,
+        }
+    }
+
+    /// The scroll origin: the offset showing each axis's start edge after
+    /// the content overflowing past it. `0` unless the axis starts at the
+    /// right / bottom.
+    pub fn min_offset(self) -> ScrollOffset {
+        ScrollOffset {
+            x: self.origin_x,
+            y: self.origin_y,
+        }
+    }
+
     pub fn max_offset(self) -> ScrollOffset {
         ScrollOffset {
-            x: (self.content_width - self.viewport_width).max(0.0),
-            y: (self.content_height - self.viewport_height).max(0.0),
+            x: self.origin_x + (self.content_width - self.viewport_width).max(0.0),
+            y: self.origin_y + (self.content_height - self.viewport_height).max(0.0),
         }
     }
 
     pub fn clamp(self, offset: ScrollOffset) -> ScrollOffset {
-        let max = self.max_offset();
+        let (min, max) = (self.min_offset(), self.max_offset());
         ScrollOffset {
-            x: offset.x.clamp(0.0, max.x),
-            y: offset.y.clamp(0.0, max.y),
+            x: offset.x.clamp(min.x, max.x),
+            y: offset.y.clamp(min.y, max.y),
         }
     }
 }

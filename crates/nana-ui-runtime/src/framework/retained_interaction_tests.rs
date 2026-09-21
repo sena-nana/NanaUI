@@ -213,6 +213,8 @@ fn scroll_retention_follows_new_extent_and_restores_row_without_user_event() {
             viewport_height: 100.0,
             content_width: 100.0,
             content_height: 200.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         },
     )
     .unwrap();
@@ -239,6 +241,8 @@ fn scroll_retention_follows_new_extent_and_restores_row_without_user_event() {
             viewport_height: 100.0,
             content_width: 100.0,
             content_height: 300.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         },
     )
     .unwrap();
@@ -294,6 +298,8 @@ fn explicit_follow_end_supersedes_a_pending_reading_anchor_without_layout() {
             viewport_height: 100.0,
             content_width: 100.0,
             content_height: 500.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         },
     )
     .unwrap();

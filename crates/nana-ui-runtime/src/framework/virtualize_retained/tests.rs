@@ -479,6 +479,8 @@ fn scroll_port(cx: &mut AppContext, width: f32, height: f32) -> Entity<crate::Sc
             viewport_height: height,
             content_width: width.max(10_000.0),
             content_height: 10_000.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         },
     )
     .unwrap();

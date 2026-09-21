@@ -5444,6 +5444,7 @@ fn scrollbar_chrome_paints_ordinary_quads_over_the_scrollport() {
             track_background: Some([0.1, 0.1, 0.1, 1.0]),
             thumb_background: [0.6, 0.6, 0.6, 1.0],
             thumb_radius: 3.0,
+            min_offset: 0.0,
             max_offset: 80.0,
         }),
     }));
@@ -5539,6 +5540,7 @@ fn scrollbar_skin_thickness_still_paints_ordinary_quads() {
             track_background: Some([0.2, 0.2, 0.2, 1.0]),
             thumb_background: [1.0, 0.0, 0.0, 1.0],
             thumb_radius: 2.0,
+            min_offset: 0.0,
             max_offset: 80.0,
         }),
     }));

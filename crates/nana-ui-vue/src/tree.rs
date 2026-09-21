@@ -1045,13 +1045,13 @@ impl NanaTreeDocument {
         if !delta.x.is_finite() || !delta.y.is_finite() {
             return false;
         }
-        self.publish_scroll_metrics_from_layout(node);
+        // The Runtime measured the scrolling area when the boxes were written.
         let current = self.scroll_offset(node);
         self.set_scroll_offset(
             node,
             nana_ui_runtime::ScrollOffset {
-                x: (current.x + delta.x).max(0.0),
-                y: (current.y + delta.y).max(0.0),
+                x: current.x + delta.x,
+                y: current.y + delta.y,
             },
         )
     }
@@ -1072,8 +1072,8 @@ impl NanaTreeDocument {
         };
         let current = self.scroll_offset(node);
         let next = metrics.clamp(nana_ui_runtime::ScrollOffset {
-            x: (current.x + delta.x).max(0.0),
-            y: (current.y + delta.y).max(0.0),
+            x: current.x + delta.x,
+            y: current.y + delta.y,
         });
         if next == current {
             return false;
@@ -1086,63 +1086,45 @@ impl NanaTreeDocument {
         self.runtime.scroll_offset(id) == Some(next)
     }
 
-    fn publish_scroll_metrics_from_layout(&mut self, node: NodeHandle) {
-        let Some(metrics) = self.layout_scroll_metrics_from(node, None) else {
-            return;
-        };
-        let Ok(id) = StableNodeId::try_from(node) else {
-            return;
-        };
-        if !self.should_adopt_scroll_metrics(id, metrics) {
-            return;
-        }
-        self.pending.mutations.set_scroll_metrics(id, Some(metrics));
-    }
-
-    fn should_adopt_scroll_metrics(
-        &self,
-        id: StableNodeId,
-        metrics: nana_ui_runtime::ScrollMetrics,
-    ) -> bool {
-        match self.runtime.scroll_metrics(id) {
-            Some(existing) if existing == metrics => false,
-            Some(existing)
-                if metrics.content_width <= existing.content_width
-                    && metrics.content_height <= existing.content_height =>
-            {
-                false
-            }
-            _ => true,
-        }
-    }
-
+    /// The scrolling area over the Scene's un-scrolled writeback boxes, else
+    /// Runtime layout. View boxes already carry this scroller's own offset,
+    /// which would shrink the area by the distance scrolled.
     pub(crate) fn layout_scroll_metrics_from(
         &self,
         node: NodeHandle,
-        store: Option<&LayoutBoxStore>,
+        store: &LayoutBoxStore,
     ) -> Option<nana_ui_runtime::ScrollMetrics> {
-        let viewport = store
-            .and_then(|store| store.get(node))
-            .or_else(|| self.layout_box(node))?;
-        let mut content_width = viewport.width;
-        let mut content_height = viewport.height;
+        let box_of = |node| store.source_box(node).or_else(|| self.layout_box(node));
+        let viewport = box_of(node)?;
+        let mut content = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
         let mut stack = self.children_of(node);
         while let Some(child) = stack.pop() {
-            if let Some(box_) = store
-                .and_then(|store| store.get(child))
-                .or_else(|| self.layout_box(child))
-            {
-                content_width = content_width.max(box_.x + box_.width - viewport.x);
-                content_height = content_height.max(box_.y + box_.height - viewport.y);
+            if let Some(box_) = box_of(child) {
+                content[0] = content[0].min(box_.x);
+                content[1] = content[1].min(box_.y);
+                content[2] = content[2].max(box_.x + box_.width);
+                content[3] = content[3].max(box_.y + box_.height);
             }
             stack.extend(self.children_of(child));
         }
-        Some(nana_ui_runtime::ScrollMetrics {
-            viewport_width: viewport.width,
-            viewport_height: viewport.height,
-            content_width: content_width.max(0.0),
-            content_height: content_height.max(0.0),
-        })
+        let far_start = StableNodeId::try_from(node)
+            .map(|id| self.world().scroll_far_start_axes(id))
+            .unwrap_or_default();
+        Some(nana_ui_runtime::ScrollMetrics::scrolling_area(
+            nana_ui_runtime::LayoutBox {
+                x: viewport.x,
+                y: viewport.y,
+                width: viewport.width,
+                height: viewport.height,
+            },
+            content,
+            far_start,
+        ))
     }
 
     pub(crate) fn sync_scroll_viewport(

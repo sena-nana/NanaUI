@@ -196,7 +196,9 @@ function readHostScroll(nid, axis) {
 function writeHostScroll(nid, axis, next) {
   if (nid == null || !Number.isFinite(Number(nid))) return;
   const n = Number(next);
-  const value = Number.isFinite(n) ? Math.max(0, n) : 0;
+  // CSSOM: negative on an axis whose scroll origin is the right / bottom edge
+  // (RTL, vertical-rl, *-reverse); the host clamps to the measured range.
+  const value = Number.isFinite(n) ? n : 0;
   try {
     const cur = hostCall("getScrollOffset", [Number(nid)]) || {};
     const x = axis === "x" ? value : Number(cur.scrollLeft ?? cur.x) || 0;

@@ -4945,35 +4945,35 @@ impl UiWorld {
 }
 
 impl UiWorld {
-    pub(crate) fn text_scroll_by_target(
-        &self,
-        id: StableNodeId,
-        delta: ScrollOffset,
-    ) -> Option<ScrollOffset> {
-        let node = self.nodes.get(id)?;
+    /// A multiline editor's scrolling area: its text box over the value it
+    /// shaped. The value runs from the block-start edge, which `vertical-rl`
+    /// puts on the right, so there the later columns overflow to the left and
+    /// the offset runs negative from 0, like any container's (#59).
+    pub(crate) fn text_scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
+        if !self.nodes.get(id)?.accessibility.multiline {
+            return None;
+        }
         let presentation = self.nodes.text_input_presentation(id)?;
-        let padding = self.used_layout_padding(id);
-        let border = node.style.layout.resolved_border_width();
-        let width = (node.layout.width - border * 2.0 - padding.left - padding.right).max(0.0);
-        let height = (node.layout.height - border * 2.0 - padding.top - padding.bottom).max(0.0);
-        let current = self.record(id).scroll_offset;
-        // A vertical editor keeps its scroll in line space (#59): `y` down the
-        // columns, `x` across them from the block-start one. Down the page is
-        // down the columns either way, but a `vertical-rl` editor's columns
-        // run leftwards, so a wheel that asks to see what is to the right is
-        // asking to go back towards the first column.
-        let delta = match self.computed_style(id).map(ComputedStyle::writing_context) {
-            Some(writing) if writing.is_vertical() && writing.block_reversed() => ScrollOffset {
-                x: -delta.x,
-                ..delta
-            },
-            _ => delta,
+        let text_box = self.text_input_text_box(id)?;
+        if text_box.width <= 0.0 || text_box.height <= 0.0 {
+            return None;
+        }
+        let writing = self.computed_style(id)?.writing_context();
+        let far_x = writing.is_vertical() && writing.block_reversed();
+        let (width, height) = (
+            presentation.content_size.width,
+            presentation.content_size.height,
+        );
+        let left = if far_x {
+            text_box.x + text_box.width - width
+        } else {
+            text_box.x
         };
-        Some(ScrollOffset {
-            x: (current.x + delta.x).clamp(0.0, (presentation.content_size.width - width).max(0.0)),
-            y: (current.y + delta.y)
-                .clamp(0.0, (presentation.content_size.height - height).max(0.0)),
-        })
+        Some(ScrollMetrics::scrolling_area(
+            text_box,
+            [left, text_box.y, left + width, text_box.y + height],
+            [far_x, false],
+        ))
     }
 
     /// minimap 导航换算：条内点击点 → 目标滚动偏移（点击行在视口居中，
@@ -5207,8 +5207,9 @@ mod counting_probe_tests {
 /// The axes themselves are [`nana_ui_core::WritingContext`]'s, the same
 /// line-relative map the painter and `nana-text` use.
 ///
-/// Scrolling is kept in line space too: `inline_scroll` along the lines,
-/// `block_scroll` across them. Where a single-line field's line sits is a
+/// Scrolling is drawn in line space too: `inline_scroll` along the lines,
+/// `block_scroll` across them, turned from the physical offset every scroll
+/// container records. Where a single-line field's line sits is a
 /// scroll as well — centred across the box (a negative block scroll), and
 /// against the inline-start edge: the left, or the right of an RTL field, or
 /// the bottom of a vertical RTL one (a negative inline scroll).
@@ -5342,7 +5343,8 @@ impl UiWorld {
 
     /// The frame an editor's text space is drawn and hit in.
     ///
-    /// Scrolled in line space: a focused multiline editor reveals its caret
+    /// Scrolled in line space, turned from the recorded physical offset: a
+    /// focused multiline editor reveals its caret
     /// from the offset it was left at (unless a minimap navigation pinned the
     /// viewport), a single-line field follows its caret along the line.
     pub(crate) fn editor_frame(&self, id: StableNodeId) -> Option<EditorFrame> {
@@ -5353,15 +5355,16 @@ impl UiWorld {
         let content = self.text_input_text_box(id)?;
         let requested = self.record(id).scroll_offset;
         let vertical = writing.is_vertical();
+        // The recorded offset is physical, like every scroll container's. As
+        // a displacement it turns into line space mirrored about 0: the block
+        // scroll runs from the block-start edge, which `vertical-rl` puts on
+        // the right, where the physical offset is negative.
+        let requested_line = writing.page_point_to_line(requested.x, requested.y, 0.0);
         let Some(presentation) = self.nodes.text_input_presentation(id) else {
             // Not shaped yet: nothing is drawn, so there is no line to anchor
             // or centre. The recorded offset is all there is, and a pointer
             // still resolves through it.
-            let (inline_scroll, block_scroll) = if vertical {
-                (requested.y, requested.x)
-            } else {
-                (requested.x, requested.y)
-            };
+            let (inline_scroll, block_scroll) = requested_line;
             return Some(EditorFrame {
                 content,
                 writing,
@@ -5404,13 +5407,7 @@ impl UiWorld {
         let max_inline = (inline_extent - content_inline).max(0.0);
         let max_block = (block_extent - content_block).max(0.0);
         let (inline_scroll, block_scroll) = if multiline {
-            // A physical scroll offset in line space: `x` along a horizontal
-            // line, `y` down a vertical one.
-            let (mut inline, mut block) = if vertical {
-                (requested.y, requested.x)
-            } else {
-                (requested.x, requested.y)
-            };
+            let (mut inline, mut block) = requested_line;
             inline = inline.min(max_inline);
             block = block.min(max_block);
             // A minimap navigation pins the viewport: the caret yields to it

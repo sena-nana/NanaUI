@@ -500,6 +500,8 @@ fn scrolling_publishes_the_moved_subtree_and_matches_a_full_projection() {
             content_height: 400.0,
             viewport_width: 100.0,
             viewport_height: 100.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         }),
     );
     for row in 0..6u64 {

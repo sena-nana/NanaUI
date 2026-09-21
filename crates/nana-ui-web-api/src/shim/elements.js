@@ -129,8 +129,11 @@
       },
       set: function (next) {
         const n = Number(next);
-        const value = Number.isFinite(n) ? Math.max(0, n) : 0;
-        this.__nanaScrollTop = value;
+        // CSSOM: negative on an axis whose scroll origin is the right /
+        // bottom edge (RTL, vertical-rl, *-reverse). The host clamps to the
+        // measured range; with no host there is nothing to scroll past 0.
+        const value = Number.isFinite(n) ? n : 0;
+        this.__nanaScrollTop = Math.max(0, value);
         const nid = this.__nid;
         if (nid == null || !Number.isFinite(Number(nid))) return;
         try {
@@ -160,8 +163,11 @@
       },
       set: function (next) {
         const n = Number(next);
-        const value = Number.isFinite(n) ? Math.max(0, n) : 0;
-        this.__nanaScrollLeft = value;
+        // CSSOM: negative on an axis whose scroll origin is the right /
+        // bottom edge (RTL, vertical-rl, *-reverse). The host clamps to the
+        // measured range; with no host there is nothing to scroll past 0.
+        const value = Number.isFinite(n) ? n : 0;
+        this.__nanaScrollLeft = Math.max(0, value);
         const nid = this.__nid;
         if (nid == null || !Number.isFinite(Number(nid))) return;
         try {

@@ -2820,6 +2820,9 @@ mod tests;
 #[cfg(test)]
 mod retained_interaction_tests;
 
+#[cfg(test)]
+mod scroll_origin_tests;
+
 /// Assembler for a composite component type, if it has one.
 ///
 /// One table so [`AppContext::update_component`] and the explicit

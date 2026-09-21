@@ -662,6 +662,8 @@ fn scene_scroll_event_updates_runtime_without_firing_vue_event() {
                     viewport_height: 100.0,
                     content_width: 100.0,
                     content_height: 300.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
                 },
             },
         )
@@ -685,6 +687,8 @@ fn scene_scroll_event_updates_runtime_without_firing_vue_event() {
                         viewport_height: 100.0,
                         content_width: 100.0,
                         content_height: 300.0,
+                        origin_x: 0.0,
+                        origin_y: 0.0,
                     },
                 },
             )

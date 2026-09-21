@@ -191,7 +191,7 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 ## 滚动与滚动条
 
-`ScrollView` 是滚动容器。位置权威是 Runtime 的 `ScrollOffset`，尺寸权威是布局后发布的 `ScrollMetrics`；滚动条不另存一份偏移。L1 `overflow: auto|scroll` 共用同一份 `ScrollOffset` 与 overflow clip（滚轮同样更新这份偏移），但**不**再画一套 thumb：自定义滚动条铬只属于 `ScrollView`。
+`ScrollView` 是滚动容器。位置权威是 Runtime 的 `ScrollOffset`，尺寸权威是 `ScrollMetrics`（任何改动布局盒、子节点或样式的提交结束时由 Runtime 重新测量，偏移随之夹取；起点在右 / 下边的轴偏移为负，见 [布局](layout.md)）；滚动条不另存一份偏移。L1 `overflow: auto|scroll` 共用同一份 `ScrollOffset` 与 overflow clip（滚轮同样更新这份偏移），但**不**再画一套 thumb：自定义滚动条铬只属于 `ScrollView`。
 
 `ScrollView::scrollbars` 选三种：`AutoHide`（默认，指针进容器才现，overlay 式不占布局）、`Always`（能滚就常驻，画轨道底）、`Hidden`（不画，滚轮与 `scroll_to` 照常）。Vue 侧用 `scrollbars="always|hidden"`。
 

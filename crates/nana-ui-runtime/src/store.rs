@@ -98,6 +98,8 @@ pub(crate) struct NodeRecord {
     pub text_metrics: TextMetrics,
     pub layout: LayoutBox,
     pub layout_padding: Option<nana_ui_core::PaddingSpec>,
+    /// Page axes the last layout placed the children from the far end.
+    pub layout_far_start: Option<[bool; 2]>,
     pub scroll_offset: ScrollOffset,
     pub interaction: InteractionState,
     pub accessibility: AccessibilityState,
@@ -118,6 +120,7 @@ impl NodeRecord {
             text_metrics: TextMetrics::default(),
             layout: LayoutBox::default(),
             layout_padding: None,
+            layout_far_start: None,
             scroll_offset: ScrollOffset::default(),
             interaction,
             accessibility: AccessibilityState::default(),
@@ -590,6 +593,8 @@ mod tests {
                 viewport_height: 10.0,
                 content_width: 20.0,
                 content_height: 20.0,
+                origin_x: 0.0,
+                origin_y: 0.0,
             }),
         );
         store.set_component_type(id, Some(ComponentTypeId::new("nana.button").unwrap()));

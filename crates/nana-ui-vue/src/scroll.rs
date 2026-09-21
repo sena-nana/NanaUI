@@ -213,7 +213,7 @@ pub(crate) fn apply_runtime_wheel_from(
         current = doc.parent_node(node);
     }
     for node in matching {
-        let moved = match doc.layout_scroll_metrics_from(node, Some(layout_store)) {
+        let moved = match doc.layout_scroll_metrics_from(node, layout_store) {
             Some(metrics) => doc.scroll_by_with_metrics(node, delta, metrics),
             None => doc.scroll_by(node, delta),
         };
@@ -305,9 +305,11 @@ fn scroll_ancestor_to_target(
         return None;
     }
 
+    // Physical offsets: negative on an axis whose origin is the right /
+    // bottom. The Runtime metrics clamp to the scroll range.
     let next = ScrollOffset {
-        x: (current.x + dx).max(0.0),
-        y: (current.y + dy).max(0.0),
+        x: current.x + dx,
+        y: current.y + dy,
     };
     if !doc.set_scroll_offset(ancestor, next) {
         return None;
@@ -508,10 +510,9 @@ pub fn set_scroll_offset(
 ) -> ScrollOffset {
     let node = NodeHandle(id);
     let prev = doc.scroll_offset(node);
-    let next = ScrollOffset {
-        x: next.x.max(0.0),
-        y: next.y.max(0.0),
-    };
+    // CSSOM `scrollLeft` / `scrollTop` are this physical offset: negative on
+    // an axis whose scroll origin is the right / bottom (RTL, vertical-rl,
+    // `*-reverse`). The Runtime metrics clamp it to the scroll range.
     if !doc.set_scroll_offset(node, next) {
         return prev;
     }
@@ -644,6 +645,8 @@ mod tests {
             viewport_height: 200.0,
             content_width: 300.0,
             content_height: 600.0,
+            origin_x: 0.0,
+            origin_y: 0.0,
         };
 
         assert!(sync_host_scroll_offset(
@@ -756,6 +759,75 @@ mod tests {
         assert!((doc.scroll_offset(scroller).y - 48.0).abs() < 0.5);
         assert_eq!(doc.scroll_offset(target).y, 0.0);
         assert!(shared_scroll_offset_store().take_pending().is_empty());
+    }
+
+    /// An RTL row overflows to the left of its scrollport. `scrollLeft` is
+    /// CSSOM's: 0 shows the start (right) edge and it runs negative, both
+    /// through the JS setter and the wheel, including after the view boxes
+    /// were translated by the offset already applied.
+    #[test]
+    fn rtl_overflow_scrolls_left_through_negative_scroll_left() {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let body = doc.mount_root();
+        let scroller = doc.create_element("div");
+        let row = doc.create_element("div");
+        doc.insert(scroller, body, None);
+        doc.insert(row, scroller, None);
+
+        let mut bridge = MessageBridge::new();
+        let mut props = WidgetProps::default();
+        props.layout.overflow_x = OverflowSpec::Auto;
+        props.layout.display = Some(nana_ui_core::DisplaySpec::Flex);
+        props.layout.direction = Some(nana_ui_core::FlexDirection::Row);
+        props.layout.dir = Some(nana_ui_core::DirSpec::Rtl);
+        bridge.register(scroller.0, WidgetKind::Row, props);
+        bridge.register(row.0, WidgetKind::Box, WidgetProps::default());
+
+        let layout_store = LayoutBoxStore::new();
+        layout_store.record(scroller, 0.0, 0.0, 200.0, 100.0);
+        layout_store.record(row, -300.0, 0.0, 500.0, 100.0);
+        doc.sync_semantic_styles(&bridge.snapshot());
+        doc.inject_layout_boxes(&layout_store.snapshot());
+
+        let scroll_store = ScrollOffsetStore::new();
+        let set = |doc: &mut NanaTreeDocument, x: f32| {
+            let next = set_scroll_offset(
+                doc,
+                &layout_store,
+                &scroll_store,
+                scroller.0,
+                ScrollOffset { x, y: 0.0 },
+                Some(&bridge),
+            );
+            reapply_scroll_translations(doc, &bridge, &layout_store);
+            next.x
+        };
+        assert_eq!(doc.scroll_offset(scroller).x, 0.0);
+        // The setter clamps to the measured scrolling area from the start:
+        // 0 at the right edge, -300 at the far left.
+        assert_eq!(set(&mut doc, 40.0), 0.0);
+        assert_eq!(set(&mut doc, -120.0), -120.0);
+        assert_eq!(set(&mut doc, -1_000.0), -300.0);
+        let left = ScrollOffset { x: -48.0, y: 0.0 };
+        assert_eq!(
+            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, left),
+            None,
+            "already at the far edge"
+        );
+        let right = ScrollOffset { x: 48.0, y: 0.0 };
+        assert_eq!(
+            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, right),
+            Some(scroller)
+        );
+        assert_eq!(doc.scroll_offset(scroller).x, -252.0);
+        let metrics = doc.scroll_metrics(scroller).expect("measured");
+        assert_eq!((metrics.origin_x, metrics.content_width), (-300.0, 500.0));
+        reapply_scroll_translations(&mut doc, &bridge, &layout_store);
+        assert_eq!(
+            apply_runtime_wheel(&mut doc, &bridge, &layout_store, 150.0, 10.0, left),
+            Some(scroller)
+        );
+        assert_eq!(doc.scroll_offset(scroller).x, -300.0);
     }
 
     #[test]

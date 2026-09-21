@@ -3196,30 +3196,13 @@ mod tests {
         let cell = context
             .create_component(document, TableCell::new("row"))
             .unwrap();
+        // Beside the inner scrollport, content reaching 300 down the outer.
+        let tail = context
+            .create_component(document, TableCell::new("tail"))
+            .unwrap();
         context.append_child(outer, inner).unwrap();
+        context.append_child(outer, tail).unwrap();
         context.append_child(inner, cell).unwrap();
-        context
-            .set_scroll_metrics(
-                outer,
-                ScrollMetrics {
-                    viewport_width: 200.0,
-                    viewport_height: 100.0,
-                    content_width: 200.0,
-                    content_height: 300.0,
-                },
-            )
-            .unwrap();
-        context
-            .set_scroll_metrics(
-                inner,
-                ScrollMetrics {
-                    viewport_width: 180.0,
-                    viewport_height: 80.0,
-                    content_width: 180.0,
-                    content_height: 140.0,
-                },
-            )
-            .unwrap();
         let mut layout = MutationQueue::new();
         layout.write_layout(
             outer.stable_id(),
@@ -3239,13 +3222,23 @@ mod tests {
                 height: 80.0,
             },
         );
+        // 140 of content in the inner's 80: it scrolls 60, the outer 200.
         layout.write_layout(
             cell.stable_id(),
             LayoutBox {
                 x: 0.0,
                 y: 0.0,
                 width: 160.0,
-                height: 30.0,
+                height: 140.0,
+            },
+        );
+        layout.write_layout(
+            tail.stable_id(),
+            LayoutBox {
+                x: 190.0,
+                y: 0.0,
+                width: 10.0,
+                height: 300.0,
             },
         );
         context.commit_mutations(layout).unwrap();
@@ -4081,6 +4074,8 @@ mod tests {
                     viewport_height: 300.0,
                     content_width: 300.0,
                     content_height: 900.0,
+                    origin_x: 0.0,
+                    origin_y: 0.0,
                 },
             )
             .unwrap();

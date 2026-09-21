@@ -121,6 +121,9 @@ pub struct ScrollbarTrack {
     pub length: f32,
     pub thumb_origin: f32,
     pub thumb_length: f32,
+    /// Smallest content offset this axis can reach: `0`, or negative for an
+    /// axis that starts at the right / bottom and overflows the other way.
+    pub min_offset: f32,
     /// Largest content offset this axis can reach.
     pub max_offset: f32,
 }
@@ -138,7 +141,7 @@ impl ScrollbarTrack {
             return 0.0;
         }
         let ratio = ((thumb_origin - self.origin) / travel).clamp(0.0, 1.0);
-        ratio * self.max_offset
+        self.min_offset + ratio * (self.max_offset - self.min_offset)
     }
 
     /// Content offset that centres the thumb on a track position.
@@ -154,27 +157,39 @@ impl ScrollbarTrack {
 
 /// Derive one axis of scrollbar geometry.
 ///
+/// `min_offset` is the axis's scroll origin: `0`, or negative when the axis
+/// starts at the right / bottom, so `offset` runs from it to `0`. The thumb
+/// sits at the track start at `min_offset` either way — the track is physical.
+///
 /// Returns `None` when the axis cannot scroll, when the track has no room, or
 /// when any input is not finite — callers then draw nothing and hit nothing.
 pub fn scrollbar_track(
     viewport: f32,
     content: f32,
     offset: f32,
+    min_offset: f32,
     track_origin: f32,
     track_length: f32,
     metrics: ScrollbarMetrics,
 ) -> Option<ScrollbarTrack> {
-    if ![viewport, content, offset, track_origin, track_length]
-        .iter()
-        .all(|value| value.is_finite())
+    if ![
+        viewport,
+        content,
+        offset,
+        min_offset,
+        track_origin,
+        track_length,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
     {
         return None;
     }
     if viewport <= 0.0 || track_length <= 0.0 {
         return None;
     }
-    let max_offset = content - viewport;
-    if max_offset <= 0.0 {
+    let range = content - viewport;
+    if range <= 0.0 {
         return None;
     }
     let proportional = track_length * (viewport / content);
@@ -182,13 +197,14 @@ pub fn scrollbar_track(
         .max(metrics.thumb_min_length.max(0.0))
         .min(track_length);
     let travel = (track_length - thumb_length).max(0.0);
-    let ratio = (offset / max_offset).clamp(0.0, 1.0);
+    let ratio = ((offset - min_offset) / range).clamp(0.0, 1.0);
     Some(ScrollbarTrack {
         origin: track_origin,
         length: track_length,
         thumb_origin: track_origin + travel * ratio,
         thumb_length,
-        max_offset,
+        min_offset,
+        max_offset: min_offset + range,
     })
 }
 
@@ -198,7 +214,7 @@ mod tests {
 
     #[test]
     fn a_track_shorter_than_its_content_yields_a_proportional_thumb() {
-        let track = scrollbar_track(100.0, 400.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
+        let track = scrollbar_track(100.0, 400.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
             .expect("scrollable axis");
         assert_eq!(track.thumb_length, 25.0);
         assert_eq!(track.thumb_origin, 0.0);
@@ -208,30 +224,32 @@ mod tests {
 
     #[test]
     fn the_thumb_reaches_the_track_end_at_the_maximum_offset() {
-        let track = scrollbar_track(100.0, 400.0, 300.0, 10.0, 100.0, SCROLLBAR_METRICS)
+        let track = scrollbar_track(100.0, 400.0, 300.0, 0.0, 10.0, 100.0, SCROLLBAR_METRICS)
             .expect("scrollable axis");
         assert_eq!(track.thumb_origin + track.thumb_length, 110.0);
     }
 
     #[test]
     fn very_long_content_keeps_a_grabbable_thumb() {
-        let track = scrollbar_track(100.0, 100_000.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
+        let track = scrollbar_track(100.0, 100_000.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
             .expect("scrollable axis");
         assert_eq!(track.thumb_length, SCROLLBAR_METRICS.thumb_min_length);
     }
 
     #[test]
     fn content_within_the_viewport_has_no_track() {
-        assert!(scrollbar_track(100.0, 100.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
-        assert!(scrollbar_track(100.0, 40.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
-        assert!(scrollbar_track(0.0, 400.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
-        assert!(scrollbar_track(100.0, 400.0, 0.0, 0.0, 0.0, SCROLLBAR_METRICS).is_none());
-        assert!(scrollbar_track(f32::NAN, 400.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
+        assert!(scrollbar_track(100.0, 100.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
+        assert!(scrollbar_track(100.0, 40.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
+        assert!(scrollbar_track(0.0, 400.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none());
+        assert!(scrollbar_track(100.0, 400.0, 0.0, 0.0, 0.0, 0.0, SCROLLBAR_METRICS).is_none());
+        assert!(
+            scrollbar_track(f32::NAN, 400.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS).is_none()
+        );
     }
 
     #[test]
     fn thumb_position_round_trips_through_the_content_offset() {
-        let track = scrollbar_track(100.0, 400.0, 120.0, 4.0, 100.0, SCROLLBAR_METRICS)
+        let track = scrollbar_track(100.0, 400.0, 120.0, 0.0, 4.0, 100.0, SCROLLBAR_METRICS)
             .expect("scrollable axis");
         let offset = track.offset_for_thumb_origin(track.thumb_origin);
         assert!((offset - 120.0).abs() < 0.001, "offset {offset}");
@@ -243,8 +261,23 @@ mod tests {
     }
 
     #[test]
+    fn a_reversed_axis_puts_its_origin_at_the_track_start() {
+        // An RTL axis: 300px overflow to the left, offsets -300..=0, the
+        // initial offset 0 showing the start (right) edge.
+        let start = scrollbar_track(100.0, 400.0, 0.0, -300.0, 0.0, 100.0, SCROLLBAR_METRICS)
+            .expect("scrollable axis");
+        assert_eq!(start.thumb_origin + start.thumb_length, 100.0);
+        assert_eq!(start.max_offset, 0.0);
+        let far = scrollbar_track(100.0, 400.0, -300.0, -300.0, 0.0, 100.0, SCROLLBAR_METRICS)
+            .expect("scrollable axis");
+        assert_eq!(far.thumb_origin, 0.0);
+        assert_eq!(far.offset_for_thumb_origin(far.origin), -300.0);
+        assert_eq!(far.offset_for_thumb_origin(far.origin + far.travel()), 0.0);
+    }
+
+    #[test]
     fn hit_testing_covers_the_thumb_but_not_the_bare_track() {
-        let track = scrollbar_track(100.0, 400.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
+        let track = scrollbar_track(100.0, 400.0, 0.0, 0.0, 0.0, 100.0, SCROLLBAR_METRICS)
             .expect("scrollable axis");
         assert!(track.thumb_contains(0.0));
         assert!(track.thumb_contains(24.0));

@@ -667,7 +667,13 @@ mod tests {
                     x: 0.0,
                     y: 0.0,
                     width: 100.0,
-                    height: if id == ids[0] { 100.0 } else { 20.0 },
+                    // The frozen row's parent reaches 200 down the 100px
+                    // scrollport, so it scrolls the 60 below.
+                    height: match id {
+                        _ if id == ids[0] => 100.0,
+                        _ if id == ids[1] => 200.0,
+                        _ => 20.0,
+                    },
                 },
             );
         }

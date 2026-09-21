@@ -330,36 +330,16 @@ pub fn query_scroll_content_size(
             metrics.content_height.max(client_height).max(0.0),
         );
     }
-    let Some(viewport) = get_layout_box_from(store, doc, node) else {
+    // Unpublished: the same scrolling area the wheel path measures, which
+    // includes content overflowing toward an axis that starts at the right /
+    // bottom.
+    let Some(metrics) = doc.layout_scroll_metrics_from(node, store) else {
         return (client_width.max(0.0), client_height.max(0.0));
     };
-    let (content_width, content_height) =
-        union_descendant_content(doc, node, viewport, |doc, child| {
-            get_layout_box_from(store, doc, child)
-        });
     (
-        content_width.max(client_width),
-        content_height.max(client_height),
+        metrics.content_width.max(client_width),
+        metrics.content_height.max(client_height),
     )
-}
-
-fn union_descendant_content(
-    doc: &NanaTreeDocument,
-    node: NodeHandle,
-    viewport: LayoutBox,
-    mut box_of: impl FnMut(&NanaTreeDocument, NodeHandle) -> Option<LayoutBox>,
-) -> (f32, f32) {
-    let mut content_width = viewport.width;
-    let mut content_height = viewport.height;
-    let mut stack = doc.children_of(node);
-    while let Some(child) = stack.pop() {
-        if let Some(box_) = box_of(doc, child) {
-            content_width = content_width.max(box_.x + box_.width - viewport.x);
-            content_height = content_height.max(box_.y + box_.height - viewport.y);
-        }
-        stack.extend(doc.children_of(child));
-    }
-    (content_width.max(0.0), content_height.max(0.0))
 }
 
 /// Document layout cache (pre-paint measure or last [`NanaTreeDocument::apply_layout_boxes`]).
