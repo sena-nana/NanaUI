@@ -4705,11 +4705,15 @@ mod tests {
         // session and evict everything else first.
         pipeline.close_target(first.take().expect("first window"));
         let after = handles(&pipeline, &second_target);
+        // Both windows drew the same paragraph, so each held the same claims —
+        // one per occurrence, and a letter that appears twice at the same
+        // sub-pixel bin is one handle claimed twice. Closing one gives back
+        // exactly half.
         for (before, now) in shared.iter().zip(&after) {
             assert_eq!(
-                now.map(|n| n + 1),
+                now.map(|n| n * 2),
                 *before,
-                "exactly one claim per glyph released"
+                "the closed window's claims, and only those, are released"
             );
         }
     }
