@@ -438,70 +438,21 @@ impl UiWorld {
                         })
                     })
                     .flatten();
-                let content = match steppers {
-                    Some(steppers) => LayoutBox {
-                        width: (content.width - steppers.increment.width - 4.0).max(0.0),
-                        ..content
-                    },
-                    None => content,
-                };
+                // Where the text sits in the field — the content box less the
+                // steppers, the scroll, a single-line field's centring and its
+                // inline-start edge — is the editor frame's, the same one a
+                // pointer hit is resolved through.
+                let frame = self.editor_frame(id)?;
+                let content = frame.content;
                 let focused = self.input.focused.get(&self.record(id).document) == Some(&id);
-                let metrics = self.text_metrics(id).unwrap_or_default();
                 let multiline = accessibility.is_some_and(|state| state.multiline);
-                let requested_scroll = self.record(id).scroll_offset;
-                // Presentation uses the actual editor wrapping width; intrinsic
-                // metrics are single-line and cannot bound its viewport.
-                let total_text_height = if multiline {
-                    presentation.content_size.height
-                } else {
-                    metrics.height
-                };
-                let mut scroll_x = if multiline {
-                    requested_scroll.x
-                } else {
-                    (presentation.caret_x - content.width + 1.0).max(0.0)
-                }
-                .min((metrics.width - content.width).max(0.0));
-                let line_height = if multiline {
-                    presentation.line_height
-                } else {
-                    size.line_height()
-                }
-                .max(1.0)
-                .min(content.height.max(1.0));
-                let mut scroll_y = if multiline {
-                    requested_scroll
-                        .y
-                        .min((total_text_height - content.height).max(0.0))
-                } else {
-                    0.0
-                };
-                if multiline && focused {
-                    // minimap 视口钉住：显式导航（minimap 点击/拖动）期间
-                    // 光标 reveal 让位，视口停在用户导航到的位置。宿主改写
-                    // 滚动偏移或光标移动（shape 趟清除钉住）都会使钉住失效，
-                    // reveal 恢复权威——未钉住时行为与既有语义完全一致。
-                    let viewport_pinned = self.text_viewport_pin(id) == Some(requested_scroll);
-                    if !viewport_pinned {
-                        if presentation.caret_x < scroll_x {
-                            scroll_x = presentation.caret_x;
-                        } else if presentation.caret_x + 1.0 > scroll_x + content.width {
-                            scroll_x = presentation.caret_x + 1.0 - content.width;
-                        }
-                        if presentation.caret_y < scroll_y {
-                            scroll_y = presentation.caret_y;
-                        } else if presentation.caret_y + line_height > scroll_y + content.height {
-                            scroll_y = presentation.caret_y + line_height - content.height;
-                        }
-                    }
-                }
-                scroll_x = scroll_x.clamp(0.0, (metrics.width - content.width).max(0.0));
-                scroll_y = scroll_y.clamp(0.0, (total_text_height - content.height).max(0.0));
-                let line_y = if multiline {
-                    content.y - scroll_y
-                } else {
-                    content.y + (content.height - line_height) / 2.0
-                };
+                let line_height = frame.line;
+                // Horizontal text space: `x` along the line, `y` across. A
+                // single-line field has no block scroll of its own; its
+                // centring is where its line top lands.
+                let scroll_x = frame.inline_scroll;
+                let scroll_y = if multiline { frame.block_scroll } else { 0.0 };
+                let line_y = content.y - frame.block_scroll;
                 let field_x = |offset: f32| content.x + offset - scroll_x;
                 let (selection, preedit) = text_input_decorations(
                     presentation,
@@ -1097,16 +1048,11 @@ impl UiWorld {
                     line_labels_color: self.style_model.color(SemanticColorRole::Faint).as_rgba_array(),
                     line_labels_font_size: size.caption_size(),
                     text: crate::ComponentTextRegion {
-                        bounds: LayoutBox {
-                            x: content.x - scroll_x,
-                            y: line_y,
-                            width: metrics.width.max(content.width),
-                            height: if multiline {
-                                metrics.height.max(content.height)
-                            } else {
-                                line_height
-                            },
-                        },
+                        bounds: frame.text_bounds(
+                            presentation.content_size.width,
+                            presentation.content_size.height,
+                            multiline,
+                        ),
                         content: Arc::from(presentation.display_value.as_str()),
                         color: Some(if presentation.placeholder {
                             text_input_placeholder_color(
@@ -1218,15 +1164,10 @@ impl UiWorld {
                     preedit_color: self.style_model.color(SemanticColorRole::Accent).as_rgba_array(),
                     steppers,
                 };
-                Some(match self.vertical_editor_frame(id) {
-                    Some(frame) => vertical_text_input_geometry(
-                        geometry,
-                        &frame,
-                        presentation,
-                        multiline,
-                        focused,
-                    ),
-                    None => geometry,
+                Some(if frame.writing.is_vertical() {
+                    vertical_text_input_geometry(geometry, &frame, presentation, multiline, focused)
+                } else {
+                    geometry
                 })
             }
             StandardVisual::Switch {
@@ -2674,7 +2615,7 @@ impl UiWorld {
 /// ones drawn across its columns.
 fn vertical_text_input_geometry(
     geometry: crate::ComponentGeometry,
-    frame: &VerticalEditorFrame,
+    frame: &EditorFrame,
     presentation: &TextInputPresentation,
     multiline: bool,
     focused: bool,
@@ -2709,9 +2650,10 @@ fn vertical_text_input_geometry(
             height: line,
         })
     };
+    // Along the columns is the page's height, across them its width.
     text.bounds = frame.text_bounds(
-        presentation.content_size.width,
         presentation.content_size.height,
+        presentation.content_size.width,
         multiline,
     );
     // The preedit underline runs beside the column, on its block-start side:

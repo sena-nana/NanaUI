@@ -5195,36 +5195,35 @@ mod counting_probe_tests {
     }
 }
 
-/// How a vertical editor's text space lands on the page (#59).
+/// How an editor's text space lands on the page, in every writing mode.
 ///
 /// An editor's geometry — caret, selection, preedit, hit-testing — is in the
-/// line space `nana-text` lays out in: `x` down a column, `y` across the
-/// columns from the block-start one. This is the one place that turns it onto
-/// the page and back, so the component geometry a frame draws and the point a
-/// pointer hits cannot disagree about where a glyph is. The axes themselves
-/// are [`nana_ui_core::WritingContext`]'s, the same line-relative map the
-/// painter and `nana-text` use; this adds the content box and the scroll.
+/// line space `nana-text` lays out in: `x` along a line from line-left, `y`
+/// across the lines from the block-start one. For horizontal text that is
+/// the page, offset by the content box and the scroll; for vertical text (#59)
+/// `x` runs down a column and `y` across the columns. This is the one place
+/// that turns it onto the page and back, so the component geometry a frame
+/// draws and the point a pointer hits cannot disagree about where a glyph is.
+/// The axes themselves are [`nana_ui_core::WritingContext`]'s, the same
+/// line-relative map the painter and `nana-text` use.
 ///
-/// Scrolling is kept in line space too: `inline_scroll` down the columns,
-/// `block_scroll` across them. A single-line field centres its one column in
-/// the box, which is a negative block scroll.
+/// Scrolling is kept in line space too: `inline_scroll` along the lines,
+/// `block_scroll` across them. Where a single-line field's line sits is a
+/// scroll as well — centred across the box (a negative block scroll), and
+/// against the inline-start edge: the left, or the right of an RTL field, or
+/// the bottom of a vertical RTL one (a negative inline scroll).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct VerticalEditorFrame {
+pub(crate) struct EditorFrame {
     pub(crate) content: LayoutBox,
     pub(crate) writing: nana_ui_core::WritingContext,
+    /// The line box across the line: a caret's length, and a single-line
+    /// field's thickness.
+    pub(crate) line: f32,
     pub(crate) inline_scroll: f32,
     pub(crate) block_scroll: f32,
 }
 
-impl VerticalEditorFrame {
-    /// Page x of a text-space block coordinate.
-    fn page_x(&self, block: f32) -> f32 {
-        self.content.x
-            + self
-                .writing
-                .block_to_page_x(block - self.block_scroll, self.content.width)
-    }
-
+impl EditorFrame {
     /// A text-space rectangle (`x`/`width` along the line, `y`/`height`
     /// across it) on the page.
     pub(crate) fn field_rect(&self, rect: LayoutBox) -> LayoutBox {
@@ -5255,37 +5254,45 @@ impl VerticalEditorFrame {
         (inline + self.inline_scroll, block + self.block_scroll)
     }
 
-    /// The box the painter lays the editor's value out in: its block-start
-    /// edge where text-space block 0 lands, and — for a wrapping editor — the
-    /// content height, which is the line budget the editor geometry wrapped
-    /// and aligned at. `block_extent` is how wide the column stack is.
+    /// The box the painter lays the editor's value out in, given the value's
+    /// extent along its lines and across them.
     ///
-    /// A single-line field's geometry has no line budget, so its line starts
-    /// at line-left and aligns nowhere. Its box is then exactly as long as the
-    /// line, leaving the painter's own `start` alignment no slack to move the
-    /// glyphs off the carets; where the line sits in the field is the scroll's
-    /// business ([`UiWorld::vertical_editor_frame`]).
+    /// For a wrapping editor its length along the lines is the content box's
+    /// — the line budget the editor geometry wrapped and aligned at, so the
+    /// painter wraps and aligns the same. A single-line field's geometry has
+    /// no line budget and starts its line at line-left, so the box is exactly
+    /// as long as the line: the painter's own `start` alignment has no slack
+    /// to move the glyphs off the carets, and where the line sits in the field
+    /// is the frame's scroll.
     pub(crate) fn text_bounds(
         &self,
-        block_extent: f32,
         inline_extent: f32,
+        block_extent: f32,
         multiline: bool,
     ) -> LayoutBox {
-        let width = block_extent.max(self.content.width);
-        let start = self.page_x(0.0);
-        LayoutBox {
-            x: if self.writing.block_reversed() {
-                start - width
-            } else {
-                start
-            },
-            y: self.content.y - self.inline_scroll,
-            width,
-            height: if multiline {
-                self.content.height
+        let (content_inline, content_block) = self.content_extents();
+        self.field_rect(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: if multiline {
+                content_inline
             } else {
                 inline_extent
             },
+            height: if multiline {
+                block_extent.max(content_block)
+            } else {
+                self.line
+            },
+        })
+    }
+
+    /// The content box's extent along the lines and across them.
+    fn content_extents(&self) -> (f32, f32) {
+        if self.writing.is_vertical() {
+            (self.content.height, self.content.width)
+        } else {
+            (self.content.width, self.content.height)
         }
     }
 }
@@ -5308,63 +5315,136 @@ impl UiWorld {
             })
     }
 
-    /// The frame a vertical editor's text space is drawn and hit in, or
-    /// `None` for a horizontal one (#59).
-    ///
-    /// Scrolled the way a horizontal editor is: a single-line field follows
-    /// its caret down the column, a focused multiline one reveals the caret
-    /// from the scroll offset it was left at — `y` along the columns, `x`
-    /// across them.
-    pub(crate) fn vertical_editor_frame(&self, id: StableNodeId) -> Option<VerticalEditorFrame> {
-        let writing = self.computed_style(id)?.writing_context();
-        if !writing.is_vertical() {
-            return None;
+    /// The box an editor's text is drawn in: its content box, less the
+    /// number steppers a numeric field keeps at its right edge. Component
+    /// geometry and pointer hits both read it, so the two agree on where the
+    /// text is.
+    pub(crate) fn text_input_text_box(&self, id: StableNodeId) -> Option<LayoutBox> {
+        let (content, _) = self.text_input_pointer_context(id)?;
+        let Some(StandardVisual::TextInput {
+            size,
+            steppers: true,
+            ..
+        }) = self.nodes.visual(id)
+        else {
+            return Some(content);
+        };
+        let band = (size.height_in(self.style_model.metrics) / 2.0).min(content.height / 2.0);
+        let width = size.indicator_size();
+        if band <= 0.0 || width <= 0.0 || content.width <= width {
+            return Some(content);
         }
-        let (content, requested) = self.text_input_pointer_context(id)?;
-        let presentation = self.nodes.text_input_presentation(id)?;
+        Some(LayoutBox {
+            width: (content.width - width - 4.0).max(0.0),
+            ..content
+        })
+    }
+
+    /// The frame an editor's text space is drawn and hit in.
+    ///
+    /// Scrolled in line space: a focused multiline editor reveals its caret
+    /// from the offset it was left at (unless a minimap navigation pinned the
+    /// viewport), a single-line field follows its caret along the line.
+    pub(crate) fn editor_frame(&self, id: StableNodeId) -> Option<EditorFrame> {
+        let writing = self.computed_style(id)?.writing_context();
+        let Some(StandardVisual::TextInput { size, .. }) = self.nodes.visual(id) else {
+            return None;
+        };
+        let content = self.text_input_text_box(id)?;
+        let requested = self.record(id).scroll_offset;
+        let vertical = writing.is_vertical();
+        let Some(presentation) = self.nodes.text_input_presentation(id) else {
+            // Not shaped yet: nothing is drawn, so there is no line to anchor
+            // or centre. The recorded offset is all there is, and a pointer
+            // still resolves through it.
+            let (inline_scroll, block_scroll) = if vertical {
+                (requested.y, requested.x)
+            } else {
+                (requested.x, requested.y)
+            };
+            return Some(EditorFrame {
+                content,
+                writing,
+                line: size.line_height().max(1.0),
+                inline_scroll,
+                block_scroll,
+            });
+        };
         let multiline = self
             .nodes
             .get(id)
             .is_some_and(|node| node.accessibility.multiline);
         let focused = self.input.focused.get(&self.record(id).document) == Some(&id);
-        let line = presentation.line_height.max(1.0);
-        let block_extent = presentation.content_size.width;
-        let inline_extent = presentation.content_size.height;
+        let (content_inline, content_block) = if vertical {
+            (content.height, content.width)
+        } else {
+            (content.width, content.height)
+        };
+        let (inline_extent, block_extent) = if vertical {
+            (
+                presentation.content_size.height,
+                presentation.content_size.width,
+            )
+        } else {
+            (
+                presentation.content_size.width,
+                presentation.content_size.height,
+            )
+        };
+        // The caret's line box: the editor's own for a wrapping editor, the
+        // control's for a single-line field. Never taller than the box.
+        let line = if multiline {
+            presentation.line_height
+        } else {
+            size.line_height()
+        }
+        .max(1.0)
+        .min(content_block.max(1.0));
         let (caret_inline, caret_block) = (presentation.caret_x, presentation.caret_y);
-        let max_inline = (inline_extent - content.height).max(0.0);
+        let max_inline = (inline_extent - content_inline).max(0.0);
+        let max_block = (block_extent - content_block).max(0.0);
         let (inline_scroll, block_scroll) = if multiline {
-            let mut inline = requested.y;
-            let mut block = requested.x;
-            if focused {
+            // A physical scroll offset in line space: `x` along a horizontal
+            // line, `y` down a vertical one.
+            let (mut inline, mut block) = if vertical {
+                (requested.y, requested.x)
+            } else {
+                (requested.x, requested.y)
+            };
+            inline = inline.min(max_inline);
+            block = block.min(max_block);
+            // A minimap navigation pins the viewport: the caret yields to it
+            // until the host rewrites the offset or the caret moves.
+            let pinned = self.text_viewport_pin(id) == Some(requested);
+            if focused && !pinned {
                 if caret_inline < inline {
                     inline = caret_inline;
-                } else if caret_inline + 1.0 > inline + content.height {
-                    inline = caret_inline + 1.0 - content.height;
+                } else if caret_inline + 1.0 > inline + content_inline {
+                    inline = caret_inline + 1.0 - content_inline;
                 }
                 if caret_block < block {
                     block = caret_block;
-                } else if caret_block + line > block + content.width {
-                    block = caret_block + line - content.width;
+                } else if caret_block + line > block + content_block {
+                    block = caret_block + line - content_block;
                 }
             }
-            (
-                inline.clamp(0.0, max_inline),
-                block.clamp(0.0, (block_extent - content.width).max(0.0)),
-            )
+            (inline.clamp(0.0, max_inline), block.clamp(0.0, max_block))
         } else {
-            // A line shorter than the field sits at its inline-start: the top,
-            // or the bottom of a vertical RTL field (CSS Writing Modes §2.1),
-            // which is a negative scroll. A longer one follows the caret.
-            let inline = if writing.inline_reversed() && inline_extent <= content.height {
-                -(content.height - inline_extent)
+            // A line shorter than the field sits at its inline-start: the left,
+            // the right of an RTL field, the top — or the bottom of a vertical
+            // RTL one (CSS Writing Modes §2.1) — which on a reversed axis is a
+            // negative scroll. A longer line follows the caret.
+            let inline = if writing.inline_reversed() && inline_extent <= content_inline {
+                -(content_inline - inline_extent)
             } else {
-                (caret_inline - content.height + 1.0).clamp(0.0, max_inline)
+                (caret_inline - content_inline + 1.0).clamp(0.0, max_inline)
             };
-            (inline, -(content.width - line) * 0.5)
+            (inline, -(content_block - line) * 0.5)
         };
-        Some(VerticalEditorFrame {
+        Some(EditorFrame {
             content,
             writing,
+            line,
             inline_scroll,
             block_scroll,
         })

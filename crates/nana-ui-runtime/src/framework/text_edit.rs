@@ -244,16 +244,6 @@ impl EditorGeometry<'_> {
             )
             .is_some()
     }
-
-    /// Document-local pointer coordinates as a content-local point.
-    fn localize(
-        content: crate::LayoutBox,
-        scroll: crate::ScrollOffset,
-        x: f32,
-        y: f32,
-    ) -> (f32, f32) {
-        (x - content.x + scroll.x, y - content.y + scroll.y)
-    }
 }
 
 /// Whether an editor's drawn text is its value, so a geometry probe of the
@@ -2220,7 +2210,7 @@ impl AppContext {
         y: f32,
         shaper: &mut dyn crate::TextShaper,
     ) -> Result<Option<crate::TextHit>, FrameworkError> {
-        let Some((content, scroll)) = self.world.text_input_pointer_context(node) else {
+        let Some(frame) = self.world.editor_frame(node) else {
             return Ok(None);
         };
         let Some((style, constraints)) = self.world.text_input_shape_context(node) else {
@@ -2238,13 +2228,10 @@ impl AppContext {
             style,
             constraints,
         };
-        // A vertical editor's text space is line space (#59): the point is
-        // turned into it by the same frame its caret and selection are drawn
-        // through.
-        let (local_x, local_y) = match self.world.vertical_editor_frame(node) {
-            Some(frame) => frame.text_point(x, y),
-            None => EditorGeometry::localize(content, scroll, x, y),
-        };
+        // The point in the editor's text space, through the frame its caret
+        // and selection are drawn with: the same scroll, centring and
+        // inline-start anchoring, in every writing mode.
+        let (local_x, local_y) = frame.text_point(x, y);
         let hit = match geometry.shaper.text_hit_at_point(
             node,
             &geometry.text,
@@ -3035,9 +3022,7 @@ impl AppContext {
         }
         let target = self.world.hit_test(document, x, y);
         let hit = target.and_then(|id| {
-            let (content, scroll) = self.world.text_input_pointer_context(id)?;
-            let local_x = x - content.x + scroll.x;
-            let local_y = y - content.y + scroll.y;
+            let (local_x, local_y) = self.world.editor_frame(id)?.text_point(x, y);
             self.world
                 .text_diagnostic_hit(id, local_x, local_y)
                 .map(|hover| (id, hover))
