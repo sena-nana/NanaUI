@@ -654,6 +654,9 @@ pub struct IconButton {
     pub disabled: bool,
     pub tooltip: Option<IconButtonTooltip>,
     pub(crate) tooltip_open: bool,
+    /// Take every colour from [`Self::style`] as written instead of from
+    /// [`Self::kind`]. Off by default; see [`IconButton::colors_from_style`].
+    pub colors_from_style: bool,
     pub style: NodeStyle,
 }
 
@@ -717,6 +720,7 @@ impl IconButton {
             disabled: false,
             tooltip: None,
             tooltip_open: false,
+            colors_from_style: false,
             style,
         }
     }
@@ -749,6 +753,22 @@ impl IconButton {
     /// Tooltip with [`nana_ui_core::TooltipConfig::default`].
     pub fn with_tooltip(self, label: impl Into<Arc<str>>) -> Self {
         self.tooltip(label, nana_ui_core::TooltipConfig::default())
+    }
+
+    /// Paint this button with the colours in its own [`Self::style`] instead
+    /// of the ones [`Self::kind`] picks.
+    ///
+    /// By default `kind` decides the resting fill, the glyph and the hover /
+    /// press / selected washes, and overwrites whatever the style says — which
+    /// is what keeps every icon button in a product consistent. A button that
+    /// stands on a surface no kind was drawn for (a coloured plate, an image)
+    /// needs combinations no kind has, such as no resting fill with an
+    /// on-accent glyph. This switch hands that one button's colours to its
+    /// style, verbatim: `background: None` there means no fill, not "use the
+    /// kind's". It only affects the button it is set on.
+    pub fn colors_from_style(mut self) -> Self {
+        self.colors_from_style = true;
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -792,49 +812,10 @@ impl ComponentView for IconButton {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
-        let mut effective_style = self.style.clone();
-        effective_style.background = match self.kind {
-            nana_ui_core::ButtonKind::Primary => Some(nana_ui_core::SemanticColorRole::Accent),
-            nana_ui_core::ButtonKind::Subtle => Some(nana_ui_core::SemanticColorRole::Subtle),
-            nana_ui_core::ButtonKind::Selected => Some(nana_ui_core::SemanticColorRole::Selected),
-            _ => None,
-        };
-        effective_style.foreground = Some(match self.kind {
-            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentText,
-            nana_ui_core::ButtonKind::Warning => nana_ui_core::SemanticColorRole::Warning,
-            nana_ui_core::ButtonKind::Danger => nana_ui_core::SemanticColorRole::Danger,
-            _ => nana_ui_core::SemanticColorRole::Muted,
-        });
-        effective_style.interaction.hovered.background = Some(match self.kind {
-            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
-            nana_ui_core::ButtonKind::Subtle
-            | nana_ui_core::ButtonKind::Selected
-            | nana_ui_core::ButtonKind::Ghost
-            | nana_ui_core::ButtonKind::Warning
-            | nana_ui_core::ButtonKind::Danger
-            | nana_ui_core::ButtonKind::Text
-            | nana_ui_core::ButtonKind::Menu => nana_ui_core::SemanticColorRole::Hover,
-        });
-        effective_style.interaction.pressed.background = Some(match self.kind {
-            nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
-            _ => nana_ui_core::SemanticColorRole::Active,
-        });
-        effective_style.interaction.selected.foreground =
-            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
-        effective_style.interaction.selected.background =
-            Some(nana_ui_core::SemanticColorRole::AccentSoft);
-        effective_style.interaction.selected_hovered.foreground =
-            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
-        effective_style.interaction.selected_hovered.background =
-            Some(nana_ui_core::SemanticColorRole::AccentSoftHover);
-        effective_style.interaction.selected_pressed.foreground =
-            Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
-        effective_style.interaction.selected_pressed.background =
-            Some(nana_ui_core::SemanticColorRole::AccentSoftPressed);
         let selected = self.selected || self.kind == nana_ui_core::ButtonKind::Selected;
-        if selected {
-            effective_style.background = Some(nana_ui_core::SemanticColorRole::AccentSoft);
-            effective_style.foreground = Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+        let mut effective_style = self.style.clone();
+        if !self.colors_from_style {
+            kind_colors(self.kind, selected, &mut effective_style);
         }
         project_common(
             id,
@@ -853,6 +834,51 @@ impl ComponentView for IconButton {
                 ..AccessibilityState::default()
             },
         );
+    }
+}
+
+/// The colours an [`IconButton`] of `kind` paints with, written over `style`.
+/// Skipped for a button that opted into [`IconButton::colors_from_style`].
+fn kind_colors(kind: nana_ui_core::ButtonKind, selected: bool, style: &mut NodeStyle) {
+    style.background = match kind {
+        nana_ui_core::ButtonKind::Primary => Some(nana_ui_core::SemanticColorRole::Accent),
+        nana_ui_core::ButtonKind::Subtle => Some(nana_ui_core::SemanticColorRole::Subtle),
+        nana_ui_core::ButtonKind::Selected => Some(nana_ui_core::SemanticColorRole::Selected),
+        _ => None,
+    };
+    style.foreground = Some(match kind {
+        nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentText,
+        nana_ui_core::ButtonKind::Warning => nana_ui_core::SemanticColorRole::Warning,
+        nana_ui_core::ButtonKind::Danger => nana_ui_core::SemanticColorRole::Danger,
+        _ => nana_ui_core::SemanticColorRole::Muted,
+    });
+    style.interaction.hovered.background = Some(match kind {
+        nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
+        nana_ui_core::ButtonKind::Subtle
+        | nana_ui_core::ButtonKind::Selected
+        | nana_ui_core::ButtonKind::Ghost
+        | nana_ui_core::ButtonKind::Warning
+        | nana_ui_core::ButtonKind::Danger
+        | nana_ui_core::ButtonKind::Text
+        | nana_ui_core::ButtonKind::Menu => nana_ui_core::SemanticColorRole::Hover,
+    });
+    style.interaction.pressed.background = Some(match kind {
+        nana_ui_core::ButtonKind::Primary => nana_ui_core::SemanticColorRole::AccentStrong,
+        _ => nana_ui_core::SemanticColorRole::Active,
+    });
+    style.interaction.selected.foreground = Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+    style.interaction.selected.background = Some(nana_ui_core::SemanticColorRole::AccentSoft);
+    style.interaction.selected_hovered.foreground =
+        Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+    style.interaction.selected_hovered.background =
+        Some(nana_ui_core::SemanticColorRole::AccentSoftHover);
+    style.interaction.selected_pressed.foreground =
+        Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
+    style.interaction.selected_pressed.background =
+        Some(nana_ui_core::SemanticColorRole::AccentSoftPressed);
+    if selected {
+        style.background = Some(nana_ui_core::SemanticColorRole::AccentSoft);
+        style.foreground = Some(nana_ui_core::SemanticColorRole::AccentOnSoft);
     }
 }
 
