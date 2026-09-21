@@ -611,6 +611,23 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 stack.pop();
             }
             PaintOp::FillPath { path, paint } => {
+                // A solid (rounded) rectangle is a quad: nothing to
+                // triangulate, and a handful of instance bytes a frame instead
+                // of a mesh's worth of vertices.
+                if clip.is_none()
+                    && let ResolvedPaint::Solid(color) = paint
+                    && let Some((rect, radii)) = quad_shape(path)
+                {
+                    built.push(BuiltOp::Quad {
+                        rect,
+                        radii,
+                        fill: Some(fade(*color, alpha)),
+                        border: None,
+                        shadow: None,
+                        transform: t,
+                    });
+                    continue;
+                }
                 push_fill(&mut built, fill_shapes(path, t), paint, state, clip);
             }
             PaintOp::StrokePath {
@@ -618,6 +635,24 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
                 paint,
                 stroke,
             } => {
+                // Likewise a solid, undashed stroke of one: a border drawn on
+                // the rectangle grown by half the width.
+                if clip.is_none()
+                    && let ResolvedPaint::Solid(color) = paint
+                    && let Some((rect, radii)) = quad_shape(path)
+                    && let Some(outer) = stroke_quad_radii(radii, stroke)
+                {
+                    let half = stroke.width * 0.5;
+                    built.push(BuiltOp::Quad {
+                        rect: outset(rect, half),
+                        radii: outer,
+                        fill: None,
+                        border: Some((fade(*color, alpha), stroke.width)),
+                        shadow: None,
+                        transform: t,
+                    });
+                    continue;
+                }
                 push_fill(
                     &mut built,
                     stroke_shapes(path, stroke, t),
@@ -809,6 +844,47 @@ fn build_ops(ops: &[PaintOp]) -> Vec<BuiltOp> {
         }
     }
     built
+}
+
+/// The rectangle and corner radii of a path that is one (rounded)
+/// rectangle with room to draw.
+fn quad_shape(path: &PaintPath) -> Option<(SceneRect, [f32; 4])> {
+    let (rect, radii) = path.as_rounded_rect_corners()?;
+    let finite = [rect.x, rect.y, rect.width, rect.height]
+        .iter()
+        .chain(radii.iter())
+        .all(|v| v.is_finite());
+    (finite && rect.width > 0.0 && rect.height > 0.0).then(|| (scene_rect(rect), radii))
+}
+
+/// The outer corner radii of a stroke along a rounded rectangle, as the
+/// border of a quad grown by half the stroke — or `None` when a quad border
+/// cannot draw it: a dash, or a bevelled (or miter-limited) sharp corner.
+fn stroke_quad_radii(radii: [f32; 4], stroke: &StrokeStyle) -> Option<[f32; 4]> {
+    if dash_pattern(&stroke.dash).is_some()
+        || !stroke.width.is_finite()
+        || stroke.width <= 0.0
+        || stroke.width > MAX_LENGTH
+    {
+        return None;
+    }
+    let half = stroke.width * 0.5;
+    // A square corner's miter reaches √2 widths: a lower limit bevels it.
+    let square_miter = stroke.miter_limit >= std::f32::consts::SQRT_2;
+    let mut outer = [0.0; 4];
+    for (slot, radius) in outer.iter_mut().zip(radii) {
+        *slot = if radius > 0.0 {
+            // Round, miter and bevel joins all follow the arc.
+            radius + half
+        } else {
+            match stroke.join {
+                LineJoin::Miter if square_miter => 0.0,
+                LineJoin::Round => half,
+                _ => return None,
+            }
+        };
+    }
+    Some(outer)
 }
 
 /// Straight RGBA with its alpha scaled.
@@ -2055,13 +2131,14 @@ mod tests {
     use super::*;
 
     fn rect_path(x: f32, y: f32, width: f32, height: f32) -> PaintPath {
+        // Drawn edge by edge, so it stays a path: `PaintPath::rect` would be
+        // drawn as a quad and these tests are about the path geometry.
         let mut path = PaintPath::new();
-        path.rect(LayoutBox {
-            x,
-            y,
-            width,
-            height,
-        });
+        path.move_to(x, y)
+            .line_to(x + width, y)
+            .line_to(x + width, y + height)
+            .line_to(x, y + height)
+            .close();
         path
     }
 
@@ -2125,6 +2202,105 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_solid_rounded_rectangle_fills_and_strokes_as_a_quad() {
+        let mut card = PaintPath::new();
+        card.rounded_rect(
+            LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 80.0,
+                height: 40.0,
+            },
+            [6.0, 6.0, 0.0, 0.0],
+        );
+        let card = Arc::new(card);
+        let solid = ResolvedPaint::Solid([1.0, 0.0, 0.0, 1.0]);
+        let stroke = |join| {
+            let mut stroke = StrokeStyle::new(2.0);
+            stroke.join = join;
+            stroke
+        };
+        let built = build_ops(&[
+            PaintOp::FillPath {
+                path: Arc::clone(&card),
+                paint: solid.clone(),
+            },
+            PaintOp::StrokePath {
+                path: Arc::clone(&card),
+                stroke: stroke(LineJoin::Miter),
+                paint: solid.clone(),
+            },
+            PaintOp::StrokePath {
+                path: Arc::clone(&card),
+                stroke: stroke(LineJoin::Round),
+                paint: solid.clone(),
+            },
+        ]);
+        let [
+            BuiltOp::Quad {
+                rect: fill_rect,
+                radii: fill_radii,
+                fill: Some(_),
+                border: None,
+                ..
+            },
+            BuiltOp::Quad {
+                rect: miter_rect,
+                radii: miter_radii,
+                fill: None,
+                border: Some((_, 2.0)),
+                ..
+            },
+            BuiltOp::Quad {
+                radii: round_radii, ..
+            },
+        ] = &built[..]
+        else {
+            panic!("{built:?}");
+        };
+        assert_eq!((fill_rect.x, fill_rect.width), (10.0, 80.0));
+        assert_eq!(*fill_radii, [6.0, 6.0, 0.0, 0.0]);
+        // Half the width either side of the outline; arcs grow by half, a
+        // square corner stays square under a miter and rounds under a round
+        // join.
+        assert_eq!((miter_rect.x, miter_rect.width), (9.0, 82.0));
+        assert_eq!(*miter_radii, [7.0, 7.0, 0.0, 0.0]);
+        assert_eq!(*round_radii, [7.0, 7.0, 1.0, 1.0]);
+
+        // What a quad border cannot draw stays a path: a dash, a bevelled
+        // square corner, a gradient, anything not a rectangle.
+        let mut dashed = StrokeStyle::new(2.0).dash(vec![4.0, 2.0], 0.0);
+        dashed.join = LineJoin::Miter;
+        let mut circle = PaintPath::new();
+        circle.ellipse(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+        });
+        let built = build_ops(&[
+            PaintOp::StrokePath {
+                path: Arc::clone(&card),
+                stroke: dashed,
+                paint: solid.clone(),
+            },
+            PaintOp::StrokePath {
+                path: Arc::clone(&card),
+                stroke: stroke(LineJoin::Bevel),
+                paint: solid.clone(),
+            },
+            PaintOp::FillPath {
+                path: Arc::new(circle),
+                paint: solid,
+            },
+        ]);
+        assert!(
+            built.iter().all(|op| matches!(op, BuiltOp::Mesh(_))),
+            "{built:?}"
+        );
     }
 
     #[test]

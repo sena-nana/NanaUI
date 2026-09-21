@@ -147,7 +147,8 @@ slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组
   行高、斜体，颜色可以是渐变。
 - 路径：`PaintPath` 支持直线、二次 / 三次贝塞尔、`arc` 和 Canvas 语义的
   `arc_to`（任意拐角倒圆，凹角也可以），NonZero / EvenOdd，参数与 Canvas 一样
-  写成标量；`PaintPath::from_svg` 从 SVG path 数据建路径，`contains` /
+  写成标量（`arc` 的最后一个参数是扫过的角度，与 `QPainterPath::arcTo` 相同，
+  不是 Canvas 的终止角）；`PaintPath::from_svg` 从 SVG path 数据建路径，`contains` /
   `stroke_contains` 对应 Canvas `isPointInPath` / `isPointInStroke`，另有
   `bounds`、`transformed`。`cx.fill_path` / `cx.stroke_path` 带抗锯齿。
 - 上色：填充、描边、圆角矩形、文字和图标都接受纯色或 `Gradient`（`linear` /

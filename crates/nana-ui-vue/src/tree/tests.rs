@@ -6993,29 +6993,51 @@ fn a_paint_attribute_paints_a_layout_element() {
             height: 60.0,
         },
     )]);
-    let paths: Vec<_> = doc
+    let own: Vec<_> = doc
         .scene()
         .primitives()
         .filter(|primitive| primitive.node.get() == panel.0)
+        .cloned()
+        .collect();
+    // A solid rounded rectangle is drawn as a quad; the line stays a path.
+    let [fill] = &own
+        .iter()
         .filter_map(|primitive| match &primitive.kind {
-            nana_ui_scene::ScenePrimitiveKind::Path { mesh, .. } => Some(mesh.clone()),
+            nana_ui_scene::ScenePrimitiveKind::Quad {
+                background: Some(color),
+                corner_radius,
+                ..
+            } => Some((primitive.bounds, *color, *corner_radius)),
             _ => None,
         })
-        .collect();
-    assert_eq!(paths.len(), 2, "the fill and the stroke");
-    let fill = &paths[0];
-    assert!((fill.bounds.width - 120.0).abs() < 0.01 && (fill.bounds.height - 60.0).abs() < 0.01);
-    let color = fill.vertices[0].color;
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("{own:?}");
+    };
+    let (bounds, color, radius) = fill;
+    assert!((bounds.width - 120.0).abs() < 0.01 && (bounds.height - 60.0).abs() < 0.01);
     assert!(
         (color[0] - 0.2).abs() < 0.01 && (color[2] - 1.0).abs() < 0.01,
         "{color:?}"
+    );
+    assert_eq!(*radius, [8.0; 4]);
+    assert_eq!(
+        own.iter()
+            .filter(|p| matches!(p.kind, nana_ui_scene::ScenePrimitiveKind::Path { .. }))
+            .count(),
+        1,
+        "the stroke"
     );
 
     // A broken script paints nothing and says why, once.
     doc.set_attribute(panel, "paint", r#"[{"op": "nope"}]"#);
     doc.apply_layout_boxes(&[]);
     assert!(!doc.scene().primitives().any(|p| p.node.get() == panel.0
-        && matches!(p.kind, nana_ui_scene::ScenePrimitiveKind::Path { .. })));
+        && matches!(
+            p.kind,
+            nana_ui_scene::ScenePrimitiveKind::Path { .. }
+                | nana_ui_scene::ScenePrimitiveKind::Quad { .. }
+        )));
     let errors = doc.take_paint_errors();
     assert!(
         errors.len() == 1 && errors[0].contains("unknown op `nope`"),
@@ -7031,6 +7053,39 @@ fn a_paint_attribute_paints_a_layout_element() {
 }
 
 #[test]
+fn the_last_paint_set_in_a_frame_is_the_one_that_lands() {
+    const A: &str = r#"[{"op": "fill", "path": "M0 0 H4 V4 Z", "paint": "accent"}]"#;
+    const B: &str = r#"[{"op": "fill", "path": "M0 0 H8 V8 Z", "paint": "text"}]"#;
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let panel = doc.create_element("div");
+    doc.insert(panel, doc.mount_root(), None);
+    doc.set_attribute(panel, "paint", A);
+    doc.apply_layout_boxes(&[]);
+    let id = StableNodeId::try_from(panel).unwrap();
+    let key = |doc: &NanaTreeDocument| {
+        doc.runtime
+            .world()
+            .painter_override(id)
+            .map(|painter| painter.painter().paint_key())
+    };
+    let a = key(&doc).expect("A is on");
+    // Away and back before the frame commits: A stays.
+    doc.set_attribute(panel, "paint", B);
+    doc.set_attribute(panel, "paint", A);
+    doc.apply_layout_boxes(&[]);
+    assert_eq!(key(&doc), Some(a));
+
+    // Set and removed before the frame commits: nothing stays.
+    let fresh = doc.create_element("div");
+    doc.insert(fresh, doc.mount_root(), None);
+    doc.set_attribute(fresh, "paint", B);
+    doc.remove_attribute(fresh, "paint");
+    doc.apply_layout_boxes(&[]);
+    let fresh_id = StableNodeId::try_from(fresh).unwrap();
+    assert!(doc.runtime.world().painter_override(fresh_id).is_none());
+}
+
+#[test]
 fn a_paint_attribute_paints_a_built_in_component_too() {
     let mut doc = NanaTreeDocument::new(800, 600, 1.0);
     let button = doc.create_element("button");
@@ -7038,7 +7093,7 @@ fn a_paint_attribute_paints_a_built_in_component_too() {
     doc.set_attribute(
         button,
         "paint",
-        r##"[{"op": "drawDefault"}, {"op": "fill", "path": [["rect", 0, 0, "100%", 2]], "paint": "#ff0000"}]"##,
+        r##"[{"op": "drawDefault"}, {"op": "fill", "path": "M0 0 H80 L0 2 Z", "paint": "#ff0000"}]"##,
     );
     doc.apply_layout_boxes(&[(
         button,

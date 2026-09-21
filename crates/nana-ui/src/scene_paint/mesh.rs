@@ -677,9 +677,18 @@ impl MeshPipeline {
             }
         };
         let base = self.paths.pending_vertices.len() as u32;
+        let mut last_color = ([f32::NAN; 4], [0.0f32; 4]);
         self.paths
             .pending_vertices
             .extend(mesh.vertices.iter().map(|vertex| {
+                // A mesh is mostly one colour: convert it to linear once,
+                // not three `powf`s a vertex.
+                if vertex.color != last_color.0 {
+                    last_color = (
+                        vertex.color,
+                        pack_linear(with_opacity(vertex.color, opacity)),
+                    );
+                }
                 let x = vertex.position[0] + origin[0];
                 let y = vertex.position[1] + origin[1];
                 let [ex, ey] = vertex.extrude;
@@ -688,7 +697,7 @@ impl MeshPipeline {
                     extrude: screen_extrude([a, b, c, d], [ex, ey]),
                     coverage: vertex.coverage,
                     clip_index,
-                    color: pack_linear(with_opacity(vertex.color, opacity)),
+                    color: last_color.1,
                     paint_pos: vertex.paint_pos,
                     gradient,
                 }

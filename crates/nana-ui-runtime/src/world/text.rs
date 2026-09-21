@@ -4025,13 +4025,14 @@ impl UiWorld {
                 .invalidate_text(id, crate::text_node::TextDirty::FONT);
             self.mark(id, DirtyMask::TEXT | DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
-        // A painter may have measured text: its recording is keyed on the
-        // backend, and has to be extracted again to be re-recorded.
+        // A painter that measured text re-records against the new backend;
+        // one that did not is untouched.
         let painted = self
             .paint_recordings
             .get_mut()
-            .keys()
-            .copied()
+            .iter()
+            .filter(|(_, held)| held.measured_text.is_some())
+            .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in painted {
             self.mark_repaint(id);

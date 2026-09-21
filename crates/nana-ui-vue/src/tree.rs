@@ -1431,7 +1431,10 @@ impl NanaTreeDocument {
                 .paint
                 .clone()
                 .or_else(|| self.dom_painter(id.get()));
-            if self.runtime.world().painter_override(id) != painter.as_ref() {
+            // Queued after everything the frame queued before, so it is what
+            // lands; the world ignores it when nothing changed. Unpainted
+            // elements queue nothing.
+            if painter.is_some() || self.runtime.world().painter_override(id).is_some() {
                 mutations.set_painter(id, painter);
             }
             let migrated = {
@@ -2339,11 +2342,11 @@ impl NanaTreeDocument {
             return;
         };
         // Set apart from the style, so whichever component writes the
-        // node's style leaves it alone.
+        // node's style leaves it alone. Always queued: an earlier change this
+        // frame may already be queued and not yet committed, so the world's
+        // value is no guide. The world ignores a set that changes nothing.
         let painter = self.dom_painter(el.0);
-        if self.runtime.world().painter_override(id) != painter.as_ref() {
-            self.pending.mutations.set_painter(id, painter);
-        }
+        self.pending.mutations.set_painter(id, painter);
     }
 
     /// Queue a `paint` script error for the diagnostics sink, once per

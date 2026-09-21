@@ -267,10 +267,13 @@ struct PaintCacheEntry {
     recording: Arc<crate::PaintRecording>,
     /// The same recording, for the hit index.
     latest: SharedRecording,
-    /// The resolved style text was measured with, when the painter measured
-    /// any: a font change has to re-record it. Held, so the pointer compared
-    /// against cannot be reused by another style.
-    text_style: Option<Arc<crate::ComputedStyle>>,
+    /// What the painter's text was measured against — the node's resolved
+    /// style and the host's font backend — when it measured any. Only then
+    /// does a font or backend change re-record it.
+    measured_text: Option<(
+        Arc<crate::ComputedStyle>,
+        Option<crate::text_node::TextBackendEpoch>,
+    )>,
 }
 
 /// What a painted node's hit test asks: the painter's own answer, else the
@@ -1705,10 +1708,7 @@ impl UiWorld {
         for (document, id) in invalid_focus {
             self.input.focused.remove(&document);
             self.remove_ime(id);
-            self.mark(
-                id,
-                DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-            );
+            self.mark_focus_changed(id);
         }
     }
 
@@ -2333,10 +2333,7 @@ impl UiWorld {
                     && self.active_modal_allows_focus_now(document, *id)
             }) {
                 self.input.focused.insert(document, restore_focus);
-                self.mark(
-                    restore_focus,
-                    DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                );
+                self.mark_focus_changed(restore_focus);
             }
         }
     }

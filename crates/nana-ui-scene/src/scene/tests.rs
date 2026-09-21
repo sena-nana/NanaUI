@@ -9136,13 +9136,14 @@ mod custom_paint {
     use nana_ui_runtime::{PaintOp, PaintPath, PaintRecording};
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> PaintPath {
+        // Drawn edge by edge, so it stays a path: `PaintPath::rect` would be
+        // drawn as a quad and these tests are about the path geometry.
         let mut path = PaintPath::new();
-        path.rect(LayoutBox {
-            x,
-            y,
-            width,
-            height,
-        });
+        path.move_to(x, y)
+            .line_to(x + width, y)
+            .line_to(x + width, y + height)
+            .line_to(x, y + height)
+            .close();
         path
     }
 

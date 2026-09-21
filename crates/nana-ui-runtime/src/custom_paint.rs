@@ -78,7 +78,6 @@ impl NodePainter {
         size: [f32; 2],
         theme_epoch: u64,
         state: PaintState,
-        text: Option<crate::text_node::TextBackendEpoch>,
     ) -> PaintCacheKey {
         PaintCacheKey {
             painter: self.type_id,
@@ -86,7 +85,6 @@ impl NodePainter {
             size: [size[0].to_bits(), size[1].to_bits()],
             theme_epoch,
             state,
-            text,
         }
     }
 }
@@ -121,8 +119,6 @@ pub(crate) struct PaintCacheKey {
     size: [u32; 2],
     theme_epoch: u64,
     state: PaintState,
-    /// What `measure_text` measured with: another font set is another answer.
-    text: Option<crate::text_node::TextBackendEpoch>,
 }
 
 /// 节点当前的交互状态。状态变化会让节点重录，painter 不必把它算进
@@ -822,6 +818,14 @@ impl PaintPath {
                 [cx + rx, cy],
             )
             .close()
+    }
+
+    /// 这条路径若只是一个轴对齐的（圆角）矩形，返回它和四角半径（左上、右上、
+    /// 右下、左下，已按 CSS 规则缩到放得下）。
+    ///
+    /// Scene 用它把这样的填充和描边交给矩形图元画，不必三角化。
+    pub fn as_rounded_rect_corners(&self) -> Option<(LayoutBox, [f32; 4])> {
+        self.shape_hint
     }
 
     /// 这条路径若只是一个轴对齐的（圆角）矩形，返回它和统一的圆角半径。
@@ -2373,18 +2377,64 @@ mod tests {
             },
         );
         commit(&mut world, queue);
-        world.extract_nodes(&[node()]);
+        let recording = |world: &UiWorld| {
+            world.extract_nodes(&[node()])[0]
+                .custom_paint
+                .clone()
+                .expect("painted")
+        };
+        let before = recording(&world);
         world.set_pointer_hover(document, 1, Some(node())).unwrap();
         let work = world.take_system_work();
         assert!(
             work.render_extraction.contains(&node()),
             "hover repaints a painter"
         );
-        world.extract_nodes(&[node()]);
+        let after = recording(&world);
         world.extract_nodes(&[node()]);
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2, "once per state, not per extraction");
         assert!(!seen[0].hovered && seen[1].hovered, "{seen:?}");
+        // It paints the same whatever the state: the scene keeps its
+        // triangles, which it reuses by identity.
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    #[test]
+    fn a_painter_that_measured_text_re_records_on_a_font_change_only() {
+        struct Measures(Arc<AtomicUsize>);
+        impl Painter for Measures {
+            fn paint(&self, cx: &mut PaintContext<'_>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                cx.measure_text(&PaintText::new("label"), None);
+            }
+            fn paint_key(&self) -> u64 {
+                0
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut world = painted_world_with(Measures(Arc::clone(&calls)));
+        world.extract_nodes(&[node()]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let restyle = |world: &mut UiWorld, edit: &dyn Fn(&mut nana_ui_core::LayoutStyle)| {
+            let mut style = NodeStyle::default().painter(Measures(Arc::clone(&calls)));
+            edit(Arc::make_mut(&mut style.layout));
+            let mut queue = MutationQueue::new();
+            queue.set_style(node(), style);
+            commit(world, queue);
+            world.extract_nodes(&[node()]);
+        };
+        // A new resolved style that measures the same: no re-record.
+        restyle(&mut world, &|layout| {
+            layout.color = Some([1.0, 0.0, 0.0, 1.0])
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // Another family measures differently.
+        restyle(&mut world, &|layout| {
+            layout.color = Some([1.0, 0.0, 0.0, 1.0]);
+            layout.font_family = Some("Serif".into());
+        });
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

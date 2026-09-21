@@ -1775,13 +1775,13 @@ mod tests {
         world.commit(queue).unwrap();
         world.advance_animations(Duration::ZERO);
         let mut extracted = world.extract_nodes(&[node]);
+        // A triangle stays a path mesh (a rectangle would be drawn as a quad).
         let mut square = PaintPath::new();
-        square.rect(LayoutBox {
-            x: 0.0,
-            y: 0.0,
-            width: 20.0,
-            height: 20.0,
-        });
+        square
+            .move_to(0.0, 0.0)
+            .line_to(20.0, 0.0)
+            .line_to(0.0, 20.0)
+            .close();
         extracted[0].layout = LayoutBox {
             x: 0.0,
             y: 0.0,

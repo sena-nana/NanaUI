@@ -1856,20 +1856,14 @@ impl UiWorld {
                     if !self.record(old).style.interaction.focused.is_empty() {
                         self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
                     }
-                    self.mark(
-                        old,
-                        DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                    );
+                    self.mark_focus_changed(old);
                 }
                 if let Some(target) = target {
                     self.mark(*target, DirtyMask::STATE);
                     if !self.record(*target).style.interaction.focused.is_empty() {
                         self.mark(*target, DirtyMask::STYLE | DirtyMask::RENDER);
                     }
-                    self.mark(
-                        *target,
-                        DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
-                    );
+                    self.mark_focus_changed(*target);
                 }
             }
             UiMutation::RestoreFocusWithin { root } => {

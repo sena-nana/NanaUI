@@ -495,6 +495,18 @@ impl UiWorld {
 impl UiWorld {
     /// Re-record a painted node. A painter whose outline is its hit shape
     /// takes its hit index entry with it: the entry holds the recording.
+    /// A node gained or lost focus: its focus ring, IME and accessibility
+    /// state, and a painter that paints focus.
+    pub(super) fn mark_focus_changed(&mut self, id: StableNodeId) {
+        self.mark(
+            id,
+            DirtyMask::FOCUS_IME | DirtyMask::RENDER | DirtyMask::ACCESSIBILITY,
+        );
+        if self.node_painter(id).is_some() {
+            self.mark_repaint(id);
+        }
+    }
+
     pub(super) fn mark_repaint(&mut self, id: StableNodeId) {
         let outline = self
             .node_painter(id)

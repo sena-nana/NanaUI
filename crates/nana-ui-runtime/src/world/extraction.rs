@@ -244,7 +244,7 @@ impl UiWorld {
     ) -> Arc<crate::PaintRecording> {
         let size = [layout.width.max(0.0), layout.height.max(0.0)];
         let state = self.paint_state(id);
-        let key = painter.cache_key(size, self.palette_epoch, state, self.text_backend);
+        let key = painter.cache_key(size, self.palette_epoch, state);
         let base = self
             .nodes
             .get(id)
@@ -252,10 +252,15 @@ impl UiWorld {
             .unwrap_or_default();
         if let Some(held) = self.paint_recordings.borrow().get(&id)
             && held.key == key
-            && held
-                .text_style
-                .as_ref()
-                .is_none_or(|style| Arc::ptr_eq(style, &base))
+            && held.measured_text.as_ref().is_none_or(|(style, backend)| {
+                *backend == self.text_backend
+                    && (Arc::ptr_eq(style, &base)
+                        || !crate::text_node::classify_computed_style_change(style, &base)
+                            .intersects(
+                                crate::text_node::TextDirty::SHAPE_STYLE
+                                    .union(crate::text_node::TextDirty::CONSTRAINT),
+                            ))
+            })
         {
             return Arc::clone(&held.recording);
         }
@@ -273,6 +278,13 @@ impl UiWorld {
             &measure,
         ));
         let mut recordings = self.paint_recordings.borrow_mut();
+        // The same ops as last time keep the same `Arc`: the scene reuses
+        // its triangles by identity, so a painter that ignores, say, hover is
+        // not re-triangulated on it.
+        let recording = match recordings.get(&id) {
+            Some(held) if *held.recording == *recording => Arc::clone(&held.recording),
+            _ => recording,
+        };
         let latest = match recordings.get(&id) {
             Some(held) => {
                 *held
@@ -289,7 +301,7 @@ impl UiWorld {
                 key,
                 recording: Arc::clone(&recording),
                 latest,
-                text_style: measured.get().then_some(base),
+                measured_text: measured.get().then_some((base, self.text_backend)),
             },
         );
         recording

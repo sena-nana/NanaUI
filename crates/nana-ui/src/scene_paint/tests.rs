@@ -9296,3 +9296,35 @@ fn an_empty_layer_composites_nothing_instead_of_what_last_used_its_depth() {
     assert_eq!(pixel(&pixels, 60, 10, 10), [255, 255, 255, 255]);
     assert_eq!(pixel(&pixels, 60, 50, 10), [0, 0, 0, 255]);
 }
+
+#[test]
+fn a_stroked_rectangle_drawn_as_a_quad_straddles_its_outline() {
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            let mut square = nana_ui_runtime::PaintPath::new();
+            square.rect(LayoutBox {
+                x: 10.0,
+                y: 10.0,
+                width: 40.0,
+                height: 40.0,
+            });
+            cx.fill_path(&square, [0.0, 0.0, 1.0, 1.0]);
+            cx.stroke_path(
+                &square,
+                nana_ui_runtime::StrokeStyle::new(4.0),
+                [1.0, 0.0, 0.0, 1.0],
+            );
+        }),
+        60,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 60, x, y);
+    // The 4px stroke covers 8..12 across the left edge, over the fill.
+    for x in [8, 9, 10, 11] {
+        assert_eq!(at(x, 30), [255, 0, 0, 255], "stroke at x={x}");
+    }
+    assert_eq!(at(12, 30), [0, 0, 255, 255], "fill inside the stroke");
+    assert_eq!(at(7, 30), [0, 0, 0, 255], "nothing outside the stroke");
+    // A miter join keeps the corner square.
+    assert_eq!(at(8, 8), [255, 0, 0, 255], "square outer corner");
+}
