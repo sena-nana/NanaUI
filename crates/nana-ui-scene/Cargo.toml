@@ -20,6 +20,8 @@ benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundl
 [dependencies]
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
+lyon_tessellation.workspace = true
+i_overlay.workspace = true
 # Benchmark only: `nana-dirty-frame-benchmark --engine nana-text`.
 nana-text = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

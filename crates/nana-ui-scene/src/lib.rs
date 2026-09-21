@@ -20,9 +20,10 @@ pub use runtime_document::{RuntimeDocument, RuntimeFrameUpdate};
 pub use scene::{
     AffineTransform, ClipRegion, CompositorLayer, CompositorLayerId, CompositorLayerKind,
     CompositorMotionBinding, CompositorPaintEncode, FilterGroup, FramePlan, InsetShadowOverlay,
-    LAYER_DEMOTE_HOLD, LAYER_PROMOTE_HOLD, OpacityGroup, PrimitiveId, QuadSurfacePaint, SceneDelta,
-    SceneDeltaStats, SceneDraw, ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextOpenType,
-    SceneTextSpan, StrokeCap, StrokePattern, UiScene,
+    LAYER_DEMOTE_HOLD, LAYER_PROMOTE_HOLD, LayerMask, LayerMaskMode, OpacityGroup, PathMesh,
+    PathVertex, PrimitiveId, QuadSurfacePaint, SceneDelta, SceneDeltaStats, SceneDraw,
+    ScenePrimitive, ScenePrimitiveKind, SceneRect, SceneTextOpenType, SceneTextSpan, StrokeCap,
+    StrokePattern, UiScene,
 };
 
 pub use nana_ui_core::{

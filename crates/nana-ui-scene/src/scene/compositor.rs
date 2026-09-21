@@ -950,6 +950,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
+            custom_paint: None,
             chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -1744,6 +1745,92 @@ mod tests {
             }
         }
         assert!(saw_quad && saw_text, "parent quad and child text required");
+    }
+
+    #[test]
+    fn a_painted_node_follows_its_compositor_animation_like_built_in_paint() {
+        use nana_ui_runtime::{
+            AnimationId, AnimationSpec, DocumentId, MutationQueue, PaintOp, PaintPath,
+            PaintRecording, ResolvedPaint, UiWorld,
+        };
+        let node = id(1);
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(node, DocumentId::new(1).unwrap(), NodeKind::Document);
+        queue.start_animation(
+            AnimationSpec::new(
+                AnimationId::new(1).unwrap(),
+                node,
+                Duration::ZERO,
+                Duration::from_millis(400),
+                Duration::from_millis(16),
+                Easing::Linear,
+            )
+            .with_property(AnimatableProperty::Opacity)
+            .with_range(
+                MotionValue::Scalar(0.0),
+                MotionTo::Value(MotionValue::Scalar(1.0)),
+            ),
+        );
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::ZERO);
+        let mut extracted = world.extract_nodes(&[node]);
+        let mut square = PaintPath::new();
+        square.rect(LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 20.0,
+            height: 20.0,
+        });
+        extracted[0].layout = LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 80.0,
+        };
+        extracted[0].style = Arc::new(ComputedStyle {
+            background: Some([1.0, 0.0, 0.0, 1.0]),
+            ..ComputedStyle::default()
+        });
+        extracted[0].custom_paint = Some(Arc::new(PaintRecording {
+            behind_children: vec![
+                PaintOp::DrawDefault,
+                PaintOp::FillPath {
+                    path: Arc::new(square),
+                    paint: ResolvedPaint::Solid([0.0, 0.0, 1.0, 1.0]),
+                },
+            ],
+            over_children: Vec::new(),
+        }));
+        let mut scene = UiScene::new();
+        scene.apply_delta(extracted, []);
+        scene.apply_presentation(
+            world.presentation_store(),
+            Duration::from_millis(200),
+            Some(world.motion_descriptors()),
+        );
+        let layer = scene.compositor_layer(node).expect("promoted");
+        let mut saw_path = false;
+        for primitive in scene.primitives() {
+            let draw = scene.draw_primitive(primitive.id).expect("draw");
+            let encode = scene.compositor_paint_encode(
+                draw.node,
+                &draw.kind,
+                draw.transform,
+                draw.paint_opacity,
+            );
+            if let crate::ScenePrimitiveKind::Path { .. } = &draw.kind {
+                saw_path = true;
+                assert_eq!(encode.motion_ids, (0, 0), "a mesh keeps CPU presentation");
+                assert!(
+                    (encode.opacity - layer.opacity).abs() < 0.05,
+                    "painted {} must follow the animation at {}",
+                    encode.opacity,
+                    layer.opacity
+                );
+            }
+        }
+        assert!(saw_path);
     }
 
     #[test]

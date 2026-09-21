@@ -3620,6 +3620,7 @@ impl UiWorld {
         host: &mut impl TextShaper,
     ) -> Result<bool, UiWorldError> {
         let backend = PlainTextBackend::of(host);
+        self.paint_text_engine = backend.engine.clone();
         self.observe_text_backend(backend.epoch);
         let mut work = nana_text::TextWorkCounters::default();
         // Same production adapter as [`Self::shape_text`].
@@ -4024,6 +4025,17 @@ impl UiWorld {
                 .invalidate_text(id, crate::text_node::TextDirty::FONT);
             self.mark(id, DirtyMask::TEXT | DirtyMask::LAYOUT | DirtyMask::RENDER);
         }
+        // A painter may have measured text: its recording is keyed on the
+        // backend, and has to be extracted again to be re-recorded.
+        let painted = self
+            .paint_recordings
+            .get_mut()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in painted {
+            self.mark_repaint(id);
+        }
     }
 }
 
@@ -4064,7 +4076,9 @@ impl UiWorld {
     /// a static document settle on the new fonts instead of waiting for
     /// unrelated work to reach a text pass.
     pub fn observe_text_shaper(&mut self, host: &(impl TextShaper + ?Sized)) {
-        self.observe_text_backend(PlainTextBackend::of(host).epoch);
+        let backend = PlainTextBackend::of(host);
+        self.paint_text_engine = backend.engine.clone();
+        self.observe_text_backend(backend.epoch);
     }
 
     /// Text revisions of `id` (Issue #95): which classes of change its text
@@ -4220,6 +4234,7 @@ impl UiWorld {
         self.resolve_presentations(ids)?;
         let shown = self.take_shown_text(ids);
         let backend = PlainTextBackend::of(host);
+        self.paint_text_engine = backend.engine.clone();
         self.observe_text_backend(backend.epoch);
         let mut work = nana_text::TextWorkCounters::default();
         // Production adapter: every host shaper (MeasureTextShaper, NanaTextShaper,

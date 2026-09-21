@@ -304,6 +304,9 @@ impl<'a> ValidationPlan<'a> {
                     self.require_exists(*id)?;
                     self.interactions.insert(*id, *interaction);
                 }
+                UiMutation::SetPainter { id, .. } => {
+                    self.require_exists(*id)?;
+                }
                 UiMutation::SetCustomRender { id, content } => {
                     self.require_exists(*id)?;
                     if content.as_ref().is_some_and(|content| {
@@ -1230,6 +1233,10 @@ impl UiWorld {
                     self.scroll_content_bounds
                         .get_mut()
                         .remove(id, snapshot.parent);
+                    self.paint_recordings.get_mut().remove(&id);
+                    if !self.painter_overrides.is_empty() {
+                        self.painter_overrides.remove(&id);
+                    }
                     self.write_overlay_host(id, None);
                     self.reindex_component(id, None);
                     let _removed = self.nodes.remove(id);
@@ -1353,6 +1360,13 @@ impl UiWorld {
 
                 if !style_excluding_transform_and_cursor_eq(&previous, style) {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+                if previous.painter != style.painter {
+                    // The hit index entry holds the painter (Issue #217).
+                    self.mark(*id, DirtyMask::INPUT);
+                    if style.painter.is_none() && !self.painter_overrides.contains_key(id) {
+                        self.paint_recordings.get_mut().remove(id);
+                    }
                 }
                 if inherited_paint_changed {
                     self.mark_subtree(*id, DirtyMask::STYLE | DirtyMask::RENDER);
@@ -1521,6 +1535,21 @@ impl UiWorld {
             UiMutation::SetCustomRender { id, content } => {
                 self.nodes.set_custom_render(*id, content.clone());
                 self.mark(*id, DirtyMask::RENDER);
+            }
+            UiMutation::SetPainter { id, painter } => {
+                let changed = match painter {
+                    Some(painter) => self
+                        .painter_overrides
+                        .insert(*id, painter.clone())
+                        .is_none_or(|previous| previous != *painter),
+                    None => self.painter_overrides.remove(id).is_some(),
+                };
+                if changed && self.node_painter(*id).is_none() {
+                    self.paint_recordings.get_mut().remove(id);
+                }
+                if changed {
+                    self.mark(*id, DirtyMask::RENDER | DirtyMask::INPUT);
+                }
             }
             UiMutation::SetEventListener { id, event, enabled } => {
                 let mut listeners = self.nodes.event_listeners(*id).cloned().unwrap_or_default();
@@ -1708,11 +1737,15 @@ impl UiWorld {
                 let previous = &self.record(*id).accessibility;
                 let interaction_style_changed = previous.disabled != accessibility.disabled
                     || previous.checked != accessibility.checked
-                    || previous.selected != accessibility.selected;
+                    || previous.selected != accessibility.selected
+                    || previous.mixed != accessibility.mixed;
                 self.record_mut(*id).accessibility = accessibility.clone();
                 self.mark(*id, DirtyMask::ACCESSIBILITY);
                 if interaction_style_changed && !self.record(*id).style.interaction.is_empty() {
                     self.mark(*id, DirtyMask::STYLE | DirtyMask::RENDER);
+                }
+                if interaction_style_changed && self.node_painter(*id).is_some() {
+                    self.mark_repaint(*id);
                 }
             }
             UiMutation::SetSurfaceOpen { id, open, menu } => {

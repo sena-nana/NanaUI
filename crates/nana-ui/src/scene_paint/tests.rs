@@ -3088,6 +3088,7 @@ fn overflow_parent(
     transform: Option<PaintTransform>,
 ) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -3146,6 +3147,7 @@ fn translucent_parent(
     opacity: f32,
 ) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -3202,6 +3204,7 @@ fn overflowing_text_child(
     color: [f32; 4],
 ) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Text),
@@ -3266,6 +3269,7 @@ fn host_texture_child(
     resource: &str,
 ) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -3325,6 +3329,7 @@ fn extracted_div(
     background: Option<[f32; 4]>,
 ) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: StableNodeId::new(value).unwrap(),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -8401,3 +8406,893 @@ mod graph_scale_tests;
 
 #[path = "key_badge_tests.rs"]
 mod key_badge_tests;
+
+/// Issue #217: one `Painter` on one node draws a non-rectangular outline —
+/// a raised step on the left, a slope down to the lower edge with its
+/// concave foot rounded — a layer *beneath* its own fill that the fill
+/// partly covers, and a shadow that follows the outline. Ordinary children
+/// lay out and paint above all of it.
+mod painted_outline {
+    use super::*;
+    use nana_ui_core::{CardKind, PositionSpec, RadiusTier};
+    use nana_ui_runtime::{BoxPaint, Card, PaintContext, PaintPath, PaintShadow, Painter, Stack};
+
+    pub(super) const STEP: f32 = 36.0;
+    pub(super) const UNDER_TOP: f32 = 4.0;
+    pub(super) const UNDER_INSET: f32 = 10.0;
+    /// `tan` of the slope's lean from vertical.
+    const SLOPE_LEAN: f32 = 0.84;
+    const FOOT_RADIUS: f32 = 18.0;
+
+    pub(super) struct OutlinePainter;
+
+    impl OutlinePainter {
+        pub(super) fn tab_right(width: f32) -> f32 {
+            width * 0.5
+        }
+
+        pub(super) fn foot(width: f32) -> [f32; 2] {
+            [Self::tab_right(width) + STEP * SLOPE_LEAN, STEP]
+        }
+
+        pub(super) fn outline(cx: &PaintContext<'_>) -> PaintPath {
+            let [w, h] = cx.size();
+            let outer = cx.radius(RadiusTier::Lg);
+            let shoulder = cx.radius(RadiusTier::Md);
+            let tab = Self::tab_right(w);
+            let foot = Self::foot(w);
+            let mut path = PaintPath::new();
+            path.move_to(0.0, outer)
+                .arc_to(0.0, 0.0, tab, 0.0, outer)
+                .arc_to(tab, 0.0, foot[0], foot[1], shoulder)
+                // The concave corner where the slope meets the lower edge.
+                .arc_to(foot[0], foot[1], w, STEP, FOOT_RADIUS)
+                .arc_to(w, STEP, w, h, outer)
+                .arc_to(w, h, 0.0, h, outer)
+                .arc_to(0.0, h, 0.0, 0.0, outer)
+                .close();
+            path
+        }
+    }
+
+    impl Painter for OutlinePainter {
+        fn paint(&self, cx: &mut PaintContext<'_>) {
+            let [w, _] = cx.size();
+            // The layer beneath first: the outline's fill covers its lower part.
+            let sm = cx.radius(RadiusTier::Sm);
+            cx.rounded_rect(
+                LayoutBox {
+                    x: w * 0.4,
+                    y: UNDER_TOP,
+                    width: w * 0.6 - UNDER_INSET,
+                    height: STEP + 16.0,
+                },
+                [sm, sm, 0.0, 0.0],
+                BoxPaint::fill(SemanticColorRole::Accent),
+            );
+            let outline = Self::outline(cx);
+            cx.shadow(
+                &outline,
+                PaintShadow::Custom {
+                    color: [0.0, 0.0, 0.0, 0.45].into(),
+                    offset: [0.0, 6.0],
+                    blur: 12.0,
+                    spread: 0.0,
+                    inset: false,
+                },
+            );
+            cx.fill_path(&outline, SemanticColorRole::Surface);
+        }
+
+        fn paint_key(&self) -> u64 {
+            0
+        }
+    }
+
+    pub(super) fn scene() -> (UiScene, StableNodeId, Vec<StableNodeId>) {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let root = context
+            .create_component(
+                document,
+                Stack::column(0.0).with_layout(|layout| {
+                    layout.padding = Some(LengthSpec::Px(24.0));
+                    layout.align_items = nana_ui_core::AlignSpec::Start;
+                }),
+            )
+            .unwrap();
+        let mut card = Card::new()
+            .kind(CardKind::Flat)
+            .padding(12.0)
+            .painter(OutlinePainter);
+        {
+            let layout = Arc::make_mut(&mut card.style.layout);
+            layout.width = Some(LengthSpec::Px(360.0));
+            layout.height = Some(LengthSpec::Px(260.0));
+            layout.position = PositionSpec::Relative;
+        }
+        let card = context.create_component(document, card).unwrap();
+        let actions = context
+            .create_component(
+                document,
+                Stack::row(4.0).with_layout(|layout| {
+                    layout.position = PositionSpec::Absolute;
+                    layout.offset_top = Some(LengthSpec::Px(UNDER_TOP + 4.0));
+                    layout.offset_right = Some(LengthSpec::Px(UNDER_INSET + 4.0));
+                }),
+            )
+            .unwrap();
+        let first = context
+            .create_component(document, RuntimeButton::new("A").kind(ButtonKind::Selected))
+            .unwrap();
+        let second = context
+            .create_component(document, RuntimeButton::new("B").kind(ButtonKind::Selected))
+            .unwrap();
+        context.append_child(root, card).unwrap();
+        context.append_child(card, actions).unwrap();
+        context.append_child(actions, first).unwrap();
+        context.append_child(actions, second).unwrap();
+        let ids = [
+            root.stable_id(),
+            card.stable_id(),
+            actions.stable_id(),
+            first.stable_id(),
+            second.stable_id(),
+        ];
+        context.resolve_styles(&ids).unwrap();
+        context
+            .shape_text(&ids, &mut crate::NanaTextShaper::default())
+            .unwrap();
+        context
+            .layout_document(document, nana_ui_runtime::LayoutViewport::new(420.0, 330.0))
+            .unwrap();
+        let mut scene = UiScene::new();
+        scene.apply_delta(context.world().extract_document(document), []);
+        (
+            scene,
+            card.stable_id(),
+            vec![first.stable_id(), second.stable_id()],
+        )
+    }
+}
+
+fn distance(a: [u8; 4], b: [u8; 4]) -> u32 {
+    (0..3).map(|i| a[i].abs_diff(b[i]) as u32).max().unwrap()
+}
+
+#[test]
+fn one_painter_draws_an_outline_a_layer_beneath_it_and_its_shadow() {
+    use painted_outline::*;
+    let (scene, card, buttons) = scene();
+    let card_bounds = scene.node_bounds(card).unwrap();
+    assert_eq!((card_bounds.x, card_bounds.y), (24.0, 24.0));
+    // One node paints the whole silhouette; the actions are its children and
+    // paint above everything the painter put behind them.
+    let order: Vec<_> = scene
+        .primitives()
+        .map(|p| (p.node, p.kind.clone()))
+        .collect();
+    let last_card = order.iter().rposition(|(node, _)| *node == card).unwrap();
+    let first_button = order
+        .iter()
+        .position(|(node, _)| buttons.contains(node))
+        .unwrap();
+    assert!(
+        last_card < first_button,
+        "the node's own paint precedes its children"
+    );
+    assert_eq!(
+        order
+            .iter()
+            .filter(|(node, kind)| *node == card && matches!(kind, ScenePrimitiveKind::Path { .. }))
+            .count(),
+        2,
+        "shadow and fill are path meshes; the layer beneath is a quad"
+    );
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let (width, height) = (420u32, 330u32);
+    let viewport = ScenePaintViewport {
+        logical_size: [width as f32, height as f32],
+        physical_size: [width, height],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.9, 0.9, 0.9, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, width, height);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui painted outline"),
+    });
+    painter
+        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, width, height);
+    if let Ok(path) = std::env::var("NANA_UI_PAINTED_OUTLINE_RGBA") {
+        std::fs::write(path, &pixels).unwrap();
+    }
+    let at = |x: f32, y: f32| pixel(&pixels, width, (24.0 + x) as u32, (24.0 + y) as u32);
+    let background = pixel(&pixels, width, width - 2, 2);
+    let surface = at(180.0, 160.0);
+    // Above the action buttons, right of the slope.
+    let accent = at(200.0, 10.0);
+    assert!(
+        distance(surface, background) > 30,
+        "{surface:?} vs {background:?}"
+    );
+    assert!(distance(accent, surface) > 30, "{accent:?} vs {surface:?}");
+
+    assert!(
+        distance(at(30.0, 12.0), surface) <= 2,
+        "the raised step is filled"
+    );
+    assert!(
+        distance(at(340.0, STEP + 8.0), surface) <= 2,
+        "the layer beneath runs on under the fill and the fill covers it"
+    );
+    let cut_out = at(360.0 - UNDER_INSET / 2.0, 20.0);
+    assert!(
+        distance(cut_out, surface) > 30 && distance(cut_out, accent) > 30,
+        "right of the layer the cut-out is empty, got {cut_out:?}"
+    );
+    let above_layer = at(260.0, 1.0);
+    assert!(
+        distance(above_layer, surface) > 30 && distance(above_layer, accent) > 30,
+        "above the layer the cut-out is empty, got {above_layer:?}"
+    );
+    let below = at(180.0, 260.0 + 7.0);
+    assert!(
+        below[0] + 20 < background[0],
+        "the shadow falls under the bottom edge: {below:?} vs {background:?}"
+    );
+    assert!(
+        distance(at(180.0, 260.0 + 40.0), background) <= 2,
+        "and fades out"
+    );
+}
+
+/// Paint one node carrying `painter` at the origin of a `w × h` viewport and
+/// read the frame back.
+fn paint_one_painter(painter: impl nana_ui_runtime::Painter, w: u32, h: u32) -> Vec<u8> {
+    use nana_ui_runtime::Stack;
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let node = context
+        .create_component(
+            document,
+            Stack::column(0.0)
+                .with_layout(|layout| {
+                    layout.width = Some(LengthSpec::Px(w as f32));
+                    layout.height = Some(LengthSpec::Px(h as f32));
+                })
+                .painter(painter),
+        )
+        .unwrap();
+    let ids = [node.stable_id()];
+    context.resolve_styles(&ids).unwrap();
+    context
+        .layout_document(
+            document,
+            nana_ui_runtime::LayoutViewport::new(w as f32, h as f32),
+        )
+        .unwrap();
+    let mut scene = UiScene::new();
+    scene.apply_delta(context.world().extract_document(document), []);
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let viewport = ScenePaintViewport {
+        logical_size: [w as f32, h as f32],
+        physical_size: [w, h],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, w, h);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui one painter"),
+    });
+    painter
+        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    readback_rgba(&device, &queue, encoder, &texture, w, h)
+}
+
+/// A painter defined by a closure, for tests.
+struct PaintFn<F>(F);
+
+impl<F: Fn(&mut nana_ui_runtime::PaintContext<'_>) + Send + Sync + 'static> nana_ui_runtime::Painter
+    for PaintFn<F>
+{
+    fn paint(&self, cx: &mut nana_ui_runtime::PaintContext<'_>) {
+        (self.0)(cx);
+    }
+
+    fn paint_key(&self) -> u64 {
+        0
+    }
+}
+
+fn full_rect(w: f32, h: f32) -> nana_ui_runtime::PaintPath {
+    let mut path = nana_ui_runtime::PaintPath::new();
+    path.rect(LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: w,
+        height: h,
+    });
+    path
+}
+
+#[test]
+fn a_linear_gradient_runs_between_its_stops_on_the_gpu() {
+    use nana_ui_runtime::Gradient;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(
+                &full_rect(100.0, 20.0),
+                Gradient::linear([10.0, 0.0], [90.0, 0.0])
+                    .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                    .stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            );
+        }),
+        100,
+        20,
+    );
+    let at = |x| pixel(&pixels, 100, x, 10);
+    assert!(is_red_slot(at(3)), "padded before the start: {:?}", at(3));
+    assert!(is_blue_slot(at(96)), "padded past the end: {:?}", at(96));
+    let (a, b, c) = (at(30), at(50), at(70));
+    assert!(a[0] > b[0] && b[0] > c[0], "red falls: {a:?} {b:?} {c:?}");
+    assert!(a[2] < b[2] && b[2] < c[2], "blue rises: {a:?} {b:?} {c:?}");
+}
+
+#[test]
+fn a_radial_gradient_is_evaluated_per_pixel_under_a_rotation() {
+    use nana_ui_runtime::Gradient;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.translate(40.0, 40.0);
+            cx.rotate(0.7);
+            let mut square = nana_ui_runtime::PaintPath::new();
+            square.rect(LayoutBox {
+                x: -30.0,
+                y: -30.0,
+                width: 60.0,
+                height: 60.0,
+            });
+            cx.fill_path(
+                &square,
+                Gradient::radial([0.0, 0.0], 30.0)
+                    .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                    .stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            );
+        }),
+        80,
+        80,
+    );
+    let at = |x, y| pixel(&pixels, 80, x, y);
+    assert!(is_red_slot(at(40, 40)), "centre: {:?}", at(40, 40));
+    // The rotated square's corners reach past the radius.
+    let far = at(40, 40 + 38);
+    assert!(is_blue_slot(far), "past the radius: {far:?}");
+    // Equal distances from the centre in different directions agree: the
+    // gradient is circular, not interpolated across triangles.
+    // Pixel centres (55.5, 40.5) and (40.5, 55.5) are both 15.51 from (40, 40).
+    let (east, south) = (at(40 + 15, 40), at(40, 40 + 15));
+    assert!(distance(east, south) <= 2, "{east:?} vs {south:?}");
+}
+
+#[test]
+fn a_dashed_stroke_paints_its_dashes_and_skips_its_gaps() {
+    use nana_ui_runtime::StrokeStyle;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            let mut line = nana_ui_runtime::PaintPath::new();
+            line.move_to(0.0, 10.0).line_to(100.0, 10.0);
+            cx.stroke_path(
+                &line,
+                StrokeStyle::new(6.0).dash(vec![10.0, 10.0], 0.0),
+                [0.0, 1.0, 0.0, 1.0],
+            );
+        }),
+        100,
+        20,
+    );
+    let at = |x| pixel(&pixels, 100, x, 10);
+    for x in [5, 25, 45, 65, 85] {
+        assert!(is_green_slot(at(x)), "dash at {x}: {:?}", at(x));
+    }
+    for x in [15, 35, 55, 75, 95] {
+        assert_eq!(at(x)[1], 0, "gap at {x}: {:?}", at(x));
+    }
+}
+
+#[test]
+fn a_rotated_path_and_an_image_land_where_the_local_transform_puts_them() {
+    use base64::Engine as _;
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><path d=\"M0 0 H8 V8 H0 Z\" fill=\"#00ff00\"/></svg>";
+    let url = format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(svg.as_bytes())
+    );
+    let pixels = paint_one_painter(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.save();
+            cx.translate(30.0, 30.0);
+            cx.rotate(std::f32::consts::FRAC_PI_4);
+            let mut square = nana_ui_runtime::PaintPath::new();
+            square.rect(LayoutBox {
+                x: -10.0,
+                y: -10.0,
+                width: 20.0,
+                height: 20.0,
+            });
+            cx.fill_path(&square, [1.0, 0.0, 0.0, 1.0]);
+            cx.restore();
+            cx.translate(60.0, 20.0);
+            cx.image(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 20.0,
+                    height: 20.0,
+                },
+                url.clone(),
+                nana_ui_runtime::ImageFit::Fill,
+                0.0,
+            );
+        }),
+        100,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 100, x, y);
+    // A square turned 45° is a diamond: its tip is past the unturned edge,
+    // its bounding box's corner is empty.
+    assert!(
+        is_red_slot(at(30, 30 + 12)),
+        "diamond tip: {:?}",
+        at(30, 42)
+    );
+    assert_eq!(at(30 + 9, 30 + 9)[0], 0, "diamond corner: {:?}", at(39, 39));
+    assert!(is_green_slot(at(70, 30)), "image moved: {:?}", at(70, 30));
+    assert_eq!(at(10, 30)[1], 0, "nothing at the untranslated spot");
+}
+
+#[test]
+fn a_conic_gradient_sweeps_clockwise_from_its_start_angle() {
+    use nana_ui_runtime::Gradient;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(
+                &full_rect(60.0, 60.0),
+                Gradient::conic([30.0, 30.0], 0.0)
+                    .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                    .stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+            );
+        }),
+        60,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 60, x, y);
+    // Just clockwise of +x (y down) the sweep has barely started; just
+    // counter-clockwise of it, it has nearly finished.
+    assert!(is_red_slot(at(55, 32)), "{:?}", at(55, 32));
+    assert!(is_blue_slot(at(55, 27)), "{:?}", at(55, 27));
+}
+
+fn green_svg_url() -> String {
+    use base64::Engine as _;
+    let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8\" height=\"8\"><path d=\"M0 0 H8 V8 H0 Z\" fill=\"#00ff00\"/></svg>";
+    format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(svg.as_bytes())
+    )
+}
+
+fn rect_path(x: f32, y: f32, width: f32, height: f32) -> nana_ui_runtime::PaintPath {
+    let mut path = nana_ui_runtime::PaintPath::new();
+    path.rect(LayoutBox {
+        x,
+        y,
+        width,
+        height,
+    });
+    path
+}
+
+#[test]
+fn a_layer_composites_its_overlapping_contents_once() {
+    use nana_ui_runtime::BlendMode;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.push_layer(0.5, BlendMode::Normal);
+            cx.fill_path(&rect_path(0.0, 0.0, 60.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.fill_path(&rect_path(30.0, 0.0, 60.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.pop_layer();
+            // Per-op opacity, by contrast, stacks where ops overlap.
+            cx.set_opacity(0.5);
+            cx.fill_path(&rect_path(0.0, 20.0, 60.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.fill_path(&rect_path(30.0, 20.0, 60.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+        }),
+        90,
+        40,
+    );
+    let at = |x, y| pixel(&pixels, 90, x, y);
+    assert!(
+        distance(at(10, 10), at(45, 10)) <= 2,
+        "{:?} {:?}",
+        at(10, 10),
+        at(45, 10)
+    );
+    assert!(
+        at(10, 10)[0] > 60 && at(10, 10)[0] < 200,
+        "half red: {:?}",
+        at(10, 10)
+    );
+    assert!(
+        at(45, 30)[0] > at(10, 30)[0] + 20,
+        "{:?} {:?}",
+        at(45, 30),
+        at(10, 30)
+    );
+}
+
+#[test]
+fn a_multiply_blend_darkens_what_is_under_it() {
+    use nana_ui_runtime::BlendMode;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&rect_path(0.0, 0.0, 60.0, 20.0), [1.0, 1.0, 0.0, 1.0]);
+            cx.set_blend(BlendMode::Multiply);
+            cx.fill_path(&rect_path(30.0, 0.0, 30.0, 20.0), [1.0, 0.0, 1.0, 1.0]);
+        }),
+        60,
+        20,
+    );
+    let yellow = pixel(&pixels, 60, 10, 10);
+    let multiplied = pixel(&pixels, 60, 45, 10);
+    assert!(yellow[0] > 200 && yellow[1] > 200, "{yellow:?}");
+    // Yellow × magenta = red.
+    assert!(is_red_slot(multiplied), "{multiplied:?}");
+}
+
+#[test]
+fn a_gradient_colours_text_across_its_glyphs() {
+    use nana_ui_runtime::{Gradient, PaintText};
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.text(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 200.0,
+                    height: 60.0,
+                },
+                PaintText::new("MMMMMM").size(40.0).paint(
+                    Gradient::linear([0.0, 0.0], [200.0, 0.0])
+                        .stop(0.0, [1.0, 0.0, 0.0, 1.0])
+                        .stop(1.0, [0.0, 0.0, 1.0, 1.0]),
+                ),
+            );
+        }),
+        200,
+        60,
+    );
+    // The brightest ink in the left and right thirds.
+    let ink = |range: std::ops::Range<u32>| {
+        let mut best = [0u8; 4];
+        for x in range {
+            for y in 0..60 {
+                let p = pixel(&pixels, 200, x, y);
+                if u32::from(p[0]) + u32::from(p[2]) > u32::from(best[0]) + u32::from(best[2]) {
+                    best = p;
+                }
+            }
+        }
+        best
+    };
+    let (left, right) = (ink(0..60), ink(140..200));
+    assert!(left[0] > left[2] + 40, "red on the left: {left:?}");
+    assert!(right[2] > right[0] + 40, "blue on the right: {right:?}");
+}
+
+#[test]
+fn a_curved_clip_cuts_an_image_exactly_and_an_image_can_fill_a_path() {
+    let url = green_svg_url();
+    let pixels = paint_one_painter(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            let mut disc = nana_ui_runtime::PaintPath::new();
+            disc.ellipse(LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 60.0,
+                height: 60.0,
+            });
+            cx.push_clip(&disc);
+            cx.image(
+                LayoutBox {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 60.0,
+                    height: 60.0,
+                },
+                url.clone(),
+                nana_ui_runtime::ImageFit::Fill,
+                0.0,
+            );
+            cx.pop_clip();
+            let mut triangle = nana_ui_runtime::PaintPath::new();
+            triangle
+                .move_to(70.0, 60.0)
+                .line_to(100.0, 0.0)
+                .line_to(130.0, 60.0)
+                .close();
+            cx.fill_path_with_image(
+                &triangle,
+                LayoutBox {
+                    x: 70.0,
+                    y: 0.0,
+                    width: 60.0,
+                    height: 60.0,
+                },
+                url.clone(),
+                nana_ui_runtime::ImageFit::Fill,
+            );
+        }),
+        130,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 130, x, y);
+    assert!(is_green_slot(at(30, 30)), "disc centre: {:?}", at(30, 30));
+    assert_eq!(at(3, 3)[1], 0, "outside the disc: {:?}", at(3, 3));
+    // Inside the bounding box, outside the circle — the bounding-box
+    // approximation would have painted it.
+    assert_eq!(at(8, 8)[1], 0, "{:?}", at(8, 8));
+    assert!(is_green_slot(at(100, 45)), "triangle: {:?}", at(100, 45));
+    assert_eq!(at(75, 10)[1], 0, "beside the triangle: {:?}", at(75, 10));
+}
+
+#[test]
+fn a_clipped_layer_off_the_target_is_skipped_whole_and_one_half_on_is_not() {
+    let url = green_svg_url();
+    let pixels = paint_one_painter(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            let disc = |x: f32| {
+                let mut disc = nana_ui_runtime::PaintPath::new();
+                disc.ellipse(LayoutBox {
+                    x,
+                    y: 0.0,
+                    width: 60.0,
+                    height: 60.0,
+                });
+                disc
+            };
+            // Wholly left of the target, then straddling its left edge.
+            for x in [-200.0, -30.0] {
+                cx.push_clip(&disc(x));
+                cx.image(
+                    LayoutBox {
+                        x,
+                        y: 0.0,
+                        width: 60.0,
+                        height: 60.0,
+                    },
+                    url.clone(),
+                    nana_ui_runtime::ImageFit::Fill,
+                    0.0,
+                );
+                cx.pop_clip();
+            }
+            // What follows draws outside any layer, at full strength.
+            cx.fill_path(&rect_path(80.0, 20.0, 20.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+        }),
+        130,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 130, x, y);
+    assert!(
+        is_green_slot(at(10, 30)),
+        "the visible half: {:?}",
+        at(10, 30)
+    );
+    assert_eq!(at(28, 5)[1], 0, "outside the disc: {:?}", at(28, 5));
+    assert_eq!(at(90, 30), [255, 0, 0, 255], "after the layers");
+}
+
+#[test]
+fn an_inset_shadow_darkens_inside_the_edge() {
+    use nana_ui_runtime::PaintShadow;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            let card = rect_path(10.0, 10.0, 80.0, 40.0);
+            cx.fill_path(&card, [1.0, 1.0, 1.0, 1.0]);
+            cx.shadow(
+                &card,
+                PaintShadow::Custom {
+                    color: [0.0, 0.0, 0.0, 0.8].into(),
+                    offset: [0.0, 0.0],
+                    blur: 6.0,
+                    spread: 0.0,
+                    inset: true,
+                },
+            );
+        }),
+        100,
+        60,
+    );
+    let at = |x, y| pixel(&pixels, 100, x, y);
+    // Half the shadow on the edge itself, fading inwards over the blur.
+    let edge = u32::from(at(10, 30)[0]);
+    assert!(edge + 60 < u32::from(at(50, 30)[0]), "edge {edge}");
+    assert!(at(10, 30)[0] < at(13, 30)[0] && at(13, 30)[0] < at(16, 30)[0]);
+    assert!(
+        at(50, 30)[0] > 240,
+        "the middle stays white: {:?}",
+        at(50, 30)
+    );
+    assert_eq!(at(5, 30)[0], 0, "nothing outside: {:?}", at(5, 30));
+}
+
+#[test]
+fn a_reading_blend_copies_and_composites_only_where_its_group_drew() {
+    use nana_ui_runtime::BlendMode;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&rect_path(0.0, 0.0, 120.0, 40.0), [1.0, 0.5, 0.0, 1.0]);
+            // A small circle off the pixel grid: its anti-aliased rim has to
+            // land inside the copied area.
+            let mut disc = nana_ui_runtime::PaintPath::new();
+            disc.ellipse(LayoutBox {
+                x: 10.3,
+                y: 10.6,
+                width: 19.0,
+                height: 19.0,
+            });
+            cx.set_blend(BlendMode::Difference);
+            cx.fill_path(&disc, [1.0, 1.0, 1.0, 1.0]);
+            cx.set_blend(BlendMode::Normal);
+            // A reading blend inside another: the inner one's area is part of
+            // the outer one's.
+            cx.push_layer(1.0, BlendMode::Exclusion);
+            cx.fill_path(&rect_path(60.0, 10.0, 20.0, 20.0), [0.0, 0.0, 1.0, 1.0]);
+            cx.set_blend(BlendMode::Difference);
+            cx.fill_path(&rect_path(90.0, 10.0, 20.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+            cx.pop_layer();
+        }),
+        120,
+        40,
+    );
+    let at = |x, y| pixel(&pixels, 120, x, y);
+    let orange = at(2, 2);
+    assert!(orange[0] > 250 && orange[2] < 5, "{orange:?}");
+    // Difference with white inverts the orange: (0, 0.5, 1).
+    let inverted = at(20, 20);
+    assert!(inverted[0] < 5 && inverted[2] > 250, "{inverted:?}");
+    // The rim (the fringe runs one pixel outside the outline) blends by
+    // coverage, and just past it nothing moved.
+    let rim = at(9, 20);
+    assert!(rim[0] < orange[0] && rim[0] > inverted[0], "{rim:?}");
+    for p in [(8, 20), (20, 8), (31, 20), (20, 31), (50, 20)] {
+        assert_eq!(at(p.0, p.1), orange, "{p:?}");
+    }
+    // exclusion(orange, blue) = (1, 0.5, 1); the layer's difference with
+    // white over a transparent layer is white, then excluded: (0, 0.5, 1).
+    let blue = at(70, 20);
+    assert!(blue[0] > 250 && blue[2] > 250, "{blue:?}");
+    let white = at(100, 20);
+    assert!(white[0] < 5 && white[2] > 250, "{white:?}");
+    assert_eq!(at(85, 20), orange, "between the two");
+}
+
+#[test]
+fn blend_modes_that_read_the_backdrop_blend_with_what_is_under_them() {
+    use nana_ui_runtime::BlendMode;
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&rect_path(0.0, 0.0, 90.0, 20.0), [1.0, 0.5, 0.0, 1.0]);
+            cx.set_blend(BlendMode::Difference);
+            cx.fill_path(&rect_path(0.0, 0.0, 30.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+            cx.set_blend(BlendMode::Darken);
+            cx.fill_path(&rect_path(30.0, 0.0, 30.0, 20.0), [0.2, 0.9, 0.9, 1.0]);
+            // Nested in a layer, the backdrop is that layer.
+            cx.push_layer(1.0, BlendMode::Normal);
+            cx.fill_path(&rect_path(60.0, 0.0, 30.0, 20.0), [0.0, 0.0, 1.0, 1.0]);
+            cx.set_blend(BlendMode::Lighten);
+            cx.fill_path(&rect_path(60.0, 0.0, 30.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.pop_layer();
+        }),
+        90,
+        20,
+    );
+    let at = |x| pixel(&pixels, 90, x, 10);
+    // |orange - white| = (0, 0.5, 1) in the blend space.
+    let difference = at(15);
+    assert!(difference[0] < 20 && difference[2] > 230, "{difference:?}");
+    // min(orange, (0.2, 0.9, 0.9)) keeps the lower channel of each.
+    let darken = at(45);
+    assert!(darken[0] < 120 && darken[2] < 20, "{darken:?}");
+    // max(blue, red) inside the layer = magenta.
+    let lighten = at(75);
+    assert!(
+        lighten[0] > 230 && lighten[2] > 230 && lighten[1] < 20,
+        "{lighten:?}"
+    );
+}
+
+#[test]
+fn group_extents_union_what_each_group_draws_and_widen_for_filters() {
+    let rect = |x, y, width, height| PhysicalRect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let path = |scissor| DrawCommand::Path {
+        range: PathRange {
+            first_index: 0,
+            index_count: 3,
+        },
+        scissor,
+    };
+    let whole = rect(0, 0, 200, 100);
+    let blend = |mix_blend| GroupSlot::dest(1.0, [1.0; 3], 0.0, 0.0, mix_blend, FragmentClip::PASS);
+    let blurred = GroupSlot::dest(1.0, [1.0; 3], 0.0, 4.0, 3, FragmentClip::PASS);
+    let commands = [
+        // Slot 0 holds slot 1 and draws beside it.
+        DrawCommand::PushGroup { layer: 0, slot: 0 },
+        path(whole),
+        DrawCommand::PushGroup { layer: 1, slot: 1 },
+        path(whole),
+        DrawCommand::PopGroup,
+        DrawCommand::PopGroup,
+        // Slot 2 draws nothing; slot 3 blurs.
+        DrawCommand::PushGroup { layer: 0, slot: 2 },
+        DrawCommand::PopGroup,
+        DrawCommand::PushGroup { layer: 0, slot: 3 },
+        path(whole),
+        DrawCommand::PopGroup,
+    ];
+    let painted = [rect(10, 10, 5, 5), rect(40, 20, 10, 10), rect(0, 0, 1, 1)];
+    let extents = group_extents(
+        &commands,
+        &painted,
+        &[blend(3), blend(9), blend(3), blurred],
+    );
+    assert_eq!(
+        extents,
+        [
+            GroupExtent::Rect(rect(10, 10, 40, 20)),
+            GroupExtent::Rect(rect(40, 20, 10, 10)),
+            GroupExtent::Empty,
+            GroupExtent::All,
+        ]
+    );
+}
+
+#[test]
+fn an_empty_layer_composites_nothing_instead_of_what_last_used_its_depth() {
+    let pixels = paint_one_painter(
+        PaintFn(|cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.push_layer(1.0, nana_ui_runtime::BlendMode::Normal);
+            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [1.0, 0.0, 0.0, 1.0]);
+            cx.pop_layer();
+            cx.fill_path(&rect_path(0.0, 0.0, 20.0, 20.0), [1.0, 1.0, 1.0, 1.0]);
+            // Same depth, nothing drawn into it.
+            cx.push_layer(1.0, nana_ui_runtime::BlendMode::Normal);
+            cx.set_opacity(0.0);
+            cx.fill_path(&rect_path(40.0, 0.0, 20.0, 20.0), [0.0, 0.0, 1.0, 1.0]);
+            cx.set_opacity(1.0);
+            cx.pop_layer();
+        }),
+        60,
+        20,
+    );
+    assert_eq!(pixel(&pixels, 60, 10, 10), [255, 255, 255, 255]);
+    assert_eq!(pixel(&pixels, 60, 50, 10), [0, 0, 0, 255]);
+}

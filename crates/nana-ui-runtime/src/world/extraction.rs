@@ -137,6 +137,16 @@ impl UiWorld {
         let standard_visual_foreground = standard_visual
             .as_ref()
             .map(|visual| self.standard_visual_foreground(visual, style.color));
+        // The style's painter is already in hand; only a tree someone set a
+        // painter on apart from the style pays a lookup.
+        let painter = if self.painter_overrides.is_empty() {
+            source_style.painter.as_ref()
+        } else {
+            self.painter_overrides
+                .get(&id)
+                .or(source_style.painter.as_ref())
+        };
+        let custom_paint = painter.map(|painter| self.custom_paint(id, painter, layout));
         let mut source_style = source_style;
         // The node's design intent is already resolved into `resolved_layout`,
         // on write. Resolving it here instead meant an `Arc::make_mut` copy of
@@ -220,8 +230,151 @@ impl UiWorld {
             document_text_selection,
             document_text_selection_color,
             compositor: self.extracted_compositor(id),
+            custom_paint,
         })
     }
+
+    /// The node's painter output for its current size, theme and state,
+    /// recorded only when that key moved since the last extraction.
+    pub(super) fn custom_paint(
+        &self,
+        id: StableNodeId,
+        painter: &crate::NodePainter,
+        layout: LayoutBox,
+    ) -> Arc<crate::PaintRecording> {
+        let size = [layout.width.max(0.0), layout.height.max(0.0)];
+        let state = self.paint_state(id);
+        let key = painter.cache_key(size, self.palette_epoch, state, self.text_backend);
+        let base = self
+            .nodes
+            .get(id)
+            .map(|node| Arc::clone(&node.resolved.0))
+            .unwrap_or_default();
+        if let Some(held) = self.paint_recordings.borrow().get(&id)
+            && held.key == key
+            && held
+                .text_style
+                .as_ref()
+                .is_none_or(|style| Arc::ptr_eq(style, &base))
+        {
+            return Arc::clone(&held.recording);
+        }
+        let engine = self.paint_text_engine.clone();
+        let measured = std::cell::Cell::new(false);
+        let measure = |text: &crate::PaintText, size: f32, max_width: Option<f32>| {
+            measured.set(true);
+            measure_paint_text(id, engine.as_ref(), &base, text, size, max_width)
+        };
+        let recording = Arc::new(crate::custom_paint::record(
+            painter.painter(),
+            &self.theme,
+            size,
+            state,
+            &measure,
+        ));
+        let mut recordings = self.paint_recordings.borrow_mut();
+        let latest = match recordings.get(&id) {
+            Some(held) => {
+                *held
+                    .latest
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::clone(&recording);
+                Arc::clone(&held.latest)
+            }
+            None => Arc::new(std::sync::RwLock::new(Arc::clone(&recording))),
+        };
+        recordings.insert(
+            id,
+            super::PaintCacheEntry {
+                key,
+                recording: Arc::clone(&recording),
+                latest,
+                text_style: measured.get().then_some(base),
+            },
+        );
+        recording
+    }
+
+    /// The slot holding `id`'s latest recording, recording it first if it
+    /// has none that fits.
+    pub(super) fn shared_recording(
+        &self,
+        id: StableNodeId,
+        painter: &crate::NodePainter,
+        layout: LayoutBox,
+    ) -> Option<super::SharedRecording> {
+        self.custom_paint(id, painter, layout);
+        self.paint_recordings
+            .borrow()
+            .get(&id)
+            .map(|held| Arc::clone(&held.latest))
+    }
+
+    /// The painter set on `id` apart from its style
+    /// ([`crate::UiMutation::SetPainter`]).
+    pub fn painter_override(&self, id: StableNodeId) -> Option<&crate::NodePainter> {
+        self.painter_overrides.get(&id)
+    }
+
+    /// The painter a node paints with: one set on the node, else its
+    /// style's.
+    pub(crate) fn node_painter(&self, id: StableNodeId) -> Option<&crate::NodePainter> {
+        if !self.painter_overrides.is_empty()
+            && let Some(painter) = self.painter_overrides.get(&id)
+        {
+            return Some(painter);
+        }
+        self.record(id).style.painter.as_ref()
+    }
+
+    /// The interaction state a painter sees, from the same facts the
+    /// built-in interaction paint reads.
+    pub(super) fn paint_state(&self, id: StableNodeId) -> crate::PaintState {
+        let record = self.record(id);
+        let accessibility = &record.accessibility;
+        crate::PaintState {
+            hovered: self
+                .input
+                .pointer_hover
+                .values()
+                .any(|target| *target == id),
+            pressed: self
+                .input
+                .pointer_press
+                .values()
+                .any(|target| *target == id),
+            focused: self.focus_visible(record.document) == Some(id),
+            disabled: accessibility.disabled,
+            selected: accessibility.checked == Some(true)
+                || accessibility.mixed
+                || accessibility.selected == Some(true),
+        }
+    }
+}
+
+/// What `PaintContext::measure_text` answers: the host's `nana-text` engine
+/// when one has shaped this world, the em estimate otherwise.
+fn measure_paint_text(
+    id: StableNodeId,
+    engine: Option<&nana_text::SharedTextEngine>,
+    base: &crate::ComputedStyle,
+    text: &crate::PaintText,
+    size: f32,
+    max_width: Option<f32>,
+) -> crate::TextSize {
+    use crate::TextShaper as _;
+    let (style, constraints, content) =
+        crate::custom_paint::paint_text_request(base, text, size, max_width);
+    let metrics = match engine {
+        Some(engine) => crate::NanaTextEngineShaper::new(engine.clone()).shape(
+            id,
+            &content,
+            &style,
+            constraints,
+        ),
+        None => crate::components::measure_em_text(&content, &style, constraints),
+    };
+    crate::custom_paint::paint_text_size(&metrics, size)
 }
 
 impl UiWorld {

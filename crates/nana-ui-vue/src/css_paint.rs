@@ -2742,16 +2742,18 @@ mod tests {
     }
 
     #[test]
-    fn mix_blend_mode_subset_fails_closed() {
+    fn mix_blend_mode_unknown_values_fail_closed() {
         let mut layout = LayoutStyle::default();
         layout.apply_css_text("mix-blend-mode: multiply", None, None);
         assert_eq!(layout.paint.mix_blend, MixBlendMode::Multiply);
-        layout.apply_css_text("mix-blend-mode: overlay", None, None);
+        layout.apply_css_text("mix-blend-mode: plus-lighter", None, None);
         assert_eq!(
             layout.paint.mix_blend,
             MixBlendMode::Multiply,
             "unknown modes must fail closed"
         );
+        layout.apply_css_text("mix-blend-mode: color-dodge", None, None);
+        assert_eq!(layout.paint.mix_blend, MixBlendMode::ColorDodge);
         layout.apply_css_text("mix-blend-mode: screen", None, None);
         assert_eq!(layout.paint.mix_blend, MixBlendMode::Screen);
         layout.apply_css_text("mix-blend-mode: normal", None, None);

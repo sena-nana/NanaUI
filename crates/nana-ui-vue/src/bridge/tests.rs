@@ -6099,3 +6099,21 @@ fn the_sidebar_footer_sync_still_runs_when_there_is_a_frame() {
         "the footer content must still be inserted under the slot"
     );
 }
+
+#[test]
+fn a_paint_prop_parses_to_a_painter_and_reports_a_bad_script() {
+    use nana_js_engine::HostValue;
+    let script = HostValue::Array(vec![HostValue::Object(
+        [("op".to_string(), HostValue::string("drawDefault"))].into(),
+    )]);
+    let props = WidgetProps::from_map(&[("paint".to_string(), script)].into());
+    assert!(props.paint.is_some() && props.paint_error.is_none());
+    let props =
+        WidgetProps::from_map(&[("paint".to_string(), HostValue::string("[{\"op\":1}]"))].into());
+    assert!(props.paint.is_none());
+    assert!(
+        props
+            .paint_error
+            .is_some_and(|error| error.contains("command 0"))
+    );
+}

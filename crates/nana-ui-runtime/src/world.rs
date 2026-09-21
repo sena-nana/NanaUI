@@ -250,7 +250,35 @@ struct HitEntry {
     order: usize,
     hittable: bool,
     menu: Option<LayoutBox>,
+    /// A painter that decides which points of the box hit (Issue #217).
+    painter: Option<Arc<PainterHit>>,
     children: Vec<HitEntry>,
+}
+
+/// A node's latest recording, shared with its hit index entry so a
+/// re-record — on a state, focus, theme or font change, whichever path
+/// asked for it — reaches hit testing without the index being rebuilt.
+type SharedRecording = Arc<std::sync::RwLock<Arc<crate::PaintRecording>>>;
+
+/// One node's last recording and what it was recorded against.
+#[derive(Debug)]
+struct PaintCacheEntry {
+    key: crate::custom_paint::PaintCacheKey,
+    recording: Arc<crate::PaintRecording>,
+    /// The same recording, for the hit index.
+    latest: SharedRecording,
+    /// The resolved style text was measured with, when the painter measured
+    /// any: a font change has to re-record it. Held, so the pointer compared
+    /// against cannot be reused by another style.
+    text_style: Option<Arc<crate::ComputedStyle>>,
+}
+
+/// What a painted node's hit test asks: the painter's own answer, else the
+/// recording's outline when the painter asked for that.
+#[derive(Debug)]
+struct PainterHit {
+    painter: crate::NodePainter,
+    recording: Option<SharedRecording>,
 }
 
 /// Per-pass cache of ancestor-chain answers. Extraction and hit-index share
@@ -505,6 +533,18 @@ pub struct UiWorld {
     /// Scroll containers whose offset that re-measure clamped, for the
     /// framework to announce. Drained by `take_scroll_reclamped`.
     scroll_reclamped: HashSet<StableNodeId>,
+    /// Last recording of each custom-painted node, keyed by what the painter
+    /// promised decides its output (Issue #217). Extraction reads through it,
+    /// so an unchanged node is never re-recorded. Only painted nodes have an
+    /// entry; despawn drops it.
+    paint_recordings: RefCell<crate::NodeMap<PaintCacheEntry>>,
+    /// The `nana-text` engine the host last shaped with, for painters that
+    /// measure text while recording. `None` until a host shapes through one;
+    /// painters then measure with the em-based fallback.
+    paint_text_engine: Option<nana_text::SharedTextEngine>,
+    /// Painters set on nodes apart from their style
+    /// ([`crate::UiMutation::SetPainter`]). Empty in a tree nobody paints.
+    painter_overrides: crate::NodeMap<crate::NodePainter>,
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
@@ -678,6 +718,9 @@ impl UiWorld {
             scroll_layout_touched: false,
             scroll_requested: Vec::new(),
             scroll_reclamped: HashSet::new(),
+            paint_recordings: RefCell::new(crate::NodeMap::default()),
+            paint_text_engine: None,
+            painter_overrides: crate::NodeMap::default(),
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
@@ -2709,6 +2752,7 @@ fn style_excluding_transform_and_cursor_eq(left: &NodeStyle, right: &NodeStyle) 
         && left.interaction == right.interaction
         && left.text_horizontal_alignment == right.text_horizontal_alignment
         && left.text_vertical_alignment == right.text_vertical_alignment
+        && left.painter == right.painter
         && layout_excluding_transform_and_cursor_eq(left.layout.as_ref(), right.layout.as_ref())
 }
 

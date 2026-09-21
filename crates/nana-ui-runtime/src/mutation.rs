@@ -79,6 +79,13 @@ pub enum UiMutation {
         id: StableNodeId,
         content: Option<CustomRenderNode>,
     },
+    /// A painter for the node whatever its style says (Issue #217). It wins
+    /// over [`NodeStyle::painter`] and survives a component rewriting the
+    /// node's style. `None` removes it.
+    SetPainter {
+        id: StableNodeId,
+        painter: Option<crate::NodePainter>,
+    },
     SetEventListener {
         id: StableNodeId,
         event: String,
@@ -303,6 +310,12 @@ impl MutationQueue {
     pub fn set_custom_render(&mut self, id: StableNodeId, content: Option<CustomRenderNode>) {
         self.mutations
             .push(UiMutation::SetCustomRender { id, content });
+    }
+
+    /// Paint `id` with `painter`, whatever its style says. See
+    /// [`UiMutation::SetPainter`].
+    pub fn set_painter(&mut self, id: StableNodeId, painter: Option<crate::NodePainter>) {
+        self.mutations.push(UiMutation::SetPainter { id, painter });
     }
 
     pub fn set_event_listener(

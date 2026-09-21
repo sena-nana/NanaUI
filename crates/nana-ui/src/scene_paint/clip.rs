@@ -353,6 +353,21 @@ pub(super) fn rotated_fragment_clips(
         .collect()
 }
 
+/// `bounds` (layout space) under `transform`, as a fragment clip.
+pub(super) fn local_rect_clip(
+    bounds: nana_ui_scene::SceneRect,
+    transform: nana_ui_scene::AffineTransform,
+    origin: [f32; 2],
+) -> FragmentClip {
+    if transform.is_projective() {
+        return FragmentClip::PASS;
+    }
+    match invert_affine(paint_affine(transform.0, origin)) {
+        Some(inverse) => FragmentClip::from_local(bounds, inverse, 0.0, None),
+        None => FragmentClip::REJECT,
+    }
+}
+
 /// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
 /// Extra outers are [`extra_fragment_clips`] and dest-composited.
 pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {

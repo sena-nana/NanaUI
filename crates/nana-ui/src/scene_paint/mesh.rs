@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use nana_ui_scene::StrokeCap;
@@ -142,9 +143,329 @@ pub(super) struct MeshRange {
     pub instance_count: u32,
 }
 
+/// One custom-paint path vertex (Issue #217). Matches `PathVertexInput` in
+/// `path.wgsl`. Position and extrusion are already in logical scene px.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct GpuPathVertex {
+    position: [f32; 2],
+    extrude: [f32; 2],
+    coverage: f32,
+    clip_index: u32,
+    color: [f32; 4],
+    /// Gradient-space position; read only when `gradient` is not `NO_GRADIENT`.
+    paint_pos: [f32; 2],
+    gradient: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<GpuPathVertex>() == 52);
+
+const NO_GRADIENT: u32 = u32::MAX;
+/// Colour stops a GPU gradient holds. A gradient with more is resampled.
+const GRADIENT_STOPS: usize = 16;
+const INITIAL_GRADIENTS: usize = 4;
+
+/// One gradient. Matches `GpuGradient` in `path.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
+struct GpuGradient {
+    /// kind (0 linear, 1 radial, 2 conic), extend (0 pad, 1 repeat, 2
+    /// reflect), stop count, unused.
+    header: [u32; 4],
+    /// Linear: start.xy, end.xy. Radial: center.xy, radius. Conic: center.xy,
+    /// start angle.
+    geometry: [f32; 4],
+    offsets: [[f32; 4]; GRADIENT_STOPS / 4],
+    /// Premultiplied sRGB, the space CSS interpolates stops in.
+    colors: [[f32; 4]; GRADIENT_STOPS],
+}
+
+impl GpuGradient {
+    fn from_resolved(gradient: &nana_ui_runtime::ResolvedGradient) -> Self {
+        use nana_ui_runtime::{GradientExtend, GradientShape};
+        let (kind, geometry) = match gradient.shape {
+            GradientShape::Linear { start, end } => (0, [start[0], start[1], end[0], end[1]]),
+            GradientShape::Radial { center, radius } => (1, [center[0], center[1], radius, 0.0]),
+            GradientShape::Conic {
+                center,
+                start_angle,
+            } => (2, [center[0], center[1], start_angle, 0.0]),
+        };
+        let extend = match gradient.extend {
+            GradientExtend::Pad => 0,
+            GradientExtend::Repeat => 1,
+            GradientExtend::Reflect => 2,
+        };
+        let stops: Vec<(f32, [f32; 4])> = if gradient.stops.len() <= GRADIENT_STOPS {
+            gradient.stops.clone()
+        } else {
+            (0..GRADIENT_STOPS)
+                .map(|i| {
+                    let t = i as f32 / (GRADIENT_STOPS - 1) as f32;
+                    (t, sample_stops(&gradient.stops, t))
+                })
+                .collect()
+        };
+        let mut packed = Self::zeroed();
+        packed.header = [kind, extend, stops.len() as u32, 0];
+        packed.geometry = geometry;
+        for (index, (offset, [r, g, b, a])) in stops.iter().enumerate() {
+            packed.offsets[index / 4][index % 4] = *offset;
+            packed.colors[index] = [r * a, g * a, b * a, *a];
+        }
+        packed
+    }
+}
+
+/// Straight sRGB colour of sorted stops at `t`, interpolated premultiplied.
+fn sample_stops(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
+    let premultiplied = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
+    let Some(next) = stops.iter().position(|(offset, _)| *offset >= t) else {
+        return stops.last().map_or([0.0; 4], |stop| stop.1);
+    };
+    if next == 0 {
+        return stops[0].1;
+    }
+    let (o0, c0) = stops[next - 1];
+    let (o1, c1) = stops[next];
+    let k = if o1 > o0 { (t - o0) / (o1 - o0) } else { 1.0 };
+    let (p0, p1) = (premultiplied(c0), premultiplied(c1));
+    let mixed: [f32; 4] = std::array::from_fn(|i| p0[i] + (p1[i] - p0[i]) * k);
+    if mixed[3] <= 0.0 {
+        return [0.0; 4];
+    }
+    [
+        mixed[0] / mixed[3],
+        mixed[1] / mixed[3],
+        mixed[2] / mixed[3],
+        mixed[3],
+    ]
+}
+
+const INITIAL_PATH_VERTICES: usize = 256;
+const INITIAL_PATH_INDICES: usize = 768;
+
+pub(super) struct PathRange {
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
+/// Vertex and index storage for custom-paint path triangles. Separate from
+/// the stroke instances, but drawn with the same globals and clip palette.
+pub(super) struct PathBuffers {
+    gradients: wgpu::Buffer,
+    gradient_capacity: usize,
+    pending_gradients: Vec<GpuGradient>,
+    uploaded_gradients: Vec<GpuGradient>,
+    /// Gradients already queued this frame, by the resolved gradient they
+    /// came from: a mesh repainted every frame shares one.
+    gradient_intern: HashMap<usize, u32>,
+    vertices: wgpu::Buffer,
+    vertex_capacity: usize,
+    indices: wgpu::Buffer,
+    index_capacity: usize,
+    pending_vertices: Vec<GpuPathVertex>,
+    pending_indices: Vec<u32>,
+    uploaded_vertices: Vec<GpuPathVertex>,
+    uploaded_indices: Vec<u32>,
+}
+
+impl PathBuffers {
+    fn new(device: &wgpu::Device) -> Self {
+        Self {
+            gradients: gradient_buffer(device, INITIAL_GRADIENTS),
+            gradient_capacity: INITIAL_GRADIENTS,
+            pending_gradients: Vec::new(),
+            uploaded_gradients: Vec::new(),
+            gradient_intern: HashMap::new(),
+            vertices: path_vertex_buffer(device, INITIAL_PATH_VERTICES),
+            vertex_capacity: INITIAL_PATH_VERTICES,
+            indices: path_index_buffer(device, INITIAL_PATH_INDICES),
+            index_capacity: INITIAL_PATH_INDICES,
+            pending_vertices: Vec::new(),
+            pending_indices: Vec::new(),
+            uploaded_vertices: Vec::new(),
+            uploaded_indices: Vec::new(),
+        }
+    }
+
+    /// Returns whether the gradient buffer was replaced, which invalidates
+    /// the bind group that names it.
+    fn upload(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) -> bool {
+        let mut rebind = false;
+        if self.pending_gradients.len() > self.gradient_capacity {
+            self.uploaded_gradients.clear();
+            self.gradient_capacity = self.pending_gradients.len().next_power_of_two();
+            self.gradients = gradient_buffer(device, self.gradient_capacity);
+            rebind = true;
+            if let Some(work) = gpu_work {
+                work.record_realloc();
+            }
+        }
+        if self.pending_gradients != self.uploaded_gradients {
+            let bytes = super::buffer_upload::upload_changed(
+                queue,
+                &self.gradients,
+                bytemuck::cast_slice(&self.uploaded_gradients),
+                bytemuck::cast_slice(&self.pending_gradients),
+            );
+            self.uploaded_gradients.clone_from(&self.pending_gradients);
+            if let Some(work) = gpu_work {
+                work.record_upload(bytes);
+            }
+        }
+        if self.pending_indices.is_empty() {
+            self.uploaded_vertices.clear();
+            self.uploaded_indices.clear();
+            return rebind;
+        }
+        if self.pending_vertices == self.uploaded_vertices
+            && self.pending_indices == self.uploaded_indices
+        {
+            return rebind;
+        }
+        if self.pending_vertices.len() > self.vertex_capacity {
+            self.uploaded_vertices.clear();
+            self.vertex_capacity = self.pending_vertices.len().next_power_of_two();
+            self.vertices = path_vertex_buffer(device, self.vertex_capacity);
+            if let Some(work) = gpu_work {
+                work.record_realloc();
+            }
+        }
+        if self.pending_indices.len() > self.index_capacity {
+            self.uploaded_indices.clear();
+            self.index_capacity = self.pending_indices.len().next_power_of_two();
+            self.indices = path_index_buffer(device, self.index_capacity);
+            if let Some(work) = gpu_work {
+                work.record_realloc();
+            }
+        }
+        let vertices = super::buffer_upload::upload_changed(
+            queue,
+            &self.vertices,
+            bytemuck::cast_slice(&self.uploaded_vertices),
+            bytemuck::cast_slice(&self.pending_vertices),
+        );
+        let indices = super::buffer_upload::upload_changed(
+            queue,
+            &self.indices,
+            bytemuck::cast_slice(&self.uploaded_indices),
+            bytemuck::cast_slice(&self.pending_indices),
+        );
+        self.uploaded_vertices.clone_from(&self.pending_vertices);
+        self.uploaded_indices.clone_from(&self.pending_indices);
+        if let Some(work) = gpu_work {
+            work.record_upload(vertices + indices);
+            work.record_batch_rebuild();
+        }
+        rebind
+    }
+}
+
+fn gradient_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.path.gradients"),
+        size: (capacity.max(1) * std::mem::size_of::<GpuGradient>()) as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn path_vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.path.vertices"),
+        size: (capacity * std::mem::size_of::<GpuPathVertex>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn path_index_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.path.indices"),
+        size: (capacity * std::mem::size_of::<u32>()) as u64,
+        usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// A mesh vertex's AA extrude, built in node space to push its edges one
+/// pixel out, carried through the linear part `[a, b, c, d]` of the draw
+/// transform so the edges still move one pixel on screen.
+///
+/// The extrude is a miter: along the bisector of the two edge normals, as
+/// long as `1 / cos` of half the angle between them (a straight edge's is
+/// its unit normal). That gives both normals back. Each maps by the inverse
+/// transpose — not the matrix itself: under `scaleX(0.01)` a vertical edge's
+/// normal stays one pixel long rather than shrinking to a hundredth — and
+/// the miter is rebuilt on screen from the two. A degenerate transform has
+/// no screen normal and gets no fringe.
+fn screen_extrude([a, b, c, d]: [f32; 4], extrude: [f32; 2]) -> [f32; 2] {
+    const MITER_LIMIT: f32 = 4.0;
+    let det = a * d - b * c;
+    let length = (extrude[0] * extrude[0] + extrude[1] * extrude[1]).sqrt();
+    if !det.is_finite() || det.abs() < 1e-12 || length.is_nan() || length <= 1e-12 {
+        return [0.0, 0.0];
+    }
+    if a == d && b == -c {
+        // A rotation and uniform scale, as nearly every node is under: the
+        // miter just turns with it.
+        let k = (a * a + b * b).sqrt();
+        return [
+            (a * extrude[0] + c * extrude[1]) / k,
+            (b * extrude[0] + d * extrude[1]) / k,
+        ];
+    }
+    let bisector = [extrude[0] / length, extrude[1] / length];
+    let cos = (1.0 / length).min(1.0);
+    let sin = (1.0 - cos * cos).max(0.0).sqrt();
+    let normal = |sin: f32| {
+        let n = [
+            bisector[0] * cos - bisector[1] * sin,
+            bisector[0] * sin + bisector[1] * cos,
+        ];
+        let mapped = [(d * n[0] - b * n[1]) / det, (-c * n[0] + a * n[1]) / det];
+        let len = (mapped[0] * mapped[0] + mapped[1] * mapped[1]).sqrt();
+        if len.is_nan() || len <= 1e-12 {
+            None
+        } else {
+            Some([mapped[0] / len, mapped[1] / len])
+        }
+    };
+    let (Some(n1), Some(n2)) = (normal(sin), normal(-sin)) else {
+        return [0.0, 0.0];
+    };
+    let denominator = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+    let miter = if denominator > 1e-3 {
+        [(n1[0] + n2[0]) / denominator, (n1[1] + n2[1]) / denominator]
+    } else {
+        n1
+    };
+    let reach = (miter[0] * miter[0] + miter[1] * miter[1]).sqrt();
+    if reach > MITER_LIMIT {
+        [
+            miter[0] * MITER_LIMIT / reach,
+            miter[1] * MITER_LIMIT / reach,
+        ]
+    } else {
+        miter
+    }
+}
+
 pub(super) struct MeshPipeline {
     pipeline: wgpu::RenderPipeline,
     pipeline_msaa: wgpu::RenderPipeline,
+    path_pipeline: wgpu::RenderPipeline,
+    path_pipeline_msaa: wgpu::RenderPipeline,
+    /// Layer masks (Issue #217). Groups are only ever single-sampled.
+    erase_pipeline: wgpu::RenderPipeline,
+    tint_pipeline: wgpu::RenderPipeline,
+    paths: PathBuffers,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
@@ -167,6 +488,8 @@ impl MeshPipeline {
                 include_str!("shader/triangle.wgsl"),
                 "\n",
                 include_str!("shader/triangle_solid.wgsl"),
+                "\n",
+                include_str!("shader/path.wgsl"),
                 "\n",
                 include_str!("shader/color.wgsl"),
             ))),
@@ -196,6 +519,16 @@ impl MeshPipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
         let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
@@ -210,7 +543,8 @@ impl MeshPipeline {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind_group = mesh_bind_group(device, &bind_layout, &uniforms, &clips);
+        let paths = PathBuffers::new(device);
+        let bind_group = mesh_bind_group(device, &bind_layout, &uniforms, &clips, &paths.gradients);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("nana-ui.scene.triangle.solid.pipeline"),
             bind_group_layouts: &[Some(&bind_layout)],
@@ -218,9 +552,64 @@ impl MeshPipeline {
         });
         let pipeline = mesh_pipeline(device, &shader, &layout, format, 1);
         let pipeline_msaa = mesh_pipeline(device, &shader, &layout, format, 4);
+        let path_pipeline = create_path_pipeline(
+            device,
+            &shader,
+            &layout,
+            format,
+            1,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
+        let path_pipeline_msaa = create_path_pipeline(
+            device,
+            &shader,
+            &layout,
+            format,
+            4,
+            wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        );
+        // dst · (1 − coverage)
+        let erase = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        // src · dst alpha: the mesh's paint where the layer already is.
+        let tint = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::DstAlpha,
+            dst_factor: wgpu::BlendFactor::Zero,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let erase_pipeline = create_path_pipeline(
+            device,
+            &shader,
+            &layout,
+            format,
+            1,
+            wgpu::BlendState {
+                color: erase,
+                alpha: erase,
+            },
+        );
+        let tint_pipeline = create_path_pipeline(
+            device,
+            &shader,
+            &layout,
+            format,
+            1,
+            wgpu::BlendState {
+                color: tint,
+                alpha: tint,
+            },
+        );
         Self {
             pipeline,
             pipeline_msaa,
+            path_pipeline,
+            path_pipeline_msaa,
+            erase_pipeline,
+            tint_pipeline,
+            paths,
             bind_layout,
             bind_group,
             uniforms,
@@ -245,6 +634,135 @@ impl MeshPipeline {
         self.pending_instances.clear();
         self.pending_clips.clear();
         self.clip_intern.clear();
+        self.paths.pending_vertices.clear();
+        self.paths.pending_indices.clear();
+        self.paths.pending_gradients.clear();
+        self.paths.gradient_intern.clear();
+    }
+
+    /// Queue a custom-paint path mesh (Issue #217). `origin` places the
+    /// node-local vertices in layout space, then `affine` maps them to the
+    /// scene. The fringe extrusion is carried through the same linear map and
+    /// normalised so it stays one physical pixel under scale.
+    pub(super) fn push_path(
+        &mut self,
+        mesh: &nana_ui_scene::PathMesh,
+        origin: [f32; 2],
+        affine: [f32; 6],
+        opacity: f32,
+        fragment_clip: FragmentClip,
+    ) -> Option<PathRange> {
+        if mesh.indices.is_empty() || opacity <= 0.0 {
+            return None;
+        }
+        let clip_index = intern_clip(
+            &mut self.pending_clips,
+            &mut self.clip_intern,
+            fragment_clip,
+        );
+        let [a, b, c, d, e, f] = affine;
+        let gradient = match mesh.gradient.as_ref() {
+            None => NO_GRADIENT,
+            Some(resolved) => {
+                let paths = &mut self.paths;
+                *paths
+                    .gradient_intern
+                    .entry(Arc::as_ptr(resolved) as usize)
+                    .or_insert_with(|| {
+                        paths
+                            .pending_gradients
+                            .push(GpuGradient::from_resolved(resolved));
+                        paths.pending_gradients.len() as u32 - 1
+                    })
+            }
+        };
+        let base = self.paths.pending_vertices.len() as u32;
+        self.paths
+            .pending_vertices
+            .extend(mesh.vertices.iter().map(|vertex| {
+                let x = vertex.position[0] + origin[0];
+                let y = vertex.position[1] + origin[1];
+                let [ex, ey] = vertex.extrude;
+                GpuPathVertex {
+                    position: [a * x + c * y + e, b * x + d * y + f],
+                    extrude: screen_extrude([a, b, c, d], [ex, ey]),
+                    coverage: vertex.coverage,
+                    clip_index,
+                    color: pack_linear(with_opacity(vertex.color, opacity)),
+                    paint_pos: vertex.paint_pos,
+                    gradient,
+                }
+            }));
+        let first_index = self.paths.pending_indices.len() as u32;
+        self.paths
+            .pending_indices
+            .extend(mesh.indices.iter().map(|index| base + index));
+        Some(PathRange {
+            first_index,
+            index_count: mesh.indices.len() as u32,
+        })
+    }
+
+    /// Apply a painter layer's mask to the open group.
+    pub(super) fn draw_mask(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        range: &PathRange,
+        scissor: PhysicalRect,
+        mode: nana_ui_scene::LayerMaskMode,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if range.index_count == 0 {
+            return;
+        }
+        pass.set_pipeline(match mode {
+            nana_ui_scene::LayerMaskMode::Erase => &self.erase_pipeline,
+            nana_ui_scene::LayerMaskMode::Tint => &self.tint_pipeline,
+        });
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
+        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+        pass.draw_indexed(
+            range.first_index..range.first_index + range.index_count,
+            0,
+            0..1,
+        );
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
+    }
+
+    pub(super) fn draw_path(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        range: &PathRange,
+        scissor: PhysicalRect,
+        sample_count: u32,
+        gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        if range.index_count == 0 {
+            return;
+        }
+        pass.set_pipeline(if sample_count > 1 {
+            &self.path_pipeline_msaa
+        } else {
+            &self.path_pipeline
+        });
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_vertex_buffer(0, self.paths.vertices.slice(..));
+        pass.set_index_buffer(self.paths.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+        pass.draw_indexed(
+            range.first_index..range.first_index + range.index_count,
+            0,
+            0..1,
+        );
+        if let Some(work) = gpu_work {
+            work.record_draw_batch();
+            work.record_draw_call();
+        }
     }
 
     #[expect(
@@ -383,7 +901,16 @@ impl MeshPipeline {
         if let Some(work) = gpu_work {
             work.record_upload(uniform_bytes.len());
         }
-        if self.pending_instances.is_empty() {
+        if self.paths.upload(device, queue, gpu_work) {
+            self.bind_group = mesh_bind_group(
+                device,
+                &self.bind_layout,
+                &self.uniforms,
+                &self.clips,
+                &self.paths.gradients,
+            );
+        }
+        if self.pending_instances.is_empty() && self.paths.pending_indices.is_empty() {
             self.uploaded_instances.clear();
             self.uploaded_clips.clear();
             return;
@@ -415,8 +942,13 @@ impl MeshPipeline {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.bind_group =
-                mesh_bind_group(device, &self.bind_layout, &self.uniforms, &self.clips);
+            self.bind_group = mesh_bind_group(
+                device,
+                &self.bind_layout,
+                &self.uniforms,
+                &self.clips,
+                &self.paths.gradients,
+            );
             if let Some(work) = gpu_work {
                 work.record_realloc();
             }
@@ -478,6 +1010,7 @@ fn mesh_bind_group(
     layout: &wgpu::BindGroupLayout,
     uniforms: &wgpu::Buffer,
     clips: &wgpu::Buffer,
+    gradients: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("nana-ui.scene.triangle.uniforms.bind_group"),
@@ -491,7 +1024,67 @@ fn mesh_bind_group(
                 binding: 1,
                 resource: clips.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: gradients.as_entire_binding(),
+            },
         ],
+    })
+}
+
+fn create_path_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layout: &wgpu::PipelineLayout,
+    format: wgpu::TextureFormat,
+    sample_count: u32,
+    blend: wgpu::BlendState,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.path.pipeline"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module: shader,
+            entry_point: Some("path_vs_main"),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<GpuPathVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array!(
+                    0 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32,
+                    3 => Uint32,
+                    4 => Float32x4,
+                    5 => Float32x2,
+                    6 => Uint32,
+                ),
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: shader,
+            entry_point: Some("path_fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        // Tessellated triangles come in either winding.
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
     })
 }
 
@@ -2546,6 +3139,35 @@ mod tests {
     }
 
     #[test]
+    fn a_path_fringe_stays_one_pixel_on_screen_under_any_scale() {
+        let length = |v: [f32; 2]| (v[0] * v[0] + v[1] * v[1]).sqrt();
+        // A vertical edge's outward normal under scaleX(0.01) and scale(3):
+        // still one pixel, still along x.
+        for m in [[0.01, 0.0, 0.0, 1.0], [3.0, 0.0, 0.0, 3.0]] {
+            let e = screen_extrude(m, [1.0, 0.0]);
+            assert!(
+                (length(e) - 1.0).abs() < 1e-5 && e[1].abs() < 1e-6,
+                "{m:?}: {e:?}"
+            );
+        }
+        // A mirror keeps it pointing out of the mirrored shape.
+        assert!(screen_extrude([-1.0, 0.0, 0.0, 1.0], [1.0, 0.0])[0] < 0.0);
+        // A skew keeps it perpendicular to the edge on screen: the edge
+        // (0,1) maps to (0.5, 1).
+        let e = screen_extrude([1.0, 0.0, 0.5, 1.0], [1.0, 0.0]);
+        assert!((e[0] * 0.5 + e[1]).abs() < 1e-5, "{e:?}");
+        // A square corner's miter under scaleX(0.01) still pushes both of
+        // its edges one pixel: (1, 1) on screen, not (1.41, 0.01).
+        let corner = screen_extrude([0.01, 0.0, 0.0, 1.0], [1.0, 1.0]);
+        assert!(
+            (corner[0] - 1.0).abs() < 1e-4 && (corner[1] - 1.0).abs() < 1e-4,
+            "{corner:?}"
+        );
+        // Collapsed to a line: no fringe rather than an infinite one.
+        assert_eq!(screen_extrude([0.0, 0.0, 0.0, 1.0], [1.0, 0.0]), [0.0, 0.0]);
+    }
+
+    #[test]
     fn local_aa_fringe_matches_shader_one_over_sigma_min() {
         assert!((local_aa_fringe([1.0, 0.0, 0.0, 1.0], 1.0) - 1.0).abs() < 1e-5);
         let squashed = local_aa_fringe([2.0, 0.0, 0.0, 0.5], 1.0);
@@ -2593,6 +3215,7 @@ mod tests {
 }
 
 pub(super) struct MeshPipelineTarget {
+    paths: PathBuffers,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     clips: wgpu::Buffer,
@@ -2625,8 +3248,16 @@ impl MeshPipeline {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
+            let paths = PathBuffers::new(device);
             MeshPipelineTarget {
-                bind_group: mesh_bind_group(device, &self.bind_layout, &uniforms, &clips),
+                bind_group: mesh_bind_group(
+                    device,
+                    &self.bind_layout,
+                    &uniforms,
+                    &clips,
+                    &paths.gradients,
+                ),
+                paths,
                 uniforms,
                 clips,
                 clip_capacity: INITIAL_CLIPS,
@@ -2644,6 +3275,7 @@ impl MeshPipeline {
                 clip_intern: HashMap::new(),
             }
         });
+        std::mem::swap(&mut self.paths, &mut target.paths);
         std::mem::swap(&mut self.bind_group, &mut target.bind_group);
         std::mem::swap(&mut self.uniforms, &mut target.uniforms);
         std::mem::swap(&mut self.clips, &mut target.clips);

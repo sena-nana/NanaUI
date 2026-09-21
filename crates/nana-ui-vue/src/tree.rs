@@ -261,6 +261,7 @@ fn mutation_label(mutation: &UiMutation) -> &'static str {
         UiMutation::SetScrollMetrics { .. } => "SetScrollMetrics",
         UiMutation::SetInteraction { .. } => "SetInteraction",
         UiMutation::SetCustomRender { .. } => "SetCustomRender",
+        UiMutation::SetPainter { .. } => "SetPainter",
         UiMutation::SetEventListener { .. } => "SetEventListener",
         UiMutation::SetComponentType { .. } => "SetComponentType",
         UiMutation::SetStandardVisual { .. } => "SetStandardVisual",
@@ -394,6 +395,15 @@ pub struct NanaTreeDocument {
     /// only these instead of scanning the whole Vue node map.
     host_texture_nodes: HashSet<u64>,
     pending_drop_accepts: HashSet<u64>,
+    /// Elements with a `paint` attribute (Issue #217), and the painter it
+    /// parsed to — `None` when the script is invalid.
+    paint_scripts: HashMap<u64, Option<nana_ui_runtime::NodePainter>>,
+    /// The `paint` script error last reported for each element, so a
+    /// persisting one is reported once.
+    paint_errors: HashMap<u64, String>,
+    /// Newly failed `paint` scripts, drained by the host into the JS
+    /// diagnostics sink.
+    pending_paint_errors: Vec<String>,
     native_events: Arc<Mutex<Vec<NativeDomEvent>>>,
     /// Every `<svg>` element in the document.
     ///
@@ -520,6 +530,9 @@ impl NanaTreeDocument {
             commit_rejections: Vec::new(),
             host_texture_nodes: HashSet::new(),
             pending_drop_accepts: HashSet::new(),
+            paint_scripts: HashMap::new(),
+            paint_errors: HashMap::new(),
+            pending_paint_errors: Vec::new(),
             native_events: Arc::new(Mutex::new(Vec::new())),
             svg_root_nodes: HashSet::new(),
             svg_rasters: HashMap::new(),
@@ -1288,6 +1301,7 @@ impl NanaTreeDocument {
         let mut mutations = MutationQueue::new();
         let mut pending = PendingAssembly::default();
         let mut component_owned_layout = HashSet::new();
+        let mut paint_errors = Vec::new();
         if self.runtime.theme_mode() != snapshot.theme {
             mutations.set_theme(snapshot.theme);
         }
@@ -1404,6 +1418,21 @@ impl NanaTreeDocument {
                 // clears the old committed value, then Button/ListItem may publish
                 // their own visible label later in the same transaction.
                 mutations.set_text_input(id, None);
+            }
+            // The Vue prop, else the DOM attribute — on any element, whether a
+            // component or the cascade owns its style.
+            // A cleared prop clears its error too, so the same broken script
+            // set again is reported again.
+            if widget.props.paint_source.is_some() || self.paint_errors.contains_key(&id.get()) {
+                paint_errors.push((id.get(), widget.props.paint_error.clone()));
+            }
+            let painter = widget
+                .props
+                .paint
+                .clone()
+                .or_else(|| self.dom_painter(id.get()));
+            if self.runtime.world().painter_override(id) != painter.as_ref() {
+                mutations.set_painter(id, painter);
             }
             let migrated = {
                 #[cfg(feature = "benchmark")]
@@ -1573,6 +1602,7 @@ impl NanaTreeDocument {
             projected,
             full_pass,
             revision: snapshot.revision,
+            paint_errors,
         }
     }
 
@@ -1584,7 +1614,11 @@ impl NanaTreeDocument {
             projected,
             full_pass,
             revision,
+            paint_errors,
         } = prepared;
+        for (id, error) in paint_errors {
+            self.note_paint_error(id, error.as_ref());
+        }
         if full_pass {
             self.component_owned_layout = component_owned_layout;
         } else {
@@ -2279,6 +2313,65 @@ impl NanaTreeDocument {
         if is_drop_accepts_attr(name) {
             self.sync_drop_accepts(el);
         }
+        if changed && name == "paint" {
+            self.sync_paint_attr(el);
+        }
+    }
+
+    /// Parse an element's `paint` attribute and put the painter on its node.
+    fn sync_paint_attr(&mut self, el: NodeHandle) {
+        match self
+            .get_attribute(el, "paint")
+            .filter(|text| !text.trim().is_empty())
+        {
+            Some(text) => {
+                let parsed = nana_ui_runtime::PaintScript::from_json_str(&text);
+                self.note_paint_error(el.0, parsed.as_ref().err());
+                self.paint_scripts
+                    .insert(el.0, parsed.ok().map(nana_ui_runtime::NodePainter::new));
+            }
+            None => {
+                self.note_paint_error(el.0, None);
+                self.paint_scripts.remove(&el.0);
+            }
+        }
+        let Ok(id) = StableNodeId::try_from(el) else {
+            return;
+        };
+        // Set apart from the style, so whichever component writes the
+        // node's style leaves it alone.
+        let painter = self.dom_painter(el.0);
+        if self.runtime.world().painter_override(id) != painter.as_ref() {
+            self.pending.mutations.set_painter(id, painter);
+        }
+    }
+
+    /// Queue a `paint` script error for the diagnostics sink, once per
+    /// distinct error on an element.
+    fn note_paint_error(&mut self, raw_id: u64, error: Option<&String>) {
+        let Some(error) = error else {
+            self.paint_errors.remove(&raw_id);
+            return;
+        };
+        if self.paint_errors.get(&raw_id) == Some(error) {
+            return;
+        }
+        self.paint_errors.insert(raw_id, error.clone());
+        if self.pending_paint_errors.len() < MAX_COMMIT_REJECTIONS {
+            self.pending_paint_errors
+                .push(format!("node {raw_id}: invalid paint script: {error}"));
+        }
+    }
+
+    /// `paint` scripts that failed to parse since the last call; drained by
+    /// the host and forwarded to the JS diagnostics sink.
+    pub fn take_paint_errors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_paint_errors)
+    }
+
+    /// The painter an element's `paint` attribute asks for.
+    fn dom_painter(&self, raw_id: u64) -> Option<nana_ui_runtime::NodePainter> {
+        self.paint_scripts.get(&raw_id).cloned().flatten()
     }
 
     /// Paint-only CSS `transform` overlay (TransitionGroup FLIP).
@@ -2371,6 +2464,9 @@ impl NanaTreeDocument {
         }
         if removed && is_drop_accepts_attr(name) {
             self.sync_drop_accepts(el);
+        }
+        if removed && name == "paint" {
+            self.sync_paint_attr(el);
         }
     }
 
@@ -3110,6 +3206,8 @@ impl NanaTreeDocument {
             self.host_texture_nodes.remove(&id);
             self.svg_root_nodes.remove(&id);
             self.svg_rasters.remove(&id);
+            self.paint_scripts.remove(&id);
+            self.paint_errors.remove(&id);
             self.pending.parent.remove(&id);
             self.pending.children.remove(&id);
             self.pending.kinds.remove(&id);

@@ -388,6 +388,14 @@ pub struct WidgetProps {
     pub containing_block_width: Option<f32>,
     /// 最近已知的包含块高度（父 content box）。
     pub containing_block_height: Option<f32>,
+    /// `paint` 属性：节点自绘脚本（Issue #217），格式见
+    /// [`nana_ui_runtime::PaintScript::from_json`]。挂在布局元素上。
+    pub paint: Option<nana_ui_runtime::NodePainter>,
+    /// `paint` 属性解析失败的原因；此时不挂 painter。
+    pub paint_error: Option<String>,
+    /// The `paint` value last parsed, as JSON text, so re-sending the same
+    /// script (a Vue re-render of an object literal) does not parse it again.
+    pub paint_source: Option<String>,
 }
 
 impl Default for WidgetProps {
@@ -436,6 +444,9 @@ impl Default for WidgetProps {
             layout: LayoutStyle::default(),
             containing_block_width: None,
             containing_block_height: None,
+            paint: None,
+            paint_error: None,
+            paint_source: None,
         }
     }
 }
@@ -526,6 +537,9 @@ impl WidgetProps {
                 self.persist_native_payload(&key, value);
             }
             _ => {}
+        }
+        if key == "paint" {
+            self.apply_paint(value);
         }
         match key.as_str() {
             "label" | "text" | "title" => self.label = host_string(value),
@@ -1138,6 +1152,51 @@ impl WidgetProps {
                         self.attrs.insert(other.to_string(), s);
                     }
                 }
+            }
+        }
+    }
+
+    /// A `paint` script: JSON text, or the same as an object / array.
+    fn apply_paint(&mut self, value: &nana_js_engine::HostValue) {
+        use nana_js_engine::HostValue;
+        let parsed = match value {
+            HostValue::Null | HostValue::Undefined => {
+                self.paint = None;
+                self.paint_error = None;
+                self.paint_source = None;
+                return;
+            }
+            HostValue::String(text) if text.trim().is_empty() => {
+                self.paint = None;
+                self.paint_error = None;
+                self.paint_source = None;
+                return;
+            }
+            HostValue::String(text) => {
+                if self.paint_source.as_ref() == Some(text) {
+                    return;
+                }
+                self.paint_source = Some(text.clone());
+                nana_ui_runtime::PaintScript::from_json_str(text)
+            }
+            other => {
+                let value = other.to_json_value();
+                let source = value.to_string();
+                if self.paint_source.as_ref() == Some(&source) {
+                    return;
+                }
+                self.paint_source = Some(source);
+                nana_ui_runtime::PaintScript::from_json(&value)
+            }
+        };
+        match parsed {
+            Ok(script) => {
+                self.paint = Some(nana_ui_runtime::NodePainter::new(script));
+                self.paint_error = None;
+            }
+            Err(error) => {
+                self.paint = None;
+                self.paint_error = Some(error);
             }
         }
     }

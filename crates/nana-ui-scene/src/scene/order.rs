@@ -8,11 +8,23 @@ impl UiScene {
         // sits under the same one, so walk once per node and hand out that
         // `Arc`.
         let mut stacks: NodeMap<GroupPrefix> = NodeMap::default();
+        // A painted node's primitives split around its children, so each
+        // takes its own stack; the walk to its prefix is still once a node.
+        let mut painted_prefixes: NodeMap<GroupPrefix> = NodeMap::default();
         let keys: Vec<SceneOrderKey> = self
             .primitives
             .values()
             .map(|held| {
                 let primitive = &held.primitive;
+                if !self.custom_paint.is_empty() && has_custom_paint(&self.nodes, primitive.node) {
+                    let prefix = painted_prefixes.entry(primitive.node).or_insert_with(|| {
+                        group_prefix(&self.nodes, &self.node_order, primitive.node).into()
+                    });
+                    return SceneOrderKey::at(
+                        order_stack(&self.nodes, prefix, primitive),
+                        primitive,
+                    );
+                }
                 let stack = stacks.entry(primitive.node).or_insert_with(|| {
                     let prefix: GroupPrefix =
                         group_prefix(&self.nodes, &self.node_order, primitive.node).into();

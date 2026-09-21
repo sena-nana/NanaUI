@@ -521,7 +521,10 @@ impl HitIndex {
         if !emitted_menu && emit(id) {
             return true;
         }
-        if node.hittable && transformed_contains(node.layout, node.transform, node.persp, x, y) {
+        if node.hittable
+            && transformed_contains(node.layout, node.transform, node.persp, x, y)
+            && painter_accepts(node, node.layout, node.transform, node.persp, x, y)
+        {
             return emit(id);
         }
         false
@@ -571,6 +574,49 @@ pub(super) fn then_hit(
         [na * inv, nb * inv, nc * inv, nd * inv, ne * inv, nf * inv],
         [ng * inv, nh * inv],
     )
+}
+
+/// Whether a painted node's painter takes a point its box already contains.
+fn painter_accepts(
+    node: &HitEntry,
+    layout: LayoutBox,
+    transform: [f32; 6],
+    persp: [f32; 2],
+    x: f32,
+    y: f32,
+) -> bool {
+    let Some(hit) = node.painter.as_deref() else {
+        return true;
+    };
+    let Some((px, py)) = transformed_point(transform, persp, x, y) else {
+        return false;
+    };
+    let local = [px - layout.x, py - layout.y];
+    let size = [layout.width, layout.height];
+    if let Some(answer) = hit.painter.painter().hit_test(local, size) {
+        return answer;
+    }
+    hit.recording.as_ref().is_none_or(|recording| {
+        recording
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(local, size)
+    })
+}
+
+impl UiWorld {
+    fn painter_hit(&self, id: StableNodeId, layout: LayoutBox) -> Option<Arc<PainterHit>> {
+        let painter = self.node_painter(id)?;
+        let recording = painter
+            .painter()
+            .hit_painted_outline()
+            .then(|| self.shared_recording(id, painter, layout))
+            .flatten();
+        Some(Arc::new(PainterHit {
+            painter: painter.clone(),
+            recording,
+        }))
+    }
 }
 
 pub(super) fn transformed_contains(
@@ -975,7 +1021,10 @@ impl UiWorld {
         if !emitted_menu && emit(id) {
             return true;
         }
-        if node.hittable && transformed_contains(layout, transform, persp, x, y) {
+        if node.hittable
+            && transformed_contains(layout, transform, persp, x, y)
+            && painter_accepts(node, layout, transform, persp, x, y)
+        {
             return emit(id);
         }
         false
@@ -1229,7 +1278,10 @@ impl UiWorld {
                     self_clips.push((body, parent_hit.0));
                 }
             }
-            let interaction = self.record(id).interaction;
+            let record = self.record(id);
+            let interaction = record.interaction;
+            // Checked on the record in hand: an unpainted tree does no lookup.
+            let painted = record.style.painter.is_some() || !self.painter_overrides.is_empty();
             let confirm_busy = self
                 .confirm_action_effect(id)
                 .is_some_and(|effect| effect.0);
@@ -1264,6 +1316,11 @@ impl UiWorld {
                     order: position,
                     hittable,
                     menu,
+                    painter: if painted {
+                        self.painter_hit(id, layout)
+                    } else {
+                        None
+                    },
                     children: Vec::new(),
                 },
                 parent,

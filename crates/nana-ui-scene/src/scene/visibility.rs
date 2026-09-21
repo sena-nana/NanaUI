@@ -138,6 +138,24 @@ fn primitive_bounds(scene: &UiScene, id: PrimitiveId) -> Option<SceneRect> {
             bounds.width += 2.0 * outset;
             bounds.height += 2.0 * outset;
         }
+        // A layer's two ends must both reach the painter or neither: never
+        // cull them. The painter skips a clipped one that misses the target.
+        ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => {
+            return None;
+        }
+        ScenePrimitiveKind::Path { .. } => {
+            // The mesh bounds already hold every vertex, shadow band
+            // included. The AA fringe past them is physical pixels whatever
+            // the transform: one along an edge, up to the miter limit (4) at
+            // a sharp corner. Outset after the transform, so a scaled-down
+            // node keeps it.
+            let mut bounds = transform(bounds, draw_transform)?;
+            bounds.x -= 4.0;
+            bounds.y -= 4.0;
+            bounds.width += 8.0;
+            bounds.height += 8.0;
+            return Some(bounds);
+        }
         ScenePrimitiveKind::Custom { .. }
         | ScenePrimitiveKind::Icon { .. }
         | ScenePrimitiveKind::QuadColorBatch { .. }

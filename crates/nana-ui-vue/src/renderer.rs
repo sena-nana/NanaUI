@@ -1196,6 +1196,13 @@ fn patch_prop(doc: &mut NanaTreeDocument, el: NodeHandle, key: &str, value: Host
             HostValue::Null | HostValue::Undefined => doc.remove_attribute(el, "class"),
             other => doc.set_attribute(el, "class", &host_to_string(&other)),
         },
+        // A paint script: an array or object keeps its JSON, so the
+        // attribute holds the same script the prop parses.
+        "paint" => match value {
+            HostValue::Null | HostValue::Undefined => doc.remove_attribute(el, "paint"),
+            HostValue::String(text) => doc.set_attribute(el, "paint", &text),
+            other => doc.set_attribute(el, "paint", &other.to_json_value().to_string()),
+        },
         "style" => match value {
             HostValue::Null | HostValue::Undefined => doc.remove_attribute(el, "style"),
             HostValue::Object(map) => {
@@ -3415,6 +3422,34 @@ mod tests {
             !texts.iter().any(|(_, t)| t == "keep"),
             "null textContent should clear prior text"
         );
+    }
+
+    #[test]
+    fn a_paint_script_object_keeps_its_json_as_the_attribute() {
+        let mut doc = NanaTreeDocument::new(400, 300, 1.0);
+        let root = doc.mount_root();
+        let el = doc.create_element("div");
+        doc.insert(el, root, None);
+        let command = HostValue::Object(
+            [
+                ("op".to_string(), HostValue::string("text")),
+                ("text".to_string(), HostValue::string("Hi")),
+                (
+                    "rect".to_string(),
+                    HostValue::Array(vec![HostValue::Number(0.0); 4]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        patch_prop(&mut doc, el, "paint", HostValue::Array(vec![command]));
+        // Not "Hi", as a label-seeking stringify would make it: the script
+        // parses, so no false warning.
+        let attr = doc.get_attribute(el, "paint").expect("paint attribute");
+        assert!(attr.starts_with('['), "{attr}");
+        assert!(doc.take_paint_errors().is_empty());
+        patch_prop(&mut doc, el, "paint", HostValue::Null);
+        assert_eq!(doc.get_attribute(el, "paint"), None);
     }
 
     #[test]

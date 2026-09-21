@@ -1397,36 +1397,61 @@ pub struct BoxShadowSpec {
     pub inset: bool,
 }
 
-/// GPU-capable CSS `mix-blend-mode` subset. Unknown values fail closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// CSS `mix-blend-mode` (Compositing and Blending Level 1). Unknown values
+/// fail closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum MixBlendMode {
     #[default]
     Normal,
     Multiply,
     Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl MixBlendMode {
     pub fn parse(input: &str) -> Option<Self> {
-        match input.trim().to_ascii_lowercase().as_str() {
-            "normal" => Some(Self::Normal),
-            "multiply" => Some(Self::Multiply),
-            "screen" => Some(Self::Screen),
-            _ => None,
-        }
+        Some(match input.trim().to_ascii_lowercase().as_str() {
+            "normal" => Self::Normal,
+            "multiply" => Self::Multiply,
+            "screen" => Self::Screen,
+            "overlay" => Self::Overlay,
+            "darken" => Self::Darken,
+            "lighten" => Self::Lighten,
+            "color-dodge" => Self::ColorDodge,
+            "color-burn" => Self::ColorBurn,
+            "hard-light" => Self::HardLight,
+            "soft-light" => Self::SoftLight,
+            "difference" => Self::Difference,
+            "exclusion" => Self::Exclusion,
+            "hue" => Self::Hue,
+            "saturation" => Self::Saturation,
+            "color" => Self::Color,
+            "luminosity" => Self::Luminosity,
+            _ => return None,
+        })
     }
 
     pub fn is_normal(self) -> bool {
         matches!(self, Self::Normal)
     }
 
-    /// Dest-group BlendState selector (`0` normal, `1` multiply, `2` screen).
+    /// Dest-group composite selector. `0` normal, `1` multiply and `2` screen
+    /// blend in fixed function; `3..` read the backdrop in the shader, in
+    /// declaration order.
     pub fn gpu_index(self) -> u32 {
-        match self {
-            Self::Normal => 0,
-            Self::Multiply => 1,
-            Self::Screen => 2,
-        }
+        self as u32
     }
 }
 

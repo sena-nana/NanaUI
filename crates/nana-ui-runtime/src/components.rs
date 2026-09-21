@@ -1680,6 +1680,9 @@ pub struct NodeStyle {
     pub interaction: InteractionStyle,
     pub text_horizontal_alignment: TextHorizontalAlignment,
     pub text_vertical_alignment: TextVerticalAlignment,
+    /// 节点自绘（Issue #217）。挂上后由 painter 决定这个节点自己的外观，
+    /// 子节点照常绘制；见 [`crate::Painter`]。
+    pub painter: Option<crate::NodePainter>,
 }
 
 impl Default for NodeStyle {
@@ -1705,7 +1708,14 @@ impl NodeStyle {
             interaction: InteractionStyle::default(),
             text_horizontal_alignment: TextHorizontalAlignment::Start,
             text_vertical_alignment: TextVerticalAlignment::Top,
+            painter: None,
         }
+    }
+
+    /// 挂上节点自绘。见 [`crate::Painter`]。
+    pub fn painter(mut self, painter: impl Into<crate::NodePainter>) -> Self {
+        self.painter = Some(painter.into());
+        self
     }
 
     /// Name the radius step instead of spending it. See [`Self::radius`].
@@ -2229,7 +2239,7 @@ impl TextShaper for MeasureTextShaper {
     }
 }
 
-fn measure_em_text(
+pub(crate) fn measure_em_text(
     text: &TextContent,
     style: &ComputedStyle,
     constraints: TextShapeConstraints,
@@ -3491,6 +3501,10 @@ pub struct ExtractedNode {
     /// Compositor-class overlay bindings and optional advanced layer request.
     /// Logical style stays on [`Self::source_style`]; presentation is not baked in.
     pub compositor: ExtractedCompositor,
+    /// What the node's [`crate::Painter`] recorded, resolved against the
+    /// installed theme (Issue #217). `None` for every node without a painter,
+    /// which keeps the built-in paint path.
+    pub custom_paint: Option<Arc<crate::PaintRecording>>,
 }
 
 /// Scene layer promotion hint produced at extract. Empty for layout/paint tracks.

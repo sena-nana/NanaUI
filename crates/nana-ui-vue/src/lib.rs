@@ -855,8 +855,9 @@ impl VueHost {
         );
     }
 
-    /// Forward host-op commit rejections recorded by [`NanaTreeDocument`]
-    /// to the JS diagnostics sink instead of dropping them silently.
+    /// Forward host-op commit rejections and invalid `paint` scripts recorded
+    /// by [`NanaTreeDocument`] to the JS diagnostics sink instead of dropping
+    /// them silently.
     #[cfg(feature = "scene-view")]
     fn report_commit_rejections(&self, doc: &mut NanaTreeDocument) {
         for rejection in doc.take_commit_rejections() {
@@ -866,6 +867,9 @@ impl VueHost {
                 format!("rejected host mutation {rejection}"),
                 None,
             );
+        }
+        for error in doc.take_paint_errors() {
+            self.report_diagnostic("nana.paint", JsDiagnosticLevel::Warning, error, None);
         }
     }
 

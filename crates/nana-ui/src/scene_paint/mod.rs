@@ -46,15 +46,16 @@ pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use backdrop::BackdropPipeline;
 use clip::{
-    FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips, local_rect,
-    mesh_extra_fragment_clips, overlaps_physical, paint_origin, paint_transform, physical_bounds,
-    physical_scissor, transformed_aabb, transformed_aabb_projective, union_physical,
+    FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips,
+    intersect_physical, local_rect, mesh_extra_fragment_clips, overlaps_physical, paint_origin,
+    paint_transform, physical_bounds, physical_scissor, transformed_aabb,
+    transformed_aabb_projective, union_physical,
 };
 use color::{pack_linear, with_opacity};
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};
-use mesh::{MeshPipeline, MeshRange, StrokeStyle};
+use mesh::{MeshPipeline, MeshRange, PathRange, StrokeStyle};
 use motion::MotionGpuResources;
 use quad::QuadPipeline;
 use text::{PreparedText, TextPipeline};
@@ -140,6 +141,7 @@ struct PreparedBatch {
     commands: Vec<DrawCommand>,
     max_group_depth: usize,
     group_slots: Vec<dest::GroupSlot>,
+    group_extents: Vec<GroupExtent>,
     /// Read off the document order that built `commands`; it cannot be
     /// recovered from the merged list.
     glyph_then_quad: bool,
@@ -166,6 +168,16 @@ enum DrawCommand {
     Mesh {
         range: MeshRange,
         scissor: PhysicalRect,
+    },
+    Path {
+        range: PathRange,
+        scissor: PhysicalRect,
+    },
+    /// A painter layer's mask, applied to the open group before it pops.
+    PathMask {
+        range: PathRange,
+        scissor: PhysicalRect,
+        mode: nana_ui_scene::LayerMaskMode,
     },
     Text {
         prepared: PreparedText,
@@ -509,104 +521,305 @@ impl SceneWgpuPainter {
                 && batch.text_placement_epoch == self.text.placement_epoch()
         });
         let reused = cached.is_some();
-        let (commands, max_group_depth, group_slots_uniforms, glyph_then_quad, batch, gpu_upload) =
-            if let Some(cached) = cached {
-                (
-                    cached.commands,
-                    cached.max_group_depth,
-                    cached.group_slots,
-                    cached.glyph_then_quad,
-                    std::time::Duration::ZERO,
-                    std::time::Duration::ZERO,
-                )
-            } else {
-                let batch_started = Instant::now();
-                self.quads.begin_frame();
-                self.host_textures.begin_frame();
-                self.meshes.begin_frame();
-                self.icons.begin_frame(dest_physical);
-                self.text.begin_frame(dest_physical);
-                self.backdrop.begin_frame();
+        let (
+            commands,
+            max_group_depth,
+            group_slots_uniforms,
+            group_extents,
+            glyph_then_quad,
+            batch,
+            gpu_upload,
+        ) = if let Some(cached) = cached {
+            (
+                cached.commands,
+                cached.max_group_depth,
+                cached.group_slots,
+                cached.group_extents,
+                cached.glyph_then_quad,
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            )
+        } else {
+            let batch_started = Instant::now();
+            self.quads.begin_frame();
+            self.host_textures.begin_frame();
+            self.meshes.begin_frame();
+            self.icons.begin_frame(dest_physical);
+            self.text.begin_frame(dest_physical);
+            self.backdrop.begin_frame();
 
-                let mut commands = Vec::new();
-                let mut batching = Batching::default();
-                let mut group_stack: Vec<nana_ui_scene::OpacityGroup> = Vec::new();
-                let mut group_depth = 0usize;
-                let mut group_slots = 0u32;
-                let mut max_group_depth = 0usize;
-                let mut group_slots_uniforms = Vec::new();
-                // Scissors/text clips round to physical pixels. Include their
-                // possible edge coverage even at fractional origins/low DPI.
-                let edge_padding = 1.0 / scale;
-                let operations = scene
-                    .visible_operations(nana_ui_scene::SceneRect {
-                        x: viewport.scene_origin[0] - edge_padding,
-                        y: viewport.scene_origin[1] - edge_padding,
-                        width: viewport.logical_size[0] + edge_padding * 2.0,
-                        height: viewport.logical_size[1] + edge_padding * 2.0,
-                    })
-                    .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
-                for operation in operations.iter() {
-                    let id = match operation {
-                        RenderOperation::PrepareExternal(_) => continue,
-                        RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id) => *id,
-                    };
-                    let Some(primitive) = scene.draw_primitive(id) else {
+            let mut commands = Vec::new();
+            let mut batching = Batching::default();
+            let mut group_stack: Vec<nana_ui_scene::OpacityGroup> = Vec::new();
+            let mut group_depth = 0usize;
+            let mut group_slots = 0u32;
+            let mut max_group_depth = 0usize;
+            let mut group_slots_uniforms = Vec::new();
+            // Painter layers open (Issue #217), by the node that opened
+            // each. They nest inside the node's own groups.
+            let mut painter_layers: Vec<nana_ui_runtime::StableNodeId> = Vec::new();
+            // A clipped painter layer wholly outside the target, skipped
+            // with everything in it: its node and how deep in it we are.
+            // Culling cannot drop the pair itself, as its contents are
+            // bounded by the layer's clip, not by their own bounds.
+            let mut skipped_layer: Option<(nana_ui_runtime::StableNodeId, usize)> = None;
+            let whole_dest = PhysicalRect {
+                x: 0,
+                y: 0,
+                width: dest_physical[0],
+                height: dest_physical[1],
+            };
+            // Scissors/text clips round to physical pixels. Include their
+            // possible edge coverage even at fractional origins/low DPI.
+            let edge_padding = 1.0 / scale;
+            let operations = scene
+                .visible_operations(nana_ui_scene::SceneRect {
+                    x: viewport.scene_origin[0] - edge_padding,
+                    y: viewport.scene_origin[1] - edge_padding,
+                    width: viewport.logical_size[0] + edge_padding * 2.0,
+                    height: viewport.logical_size[1] + edge_padding * 2.0,
+                })
+                .map_err(|_| ScenePaintError::InvalidRenderGraph)?;
+            for operation in operations.iter() {
+                let id = match operation {
+                    RenderOperation::PrepareExternal(_) => continue,
+                    RenderOperation::Draw(id) | RenderOperation::InvokeCustom(id) => *id,
+                };
+                let Some(primitive) = scene.draw_primitive(id) else {
+                    continue;
+                };
+                if let Some((node, depth)) = &mut skipped_layer {
+                    if *node == primitive.node {
+                        match primitive.kind {
+                            ScenePrimitiveKind::LayerBegin { .. } => *depth += 1,
+                            ScenePrimitiveKind::LayerEnd { .. } => {
+                                *depth -= 1;
+                                if *depth == 0 {
+                                    skipped_layer = None;
+                                }
+                            }
+                            _ => {}
+                        }
                         continue;
-                    };
-                    let encode = scene.compositor_paint_encode(
-                        primitive.node,
-                        &primitive.kind,
-                        primitive.transform,
-                        primitive.paint_opacity,
-                    );
-                    let opacity = encode.opacity;
-                    let encode_transform = encode.transform;
-                    self.quads
-                        .set_motion(encode.motion_ids, encode.transform_origin);
-                    if sync_opacity_groups(
-                        &mut commands,
-                        &mut group_stack,
-                        &mut group_depth,
-                        &mut group_slots,
-                        &mut max_group_depth,
-                        &mut group_slots_uniforms,
-                        &scene.opacity_groups(primitive.node),
-                        scene,
-                        origin,
-                        scale,
-                    ) {
-                        batching.close_all();
                     }
-                    let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin)
-                    else {
-                        continue;
-                    };
-                    let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
-                        continue;
-                    };
-                    let frag_clip = fragment_clip(&primitive.clips, origin);
-                    let (affine, persp) =
-                        paint_transform(encode_transform.0, encode_transform.1, origin);
-                    let bounds = local_rect(primitive.bounds);
-                    // Wrapping drains and re-inserts this primitive's commands
-                    // behind a `PushGroup`, so no batch may span the edit.
-                    let clip_dests = clip_dests_for(&primitive.kind, &primitive.clips, origin);
-                    if !clip_dests.is_empty() {
-                        batching.close_all();
+                    skipped_layer = None;
+                }
+                let encode = scene.compositor_paint_encode(
+                    primitive.node,
+                    &primitive.kind,
+                    primitive.transform,
+                    primitive.paint_opacity,
+                );
+                let opacity = encode.opacity;
+                let encode_transform = encode.transform;
+                self.quads
+                    .set_motion(encode.motion_ids, encode.transform_origin);
+                // A layer never outlives the node that opened it.
+                if painter_layers
+                    .last()
+                    .is_some_and(|node| *node != primitive.node)
+                {
+                    batching.close_all();
+                    while painter_layers.pop().is_some() {
+                        group_depth = group_depth.saturating_sub(1);
+                        commands.push(DrawCommand::PopGroup);
                     }
-                    let command_start = commands.len();
-                    match &primitive.kind {
-                        ScenePrimitiveKind::Quad {
-                            background,
-                            border_color,
-                            border_width,
-                            corner_radius,
-                            shadow,
+                }
+                if sync_opacity_groups(
+                    &mut commands,
+                    &mut group_stack,
+                    &mut group_depth,
+                    &mut group_slots,
+                    &mut max_group_depth,
+                    &mut group_slots_uniforms,
+                    &scene.opacity_groups(primitive.node),
+                    scene,
+                    origin,
+                    scale,
+                ) {
+                    batching.close_all();
+                }
+                // Both ends of a painter layer reach here whatever they
+                // cover, so no culling below can leave one open.
+                match &primitive.kind {
+                    ScenePrimitiveKind::LayerBegin {
+                        opacity: layer_opacity,
+                        blend,
+                        clip: layer_clip,
+                    } => {
+                        if let Some(rect) = layer_clip
+                            && !encode_transform.is_projective()
+                            && !rect_meets_target(
+                                *rect,
+                                clip::paint_affine(encode_transform.0, origin),
+                                scale,
+                                dest_physical,
+                            )
+                        {
+                            skipped_layer = Some((primitive.node, 1));
+                            continue;
+                        }
+                        batching.close_all();
+                        let frag = layer_clip
+                            .map(|rect| {
+                                clip::local_rect_clip(rect, encode_transform, origin)
+                                    .for_physical_pixels(scale)
+                            })
+                            .unwrap_or(clip::FragmentClip::PASS);
+                        let layer = group_depth;
+                        let slot = group_slots;
+                        group_slots = group_slots.saturating_add(1);
+                        group_depth = group_depth.saturating_add(1);
+                        max_group_depth = max_group_depth.max(group_depth);
+                        group_slots_uniforms.push(GroupSlot::dest(
+                            *layer_opacity,
+                            [1.0, 1.0, 1.0],
+                            0.0,
+                            0.0,
+                            blend.gpu_index(),
+                            frag,
+                        ));
+                        commands.push(DrawCommand::PushGroup { layer, slot });
+                        painter_layers.push(primitive.node);
+                        continue;
+                    }
+                    ScenePrimitiveKind::LayerEnd { mask } => {
+                        batching.close_all();
+                        if painter_layers.pop().is_none() {
+                            continue;
+                        }
+                        if let Some(mask) = mask {
+                            let (affine, persp) =
+                                paint_transform(encode_transform.0, encode_transform.1, origin);
+                            if let Some(range) = self.meshes.push_path(
+                                &mask.mesh,
+                                mask.origin,
+                                mesh_affine(affine, persp),
+                                1.0,
+                                clip::FragmentClip::PASS,
+                            ) {
+                                commands.push(DrawCommand::PathMask {
+                                    range,
+                                    scissor: whole_dest,
+                                    mode: mask.mode,
+                                });
+                            }
+                        }
+                        group_depth = group_depth.saturating_sub(1);
+                        commands.push(DrawCommand::PopGroup);
+                        continue;
+                    }
+                    _ => {}
+                }
+                let Some(clip) = intersect_clips(viewport_clip, &primitive.clips, origin) else {
+                    continue;
+                };
+                let Some(scissor) = physical_scissor(clip, scale, dest_physical) else {
+                    continue;
+                };
+                let frag_clip = fragment_clip(&primitive.clips, origin);
+                let (affine, persp) =
+                    paint_transform(encode_transform.0, encode_transform.1, origin);
+                let bounds = local_rect(primitive.bounds);
+                // Wrapping drains and re-inserts this primitive's commands
+                // behind a `PushGroup`, so no batch may span the edit.
+                let clip_dests = clip_dests_for(&primitive.kind, &primitive.clips, origin);
+                if !clip_dests.is_empty() {
+                    batching.close_all();
+                }
+                let command_start = commands.len();
+                match &primitive.kind {
+                    ScenePrimitiveKind::Quad {
+                        background,
+                        border_color,
+                        border_width,
+                        corner_radius,
+                        shadow,
+                        surface,
+                    } => {
+                        let painted = quad_painted_bounds(
+                            bounds,
+                            shadow.as_ref(),
                             surface,
-                        } => {
+                            affine,
+                            persp,
+                            scale,
+                            scissor,
+                            dest_physical,
+                        );
+                        if let Some(index) = self.quads.push(
+                            &self.device,
+                            &self.queue,
+                            bounds,
+                            clip,
+                            frag_clip,
+                            affine,
+                            persp,
+                            *background,
+                            *border_color,
+                            *border_width,
+                            *corner_radius,
+                            *shadow,
+                            opacity,
+                            surface,
+                        ) {
+                            // A fully transparent surface shows nothing,
+                            // backdrop blur included.
+                            if let Some(filter) = surface
+                                .backdrop_filter
+                                .filter(|f| f.is_active() && opacity > 0.0)
+                            {
+                                let world_bounds = if clip::is_translation_projective(affine, persp)
+                                {
+                                    bounds
+                                } else {
+                                    transformed_aabb_projective(bounds, affine, persp)
+                                };
+                                let phys = physical_bounds(world_bounds, scale, scissor);
+                                let radii = corner_radius.map(|r| r * scale);
+                                let bidx = self.backdrop.push(
+                                    index,
+                                    [
+                                        phys.x as f32,
+                                        phys.y as f32,
+                                        phys.width as f32,
+                                        phys.height as f32,
+                                    ],
+                                    radii,
+                                    filter,
+                                    frag_clip.for_physical_pixels(scale),
+                                    scale,
+                                    dest_physical,
+                                    bounds,
+                                    affine,
+                                );
+                                batching.close_all();
+                                commands.push(DrawCommand::Backdrop { index: bidx });
+                            }
+                            for quad_index in index..self.quads.pending_len() {
+                                push_quad(
+                                    &mut commands,
+                                    &mut batching,
+                                    quad_index,
+                                    scissor,
+                                    painted,
+                                );
+                            }
+                        }
+                    }
+                    ScenePrimitiveKind::QuadBatch {
+                        bounds: batch,
+                        background,
+                        border_color,
+                        border_width,
+                        corner_radius,
+                        shadow,
+                        surface,
+                    } => {
+                        for item in batch {
+                            let item_bounds = local_rect(*item);
                             let painted = quad_painted_bounds(
-                                bounds,
+                                item_bounds,
                                 shadow.as_ref(),
                                 surface,
                                 affine,
@@ -618,7 +831,7 @@ impl SceneWgpuPainter {
                             if let Some(index) = self.quads.push(
                                 &self.device,
                                 &self.queue,
-                                bounds,
+                                item_bounds,
                                 clip,
                                 frag_clip,
                                 affine,
@@ -631,14 +844,15 @@ impl SceneWgpuPainter {
                                 opacity,
                                 surface,
                             ) {
-                                if let Some(filter) =
-                                    surface.backdrop_filter.filter(|f| f.is_active())
+                                if let Some(filter) = surface
+                                    .backdrop_filter
+                                    .filter(|f| f.is_active() && opacity > 0.0)
                                 {
                                     let world_bounds =
                                         if clip::is_translation_projective(affine, persp) {
-                                            bounds
+                                            item_bounds
                                         } else {
-                                            transformed_aabb_projective(bounds, affine, persp)
+                                            transformed_aabb_projective(item_bounds, affine, persp)
                                         };
                                     let phys = physical_bounds(world_bounds, scale, scissor);
                                     let radii = corner_radius.map(|r| r * scale);
@@ -655,7 +869,7 @@ impl SceneWgpuPainter {
                                         frag_clip.for_physical_pixels(scale),
                                         scale,
                                         dest_physical,
-                                        bounds,
+                                        item_bounds,
                                         affine,
                                     );
                                     batching.close_all();
@@ -672,257 +886,204 @@ impl SceneWgpuPainter {
                                 }
                             }
                         }
-                        ScenePrimitiveKind::QuadBatch {
-                            bounds: batch,
-                            background,
-                            border_color,
-                            border_width,
-                            corner_radius,
-                            shadow,
-                            surface,
-                        } => {
-                            for item in batch {
-                                let item_bounds = local_rect(*item);
-                                let painted = quad_painted_bounds(
-                                    item_bounds,
-                                    shadow.as_ref(),
-                                    surface,
-                                    affine,
-                                    persp,
-                                    scale,
-                                    scissor,
-                                    dest_physical,
-                                );
-                                if let Some(index) = self.quads.push(
+                    }
+                    ScenePrimitiveKind::Text {
+                        content,
+                        color,
+                        size,
+                        weight,
+                        family,
+                        line_height,
+                        wrap,
+                        ellipsis,
+                        max_lines,
+                        shaping,
+                        horizontal_alignment,
+                        vertical_alignment,
+                        spans,
+                        letter_spacing,
+                        text_shadow,
+                        underline: _,
+                        line_through: _,
+                        font_features,
+                        italic,
+                        wrap_break,
+                        opentype,
+                        // The Runtime's retained handle: the layout this
+                        // node was *measured* with. The painter draws it
+                        // rather than laying the same paragraph out again,
+                        // so there is one paragraph, not two that agree.
+                        layout,
+                    } => {
+                        // A text node's glyphs are retained per node and
+                        // per pass, so the shadows under a label are their
+                        // own entries over the same shaped paragraph and
+                        // the same glyph bitmaps.
+                        let node = primitive.node.get();
+                        let slot = id.slot;
+                        let mut pass = 0u32;
+                        let mut push_text =
+                            |commands: &mut Vec<DrawCommand>,
+                             batching: &mut Batching,
+                             extra_offset: [f32; 2],
+                             color_override: Option<[f32; 4]>| {
+                                let prepared = self.text.prepare(
                                     &self.device,
-                                    &self.queue,
-                                    item_bounds,
+                                    bounds,
                                     clip,
-                                    frag_clip,
+                                    scale,
+                                    content,
+                                    color_override.or(*color),
+                                    *size,
+                                    *weight,
+                                    family.as_deref(),
+                                    *line_height,
+                                    *wrap,
+                                    *wrap_break,
+                                    *italic,
+                                    *ellipsis,
+                                    *max_lines,
+                                    *shaping,
+                                    *horizontal_alignment,
+                                    *vertical_alignment,
+                                    spans,
+                                    *letter_spacing,
+                                    font_features,
+                                    opentype,
                                     affine,
                                     persp,
-                                    *background,
-                                    *border_color,
-                                    *border_width,
-                                    *corner_radius,
-                                    *shadow,
+                                    frag_clip,
                                     opacity,
-                                    surface,
-                                ) {
-                                    if let Some(filter) =
-                                        surface.backdrop_filter.filter(|f| f.is_active())
-                                    {
-                                        let world_bounds =
-                                            if clip::is_translation_projective(affine, persp) {
-                                                item_bounds
-                                            } else {
-                                                transformed_aabb_projective(
-                                                    item_bounds,
-                                                    affine,
-                                                    persp,
-                                                )
-                                            };
-                                        let phys = physical_bounds(world_bounds, scale, scissor);
-                                        let radii = corner_radius.map(|r| r * scale);
-                                        let bidx = self.backdrop.push(
-                                            index,
-                                            [
-                                                phys.x as f32,
-                                                phys.y as f32,
-                                                phys.width as f32,
-                                                phys.height as f32,
-                                            ],
-                                            radii,
-                                            filter,
-                                            frag_clip.for_physical_pixels(scale),
-                                            scale,
-                                            dest_physical,
-                                            item_bounds,
-                                            affine,
-                                        );
-                                        batching.close_all();
-                                        commands.push(DrawCommand::Backdrop { index: bidx });
-                                    }
-                                    for quad_index in index..self.quads.pending_len() {
-                                        push_quad(
-                                            &mut commands,
-                                            &mut batching,
-                                            quad_index,
-                                            scissor,
-                                            painted,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        ScenePrimitiveKind::Text {
-                            content,
-                            color,
-                            size,
-                            weight,
-                            family,
-                            line_height,
-                            wrap,
-                            ellipsis,
-                            max_lines,
-                            shaping,
-                            horizontal_alignment,
-                            vertical_alignment,
-                            spans,
-                            letter_spacing,
-                            text_shadow,
-                            underline: _,
-                            line_through: _,
-                            font_features,
-                            italic,
-                            wrap_break,
-                            opentype,
-                            // The Runtime's retained handle: the layout this
-                            // node was *measured* with. The painter draws it
-                            // rather than laying the same paragraph out again,
-                            // so there is one paragraph, not two that agree.
-                            layout,
-                        } => {
-                            // A text node's glyphs are retained per node and
-                            // per pass, so the shadows under a label are their
-                            // own entries over the same shaped paragraph and
-                            // the same glyph bitmaps.
-                            let node = primitive.node.get();
-                            let slot = id.slot;
-                            let mut pass = 0u32;
-                            let mut push_text =
-                                |commands: &mut Vec<DrawCommand>,
-                                 batching: &mut Batching,
-                                 extra_offset: [f32; 2],
-                                 color_override: Option<[f32; 4]>| {
-                                    let prepared = self.text.prepare(
-                                        &self.device,
-                                        bounds,
-                                        clip,
-                                        scale,
-                                        content,
-                                        color_override.or(*color),
-                                        *size,
-                                        *weight,
-                                        family.as_deref(),
-                                        *line_height,
-                                        *wrap,
-                                        *wrap_break,
-                                        *italic,
-                                        *ellipsis,
-                                        *max_lines,
-                                        *shaping,
-                                        *horizontal_alignment,
-                                        *vertical_alignment,
-                                        spans,
-                                        *letter_spacing,
-                                        font_features,
-                                        opentype,
+                                    extra_offset,
+                                    text::EntryKey { node, slot, pass },
+                                    primitive.revision,
+                                    layout.as_ref(),
+                                );
+                                pass += 1;
+                                if let Some(prepared) = prepared {
+                                    let painted = painted_bounds(
+                                        prepared.ink,
+                                        0.0,
                                         affine,
                                         persp,
-                                        frag_clip,
-                                        opacity,
-                                        extra_offset,
-                                        text::EntryKey { node, slot, pass },
-                                        primitive.revision,
-                                        layout.as_ref(),
+                                        scale,
+                                        scissor,
                                     );
-                                    pass += 1;
-                                    if let Some(prepared) = prepared {
-                                        let painted = painted_bounds(
-                                            prepared.ink,
-                                            0.0,
-                                            affine,
-                                            persp,
-                                            scale,
-                                            scissor,
-                                        );
-                                        push_text_run(
-                                            commands,
-                                            batching,
-                                            &mut self.text,
-                                            prepared,
-                                            scissor,
-                                            painted,
-                                        );
-                                    }
-                                };
-                            if let Some(shadow) = text_shadow {
-                                let base_color = with_opacity(shadow.color, opacity);
-                                for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
-                                    let scaled = [
-                                        base_color[0],
-                                        base_color[1],
-                                        base_color[2],
-                                        base_color[3] * alpha_scale,
-                                    ];
-                                    push_text(
+                                    push_text_run(
+                                        commands,
+                                        batching,
+                                        &mut self.text,
+                                        prepared,
+                                        scissor,
+                                        painted,
+                                    );
+                                }
+                            };
+                        if let Some(shadow) = text_shadow {
+                            let base_color = with_opacity(shadow.color, opacity);
+                            for (dx, dy, alpha_scale) in text_shadow_draw_offsets(*shadow) {
+                                let scaled = [
+                                    base_color[0],
+                                    base_color[1],
+                                    base_color[2],
+                                    base_color[3] * alpha_scale,
+                                ];
+                                push_text(
+                                    &mut commands,
+                                    &mut batching,
+                                    [shadow.offset_x + dx, shadow.offset_y + dy],
+                                    Some(scaled),
+                                );
+                            }
+                        }
+                        push_text(&mut commands, &mut batching, [0.0, 0.0], None);
+                    }
+                    ScenePrimitiveKind::QuadColorBatch {
+                        bounds: batch,
+                        colors,
+                        border_color,
+                        border_width,
+                        corner_radius,
+                    } => {
+                        // Per-item solid colors (editor color swatches); no
+                        // shadow and no surface paint by construction, so the
+                        // batch collapses to one quads.push per item.
+                        let no_shadow: Option<nana_ui_runtime::ComponentElevation> = None;
+                        let default_surface = nana_ui_scene::QuadSurfacePaint::default();
+                        for (item, color) in batch.iter().zip(colors.iter()) {
+                            let item_bounds = local_rect(*item);
+                            let painted = quad_painted_bounds(
+                                item_bounds,
+                                None,
+                                &default_surface,
+                                affine,
+                                persp,
+                                scale,
+                                scissor,
+                                dest_physical,
+                            );
+                            if let Some(index) = self.quads.push(
+                                &self.device,
+                                &self.queue,
+                                item_bounds,
+                                clip,
+                                frag_clip,
+                                affine,
+                                persp,
+                                Some(*color),
+                                *border_color,
+                                *border_width,
+                                *corner_radius,
+                                no_shadow,
+                                opacity,
+                                &default_surface,
+                            ) {
+                                for quad_index in index..self.quads.pending_len() {
+                                    push_quad(
                                         &mut commands,
                                         &mut batching,
-                                        [shadow.offset_x + dx, shadow.offset_y + dy],
-                                        Some(scaled),
+                                        quad_index,
+                                        scissor,
+                                        painted,
                                     );
                                 }
                             }
-                            push_text(&mut commands, &mut batching, [0.0, 0.0], None);
                         }
-                        ScenePrimitiveKind::QuadColorBatch {
-                            bounds: batch,
-                            colors,
-                            border_color,
-                            border_width,
-                            corner_radius,
-                        } => {
-                            // Per-item solid colors (editor color swatches); no
-                            // shadow and no surface paint by construction, so the
-                            // batch collapses to one quads.push per item.
-                            let no_shadow: Option<nana_ui_runtime::ComponentElevation> = None;
-                            let default_surface = nana_ui_scene::QuadSurfacePaint::default();
-                            for (item, color) in batch.iter().zip(colors.iter()) {
-                                let item_bounds = local_rect(*item);
-                                let painted = quad_painted_bounds(
-                                    item_bounds,
-                                    None,
-                                    &default_surface,
-                                    affine,
-                                    persp,
-                                    scale,
-                                    scissor,
-                                    dest_physical,
-                                );
-                                if let Some(index) = self.quads.push(
-                                    &self.device,
-                                    &self.queue,
-                                    item_bounds,
-                                    clip,
-                                    frag_clip,
-                                    affine,
-                                    persp,
-                                    Some(*color),
-                                    *border_color,
-                                    *border_width,
-                                    *corner_radius,
-                                    no_shadow,
-                                    opacity,
-                                    &default_surface,
-                                ) {
-                                    for quad_index in index..self.quads.pending_len() {
-                                        push_quad(
-                                            &mut commands,
-                                            &mut batching,
-                                            quad_index,
-                                            scissor,
-                                            painted,
-                                        );
-                                    }
-                                }
-                            }
+                    }
+                    ScenePrimitiveKind::Icon { icon, color } => {
+                        if let Some(prepared) = self.icons.prepare(
+                            &self.device,
+                            &self.queue,
+                            bounds,
+                            affine,
+                            persp,
+                            scale,
+                            *icon,
+                            color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                            opacity,
+                            frag_clip,
+                        ) {
+                            push_icon(
+                                &mut commands,
+                                &mut batching,
+                                &self.icons,
+                                prepared,
+                                scissor,
+                                painted_bounds(bounds, 0.0, affine, persp, scale, scissor),
+                            );
                         }
-                        ScenePrimitiveKind::Icon { icon, color } => {
+                    }
+                    ScenePrimitiveKind::IconBatch {
+                        bounds: batch,
+                        icon,
+                        color,
+                    } => {
+                        for item in batch {
+                            let item_bounds = local_rect(*item);
                             if let Some(prepared) = self.icons.prepare(
                                 &self.device,
                                 &self.queue,
-                                bounds,
+                                item_bounds,
                                 affine,
                                 persp,
                                 scale,
@@ -937,289 +1098,291 @@ impl SceneWgpuPainter {
                                     &self.icons,
                                     prepared,
                                     scissor,
-                                    painted_bounds(bounds, 0.0, affine, persp, scale, scissor),
+                                    painted_bounds(item_bounds, 0.0, affine, persp, scale, scissor),
                                 );
-                            }
-                        }
-                        ScenePrimitiveKind::IconBatch {
-                            bounds: batch,
-                            icon,
-                            color,
-                        } => {
-                            for item in batch {
-                                let item_bounds = local_rect(*item);
-                                if let Some(prepared) = self.icons.prepare(
-                                    &self.device,
-                                    &self.queue,
-                                    item_bounds,
-                                    affine,
-                                    persp,
-                                    scale,
-                                    *icon,
-                                    color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                    opacity,
-                                    frag_clip,
-                                ) {
-                                    push_icon(
-                                        &mut commands,
-                                        &mut batching,
-                                        &self.icons,
-                                        prepared,
-                                        scissor,
-                                        painted_bounds(
-                                            item_bounds,
-                                            0.0,
-                                            affine,
-                                            persp,
-                                            scale,
-                                            scissor,
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        ScenePrimitiveKind::Spinner { phase, color } => {
-                            if let Some(range) = self.meshes.push_spinner(
-                                bounds,
-                                mesh_affine(affine, persp),
-                                *phase,
-                                color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
-                                opacity,
-                                frag_clip,
-                            ) {
-                                push_mesh_draw(
-                                    &mut commands,
-                                    &mut batching,
-                                    range,
-                                    scissor,
-                                    painted_bounds(
-                                        bounds,
-                                        0.0,
-                                        mesh_affine(affine, persp),
-                                        [0.0, 0.0],
-                                        scale,
-                                        scissor,
-                                    ),
-                                );
-                            }
-                        }
-                        ScenePrimitiveKind::Stroke {
-                            points,
-                            width,
-                            color,
-                            widths,
-                            cap,
-                            pattern,
-                        } => {
-                            let (dash, dash_offset, colors, path_length) = match pattern.as_deref()
-                            {
-                                Some(pattern) => (
-                                    pattern.dash.as_slice(),
-                                    pattern.dash_offset,
-                                    pattern.colors.as_slice(),
-                                    pattern.path_length,
-                                ),
-                                None => ([].as_slice(), 0.0, [].as_slice(), 0.0),
-                            };
-                            if let Some(range) = self.meshes.push_stroke_with_path_length(
-                                points,
-                                StrokeStyle {
-                                    width: *width,
-                                    widths,
-                                    cap: *cap,
-                                    dash,
-                                    dash_offset,
-                                    colors,
-                                },
-                                mesh_affine(affine, persp),
-                                *color,
-                                opacity,
-                                frag_clip,
-                                path_length,
-                            ) {
-                                // Caps and joins reach half a stroke width past
-                                // the polyline; one more pixel covers AA.
-                                let reach =
-                                    widths.iter().copied().fold(*width, f32::max).max(0.0) + 1.0;
-                                push_mesh_draw(
-                                    &mut commands,
-                                    &mut batching,
-                                    range,
-                                    scissor,
-                                    painted_bounds(
-                                        polyline_bounds(points).unwrap_or(bounds),
-                                        reach,
-                                        mesh_affine(affine, persp),
-                                        [0.0, 0.0],
-                                        scale,
-                                        scissor,
-                                    ),
-                                );
-                            }
-                        }
-                        ScenePrimitiveKind::Custom { node: custom, mask } => {
-                            if custom.renderer.as_ref() == "nana.host-texture" {
-                                // The registry is a shared RwLock: an entry validated at
-                                // frame start can be removed before prepare. Skip the
-                                // node for this frame instead of panicking.
-                                let Some(binding) = host_textures
-                                    .and_then(|registry| registry.get(custom.resource.as_ref()))
-                                else {
-                                    continue;
-                                };
-                                let dest = nana_ui_core::LogicalRect::new(
-                                    bounds.x,
-                                    bounds.y,
-                                    bounds.width,
-                                    bounds.height,
-                                )
-                                .fitted(
-                                    binding.width as f32,
-                                    binding.height as f32,
-                                    custom.fit,
-                                );
-                                let (rounded_clip, corner_radius) = scene
-                                    .primitive(nana_ui_scene::PrimitiveId {
-                                        node: primitive.id.node,
-                                        slot: 0,
-                                    })
-                                    .and_then(|quad| match &quad.kind {
-                                        ScenePrimitiveKind::Quad { corner_radius, .. } => {
-                                            let radius = corner_radius
-                                                .iter()
-                                                .copied()
-                                                .fold(0.0f32, f32::max);
-                                            Some((local_rect(quad.bounds), radius))
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or((bounds, 0.0));
-                                batching.close_all();
-                                let prepared = self.host_textures.prepare(
-                                    &self.device,
-                                    &self.queue,
-                                    binding,
-                                    primitive.id.node.get(),
-                                    primitive.id.slot,
-                                    LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
-                                    affine,
-                                    persp,
-                                    scissor,
-                                    opacity,
-                                    corner_radius,
-                                    rounded_clip,
-                                    frag_clip,
-                                    dest_physical,
-                                    scale,
-                                    mask.clone(),
-                                    Some(&gpu_work),
-                                    custom.checkerboard,
-                                    custom.zoom,
-                                );
-                                if let Some(registry) = host_textures {
-                                    registry
-                                        .note_painted(custom.resource.as_ref(), prepared.painted);
-                                }
-                                commands.push(DrawCommand::HostTexture(prepared));
-                            } else {
-                                let Some(renderer) = gpu_renderers
-                                    .and_then(|registry| registry.get(custom.renderer.as_ref()))
-                                else {
-                                    continue;
-                                };
-                                let node = SceneGpuNode {
-                                    id: primitive.id,
-                                    custom: custom.clone(),
-                                    opacity,
-                                };
-                                let custom_bounds = custom_paint_bounds(bounds, affine, persp);
-                                renderer.prepare(
-                                    &node,
-                                    SceneGpuPrepareContext {
-                                        device: &self.device,
-                                        queue: &self.queue,
-                                        target_format: self.format,
-                                        bounds: custom_bounds.to_core(),
-                                        scale_factor: scale,
-                                        dest_size: dest_physical,
-                                        gpu_work: Some(&gpu_work),
-                                    },
-                                );
-                                batching.close_all();
-                                commands.push(DrawCommand::Custom {
-                                    node,
-                                    renderer,
-                                    bounds: physical_bounds(custom_bounds, scale, scissor),
-                                    clip: scissor,
-                                });
                             }
                         }
                     }
-                    if !clip_dests.is_empty()
-                        && wrap_drawn_with_clip_dests(
-                            &mut commands,
-                            command_start,
-                            &mut group_depth,
-                            &mut group_slots,
-                            &mut max_group_depth,
-                            &mut group_slots_uniforms,
-                            &clip_dests,
-                            scale,
-                        )
-                    {
-                        batching.close_all();
+                    ScenePrimitiveKind::Spinner { phase, color } => {
+                        if let Some(range) = self.meshes.push_spinner(
+                            bounds,
+                            mesh_affine(affine, persp),
+                            *phase,
+                            color.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                            opacity,
+                            frag_clip,
+                        ) {
+                            push_mesh_draw(
+                                &mut commands,
+                                &mut batching,
+                                range,
+                                scissor,
+                                painted_bounds(
+                                    bounds,
+                                    0.0,
+                                    mesh_affine(affine, persp),
+                                    [0.0, 0.0],
+                                    scale,
+                                    scissor,
+                                ),
+                            );
+                        }
+                    }
+                    ScenePrimitiveKind::Stroke {
+                        points,
+                        width,
+                        color,
+                        widths,
+                        cap,
+                        pattern,
+                    } => {
+                        let (dash, dash_offset, colors, path_length) = match pattern.as_deref() {
+                            Some(pattern) => (
+                                pattern.dash.as_slice(),
+                                pattern.dash_offset,
+                                pattern.colors.as_slice(),
+                                pattern.path_length,
+                            ),
+                            None => ([].as_slice(), 0.0, [].as_slice(), 0.0),
+                        };
+                        if let Some(range) = self.meshes.push_stroke_with_path_length(
+                            points,
+                            StrokeStyle {
+                                width: *width,
+                                widths,
+                                cap: *cap,
+                                dash,
+                                dash_offset,
+                                colors,
+                            },
+                            mesh_affine(affine, persp),
+                            *color,
+                            opacity,
+                            frag_clip,
+                            path_length,
+                        ) {
+                            // Caps and joins reach half a stroke width past
+                            // the polyline; one more pixel covers AA.
+                            let reach =
+                                widths.iter().copied().fold(*width, f32::max).max(0.0) + 1.0;
+                            push_mesh_draw(
+                                &mut commands,
+                                &mut batching,
+                                range,
+                                scissor,
+                                painted_bounds(
+                                    polyline_bounds(points).unwrap_or(bounds),
+                                    reach,
+                                    mesh_affine(affine, persp),
+                                    [0.0, 0.0],
+                                    scale,
+                                    scissor,
+                                ),
+                            );
+                        }
+                    }
+                    ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => {
+                        unreachable!("painter layers are handled before culling")
+                    }
+                    ScenePrimitiveKind::Path { mesh, origin } => {
+                        let path_affine = mesh_affine(affine, persp);
+                        if let Some(range) =
+                            self.meshes
+                                .push_path(mesh, *origin, path_affine, opacity, frag_clip)
+                        {
+                            // The AA fringe is physical pixels past the
+                            // mesh whatever the transform: one along an
+                            // edge, up to the miter limit (4) at a corner.
+                            let drawn =
+                                transformed_aabb_projective(bounds, path_affine, [0.0, 0.0]);
+                            let fringe = 5.0 / scale;
+                            push_path_draw(
+                                &mut commands,
+                                &mut batching,
+                                range,
+                                scissor,
+                                physical_bounds(
+                                    LogicalRect::from_xywh(
+                                        drawn.x - fringe,
+                                        drawn.y - fringe,
+                                        drawn.width + fringe * 2.0,
+                                        drawn.height + fringe * 2.0,
+                                    ),
+                                    scale,
+                                    scissor,
+                                ),
+                            );
+                        }
+                    }
+                    ScenePrimitiveKind::Custom { node: custom, mask } => {
+                        if custom.renderer.as_ref() == "nana.host-texture" {
+                            // The registry is a shared RwLock: an entry validated at
+                            // frame start can be removed before prepare. Skip the
+                            // node for this frame instead of panicking.
+                            let Some(binding) = host_textures
+                                .and_then(|registry| registry.get(custom.resource.as_ref()))
+                            else {
+                                continue;
+                            };
+                            let dest = nana_ui_core::LogicalRect::new(
+                                bounds.x,
+                                bounds.y,
+                                bounds.width,
+                                bounds.height,
+                            )
+                            .fitted(
+                                binding.width as f32,
+                                binding.height as f32,
+                                custom.fit,
+                            );
+                            let (rounded_clip, corner_radius) = scene
+                                .primitive(nana_ui_scene::PrimitiveId {
+                                    node: primitive.id.node,
+                                    slot: 0,
+                                })
+                                .and_then(|quad| match &quad.kind {
+                                    ScenePrimitiveKind::Quad { corner_radius, .. } => {
+                                        let radius =
+                                            corner_radius.iter().copied().fold(0.0f32, f32::max);
+                                        Some((local_rect(quad.bounds), radius))
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or((bounds, 0.0));
+                            batching.close_all();
+                            let prepared = self.host_textures.prepare(
+                                &self.device,
+                                &self.queue,
+                                binding,
+                                primitive.id.node.get(),
+                                primitive.id.slot,
+                                LogicalRect::from_xywh(dest.x, dest.y, dest.width, dest.height),
+                                affine,
+                                persp,
+                                scissor,
+                                opacity,
+                                corner_radius,
+                                rounded_clip,
+                                frag_clip,
+                                dest_physical,
+                                scale,
+                                mask.clone(),
+                                Some(&gpu_work),
+                                custom.checkerboard,
+                                custom.zoom,
+                            );
+                            if let Some(registry) = host_textures {
+                                registry.note_painted(custom.resource.as_ref(), prepared.painted);
+                            }
+                            commands.push(DrawCommand::HostTexture(prepared));
+                        } else {
+                            let Some(renderer) = gpu_renderers
+                                .and_then(|registry| registry.get(custom.renderer.as_ref()))
+                            else {
+                                continue;
+                            };
+                            let node = SceneGpuNode {
+                                id: primitive.id,
+                                custom: custom.clone(),
+                                opacity,
+                            };
+                            let custom_bounds = custom_paint_bounds(bounds, affine, persp);
+                            renderer.prepare(
+                                &node,
+                                SceneGpuPrepareContext {
+                                    device: &self.device,
+                                    queue: &self.queue,
+                                    target_format: self.format,
+                                    bounds: custom_bounds.to_core(),
+                                    scale_factor: scale,
+                                    dest_size: dest_physical,
+                                    gpu_work: Some(&gpu_work),
+                                },
+                            );
+                            batching.close_all();
+                            commands.push(DrawCommand::Custom {
+                                node,
+                                renderer,
+                                bounds: physical_bounds(custom_bounds, scale, scissor),
+                                clip: scissor,
+                            });
+                        }
                     }
                 }
-                if sync_opacity_groups(
-                    &mut commands,
-                    &mut group_stack,
-                    &mut group_depth,
-                    &mut group_slots,
-                    &mut max_group_depth,
-                    &mut group_slots_uniforms,
-                    &[],
-                    scene,
-                    origin,
-                    scale,
-                ) {
+                if !clip_dests.is_empty()
+                    && wrap_drawn_with_clip_dests(
+                        &mut commands,
+                        command_start,
+                        &mut group_depth,
+                        &mut group_slots,
+                        &mut max_group_depth,
+                        &mut group_slots_uniforms,
+                        &clip_dests,
+                        scale,
+                    )
+                {
                     batching.close_all();
                 }
-                // Text prepare stays inside the batch window: it is the same
-                // work the per-primitive prepare did, only once per run.
-                self.text.flush_runs();
-                let batch = batch_started.elapsed();
+            }
+            if !painter_layers.is_empty() {
+                batching.close_all();
+                while painter_layers.pop().is_some() {
+                    group_depth = group_depth.saturating_sub(1);
+                    commands.push(DrawCommand::PopGroup);
+                }
+            }
+            if sync_opacity_groups(
+                &mut commands,
+                &mut group_stack,
+                &mut group_depth,
+                &mut group_slots,
+                &mut max_group_depth,
+                &mut group_slots_uniforms,
+                &[],
+                scene,
+                origin,
+                scale,
+            ) {
+                batching.close_all();
+            }
+            // Text prepare stays inside the batch window: it is the same
+            // work the per-primitive prepare did, only once per run.
+            self.text.flush_runs();
+            let batch = batch_started.elapsed();
 
-                let upload_started = Instant::now();
-                self.quads.upload(
-                    &self.device,
-                    &self.queue,
-                    dest_physical,
-                    scale,
-                    Some(&gpu_work),
-                );
-                self.meshes.upload(
-                    &self.device,
-                    &self.queue,
-                    dest_physical,
-                    scale,
-                    Some(&gpu_work),
-                );
-                self.icons
-                    .upload(&self.device, &self.queue, Some(&gpu_work));
-                self.text.upload(&self.device, &self.queue, Some(&gpu_work));
-                self.backdrop
-                    .upload(&self.device, &self.queue, dest_physical, Some(&gpu_work));
-                let gpu_upload = upload_started.elapsed();
+            let upload_started = Instant::now();
+            self.quads.upload(
+                &self.device,
+                &self.queue,
+                dest_physical,
+                scale,
+                Some(&gpu_work),
+            );
+            self.meshes.upload(
+                &self.device,
+                &self.queue,
+                dest_physical,
+                scale,
+                Some(&gpu_work),
+            );
+            self.icons
+                .upload(&self.device, &self.queue, Some(&gpu_work));
+            self.text.upload(&self.device, &self.queue, Some(&gpu_work));
+            self.backdrop
+                .upload(&self.device, &self.queue, dest_physical, Some(&gpu_work));
+            let gpu_upload = upload_started.elapsed();
+            let group_extents = group_extents(&commands, &batching.painted, &group_slots_uniforms);
 
-                (
-                    commands,
-                    max_group_depth,
-                    group_slots_uniforms,
-                    batching.glyph_then_quad,
-                    batch,
-                    gpu_upload,
-                )
-            };
+            (
+                commands,
+                max_group_depth,
+                group_slots_uniforms,
+                group_extents,
+                batching.glyph_then_quad,
+                batch,
+                gpu_upload,
+            )
+        };
 
         let encode_started = Instant::now();
         // The MSAA-geometry then single-sample-glyph optimization is valid only
@@ -1288,6 +1451,7 @@ impl SceneWgpuPainter {
                     queue: &self.queue,
                     gpu_work: &gpu_work,
                     motion: self.motion.bind_group(),
+                    group_extents: &group_extents,
                 },
                 encoder,
                 dest,
@@ -1315,6 +1479,18 @@ impl SceneWgpuPainter {
                         self.meshes
                             .draw(&mut pass, range, *scissor, sample_count, Some(&gpu_work));
                     }
+                    DrawCommand::Path { range, scissor } => {
+                        self.meshes.draw_path(
+                            &mut pass,
+                            range,
+                            *scissor,
+                            sample_count,
+                            Some(&gpu_work),
+                        );
+                    }
+                    // A mask only ever sits inside a group, and a frame with
+                    // groups is encoded in order, not here.
+                    DrawCommand::PathMask { .. } => {}
                     DrawCommand::Text { .. }
                     | DrawCommand::Icon { .. }
                     | DrawCommand::HostTexture(_)
@@ -1397,6 +1573,7 @@ impl SceneWgpuPainter {
                 commands,
                 max_group_depth,
                 group_slots: group_slots_uniforms,
+                group_extents,
                 glyph_then_quad,
                 text_placement_epoch: self.text.placement_epoch(),
             });
@@ -1610,6 +1787,8 @@ fn pop_opacity_group(
 struct OpenBatch {
     /// Position of the command in the display list.
     command: usize,
+    /// Its place in [`Batching::painted`].
+    ordinal: usize,
     /// Union of the dest-pixel bounds of everything already in it.
     painted: PhysicalRect,
 }
@@ -1632,6 +1811,11 @@ struct Batching {
     /// an earlier batch can leave glyphs at the end and that must not turn a
     /// single-sampled frame into a 4x MSAA one.
     glyph_then_quad: bool,
+    /// Dest-pixel bounds of every batched command (quads, meshes, paths,
+    /// text, icons), in list order. Indexed by order among those commands
+    /// rather than list position: clip dests wrap drawn commands in groups
+    /// after the fact, which moves them but never reorders them.
+    painted: Vec<PhysicalRect>,
 }
 
 impl Batching {
@@ -1670,11 +1854,17 @@ impl Batching {
         }
         let batch = &mut self.open[position];
         batch.painted = union_physical(batch.painted, painted);
+        self.painted[batch.ordinal] = batch.painted;
         Some(batch.command)
     }
 
     fn open(&mut self, command: usize, painted: PhysicalRect) {
-        self.open.push(OpenBatch { command, painted });
+        self.open.push(OpenBatch {
+            command,
+            ordinal: self.painted.len(),
+            painted,
+        });
+        self.painted.push(painted);
     }
 }
 
@@ -1864,6 +2054,32 @@ fn push_mesh_draw(
     commands.push(DrawCommand::Mesh { range, scissor });
 }
 
+fn push_path_draw(
+    commands: &mut Vec<DrawCommand>,
+    batching: &mut Batching,
+    range: PathRange,
+    scissor: PhysicalRect,
+    painted: PhysicalRect,
+) {
+    batching.note_geometry();
+    if let Some(target) = batching.target(commands, painted, |command| {
+        matches!(command, DrawCommand::Path { range: previous, scissor: open }
+            if *open == scissor
+                && previous.first_index + previous.index_count == range.first_index)
+    }) {
+        let DrawCommand::Path {
+            range: previous, ..
+        } = &mut commands[target]
+        else {
+            unreachable!("a path batch names a path command")
+        };
+        previous.index_count += range.index_count;
+        return;
+    }
+    batching.open(commands.len(), painted);
+    commands.push(DrawCommand::Path { range, scissor });
+}
+
 fn text_shadow_draw_offsets(shadow: nana_ui_core::TextShadowSpec) -> Vec<(f32, f32, f32)> {
     let mut out = vec![(0.0, 0.0, 1.0)];
     let blur = shadow.blur_radius.max(0.0);
@@ -1888,6 +2104,83 @@ struct EncodeOrdered<'a> {
     queue: &'a wgpu::Queue,
     gpu_work: &'a GpuWorkSink,
     motion: &'a wgpu::BindGroup,
+    /// What each group can change, by slot ([`group_extents`]).
+    group_extents: &'a [GroupExtent],
+}
+
+/// Which dest pixels a group can change when it composites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupExtent {
+    /// It drew nothing.
+    Empty,
+    Rect(PhysicalRect),
+    /// Not known to be less than the whole target.
+    All,
+}
+
+impl GroupExtent {
+    fn union(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::All, _) | (_, Self::All) => Self::All,
+            (Self::Empty, other) | (other, Self::Empty) => other,
+            (Self::Rect(a), Self::Rect(b)) => Self::Rect(union_physical(a, b)),
+        }
+    }
+}
+
+/// Each group's extent, by slot: the union of what its commands paint, and
+/// the whole target once anything in it has no known bounds or its filter
+/// can move pixels past what was drawn.
+fn group_extents(
+    commands: &[DrawCommand],
+    painted: &[PhysicalRect],
+    slots: &[GroupSlot],
+) -> Vec<GroupExtent> {
+    let mut extents = vec![GroupExtent::All; slots.len()];
+    if slots.is_empty() {
+        return extents;
+    }
+    let mut stack: Vec<(u32, GroupExtent)> = Vec::new();
+    let mut batched = painted.iter();
+    for command in commands {
+        let drawn = match command {
+            DrawCommand::Quads { .. }
+            | DrawCommand::Mesh { .. }
+            | DrawCommand::Path { .. }
+            | DrawCommand::Text { .. }
+            | DrawCommand::Icon { .. } => batched
+                .next()
+                .map_or(GroupExtent::All, |rect| GroupExtent::Rect(*rect)),
+            // A mask only takes away from the layer it is applied to.
+            DrawCommand::PathMask { .. } => GroupExtent::Empty,
+            // A custom renderer may open its own pass, which nothing
+            // scissors to the bounds it was given.
+            DrawCommand::Custom { .. }
+            | DrawCommand::HostTexture(_)
+            | DrawCommand::Backdrop { .. } => GroupExtent::All,
+            DrawCommand::PushGroup { slot, .. } => {
+                stack.push((*slot, GroupExtent::Empty));
+                continue;
+            }
+            DrawCommand::PopGroup => {
+                let Some((slot, extent)) = stack.pop() else {
+                    continue;
+                };
+                let extent = match slots.get(slot as usize) {
+                    Some(group) if !group.spreads() => extent,
+                    _ => GroupExtent::All,
+                };
+                if let Some(held) = extents.get_mut(slot as usize) {
+                    *held = extent;
+                }
+                extent
+            }
+        };
+        if let Some((_, extent)) = stack.last_mut() {
+            *extent = extent.union(drawn);
+        }
+    }
+    extents
 }
 
 struct GroupFrame {
@@ -1927,6 +2220,66 @@ fn encode_ordered(
                     index += 1;
                     continue;
                 };
+                if !layer_ready.get(frame.layer).copied().unwrap_or(false) {
+                    // Nothing drew into the layer, so it was never cleared:
+                    // it still holds whatever last used that depth. An empty
+                    // group composites to nothing, filters and blends alike.
+                    index += 1;
+                    continue;
+                }
+                // Where the group can change its parent: a blend that reads
+                // the backdrop copies and composites only there.
+                let whole = PhysicalRect {
+                    x: 0,
+                    y: 0,
+                    width: dest_physical[0],
+                    height: dest_physical[1],
+                };
+                let mut area = None;
+                if dest.reads_backdrop(frame.slot) {
+                    let region = match pipelines.group_extents.get(frame.slot as usize) {
+                        Some(GroupExtent::Empty) => {
+                            // Nothing drawn: every blend of a transparent
+                            // source leaves the backdrop as it was.
+                            index += 1;
+                            continue;
+                        }
+                        Some(GroupExtent::Rect(rect)) => intersect_physical(*rect, whole),
+                        Some(GroupExtent::All) | None => whole,
+                    };
+                    if region.width == 0 || region.height == 0 {
+                        index += 1;
+                        continue;
+                    }
+                    area = Some(region);
+                    // The blend reads what it lands on: bring the parent up
+                    // to date — a first use still has to clear it — and copy
+                    // it before compositing over it.
+                    let parent = stack.last().map(|parent| parent.layer);
+                    match parent {
+                        Some(layer) => {
+                            if let wgpu::LoadOp::Clear(_) =
+                                group_layer_load(&mut layer_ready, layer)
+                            {
+                                let mut pass = dest.begin_group_pass(
+                                    encoder,
+                                    layer,
+                                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                    dest_passes,
+                                );
+                                restore_dest_viewport(&mut pass, dest_physical);
+                            }
+                        }
+                        None => ensure_backdrop_target_ready(
+                            dest,
+                            encoder,
+                            dest_physical,
+                            &mut dest_load,
+                            dest_passes,
+                        ),
+                    }
+                    dest.copy_backdrop(encoder, parent, region);
+                }
                 let mut pass = match stack.last() {
                     Some(parent) => {
                         let load = group_layer_load(&mut layer_ready, parent.layer);
@@ -1939,6 +2292,9 @@ fn encode_ordered(
                     }
                 };
                 restore_dest_viewport(&mut pass, dest_physical);
+                if let Some(area) = area {
+                    pass.set_scissor_rect(area.x, area.y, area.width, area.height);
+                }
                 dest.composite_group(&mut pass, frame.layer, frame.slot, Some(pipelines.gpu_work));
                 drop(pass);
                 index += 1;
@@ -2006,6 +2362,28 @@ fn encode_ordered(
                                 range,
                                 *scissor,
                                 SAMPLE_COUNT,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::Path { range, scissor } => {
+                            pipelines.meshes.draw_path(
+                                &mut pass,
+                                range,
+                                *scissor,
+                                SAMPLE_COUNT,
+                                Some(pipelines.gpu_work),
+                            );
+                        }
+                        DrawCommand::PathMask {
+                            range,
+                            scissor,
+                            mode,
+                        } => {
+                            pipelines.meshes.draw_mask(
+                                &mut pass,
+                                range,
+                                *scissor,
+                                *mode,
                                 Some(pipelines.gpu_work),
                             );
                         }
@@ -2116,6 +2494,9 @@ fn encode_ordered(
             }
         }
     }
+    // Every command may have been an empty group, skipped: the dest still
+    // owes its clear.
+    ensure_backdrop_target_ready(dest, encoder, dest_physical, &mut dest_load, dest_passes);
 }
 
 /// Offer the renderer the run of `Custom` commands starting at `start` that
@@ -2221,3 +2602,33 @@ fn ensure_backdrop_target_ready(
 
 #[cfg(test)]
 mod tests;
+
+/// Whether `rect` (layout space), under `affine` into logical target space,
+/// reaches the `size` physical-pixel target.
+fn rect_meets_target(
+    rect: nana_ui_scene::SceneRect,
+    affine: [f32; 6],
+    scale: f32,
+    size: [u32; 2],
+) -> bool {
+    let corners = [
+        [rect.x, rect.y],
+        [rect.x + rect.width, rect.y],
+        [rect.x, rect.y + rect.height],
+        [rect.x + rect.width, rect.y + rect.height],
+    ]
+    .map(|[x, y]| clip::transform_point(affine, x, y));
+    let (mut min, mut max) = ([f32::INFINITY; 2], [f32::NEG_INFINITY; 2]);
+    for corner in corners {
+        for axis in 0..2 {
+            min[axis] = min[axis].min(corner[axis] * scale);
+            max[axis] = max[axis].max(corner[axis] * scale);
+        }
+    }
+    // One pixel of slack for the clip's anti-aliased edge; NaN fails closed
+    // to drawing.
+    !(max[0] < -1.0
+        || max[1] < -1.0
+        || min[0] > size[0] as f32 + 1.0
+        || min[1] > size[1] as f32 + 1.0)
+}

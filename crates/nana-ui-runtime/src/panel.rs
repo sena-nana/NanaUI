@@ -62,6 +62,9 @@ pub(crate) fn origin(value: f32) -> f32 {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Panel {
     pub label: Arc<str>,
+    /// 外框类型，与 [`Card`] 相同。[`CardKind::Flat`](nana_ui_core::CardKind)
+    /// 不画底色和边框，适合交给 painter 自绘或做透明外框。
+    pub kind: nana_ui_core::CardKind,
     pub close_on_escape: bool,
     pub focus_on_open: bool,
     pub style: NodeStyle,
@@ -73,6 +76,7 @@ impl Panel {
         Arc::make_mut(&mut style.layout).z_index = Some(100);
         Self {
             label: label.into(),
+            kind: nana_ui_core::CardKind::Surface,
             close_on_escape: true,
             focus_on_open: true,
             style,
@@ -81,6 +85,17 @@ impl Panel {
 
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    pub fn kind(mut self, kind: nana_ui_core::CardKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// 自绘外框，见 [`crate::Painter`]。
+    pub fn painter(mut self, painter: impl Into<crate::NodePainter>) -> Self {
+        self.style.painter = Some(painter.into());
         self
     }
 
@@ -155,6 +170,7 @@ impl ComponentView for Panel {
         // Share Card's semantic surface, spacing and radius instead of adding
         // another painter or copying its appearance tokens.
         Card::new()
+            .kind(self.kind)
             .style(self.style.clone())
             .project(id, world, mutations);
         mutations.set_interaction(
@@ -483,5 +499,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_flat_panel_has_no_surface_of_its_own() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let surface = cx.create_component(doc, Panel::new("Tools")).unwrap();
+        let flat = cx
+            .create_component(doc, Panel::new("Tools").kind(nana_ui_core::CardKind::Flat))
+            .unwrap();
+        let background = |id| cx.world().node_style(id).and_then(|style| style.background);
+        assert_eq!(
+            background(surface.stable_id()),
+            Some(nana_ui_core::SemanticColorRole::Surface)
+        );
+        assert_eq!(background(flat.stable_id()), None);
     }
 }

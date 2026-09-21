@@ -67,6 +67,12 @@ fn element_filter_blur(uv: vec2<f32>, radius: f32) -> vec4<f32> {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return layer_source(input);
+}
+
+// The group's premultiplied colour at this pixel, after its clip, blur, drop
+// shadow, opacity and colour filter.
+fn layer_source(input: VertexOutput) -> vec4<f32> {
     // Clip inverse is stored in dest pixels (`FragmentClip::for_physical_pixels`).
     if !inside_fragment_clip(
         input.position.xy,

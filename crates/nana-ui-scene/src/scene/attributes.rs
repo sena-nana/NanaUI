@@ -191,6 +191,7 @@ mod tests {
 
     fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
         ExtractedNode {
+            custom_paint: None,
             chrome_radii: nana_ui_core::ChromeRadii::default(),
             id: id(value),
             kind: Arc::new(NodeKind::Element { tag: "div".into() }),

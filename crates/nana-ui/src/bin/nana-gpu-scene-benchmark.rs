@@ -883,6 +883,8 @@ fn primitive_kind_name(kind: &ScenePrimitiveKind, _slot: &str) -> &'static str {
         ScenePrimitiveKind::Icon { .. } | ScenePrimitiveKind::IconBatch { .. } => "icon",
         ScenePrimitiveKind::Spinner { .. } => "spinner",
         ScenePrimitiveKind::Stroke { .. } => "stroke",
+        ScenePrimitiveKind::Path { .. } => "path",
+        ScenePrimitiveKind::LayerBegin { .. } | ScenePrimitiveKind::LayerEnd { .. } => "layer",
         ScenePrimitiveKind::Custom { node: custom, .. }
             if custom.renderer.as_ref() == HOST_TEXTURE_RENDERER =>
         {

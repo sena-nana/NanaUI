@@ -6969,3 +6969,97 @@ fn settings_row_stack_below_flows_from_vue_semantics_to_retained_layout() {
         assert_eq!(doc.parent_node(label), Some(copy));
     }
 }
+
+#[test]
+fn a_paint_attribute_paints_a_layout_element() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let panel = doc.create_element("div");
+    doc.insert(panel, doc.mount_root(), None);
+    doc.set_attribute(
+        panel,
+        "paint",
+        r##"{"commands": [
+            {"op": "fill", "path": [["roundedRect", 0, 0, "100%", "100%", 8]], "paint": "#3366ff"},
+            {"op": "stroke", "path": "M0 0 H40", "paint": "accent", "width": 2, "phase": "over"}
+        ]}"##,
+    );
+    doc.apply_layout_boxes(&[(
+        panel,
+        LayoutBox {
+            handle: panel,
+            x: 10.0,
+            y: 20.0,
+            width: 120.0,
+            height: 60.0,
+        },
+    )]);
+    let paths: Vec<_> = doc
+        .scene()
+        .primitives()
+        .filter(|primitive| primitive.node.get() == panel.0)
+        .filter_map(|primitive| match &primitive.kind {
+            nana_ui_scene::ScenePrimitiveKind::Path { mesh, .. } => Some(mesh.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paths.len(), 2, "the fill and the stroke");
+    let fill = &paths[0];
+    assert!((fill.bounds.width - 120.0).abs() < 0.01 && (fill.bounds.height - 60.0).abs() < 0.01);
+    let color = fill.vertices[0].color;
+    assert!(
+        (color[0] - 0.2).abs() < 0.01 && (color[2] - 1.0).abs() < 0.01,
+        "{color:?}"
+    );
+
+    // A broken script paints nothing and says why, once.
+    doc.set_attribute(panel, "paint", r#"[{"op": "nope"}]"#);
+    doc.apply_layout_boxes(&[]);
+    assert!(!doc.scene().primitives().any(|p| p.node.get() == panel.0
+        && matches!(p.kind, nana_ui_scene::ScenePrimitiveKind::Path { .. })));
+    let errors = doc.take_paint_errors();
+    assert!(
+        errors.len() == 1 && errors[0].contains("unknown op `nope`"),
+        "{errors:?}"
+    );
+    doc.set_attribute(panel, "paint", r#"[{"op": "nope"}]"#);
+    assert!(doc.take_paint_errors().is_empty());
+
+    // Removing the element forgets its script.
+    doc.remove(panel);
+    doc.apply_layout_boxes(&[]);
+    assert!(doc.paint_scripts.is_empty() && doc.paint_errors.is_empty());
+}
+
+#[test]
+fn a_paint_attribute_paints_a_built_in_component_too() {
+    let mut doc = NanaTreeDocument::new(800, 600, 1.0);
+    let button = doc.create_element("button");
+    doc.insert(button, doc.mount_root(), None);
+    doc.set_attribute(
+        button,
+        "paint",
+        r##"[{"op": "drawDefault"}, {"op": "fill", "path": [["rect", 0, 0, "100%", 2]], "paint": "#ff0000"}]"##,
+    );
+    doc.apply_layout_boxes(&[(
+        button,
+        LayoutBox {
+            handle: button,
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 30.0,
+        },
+    )]);
+    let id = StableNodeId::try_from(button).unwrap();
+    assert!(doc.runtime.world().painter_override(id).is_some());
+    assert!(
+        doc.scene()
+            .primitives()
+            .any(|p| p.node == id
+                && matches!(p.kind, nana_ui_scene::ScenePrimitiveKind::Path { .. })),
+        "the painter's fill"
+    );
+    doc.remove_attribute(button, "paint");
+    doc.apply_layout_boxes(&[]);
+    assert!(doc.runtime.world().painter_override(id).is_none());
+}

@@ -11,6 +11,8 @@ pub use compositor::{
 mod visibility;
 pub use composition::FramePlan;
 use visibility::VisibilityIndex;
+mod custom_paint;
+pub use custom_paint::{PathMesh, PathVertex};
 mod order;
 mod primitives;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -284,6 +286,46 @@ pub enum ScenePrimitiveKind {
         /// Same value as [`QuadSurfacePaint::mask`] (gradient or `url()`).
         mask: Option<nana_ui_core::MaskImage>,
     },
+    /// Triangles a node's `Painter` produced (Issue #217): path fills,
+    /// strokes and shadows, already clipped and anti-aliased on the CPU.
+    /// Vertices are node-local; `origin` places them in the node's layout
+    /// space, so a node that only moves keeps its mesh.
+    Path {
+        mesh: Arc<PathMesh>,
+        origin: [f32; 2],
+    },
+    /// A painter layer opens (Issue #217): what the node paints from here to
+    /// the matching [`Self::LayerEnd`] draws into its own layer, which then
+    /// composites with `opacity` and `blend`, cut to `clip` (layout space,
+    /// under the primitive's transform) when there is one.
+    LayerBegin {
+        opacity: f32,
+        blend: MixBlendMode,
+        clip: Option<SceneRect>,
+    },
+    /// The layer closes, after `mask` has been applied to it.
+    LayerEnd {
+        mask: Option<LayerMask>,
+    },
+}
+
+/// A mesh applied to a painter layer before it composites.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerMask {
+    pub mesh: Arc<PathMesh>,
+    /// Places the node-local mesh in layout space, as for
+    /// [`ScenePrimitiveKind::Path`].
+    pub origin: [f32; 2],
+    pub mode: LayerMaskMode,
+}
+
+/// What a [`LayerMask`] does to the layer under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerMaskMode {
+    /// Remove the layer where the mesh covers it.
+    Erase,
+    /// Recolour the layer with the mesh's paint, keeping the layer's alpha.
+    Tint,
 }
 
 impl ScenePrimitiveKind {
@@ -514,6 +556,10 @@ pub struct UiScene {
     /// list and diffing it, which is a range scan and an allocation per node.
     structure_changed: bool,
     compositor: CompositorRegistry,
+    /// Geometry built from each custom-painted node's recording, reused while
+    /// the runtime hands back the same recording. Empty unless a node has a
+    /// `Painter`.
+    custom_paint: NodeMap<custom_paint::BuiltPaint>,
     /// Nodes that [`may_be_dest_group`] admits. Paint asks
     /// [`UiScene::opacity_groups`] once per primitive, and even the memoized
     /// walk behind it has to read a cold `ExtractedNode` and its style for the
@@ -548,6 +594,7 @@ impl Default for UiScene {
             build: next_primitive_revision(),
             structure_changed: false,
             compositor: CompositorRegistry::default(),
+            custom_paint: NodeMap::default(),
             dest_group_candidates: 0,
             instance: next_scene_instance(),
         }
@@ -580,6 +627,7 @@ impl Clone for UiScene {
             build: self.build,
             structure_changed: self.structure_changed,
             compositor: self.compositor.clone(),
+            custom_paint: self.custom_paint.clone(),
             dest_group_candidates: self.dest_group_candidates,
             instance: next_scene_instance(),
         }
@@ -768,6 +816,9 @@ impl UiScene {
                 hierarchy_changed |= old.parent.is_some() || !old.children.is_empty();
                 self.remove_node_primitives(id);
                 self.forget_compositor_node(id);
+                if !self.custom_paint.is_empty() {
+                    self.custom_paint.remove(&id);
+                }
             }
         }
         let mut updated_nodes = 0;
@@ -1007,6 +1058,9 @@ impl UiScene {
             .values()
             .map(|held| {
                 let primitive = &held.primitive;
+                if !self.custom_paint.is_empty() && has_custom_paint(&self.nodes, primitive.node) {
+                    return order_key(&self.nodes, &self.node_order, primitive);
+                }
                 let stack = stacks.entry(primitive.node).or_insert_with(|| {
                     let prefix: GroupPrefix =
                         group_prefix(&self.nodes, &self.node_order, primitive.node).into();
@@ -1018,6 +1072,26 @@ impl UiScene {
         assert!(
             self.ordered == fresh,
             "retained paint order disagrees with a fresh sort"
+        );
+        // Painted geometry lives only for painted nodes, and every painted
+        // primitive has the geometry it was cut from (Issue #217).
+        assert!(
+            self.custom_paint.keys().all(|id| self
+                .nodes
+                .get(id)
+                .is_some_and(|node| node.custom_paint.is_some())),
+            "painted geometry held for a node that no longer paints"
+        );
+        assert!(
+            self.primitives.values().all(|held| !matches!(
+                held.primitive.kind,
+                ScenePrimitiveKind::Path { .. }
+                    | ScenePrimitiveKind::LayerBegin { .. }
+                    | ScenePrimitiveKind::LayerEnd { .. }
+            ) || self
+                .custom_paint
+                .contains_key(&held.primitive.node)),
+            "a painted primitive without its geometry"
         );
         assert!(
             self.primitives
@@ -1461,7 +1535,10 @@ impl UiScene {
             }
             let prefix = self.group_prefix_of(&mut scratch, primitive.node);
             let stack = order_stack(&self.nodes, &prefix, primitive);
-            scratch.order_stack = Some((primitive.node, Arc::clone(&stack)));
+            // A painted node's primitives do not share one stack.
+            if self.custom_paint.is_empty() || !has_custom_paint(&self.nodes, primitive.node) {
+                scratch.order_stack = Some((primitive.node, Arc::clone(&stack)));
+            }
             return SceneOrderKey::at(stack, primitive);
         }
         order_key(&self.nodes, &self.node_order, primitive)
@@ -1534,6 +1611,12 @@ impl UiScene {
             // the slot itself stays.
             self.structure_changed |=
                 Self::custom_binding(&held.primitive.kind) != Self::custom_binding(&primitive.kind);
+            // A painter moving `draw_default()` to the other side of the
+            // children re-keys the same slots with nothing else changing: the
+            // plan has to hear it (Issue #217).
+            self.structure_changed |= moved
+                && !self.custom_paint.is_empty()
+                && has_custom_paint(&self.nodes, primitive.node);
             let previous = std::mem::replace(&mut held.key, key.clone());
             held.primitive = primitive;
             held.build = build;
@@ -1732,6 +1815,7 @@ struct PaintOrderFacts {
     filter: Option<ColorFilter>,
     mix_blend: MixBlendMode,
     stacking_context: bool,
+    custom_paint: bool,
 }
 
 fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
@@ -1742,6 +1826,7 @@ fn paint_order_facts(node: &ExtractedNode) -> PaintOrderFacts {
         filter: paint.filter.filter(|filter| !filter.is_identity()),
         mix_blend: paint.mix_blend,
         stacking_context: node.source_style.layout.creates_paint_stacking_context(),
+        custom_paint: node.custom_paint.is_some(),
     }
 }
 
@@ -1827,7 +1912,10 @@ fn inherited_opacity(nodes: &SceneNodes, node: &ExtractedNode) -> f32 {
 }
 
 fn is_stacking_group(nodes: &SceneNodes, node: &ExtractedNode) -> bool {
-    is_opacity_group(nodes, node)
+    // A painted node keeps its children between its two paint phases, so it
+    // has to own their order the way a stacking context does.
+    node.custom_paint.is_some()
+        || is_opacity_group(nodes, node)
         || (has_extracted_child(nodes, node)
             && node.source_style.layout.creates_paint_stacking_context())
 }
@@ -2131,6 +2219,12 @@ fn group_prefix(
     stack
 }
 
+fn has_custom_paint(nodes: &SceneNodes, node: StableNodeId) -> bool {
+    nodes
+        .get(&node)
+        .is_some_and(|node| node.custom_paint.is_some())
+}
+
 fn primitive_paint_layer(slot: u64) -> u64 {
     match slot >> 32 {
         // Behind the glyphs (layer 2), above a custom-rendered backdrop
@@ -2162,10 +2256,20 @@ pub(super) fn order_stack(
 ) -> GroupPrefix {
     // A group's own paint is the prefix, before its descendants. Repeating its
     // outer z-index here incorrectly puts lower-z children behind its backplate.
-    if nodes
-        .get(&primitive.node)
-        .is_some_and(|node| is_stacking_group(nodes, node))
+    if let Some(node) = nodes.get(&primitive.node)
+        && is_stacking_group(nodes, node)
     {
+        // A painted node splits its own paint around its children.
+        if let Some(entry) = node
+            .custom_paint
+            .as_deref()
+            .and_then(|recording| custom_paint::custom_paint_stack(recording, primitive.id.slot))
+        {
+            let mut stack = Vec::with_capacity(prefix.len() + 1);
+            stack.extend_from_slice(prefix);
+            stack.push(entry);
+            return Arc::from(stack);
+        }
         return Arc::clone(prefix);
     }
     let mut stack = Vec::with_capacity(prefix.len() + 1);

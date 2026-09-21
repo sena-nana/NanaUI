@@ -63,6 +63,9 @@ winit = { git = "https://github.com/rust-windowing/winit", rev = "874a1e31f194d1
 # Product JS engine. crates.io `v8` is the rusty_v8 successor package name.
 v8 = "152.2.0"
 tiny-skia = "0.12"
+# Issue #217 custom paint: CPU path tessellation and polygon clipping.
+lyon_tessellation = "1.0.22"
+i_overlay = "9.0.0"
 resvg = { version = "0.48.1", default-features = false, features = ["text"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 unicode-segmentation = "1.13.0"

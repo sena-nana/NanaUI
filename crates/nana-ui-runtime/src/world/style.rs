@@ -493,9 +493,33 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// Re-record a painted node. A painter whose outline is its hit shape
+    /// takes its hit index entry with it: the entry holds the recording.
+    pub(super) fn mark_repaint(&mut self, id: StableNodeId) {
+        let outline = self
+            .node_painter(id)
+            .is_some_and(|painter| painter.painter().hit_painted_outline());
+        self.mark(
+            id,
+            if outline {
+                DirtyMask::RENDER | DirtyMask::INPUT
+            } else {
+                DirtyMask::RENDER
+            },
+        );
+    }
+
     pub(super) fn mark_interaction_style(&mut self, id: StableNodeId) {
         self.mark(id, DirtyMask::STATE);
-        if !self.record(id).style.interaction.is_empty() {
+        let record = self.record(id);
+        // A painter reads the state it is in, so it re-records on it.
+        let painted = record.style.painter.is_some()
+            || (!self.painter_overrides.is_empty() && self.painter_overrides.contains_key(&id));
+        let styled = !record.style.interaction.is_empty();
+        if painted {
+            self.mark_repaint(id);
+        }
+        if styled {
             let mut work = ThemeWorkCounters::default();
             work.record_paint_invalidation(1);
             self.record_theme_work(work);
@@ -555,6 +579,16 @@ impl UiWorld {
         self.style_model = next.style_model();
         self.theme = next;
         self.palette_epoch = self.palette_epoch.wrapping_add(1).max(1);
+        // Painters re-record against the new palette and radius tiers.
+        let painted = self
+            .paint_recordings
+            .get_mut()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in painted {
+            self.mark_repaint(id);
+        }
         let mut bits = DirtyMask::RENDER;
         let metrics_changed = self.style_model.metrics != previous_metrics;
         if metrics_changed {

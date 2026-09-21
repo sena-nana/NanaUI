@@ -165,6 +165,24 @@ fn describe_primitive(primitive: &nana_ui_scene::ScenePrimitive) -> String {
             number(*width),
             color(Some(*stroke_color)),
         ),
+        // A painted node's triangles: their count and the theme colour they
+        // were resolved to.
+        ScenePrimitiveKind::Path { mesh, .. } => format!(
+            "path {head} triangles={} color={}",
+            mesh.indices.len() / 3,
+            color(mesh.vertices.first().map(|vertex| vertex.color)),
+        ),
+        ScenePrimitiveKind::LayerBegin { opacity, blend, .. } => {
+            format!(
+                "layer-begin {head} opacity={} blend={blend:?}",
+                number(*opacity)
+            )
+        }
+        ScenePrimitiveKind::LayerEnd { mask } => format!(
+            "layer-end {head} mask={}",
+            mask.as_ref()
+                .map_or_else(|| "none".to_owned(), |mask| format!("{:?}", mask.mode)),
+        ),
         // A custom node's contents are the host's, not the theme's.
         ScenePrimitiveKind::Custom { .. } => format!("custom {head}"),
     }

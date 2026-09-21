@@ -123,8 +123,97 @@ slots / overlay 组装接口；`mount` 仍用于按 key 构造并销毁缺席组
 | 进入布局、命中、Scene | `UiExtension` + `register_component`；Vue tag 为 `ComponentTypeId` 去掉 `nana.`（与 HTML 同语义用原生标签；不同语义换名） |
 | 仅 JS 命令 / props 白名单 | `NativeComponentRegistry` + `Nana.components.call` |
 | GPU 内容 | `GpuTextureView` + 宿主纹理；直写见 `GpuView` |
+| 改一个节点长什么样 | `Painter` 挂到 `NodeStyle::painter`（`Card::painter` / `Stack::painter` / `Panel::painter`），见下 |
 
 不支持动态 dylib。
+
+### 节点自绘（`Painter`）
+
+相当于 Qt 的 `paintEvent`：`paint(&self, cx)` 画在子节点下面，
+`paint_over_children` 画在子节点上面；在里面调用 `cx.draw_default()` 就画出
+该节点原本的内建外观（基类的 `paintEvent`），不调用则完全替换。子节点照常布局和
+绘制，负 `z-index` 的子节点也在 `paint` 之上。
+
+`cx` 录的是命令，不是立即绘制：同一节点在（`paint_key()`、布局尺寸、主题代数、
+交互状态、字体集）不变时不会重录，只移动时连三角化都复用。颜色写
+`SemanticColorRole` / `SemanticColorMix`，圆角写 `RadiusTier`，阴影写
+`ElevationRole`，由 `cx` 按当前主题解析，切换主题自动重录。
+
+- 状态：`cx.state()` 给出悬停、按下、可见焦点、禁用、选中；状态变化会重录，
+  不必算进 `paint_key`。悬停只看节点自己是不是命中目标，指针落在子节点上时
+  父节点的 `hovered` 为假，与内建交互外观一致。
+- 文字：`cx.measure_text(&text, max_width)` 用宿主当前的排版引擎测量（未接引擎时
+  按 em 估算），与 `cx.text` 画出来的一致；`PaintText` 支持折行、最多行数、
+  行高、斜体，颜色可以是渐变。
+- 路径：`PaintPath` 支持直线、二次 / 三次贝塞尔、`arc` 和 Canvas 语义的
+  `arc_to`（任意拐角倒圆，凹角也可以），NonZero / EvenOdd，参数与 Canvas 一样
+  写成标量；`PaintPath::from_svg` 从 SVG path 数据建路径，`contains` /
+  `stroke_contains` 对应 Canvas `isPointInPath` / `isPointInStroke`，另有
+  `bounds`、`transformed`。`cx.fill_path` / `cx.stroke_path` 带抗锯齿。
+- 上色：填充、描边、圆角矩形、文字和图标都接受纯色或 `Gradient`（`linear` /
+  `radial` / `conic`，任意多个色标，`Pad` / `Repeat` / `Reflect`）。渐变逐像素
+  求值，色标在 premultiplied sRGB 里插值（与 CSS 一致），超过 16 个色标时重采样。
+- 描边：`StrokeStyle` 设宽度、线帽、连接、尖角限制（Canvas `miterLimit`），
+  缺省与 Canvas 一致：平头线帽、尖角连接、限制 10；
+  `.dash(pattern, offset)` 是 Canvas `setLineDash` / `lineDashOffset` 语义，
+  每段按线帽收尾。一条描边切出超过一万段虚线时按实线画（每段已不到一个像素）。
+- 局部变换：`translate` / `scale` / `rotate` / `concat` / `set_transform`，
+  `save` / `restore` 保存恢复变换、不透明度和混合方式；和 Canvas 一样，
+  `restore` 也弹出 `save` 之后压入的裁剪（图层仍由 `push_layer` / `pop_layer`
+  单独管）。路径、裁剪、
+  渐变随变换；描边和虚线先在变换前的坐标里算好再整体变换（与 Canvas 一致）；
+  阴影的偏移和模糊不随变换。文字、图标、图片和 `draw_default()` 的内建外观也
+  跟随当前变换。
+- 不透明度与混合：`set_opacity`（Canvas `globalAlpha`，逐条命令生效）、
+  `set_blend(mode)`，以及 `push_layer(opacity, blend)` / `pop_layer` 把一组命令
+  先画进图层再整体合成，重叠部分不会叠加透明度。混合方式是完整的 CSS
+  `mix-blend-mode` 集合（`multiply`、`screen`、`overlay`、`darken`、`lighten`、
+  `color-dodge`、`color-burn`、`hard-light`、`soft-light`、`difference`、
+  `exclusion`、`hue`、`saturation`、`color`、`luminosity`），CSS 的
+  `mix-blend-mode` 也随之支持这些值。
+- `cx.shadow(path, ..)`：沿路径轮廓的阴影，外阴影或 `inset` 内阴影。
+- `cx.push_clip(path)` / `cx.pop_clip()`：只裁剪之后录的内容，不影响子节点，
+  也不会裁掉 `push_clip` 之前画的阴影。任意路径都精确：路径几何在 CPU 上切割并
+  保留抗锯齿；文字、图标、图片和 `draw_default()` 的内建外观在裁剪路径是（圆角）
+  矩形或不超过 8 个顶点的多边形时直接用 GPU 裁剪，其他形状画进一个按路径遮罩的
+  图层。
+- `cx.rounded_rect`（四角独立圆角，可带边框和阴影）、`cx.text`、`cx.icon`、
+  `cx.image(rect, source, fit, radii)`（`source` 与 CSS `url()` 同源，`fit`
+  同 `object-fit`，异步加载），`cx.fill_path_with_image(path, rect, source, fit)`
+  用图片填充任意路径。
+- 命中：`Painter::hit_test(local, size)` 返回 `Some(false)` 的点点穿到下面；
+  `hit_painted_outline()` 为真时命中区域等于录下的内容（填充、描边含虚线空段、
+  圆角矩形、图片、文字框、`draw_default()` 的节点矩形，按变换和裁剪计算）。
+  阴影不参与命中，与 CSS `box-shadow` 和 Canvas `isPointInPath` 一致；
+  `set_opacity(0)` 之后、或不透明度为 0 的图层里画的内容也不参与命中。描边
+  按到中线的距离不超过半个线宽判断，即线帽和连接一律按圆形算。命中读的是节点
+  最新的录制，状态、焦点或主题变化重录后立即生效。
+- 数值：含 NaN / 无穷的路径、线宽和阴影不绘制；变换后超出节点原点一百万像素的
+  路径不绘制，线宽、模糊和扩散按一万像素封顶。
+
+除了写在 `NodeStyle::painter` 上，也可以用 `AppContext::set_painter(id, …)`
+（`MutationQueue::set_painter`）把 painter 挂在任意节点上：它优先于样式里的
+painter，组件重写节点样式也不会把它冲掉，适合给内建组件换外观。
+
+节点的 transform、裁剪、不透明度、层叠顺序和合成器动画照常作用于自绘内容。
+挂了 painter 的节点自身构成层叠上下文。节点自己的 `overflow` 裁剪只作用于子
+节点，不裁自绘的阴影。
+
+拿不到 Rust trait 的消费方用 `PaintScript`：一份 JSON 命令列表，覆盖 `cx` 的
+全部绘制命令（需要读回结果的 `measure_text` 和自定义命中逻辑除外，命中可以给
+一条路径），长度可以写成相对节点尺寸的 `"50%"`、`"100% - 12"`，颜色写语义
+角色名、主题混色或 CSS 颜色，路径写 SVG path 字符串，命令可按交互状态筛选，
+写错的字段名直接报错（格式见 `PaintScript::from_json` 的文档）；图标按内建
+图标名画。
+
+单元测试里可以用 `PaintRecording::record(&painter, &theme, size, state)` 不借助
+`UiWorld` 录一次 painter，检查它录下的命令。Vue 里把它写在任意元素
+的 `paint` 属性上（JSON 字符串或对象），包括按钮这类内建组件；解析失败时不挂
+painter，原因记在 `WidgetProps::paint_error`，并以 `nana.paint` 来源的警告
+送到 `VueHost::set_diagnostics` 接的诊断回调（同一元素的同一错误只报一次）。
+
+`Panel::kind(CardKind::Flat)` / `Card::kind(CardKind::Flat)` 不画底色和边框，
+适合交给 painter 自绘外框。
 
 ## JavaScript 产物形态
 

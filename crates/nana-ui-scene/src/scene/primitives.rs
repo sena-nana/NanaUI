@@ -58,6 +58,9 @@ impl UiScene {
         if is_descendant_of_rasterized_svg(&self.nodes, &node)
             || is_descendant_of_icon_visual(&self.nodes, &node)
         {
+            if node.custom_paint.is_none() && !self.custom_paint.is_empty() {
+                self.custom_paint.remove(&id);
+            }
             return;
         }
         let (parent_transform, parent_opacity, parent_clips, parent_blocks_3d) =
@@ -156,7 +159,28 @@ impl UiScene {
                 Arc::clone(&clips)
             };
         let node_order = self.node_order.get(&id).copied().unwrap_or_default();
-        if node.style.visible && opacity > 0.0 {
+        let visible = node.style.visible && opacity > 0.0;
+        // A painted node's geometry must be registered before its first
+        // primitive goes in: paint order asks whether the node is painted.
+        // A hidden painted node keeps its built geometry: shown again with the
+        // same recording, it is not triangulated again. Only losing the
+        // painter (or the node) drops it.
+        let custom_paint = match node.custom_paint.as_ref() {
+            Some(recording) if visible => Some(self.prepare_custom_paint(id, recording)),
+            Some(_) => None,
+            None => {
+                if !self.custom_paint.is_empty() {
+                    self.custom_paint.remove(&id);
+                }
+                None
+            }
+        };
+        if visible
+            && node
+                .custom_paint
+                .as_deref()
+                .is_none_or(|recording| recording.default_phase().is_some())
+        {
             let standard_visual_uses_root_surface = matches!(
                 node.standard_visual,
                 Some(
@@ -1749,6 +1773,19 @@ impl UiScene {
                     },
                 ));
             }
+        }
+        if let Some(built) = custom_paint {
+            // The node's own overflow clip cuts its content, not its own
+            // appearance: a painted shadow must survive `overflow: hidden`.
+            let paint_clips: Arc<[ClipRegion]> = match clip_path_region(style, bounds, transform) {
+                Some(region) => {
+                    let mut chain = parent_clips.to_vec();
+                    chain.push(region);
+                    chain.into()
+                }
+                None => Arc::clone(&parent_clips),
+            };
+            self.emit_custom_paint(&node, &built, transform, &paint_clips, opacity, node_order);
         }
     }
 }

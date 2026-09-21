@@ -23,6 +23,17 @@ pub(super) struct GroupSlot {
 }
 
 impl GroupSlot {
+    /// Whether compositing can put pixels where the group drew none: a blur
+    /// or drop shadow spreads them, and a colour filter is not relied on to
+    /// leave a transparent pixel transparent.
+    pub fn spreads(&self) -> bool {
+        self.filter_blur > 0.5
+            || self.drop_shadow_color[3] > 0.001
+            || self.filter != [1.0, 1.0, 1.0]
+            || self.filter_hue.abs() > 0.0001
+            || self.filter_invert > 0.0001
+    }
+
     pub fn dest(
         opacity: f32,
         filter: [f32; 3],
@@ -167,6 +178,138 @@ fn group_layer_bind_group(
     })
 }
 
+/// [`nana_ui_core::MixBlendMode::gpu_index`] of the first blend mode the blend
+/// unit cannot do.
+const FIRST_READING_BLEND: u32 = 3;
+
+fn group_blend_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    uniforms: &wgpu::Buffer,
+    view: &wgpu::TextureView,
+    backdrop: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("nana-ui.scene.group.blend.bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniforms,
+                    offset: 0,
+                    size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(backdrop),
+            },
+        ],
+    })
+}
+
+/// The pipeline for blend modes that read the backdrop, and its bind group
+/// layout. Built the first time a frame has such a group: most apps never do.
+fn reading_blend_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let group_blend_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("nana-ui.scene.group.blend.layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(GROUP_UNIFORM_SIZE),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+    let group_blend_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("nana-ui.scene.group.blend.shader"),
+        source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(concat!(
+            include_str!("shader/color.wgsl"),
+            "\n",
+            include_str!("shader/layer.wgsl"),
+            "\n",
+            include_str!("shader/layer_blend.wgsl"),
+        ))),
+    });
+    let group_blend_pipeline_layout =
+        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("nana-ui.scene.group.blend.pipeline"),
+            bind_group_layouts: &[Some(&group_blend_layout)],
+            immediate_size: 0,
+        });
+    let group_pipeline_blend = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("nana-ui.scene.group.pipeline.blend"),
+        layout: Some(&group_blend_pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &group_blend_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &group_blend_shader,
+            entry_point: Some("fs_blend"),
+            // The shader already composited against the backdrop copy.
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+    (group_blend_layout, group_pipeline_blend)
+}
+
 fn make_group_pipeline(
     device: &wgpu::Device,
     pipeline_cache: Option<&wgpu::PipelineCache>,
@@ -213,10 +356,20 @@ pub(super) struct DestPassCounts {
     pub msaa_allocated: bool,
 }
 
+struct ReadingBlend {
+    layout: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    backdrop: wgpu::Texture,
+    backdrop_view: wgpu::TextureView,
+}
+
 struct GroupLayer {
-    _texture: wgpu::Texture,
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
+    /// With the backdrop copy bound, for blend modes that read it. Built on
+    /// the first frame that needs one.
+    blend_bind_group: Option<wgpu::BindGroup>,
 }
 
 pub(super) struct DestTarget {
@@ -225,6 +378,7 @@ pub(super) struct DestTarget {
     pub msaa_allocated: bool,
     format: wgpu::TextureFormat,
     msaa: Option<wgpu::TextureView>,
+    color: wgpu::Texture,
     color_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
@@ -232,6 +386,12 @@ pub(super) struct DestTarget {
     group_pipeline: wgpu::RenderPipeline,
     group_pipeline_multiply: wgpu::RenderPipeline,
     group_pipeline_screen: wgpu::RenderPipeline,
+    /// CSS blend modes past multiply and screen: read a copy of the parent
+    /// target and replace it with the blended result.
+    /// Its bind group layout and pipeline, and the parent target, copied
+    /// before a reading blend composites onto it. Built on the first frame
+    /// that has such a group.
+    reading_blend: Option<ReadingBlend>,
     group_bind_layout: wgpu::BindGroupLayout,
     group_sampler: wgpu::Sampler,
     group_uniforms: wgpu::Buffer,
@@ -303,7 +463,9 @@ impl DestTarget {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
@@ -474,6 +636,7 @@ impl DestTarget {
             msaa_allocated: want_msaa,
             format,
             msaa,
+            color,
             color_view,
             blit_pipeline,
             blit_bind_group,
@@ -481,6 +644,7 @@ impl DestTarget {
             group_pipeline,
             group_pipeline_multiply,
             group_pipeline_screen,
+            reading_blend: None,
             group_bind_layout,
             group_sampler,
             group_uniforms,
@@ -524,6 +688,106 @@ impl DestTarget {
             }
         }
         self.slot_blend = slots.iter().map(|slot| slot.mix_blend).collect();
+        if self
+            .slot_blend
+            .iter()
+            .any(|blend| *blend >= FIRST_READING_BLEND)
+        {
+            self.prepare_reading_blends(device);
+        }
+    }
+
+    /// The backdrop copy and a bind group per layer that reads it.
+    fn prepare_reading_blends(&mut self, device: &wgpu::Device) {
+        if self.reading_blend.is_none() {
+            let (layout, pipeline) = reading_blend_pipeline(device, self.format);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("nana-ui.scene.group.backdrop"),
+                size: wgpu::Extent3d {
+                    width: self.width,
+                    height: self.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.reading_blend = Some(ReadingBlend {
+                layout,
+                pipeline,
+                backdrop: texture,
+                backdrop_view: view,
+            });
+            for layer in &mut self.group_layers {
+                layer.blend_bind_group = None;
+            }
+        }
+        let reading = self.reading_blend.as_ref().expect("built above");
+        for layer in &mut self.group_layers {
+            if layer.blend_bind_group.is_none() {
+                layer.blend_bind_group = Some(group_blend_bind_group(
+                    device,
+                    &reading.layout,
+                    &self.group_sampler,
+                    &self.group_uniforms,
+                    &layer.view,
+                    &reading.backdrop_view,
+                ));
+            }
+        }
+    }
+
+    /// Whether `slot` composites with a blend mode that reads the backdrop.
+    pub(super) fn reads_backdrop(&self, slot: u32) -> bool {
+        self.slot_blend
+            .get(slot as usize)
+            .is_some_and(|blend| *blend >= FIRST_READING_BLEND)
+    }
+
+    /// Copy `area` of what a reading blend composites onto — `parent`'s
+    /// layer, or the dest itself — into the same place in the backdrop
+    /// texture. The composite is scissored to `area`, so nothing else of the
+    /// backdrop is read.
+    pub(super) fn copy_backdrop(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        parent: Option<usize>,
+        area: crate::PhysicalRect,
+    ) {
+        let Some(ReadingBlend { backdrop, .. }) = self.reading_blend.as_ref() else {
+            return;
+        };
+        let source = match parent {
+            Some(layer) => &self.group_layers[layer].texture,
+            None => &self.color,
+        };
+        let x = area.x.min(self.width);
+        let y = area.y.min(self.height);
+        let width = area.width.min(self.width - x);
+        let height = area.height.min(self.height - y);
+        if width == 0 || height == 0 {
+            return;
+        }
+        let origin = wgpu::Origin3d { x, y, z: 0 };
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                origin,
+                ..source.as_image_copy()
+            },
+            wgpu::TexelCopyTextureInfo {
+                origin,
+                ..backdrop.as_image_copy()
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     fn resize_group_uniforms(&mut self, device: &wgpu::Device, slots: u64) {
@@ -553,6 +817,7 @@ impl DestTarget {
             .collect::<Vec<_>>();
         for (layer, bind_group) in self.group_layers.iter_mut().zip(rebound) {
             layer.bind_group = bind_group;
+            layer.blend_bind_group = None;
         }
     }
 
@@ -568,7 +833,9 @@ impl DestTarget {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -580,9 +847,10 @@ impl DestTarget {
             &view,
         );
         self.group_layers.push(GroupLayer {
-            _texture: texture,
+            texture,
             view,
             bind_group,
+            blend_bind_group: None,
         });
     }
 
@@ -623,13 +891,31 @@ impl DestTarget {
         let slot = slot.min(max_slot);
         let offset = (slot as u64 * GROUP_UNIFORM_STRIDE) as u32;
         let blend = self.slot_blend.get(slot as usize).copied().unwrap_or(0);
-        let pipeline = match blend {
-            1 => &self.group_pipeline_multiply,
-            2 => &self.group_pipeline_screen,
-            _ => &self.group_pipeline,
-        };
-        pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.group_layers[layer].bind_group, &[offset]);
+        let group = &self.group_layers[layer];
+        match (
+            blend,
+            group
+                .blend_bind_group
+                .as_ref()
+                .zip(self.reading_blend.as_ref()),
+        ) {
+            (1, _) => {
+                pass.set_pipeline(&self.group_pipeline_multiply);
+                pass.set_bind_group(0, &group.bind_group, &[offset]);
+            }
+            (2, _) => {
+                pass.set_pipeline(&self.group_pipeline_screen);
+                pass.set_bind_group(0, &group.bind_group, &[offset]);
+            }
+            (blend, Some((blend_bind_group, reading))) if blend >= FIRST_READING_BLEND => {
+                pass.set_pipeline(&reading.pipeline);
+                pass.set_bind_group(0, blend_bind_group, &[offset]);
+            }
+            _ => {
+                pass.set_pipeline(&self.group_pipeline);
+                pass.set_bind_group(0, &group.bind_group, &[offset]);
+            }
+        }
         pass.draw(0..3, 0..1);
         if let Some(work) = gpu_work {
             work.record_draw_batch();

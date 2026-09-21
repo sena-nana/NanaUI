@@ -479,6 +479,7 @@ impl Button {
                 },
                 text_horizontal_alignment: TextHorizontalAlignment::Center,
                 text_vertical_alignment: TextVerticalAlignment::Center,
+                painter: None,
             },
             style_override: false,
         }
@@ -1003,6 +1004,13 @@ impl Card {
 
     pub fn style(mut self, style: NodeStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// 自绘这张卡片的外观，见 [`crate::Painter`]。要保留内建卡片再叠加装饰，
+    /// 在 `paint` 里调用 `cx.draw_default()`。
+    pub fn painter(mut self, painter: impl Into<crate::NodePainter>) -> Self {
+        self.style.painter = Some(painter.into());
         self
     }
 }
@@ -4071,6 +4079,12 @@ impl Stack {
             layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
             layout.pointer_events = Some(nana_ui_core::PointerEventsSpec::None);
         })
+    }
+
+    /// 自绘这个容器的外观，见 [`crate::Painter`]。
+    pub fn painter(mut self, painter: impl Into<crate::NodePainter>) -> Self {
+        self.style.painter = Some(painter.into());
+        self
     }
 
     pub fn gap(mut self, gap: f32) -> Self {

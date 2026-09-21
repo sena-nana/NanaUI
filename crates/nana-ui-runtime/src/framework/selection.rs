@@ -120,6 +120,21 @@ impl AppContext {
 
     /// Register a drop target by node id. Vue and other hosts that do not hold
     /// a typed [`Entity`] use this; dropping the node still releases it.
+    /// 给节点挂上 painter（Issue #217），不论它的样式由哪个组件写；优先于
+    /// [`crate::NodeStyle::painter`]。`None` 取下。
+    pub fn set_painter(
+        &mut self,
+        id: StableNodeId,
+        painter: Option<crate::NodePainter>,
+    ) -> Result<(), FrameworkError> {
+        if !self.world.contains(id) {
+            return Err(FrameworkError::MissingView(id));
+        }
+        let mut queue = crate::MutationQueue::new();
+        queue.set_painter(id, painter);
+        self.commit_mutations(queue).map(|_| ())
+    }
+
     pub fn set_drop_target_node(
         &mut self,
         id: StableNodeId,

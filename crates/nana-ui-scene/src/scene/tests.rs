@@ -26,6 +26,7 @@ fn style_mut(node: &mut ExtractedNode) -> &mut ComputedStyle {
 
 fn node(value: u64, parent: Option<u64>, children: &[u64]) -> ExtractedNode {
     ExtractedNode {
+        custom_paint: None,
         chrome_radii: nana_ui_core::ChromeRadii::default(),
         id: id(value),
         kind: Arc::new(NodeKind::Element { tag: "div".into() }),
@@ -9124,4 +9125,519 @@ fn a_colour_change_on_a_rotated_parent_does_not_move_its_descendants() {
         before_bounds,
         "a colour change on the parent moved a descendant's bounds"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #217: custom paint
+// ---------------------------------------------------------------------------
+
+mod custom_paint {
+    use super::*;
+    use nana_ui_runtime::{PaintOp, PaintPath, PaintRecording};
+
+    fn rect(x: f32, y: f32, width: f32, height: f32) -> PaintPath {
+        let mut path = PaintPath::new();
+        path.rect(LayoutBox {
+            x,
+            y,
+            width,
+            height,
+        });
+        path
+    }
+
+    fn fill(path: PaintPath, color: [f32; 4]) -> PaintOp {
+        PaintOp::FillPath {
+            path: Arc::new(path),
+            paint: nana_ui_runtime::ResolvedPaint::Solid(color),
+        }
+    }
+
+    fn painted(
+        value: u64,
+        parent: Option<u64>,
+        children: &[u64],
+        recording: PaintRecording,
+    ) -> ExtractedNode {
+        let mut painted = node(value, parent, children);
+        painted.custom_paint = Some(Arc::new(recording));
+        painted
+    }
+
+    fn with_background(mut node: ExtractedNode, color: [f32; 4]) -> ExtractedNode {
+        style_mut(&mut node).background = Some(color);
+        node
+    }
+
+    fn path_color(kind: &ScenePrimitiveKind) -> Option<[f32; 4]> {
+        match kind {
+            ScenePrimitiveKind::Path { mesh, .. } => mesh.vertices.first().map(|v| v.color),
+            _ => None,
+        }
+    }
+
+    const UNDER: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+    const CARD: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    const BADGE: [f32; 4] = [1.0, 0.0, 1.0, 1.0];
+
+    #[test]
+    fn paint_phases_straddle_the_default_visual_and_the_children() {
+        let parent = with_background(
+            painted(
+                1,
+                None,
+                &[2, 3],
+                PaintRecording {
+                    behind_children: vec![
+                        fill(rect(0.0, 0.0, 100.0, 20.0), UNDER),
+                        PaintOp::DrawDefault,
+                        fill(rect(0.0, 10.0, 100.0, 70.0), CARD),
+                    ],
+                    over_children: vec![fill(rect(90.0, 0.0, 10.0, 10.0), BADGE)],
+                },
+            ),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let mut below = with_background(node(2, Some(1), &[]), [0.0, 1.0, 0.0, 1.0]);
+        below.z_index = -5;
+        let above = with_background(node(3, Some(1), &[]), [0.0, 0.5, 0.5, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, below, above], []);
+        let order: Vec<String> = scene
+            .primitives()
+            .map(|p| match (p.node.get(), path_color(&p.kind)) {
+                (1, Some(UNDER)) => "under".to_owned(),
+                (1, Some(CARD)) => "card".to_owned(),
+                (1, Some(BADGE)) => "badge".to_owned(),
+                (node, _) => format!("quad{node}"),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["under", "quad1", "card", "quad2", "quad3", "badge"],
+            "a negative z-index child still paints above its parent's own paint"
+        );
+    }
+
+    #[test]
+    fn a_node_without_draw_default_paints_only_what_it_recorded() {
+        let replaced = with_background(
+            painted(
+                1,
+                None,
+                &[],
+                PaintRecording {
+                    behind_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), CARD)],
+                    over_children: Vec::new(),
+                },
+            ),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let mut scene = UiScene::new();
+        scene.apply_delta([replaced], []);
+        let kinds: Vec<_> = scene.primitives().map(|p| p.kind.clone()).collect();
+        assert!(
+            matches!(&kinds[..], [ScenePrimitiveKind::Path { .. }]),
+            "{kinds:?}"
+        );
+    }
+
+    #[test]
+    fn a_moved_node_keeps_its_tessellation() {
+        let recording = Arc::new(PaintRecording {
+            behind_children: vec![fill(rect(0.0, 0.0, 100.0, 80.0), CARD)],
+            over_children: Vec::new(),
+        });
+        let mut first = node(1, None, &[]);
+        first.custom_paint = Some(Arc::clone(&recording));
+        let mut scene = UiScene::new();
+        scene.apply_delta([first.clone()], []);
+        let mesh_of = |scene: &UiScene| {
+            scene
+                .primitives()
+                .find_map(|p| match &p.kind {
+                    ScenePrimitiveKind::Path { mesh, origin } => Some((Arc::clone(mesh), *origin)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (mesh, origin) = mesh_of(&scene);
+        assert_eq!(origin, [0.0, 0.0]);
+        let mut moved = first;
+        moved.layout.x += 30.0;
+        scene.apply_delta([moved], []);
+        let (again, origin) = mesh_of(&scene);
+        assert!(Arc::ptr_eq(&mesh, &again), "same recording, same triangles");
+        assert_eq!(origin, [30.0, 0.0]);
+    }
+
+    #[test]
+    fn a_path_clip_cuts_geometry_exactly_and_gives_text_a_gpu_clip() {
+        let recording = PaintRecording {
+            behind_children: vec![
+                PaintOp::PushClip {
+                    path: Arc::new(rect(0.0, 0.0, 50.0, 80.0)),
+                },
+                fill(rect(0.0, 0.0, 100.0, 80.0), CARD),
+                PaintOp::Text {
+                    rect: LayoutBox {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 100.0,
+                        height: 20.0,
+                    },
+                    content: Arc::from("clipped"),
+                    paint: nana_ui_runtime::ResolvedPaint::Solid(CARD),
+                    size: 13.0,
+                    weight: None,
+                    italic: false,
+                    line_height: None,
+                    wrap: false,
+                    max_lines: None,
+                    horizontal: Default::default(),
+                    vertical: Default::default(),
+                },
+                PaintOp::PopClip,
+                fill(rect(0.0, 0.0, 100.0, 80.0), UNDER),
+            ],
+            over_children: Vec::new(),
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted(1, None, &[], recording)], []);
+        let primitives: Vec<_> = scene.primitives().cloned().collect();
+        let [clipped, text, unclipped] = &primitives[..] else {
+            panic!("{primitives:?}");
+        };
+        let ScenePrimitiveKind::Path { mesh, .. } = &clipped.kind else {
+            panic!("{clipped:?}");
+        };
+        assert!(mesh.bounds.width <= 50.0 + 1e-3, "{:?}", mesh.bounds);
+        let ScenePrimitiveKind::Path { mesh, .. } = &unclipped.kind else {
+            panic!("{unclipped:?}");
+        };
+        assert!(mesh.bounds.width >= 100.0 - 1e-3, "pop_clip ends the clip");
+        assert!(matches!(text.kind, ScenePrimitiveKind::Text { .. }));
+        let clip = text.clips.last().expect("text carries the path clip");
+        assert_eq!(clip.bounds.width, 50.0);
+        assert!(
+            clipped.clips.is_empty(),
+            "geometry was cut on the CPU instead"
+        );
+    }
+
+    #[test]
+    fn a_rounded_concave_corner_fills_its_fillet() {
+        // An L: the inside corner of its cut-out at (40, 40) is concave.
+        let mut path = PaintPath::new();
+        path.move_to(0.0, 0.0)
+            .line_to(40.0, 0.0)
+            .arc_to(40.0, 40.0, 100.0, 40.0, 10.0)
+            .line_to(100.0, 80.0)
+            .line_to(0.0, 80.0)
+            .close();
+        let mut scene = UiScene::new();
+        scene.apply_delta(
+            [painted(
+                1,
+                None,
+                &[],
+                PaintRecording {
+                    behind_children: vec![fill(path, CARD)],
+                    over_children: Vec::new(),
+                },
+            )],
+            [],
+        );
+        let ScenePrimitiveKind::Path { mesh, .. } = &scene.primitives().next().unwrap().kind else {
+            panic!("a path");
+        };
+        let solid = |p: [f32; 2]| {
+            mesh.indices.as_chunks::<3>().0.iter().any(|tri| {
+                let v = [0, 1, 2].map(|k| mesh.vertices[tri[k] as usize]);
+                if v.iter().any(|v| v.coverage < 1.0) {
+                    return false;
+                }
+                let s = [0, 1, 2].map(|k| {
+                    let (a, b) = (v[k].position, v[(k + 1) % 3].position);
+                    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+                });
+                s.iter().all(|s| *s >= 0.0) || s.iter().all(|s| *s <= 0.0)
+            })
+        };
+        assert!(solid([42.0, 38.0]), "the fillet fills the inside corner");
+        assert!(!solid([48.0, 32.0]), "but only up to the arc");
+        assert!(!solid([70.0, 20.0]), "the cut-out itself stays empty");
+    }
+
+    #[test]
+    fn painted_primitives_inherit_transform_opacity_and_clips_like_the_default_ones() {
+        let mut parent = node(1, None, &[2]);
+        Arc::make_mut(&mut parent.source_style.layout).overflow_x =
+            nana_ui_core::OverflowSpec::Hidden;
+        Arc::make_mut(&mut parent.source_style.layout).overflow_y =
+            nana_ui_core::OverflowSpec::Hidden;
+        let mut child = with_background(
+            painted(
+                2,
+                Some(1),
+                &[],
+                PaintRecording {
+                    behind_children: vec![
+                        PaintOp::DrawDefault,
+                        fill(rect(0.0, 0.0, 10.0, 10.0), CARD),
+                    ],
+                    over_children: Vec::new(),
+                },
+            ),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        {
+            let layout = Arc::make_mut(&mut child.source_style.layout);
+            layout.transform = Some(nana_ui_core::PaintTransform {
+                a: 1.0,
+                b: 0.2,
+                c: 0.0,
+                d: 1.0,
+                e: 5.0,
+                f: 7.0,
+            });
+            layout.opacity = Some(0.5);
+        }
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let own: Vec<_> = scene
+            .primitives()
+            .filter(|p| p.node == id(2))
+            .cloned()
+            .collect();
+        let [quad, path] = &own[..] else {
+            panic!("{own:?}");
+        };
+        assert!(matches!(quad.kind, ScenePrimitiveKind::Quad { .. }));
+        assert!(matches!(path.kind, ScenePrimitiveKind::Path { .. }));
+        assert_eq!(path.transform, quad.transform);
+        assert_eq!(path.opacity, quad.opacity);
+        assert_eq!(path.opacity, 0.5);
+        assert_eq!(path.clips, quad.clips);
+        assert_eq!(path.clips.len(), 1, "the parent's overflow clip");
+    }
+
+    #[test]
+    fn attaching_a_painter_to_a_live_node_reorders_its_children() {
+        let parent = with_background(node(1, None, &[2]), [1.0, 0.0, 0.0, 1.0]);
+        let mut child = with_background(node(2, Some(1), &[]), [0.0, 1.0, 0.0, 1.0]);
+        child.z_index = 1;
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent.clone(), child], []);
+        // Only the parent is re-extracted; the child's key has to move with
+        // it. The debug audit inside `apply_delta` re-derives every key.
+        let mut repainted = parent;
+        repainted.custom_paint = Some(Arc::new(PaintRecording {
+            behind_children: vec![PaintOp::DrawDefault],
+            over_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), BADGE)],
+        }));
+        let delta = scene.apply_delta([repainted], []);
+        assert!(delta.order_changed);
+        let last = scene.primitives().last().unwrap();
+        assert_eq!(
+            path_color(&last.kind),
+            Some(BADGE),
+            "over-children paint is last"
+        );
+    }
+
+    #[test]
+    fn moving_the_default_visual_over_the_children_reaches_the_frame_plan() {
+        let behind = PaintRecording {
+            behind_children: vec![PaintOp::DrawDefault],
+            over_children: Vec::new(),
+        };
+        let over = PaintRecording {
+            behind_children: Vec::new(),
+            over_children: vec![PaintOp::DrawDefault],
+        };
+        let parent = with_background(painted(1, None, &[2], behind), [1.0, 0.0, 0.0, 1.0]);
+        let child = with_background(node(2, Some(1), &[]), [0.0, 1.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent.clone(), child], []);
+        let order = |scene: &UiScene| -> Vec<u64> {
+            scene
+                .frame_plan()
+                .unwrap()
+                .operations
+                .iter()
+                .filter_map(|operation| match operation {
+                    RenderOperation::Draw(id) => Some(id.node.get()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(order(&scene), [1, 2]);
+        // Only the recording changes: the same slots, re-keyed.
+        let mut flipped = parent;
+        flipped.custom_paint = Some(Arc::new(over));
+        scene.apply_delta([flipped], []);
+        assert_eq!(order(&scene), [2, 1], "the parent now draws over its child");
+    }
+
+    #[test]
+    fn a_shrinking_recording_and_a_removed_painter_leave_nothing_behind() {
+        let fills = |count: usize| PaintRecording {
+            behind_children: (0..count)
+                .map(|i| fill(rect(i as f32 * 10.0, 0.0, 5.0, 5.0), BADGE))
+                .collect(),
+            over_children: Vec::new(),
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([painted(1, None, &[], fills(3))], []);
+        let paths = |scene: &UiScene| {
+            scene
+                .primitives()
+                .filter(|p| matches!(p.kind, ScenePrimitiveKind::Path { .. }))
+                .count()
+        };
+        assert_eq!(paths(&scene), 3);
+        scene.apply_delta([painted(1, None, &[], fills(1))], []);
+        assert_eq!(paths(&scene), 1);
+        scene.apply_delta([node(1, None, &[])], []);
+        assert_eq!(paths(&scene), 0);
+        assert!(scene.custom_paint.is_empty());
+    }
+
+    #[test]
+    fn hiding_and_showing_a_painted_node_reuses_its_geometry() {
+        let recording = PaintRecording {
+            behind_children: vec![fill(rect(0.0, 0.0, 10.0, 10.0), BADGE)],
+            over_children: Vec::new(),
+        };
+        let shown = painted(1, None, &[], recording);
+        let mut hidden = shown.clone();
+        Arc::make_mut(&mut hidden.style).visible = false;
+        let mesh = |scene: &UiScene| {
+            scene.primitives().find_map(|p| match &p.kind {
+                ScenePrimitiveKind::Path { mesh, .. } => Some(Arc::clone(mesh)),
+                _ => None,
+            })
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta([shown.clone()], []);
+        let first = mesh(&scene).expect("drawn");
+        scene.apply_delta([hidden], []);
+        assert!(mesh(&scene).is_none(), "hidden draws nothing");
+        scene.apply_delta([shown], []);
+        assert!(
+            Arc::ptr_eq(&first, &mesh(&scene).expect("drawn again")),
+            "the same triangles"
+        );
+    }
+
+    #[test]
+    fn the_default_visual_is_adjusted_once_per_rebuild() {
+        let recording = Arc::new(PaintRecording {
+            behind_children: vec![PaintOp::SetOpacity(0.5), PaintOp::DrawDefault],
+            over_children: Vec::new(),
+        });
+        let mut scene = UiScene::new();
+        for color in [
+            [1.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+        ] {
+            let mut parent = with_background(node(1, None, &[]), color);
+            parent.custom_paint = Some(Arc::clone(&recording));
+            scene.apply_delta([parent], []);
+            let quad = scene.primitives().next().unwrap();
+            assert_eq!(quad.opacity, 0.5, "{color:?}");
+        }
+    }
+
+    #[test]
+    fn text_images_and_the_default_visual_follow_the_local_transform() {
+        let turn = [0.0, 1.0, -1.0, 0.0, 20.0, 0.0];
+        let mut node = with_background(
+            painted(
+                1,
+                None,
+                &[],
+                PaintRecording {
+                    behind_children: vec![
+                        PaintOp::SetTransform(turn),
+                        PaintOp::DrawDefault,
+                        PaintOp::Image {
+                            rect: LayoutBox {
+                                x: 0.0,
+                                y: 0.0,
+                                width: 10.0,
+                                height: 10.0,
+                            },
+                            source: Arc::from("data:image/png;base64,"),
+                            fit: nana_ui_runtime::ImageFit::Cover,
+                            radii: [2.0; 4],
+                        },
+                    ],
+                    over_children: Vec::new(),
+                },
+            ),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        node.layout.x = 100.0;
+        node.layout.y = 50.0;
+        let mut scene = UiScene::new();
+        scene.apply_delta([node], []);
+        let own: Vec<_> = scene.primitives().cloned().collect();
+        let [quad, image] = &own[..] else {
+            panic!("{own:?}");
+        };
+        // A point one px right of the node's origin lands one px below
+        // (x = 20 + origin) after a quarter turn about the node's origin.
+        let map = |t: AffineTransform, p: [f32; 2]| {
+            let [a, b, c, d, e, f] = t.0;
+            [a * p[0] + c * p[1] + e, b * p[0] + d * p[1] + f]
+        };
+        for primitive in [quad, image] {
+            assert_eq!(map(primitive.transform, [101.0, 50.0]), [120.0, 51.0]);
+        }
+        let ScenePrimitiveKind::Quad { surface, .. } = &image.kind else {
+            panic!("{image:?}");
+        };
+        assert!(surface.content_image.is_some());
+    }
+
+    #[test]
+    fn a_layer_wraps_the_default_visual_and_closes_before_the_children() {
+        let parent = with_background(
+            painted(
+                1,
+                None,
+                &[2],
+                PaintRecording {
+                    behind_children: vec![
+                        PaintOp::PushLayer {
+                            opacity: 0.5,
+                            blend: nana_ui_runtime::BlendMode::Multiply,
+                        },
+                        PaintOp::DrawDefault,
+                        fill(rect(0.0, 0.0, 10.0, 10.0), CARD),
+                        PaintOp::PopLayer,
+                    ],
+                    over_children: Vec::new(),
+                },
+            ),
+            [1.0, 0.0, 0.0, 1.0],
+        );
+        let child = with_background(node(2, Some(1), &[]), [0.0, 1.0, 0.0, 1.0]);
+        let mut scene = UiScene::new();
+        scene.apply_delta([parent, child], []);
+        let order: Vec<&str> = scene
+            .primitives()
+            .map(|p| match (&p.kind, p.node.get()) {
+                (ScenePrimitiveKind::LayerBegin { .. }, _) => "begin",
+                (ScenePrimitiveKind::LayerEnd { .. }, _) => "end",
+                (ScenePrimitiveKind::Path { .. }, _) => "fill",
+                (_, 1) => "default",
+                _ => "child",
+            })
+            .collect();
+        assert_eq!(order, ["begin", "default", "fill", "end", "child"]);
+    }
 }
