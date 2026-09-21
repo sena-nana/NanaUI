@@ -3913,11 +3913,12 @@ fn an_installed_radius_reaches_a_control_that_named_the_tier() {
 
 /// Per-corner steps follow the installed theme the way a uniform one does.
 ///
-/// Two blocks joined edge to edge keep large outer corners and small inner
-/// ones, and the only per-corner control was `paint.border_radii`, which takes
+/// Two blocks joined edge to edge round their outer corners and meet square,
+/// and the only per-corner control was `paint.border_radii`, which takes
 /// lengths. Spending the installed `radius_*` into it at construction left
 /// those shapes behind when the Appearance radius changed, while every uniform
-/// corner in the same window moved.
+/// corner in the same window moved. An unnamed corner stays square through
+/// the install.
 #[test]
 fn named_corner_steps_follow_an_installed_radius() {
     use nana_ui_core::RadiusTier::{Lg, Xs};
@@ -3926,8 +3927,12 @@ fn named_corner_steps_follow_an_installed_radius() {
     let block = context
         .create_component(
             document,
-            crate::Stack::column(0.0)
-                .style(crate::NodeStyle::default().corner_radii([Lg, Xs, Xs, Lg])),
+            crate::Stack::column(0.0).style(crate::NodeStyle::default().corner_radii([
+                Some(Lg),
+                Some(Xs),
+                None,
+                Some(Lg),
+            ])),
         )
         .unwrap();
     let corners_of = |context: &AppContext| {
@@ -3942,7 +3947,7 @@ fn named_corner_steps_follow_an_installed_radius() {
         [
             defaults.radius_lg,
             defaults.radius_xs,
-            defaults.radius_xs,
+            0.0,
             defaults.radius_lg
         ]
     );
@@ -3960,7 +3965,7 @@ fn named_corner_steps_follow_an_installed_radius() {
             )
             .unwrap()
     );
-    assert_eq!(corners_of(&context), [30.0, 1.0, 1.0, 30.0]);
+    assert_eq!(corners_of(&context), [30.0, 1.0, 0.0, 30.0]);
 }
 
 /// A switch with no label is its track.

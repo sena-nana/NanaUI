@@ -149,9 +149,11 @@ impl UiWorld {
         metrics: nana_ui_core::ThemeMetrics,
     ) -> (Arc<nana_ui_core::LayoutStyle>, bool) {
         let radius = style.radius.map(|tier| tier.resolve(metrics));
-        let corners = style
-            .corner_radii
-            .map(|tiers| tiers.map(|tier| nana_ui_core::LengthSpec::Px(tier.resolve(metrics))));
+        let corners = style.corner_radii.map(|tiers| {
+            tiers.map(|tier| {
+                nana_ui_core::LengthSpec::Px(tier.map_or(0.0, |tier| tier.resolve(metrics)))
+            })
+        });
         let control = style.control_height.map(|height| {
             (
                 matches!(height, nana_ui_core::ControlHeight::Exact(_)),

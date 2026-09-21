@@ -46,7 +46,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 节点级尺寸用命名档位（`NodeStyle::radius` / `corner_radii` / `control_height` / `control_padding_x` / `square`），不要把 `UI_METRICS.radius_lg` 这类数字写进 `layout`——那是在构造期把 token 花掉，之后装什么主题都推不动它。`control_padding_x` 会盖掉节点自己的左右内边距，这是「命名档位而不是花掉数字」的代价；要退出就把它设成 `None` 再自己写 padding（`sidebar.rs` 就是这么做的）。
 
-四个角不同档的形状（两块拼成一体：外侧大角、接缝小角）用 `corner_radii`，四个值按左上、右上、右下、左下。没有标签的 `Switch` 自己按安装的轨道宽度定宽、不加内边距，行尾开关不用再算宽度。
+四个角不同档的形状（两块拼成一体：外侧圆角、接缝直角）用 `corner_radii`，四个值按左上、右上、右下、左下，`None` 是直角。接缝处不要给圆角，哪怕是 `Xs`，两段弧分开的地方都会露出缺口。没有标签的 `Switch` 自己按安装的轨道宽度定宽、不加内边距，行尾开关不用再算宽度。
 
 ## 圆角
 

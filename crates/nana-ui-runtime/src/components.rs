@@ -1641,13 +1641,15 @@ pub struct NodeStyle {
     /// [`nana_ui_core::ThemeMetrics`] into `layout.paint.border_radii`.
     ///
     /// The four-corner form of [`Self::radius`], for shapes whose corners are
-    /// not all the same step: two blocks joined edge to edge keep large outer
-    /// corners and small inner ones. Spending `paint.border_radii` directly
+    /// not all the same step. `None` is a square corner: two blocks joined
+    /// edge to edge round their outer corners and meet flush, and any radius
+    /// at the join — even the smallest step — leaves a notch where the two
+    /// curves part. Spending `paint.border_radii` directly
     /// fixes those numbers at construction, so an Appearance radius change
     /// would move every uniform corner in the window and leave these behind.
     /// When set it wins over [`Self::radius`], as `border_radii` already wins
     /// over `border_radius` when the box is painted.
-    pub corner_radii: Option<[nana_ui_core::RadiusTier; 4]>,
+    pub corner_radii: Option<[Option<nana_ui_core::RadiusTier>; 4]>,
     /// Control-size step for this node's own box, resolved against the
     /// installed [`nana_ui_core::ThemeMetrics`]. Sibling of [`Self::radius`].
     ///
@@ -1710,7 +1712,7 @@ impl NodeStyle {
     }
 
     /// Name a radius step per corner. See [`Self::corner_radii`].
-    pub fn corner_radii(mut self, tiers: [nana_ui_core::RadiusTier; 4]) -> Self {
+    pub fn corner_radii(mut self, tiers: [Option<nana_ui_core::RadiusTier>; 4]) -> Self {
         self.corner_radii = Some(tiers);
         self
     }
