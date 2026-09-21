@@ -2882,7 +2882,7 @@ fn text_counters_see_every_window_and_survive_one_closing() {
     };
     let (_first, first_view) = test_copy_target(&device, format, 64, 64);
     let (_second, second_view) = test_copy_target(&device, format, 64, 64);
-    let mut paint = |painter: &mut SceneWgpuPainter, id: u64, view: &wgpu::TextureView| {
+    let paint = |painter: &mut SceneWgpuPainter, id: u64, view: &wgpu::TextureView| {
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
             .paint_target(
