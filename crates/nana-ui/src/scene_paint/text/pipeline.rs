@@ -200,7 +200,11 @@ pub(super) struct TextPresentationGpu {
     clip_inv_ef: [f32; 4],
     polygon: [[f32; 4]; 4],
     polygon_count: u32,
-    pad: [u32; 3],
+    pad: u32,
+    /// The whole-pixel part of a translation, in physical px. A translated
+    /// run's origin is kept relative to it, so a scroll that lands on whole
+    /// pixels rewrites this one shared row instead of every run under it.
+    translate: [f32; 2],
 }
 
 /// One draw: a contiguous span of instances that samples one pair of pages.
@@ -688,7 +692,8 @@ impl TextPresentationGpu {
             clip_inv_ef: [clip.inv_ef[0], clip.inv_ef[1], clip.corner_radius, scale],
             polygon,
             polygon_count: u32::from(clip.polygon_count),
-            pad: [0; 3],
+            pad: 0,
+            translate: whole_translation(affine, scale),
         }
     }
 
@@ -710,8 +715,19 @@ impl TextPresentationGpu {
             *slot = value.to_bits();
         }
         bits[36] = self.polygon_count;
+        bits[37] = self.translate[0].to_bits();
+        bits[38] = self.translate[1].to_bits();
         bits
     }
+}
+
+/// The whole physical pixels of `affine`'s translation at `scale`.
+///
+/// What a translated run's origin is relative to: the CPU subtracts it when it
+/// writes the run row, the vertex stage adds it back from the presentation
+/// row, and both read this one value, so the two cannot round it apart.
+pub(super) fn whole_translation(affine: [f32; 6], scale: f32) -> [f32; 2] {
+    [(affine[4] * scale).floor(), (affine[5] * scale).floor()]
 }
 
 /// sRGB `a<<24 | r<<16 | g<<8 | b`, the form the instance and the retained

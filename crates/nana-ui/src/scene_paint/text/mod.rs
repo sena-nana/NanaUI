@@ -1271,6 +1271,16 @@ impl TextPipeline {
             (paint_origin[0] - whole[0]).to_bits(),
             (paint_origin[1] - whole[1]).to_bits(),
         ];
+        // A translated run's origin is relative to the translation's whole
+        // pixels, which the presentation row carries. A scroll that lands on
+        // whole pixels then moves the one row every label under it shares,
+        // and not a single run row.
+        let whole = if translation {
+            let [x, y] = pipeline::whole_translation(affine, scale);
+            [whole[0] - x, whole[1] - y]
+        } else {
+            whole
+        };
         let index = self.target.live_runs;
         if index == self.target.runs.len() {
             self.target.runs.push(TextRun {
@@ -3884,6 +3894,36 @@ mod tests {
             2,
             "and one rebuild per step"
         );
+    }
+
+    #[test]
+    fn a_whole_pixel_scroll_rewrites_one_shared_row_and_no_run() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let labels = |offset: f32| {
+            (0..12)
+                .map(|index| Label {
+                    top: 3.3 + index as f32 * 17.6,
+                    affine: [1.0, 0.0, 0.0, 1.0, 0.0, -offset],
+                    ..Label::new("Row content", index + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        text_frame(&device, &queue, &mut pipeline, &labels(0.0));
+        for offset in 1..6 {
+            let warm = pipeline.glyph_counters();
+            text_frame(&device, &queue, &mut pipeline, &labels(offset as f32 * 3.0));
+            let after = pipeline.glyph_counters();
+            assert_eq!(
+                after.text_instance_rebuilds, warm.text_instance_rebuilds,
+                "a whole-pixel scroll keeps every glyph"
+            );
+            let moved = after.text_presentation_upload_bytes - warm.text_presentation_upload_bytes;
+            assert!(
+                moved <= std::mem::size_of::<pipeline::TextPresentationGpu>() as u64,
+                "and moves one presentation row, not twelve run rows: {moved} bytes"
+            );
+        }
     }
 
     #[test]

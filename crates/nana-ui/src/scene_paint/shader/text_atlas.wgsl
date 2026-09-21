@@ -45,8 +45,9 @@ struct TextPresentation {
     polygon: array<vec4<f32>, 4>,
     polygon_count: u32,
     pad0: u32,
-    pad1: u32,
-    pad2: u32,
+    // Whole physical px of the translation a translated run's origin is
+    // relative to, so a whole-pixel scroll rewrites this row and no run.
+    translate: vec2<f32>,
 }
 
 // Sampling is bilinear rather than nearest: the quad no longer lands on the
@@ -109,19 +110,20 @@ fn atlas_uv(texel: vec2<u32>, content: u32) -> vec2<f32> {
 // A glyph corner in physical paint space.
 //
 // The same homography `Quad` applies, in logical space, per corner. A pure
-// translation skips it: the run origin already carries the whole-pixel
-// translation and the instance the sub-pixel remainder its bitmap was
-// rasterized for, so touching the corner at all would only round it again.
+// translation skips it: the presentation row carries the translation's whole
+// pixels, the run origin the paragraph's own whole pixels relative to that,
+// and the instance the sub-pixel remainder its bitmap was rasterized for, so
+// touching the corner at all would only round it again.
 //
 // A projected run's instances are in the run's raster px, which a magnified
 // entry makes finer than device px, so they are taken back to logical space
 // by the raster scale and out again by the device scale.
 fn text_world_position(run: TextRun, local: vec2<f32>) -> vec2<f32> {
     let paint = local + run.origin;
-    if (run.flags & RUN_PROJECT) == 0u {
-        return paint;
-    }
     let presentation = text_presentations[run.presentation];
+    if (run.flags & RUN_PROJECT) == 0u {
+        return paint + presentation.translate;
+    }
     let scale = presentation.clip_inv_ef.w;
     let p = paint / run.raster;
     let xp = presentation.affine.x * p.x + presentation.affine.z * p.y + presentation.project.x;
