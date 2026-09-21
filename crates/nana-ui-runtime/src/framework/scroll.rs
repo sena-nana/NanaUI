@@ -381,7 +381,8 @@ impl AppContext {
             let mut mutations = MutationQueue::new();
             mutations.set_scroll_offset(id, next);
             self.world.commit(mutations)?;
-            let applied = self.world.scroll_offset(id).unwrap_or(next);
+            // Pinned to the request, which the caret reveal then yields to.
+            let applied = self.world.scroll_request(id).unwrap_or(next);
             self.world.set_text_viewport_pin(id, Some(applied));
             self.update_component(Entity::<TextArea>::from_stable_id(id), |area, _| {
                 area.scroll_offset = applied;

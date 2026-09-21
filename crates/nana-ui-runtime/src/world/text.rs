@@ -5225,6 +5225,21 @@ pub(crate) struct EditorFrame {
 }
 
 impl EditorFrame {
+    /// The scroll as a physical offset, the inverse of how `editor_frame`
+    /// reads the recorded one: the block scroll of `vertical-rl` runs left.
+    pub(crate) fn scroll_offset(&self) -> ScrollOffset {
+        if !self.writing.is_vertical() {
+            return ScrollOffset {
+                x: self.inline_scroll,
+                y: self.block_scroll,
+            };
+        }
+        ScrollOffset {
+            x: self.writing.block_to_page_x(self.block_scroll, 0.0),
+            y: self.inline_scroll,
+        }
+    }
+
     /// A text-space rectangle (`x`/`width` along the line, `y`/`height`
     /// across it) on the page.
     pub(crate) fn field_rect(&self, rect: LayoutBox) -> LayoutBox {

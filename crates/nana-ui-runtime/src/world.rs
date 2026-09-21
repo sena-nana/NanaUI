@@ -1288,13 +1288,27 @@ impl UiWorld {
         self.nodes.get(id).map(|node| node.layout)
     }
 
+    /// Where `id` is scrolled: the offset last set, except that a multiline
+    /// editor reports where it is drawn — that request clamped to its value
+    /// and, while focused, moved to show the caret.
     pub fn scroll_offset(&self, id: StableNodeId) -> Option<ScrollOffset> {
-        self.nodes.get(id).map(|node| node.scroll_offset)
+        let node = self.nodes.get(id)?;
+        if node.accessibility.multiline
+            && let Some(frame) = self.editor_frame(id)
+        {
+            return Some(frame.scroll_offset());
+        }
+        Some(node.scroll_offset)
     }
 
     /// The scrolling area a scroll offset is clamped to. A multiline text
     /// editor's follows its shaped value, so it is always current; every
     /// other container's is the one last published for it.
+    /// The offset last set on `id`, which a multiline editor is drawn from.
+    pub(crate) fn scroll_request(&self, id: StableNodeId) -> Option<ScrollOffset> {
+        self.nodes.get(id).map(|node| node.scroll_offset)
+    }
+
     pub fn scroll_metrics(&self, id: StableNodeId) -> Option<ScrollMetrics> {
         self.text_scroll_metrics(id)
             .or_else(|| self.nodes.scroll_metrics(id).copied())

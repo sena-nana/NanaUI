@@ -2321,7 +2321,8 @@ impl ComponentView for TextArea {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
-        if world.scroll_offset(id) != Some(self.scroll_offset) {
+        // The field is the request; where the editor is drawn follows it.
+        if world.scroll_request(id) != Some(self.scroll_offset) {
             mutations.set_scroll_offset(id, self.scroll_offset);
         }
         let snippet_choices = world

@@ -1848,7 +1848,7 @@ impl AppContext {
         self.world.commit(mutations)?;
         // 钉住提交后的实际偏移（世界侧可能再钳制），保证与几何层读取的
         // 请求滚动逐位相等。
-        let applied = self.world.scroll_offset(node).unwrap_or(target);
+        let applied = self.world.scroll_request(node).unwrap_or(target);
         self.world.set_text_viewport_pin(node, Some(applied));
         if kind == TextEditorKind::Area {
             self.update_component(Entity::<TextArea>::from_stable_id(node), |area, _| {
@@ -4593,6 +4593,106 @@ mod minimap_tests {
         };
         // 光标在第 0 行（y=0），reveal 后视口回顶部：文本区 y 回到内容顶。
         assert!((text.bounds.y - content.y).abs() < 0.01);
+    }
+
+    /// The scroll the editor is drawn at: its text origin above the content
+    /// box.
+    fn drawn_scroll_y(context: &AppContext, node: StableNodeId) -> f32 {
+        let (content, _) = context.world().text_input_pointer_context(node).unwrap();
+        let extracted = &context.world().extract_nodes(&[node])[0];
+        let crate::ComponentGeometry::TextInput { text, .. } =
+            extracted.component_geometry.as_deref().unwrap()
+        else {
+            panic!("expected text input geometry");
+        };
+        content.y - text.bounds.y
+    }
+
+    fn move_caret(
+        context: &mut AppContext,
+        area: Entity<TextArea>,
+        node: StableNodeId,
+        offset: usize,
+    ) {
+        context
+            .update_component(area, |area, _| {
+                area.state.selection = crate::TextSelection::caret(offset);
+                true
+            })
+            .unwrap();
+        context
+            .world_mut()
+            .shape_text(&[node], &mut MeasureTextShaper)
+            .unwrap();
+    }
+
+    /// The caret reveal scrolls a focused editor to its caret; the editor
+    /// reports that scroll, so a wheel carries on from what is on screen
+    /// instead of from the offset set before the caret moved.
+    #[test]
+    fn a_wheel_after_the_caret_reveal_scrolls_from_what_is_drawn() {
+        let (mut context, _document, area, node) = minimap_editor();
+        let end = context.world().text_input(node).unwrap().value.len();
+        move_caret(&mut context, area, node, end);
+        // 30 lines of 10 px in a 100 px box: the last line is revealed at the
+        // bottom, so the editor is drawn scrolled to the end.
+        let revealed = drawn_scroll_y(&context, node);
+        assert!(
+            revealed > 150.0,
+            "caret reveal scrolls to the end: {revealed}"
+        );
+        assert_eq!(scroll_y_of(&context, node), revealed);
+
+        assert!(
+            context
+                .scroll_node_by(node, crate::ScrollOffset { x: 0.0, y: -10.0 })
+                .unwrap()
+        );
+        assert_eq!(scroll_y_of(&context, node), revealed - 10.0);
+        assert_eq!(drawn_scroll_y(&context, node), revealed - 10.0);
+    }
+
+    /// Shortening the value leaves the request past the new end; the editor
+    /// is drawn clamped, and a wheel moves from there on its first tick.
+    #[test]
+    fn a_wheel_after_the_value_shrinks_moves_on_its_first_tick() {
+        let (mut context, _document, area, node) = minimap_editor();
+        move_caret(&mut context, area, node, 0);
+        assert_eq!(scroll_y_of(&context, node), 0.0);
+        assert!(
+            context
+                .scroll_node_by(node, crate::ScrollOffset { x: 0.0, y: 1_000.0 })
+                .unwrap()
+        );
+        let bottom = scroll_y_of(&context, node);
+        assert!(bottom > 150.0, "scrolled to the end: {bottom}");
+
+        // 15 lines of 10 px: 50 px past a 100 px box. The caret stays on the
+        // first line, so the wheel's pin holds.
+        let shorter = (0..15)
+            .map(|index| format!("line{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        context
+            .update_component(area, |area, _| {
+                area.state.value = shorter;
+                true
+            })
+            .unwrap();
+        context
+            .world_mut()
+            .shape_text(&[node], &mut MeasureTextShaper)
+            .unwrap();
+        let end = scroll_y_of(&context, node);
+        assert_eq!(drawn_scroll_y(&context, node), end);
+        assert!(end < bottom, "drawn clamped to the shorter value: {end}");
+
+        assert!(
+            context
+                .scroll_node_by(node, crate::ScrollOffset { x: 0.0, y: -10.0 })
+                .unwrap()
+        );
+        assert_eq!(drawn_scroll_y(&context, node), end - 10.0);
     }
 }
 
