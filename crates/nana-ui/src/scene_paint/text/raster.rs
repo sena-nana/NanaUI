@@ -249,12 +249,27 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         render
             .format(swash::zeno::Format::Alpha)
             .offset(subpixel_offset(key, snap_to_pixel));
+        let mut transform = None;
         if key.synthesis.contains(GlyphSynthesis::FAKE_ITALIC) {
-            render.transform(Some(swash::zeno::Transform::skew(
+            transform = Some(swash::zeno::Transform::skew(
                 swash::zeno::Angle::from_degrees(OBLIQUE_DEGREES),
                 swash::zeno::Angle::from_degrees(0.0),
-            )));
+            ));
         }
+        if key.synthesis.contains(GlyphSynthesis::ROTATE_CW) {
+            // Font space is y-up, so a quarter turn clockwise on the page
+            // sends the outline's x to page-down (font −y) and its y to
+            // page-right (font +x): (x, y) → (y, −x). Written out rather than
+            // as `rotation(-90°)`, whose `cos` is not exactly zero and would
+            // lean every sideways glyph by a hair. After the oblique skew, so
+            // a fake italic slants along its own baseline.
+            let quarter_turn = swash::zeno::Transform::new(0.0, -1.0, 1.0, 0.0, 0.0, 0.0);
+            transform = Some(match transform {
+                Some(skew) => skew.then(&quarter_turn),
+                None => quarter_turn,
+            });
+        }
+        render.transform(transform);
         if key.synthesis.contains(GlyphSynthesis::FAKE_BOLD) {
             render.embolden(size * EMBOLDEN_RATIO);
         }

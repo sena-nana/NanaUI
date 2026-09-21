@@ -35,8 +35,9 @@ pub(super) struct GlyphFontId(pub u32);
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) struct GlyphVariationId(pub u64);
 
-/// Synthesis and hinting the rasterizer applies, as opposed to what the face
-/// already carries. Part of the raster key: each flag changes the bitmap.
+/// Synthesis, hinting and orientation the rasterizer applies, as opposed to
+/// what the face already carries. Part of the raster key: each flag changes
+/// the bitmap.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub(super) struct GlyphSynthesis(pub u8);
 
@@ -51,6 +52,12 @@ impl GlyphSynthesis {
     /// Reported by the font layer when the requested weight is out of the
     /// face's range and no other face covers it.
     pub(super) const FAKE_BOLD: Self = Self(1 << 3);
+    /// Turn the outline 90° clockwise: a sideways run of a vertical line
+    /// (#59), whose glyphs lie on their side with their tops facing the line's
+    /// block end. Not synthesis in the font sense, but the same kind of fact —
+    /// a transform the rasterizer applies that changes the bitmap — so it
+    /// rides in the same key field.
+    pub(super) const ROTATE_CW: Self = Self(1 << 4);
 
     pub(super) const fn contains(self, flag: Self) -> bool {
         self.0 & flag.0 == flag.0

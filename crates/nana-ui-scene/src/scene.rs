@@ -358,8 +358,11 @@ pub struct SceneTextOpenType {
     /// anything else here, and getting it wrong measures one line and paints
     /// two.
     pub preserve_lines: bool,
-    /// CSS `writing-mode` after inherit. The layout engine has no vertical
-    /// glyph orientation; paint still shapes horizontally.
+    /// The writing mode this text was laid out in: CSS `writing-mode` after
+    /// inherit, except for an editor's value, which is laid out horizontally
+    /// whatever it asks for until editing works in columns (#59) — its caret
+    /// and selection come from horizontal geometry, and glyphs painted in
+    /// columns under them would not line up.
     pub writing_mode: WritingModeSpec,
 }
 
@@ -2352,6 +2355,9 @@ fn component_text_primitive(
                 // a renderer that folds them paints one line where six were
                 // measured.
                 preserve_lines: node.text_preserve_lines,
+                // The editor's geometry is horizontal (#59); painting its
+                // value in columns would put every glyph off its caret.
+                writing_mode: WritingModeSpec::HorizontalTb,
                 ..SceneTextOpenType::from_computed(&node.style)
             },
             layout: None,

@@ -2260,6 +2260,21 @@ fn mount_rich_text(
                 12.0,
                 400,
             ));
+            // #59: `vertical-rl` in columns — upright CJK with its vertical
+            // punctuation forms, sideways Latin and digits, wrapped against the
+            // box height and stacked from the right.
+            let vertical = ui.parked({
+                let mut text = hugging_text(
+                    "縦書き「春はあけぼの」。やうやう白くなりゆく山ぎは、NanaUI 2026年、少しあかりて。",
+                    SemanticColorRole::Text,
+                    16.0,
+                    400,
+                );
+                let layout = Arc::make_mut(&mut text.style.layout);
+                layout.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+                layout.height = Some(LengthSpec::Px(180.0));
+                text
+            });
             let markdown = ui.parked(state.markdown.clone());
             let link_status = ui.parked(styled_text(
                 state
@@ -2296,6 +2311,7 @@ fn mount_rich_text(
             ui.nest(root, |ui| {
                 ui.adopt(heading);
                 ui.adopt(hint);
+                ui.adopt(vertical);
                 ui.adopt(markdown);
                 ui.adopt(link_status);
                 ui.adopt(editor_title);

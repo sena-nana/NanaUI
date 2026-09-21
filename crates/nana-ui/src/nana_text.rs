@@ -615,6 +615,77 @@ mod tests {
         );
     }
 
+    /// #59: vertical text is measured as a column — a line box across, its
+    /// vertical advances down — also on the one-character fast path, and its
+    /// upright advances never land in the per-character cache horizontal rich
+    /// text is measured from.
+    #[test]
+    fn vertical_text_measures_as_a_column_and_keeps_its_advances_out_of_the_glyph_cache() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let mut glyphs = GlyphCache::default();
+        let horizontal = ComputedStyle {
+            font_size: 16.0,
+            ..ComputedStyle::default()
+        };
+        let vertical = ComputedStyle {
+            writing_mode: nana_ui_core::WritingModeSpec::VerticalRl,
+            ..horizontal.clone()
+        };
+        let constraints = TextShapeConstraints {
+            shaping: TextShaping::Advanced,
+            ..TextShapeConstraints::default()
+        };
+        let column = shaper.shape_cached(
+            node(),
+            &TextContent {
+                value: "やや".into(),
+            },
+            &vertical,
+            constraints,
+            &mut glyphs,
+        );
+        assert!(
+            column.height > column.width,
+            "two kana stand in a column: {column:?}"
+        );
+        assert_eq!(
+            column.ascent, None,
+            "a column hangs from a central baseline"
+        );
+        assert_eq!(
+            glyphs.peek('や', &vertical),
+            None,
+            "an upright advance is not what `や` advances across a line"
+        );
+
+        // Seed the cache horizontally; a one-character vertical label must
+        // still not be answered from it.
+        shaper.shape_cached(
+            node(),
+            &TextContent {
+                value: "や".into()
+            },
+            &horizontal,
+            constraints,
+            &mut glyphs,
+        );
+        let across = glyphs.peek('や', &horizontal).expect("horizontal records");
+        let single = shaper.shape_cached(
+            node(),
+            &TextContent {
+                value: "や".into()
+            },
+            &vertical,
+            constraints,
+            &mut glyphs,
+        );
+        assert!(
+            (single.width - 16.0 * 1.2).abs() < 0.01,
+            "one column is one line box wide, not {across}: {single:?}"
+        );
+    }
+
     /// The Runtime's own advance cache is not the engine's layout cache: it
     /// answers what one character advances to, whatever string it came in, so
     /// a one-character label is measured without laying anything out.

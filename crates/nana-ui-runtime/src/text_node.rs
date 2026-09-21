@@ -412,19 +412,11 @@ pub(crate) fn nana_text_constraints(
     style: &ComputedStyle,
     constraints: &TextShapeConstraints,
     alignment: TextHorizontalAlignment,
+    kind: TextKind,
 ) -> NanaTextConstraints {
-    NanaTextConstraints {
+    let mut nana = NanaTextConstraints {
         max_width_px: constraints.max_width,
-        // A height budget is a *truncation* budget: `nana-text` drops the
-        // lines that do not fit it. A box too short for its text is an
-        // overflow, not a shorter paragraph — CSS clips it at paint and the
-        // text is still there to select and to hit-test. So the engine only
-        // gets the height when truncation was actually asked for; `max_lines`
-        // travels on its own and clamps either way.
-        max_height_px: constraints
-            .ellipsis
-            .then_some(constraints.max_height)
-            .flatten(),
+        max_height_px: constraints.max_height,
         wrap: constraints.wrap.then_some(constraints.wrap_break),
         word_break: style.word_break,
         line_break: style.line_break,
@@ -439,7 +431,24 @@ pub(crate) fn nana_text_constraints(
         },
         writing_mode: style.writing_mode,
         ..NanaTextConstraints::default()
+    };
+    // The box dimension lines *stack* along — the height, or the width of a
+    // vertical paragraph — is a *truncation* budget: `nana-text` drops the
+    // lines that do not fit it. A box too short for its text is an overflow,
+    // not a shorter paragraph — CSS clips it at paint and the text is still
+    // there to select and to hit-test. So the engine only gets it when
+    // truncation was actually asked for; `max_lines` travels on its own and
+    // clamps either way.
+    let vertical = nana.lays_out_vertically(kind);
+    let stacking = if vertical {
+        &mut nana.max_width_px
+    } else {
+        &mut nana.max_height_px
+    };
+    if !constraints.ellipsis {
+        *stacking = None;
     }
+    nana
 }
 
 /// Record the advance of every glyph that is a whole single-character cluster
@@ -456,13 +465,23 @@ pub(crate) fn nana_text_constraints(
 /// A cluster of two characters (a combining mark, an emoji sequence) has no
 /// per-character advance to record, and a character that shaped to several
 /// glyphs has no single one either — both are skipped rather than approximated.
+///
+/// So is an upright run of vertical text (#59): its advances are the face's
+/// *vertical* ones, and a proportional kana that advances 15.5px across a line
+/// advances a full 16px down a column. Recorded here, they would size the next
+/// horizontal rich-text run by the column's metrics. A sideways run is
+/// horizontal shaping and records like any other.
 pub(crate) fn record_glyph_advances(
     layout: &nana_text::TextLayout,
     text: &str,
     style: &ComputedStyle,
     glyphs: &mut crate::GlyphCache,
 ) {
-    for run in &layout.runs {
+    for run in layout
+        .runs
+        .iter()
+        .filter(|run| run.orientation != nana_text::RunOrientation::Upright)
+    {
         for glyph in &run.glyphs {
             let (start, end) = (glyph.cluster as usize, glyph.cluster_end as usize);
             let Some(cluster) = text.get(start..end) else {
@@ -479,23 +498,20 @@ pub(crate) fn record_glyph_advances(
     }
 }
 
-/// The Runtime metrics contract read off a layout: the widest line, the
-/// summed line boxes, and the first line's ascent.
+/// The Runtime metrics contract read off a layout: the page size of its lines
+/// ([`TextLayout::physical_size`] — the widest line and the summed line boxes,
+/// crossed over for vertical text), and the first line's ascent.
+///
+/// A vertical layout reports no ascent: its lines hang from a central
+/// baseline, and handing that to a box layout that aligns alphabetic
+/// baselines would put a column's midpoint on a horizontal neighbour's text
+/// line.
 pub(crate) fn text_metrics_of_layout(layout: &TextLayout) -> TextMetrics {
-    let finite = |value: f32| if value.is_finite() { value } else { 0.0 };
-    let width = layout
-        .lines
-        .iter()
-        .map(|line| finite(line.metrics.width_px).max(0.0))
-        .fold(0.0, f32::max);
-    let height = layout
-        .lines
-        .iter()
-        .map(|line| finite(line.metrics.height_px).max(0.0))
-        .sum();
+    let (width, height) = layout.physical_size();
     let ascent = layout
         .lines
         .first()
+        .filter(|_| !layout.is_vertical())
         .map(|line| (line.metrics.baseline_y_px - line.metrics.top_y_px).max(0.0))
         .filter(|ascent| ascent.is_finite());
     TextMetrics {

@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use nana_text::{
     Affinity, EditorGeometry, SharedTextEngine, TextConstraints as NanaTextConstraints,
-    TextEngine as _, TextSource, TextStyle as NanaTextStyle, TextWorkCounters,
+    TextEngine as _, TextKind, TextSource, TextStyle as NanaTextStyle, TextWorkCounters,
 };
 
 use crate::text_node::{nana_text_constraints, nana_text_style, text_kind, text_metrics_of_layout};
@@ -86,8 +86,12 @@ impl NanaTextEngineShaper {
         create: bool,
     ) -> Option<&EditorGeometry> {
         let nana_style = nana_text_style(style);
-        let nana_constraints =
-            nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start);
+        let nana_constraints = nana_text_constraints(
+            style,
+            &constraints,
+            TextHorizontalAlignment::Start,
+            TextKind::Editable,
+        );
         let mut entry = match self.editors.iter().rposition(|entry| entry.id == id) {
             Some(index) => {
                 let entry = self.editors.remove(index);
@@ -283,11 +287,12 @@ impl NanaTextEngineShaper {
             return metrics;
         }
         let source = TextSource::new(text.value.as_str());
+        let kind = text_kind(&constraints);
         let layout = nana_text::lock_text_engine(&self.engine).layout(
-            text_kind(&constraints),
+            kind,
             &source,
             &nana_text_style(style),
-            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start),
+            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind),
             &mut self.work,
         );
         self.work.text_source_clones += 1;
@@ -370,9 +375,12 @@ impl TextShaper for NanaTextEngineShaper {
     ) -> TextMetrics {
         // One character in a box that cannot wrap or truncate is its advance
         // and the style's line box, which the cache already holds if anything
-        // drew that character before.
+        // drew that character before. Across, that is: a vertical column
+        // (#59) is a line box wide and a vertical advance tall, and the cache
+        // holds neither.
         if !constraints.wrap
             && !constraints.ellipsis
+            && !style.writing_mode.is_vertical()
             && let Some(ch) = single_char(&text.value)
             && glyphs.peek(ch, style).is_some()
             && let Some(advance) = glyphs.lookup(ch, style)
@@ -427,11 +435,12 @@ impl TextShaper for NanaTextEngineShaper {
         }
         let constraints = TextShapeConstraints::default();
         let source = TextSource::new(text.value.as_str());
+        let kind = text_kind(&constraints);
         let layout = nana_text::lock_text_engine(&self.engine).layout(
-            text_kind(&constraints),
+            kind,
             &source,
             &nana_text_style(style),
-            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start),
+            &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start, kind),
             &mut self.work,
         );
         self.work.text_source_clones += 1;

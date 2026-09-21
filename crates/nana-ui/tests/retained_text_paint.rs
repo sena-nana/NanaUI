@@ -10,6 +10,7 @@
 //! otherwise `TextPipeline::prepare` would silently fall back for every node
 //! and the retained layout would be dead weight.
 
+use nana_text::TextWorkCounters;
 use nana_ui::{NanaTextShaper, runtime::*};
 use nana_ui_scene::{ScenePrimitiveKind, UiScene};
 
@@ -119,44 +120,83 @@ fn a_short_box_clips_its_wrapped_text_instead_of_losing_lines() {
     );
 }
 
-/// #59: a node that asks for a vertical writing mode is laid out horizontally,
-/// and the frame says so.
-///
-/// The fallback is the right answer — the engine has no glyph orientation, and
-/// reporting horizontal metrics as vertical ones would be worse. What was
-/// missing is that it was invisible: the flag sat on the layout and nothing
-/// read it, so a document could ask for vertical text and get horizontal with
-/// nobody the wiser. Now it reaches the pass counters.
+/// #59: a `vertical-rl` text node is laid out in columns, measured as a
+/// column (width across, height down), and the painter draws the very layout
+/// the Runtime measured — its line budget is the box's *height*, so the reuse
+/// check has to compare that and not the width.
 #[test]
-fn a_vertical_writing_mode_falls_back_horizontally_and_the_frame_reports_it() {
-    let mut cx = AppContext::new();
-    let doc = DocumentId::new(1).unwrap();
-    let root = cx.create_component(doc, Stack::column(0.0)).unwrap();
-    let mut label = Text::new("縦書きの段落");
-    {
-        let style = std::sync::Arc::make_mut(&mut label.style.layout);
-        style.width = Some(nana_ui_core::LengthSpec::Px(200.0));
-        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
-    }
-    let label = cx.create_component(doc, label).unwrap();
-    cx.append_child(root, label).unwrap();
-    let (root, label) = (root.stable_id(), label.stable_id());
-    settle(&mut cx, doc, &[root, label]);
+fn a_vertical_text_node_is_measured_as_columns_and_painted_from_that_layout() {
+    fn vertical_label(
+        height: Option<f32>,
+    ) -> (
+        nana_ui_scene::SceneRect,
+        RetainedTextLayout,
+        TextWorkCounters,
+    ) {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let root = cx.create_component(doc, Stack::row(0.0)).unwrap();
+        let mut label = Text::new("縦書きの段落");
+        {
+            let style = std::sync::Arc::make_mut(&mut label.style.layout);
+            style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+            style.height = height.map(nana_ui_core::LengthSpec::Px);
+        }
+        let label = cx.create_component(doc, label).unwrap();
+        cx.append_child(root, label).unwrap();
+        let (root, label) = (root.stable_id(), label.stable_id());
+        settle(&mut cx, doc, &[root, label]);
+        let counters = cx.world().last_text_work_counters();
 
-    let counters = cx.world().last_text_work_counters();
+        let mut scene = UiScene::new();
+        scene.apply_delta(cx.world().extract_document(doc), []);
+        let (bounds, retained) = text_primitive(&scene, label);
+        (
+            bounds,
+            retained.expect("a plain text node retains its layout"),
+            counters,
+        )
+    }
+
+    let (bounds, retained, counters) = vertical_label(None);
+    let layout = &retained.layout;
     assert!(
-        counters.vertical_writing_fallbacks > 0,
-        "the frame has to be able to say the vertical request was not honoured: {counters:?}"
+        layout.is_vertical(),
+        "the node asked for columns and got them"
+    );
+    assert!(!layout.unsupported_writing_mode);
+    assert_eq!(counters.vertical_writing_fallbacks, 0, "{counters:?}");
+    assert_eq!(
+        layout.lines.len(),
+        1,
+        "an unconstrained column holds it all"
+    );
+    let (width, height) = layout.physical_size();
+    assert!(
+        height > width * 3.0,
+        "six ideographs stand in one tall column: {width} x {height}"
+    );
+    assert!(
+        (bounds.width - width).abs() < 0.5 && (bounds.height - height).abs() < 0.5,
+        "the box is the column the text measured: {bounds:?} vs {width} x {height}"
+    );
+    assert_eq!(
+        layout.constraints.max_height_px,
+        Some(bounds.height),
+        "the line budget and the paint box are the same number, or the \
+         painter falls back to laying the paragraph out again"
     );
 
-    let mut scene = UiScene::new();
-    scene.apply_delta(cx.world().extract_document(doc), []);
-    let (_, retained) = text_primitive(&scene, label);
+    // A box shorter than the column wraps it into more columns, stacked
+    // right to left, and grows wider rather than losing text.
+    let (short_bounds, short, _) = vertical_label(Some(height / 2.0 + 1.0));
+    assert_eq!(
+        short.layout.lines.len(),
+        2,
+        "the text wraps into two columns"
+    );
     assert!(
-        retained
-            .expect("a plain text node retains its layout")
-            .layout
-            .unsupported_writing_mode,
-        "and the layout itself carries the same answer"
+        short_bounds.width > bounds.width * 1.5,
+        "two columns are wider than one: {short_bounds:?}"
     );
 }

@@ -50,7 +50,7 @@ use std::sync::Arc;
 use self::atlas::{AtlasPageKind, GlyphAtlasLimits, GlyphAtlasManager};
 pub(in crate::scene_paint) use self::entry::EntryKey;
 use self::entry::{EntrySegment, EntryStore, InstanceArena, RunSlots, SegmentBuilder};
-use self::glyph::{GlyphRenderMode, NanaGlyphBuffer, PlacedGlyph, size_bits};
+use self::glyph::{GlyphRenderMode, GlyphSynthesis, NanaGlyphBuffer, PlacedGlyph, size_bits};
 use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
     TextPresentationGpu, TextRunGpu, TextTargetGpu,
@@ -886,13 +886,22 @@ impl TextPipeline {
         // compare where laying out again costs a hash of the whole string.
         //
         // The one thing that has to hold is the alignment box: the glyphs are
-        // placed inside `max_width_px` and this paints them at the box's left
-        // edge, so a node whose paint box is not the box it was measured into
-        // (a switch with a trailing control, a list item whose content
-        // geometry overrides the text box) falls back to laying out for
-        // itself rather than drawing centred text off-centre.
+        // placed inside the line budget — `max_width_px`, or `max_height_px`
+        // for vertical text — and this paints them at the box's start edge,
+        // so a node whose paint box is not the box it was measured into (a
+        // switch with a trailing control, a list item whose content geometry
+        // overrides the text box) falls back to laying out for itself rather
+        // than drawing centred text off-centre.
         let retained_paragraph = text_layout
-            .filter(|retained| retained.layout.constraints.max_width_px == Some(box_width))
+            .filter(|retained| {
+                let layout = &retained.layout;
+                let (budget, line_box) = if layout.is_vertical() {
+                    (layout.constraints.max_height_px, bounds.height.max(0.0))
+                } else {
+                    (layout.constraints.max_width_px, box_width)
+                };
+                budget == Some(line_box)
+            })
             .map(|retained| Arc::clone(&retained.layout));
         // Nothing the shape key is made of can have changed: the scene has not
         // rewritten this primitive since these glyphs were resolved, and
@@ -1003,7 +1012,20 @@ impl TextPipeline {
                 measure(layout)
             }
         };
-        let mut aligned = text_box_origin(bounds, vertical, laid_out_height);
+        // Vertical text is aligned inside its own layout, down the column's
+        // line budget, so the box origin is where it starts. A `vertical-rl`
+        // paragraph is drawn right-aligned against its own column stack (see
+        // `build_entry`), and the box adds whatever it has beyond that stack
+        // on the left.
+        let mut aligned = match opentype.writing_mode {
+            nana_ui_core::WritingModeSpec::HorizontalTb => {
+                text_box_origin(bounds, vertical, laid_out_height)
+            }
+            nana_ui_core::WritingModeSpec::VerticalRl => {
+                [bounds.x + bounds.width - measured_width, bounds.y]
+            }
+            nana_ui_core::WritingModeSpec::VerticalLr => [bounds.x, bounds.y],
+        };
         aligned[0] += paint_offset[0];
         aligned[1] += paint_offset[1];
         if clip::is_translation_projective(affine, persp) {
@@ -1282,15 +1304,16 @@ impl TextPipeline {
             variations: opentype.variations.clone(),
             kerning: opentype.kerning,
         };
+        // The box dimension lines stack along — the height, or the width of
+        // vertical text — is a truncation budget, so it only goes to the
+        // engine when truncation was asked for: the same rule
+        // `nana_text_constraints` applies to the layout Runtime keeps, so the
+        // fallback here and the handle cannot disagree about it. A box too
+        // short is an overflow the scissor clips, not a shorter paragraph.
+        let vertical = opentype.writing_mode.is_vertical();
         let constraints = nana_text::TextConstraints {
-            max_width_px: Some(max_width_px),
-            // A height budget is a truncation budget, so it only goes to the
-            // engine when truncation was asked for — the same rule
-            // `nana_text_constraints` applies to the layout Runtime keeps, so
-            // the fallback here and the handle cannot disagree about it. A
-            // box too short is an overflow the scissor clips, not a shorter
-            // paragraph.
-            max_height_px: ellipsis.then_some(max_height_px),
+            max_width_px: (!vertical || ellipsis).then_some(max_width_px),
+            max_height_px: (vertical || ellipsis).then_some(max_height_px),
             wrap: wrap.then_some(wrap_break),
             word_break: opentype.word_break,
             line_break: opentype.line_break,
@@ -1353,7 +1376,12 @@ impl TextPipeline {
         };
         resolved.clear();
         let generation = *font_generation as u32;
-        for line in &layout.lines {
+        if layout.is_vertical() {
+            resolve_vertical(
+                layout, rasterizer, resolved, colors, generation, scale, origin,
+            );
+        }
+        for line in layout.lines.iter().filter(|_| !layout.is_vertical()) {
             // The baseline is snapped whole so it cannot land between texels;
             // the sub-pixel phase of the paragraph's origin is what the glyph
             // bitmaps were rasterized for and stays fractional.
@@ -1947,16 +1975,83 @@ impl SpanColors {
 /// Read off the line boxes rather than the layout's bounding box: `bounds` is
 /// the union of the line rectangles, which an aligned or RTL line offsets
 /// inside the box, and the caller wants the *content* extent.
+/// Resolves a vertical paragraph's glyphs onto the page (#59).
+///
+/// Columns are placed against the paragraph's own column stack, not the box:
+/// `vertical-rl` puts the first column at the stack's right edge and the
+/// caller shifts the whole entry right by whatever the box adds. That keeps
+/// the entry a function of the layout alone, so a box that only widened
+/// reuses every instance instead of re-resolving them.
+///
+/// Each column's centre line is snapped whole, as a horizontal baseline is.
+/// Upright glyphs hang from it by the offsets HarfRust reported relative to
+/// their horizontal origin; a sideways run centres its em box on it and is
+/// rasterized a quarter turn clockwise.
+fn resolve_vertical(
+    layout: &TextLayout,
+    rasterizer: &mut SwashGlyphRasterizer,
+    resolved: &mut NanaGlyphBuffer,
+    colors: &SpanColors,
+    generation: u32,
+    scale: f32,
+    origin: [f32; 2],
+) {
+    let stack = layout.physical_size().0;
+    for line in &layout.lines {
+        let centre =
+            (layout.physical_x_of_block(line.metrics.baseline_y_px, stack) * scale).round();
+        for run in layout.line_runs(line) {
+            let Some(instance) = run.instance.as_ref() else {
+                continue;
+            };
+            let (font, variation, mut synthesis) = rasterizer.intern_instance(instance);
+            let sideways = run.orientation == nana_text::RunOrientation::Sideways;
+            // The sideways run's own baseline, placed so that its em box —
+            // ascent to the right of it, descent to the left — is centred on
+            // the column's centre line.
+            let baseline = centre - (run.metrics.ascent_px - run.metrics.descent_px) * 0.5 * scale;
+            if sideways {
+                synthesis = synthesis.with(GlyphSynthesis::ROTATE_CW);
+            }
+            let size = size_bits(run.font_size_px * scale);
+            let mut pen = run.origin_x_px;
+            for glyph in &run.glyphs {
+                let (x, y) = if sideways {
+                    // Font y (up) is page x; font x is page y.
+                    (
+                        baseline + glyph.offset_y_px * scale + origin[0],
+                        (pen + glyph.offset_x_px) * scale + origin[1],
+                    )
+                } else {
+                    (
+                        centre + glyph.offset_x_px * scale + origin[0],
+                        (pen - glyph.offset_y_px) * scale + origin[1],
+                    )
+                };
+                pen += glyph.advance_px;
+                resolved.push(
+                    font,
+                    generation,
+                    variation,
+                    size,
+                    synthesis,
+                    GlyphRenderMode::Mask,
+                    colors.color_at(glyph.cluster as usize),
+                    PlacedGlyph {
+                        glyph: glyph.glyph_id,
+                        x,
+                        y,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// The page size of a paragraph: the widest line and the summed line boxes,
+/// crossed over for vertical text.
 fn measure(layout: &TextLayout) -> (f32, f32) {
-    layout
-        .lines
-        .iter()
-        .fold((0.0f32, 0.0f32), |(width, height), line| {
-            (
-                line.metrics.width_px.max(width),
-                height + line.metrics.height_px,
-            )
-        })
+    layout.physical_size()
 }
 
 fn text_box_origin(

@@ -3235,6 +3235,10 @@ impl UiWorld {
             .then(|| source.layout.resolved_line_clamp())
             .flatten();
         let measured = layout.width > 0.0 || layout.height > 0.0;
+        let vertical = self
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.resolved.0.writing_mode.is_vertical());
         if !measured {
             return crate::TextShapeConstraints {
                 wrap,
@@ -3263,11 +3267,16 @@ impl UiWorld {
                         .max(0.0),
                 )
             },
+            // A vertical paragraph's lines run down the box, so its height is
+            // the line budget the way a horizontal one's width is: always
+            // given once the box is measured. An editor still lays out
+            // horizontally (#59) and keeps the horizontal rule.
             max_height: (!is_text_input
-                && (source
-                    .layout
-                    .height
-                    .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
+                && (vertical
+                    || source
+                        .layout
+                        .height
+                        .is_some_and(nana_ui_core::LengthSpec::is_definite_declared)
                     || source
                         .layout
                         .max_height
@@ -3883,11 +3892,12 @@ impl UiWorld {
                 // Locked per resolution, never across the pass: the same pass
                 // measures component text through the host's `shape`, which
                 // may lay out through this very engine.
+                let kind = crate::text_node::text_kind(&constraints);
                 let layout = nana_text::lock_text_engine(engine).layout(
-                    crate::text_node::text_kind(&constraints),
+                    kind,
                     source,
                     &crate::text_node::nana_text_style(&style),
-                    &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
+                    &crate::text_node::nana_text_constraints(&style, &constraints, alignment, kind),
                     &mut node_work,
                 );
                 // Rich text measures its inline runs out of the Runtime's
