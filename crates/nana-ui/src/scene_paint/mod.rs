@@ -319,8 +319,15 @@ impl SceneWgpuPainter {
 
     /// Native glyph renderer counters: resolve, raster cache, atlas, upload
     /// and draw. Tests pin the cache and atlas contracts through these.
+    ///
+    /// Summed over every render target this painter serves, so a second
+    /// window painted through [`Self::paint_target`] counts too.
     pub fn text_glyph_counters(&self) -> TextGlyphCounters {
-        self.text.glyph_counters()
+        self.text.glyph_counters_across(
+            self.targets
+                .values()
+                .filter_map(|state| state.text.as_ref()),
+        )
     }
 
     /// Record host `queue.submit` duration for the last encoded frame.
@@ -336,11 +343,13 @@ impl SceneWgpuPainter {
     /// image requests now: URL caches only expire entries on frames that
     /// rebuild a batch, which static windows never do.
     pub fn remove_target(&mut self, id: RenderTargetId) {
-        let Some(host) = self
-            .targets
-            .remove(&id)
-            .and_then(|state| state.bound_fetch_host)
-        else {
+        let Some(mut state) = self.targets.remove(&id) else {
+            return;
+        };
+        if let Some(text) = state.text.take() {
+            self.text.close_target(text);
+        }
+        let Some(host) = state.bound_fetch_host else {
             return;
         };
         let closed = egress_of(Some(&host));

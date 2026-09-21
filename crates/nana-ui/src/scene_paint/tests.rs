@@ -2866,6 +2866,75 @@ fn rotated_label_scene() -> UiScene {
 }
 
 #[test]
+fn text_counters_see_every_window_and_survive_one_closing() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let scene = rotated_label_scene();
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (_first, first_view) = test_copy_target(&device, format, 64, 64);
+    let (_second, second_view) = test_copy_target(&device, format, 64, 64);
+    let mut paint = |painter: &mut SceneWgpuPainter, id: u64, view: &wgpu::TextureView| {
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint_target(
+                RenderTargetId(id),
+                &scene.clone(),
+                &mut encoder,
+                view,
+                viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+    };
+    paint(&mut painter, 1, &first_view);
+    let one = painter.text_glyph_counters();
+    paint(&mut painter, 2, &second_view);
+    let two = painter.text_glyph_counters();
+    // The retained half of the counters lives per window. Read through the
+    // painter, a second window's entries and rebuilds are not invisible just
+    // because the last `paint_target` put the first one's state away.
+    assert_eq!(one.text_gpu_entries_active, 1);
+    assert_eq!(
+        two.text_gpu_entries_active, 2,
+        "each window holds its own entry"
+    );
+    assert_eq!(
+        two.text_instance_rebuilds,
+        one.text_instance_rebuilds + 1,
+        "and the second window's build is counted"
+    );
+    assert_eq!(
+        two.glyph_rasterized, one.glyph_rasterized,
+        "while the glyphs themselves are shared"
+    );
+    painter.remove_target(RenderTargetId(1));
+    let closed = painter.text_glyph_counters();
+    assert_eq!(
+        closed.text_gpu_entries_active, 1,
+        "the closed window's entry is gone"
+    );
+    assert_eq!(
+        closed.text_instance_rebuilds, two.text_instance_rebuilds,
+        "but what it did is still counted: totals never run backwards"
+    );
+    assert_eq!(
+        closed.text_gpu_entries_destroyed,
+        two.text_gpu_entries_destroyed + 1
+    );
+}
+
+#[test]
 fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;

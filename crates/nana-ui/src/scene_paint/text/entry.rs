@@ -522,6 +522,7 @@ impl EntryStore {
             for handle in &self.handles[start..start + entry.glyphs as usize] {
                 release(*handle);
             }
+            self.destroyed += 1;
         }
         self.entries.clear();
         self.index.clear();

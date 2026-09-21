@@ -151,10 +151,11 @@ struct Slot {
     /// slots and only falls back to referenced ones, so this steers the LRU
     /// without pinning the atlas.
     ///
-    /// It is a hint, not a lifetime: a count that drifted high — a render
-    /// target dropped with its entries still holding claims — costs eviction
-    /// quality and nothing else, because a referenced slot is still a victim
-    /// when nothing cheaper is left.
+    /// It is a hint, not a lifetime: every path that drops an entry gives its
+    /// claims back — a rebuild, a retirement, a font-set change, a closed
+    /// window — but a count that did drift high would cost eviction quality
+    /// and nothing else, because a referenced slot is still a victim when
+    /// nothing cheaper is left.
     refs: u32,
 }
 
@@ -332,6 +333,13 @@ impl GlyphAtlasManager {
         if slot.generation == id.generation {
             slot.refs = slot.refs.saturating_add(1);
         }
+    }
+
+    /// Claims on the placement `id` names, or `None` when it is stale.
+    #[cfg(test)]
+    pub(super) fn claims(&self, id: GlyphAtlasEntryId) -> Option<u32> {
+        let slot = self.slots.get(id.index as usize)?;
+        (slot.generation == id.generation && slot.live.is_some()).then_some(slot.refs)
     }
 
     /// Give up a claim taken by [`Self::retain`]. A handle whose slot has been

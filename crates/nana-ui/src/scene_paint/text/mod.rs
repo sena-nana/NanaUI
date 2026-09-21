@@ -623,7 +623,58 @@ pub(super) struct TextPipelineTarget {
     nodes_culled: u64,
 }
 
+/// The monotonic counters one render target accumulates.
+///
+/// Kept per target because that is where the work happens, and summed across
+/// every live target — plus the ones already closed — when read, so a window
+/// that is not the one painted last still shows up in the totals and closing
+/// it does not make them run backwards.
+#[derive(Clone, Copy, Default)]
+struct TargetCounters {
+    instance_rebuilds: u64,
+    instance_patches: u64,
+    instance_upload_bytes: u64,
+    presentation_upload_bytes: u64,
+    nodes_considered: u64,
+    nodes_skipped: u64,
+    nodes_culled: u64,
+    entries_created: u64,
+    entries_destroyed: u64,
+    entries_reused: u64,
+}
+
+impl TargetCounters {
+    fn add(&mut self, other: Self) {
+        self.instance_rebuilds += other.instance_rebuilds;
+        self.instance_patches += other.instance_patches;
+        self.instance_upload_bytes += other.instance_upload_bytes;
+        self.presentation_upload_bytes += other.presentation_upload_bytes;
+        self.nodes_considered += other.nodes_considered;
+        self.nodes_skipped += other.nodes_skipped;
+        self.nodes_culled += other.nodes_culled;
+        self.entries_created += other.entries_created;
+        self.entries_destroyed += other.entries_destroyed;
+        self.entries_reused += other.entries_reused;
+    }
+}
+
 impl TextPipelineTarget {
+    fn counters(&self) -> TargetCounters {
+        let entries = self.entries.counters();
+        TargetCounters {
+            instance_rebuilds: self.instance_rebuilds,
+            instance_patches: self.instance_patches,
+            instance_upload_bytes: self.instance_upload_bytes,
+            presentation_upload_bytes: self.presentation_upload_bytes,
+            nodes_considered: self.nodes_considered,
+            nodes_skipped: self.nodes_skipped,
+            nodes_culled: self.nodes_culled,
+            entries_created: entries.created,
+            entries_destroyed: entries.destroyed,
+            entries_reused: entries.reused,
+        }
+    }
+
     fn new(gpu: TextTargetGpu) -> Self {
         Self {
             gpu,
@@ -685,6 +736,8 @@ pub(super) struct TextPipeline {
     /// claim in a comment.
     retained_layouts_drawn: u64,
     draws: Cell<u64>,
+    /// What closed render targets did before they closed.
+    closed: TargetCounters,
 }
 
 impl TextPipeline {
@@ -719,6 +772,7 @@ impl TextPipeline {
             resolve_requests: 0,
             retained_layouts_drawn: 0,
             draws: Cell::new(0),
+            closed: TargetCounters::default(),
         }
     }
 
@@ -809,11 +863,33 @@ impl TextPipeline {
         )
     }
 
+    /// Counters for the target being painted alone. The painter asks
+    /// [`Self::glyph_counters_across`] instead; this is what a test that owns
+    /// one target reads.
+    #[cfg(test)]
     pub(super) fn glyph_counters(&self) -> TextGlyphCounters {
+        self.glyph_counters_across(std::iter::empty())
+    }
+
+    /// Counters over every render target: the one being painted, `others`,
+    /// and the ones already closed. The device-wide half — raster cache,
+    /// atlas, uploads — is shared anyway; the retained half lives per target
+    /// and is summed, so a second window's frames are not invisible.
+    pub(super) fn glyph_counters_across<'a>(
+        &'a self,
+        others: impl Iterator<Item = &'a TextPipelineTarget>,
+    ) -> TextGlyphCounters {
         let raster = self.raster.counters();
         let atlas = self.atlas.counters();
         let uploads = self.uploads.counters();
-        let entries = self.target.entries.counters();
+        let mut targets = self.closed;
+        let (mut active, mut glyphs) = (0, 0);
+        for target in others.chain(std::iter::once(&self.target)) {
+            targets.add(target.counters());
+            let entries = target.entries.counters();
+            active += entries.active;
+            glyphs += entries.glyphs;
+        }
         TextGlyphCounters {
             glyph_resolve_requests: self.resolve_requests,
             glyph_rasterized: raster.rasterized,
@@ -832,18 +908,18 @@ impl TextPipeline {
             atlas_relocations: atlas.relocations,
             atlas_stale_handle_rejects: atlas.stale_handle_rejects,
             text_pipeline_draws: self.draws.get(),
-            text_gpu_entries_active: entries.active,
-            text_gpu_entries_created: entries.created,
-            text_gpu_entries_destroyed: entries.destroyed,
-            text_gpu_entries_reused: entries.reused,
-            text_gpu_entry_glyphs: entries.glyphs,
-            text_instance_rebuilds: self.target.instance_rebuilds,
-            text_instance_patches: self.target.instance_patches,
-            text_instance_upload_bytes: self.target.instance_upload_bytes,
-            text_presentation_upload_bytes: self.target.presentation_upload_bytes,
-            text_prepare_nodes_considered: self.target.nodes_considered,
-            text_prepare_nodes_skipped: self.target.nodes_skipped,
-            text_prepare_nodes_culled: self.target.nodes_culled,
+            text_gpu_entries_active: active,
+            text_gpu_entries_created: targets.entries_created,
+            text_gpu_entries_destroyed: targets.entries_destroyed,
+            text_gpu_entries_reused: targets.entries_reused,
+            text_gpu_entry_glyphs: glyphs,
+            text_instance_rebuilds: targets.instance_rebuilds,
+            text_instance_patches: targets.instance_patches,
+            text_instance_upload_bytes: targets.instance_upload_bytes,
+            text_presentation_upload_bytes: targets.presentation_upload_bytes,
+            text_prepare_nodes_considered: targets.nodes_considered,
+            text_prepare_nodes_skipped: targets.nodes_skipped,
+            text_prepare_nodes_culled: targets.nodes_culled,
             text_retained_layouts_drawn: self.retained_layouts_drawn,
         }
     }
@@ -1971,6 +2047,16 @@ impl TextPipeline {
                 work.record_draw_call();
             }
         }
+    }
+
+    /// A window or viewport closed. Its entries' claims on atlas glyphs end
+    /// here — the glyphs stay placed for the windows still open, they just
+    /// stop being counted as in use by one that is gone — and its counters
+    /// are kept so the totals do not run backwards.
+    pub(super) fn close_target(&mut self, mut target: TextPipelineTarget) {
+        let atlas = &mut self.atlas;
+        target.entries.clear(|handle| atlas.release(handle));
+        self.closed.add(target.counters());
     }
 
     pub(super) fn swap_target(
@@ -4445,6 +4531,53 @@ mod tests {
             after.glyph_atlas_evict, 0,
             "nor drop anything from the shared atlas"
         );
+    }
+
+    #[test]
+    fn a_closed_window_gives_back_its_claims_on_shared_glyphs() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut first = None;
+        let mut second = None;
+        for window in [&mut first, &mut second] {
+            pipeline.swap_target(window, &device);
+            prepare_label(&device, &queue, &mut pipeline, "Shell chrome", 1.0);
+            pipeline.swap_target(window, &device);
+        }
+        let handles = |pipeline: &TextPipeline, target: &TextPipelineTarget| {
+            let id = target
+                .entries
+                .lookup(EntryKey {
+                    node: 1,
+                    slot: 0,
+                    pass: 0,
+                })
+                .expect("the label's entry");
+            let entry = target.entries.get(id).expect("live");
+            target
+                .entries
+                .live_glyphs(entry)
+                .map(|(_, handle)| pipeline.atlas.claims(handle))
+                .collect::<Vec<_>>()
+        };
+        let second_target = second.take().expect("second window");
+        let shared = handles(&pipeline, &second_target);
+        assert!(
+            shared.iter().all(|claims| claims.is_some_and(|n| n >= 2)),
+            "both windows claim the chrome's glyphs: {shared:?}"
+        );
+        // The first window closes. Its claims go with it — otherwise the
+        // atlas would treat those glyphs as in use for the rest of the
+        // session and evict everything else first.
+        pipeline.close_target(first.take().expect("first window"));
+        let after = handles(&pipeline, &second_target);
+        for (before, now) in shared.iter().zip(&after) {
+            assert_eq!(
+                now.map(|n| n + 1),
+                *before,
+                "exactly one claim per glyph released"
+            );
+        }
     }
 
     #[test]
