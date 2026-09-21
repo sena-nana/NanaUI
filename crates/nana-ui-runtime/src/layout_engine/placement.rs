@@ -646,7 +646,7 @@ pub(super) fn place_node_scoped(
                     &flow,
                     &child_sizes,
                     direction,
-                    full_main,
+                    content,
                     gap,
                     grid_tracks,
                     viewport,

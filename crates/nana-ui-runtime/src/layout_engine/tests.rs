@@ -3081,6 +3081,54 @@ fn percentage_margins_resolve_against_the_inline_size_in_a_vertical_mode() {
     );
 }
 
+/// A wrapping column packs its lines with the same margins it then places
+/// with: percentage margins resolve against the containing block's inline
+/// size — the width, even though a column's lines fill its height.
+#[test]
+fn a_wrapping_column_packs_with_percentage_margins_of_the_width() {
+    let item = |id: &str| StyleLayoutNode {
+        id: id.into(),
+        style: LayoutStyle {
+            width: Some(LengthSpec::Px(30.0)),
+            height: Some(LengthSpec::Px(40.0)),
+            margin_top: Some(LengthSpec::Percent(10.0)),
+            ..LayoutStyle::default()
+        },
+        children: Vec::new(),
+        text: None,
+    };
+    let tree = StyleLayoutNode {
+        id: "root".into(),
+        style: LayoutStyle {
+            display: Some(DisplaySpec::Flex),
+            direction: Some(FlexDirection::Column),
+            flex_wrap: FlexWrap::Wrap,
+            width: Some(LengthSpec::Px(200.0)),
+            height: Some(LengthSpec::Px(100.0)),
+            align_items: AlignSpec::Start,
+            align_content: JustifySpec::Start,
+            ..LayoutStyle::default()
+        },
+        children: vec![item("a"), item("b")],
+        text: None,
+    };
+    let boxes = box_map(&tree, 200.0, 100.0);
+    // 10% of the 200px width is 20px: 20 + 40 + 20 + 40 overflows 100, so
+    // `b` starts the second column.
+    assert!(
+        (boxes["a"].y - 20.0).abs() < 0.5 && (boxes["b"].y - 20.0).abs() < 0.5,
+        "both sit 20px down their column: a={:?} b={:?}",
+        boxes["a"],
+        boxes["b"]
+    );
+    assert!(
+        boxes["b"].x >= boxes["a"].x + 30.0 - 0.5,
+        "b wrapped to the next column: a={:?} b={:?}",
+        boxes["a"],
+        boxes["b"]
+    );
+}
+
 /// Tracks wider than the content box overflow past the inline-start edge —
 /// the left one in RTL. Clamping the mirrored x at zero piles every
 /// overflowing column onto the first instead.

@@ -7,7 +7,7 @@ pub(super) fn pack_wrap_lines(
     children: &[StableNodeId],
     sizes: &[Size],
     direction: FlexDirection,
-    content_main: f32,
+    content: Size,
     gap: f32,
     grid_tracks: Option<&[GridTrack]>,
     viewport: LayoutViewport,
@@ -15,6 +15,10 @@ pub(super) fn pack_wrap_lines(
     nodes: &LayoutInputMap<'_>,
     break_on_blocks: bool,
 ) -> Vec<Vec<usize>> {
+    // Lines fill the main axis; percentage margins resolve against the
+    // containing block's inline size, which is the main axis only for a row
+    // in `horizontal-tb` (CSS Box Model §5).
+    let content_main = main_extent(content, direction);
     let mut lines = Vec::new();
     let mut current = Vec::new();
     let mut line_main = 0.0f32;
@@ -28,7 +32,7 @@ pub(super) fn pack_wrap_lines(
             line_main = 0.0;
         }
         let margin = style.resolved_margin_against_fonts(
-            Some(content_main),
+            Some(style.edge_percent_base(content.width, content.height)),
             fonts_of(style.as_ref(), parent_font_px),
         );
         let main = packing_main_size(
@@ -36,6 +40,7 @@ pub(super) fn pack_wrap_lines(
             sizes[index],
             direction,
             content_main,
+            style.edge_percent_base(content.width, content.height),
             viewport,
             parent_font_px,
             grid_tracks.and_then(|tracks| tracks.get(index).copied()),
@@ -85,6 +90,8 @@ pub(super) fn ifc_item_outer(
         style,
         size,
         direction,
+        content_width,
+        // A horizontal line box: its width is the inline size.
         content_width,
         viewport,
         parent_font_px,
@@ -290,7 +297,7 @@ pub(super) fn wrap_intrinsic_size(
         children,
         sizes,
         direction,
-        content_main,
+        available,
         gap,
         grid_tracks,
         viewport,
@@ -319,6 +326,7 @@ pub(super) fn wrap_intrinsic_size(
                 sizes[index],
                 direction,
                 content_main,
+                style.edge_percent_base(available.width, available.height),
                 viewport,
                 parent_font_px,
                 grid_tracks.and_then(|tracks| tracks.get(index).copied()),

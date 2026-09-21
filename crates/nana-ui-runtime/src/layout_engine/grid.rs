@@ -969,7 +969,7 @@ pub(super) fn grid_intrinsic_size(
     tracks: &[f32],
     child_sizes: &[Size],
     children: &[StableNodeId],
-    content_width: f32,
+    content: Size,
     gap: f32,
     parent_font_px: f32,
     nodes: &LayoutInputMap<'_>,
@@ -982,7 +982,7 @@ pub(super) fn grid_intrinsic_size(
             .style(*child)
             .map(|style| {
                 style.resolved_margin_against_fonts(
-                    Some(content_width),
+                    Some(style.edge_percent_base(content.width, content.height)),
                     fonts_of(style.as_ref(), parent_font_px),
                 )
             })

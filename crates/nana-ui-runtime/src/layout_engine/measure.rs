@@ -390,7 +390,7 @@ pub(super) fn intrinsic_size_scoped(
             &resolved,
             &child_sizes,
             &flow_children,
-            content_available.width,
+            content_available,
             gap,
             child_font_px,
             nodes,

@@ -1232,6 +1232,9 @@ fn packing_main_size(
     intrinsic: Size,
     direction: FlexDirection,
     content_main: f32,
+    // What percentage paddings resolve against: the containing block's inline
+    // size, which is `content_main` only for a row in `horizontal-tb`.
+    edge_percent_base: f32,
     viewport: LayoutViewport,
     parent_font_px: f32,
     track: Option<GridTrack>,
@@ -1242,7 +1245,7 @@ fn packing_main_size(
     let fonts = fonts_of(style, parent_font_px);
     match resolve_child_main(spec, content_main, viewport, fonts) {
         Some(value) => {
-            content_box_main_border_size(style, direction, Some(content_main), value, fonts)
+            content_box_main_border_size(style, direction, Some(edge_percent_base), value, fonts)
         }
         None if style.grows() || matches!(spec, Some(LengthSpec::Fill)) => content_main,
         None => main_extent(intrinsic, direction),
