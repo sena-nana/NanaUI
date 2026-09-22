@@ -457,6 +457,12 @@ fn text_counters_per_frame(
         end.text_instance_upload_bytes,
         warm.text_instance_upload_bytes,
     );
+    // #224: what reordering cost, apart from what the changed paragraph wrote.
+    delta(
+        "text_index_upload_bytes",
+        end.text_index_upload_bytes,
+        warm.text_index_upload_bytes,
+    );
     delta(
         "text_prepare_nodes_considered",
         end.text_prepare_nodes_considered,

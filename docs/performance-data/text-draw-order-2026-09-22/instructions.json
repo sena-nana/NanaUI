@@ -1,0 +1,342 @@
+{
+ "static": {
+  "head": [
+   5773956516,
+   5640099216,
+   5730450771
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   5707643805,
+   5641206918,
+   5663033109
+  ],
+  "final": [
+   5733863287,
+   5708156229,
+   5712221996
+  ]
+ },
+ "static-unique": {
+  "head": [
+   7619140951,
+   7600101608,
+   7603502988
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   7636662973,
+   7633659355,
+   7632331614
+  ],
+  "final": [
+   7691739780,
+   7683565259,
+   7694016097
+  ]
+ },
+ "color": {
+  "head": [
+   92517666078,
+   92347513962,
+   92460121581
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   92577980450,
+   92773146257,
+   92374218635
+  ],
+  "final": [
+   92542838112,
+   92543676465,
+   92587104649
+  ]
+ },
+ "opacity": {
+  "head": [
+   28036195359,
+   28026008913,
+   28026759891
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   28226575109,
+   28159793732,
+   28240898127
+  ],
+  "final": [
+   28309069163,
+   28213249887,
+   28216219532
+  ]
+ },
+ "transform": {
+  "head": [
+   53992221512,
+   53781730906,
+   53902403219
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 556701.6,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 58.025
+   },
+   "tight": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 92783.6,
+    "text_pipeline_draws": 58.025
+   },
+   "final": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 92783.6,
+    "text_pipeline_draws": 58.025
+   }
+  },
+  "tight": [
+   53631826566,
+   53733204002,
+   54235511388
+  ],
+  "final": [
+   53821988296,
+   54008031916,
+   54069368419
+  ]
+ },
+ "transform-panel": {
+  "head": [
+   18959785197,
+   18886356029,
+   18867376483
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 2.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 2.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 0.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 2.0
+   }
+  },
+  "tight": [
+   18989405992,
+   18934629316,
+   18982751644
+  ],
+  "final": [
+   19018759803,
+   19064444877,
+   19048393588
+  ]
+ },
+ "mutate-1pct": {
+  "head": [
+   6620438567,
+   6616879731,
+   6619769131
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 24000.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 24000.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 24000.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   6662514676,
+   6661576898,
+   6655657877
+  ],
+  "final": [
+   6312711617,
+   6302882822,
+   6317211402
+  ]
+ },
+ "mutate-random-1pct": {
+  "head": [
+   6894502996,
+   6877652348,
+   6871297718
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 1081861.6,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 89.45833333333333
+   },
+   "tight": {
+    "text_instance_upload_bytes": 67171.2,
+    "text_index_upload_bytes": 173696.8,
+    "text_pipeline_draws": 91.1
+   },
+   "final": {
+    "text_instance_upload_bytes": 69515.2,
+    "text_index_upload_bytes": 58204.0,
+    "text_pipeline_draws": 24.816666666666666
+   }
+  },
+  "tight": [
+   6880008000,
+   6906975777,
+   6906492469
+  ],
+  "final": [
+   6719245684,
+   6717168036,
+   6713070488
+  ]
+ },
+ "table": {
+  "head": [
+   6869348568,
+   6869287053,
+   6871442584
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   6904672818,
+   6900062218,
+   6908337069
+  ],
+  "final": [
+   6950119698,
+   6941860373,
+   6956911955
+  ]
+ },
+ "paragraphs": {
+  "head": [
+   2316411102,
+   2312205225,
+   2316188578
+  ],
+  "counts": {
+   "head": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": null,
+    "text_pipeline_draws": 1.0
+   },
+   "tight": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   },
+   "final": {
+    "text_instance_upload_bytes": 192.0,
+    "text_index_upload_bytes": 0.0,
+    "text_pipeline_draws": 1.0
+   }
+  },
+  "tight": [
+   2334567788,
+   2316936204,
+   2321982758
+  ],
+  "final": [
+   2363590821,
+   2360074398,
+   2362062222
+  ]
+ }
+}

@@ -195,6 +195,11 @@ struct Cell {
     flush_ms: Percentiles,
     batch_ms: Percentiles,
     gpu_upload_ms: Percentiles,
+    /// Submit to completion, waited on every frame: the GPU's time for it,
+    /// plus the submit itself.
+    gpu_ms: Percentiles,
+    /// Recording the passes: where each extra draw's CPU cost lands.
+    encode_ms: Percentiles,
 }
 
 #[derive(Serialize)]
@@ -436,6 +441,8 @@ fn run(
     let mut batch = Vec::new();
     let mut flush = Vec::new();
     let mut upload = Vec::new();
+    let mut gpu = Vec::new();
+    let mut encode = Vec::new();
     let mut warm = None;
     let mut warm_glyph = None;
     let mut warm_shape = None;
@@ -458,8 +465,10 @@ fn run(
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("nana-text-paint-benchmark"),
         });
+
         let mut frame_batch = std::time::Duration::ZERO;
         let mut frame_upload = std::time::Duration::ZERO;
+        let mut frame_encode = std::time::Duration::ZERO;
         for (window, view) in std::iter::once(&target).chain(second.as_ref()).enumerate() {
             // One window paints the way a single-window host does, so these
             // cells stay comparable with every earlier report.
@@ -487,8 +496,17 @@ fn run(
             let timings = painter.last_gpu_timings().expect("timed frame");
             frame_batch += timings.batch;
             frame_upload += timings.gpu_upload;
+            frame_encode += timings.encode;
         }
+        let submitted = std::time::Instant::now();
         queue.submit([encoder.finish()]);
+        // Waited on every frame so this is the GPU's own time for the frame,
+        // not a queue that is running behind. What a vertex stage change costs
+        // shows up here and nowhere else in this report.
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the frame completes");
+        let gpu_elapsed = submitted.elapsed();
         if frame + 1 == WARMUP_FRAMES {
             warm = Some(painter.text_glyph_counters());
             warm_glyph = Some(painter.text_glyph_counters().text_gpu_entry_glyphs);
@@ -498,6 +516,8 @@ fn run(
             flush.push(flush_elapsed.as_secs_f64() * 1000.0);
             batch.push(frame_batch.as_secs_f64() * 1000.0);
             upload.push(frame_upload.as_secs_f64() * 1000.0);
+            gpu.push(gpu_elapsed.as_secs_f64() * 1000.0);
+            encode.push(frame_encode.as_secs_f64() * 1000.0);
         }
     }
     let warm = warm.expect("warm counters");
@@ -539,6 +559,19 @@ fn run(
         "text_instance_upload_bytes",
         end.text_instance_upload_bytes,
         warm.text_instance_upload_bytes,
+    );
+    // #224: the draw-order index table. Separate from the instances, so a
+    // paragraph that moved in the arena shows up as its own bytes there and
+    // whatever reordering it caused shows up here.
+    delta(
+        "text_index_upload_bytes",
+        end.text_index_upload_bytes,
+        warm.text_index_upload_bytes,
+    );
+    delta(
+        "text_pipeline_draws",
+        end.text_pipeline_draws,
+        warm.text_pipeline_draws,
     );
     delta(
         "text_presentation_upload_bytes",
@@ -626,6 +659,8 @@ fn run(
         flush_ms: Percentiles::of(flush),
         batch_ms: Percentiles::of(batch),
         gpu_upload_ms: Percentiles::of(upload),
+        gpu_ms: Percentiles::of(gpu),
+        encode_ms: Percentiles::of(encode),
     }
 }
 
@@ -856,7 +891,7 @@ fn color_target(device: &wgpu::Device, physical: [u32; 2]) -> wgpu::TextureView 
 
 fn print_table(cells: &[Cell]) {
     println!(
-        "{:<18} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>10} {:>10} {:>10}",
+        "{:<18} {:>7} {:>6} {:>8} {:>10} {:>10} {:>12} {:>10} {:>7} {:>10} {:>10} {:>10}",
         "workload",
         "labels",
         "Hz",
@@ -864,6 +899,8 @@ fn print_table(cells: &[Cell]) {
         "resolve/f",
         "rebuild/f",
         "inst B/f",
+        "index B/f",
+        "draws/f",
         "reshape/f",
         "flush p50",
         "batch p50"
@@ -871,7 +908,7 @@ fn print_table(cells: &[Cell]) {
     for cell in cells {
         let get = |name: &str| cell.counters.get(name).copied().unwrap_or_default();
         println!(
-            "{:<18} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>9.3}m {:>9.3}m",
+            "{:<18} {:>7} {:>6} {:>8} {:>10.1} {:>10.1} {:>12.0} {:>10.0} {:>7.1} {:>10.0} {:>9.3}m {:>9.3}m",
             cell.workload,
             cell.labels,
             cell.frames,
@@ -879,6 +916,8 @@ fn print_table(cells: &[Cell]) {
             get("glyph_resolve_requests"),
             get("text_instance_rebuilds"),
             get("text_instance_upload_bytes"),
+            get("text_index_upload_bytes"),
+            get("text_pipeline_draws"),
             get("shape_cache_misses"),
             cell.flush_ms.p50,
             cell.batch_ms.p50,

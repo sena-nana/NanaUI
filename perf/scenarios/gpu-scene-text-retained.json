@@ -88,6 +88,14 @@
       "note": "Only the changed paragraph's block may reach the GPU. A thousand labels is about 120 KiB, so this fails closed on a whole-arena rewrite."
     },
     {
+      "name": "text_retained_steady_keeps_the_draw_order",
+      "path": "text_counters.text_index_upload_bytes",
+      "op": "lte",
+      "value": 4096,
+      "status": "required",
+      "note": "Issue #224: the draw-order index table. One label changing text rewrites at most its own range (4 B a slot); a thousand labels' table is about 20 KiB, so this fails closed on rewriting it every frame. Missing stays not-evaluable."
+    },
+    {
       "name": "text_retained_steady_answers_nodes_from_entries",
       "path": "text_counters.text_prepare_nodes_skipped",
       "op": "gte",

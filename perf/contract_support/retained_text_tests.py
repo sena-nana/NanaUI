@@ -52,6 +52,7 @@ def _quiet_text(scenario_id: str = TICKER_ID) -> dict[str, Any]:
             "glyph_upload_bytes": 112.0,
             "text_instance_rebuilds": 1.0,
             "text_instance_upload_bytes": 240.0,
+            "text_index_upload_bytes": 0.0,
             "text_prepare_nodes_considered": 1000.0,
             "text_prepare_nodes_skipped": 999.0,
             "text_gpu_entries_active": 1000.0,
@@ -234,6 +235,7 @@ def _self_test_retained_text(root: Path) -> list[str]:
             for counter in (
                 "text_instance_rebuilds",
                 "text_instance_upload_bytes",
+                "text_index_upload_bytes",
                 "glyph_rasterized",
                 "glyph_upload_bytes",
                 "text_prepare_nodes_skipped",

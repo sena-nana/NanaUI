@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "runner": "nana",
+  "status": "ok",
+  "scenario_id": "gpu-scene-text-constraint-resize",
+  "timing_gate_enforceable": false,
+  "relative_gate_enforceable": false,
+  "machine": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "hostname": "zt-admindeMac-mini.local",
+    "fixed_benchmark_machine": false,
+    "note": "This is the host that invoked the runner. GitHub `ubuntu-latest` / `macos-latest` weekly cron is not a named fixed benchmark machine (Issue #8 §8.2 / #12)."
+  },
+  "scenario": {
+    "schema_version": 1,
+    "id": "gpu-scene-text-constraint-resize",
+    "kind": "GpuScene",
+    "params": {
+      "composition": "UiOnly",
+      "viewport": [
+        1280,
+        800
+      ],
+      "host_texture": {
+        "slot": "content",
+        "width": 320,
+        "height": 180
+      },
+      "ui_nodes": [
+        "list",
+        "text",
+        "gpu-texture-view"
+      ],
+      "node_repeat": {
+        "text": 1000
+      },
+      "text_animation": "resize"
+    },
+    "record": [
+      "batch",
+      "gpu_upload",
+      "encode",
+      "submit",
+      "work_counters"
+    ],
+    "invariants": [
+      {
+        "name": "text_resize_shapes_nothing",
+        "path": "text_counters.text_nodes_shaped",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "No label reached the shaper: what they say and how they are styled did not change, only how wide they are."
+      },
+      {
+        "name": "text_resize_reshapes_no_layout",
+        "path": "text_counters.text_layouts_reshaped",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "Every new layout was built from the shaped runs the label already had."
+      },
+      {
+        "name": "text_resize_reaches_the_labels",
+        "path": "text_counters.text_layout_lookups",
+        "op": "gte",
+        "value": 900,
+        "status": "required",
+        "note": "Labels that needed a layout other than the one they held: the width change really reached the text. A frame that looked nothing up would pass every other row here by construction. The layouts themselves may come from the engine's layout cache (two widths alternate) or be relaid out from shaped runs; either way nothing is shaped."
+      },
+      {
+        "name": "text_resize_paint_lays_out_nothing",
+        "path": "text_counters.paint_shape_cache_misses",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "The painter drew the layouts the Runtime measured instead of laying the paragraphs out again."
+      },
+      {
+        "name": "text_resize_rasterizes_nothing",
+        "path": "text_counters.glyph_rasterized",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "Both widths were drawn during warm-up, so every glyph position the resize alternates between is already in the atlas."
+      },
+      {
+        "name": "text_resize_uploads_no_atlas_region",
+        "path": "text_counters.glyph_upload_bytes",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "No atlas region reached the GPU."
+      }
+    ],
+    "notes": "Issue #99 constraint-only gate. Every one of a thousand wrapping labels alternates between two widths every frame and nothing else. A width change gives each label a new layout, from the engine's layout cache or from the runs it already shaped: no shaping, no painter-side layout, no raster, no atlas upload. Instances are rebuilt (the glyphs moved) and are not gated. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+  },
+  "equivalence": "same-scenario",
+  "source_binary": "nana-gpu-scene-benchmark",
+  "source_report": "/Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json",
+  "mapping_notes": [
+    "Loaded perf/scenarios/gpu-scene-text-constraint-resize.json and materialized its UiOnly params (viewport, host_texture slot, ui_nodes, node_repeat).",
+    "RuntimeDocument flush + HostTexture content slot + SceneWgpuPainter encode/submit. Not a private hosted-gpu-demo tree. No CPU readback.",
+    "gpu_upload_bytes counts observed queue.write_buffer on that path. NanaRenderer::text atlas uploads are reported separately as glyph_upload_bytes, not estimated into this one.",
+    "Batch / GpuUpload / Encode / Submit are FrameProfiler status=ran on the same encode/submit. Runtime-only drains keep those stages unsupported and omit GPU keys.",
+    "Adapter: Apple M4 (Metal).",
+    "text_counters are per sampled frame: what one frame asked the retained-text path to resolve, rebuild and upload again."
+  ],
+  "metrics": {
+    "batch_ms": {
+      "p50": 0.37833300000000003,
+      "p95": 0.415334,
+      "p99": 0.448541,
+      "max": 0.448541
+    },
+    "gpu_upload_ms": {
+      "p50": 0.055375,
+      "p95": 0.06325,
+      "p99": 0.06679199999999999,
+      "max": 0.06679199999999999
+    },
+    "encode_ms": {
+      "p50": 0.0053750000000000004,
+      "p95": 0.006125,
+      "p99": 0.006167000000000001,
+      "max": 0.006167000000000001
+    },
+    "submit_ms": {
+      "p50": 0.10058399999999999,
+      "p95": 0.116916,
+      "p99": 0.12575,
+      "max": 0.12575
+    }
+  },
+  "work_counters": {
+    "batch_rebuilds": 0,
+    "draw_batches": 2,
+    "draw_calls": 2,
+    "gpu_upload_bytes": 199696,
+    "gpu_buffer_reallocations": 0
+  },
+  "text_counters": {
+    "glyph_rasterized": 0.0,
+    "glyph_resolve_requests": 5859.0,
+    "glyph_upload_bytes": 0.0,
+    "paint_shape_cache_misses": 0.0,
+    "text_constraint_only_relayouts": 0.0,
+    "text_gpu_entries_active": 442.0,
+    "text_index_upload_bytes": 0.0,
+    "text_instance_rebuilds": 378.0,
+    "text_instance_upload_bytes": 181440.0,
+    "text_layout_lookups": 1000.0,
+    "text_layouts_created": 0.0,
+    "text_layouts_reshaped": 0.0,
+    "text_nodes_shaped": 0.0,
+    "text_prepare_nodes_considered": 1000.0,
+    "text_prepare_nodes_culled": 590.0,
+    "text_prepare_nodes_skipped": 32.0
+  },
+  "invariants": [
+    {
+      "name": "text_resize_shapes_nothing",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_resize_reshapes_no_layout",
+      "path": "text_counters.text_layouts_reshaped",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_resize_reaches_the_labels",
+      "path": "text_counters.text_layout_lookups",
+      "op": "gte",
+      "value": 900,
+      "measured": 1000.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_resize_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_resize_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_resize_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    }
+  ],
+  "frame_stages": {
+    "Batch": {
+      "status": "ran"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Submit": {
+      "status": "ran"
+    }
+  },
+  "command": [
+    "cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --output /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json --scenario /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/perf/scenarios/gpu-scene-text-constraint-resize.json"
+  ]
+}

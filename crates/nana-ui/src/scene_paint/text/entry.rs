@@ -120,6 +120,17 @@ pub(super) struct TextGpuEntry {
     pub arena_offset: u32,
     pub arena_capacity: u32,
     pub arena_generation: Option<u64>,
+    /// The same three for the entry's range of the draw-order index table:
+    /// one `u32` per slot of the block, naming that slot's place in the arena.
+    /// A draw spans index ranges, not arena ranges, so where the block sits in
+    /// the arena no longer decides what it batches with.
+    pub order_offset: u32,
+    pub order_capacity: u32,
+    pub order_generation: Option<u64>,
+    /// The index range no longer names the block: the block moved or changed
+    /// size, or the range itself was shifted along. Rewritten when the entry
+    /// is next drawn, even if the range stays where it is.
+    pub indices_stale: bool,
     /// The run row this entry's instances name. Allocated once and kept for
     /// the entry's whole life, so a frame that only changes which paragraphs
     /// are on screen does not renumber the ones that stayed — renumbering
@@ -174,30 +185,48 @@ impl TextGpuEntry {
 /// owns (see [`EntryStore::begin_build`]), so the only bytes that move are
 /// that paragraph's. The classes — four per doubling — are what let a block
 /// one paragraph gave back be taken by the next one of about that length:
-/// both free lists are keyed by exact capacity, and without classes a list
-/// whose labels vary in length would only ever grow.
+/// the store's free lists are keyed by exact capacity, and without classes a
+/// list whose labels vary in length would only ever grow.
 pub(super) fn capacity_for(glyphs: u32) -> u32 {
     let need = glyphs.saturating_add((glyphs / 8).max(4));
     if need <= 8 {
         return 8;
     }
-    let step = (1u32 << (31 - need.leading_zeros())) / 4;
-    need.div_ceil(step).saturating_mul(step)
+    round_to_class(need, 4)
+}
+
+/// `n` rounded up to one of `per_doubling` sizes between each power of two
+/// and the next.
+fn round_to_class(n: u32, per_doubling: u32) -> u32 {
+    let step = (1u32 << (31 - n.leading_zeros())) / per_doubling;
+    n.div_ceil(step).saturating_mul(step)
 }
 
 /// Whether a block of `capacity` slots may keep holding `glyphs`.
 ///
 /// Growing within it is the point of the slack. Shrinking only happens when
 /// the block is more than twice what the paragraph needs *and* that is a real
-/// amount of memory. A block that moves costs more than its own bytes: it
-/// lands away from its neighbours in the arena, so the draw it belonged to
-/// splits, and enough splits repack — rewrite — every block there is. A cell
-/// whose text keeps changing length therefore settles at the largest class it
-/// has needed rather than moving on every change; a paragraph that lost most
-/// of a page of text still gives the space back.
+/// amount of memory. A block that changes class costs more than its own
+/// bytes: its index range changes length too, so it lands away from its
+/// neighbours in the draw order, the draw it belonged to splits, and enough
+/// splits rewrite the whole index table. A cell whose text keeps changing
+/// length therefore settles at the largest class it has needed rather than
+/// moving on every change; a paragraph that lost most of a page of text still
+/// gives the space back.
 fn block_fits(capacity: u32, glyphs: u32) -> bool {
     glyphs <= capacity
         && (capacity <= capacity_for(glyphs).saturating_mul(2) || capacity - glyphs <= SHRINK_SLACK)
+}
+
+/// What an index slot holds when no instance is behind it: past a range's
+/// block, or in a gap left for ranges to grow into.
+pub(super) const VACANT_INDEX: u32 = u32::MAX;
+
+/// Whether an index range of `held` slots may keep serving a block of
+/// `capacity`: it holds the block, and not so much more that the spare quads
+/// cost more than moving would.
+pub(super) fn range_keeps(held: u32, capacity: u32) -> bool {
+    held >= capacity && held - capacity <= capacity.max(SHRINK_SLACK)
 }
 
 /// Vacant slots a block may carry before shrinking is worth moving it: a
@@ -388,6 +417,10 @@ impl EntryStore {
                     arena_offset: 0,
                     arena_capacity: 0,
                     arena_generation: None,
+                    order_offset: 0,
+                    order_capacity: 0,
+                    order_generation: None,
+                    indices_stale: false,
                     slot: None,
                     run: u32::MAX,
                     last_used: 0,
@@ -455,14 +488,22 @@ impl EntryStore {
         }
     }
 
+    /// Void every index range. What a repack of the draw order starts with.
+    pub(super) fn invalidate_order(&mut self) {
+        for entry in self.entries.iter_mut().flatten() {
+            entry.order_generation = None;
+        }
+    }
+
     /// Drop every entry last used before `before`, giving back its glyphs, its
-    /// run row and its arena block.
+    /// run row, its arena block and its index range.
     pub(super) fn retire(
         &mut self,
         before: u64,
         mut release: impl FnMut(GlyphAtlasEntryId),
         mut release_slot: impl FnMut(u32),
         mut release_arena: impl FnMut(u64, u32, u32),
+        mut release_order: impl FnMut(u64, u32, u32),
     ) {
         let stale = self
             .index
@@ -489,6 +530,9 @@ impl EntryStore {
             }
             if let Some(generation) = entry.arena_generation {
                 release_arena(generation, entry.arena_offset, entry.arena_capacity);
+            }
+            if let Some(generation) = entry.order_generation {
+                release_order(generation, entry.order_offset, entry.order_capacity);
             }
             self.free
                 .entry(entry.capacity)
@@ -580,10 +624,11 @@ pub(super) struct EntryCounters {
     pub glyphs: u64,
 }
 
-/// A draw command's instance spans, assembled from the entries under it.
+/// A draw command's spans of the index table, assembled from the entries under
+/// it.
 ///
-/// Segments coalesce across entries: two labels whose blocks ended up adjacent
-/// and whose glyphs came from the same pages are one draw, however different
+/// Segments coalesce across entries: two labels whose index ranges ended up
+/// adjacent and whose glyphs came from the same pages are one draw, however different
 /// their colors, positions or transforms are — those live in the run rows the
 /// instances name, not in the batch key.
 pub(super) struct SegmentBuilder {
@@ -599,11 +644,12 @@ impl SegmentBuilder {
         }
     }
 
-    /// `adjacent` says the block this segment comes from starts exactly where
-    /// the previous entry's block ended. Only then may a draw span the gap:
-    /// what lies between two adjacent blocks is the slack their size classes
-    /// left, which covers nothing, while what lies between two blocks the
-    /// arena placed apart is other paragraphs' glyphs.
+    /// `base` is where the entry's range of the index table starts, and
+    /// `adjacent` says it starts exactly where the previous entry's range
+    /// ended. Only then may a draw span the gap: what lies between two
+    /// adjacent ranges is the slack their size classes left, whose indices
+    /// name vacant instances that cover nothing, while what lies between two
+    /// ranges the order placed apart is other paragraphs' glyphs.
     pub(super) fn push(
         &mut self,
         out: &mut Vec<DrawSegment>,
@@ -651,54 +697,78 @@ impl SegmentBuilder {
     }
 }
 
-/// Where each entry's block sits in the target's instance buffer.
+/// A slot allocator whose blocks keep their offset for as long as they live.
 ///
-/// Draw order and storage order are not the same thing, and this is where they
-/// are reconciled. A block keeps its offset for as long as it lives, so a
-/// paragraph that changes costs its own bytes and nobody else's. Neighbouring
-/// blocks that happen to be adjacent draw as one command; a block that had to
-/// be placed elsewhere costs that command one more draw, and when enough of
-/// them have accumulated the arena is repacked in draw order and the frame
-/// after it is one draw again.
+/// A target holds two of them, and together they are what lets draw order and
+/// storage order be different things:
+///
+/// - the **arena** says where each entry's instances sit in the instance
+///   buffer. A paragraph that changes costs its own bytes and nobody else's,
+///   even when it outgrows its block: it is simply placed somewhere else.
+///   Space given back merges with the space beside it, so the holes growing
+///   paragraphs leave are taken by the next blocks instead of pushing the
+///   arena towards a repack.
+/// - the **order** says where each entry's range of the index table sits. The
+///   table is what a draw spans — the vertex stage reads an arena slot from
+///   it and the instance from there — so two entries batch when their
+///   *ranges* are adjacent, wherever their instances are. A range that had to
+///   be placed elsewhere costs its command one more draw, and when enough of
+///   them have accumulated the order is repacked: the index table is written
+///   again in draw order, four bytes a slot, and not one instance moves.
+///   Where the text under it keeps growing, the repack leaves clean gaps (see
+///   [`Extents`]) that ranges grow into instead of moving.
 ///
 /// The generation is what makes that safe: a repack or a buffer replacement
 /// bumps it, and a block placed under an older one is written again rather
 /// than left naming a range that now holds another paragraph.
 #[derive(Default)]
-pub(super) struct InstanceArena {
+pub(super) struct SlotArena {
     /// Slots handed out, including the holes between them.
     len: u32,
     /// Slots the GPU buffer holds.
     capacity: u32,
     /// Slots inside live blocks.
     live: u32,
-    /// Free blocks by their exact capacity, so the arena never has to coalesce.
-    free: HashMap<u32, Vec<u32>>,
+    /// Free space, merged with its neighbours as it is given back.
+    free: Extents,
     /// Commands that had to open a second draw because two of their entries
-    /// were not adjacent, last frame.
+    /// were not adjacent, last frame. Only the order counts them.
     breaks: u32,
     generation: u64,
 }
 
-/// Extra draws fragmentation may cost before the arena is repacked.
+/// Extra draws fragmentation may cost before the order is repacked.
 ///
-/// A repack rewrites every block, so what it costs grows with the text on
+/// A repack rewrites every index, so what it costs grows with the text on
 /// screen; an extra draw costs the same few microseconds however much text
 /// there is. A shell with a few hundred glyphs is therefore repacked as soon
 /// as it fragments at all, and one with fifty thousand tolerates a few dozen
-/// extra draws rather than move a megabyte every frame.
+/// extra draws rather than rewrite the table every frame.
 fn break_budget(total: u32) -> u32 {
     BREAK_FLOOR.max(total / SLOTS_PER_BREAK)
 }
 
 const BREAK_FLOOR: u32 = 4;
-/// Instance slots whose rewrite costs about what one extra draw does.
+/// Index slots whose rewrite is worth one draw fewer. Four kilobytes: when an
+/// order repack rewrote instances too this was a sixth of it and still the
+/// balance point, so the index table on its own sits well inside it.
 const SLOTS_PER_BREAK: u32 = 1024;
 
-/// Instance slots a fresh target's arena starts at.
+/// Slots a fresh target's arena starts at.
 const MIN_ARENA: u32 = 512;
 
-impl InstanceArena {
+/// `slots` rounded up to one of eight sizes per doubling, so a buffer that
+/// tracks a slowly growing set is replaced a few times per doubling rather
+/// than on every repack, and never holds more than an eighth it was not
+/// asked for.
+fn size_class(slots: u32) -> u32 {
+    if slots <= 8 {
+        return slots;
+    }
+    round_to_class(slots, 8)
+}
+
+impl SlotArena {
     pub(super) fn generation(&self) -> u64 {
         self.generation
     }
@@ -717,14 +787,15 @@ impl InstanceArena {
         self.breaks = breaks;
     }
 
-    /// Whether this frame should lay every block out again in draw order.
+    /// Whether this frame should lay every block out again.
     ///
     /// `fresh` is what the frame is about to ask for that it does not already
     /// hold, so a repack happens *instead of* running out of room rather than
     /// after it.
-    pub(super) fn should_repack(&self, total: u32, fresh: u32) -> bool {
+    pub(super) fn should_repack(&self, total: u32, fresh: &[u32]) -> bool {
+        let wanted = fresh.iter().fold(0u32, |sum, len| sum.saturating_add(*len));
         self.breaks > break_budget(total)
-            || self.len.saturating_add(fresh) > self.capacity
+            || (self.len.saturating_add(wanted) > self.capacity && !self.fits(fresh))
             || total > self.capacity
             // Half the arena is holes left by paragraphs that changed size or
             // went away. Nothing is wrong, but the buffer is twice the size it
@@ -733,37 +804,123 @@ impl InstanceArena {
             || (self.len > 64 && self.live * 2 < self.len)
     }
 
+    /// Whether `fresh` can be placed without growing past the buffer, taking
+    /// holes the way [`Self::alloc`] would. Blocks the walk gives back first
+    /// are not counted, so the answer errs towards a repack.
+    fn fits(&self, fresh: &[u32]) -> bool {
+        // The same best fit `alloc` makes, over the extents as they are plus
+        // what this simulation has taken or split so far — never a copy of
+        // the maps, which hold thousands of extents once holes are reused.
+        let mut taken: std::collections::HashSet<(u32, u32)> = std::collections::HashSet::new();
+        let mut split: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+        let mut len = self.len;
+        for &want in fresh {
+            let base = self
+                .free
+                .by_size
+                .range((want, 0)..)
+                .find(|extent| !taken.contains(extent))
+                .copied();
+            let rest = split.range((want, 0)..).next().copied();
+            let pick = [
+                base.map(|extent| (extent, false)),
+                rest.map(|extent| (extent, true)),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            match pick {
+                Some(((size, offset), from_split)) => {
+                    if from_split {
+                        split.remove(&(size, offset));
+                    } else {
+                        taken.insert((size, offset));
+                    }
+                    if size > want {
+                        split.insert((size - want, offset + want));
+                    }
+                }
+                None => {
+                    len = len.saturating_add(want);
+                    if len > self.capacity {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Leave `len` slots of room after everything placed so far: a gap the
+    /// caller fills with [`VACANT_INDEX`], so a draw may run across it and a
+    /// range just before it can grow into it. `None` when the buffer has no
+    /// room for it.
+    pub(super) fn reserve_gap(&mut self, len: u32) -> Option<u32> {
+        if self.len.saturating_add(len) > self.capacity {
+            return None;
+        }
+        let offset = self.len;
+        self.len += len;
+        self.free.insert(offset, len, true);
+        Some(offset)
+    }
+
+    /// Let a range grow by `len` into the clean extent that starts at
+    /// `offset`, right after it; [`Self::free_at`] said it is that big.
+    pub(super) fn grow_into(&mut self, offset: u32, len: u32) {
+        let took = self.free.take_front(offset, len);
+        debug_assert!(took, "grew into a gap that was not there");
+        self.live += len;
+    }
+
+    /// The free extent starting exactly at `offset`, and whether it is clean.
+    pub(super) fn free_at(&self, offset: u32) -> Option<(u32, bool)> {
+        self.free.at(offset)
+    }
+
+    /// Whether `start..end` is exactly one clean extent, which a draw may
+    /// span.
+    pub(super) fn clean_between(&self, start: u32, end: u32) -> bool {
+        end > start && self.free.at(start) == Some((end - start, true))
+    }
+
+    #[cfg(test)]
+    pub(super) fn clean_at(&self, position: u32) -> bool {
+        self.free.clean_at(position)
+    }
+
     /// Give back everything, keeping the buffer. For the case where no entry
     /// means what it meant and they are all dropped at once.
     pub(super) fn reset(&mut self) {
         self.len = 0;
         self.live = 0;
-        self.free.clear();
+        self.free = Extents::default();
         self.breaks = 0;
         self.generation = self.generation.wrapping_add(1);
     }
 
     /// Start a repack: every offset handed out before this is void.
+    ///
+    /// The buffer is sized so that a third of it is free afterwards. A repack
+    /// that only just fits what the frame holds is followed by another as
+    /// soon as a few blocks move, and each one rewrites everything; with a
+    /// third free, the next one waits until as many slots have moved as half
+    /// of what is live, so what repacking costs per frame is about what moved.
     pub(super) fn repack(&mut self, total: u32) {
-        self.len = 0;
-        self.live = 0;
-        self.free.clear();
-        self.breaks = 0;
-        self.generation = self.generation.wrapping_add(1);
-        if total > self.capacity {
-            self.capacity = total.next_power_of_two().max(MIN_ARENA);
-        } else if total.saturating_mul(4) < self.capacity {
-            // Every block is about to be written again anyway, so this is
-            // the one moment giving memory back costs nothing extra. A
-            // quarter, not a half, so a set that hovers around a power of two
-            // does not replace the buffer on every repack.
-            self.capacity = total.saturating_mul(2).next_power_of_two().max(MIN_ARENA);
+        self.reset();
+        let roomy = total.saturating_add(total / 2);
+        if roomy > self.capacity || total.saturating_mul(4) < self.capacity {
+            // Shrinking happens here too: every block is about to be written
+            // again anyway, so this is the one moment giving memory back
+            // costs nothing extra. A quarter, not a half, so a set that
+            // hovers near a size does not replace the buffer on every repack.
+            self.capacity = size_class(roomy).max(MIN_ARENA);
         }
     }
 
     pub(super) fn alloc(&mut self, capacity: u32) -> u32 {
         self.live += capacity;
-        if let Some(offset) = self.free.get_mut(&capacity).and_then(Vec::pop) {
+        if let Some(offset) = self.free.take(capacity) {
             return offset;
         }
         let offset = self.len;
@@ -772,15 +929,16 @@ impl InstanceArena {
         // what the walk is about to allocate, and a repack is what makes room.
         // Growing here instead would replace the buffer after the frame had
         // already decided which blocks to write, and the ones it skipped would
-        // not be on the new one.
+        // not be on the new one. So the capacity only moves when the block
+        // really does not fit — never to round up a buffer the repack sized
+        // off a power of two.
         debug_assert!(
             self.len <= self.capacity,
             "the arena grew past the buffer the repack sized"
         );
-        self.capacity = self
-            .capacity
-            .max(self.len.next_power_of_two())
-            .max(MIN_ARENA);
+        if self.len > self.capacity {
+            self.capacity = size_class(self.len).max(MIN_ARENA);
+        }
         offset
     }
 
@@ -791,7 +949,106 @@ impl InstanceArena {
             return;
         }
         self.live = self.live.saturating_sub(capacity);
-        self.free.entry(capacity).or_default().push(offset);
+        self.free.give(offset, capacity, false);
+        // Free space that reaches the end is not a hole, it is room.
+        if let Some(end) = self.free.tail(self.len) {
+            self.len = end;
+        }
+    }
+}
+
+/// Free space in a [`SlotArena`]: extents that merge when they touch.
+///
+/// An extent is *clean* when every index slot in it is known to hold
+/// [`VACANT_INDEX`]: a draw may run straight across it, because the vertex
+/// stage culls those slots without reading an instance. Only the order ever
+/// makes clean extents; everything the arena gives back is not.
+#[derive(Default)]
+struct Extents {
+    by_offset: std::collections::BTreeMap<u32, (u32, bool)>,
+    by_size: std::collections::BTreeSet<(u32, u32)>,
+}
+
+impl Extents {
+    /// Clean extents are kept out of the size index: they are room for the
+    /// ranges beside them to grow into, not space for new ranges.
+    fn insert(&mut self, offset: u32, len: u32, clean: bool) {
+        self.by_offset.insert(offset, (len, clean));
+        if !clean {
+            self.by_size.insert((len, offset));
+        }
+    }
+
+    fn remove(&mut self, offset: u32) -> Option<(u32, bool)> {
+        let (len, clean) = self.by_offset.remove(&offset)?;
+        if !clean {
+            self.by_size.remove(&(len, offset));
+        }
+        Some((len, clean))
+    }
+
+    fn give(&mut self, mut offset: u32, mut len: u32, mut clean: bool) {
+        if let Some((&before, &(before_len, _))) = self.by_offset.range(..offset).next_back()
+            && before + before_len == offset
+        {
+            let (_, before_clean) = self.remove(before).expect("just found");
+            offset = before;
+            len += before_len;
+            clean &= before_clean;
+        }
+        if let Some((after_len, after_clean)) = self.remove(offset + len) {
+            len += after_len;
+            clean &= after_clean;
+        }
+        self.insert(offset, len, clean);
+    }
+
+    /// The smallest extent that holds `len`, split so the rest stays free.
+    fn take(&mut self, len: u32) -> Option<u32> {
+        let &(size, offset) = self.by_size.range((len, 0)..).next()?;
+        let (_, clean) = self.remove(offset).expect("indexed");
+        if size > len {
+            self.insert(offset + len, size - len, clean);
+        }
+        Some(offset)
+    }
+
+    /// Take the first `len` slots of the clean extent that starts at `offset`.
+    fn take_front(&mut self, offset: u32, len: u32) -> bool {
+        match self.by_offset.get(&offset) {
+            Some(&(size, true)) if size >= len => {
+                self.remove(offset);
+                if size > len {
+                    self.insert(offset + len, size - len, true);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn at(&self, offset: u32) -> Option<(u32, bool)> {
+        self.by_offset.get(&offset).copied()
+    }
+
+    /// Whether `position` lies in a clean extent.
+    #[cfg(test)]
+    fn clean_at(&self, position: u32) -> bool {
+        self.by_offset
+            .range(..=position)
+            .next_back()
+            .is_some_and(|(&offset, &(len, clean))| clean && position < offset + len)
+    }
+
+    /// If free space runs up to `end`, where it starts; that much is given
+    /// back to the end of the arena rather than kept as a hole.
+    fn tail(&mut self, end: u32) -> Option<u32> {
+        let (&offset, &(len, _)) = self.by_offset.range(..end).next_back()?;
+        if offset + len != end {
+            return None;
+        }
+        self.remove(offset);
+        Some(offset)
     }
 }
 
@@ -956,7 +1213,7 @@ mod tests {
             store.get_mut(id).expect("live").last_used = if node % 10 == 0 { 9 } else { 1 };
         }
         let before = store.instances.len();
-        store.retire(5, |_| {}, |_| {}, |_, _, _| {});
+        store.retire(5, |_| {}, |_| {}, |_, _, _| {}, |_, _, _| {});
         assert!(
             store.instances.len() * 4 < before,
             "nine in ten retired, so the slab must shrink: {before} -> {}",
@@ -977,8 +1234,110 @@ mod tests {
     }
 
     #[test]
+    fn space_two_neighbours_give_back_holds_a_block_of_both_their_sizes() {
+        let mut arena = SlotArena::default();
+        arena.repack(64);
+        let [a, b, _c] = [arena.alloc(8), arena.alloc(8), arena.alloc(8)];
+        let end = arena.len();
+        arena.release(arena.generation(), a, 8);
+        arena.release(arena.generation(), b, 8);
+        assert_eq!(
+            arena.alloc(16),
+            a,
+            "two holes side by side are one hole: a block of sixteen fits \
+             where two of eight were, rather than going to the end"
+        );
+        assert_eq!(arena.len(), end);
+    }
+
+    #[test]
+    fn space_given_back_at_the_end_is_room_not_a_hole() {
+        let mut arena = SlotArena::default();
+        arena.repack(64);
+        let [_a, b, c] = [arena.alloc(8), arena.alloc(8), arena.alloc(8)];
+        arena.release(arena.generation(), c, 8);
+        assert_eq!(
+            arena.len(),
+            c,
+            "the last block given back shortens the arena"
+        );
+        arena.release(arena.generation(), b, 8);
+        assert_eq!(
+            arena.len(),
+            b,
+            "and so does the one before it, once it is last"
+        );
+    }
+
+    #[test]
+    fn a_frame_the_room_check_lets_through_never_outgrows_the_buffer() {
+        // Whatever holes a session leaves, `should_repack` saying no must
+        // mean every block the frame asks for is placed inside the buffer:
+        // growing it mid-walk loses the blocks written before (see
+        // `filling_a_buffer_the_repack_sized_does_not_replace_it`).
+        let mut seed = 0x9e37_79b9_u32;
+        let mut next = move |bound: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % bound
+        };
+        let mut arena = SlotArena::default();
+        arena.repack(4096);
+        let mut live: Vec<(u32, u32)> = Vec::new();
+        for _ in 0..400 {
+            for _ in 0..next(12) {
+                if !live.is_empty() {
+                    let (offset, len) = live.swap_remove(next(live.len() as u32) as usize);
+                    arena.release(arena.generation(), offset, len);
+                }
+            }
+            let fresh = (0..1 + next(12))
+                .map(|_| [8, 10, 12, 14, 16, 20, 24, 40][next(8) as usize])
+                .collect::<Vec<u32>>();
+            let total = live.iter().map(|(_, len)| len).sum::<u32>() + fresh.iter().sum::<u32>();
+            if arena.should_repack(total, &fresh) {
+                // What the frame draws is placed again from nothing.
+                arena.repack(total);
+                live.clear();
+                live.extend(fresh.iter().map(|len| (arena.alloc(*len), *len)));
+                continue;
+            }
+            let capacity = arena.capacity();
+            for len in fresh {
+                let offset = arena.alloc(len);
+                assert!(
+                    offset + len <= capacity && arena.capacity() == capacity,
+                    "the room check let through a block that does not fit"
+                );
+                live.push((offset, len));
+            }
+        }
+    }
+
+    #[test]
+    fn filling_a_buffer_the_repack_sized_does_not_replace_it() {
+        let mut arena = SlotArena::default();
+        arena.repack(376);
+        let sized = arena.capacity();
+        assert!(
+            !sized.is_power_of_two(),
+            "the case that matters: {sized} is a size class, not a power of two"
+        );
+        while arena.len() + 16 <= sized {
+            arena.alloc(16);
+            assert_eq!(
+                arena.capacity(),
+                sized,
+                "a block that fits must not change the capacity: that replaces \
+                 the GPU buffer mid-frame and loses every block written before"
+            );
+        }
+    }
+
+    #[test]
     fn a_repack_after_the_text_went_away_gives_the_buffer_back() {
-        let mut arena = InstanceArena::default();
+        let mut arena = SlotArena::default();
         arena.repack(40_000);
         let peak = arena.capacity();
         assert!(peak >= 40_000);

@@ -52,7 +52,9 @@ use std::sync::Arc;
 
 use self::atlas::{AtlasPageKind, GlyphAtlasLimits, GlyphAtlasManager};
 pub(in crate::scene_paint) use self::entry::EntryKey;
-use self::entry::{EntrySegment, EntryStore, InstanceArena, RunSlots, SegmentBuilder};
+use self::entry::{
+    EntrySegment, EntryStore, RunSlots, SegmentBuilder, SlotArena, VACANT_INDEX, range_keeps,
+};
 use self::glyph::{GlyphRenderMode, GlyphSynthesis, NanaGlyphBuffer, PlacedGlyph, size_bits};
 use self::pipeline::{
     ArenaWrite, CONTENT_COLOR, CONTENT_MASK, DrawSegment, FrameUpload, GlyphInstance, TextGpu,
@@ -180,6 +182,10 @@ pub struct TextGlyphCounters {
     /// never a reshape or a rasterize.
     pub text_instance_patches: u64,
     pub text_instance_upload_bytes: u64,
+    /// The draw-order index table: four bytes per slot of an entry whose
+    /// range was placed or whose block moved. A frame whose draw order and
+    /// blocks stood still writes none.
+    pub text_index_upload_bytes: u64,
     /// The run and presentation tables, which is where a move, a fade or a
     /// recolor lands instead of in the instances.
     pub text_presentation_upload_bytes: u64,
@@ -614,16 +620,49 @@ pub(super) struct TextPipelineTarget {
     /// Where each entry's block sits in this target's instance buffer. The
     /// bytes come straight from the entry that owns the block; only the
     /// offsets live here.
-    arena: InstanceArena,
+    arena: SlotArena,
+    /// Where each entry's range sits in the draw-order index table. What
+    /// batches is adjacency here, not in the arena.
+    order: SlotArena,
     /// Blocks whose arena bytes are no longer what the GPU holds, coalesced
-    /// into as few writes as the draw order allows.
+    /// into as few writes as their offsets allow.
     writes: Vec<ArenaWrite>,
     staging: Vec<GlyphInstance>,
+    /// Index ranges that were placed or whose block moved, likewise.
+    index_writes: Vec<ArenaWrite>,
+    index_staging: Vec<u32>,
+    /// Scratch for the blocks and ranges a flush is about to place.
+    fresh_blocks: Vec<u32>,
+    fresh_ranges: Vec<u32>,
+    /// Which entry owns the index range starting at each offset, so a range
+    /// that grows can find the ones after it.
+    order_owners: OrderOwners,
+    /// Drawn entries whose block outgrew their range, found by the first walk
+    /// so growing them in place does not walk every entry a second time.
+    outgrown: Vec<u32>,
+    /// Whether the last order repack left gaps, and what has moved in the
+    /// order since: ranges placed, and how many of those because their
+    /// paragraph grew. What decides whether the next repack leaves gaps.
+    order_gapped: bool,
+    order_moves: u32,
+    growth_moves: u32,
     physical_size: [u32; 2],
     frame: u64,
     frame_gpu_allocations: usize,
     /// Everything but the entry lifecycle, which the store counts itself.
     counters: TargetCounters,
+    /// What this target's instance and index buffers hold, rebuilt from the
+    /// writes the frame sent them. See [`TextPipeline::audit_draw_order`].
+    #[cfg(test)]
+    shadow: GpuShadow,
+}
+
+/// A CPU copy of one target's two GPU buffers, kept only in tests.
+#[cfg(test)]
+#[derive(Default)]
+struct GpuShadow {
+    instances: Vec<GlyphInstance>,
+    indices: Vec<u32>,
 }
 
 /// The monotonic counters one render target accumulates.
@@ -637,6 +676,7 @@ struct TargetCounters {
     instance_rebuilds: u64,
     instance_patches: u64,
     instance_upload_bytes: u64,
+    index_upload_bytes: u64,
     presentation_upload_bytes: u64,
     nodes_considered: u64,
     nodes_skipped: u64,
@@ -651,6 +691,7 @@ impl TargetCounters {
         self.instance_rebuilds += other.instance_rebuilds;
         self.instance_patches += other.instance_patches;
         self.instance_upload_bytes += other.instance_upload_bytes;
+        self.index_upload_bytes += other.index_upload_bytes;
         self.presentation_upload_bytes += other.presentation_upload_bytes;
         self.nodes_considered += other.nodes_considered;
         self.nodes_skipped += other.nodes_skipped;
@@ -687,13 +728,25 @@ impl TextPipelineTarget {
             uploaded_presentations: Vec::new(),
             presentation_index: HashMap::new(),
             last_presentation: None,
-            arena: InstanceArena::default(),
+            arena: SlotArena::default(),
+            order: SlotArena::default(),
             writes: Vec::new(),
             staging: Vec::new(),
+            index_writes: Vec::new(),
+            index_staging: Vec::new(),
+            fresh_blocks: Vec::new(),
+            fresh_ranges: Vec::new(),
+            order_owners: OrderOwners::default(),
+            outgrown: Vec::new(),
+            order_gapped: false,
+            order_moves: 0,
+            growth_moves: 0,
             physical_size: [0; 2],
             frame: 0,
             frame_gpu_allocations: 0,
             counters: TargetCounters::default(),
+            #[cfg(test)]
+            shadow: GpuShadow::default(),
         }
     }
 }
@@ -856,6 +909,8 @@ impl TextPipeline {
         target.last_presentation = None;
         target.writes.clear();
         target.staging.clear();
+        target.index_writes.clear();
+        target.index_staging.clear();
         target.frame_gpu_allocations = 0;
         target.physical_size = physical_size;
         // Entries a shell stopped drawing — a closed panel, a scrolled-away
@@ -869,6 +924,8 @@ impl TextPipeline {
                 entries,
                 run_slots,
                 arena,
+                order,
+                order_owners,
                 ..
             } = target;
             entries.retire(
@@ -876,6 +933,12 @@ impl TextPipeline {
                 |handle| atlas.release(handle),
                 |slot| run_slots.release(slot),
                 |generation, offset, capacity| arena.release(generation, offset, capacity),
+                |generation, offset, capacity| {
+                    if generation == order.generation() {
+                        order_owners.remove(offset);
+                    }
+                    order.release(generation, offset, capacity)
+                },
             );
         }
     }
@@ -890,6 +953,8 @@ impl TextPipeline {
         let atlas = &mut self.atlas;
         self.target.entries.clear(|handle| atlas.release(handle));
         self.target.arena.reset();
+        self.target.order.reset();
+        self.target.order_owners.clear(None);
         self.target.run_slots.reset();
         self.target.run_table.clear();
         self.target.run_dirty = None;
@@ -965,6 +1030,7 @@ impl TextPipeline {
             text_instance_rebuilds: targets.instance_rebuilds,
             text_instance_patches: targets.instance_patches,
             text_instance_upload_bytes: targets.instance_upload_bytes,
+            text_index_upload_bytes: targets.index_upload_bytes,
             text_presentation_upload_bytes: targets.presentation_upload_bytes,
             text_prepare_nodes_considered: targets.nodes_considered,
             text_prepare_nodes_skipped: targets.nodes_skipped,
@@ -1822,13 +1888,16 @@ impl TextPipeline {
         self.target.runs[next.index].folded = true;
     }
 
-    /// Give every still-open run an arena range and a run row, and turn the
-    /// entries under it into draw segments. Must run before `upload` and
-    /// before `draw`.
+    /// Give every still-open run an arena block, an index range and a run
+    /// row, and turn the entries under it into draw segments. Must run before
+    /// `upload` and before `draw`.
     ///
-    /// This is where retention pays: an entry whose block is already at the
-    /// offset this walk assigns it, under the run index it already names, is
-    /// passed over without reading a single instance.
+    /// This is where retention pays: an entry whose block and range are
+    /// already placed, under the run index it already names, is passed over
+    /// without reading a single instance or writing a single index. An entry
+    /// that outgrew its block moves in the arena and writes its own bytes
+    /// there; what its neighbours pay for it is at most a rewrite of the index
+    /// table, never of their instances.
     pub(super) fn flush_runs(&mut self) {
         if self.target.flushed >= self.target.live_runs {
             return;
@@ -1847,10 +1916,17 @@ impl TextPipeline {
         target.segments.clear();
         target.writes.clear();
         target.staging.clear();
-        // What the frame needs, and what of it the arena does not already
-        // hold, so a repack happens instead of running out of room.
+        target.index_writes.clear();
+        target.index_staging.clear();
+        // What the frame needs, and what of it the arena and the order do not
+        // already hold, so a repack happens instead of running out of room.
         let mut total = 0u32;
-        let mut fresh = 0u32;
+        let mut outgrown = std::mem::take(&mut target.outgrown);
+        outgrown.clear();
+        let mut fresh = std::mem::take(&mut target.fresh_blocks);
+        let mut fresh_order = std::mem::take(&mut target.fresh_ranges);
+        fresh.clear();
+        fresh_order.clear();
         Self::walk_runs(target, |target, _, entry_id| {
             let Some(entry) = target.entries.get(entry_id) else {
                 return;
@@ -1860,20 +1936,59 @@ impl TextPipeline {
             if entry.arena_generation != Some(target.arena.generation())
                 || entry.arena_capacity != capacity
             {
-                fresh += capacity;
+                fresh.push(capacity);
+            }
+            let keeps = range_keeps(entry.order_capacity, capacity);
+            if entry.order_generation != Some(target.order.generation()) || !keeps {
+                fresh_order.push(capacity);
+                if entry.order_generation == Some(target.order.generation())
+                    && capacity > entry.order_capacity
+                {
+                    outgrown.push(entry_id);
+                }
             }
         });
-        if target.arena.should_repack(total, fresh) {
+        // Independent: the arena repacks only to make room or close holes,
+        // and then rewrites instances; the order repacks when fragmentation
+        // costs too many draws, and then rewrites only indices.
+        let arena_repack = target.arena.should_repack(total, &fresh);
+        let order_repack = target.order.should_repack(total, &fresh_order);
+        target.fresh_blocks = fresh;
+        target.fresh_ranges = fresh_order;
+        if arena_repack {
             target.arena.repack(total);
             target.entries.invalidate_arena();
         }
+        if order_repack {
+            target.order.repack(total);
+            target.entries.invalidate_order();
+            // Most of what moved since the last repack moved because its
+            // paragraph grew: this text keeps changing length, so the new
+            // layout leaves room for it to grow where it is. Text that only
+            // comes and goes gets none — a gap would not keep it from
+            // splitting the draws, and every gap slot is a quad the vertex
+            // stage still runs.
+            target.order_gapped = target.growth_moves * 2 > target.order_moves;
+            // Only a layout with gaps grows ranges in place, which is the
+            // one thing that asks who owns an offset.
+            target
+                .order_owners
+                .clear(target.order_gapped.then(|| target.order.capacity()));
+            target.growth_moves = 0;
+            target.order_moves = 0;
+        } else if target.order_gapped && !outgrown.is_empty() {
+            Self::grow_ranges_in_place(target, &outgrown);
+        }
+        target.outgrown = outgrown;
         let epoch = atlas.placement_epoch();
         let placeholders = [
             atlas.placeholder_page(AtlasPageKind::Mask),
             atlas.placeholder_page(AtlasPageKind::Color),
         ];
         let generation = target.arena.generation();
+        let order_generation = target.order.generation();
         let mut breaks = 0u32;
+        let mut group_start = 0u32;
         for index in 0..target.live_runs {
             if target.runs[index].folded {
                 continue;
@@ -1921,6 +2036,8 @@ impl TextPipeline {
                     }
                     let offset = target.arena.alloc(capacity);
                     let entry = target.entries.get_mut(entry_id).expect("looked up above");
+                    entry.indices_stale |=
+                        entry.arena_offset != offset || entry.arena_capacity != capacity;
                     entry.arena_offset = offset;
                     entry.arena_capacity = capacity;
                     entry.arena_generation = Some(generation);
@@ -1946,36 +2063,82 @@ impl TextPipeline {
                 let entry = target.entries.get(entry_id).expect("looked up above");
                 let offset = entry.arena_offset;
                 if dirty {
-                    let staged = target.staging.len() as u32;
-                    let contiguous = target.writes.last().is_some_and(|write| {
-                        write.offset + (write.staged.end - write.staged.start) == offset
-                    });
-                    if contiguous {
-                        target
-                            .writes
-                            .last_mut()
-                            .expect("contiguous implies a write")
-                            .staged
-                            .end += capacity;
-                    } else {
-                        target.writes.push(ArenaWrite {
-                            offset,
-                            staged: staged..staged + capacity,
-                        });
-                    }
-                    let entry = target.entries.get(entry_id).expect("looked up above");
+                    stage_write(&mut target.writes, target.staging.len(), offset, capacity);
                     let block = target.entries.instances(entry);
                     target.staging.extend_from_slice(block);
                 }
+                // Exactly the block's size. Room to grow here would let a
+                // paragraph lengthen without moving in the draw order, but
+                // every spare index is a quad the vertex stage still runs —
+                // and on the GPU that costs more than the draws and the
+                // index rewrites it would save.
+                let ordered = entry.order_generation == Some(order_generation)
+                    && range_keeps(entry.order_capacity, capacity);
+                if !ordered {
+                    if !order_repack {
+                        target.order_moves += 1;
+                    }
+                    if entry.order_generation == Some(order_generation) {
+                        let (at, held) = (entry.order_offset, entry.order_capacity);
+                        target.order.release(order_generation, at, held);
+                        target.order_owners.remove(at);
+                        if capacity > held {
+                            target.growth_moves += 1;
+                        }
+                    }
+                    let at = target.order.alloc(capacity);
+                    target.order_owners.insert(at, entry_id);
+                    let entry = target.entries.get_mut(entry_id).expect("looked up above");
+                    entry.order_offset = at;
+                    entry.order_capacity = capacity;
+                    entry.order_generation = Some(order_generation);
+                    if order_repack
+                        && target.order_gapped
+                        && at + capacity - group_start >= GAP_EVERY
+                        && let Some(gap) = target.order.reserve_gap(GAP_SLOTS)
+                    {
+                        stage_write(
+                            &mut target.index_writes,
+                            target.index_staging.len(),
+                            gap,
+                            GAP_SLOTS,
+                        );
+                        target
+                            .index_staging
+                            .extend(std::iter::repeat_n(VACANT_INDEX, GAP_SLOTS as usize));
+                        group_start = gap + GAP_SLOTS;
+                    }
+                }
+                let entry = target.entries.get_mut(entry_id).expect("looked up above");
+                let order = entry.order_offset;
+                let span = entry.order_capacity;
+                // The range names the block slot for slot, slack included:
+                // a vacant slot's instance covers nothing, so a draw that
+                // spans it paints nothing there.
+                if !ordered || entry.indices_stale {
+                    entry.indices_stale = false;
+                    stage_write(
+                        &mut target.index_writes,
+                        target.index_staging.len(),
+                        order,
+                        span,
+                    );
+                    target.index_staging.extend(offset..offset + capacity);
+                    target.index_staging.extend(std::iter::repeat_n(
+                        VACANT_INDEX,
+                        (span - capacity) as usize,
+                    ));
+                }
                 let entry = target.entries.get(entry_id).expect("looked up above");
-                let adjacent = previous_end.is_none_or(|end| end == offset);
+                let adjacent = previous_end
+                    .is_none_or(|end| end == order || target.order.clean_between(end, order));
                 if !adjacent {
                     breaks += 1;
                 }
                 for segment in &entry.segments {
-                    builder.push(&mut target.segments, *segment, offset, adjacent);
+                    builder.push(&mut target.segments, *segment, order, adjacent);
                 }
-                previous_end = Some(offset + capacity);
+                previous_end = Some(order + span);
                 let next = target.runs[member as usize].next;
                 if next == NO_RUN {
                     break;
@@ -1985,10 +2148,64 @@ impl TextPipeline {
             builder.finish(&mut target.segments);
             target.runs[index].segments = first_segment..target.segments.len() as u32;
         }
-        target.arena.note_breaks(breaks);
+        target.order.note_breaks(breaks);
         target.flushed = target.live_runs;
         #[cfg(test)]
         self.audit_placements();
+    }
+
+    /// Let every drawn range whose block outgrew it grow where it is: into
+    /// the clean gap right after it, or by shifting the ranges between it and
+    /// the next gap along by as much. A range that cannot is left to the walk,
+    /// which places it elsewhere.
+    ///
+    /// Before the walk, so the offsets the walk turns into draws are final. A
+    /// range that moves here has its indices rewritten by the walk if it is
+    /// drawn this frame, and whenever it is next drawn otherwise.
+    fn grow_ranges_in_place(target: &mut TextPipelineTarget, outgrown: &[u32]) {
+        const WINDOW: u32 = 4096;
+        'entries: for &entry_id in outgrown {
+            let Some(entry) = target.entries.get(entry_id) else {
+                continue;
+            };
+            // Listed twice when two commands draw it; the first grew it.
+            if entry.capacity <= entry.order_capacity {
+                continue;
+            }
+            let grow = entry.capacity - entry.order_capacity;
+            let after = entry.order_offset + entry.order_capacity;
+            let mut chain = Vec::new();
+            let mut at = after;
+            let gap = loop {
+                let Some(owner) = target.order_owners.get(at) else {
+                    match target.order.free_at(at) {
+                        Some((len, true)) if len >= grow => break at,
+                        _ => continue 'entries,
+                    }
+                };
+                let Some(next) = target.entries.get(owner) else {
+                    continue 'entries;
+                };
+                chain.push(owner);
+                at += next.order_capacity;
+                if at - after > WINDOW {
+                    continue 'entries;
+                }
+            };
+            target.order.grow_into(gap, grow);
+            target.growth_moves += 1;
+            target.order_moves += 1;
+            for owner in chain.into_iter().rev() {
+                let moved = target.entries.get_mut(owner).expect("owned");
+                target.order_owners.remove(moved.order_offset);
+                moved.order_offset += grow;
+                moved.indices_stale = true;
+                target.order_owners.insert(moved.order_offset, owner);
+            }
+            let entry = target.entries.get_mut(entry_id).expect("looked up above");
+            entry.order_capacity = entry.capacity;
+            entry.indices_stale = true;
+        }
     }
 
     /// Every rectangle a drawn entry samples is the one its handle names now.
@@ -2048,11 +2265,31 @@ impl TextPipeline {
         }
     }
 
-    /// Write this frame's atlas regions, arena blocks and presentation tables.
+    /// [`Self::upload_with`] in an encoder of its own, submitted at once:
+    /// for tests that draw without a painter around them.
+    #[cfg(test)]
     pub(super) fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        work: Option<&crate::gpu_work::GpuWorkSink>,
+    ) {
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui.scene.text.upload"),
+        });
+        self.upload_with(device, queue, &mut encoder, work);
+        queue.submit([encoder.finish()]);
+    }
+
+    /// Write this frame's atlas regions, arena blocks, index ranges and
+    /// presentation tables. Blocks and ranges are copied in `encoder`, so it
+    /// must be the one the passes that draw them are recorded in, or one
+    /// submitted before it.
+    pub(super) fn upload_with(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) {
         self.uploads.flush(queue, &self.atlas, work);
@@ -2071,12 +2308,16 @@ impl TextPipeline {
         let bytes = self.gpu.upload(
             device,
             queue,
+            encoder,
             &mut target.gpu,
-            target.physical_size,
             &FrameUpload {
+                physical_size: target.physical_size,
                 arena_capacity: target.arena.capacity(),
                 writes: &target.writes,
                 staging: &target.staging,
+                order_capacity: target.order.capacity(),
+                index_writes: &target.index_writes,
+                index_staging: &target.index_staging,
                 runs: &target.run_table,
                 run_dirty: target.run_dirty.clone(),
                 presentations: &target.presentations,
@@ -2085,8 +2326,121 @@ impl TextPipeline {
             work,
         );
         target.counters.instance_upload_bytes += bytes.instances as u64;
+        target.counters.index_upload_bytes += bytes.indices as u64;
         target.counters.presentation_upload_bytes += bytes.presentation as u64;
         target.frame_gpu_allocations += target.gpu.take_allocations();
+        #[cfg(test)]
+        self.audit_draw_order();
+    }
+
+    /// Every index a draw spans resolves, through what the GPU buffers hold,
+    /// to the instance its entry holds, and every glyph an entry holds is under
+    /// a draw.
+    ///
+    /// Checked against a copy of the two buffers rebuilt from the writes this
+    /// target actually sent, so every test that draws text also tests the
+    /// rules that decide when a block or a range is written: an entry that
+    /// moved without its indices following, or a range reused while a draw
+    /// still spans it, would draw another paragraph's glyphs, and no counter
+    /// would say so.
+    #[cfg(test)]
+    fn audit_draw_order(&mut self) {
+        let target = &mut self.target;
+        let shadow = &mut target.shadow;
+        // A replaced buffer starts zeroed, which is what a vacant glyph is.
+        let capacity = target.arena.capacity() as usize;
+        if capacity != 0 && capacity != shadow.instances.len() {
+            shadow.instances = vec![GlyphInstance::VACANT; capacity];
+        }
+        let capacity = target.order.capacity() as usize;
+        if capacity != 0 && capacity != shadow.indices.len() {
+            shadow.indices = vec![0; capacity];
+        }
+        for write in &target.writes {
+            let staged = &target.staging[write.staged.start as usize..write.staged.end as usize];
+            shadow.instances[write.offset as usize..][..staged.len()].copy_from_slice(staged);
+        }
+        for write in &target.index_writes {
+            let staged =
+                &target.index_staging[write.staged.start as usize..write.staged.end as usize];
+            shadow.indices[write.offset as usize..][..staged.len()].copy_from_slice(staged);
+        }
+        for head in 0..target.live_runs {
+            if target.runs[head].folded {
+                continue;
+            }
+            let mut expected = HashMap::new();
+            let mut glyphs = Vec::new();
+            let mut member = head as u32;
+            loop {
+                let run = &target.runs[member as usize];
+                if let Some(entry) = target.entries.get(run.entry) {
+                    let block = target.entries.instances(entry);
+                    assert!(
+                        entry.order_capacity >= entry.capacity,
+                        "entry {}'s index range is smaller than its block",
+                        run.entry
+                    );
+                    for index in 0..entry.order_capacity {
+                        let want = block.get(index as usize).copied();
+                        let previous =
+                            expected.insert(entry.order_offset + index, (run.entry, want));
+                        assert!(
+                            previous.is_none(),
+                            "two entries of one command share index {}",
+                            entry.order_offset + index
+                        );
+                    }
+                    for segment in &entry.segments {
+                        glyphs.extend(
+                            (segment.first..segment.first + segment.count)
+                                .map(|index| entry.order_offset + index),
+                        );
+                    }
+                }
+                if run.next == NO_RUN {
+                    break;
+                }
+                member = run.next;
+            }
+            let run = &target.runs[head];
+            let drawn = &target.segments[run.segments.start as usize..run.segments.end as usize];
+            for segment in drawn {
+                for position in segment.first..segment.first + segment.count {
+                    let slot = shadow.indices[position as usize];
+                    let Some((entry, want)) = expected.get(&position).copied() else {
+                        assert!(
+                            target.order.clean_at(position),
+                            "a draw spans index {position}, which no entry of its command \
+                             owns and no gap covers"
+                        );
+                        assert_eq!(slot, VACANT_INDEX, "gap index {position} must be vacant");
+                        continue;
+                    };
+                    match want {
+                        None => assert_eq!(
+                            slot, VACANT_INDEX,
+                            "index {position} runs past entry {entry}'s block and must be vacant"
+                        ),
+                        Some(want) => assert_eq!(
+                            shadow.instances.get(slot as usize).copied(),
+                            Some(want),
+                            "index {position} of entry {entry} names slot {slot}, which does \
+                             not hold the glyph the entry holds there"
+                        ),
+                    }
+                }
+            }
+            for position in glyphs {
+                assert!(
+                    drawn
+                        .iter()
+                        .any(|segment| (segment.first..segment.first + segment.count)
+                            .contains(&position)),
+                    "index {position} holds a glyph no draw spans"
+                );
+            }
+        }
     }
 
     pub(super) fn draw(
@@ -2147,6 +2501,75 @@ impl TextPipeline {
             target.get_or_insert_with(|| TextPipelineTarget::new(self.gpu.new_target(device)));
         std::mem::swap(&mut self.target, target);
     }
+}
+
+/// Where the order leaves a gap when it repacks around text that keeps
+/// growing: after every [`GAP_EVERY`] slots, [`GAP_SLOTS`] of room. Measured
+/// on ten thousand labels changing length (#224): a quarter of room per 512
+/// slots took the draws from 90 to 14 and the index uploads to a third; an
+/// eighth, or a group half the size, left two to three times the draws.
+const GAP_EVERY: u32 = 512;
+const GAP_SLOTS: u32 = 128;
+
+/// Which entry's index range starts at each offset of the order. Flat, so
+/// placing a whole frame's worth of ranges after a repack costs a store per
+/// range rather than a tree insert.
+///
+/// Kept only while the order has gaps (`clear(Some(capacity))`); otherwise
+/// nothing asks, and every call is free.
+#[derive(Default)]
+struct OrderOwners {
+    kept: bool,
+    owners: Vec<u32>,
+}
+
+impl OrderOwners {
+    fn clear(&mut self, capacity: Option<u32>) {
+        self.kept = capacity.is_some();
+        self.owners.clear();
+        self.owners.resize(capacity.unwrap_or(0) as usize, u32::MAX);
+    }
+
+    fn insert(&mut self, offset: u32, entry: u32) {
+        if !self.kept {
+            return;
+        }
+        let offset = offset as usize;
+        if self.owners.len() <= offset {
+            self.owners.resize(offset + 1, u32::MAX);
+        }
+        self.owners[offset] = entry;
+    }
+
+    fn remove(&mut self, offset: u32) {
+        if let Some(owner) = self.owners.get_mut(offset as usize) {
+            *owner = u32::MAX;
+        }
+    }
+
+    fn get(&self, offset: u32) -> Option<u32> {
+        self.owners
+            .get(offset as usize)
+            .copied()
+            .filter(|owner| *owner != u32::MAX)
+    }
+}
+
+/// Queue `len` slots at `offset`, staged from `staged` on: folded into the
+/// last write when it ends exactly there, so a walk that places blocks one
+/// after another turns into one write.
+fn stage_write(writes: &mut Vec<ArenaWrite>, staged: usize, offset: u32, len: u32) {
+    let staged = staged as u32;
+    if let Some(last) = writes.last_mut()
+        && last.offset + (last.staged.end - last.staged.start) == offset
+    {
+        last.staged.end += len;
+        return;
+    }
+    writes.push(ArenaWrite {
+        offset,
+        staged: staged..staged + len,
+    });
 }
 
 impl RunPresentation {
@@ -4471,6 +4894,386 @@ mod tests {
         );
     }
 
+    fn row_key(node: u64) -> EntryKey {
+        EntryKey {
+            node,
+            slot: 0,
+            pass: 0,
+        }
+    }
+
+    /// One frame of `rows` folded into one command, flushed and uploaded.
+    /// Returns what it wrote: instance bytes, index bytes and draws.
+    fn merged_rows(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        rows: &[&str],
+    ) -> (u64, u64, usize) {
+        let labels = rows
+            .iter()
+            .enumerate()
+            .map(|(index, content)| (*content, row_key(index as u64 + 1), index as f32 * 14.0))
+            .collect::<Vec<_>>();
+        let warm = pipeline.glyph_counters();
+        let height = (rows.len() as u32 * 14 + 32).max(512);
+        prepare_merged(device, pipeline, &labels, [512, height]).expect("the rows draw");
+        pipeline.flush_runs();
+        pipeline.upload(device, queue, None);
+        let after = pipeline.glyph_counters();
+        (
+            after.text_instance_upload_bytes - warm.text_instance_upload_bytes,
+            after.text_index_upload_bytes - warm.text_index_upload_bytes,
+            pipeline.target.segments.len(),
+        )
+    }
+
+    fn row_entry(pipeline: &TextPipeline, node: u64) -> &entry::TextGpuEntry {
+        let id = pipeline
+            .target
+            .entries
+            .lookup(row_key(node))
+            .expect("drawn");
+        pipeline.target.entries.get(id).expect("live")
+    }
+
+    const INSTANCE: u64 = std::mem::size_of::<pipeline::GlyphInstance>() as u64;
+
+    #[test]
+    fn a_paragraph_that_outgrows_its_block_moves_alone() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut rows = vec!["Row content"; 16];
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert_eq!(
+            merged_rows(&device, &queue, &mut pipeline, &rows),
+            (0, 0, 1),
+            "a steady frame writes nothing and is one draw"
+        );
+        let before = row_entry(&pipeline, 8).capacity;
+        rows[7] = "Row content that grew well past its block";
+        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let entry = row_entry(&pipeline, 8);
+        assert!(entry.capacity > before, "the row must have changed class");
+        assert_eq!(
+            instances,
+            u64::from(entry.capacity) * INSTANCE,
+            "the row that grew writes its own block and nobody else's"
+        );
+        assert_eq!(
+            indices,
+            u64::from(entry.capacity) * 4,
+            "and its own index range"
+        );
+        assert_eq!(
+            draws, 3,
+            "its range sits away from its neighbours: the rows before it, it, \
+             the rows after it"
+        );
+        assert_eq!(
+            merged_rows(&device, &queue, &mut pipeline, &rows),
+            (0, 0, 3),
+            "which is kept, not rewritten every frame, while it is within budget"
+        );
+    }
+
+    #[test]
+    fn an_arena_repack_rewrites_the_indices_of_the_blocks_it_moved_and_no_others() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut rows = vec!["Row content"; 16];
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        // Row 8 outgrows its block and is placed after every other one.
+        rows[7] = "Row content, longer";
+        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let before = (1..=16u64)
+            .map(|node| {
+                let entry = row_entry(&pipeline, node);
+                (entry.arena_offset, entry.order_offset)
+            })
+            .collect::<Vec<_>>();
+        // Whatever makes the arena repack — room, holes — it does so apart
+        // from the draw order. Forcing it here is the one way to see that.
+        pipeline.target.arena.note_breaks(u32::MAX);
+        let (instances, indices, again) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let mut moved = 0;
+        let mut total = 0;
+        for (node, (arena, order)) in (1..=16u64).zip(before) {
+            let entry = row_entry(&pipeline, node);
+            total += entry.capacity;
+            assert_eq!(
+                entry.order_offset, order,
+                "row {node}: an arena repack leaves the draw order alone"
+            );
+            if entry.arena_offset != arena {
+                moved += entry.capacity;
+            }
+        }
+        assert!(
+            moved > 0,
+            "the repack laid the blocks out in draw order again"
+        );
+        assert_eq!(
+            instances,
+            u64::from(total) * INSTANCE,
+            "every block is written"
+        );
+        assert_eq!(
+            indices,
+            u64::from(moved) * 4,
+            "and only the indices of the blocks that landed somewhere new"
+        );
+        assert_eq!(
+            again, draws,
+            "the draws follow the order, which did not change"
+        );
+    }
+
+    #[test]
+    fn repacking_the_draw_order_moves_no_instance() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut rows = vec!["Row content"; 16];
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        // Three rows apart from each other: two breaks each, past the budget
+        // a list this short gets. Grown by a little, so the order still has
+        // room for them and it is the breaks that repack it.
+        for row in [3, 7, 11] {
+            rows[row] = "Row content, longer";
+        }
+        let (instances, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert_eq!(draws, 7);
+        let grown: u32 = [4, 8, 12]
+            .into_iter()
+            .map(|node| row_entry(&pipeline, node).capacity)
+            .sum();
+        assert_eq!(instances, u64::from(grown) * INSTANCE);
+        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let total: u32 = (1..=16u64)
+            .map(|node| row_entry(&pipeline, node).order_capacity)
+            .sum();
+        assert_eq!(draws, 1, "the frame after is one draw again");
+        assert_eq!(
+            indices,
+            u64::from(total) * 4,
+            "by rewriting the index table in draw order"
+        );
+        assert_eq!(
+            instances, 0,
+            "and not one instance: where a block sits no longer decides what it \
+             batches with"
+        );
+    }
+
+    #[test]
+    fn text_that_keeps_growing_grows_in_place_once_the_order_has_left_it_room() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut rows = vec!["Row content"; 64];
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert!(
+            !pipeline.target.order_gapped,
+            "a first layout leaves no gaps"
+        );
+        // Four rows apart grow: eight breaks, past what a thousand slots may
+        // cost, and every move a growth.
+        for row in [5, 20, 35, 50] {
+            rows[row] = "Row content, longer";
+        }
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert!(
+            pipeline.target.order_gapped,
+            "what split the draws was text growing, so the repack left room"
+        );
+        assert_eq!(draws, 1, "and a draw runs straight across the gaps");
+        // A row that has not grown before.
+        let before = row_entry(&pipeline, 11).order_offset;
+        rows[10] = "Row content, longer";
+        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let entry = row_entry(&pipeline, 11);
+        assert_eq!(entry.order_offset, before, "it grew where it was");
+        assert_eq!(draws, 1, "so the draw did not split");
+        assert_eq!(instances, u64::from(entry.capacity) * INSTANCE);
+        assert!(
+            indices <= u64::from(GAP_EVERY + entry.capacity) * 4,
+            "and only it and the rows up to the next gap moved: {indices} bytes"
+        );
+    }
+
+    #[test]
+    fn text_that_comes_and_goes_is_not_left_gaps_it_would_not_use() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let frame = |pipeline: &mut TextPipeline, nodes: &[u64]| {
+            let labels = nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| ("Row content", row_key(*node), index as f32 * 14.0))
+                .collect::<Vec<_>>();
+            prepare_merged(&device, pipeline, &labels, [512, 1024]).expect("the rows draw");
+            pipeline.flush_runs();
+            pipeline.upload(&device, &queue, None);
+            pipeline.target.segments.len()
+        };
+        let mut nodes = (1..=64u64).collect::<Vec<_>>();
+        frame(&mut pipeline, &nodes);
+        for (at, node) in [(48, 204), (32, 203), (16, 202), (8, 201)] {
+            nodes.insert(at, node);
+        }
+        frame(&mut pipeline, &nodes);
+        assert_eq!(frame(&mut pipeline, &nodes), 1, "repacked");
+        assert!(
+            !pipeline.target.order_gapped,
+            "rows arriving split the draws; room to grow would not have helped"
+        );
+    }
+
+    #[test]
+    fn a_draw_does_not_run_across_the_space_a_paragraph_left() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let frame = |pipeline: &mut TextPipeline, rows: &[(u64, &'static str)]| {
+            let labels = rows
+                .iter()
+                .enumerate()
+                .map(|(index, (node, content))| (*content, row_key(*node), index as f32 * 14.0))
+                .collect::<Vec<_>>();
+            prepare_merged(&device, pipeline, &labels, [512, 512]).expect("the rows draw");
+            pipeline.flush_runs();
+            pipeline.upload(&device, &queue, None);
+            pipeline.target.segments.len()
+        };
+        let rows = (1..=16u64)
+            .map(|node| (node, "Row content"))
+            .collect::<Vec<_>>();
+        frame(&mut pipeline, &rows);
+        // Row 8 outgrows its range, which is given back, and is now drawn
+        // last: rows 7 and 9 are next to each other in the draw with the
+        // space row 8 left between them in the table. That space still holds
+        // row 8's old indices, so a draw spanning it would paint them.
+        let mut reordered = rows
+            .iter()
+            .copied()
+            .filter(|(node, _)| *node != 8)
+            .collect::<Vec<_>>();
+        reordered.push((8, "Row content, longer"));
+        frame(&mut pipeline, &reordered);
+        // The frame after: the space is free now, and rows 7 and 9 are still
+        // drawn one after the other.
+        assert_eq!(
+            frame(&mut pipeline, &reordered),
+            2,
+            "rows 7 and 9 are two draws, not one across what row 8 left"
+        );
+    }
+
+    #[test]
+    fn two_paints_of_one_target_before_one_submit_each_draw_their_own_text() {
+        let (device, queue) = test_device();
+        let target = |label| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: 256,
+                    height: 64,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let paint = |pipeline: &mut TextPipeline,
+                     encoder: &mut wgpu::CommandEncoder,
+                     texture: &wgpu::Texture,
+                     text: &str| {
+            let command = prepare_merged(&device, pipeline, &[(text, row_key(1), 0.0)], [256, 64]);
+            pipeline.flush_runs();
+            pipeline.upload_with(&device, &queue, encoder, None);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("nana-ui text two paints"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let scissor = PhysicalRect {
+                x: 0,
+                y: 0,
+                width: 256,
+                height: 64,
+            };
+            pipeline.draw(&mut pass, &command.expect("drawn"), scissor, None);
+        };
+        let reference = |text: &str| {
+            let mut fresh = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            paint_labels(&device, &queue, &mut fresh, &[(text, row_key(1), 0.0)])
+        };
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // The same paragraph, rebuilt in between: the second paint rewrites
+        // the block the first one's pass reads.
+        let (first, second) = (target("first"), target("second"));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui text two paints"),
+        });
+        paint(&mut pipeline, &mut encoder, &first, "First");
+        paint(&mut pipeline, &mut encoder, &second, "Second");
+        let first_pixels = readback_rgba(&device, &queue, encoder, &first, 256, 64);
+        let encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui text two paints readback"),
+        });
+        let second_pixels = readback_rgba(&device, &queue, encoder, &second, 256, 64);
+        assert!(
+            first_pixels == reference("First"),
+            "the first paint draws its own glyphs, not the ones the second \
+             paint wrote before the encoder was submitted"
+        );
+        assert!(second_pixels == reference("Second"));
+    }
+
+    #[test]
+    fn a_paragraph_that_moved_in_the_arena_paints_where_it_did() {
+        let (device, queue) = test_device();
+        let head = row_key(1);
+        let middle = row_key(2);
+        let tail = row_key(3);
+        let frame = |middle_text| {
+            [
+                ("Head", head, 0.0),
+                (middle_text, middle, 20.0),
+                ("Tail", tail, 40.0),
+            ]
+        };
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        paint_labels(&device, &queue, &mut pipeline, &frame("ab"));
+        // Out of its block, then out of the next one: moved in the arena and
+        // in the draw order both times.
+        for text in ["abcdefghijk", "abcdefghijklmnopqrst"] {
+            let moved = paint_labels(&device, &queue, &mut pipeline, &frame(text));
+            let mut fresh = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            let expected = paint_labels(&device, &queue, &mut fresh, &frame(text));
+            assert!(
+                moved == expected,
+                "a block that moved in the arena must paint exactly what a \
+                 fresh one does ({text})"
+            );
+        }
+    }
+
     #[test]
     fn an_eviction_recovers_the_entry_it_hit_without_reshaping_anything() {
         let (device, queue) = test_device();
@@ -4908,22 +5711,21 @@ mod tests {
     }
 
     /// Paint labels folded into one draw command and read the frame back.
-    fn paint_labels(
+    /// Prepare `labels` as one draw command, the way the painter folds
+    /// consecutive text, on a `size` canvas. Neither flushed nor uploaded.
+    fn prepare_merged(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         pipeline: &mut TextPipeline,
         labels: &[(&str, EntryKey, f32)],
-    ) -> Vec<u8> {
-        pipeline.begin_frame([256, 64]);
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-ui text label prepare"),
-        });
+        size: [u32; 2],
+    ) -> Option<PreparedText> {
+        pipeline.begin_frame(size);
         let mut command: Option<PreparedText> = None;
         for (content, key, top) in labels {
             let prepared = pipeline.prepare(
                 device,
                 LogicalRect::from_xywh(0.0, *top, 240.0, 32.0),
-                LogicalRect::from_xywh(0.0, 0.0, 256.0, 64.0),
+                LogicalRect::from_xywh(0.0, 0.0, size[0] as f32, size[1] as f32),
                 1.0,
                 content,
                 Some([1.0, 1.0, 1.0, 1.0]),
@@ -4963,6 +5765,19 @@ mod tests {
                 _ => command = Some(prepared),
             }
         }
+        command
+    }
+
+    fn paint_labels(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        labels: &[(&str, EntryKey, f32)],
+    ) -> Vec<u8> {
+        let command = prepare_merged(device, pipeline, labels, [256, 64]);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("nana-ui text label prepare"),
+        });
         pipeline.flush_runs();
         pipeline.upload(device, queue, None);
         let texture = device.create_texture(&wgpu::TextureDescriptor {

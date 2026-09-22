@@ -14,6 +14,14 @@
 //! of bytes instead of a rebuild of every glyph: [`super::entry`] hands the
 //! same instance range back frame after frame and only rewrites a table row.
 //!
+//! The instances themselves are a storage buffer the draw does not walk. What
+//! it walks is the index table: one `u32` per slot, in draw order, naming
+//! where that slot's instance sits. That is what lets a paragraph that grew
+//! out of its block be placed anywhere in the instance buffer without taking
+//! its neighbours' bytes with it — the draw it belongs to follows the table,
+//! and the table is rewritten at four bytes a slot where the instances would
+//! cost twenty-four.
+//!
 //! Upright and transformed text are the same program because the difference
 //! between them is two bits in the run: whether each corner goes through the
 //! homography, and whether the sampler is bilinear. A page a rotated label
@@ -61,13 +69,22 @@ macro_rules! text_shader {
             include_str!("../shader/color.wgsl"),
             include_str!("../shader/text_atlas.wgsl"),
             r#"
+// One glyph, as `GlyphInstance` lays it out: 24 bytes.
+struct GlyphInstance {
+    origin: vec2<i32>,
+    dim: u32,
+    uv: u32,
+    color: u32,
+    control: u32,
+}
+
+@group(0) @binding(3)
+var<storage, read> text_instances: array<GlyphInstance>;
+
 struct VsIn {
     @builtin(vertex_index) vertex: u32,
-    @location(0) origin: vec2<i32>,
-    @location(1) dim: u32,
-    @location(2) uv: u32,
-    @location(3) color: u32,
-    @location(4) control: u32,
+    // The instance's slot, from the draw-order index table.
+    @location(0) slot: u32,
 }
 
 struct VsOut {
@@ -87,7 +104,15 @@ struct VsOut {
 }
 
 @vertex
-fn vs_main(input: VsIn) -> VsOut {
+fn vs_main(vertex: VsIn) -> VsOut {
+    // `VACANT_INDEX`: no instance behind this slot. Outside the clip volume at
+    // every corner, so the quad is culled before rasterizing.
+    if vertex.slot == 0xffffffffu {
+        var vacant: VsOut;
+        vacant.position = vec4<f32>(-2.0, -2.0, 0.0, 1.0);
+        return vacant;
+    }
+    let input = text_instances[vertex.slot];
     let run = text_runs[input.control >> 3u];
     // The page, then whether a color-page texel is subpixel coverage.
     let page = input.control & 1u;
@@ -97,7 +122,7 @@ fn vs_main(input: VsIn) -> VsOut {
     }
     let width = input.dim & 0xffffu;
     let height = (input.dim & 0xffff0000u) >> 16u;
-    let corner = vec2<u32>(input.vertex & 1u, (input.vertex >> 1u) & 1u);
+    let corner = vec2<u32>(vertex.vertex & 1u, (vertex.vertex >> 1u) & 1u);
     let offset = vec2<u32>(width, height) * corner;
     let local = vec2<f32>(input.origin + vec2<i32>(offset));
     let texel = vec2<u32>(input.uv & 0xffffu, (input.uv & 0xffff0000u) >> 16u) + offset;
@@ -298,7 +323,8 @@ pub(super) struct TextPresentationGpu {
     translate: [f32; 2],
 }
 
-/// One draw: a contiguous span of instances that samples one pair of pages.
+/// One draw: a contiguous span of the index table whose instances sample one
+/// pair of pages.
 ///
 /// Spans are split rather than grouped when a page changes, so glyph order
 /// inside a run is document order even across a page boundary.
@@ -314,8 +340,19 @@ pub(super) struct DrawSegment {
 /// glyphs and their presentation land in, and the projection they are placed
 /// against.
 pub(super) struct TextTargetGpu {
+    /// Storage, read through `indices`; its order is the arena's, not the
+    /// draw's.
     instances: wgpu::Buffer,
     instance_capacity: usize,
+    /// The draw-order index table, bound as the per-instance vertex buffer.
+    indices: wgpu::Buffer,
+    index_capacity: usize,
+    /// Where a frame's blocks and ranges wait to be copied into place: a ring,
+    /// so a target painted twice before one submit gives each paint its own
+    /// stretch of it.
+    staging: wgpu::Buffer,
+    staging_capacity: u64,
+    staging_cursor: u64,
     runs: wgpu::Buffer,
     run_capacity: usize,
     presentations: wgpu::Buffer,
@@ -359,8 +396,19 @@ impl TextGpu {
                     },
                     count: None,
                 },
-                storage_entry(1, std::mem::size_of::<TextRunGpu>() as u64),
-                storage_entry(2, std::mem::size_of::<TextPresentationGpu>() as u64),
+                storage_entry(
+                    1,
+                    wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    std::mem::size_of::<TextRunGpu>() as u64,
+                ),
+                storage_entry(
+                    2,
+                    wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    std::mem::size_of::<TextPresentationGpu>() as u64,
+                ),
+                // Only the vertex stage reads a glyph: every fragment of it
+                // gets what it needs through the varyings.
+                storage_entry(3, wgpu::ShaderStages::VERTEX, INSTANCE_BYTES),
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -421,22 +469,25 @@ impl TextGpu {
         TextTargetGpu::new(device, &self.globals_layout)
     }
 
-    /// Write this frame's projection, arena blocks and presentation tables.
+    /// Write this frame's projection, arena blocks, index ranges and
+    /// presentation tables.
     ///
-    /// Only what changed: the arena is written through the coalesced ranges
-    /// [`super::TextPipeline::flush_runs`] staged, and the two tables through a
-    /// block diff against what this target already holds. A repaint of
-    /// unchanged text costs no queue traffic at all.
+    /// Only what changed: the arena and the index table are written through
+    /// the coalesced ranges [`super::TextPipeline::flush_runs`] staged, and the
+    /// two presentation tables through a block diff against what this target
+    /// already holds. A repaint of unchanged text costs no queue traffic at
+    /// all.
     pub(super) fn upload(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         target: &mut TextTargetGpu,
-        physical_size: [u32; 2],
         frame: &FrameUpload<'_>,
         work: Option<&crate::gpu_work::GpuWorkSink>,
     ) -> TextUploadBytes {
         let mut rebind = false;
+        let physical_size = frame.physical_size;
         if target.uploaded_size != Some(physical_size) {
             queue.write_buffer(
                 &target.globals,
@@ -452,30 +503,96 @@ impl TextGpu {
             }
         }
         let mut bytes = TextUploadBytes::default();
-        // Both ways: the arena only changes capacity inside a repack, which
-        // writes every block it places, so the replacement never has to
-        // carry bytes over from the buffer it replaces. Shrinking is what
-        // keeps a list that was once ten thousand rows long from holding
-        // that much GPU memory for the rest of the session.
+        // Both ways: the arena and the order only change capacity inside a
+        // repack, which writes every block it places, so the replacement
+        // never has to carry bytes over from the buffer it replaces.
+        // Shrinking is what keeps a list that was once ten thousand rows long
+        // from holding that much GPU memory for the rest of the session.
         if frame.arena_capacity != 0 && frame.arena_capacity != target.instance_capacity as u32 {
             target.instance_capacity = frame.arena_capacity as usize;
-            target.instances = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.text.instances"),
-                size: (target.instance_capacity * std::mem::size_of::<GlyphInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
+            target.instances =
+                instance_buffer(device, target.instance_capacity as u64 * INSTANCE_BYTES);
+            target.allocations += 1;
+            rebind = true;
+        }
+        if frame.order_capacity != 0 && frame.order_capacity != target.index_capacity as u32 {
+            target.index_capacity = frame.order_capacity as usize;
+            target.indices = index_buffer(device, target.index_capacity as u64 * INDEX_BYTES);
             target.allocations += 1;
         }
-        for write in frame.writes {
-            let staged = &frame.staging[write.staged.start as usize..write.staged.end as usize];
-            let data: &[u8] = bytemuck::cast_slice(staged);
-            queue.write_buffer(
+        // Every block and range this frame moved, in one write to a staging
+        // ring and one copy each. A `queue.write_buffer` per write costs a
+        // staging allocation of its own — about fifty thousand instructions on
+        // Metal, far more than the bytes — and a frame that rebuilds a hundred
+        // labels would make a hundred of them.
+        //
+        // Pending queue writes land at the next submit, ahead of its command
+        // buffers and after everything submitted before, so the copies of the
+        // last frame have read their part of the ring by the time this frame's
+        // bytes arrive. The copies are recorded in `encoder`, ahead of the
+        // passes that read the buffers.
+        let instance_bytes: &[u8] = bytemuck::cast_slice(frame.staging);
+        let index_bytes: &[u8] = bytemuck::cast_slice(frame.index_staging);
+        let staged = (instance_bytes.len() + index_bytes.len()) as u64;
+        if staged != 0 {
+            // A frame too large for the ring — the first one of a long list,
+            // an arena repack — gets a buffer of its own, freed once its
+            // copies have run, so the ring never grows to hold it.
+            let one_off;
+            let (source, at) = match target.stage(device, staged) {
+                Some(at) => {
+                    // One call: each has the fixed cost, however few bytes.
+                    let mut view = queue
+                        .write_buffer_with(
+                            &target.staging,
+                            at,
+                            wgpu::BufferSize::new(staged).expect("nonzero"),
+                        )
+                        .expect("the ring holds what it staged");
+                    fill_staged(
+                        |range, bytes| view.slice(range).copy_from_slice(bytes),
+                        frame,
+                    );
+                    (&target.staging, at)
+                }
+                None => {
+                    one_off = device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("nana-ui.scene.text.staging.frame"),
+                        size: staged,
+                        usage: wgpu::BufferUsages::COPY_SRC,
+                        mapped_at_creation: true,
+                    });
+                    {
+                        let mut view = one_off
+                            .slice(..)
+                            .get_mapped_range_mut()
+                            .expect("a buffer mapped at creation maps its whole range");
+                        fill_staged(
+                            |range, bytes| view.slice(range).copy_from_slice(bytes),
+                            frame,
+                        );
+                    }
+                    one_off.unmap();
+                    target.allocations += 1;
+                    (&one_off, 0)
+                }
+            };
+            bytes.instances += copy_writes(
+                encoder,
+                source,
+                at,
+                frame.writes,
+                INSTANCE_BYTES,
                 &target.instances,
-                write.offset as u64 * std::mem::size_of::<GlyphInstance>() as u64,
-                data,
             );
-            bytes.instances += data.len();
+            bytes.indices += copy_writes(
+                encoder,
+                source,
+                at + instance_bytes.len() as u64,
+                frame.index_writes,
+                INDEX_BYTES,
+                &target.indices,
+            );
         }
         if !frame.runs.is_empty() {
             let mut dirty = frame.run_dirty.clone();
@@ -533,7 +650,7 @@ impl TextGpu {
             target.globals_bind_group = Some(target.bind(device, &self.globals_layout));
         }
         if let Some(work) = work {
-            work.record_upload(bytes.instances + bytes.presentation);
+            work.record_upload(bytes.instances + bytes.indices + bytes.presentation);
         }
         bytes
     }
@@ -554,19 +671,26 @@ impl TextGpu {
         };
         pass.set_bind_group(0, globals, &[]);
         pass.set_bind_group(1, bind_group, &[]);
-        pass.set_vertex_buffer(0, target.instances.slice(..));
+        pass.set_vertex_buffer(0, target.indices.slice(..));
         pass.draw(0..4, segment.first..segment.first + segment.count);
     }
 }
 
-/// What one frame hands the GPU. Grouped because the three arrays travel
-/// together and their previous contents are the only thing that decides
-/// whether a byte moves at all.
+/// What one frame hands the GPU. Grouped because the arrays travel together
+/// and their previous contents are the only thing that decides whether a byte
+/// moves at all.
 pub(super) struct FrameUpload<'a> {
-    /// Instance slots the arena must hold; a larger one replaces the buffer.
+    /// The target's size in physical pixels, which the projection is built for.
+    pub physical_size: [u32; 2],
+    /// Instance slots the arena must hold; a different count replaces the
+    /// buffer.
     pub arena_capacity: u32,
     pub writes: &'a [ArenaWrite],
     pub staging: &'a [GlyphInstance],
+    /// Index slots the draw order must hold, likewise.
+    pub order_capacity: u32,
+    pub index_writes: &'a [ArenaWrite],
+    pub index_staging: &'a [u32],
     pub runs: &'a [TextRunGpu],
     /// Rows that changed, as one span.
     pub run_dirty: Option<Range<u32>>,
@@ -574,7 +698,7 @@ pub(super) struct FrameUpload<'a> {
     pub uploaded_presentations: &'a [TextPresentationGpu],
 }
 
-/// One coalesced run of arena slots to write, staged contiguously.
+/// One coalesced run of arena or index slots to write, staged contiguously.
 #[derive(Clone, Debug)]
 pub(super) struct ArenaWrite {
     pub offset: u32,
@@ -582,10 +706,12 @@ pub(super) struct ArenaWrite {
 }
 
 /// Bytes written, split the way [`super::TextGlyphCounters`] reports them:
-/// glyph geometry against the presentation tables that only say where it goes.
+/// glyph geometry, the draw order over it, and the presentation tables that
+/// only say where it goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct TextUploadBytes {
     pub instances: usize,
+    pub indices: usize,
     pub presentation: usize,
 }
 
@@ -607,15 +733,9 @@ fn build_pipeline(
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<GlyphInstance>() as u64,
+                array_stride: INDEX_BYTES,
                 step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array!(
-                    0 => Sint32x2,
-                    1 => Uint32,
-                    2 => Uint32,
-                    3 => Uint32,
-                    4 => Uint32,
-                ),
+                attributes: &wgpu::vertex_attr_array!(0 => Uint32),
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
@@ -640,10 +760,82 @@ fn build_pipeline(
     })
 }
 
-fn storage_entry(binding: u32, min: u64) -> wgpu::BindGroupLayoutEntry {
+const INSTANCE_BYTES: u64 = std::mem::size_of::<GlyphInstance>() as u64;
+const INDEX_BYTES: u64 = std::mem::size_of::<u32>() as u64;
+
+fn instance_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.text.instances"),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Lay a frame's staged instances and then its staged indices out in one
+/// view, through `write(range, bytes)`.
+fn fill_staged(mut write: impl FnMut(Range<usize>, &[u8]), frame: &FrameUpload<'_>) {
+    let instances: &[u8] = bytemuck::cast_slice(frame.staging);
+    let indices: &[u8] = bytemuck::cast_slice(frame.index_staging);
+    write(0..instances.len(), instances);
+    write(instances.len()..instances.len() + indices.len(), indices);
+}
+
+/// Copy each staged run from `source`, whose staging starts at `base`, to its
+/// place in `destination`, `stride` bytes a slot. Returns the bytes copied.
+fn copy_writes(
+    encoder: &mut wgpu::CommandEncoder,
+    source: &wgpu::Buffer,
+    base: u64,
+    writes: &[ArenaWrite],
+    stride: u64,
+    destination: &wgpu::Buffer,
+) -> usize {
+    let mut copied = 0;
+    for write in writes {
+        let len = u64::from(write.staged.end - write.staged.start) * stride;
+        encoder.copy_buffer_to_buffer(
+            source,
+            base + u64::from(write.staged.start) * stride,
+            destination,
+            u64::from(write.offset) * stride,
+            len,
+        );
+        copied += len as usize;
+    }
+    copied
+}
+
+/// Bytes a target's staging ring starts at, and the most it grows to.
+const MIN_STAGING: u64 = 64 * 1024;
+const MAX_STAGING: u64 = 1024 * 1024;
+
+fn staging_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.text.staging"),
+        size,
+        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.text.indices"),
+        size,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+fn storage_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+    min: u64,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+        visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: true },
             has_dynamic_offset: false,
@@ -654,6 +846,30 @@ fn storage_entry(binding: u32, min: u64) -> wgpu::BindGroupLayoutEntry {
 }
 
 impl TextTargetGpu {
+    /// Room for `len` bytes in the staging ring, and where it starts. The
+    /// ring is kept at least four frames of this size, so the stretch a
+    /// second paint before the same submit takes does not wrap onto the
+    /// first one's. `None` when that would take more than [`MAX_STAGING`]:
+    /// the ring stays sized for the frames a steady shell makes.
+    fn stage(&mut self, device: &wgpu::Device, len: u64) -> Option<u64> {
+        let wanted = len.saturating_mul(4);
+        if wanted > MAX_STAGING {
+            return None;
+        }
+        if wanted > self.staging_capacity {
+            self.staging_capacity = wanted.next_power_of_two().max(MIN_STAGING);
+            self.staging = staging_buffer(device, self.staging_capacity);
+            self.staging_cursor = 0;
+            self.allocations += 1;
+        }
+        if self.staging_cursor + len > self.staging_capacity {
+            self.staging_cursor = 0;
+        }
+        let at = self.staging_cursor;
+        self.staging_cursor = at + len;
+        Some(at)
+    }
+
     pub(super) fn take_allocations(&mut self) -> usize {
         std::mem::take(&mut self.allocations)
     }
@@ -666,13 +882,13 @@ impl TextTargetGpu {
             mapped_at_creation: false,
         });
         let mut target = Self {
-            instances: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nana-ui.scene.text.instances"),
-                size: (INITIAL_INSTANCES * std::mem::size_of::<GlyphInstance>()) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
+            instances: instance_buffer(device, INITIAL_INSTANCES as u64 * INSTANCE_BYTES),
             instance_capacity: INITIAL_INSTANCES,
+            indices: index_buffer(device, INITIAL_INSTANCES as u64 * INDEX_BYTES),
+            index_capacity: INITIAL_INSTANCES,
+            staging: staging_buffer(device, MIN_STAGING),
+            staging_capacity: MIN_STAGING,
+            staging_cursor: 0,
             runs: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana-ui.scene.text.runs"),
                 size: (INITIAL_RUNS * std::mem::size_of::<TextRunGpu>()) as u64,
@@ -717,6 +933,10 @@ impl TextTargetGpu {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.presentations.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.instances.as_entire_binding(),
                 },
             ],
         })
@@ -776,8 +996,8 @@ impl GlyphInstance {
     }
 
     /// A glyph that covers nothing. Fills the slack a size class leaves after
-    /// an entry's glyphs so the arena stays contiguous and neighbouring
-    /// entries still batch into one draw.
+    /// an entry's glyphs, which the entry's index range still names, so
+    /// neighbouring entries batch into one draw across it.
     pub(super) const VACANT: Self = Self {
         origin: [0, 0],
         dim: 0,

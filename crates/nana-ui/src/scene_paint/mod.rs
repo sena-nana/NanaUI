@@ -1398,7 +1398,8 @@ impl SceneWgpuPainter {
             );
             self.icons
                 .upload(&self.device, &self.queue, Some(&gpu_work));
-            self.text.upload(&self.device, &self.queue, Some(&gpu_work));
+            self.text
+                .upload_with(&self.device, &self.queue, encoder, Some(&gpu_work));
             self.backdrop
                 .upload(&self.device, &self.queue, dest_physical, Some(&gpu_work));
             let gpu_upload = upload_started.elapsed();
