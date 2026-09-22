@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-text-constraint-resize",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [
+      1280,
+      800
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 320,
+      "height": 180
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view"
+    ],
+    "node_repeat": {
+      "text": 1000
+    },
+    "text_animation": "resize"
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_resize_shapes_nothing",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No label reached the shaper: what they say and how they are styled did not change, only how wide they are."
+    },
+    {
+      "name": "text_resize_reshapes_no_layout",
+      "path": "text_counters.text_layouts_reshaped",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Every new layout was built from the shaped runs the label already had."
+    },
+    {
+      "name": "text_resize_reaches_the_labels",
+      "path": "text_counters.text_layout_lookups",
+      "op": "gte",
+      "value": 900,
+      "status": "required",
+      "note": "Labels that needed a layout other than the one they held: the width change really reached the text. A frame that looked nothing up would pass every other row here by construction. The layouts themselves may come from the engine's layout cache (two widths alternate) or be relaid out from shaped runs; either way nothing is shaped."
+    },
+    {
+      "name": "text_resize_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The painter drew the layouts the Runtime measured instead of laying the paragraphs out again."
+    },
+    {
+      "name": "text_resize_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Both widths were drawn during warm-up, so every glyph position the resize alternates between is already in the atlas."
+    },
+    {
+      "name": "text_resize_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No atlas region reached the GPU."
+    }
+  ],
+  "notes": "Issue #99 constraint-only gate. Every one of a thousand wrapping labels alternates between two widths every frame and nothing else. A width change gives each label a new layout, from the engine's layout cache or from the runs it already shaped: no shaping, no painter-side layout, no raster, no atlas upload. Instances are rebuilt (the glyphs moved) and are not gated. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+}

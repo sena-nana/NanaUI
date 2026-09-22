@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "runner": "nana",
+  "status": "ok",
+  "scenario_id": "gpu-scene-text-retained",
+  "timing_gate_enforceable": false,
+  "relative_gate_enforceable": false,
+  "machine": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "hostname": "zt-admindeMac-mini.local",
+    "fixed_benchmark_machine": false,
+    "note": "This is the host that invoked the runner. GitHub `ubuntu-latest` / `macos-latest` weekly cron is not a named fixed benchmark machine (Issue #8 §8.2 / #12)."
+  },
+  "scenario": {
+    "schema_version": 1,
+    "id": "gpu-scene-text-retained",
+    "kind": "GpuScene",
+    "params": {
+      "composition": "UiOnly",
+      "viewport": [
+        1280,
+        800
+      ],
+      "host_texture": {
+        "slot": "content",
+        "width": 320,
+        "height": 180
+      },
+      "ui_nodes": [
+        "list",
+        "text",
+        "gpu-texture-view"
+      ],
+      "node_repeat": {
+        "text": 1000
+      },
+      "text_ticker": true
+    },
+    "record": [
+      "batch",
+      "gpu_upload",
+      "encode",
+      "submit",
+      "work_counters"
+    ],
+    "invariants": [
+      {
+        "name": "text_retained_steady_shapes_only_what_changed",
+        "path": "text_counters.text_nodes_shaped",
+        "op": "lte",
+        "value": 1,
+        "status": "required",
+        "note": "Issue #99 static steady: only the ticking label reaches the shaper; the 999 still labels are skipped on their revisions."
+      },
+      {
+        "name": "text_retained_steady_lays_out_only_what_changed",
+        "path": "text_counters.text_layouts_created",
+        "op": "lte",
+        "value": 1,
+        "status": "required",
+        "note": "One new layout, the ticker's. A still label keeps the layout it holds."
+      },
+      {
+        "name": "text_retained_steady_paint_lays_out_nothing",
+        "path": "text_counters.paint_shape_cache_misses",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "The painter draws the layouts the Runtime retained, the ticker's new one included."
+      },
+      {
+        "name": "text_retained_steady_rebuilds_only_what_changed",
+        "path": "text_counters.text_instance_rebuilds",
+        "op": "lte",
+        "value": 1,
+        "status": "required",
+        "note": "One label's text changes per frame. Every other paragraph must be answered by its retained entry. Missing stays not-evaluable."
+      },
+      {
+        "name": "text_retained_steady_rasterizes_nothing",
+        "path": "text_counters.glyph_rasterized",
+        "op": "lte",
+        "value": 4,
+        "status": "required",
+        "note": "The ticker's digits are the only glyphs a steady frame can fault in, and only until it has seen all ten."
+      },
+      {
+        "name": "text_retained_steady_uploads_no_atlas_region",
+        "path": "text_counters.glyph_upload_bytes",
+        "op": "lte",
+        "value": 4096,
+        "status": "required",
+        "note": "Same bound, in bytes: a steady frame may fault a digit, never a page."
+      },
+      {
+        "name": "text_retained_steady_moves_no_other_instance",
+        "path": "text_counters.text_instance_upload_bytes",
+        "op": "lte",
+        "value": 4096,
+        "status": "required",
+        "note": "Only the changed paragraph's block may reach the GPU. A thousand labels is about 120 KiB, so this fails closed on a whole-arena rewrite."
+      },
+      {
+        "name": "text_retained_steady_answers_nodes_from_entries",
+        "path": "text_counters.text_prepare_nodes_skipped",
+        "op": "gte",
+        "value": 900,
+        "status": "required",
+        "note": "Nodes that reached a draw without resolving a glyph. Missing stays not-evaluable and must never be read as 0."
+      }
+    ],
+    "notes": "Issue #98 retained-text gate. One label changes per frame so the painter cannot answer from its prepared batch — which is what every frame beside an animation looks like. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+  },
+  "equivalence": "same-scenario",
+  "source_binary": "nana-gpu-scene-benchmark",
+  "source_report": "/Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json",
+  "mapping_notes": [
+    "Loaded perf/scenarios/gpu-scene-text-retained.json and materialized its UiOnly params (viewport, host_texture slot, ui_nodes, node_repeat).",
+    "RuntimeDocument flush + HostTexture content slot + SceneWgpuPainter encode/submit. Not a private hosted-gpu-demo tree. No CPU readback.",
+    "gpu_upload_bytes counts observed queue.write_buffer on that path. NanaRenderer::text atlas uploads are reported separately as glyph_upload_bytes, not estimated into this one.",
+    "Batch / GpuUpload / Encode / Submit are FrameProfiler status=ran on the same encode/submit. Runtime-only drains keep those stages unsupported and omit GPU keys.",
+    "Adapter: Apple M4 (Metal).",
+    "text_counters are per sampled frame: what one frame asked the retained-text path to resolve, rebuild and upload again."
+  ],
+  "metrics": {
+    "batch_ms": {
+      "p50": 0.147833,
+      "p95": 0.179917,
+      "p99": 0.180958,
+      "max": 0.180958
+    },
+    "gpu_upload_ms": {
+      "p50": 0.008666,
+      "p95": 0.0155,
+      "p99": 0.023916,
+      "max": 0.023916
+    },
+    "encode_ms": {
+      "p50": 0.003791,
+      "p95": 0.00475,
+      "p99": 0.005791999999999999,
+      "max": 0.005791999999999999
+    },
+    "submit_ms": {
+      "p50": 0.085875,
+      "p95": 0.327166,
+      "p99": 0.376,
+      "max": 0.376
+    }
+  },
+  "work_counters": {
+    "batch_rebuilds": 0,
+    "draw_batches": 3,
+    "draw_calls": 3,
+    "gpu_upload_bytes": 800,
+    "gpu_buffer_reallocations": 0
+  },
+  "text_counters": {
+    "glyph_rasterized": 0.45,
+    "glyph_resolve_requests": 8.0,
+    "glyph_upload_bytes": 43.45,
+    "paint_shape_cache_misses": 0.0,
+    "text_constraint_only_relayouts": 0.0,
+    "text_gpu_entries_active": 1000.0,
+    "text_instance_rebuilds": 1.0,
+    "text_instance_upload_bytes": 288.0,
+    "text_layout_lookups": 1.0,
+    "text_layouts_created": 1.0,
+    "text_layouts_reshaped": 1.0,
+    "text_nodes_shaped": 1.0,
+    "text_prepare_nodes_considered": 1000.0,
+    "text_prepare_nodes_culled": 0.0,
+    "text_prepare_nodes_skipped": 999.0
+  },
+  "invariants": [
+    {
+      "name": "text_retained_steady_shapes_only_what_changed",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 1,
+      "measured": 1.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_lays_out_only_what_changed",
+      "path": "text_counters.text_layouts_created",
+      "op": "lte",
+      "value": 1,
+      "measured": 1.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_rebuilds_only_what_changed",
+      "path": "text_counters.text_instance_rebuilds",
+      "op": "lte",
+      "value": 1,
+      "measured": 1.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 4,
+      "measured": 0.45,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 4096,
+      "measured": 43.45,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_moves_no_other_instance",
+      "path": "text_counters.text_instance_upload_bytes",
+      "op": "lte",
+      "value": 4096,
+      "measured": 288.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_retained_steady_answers_nodes_from_entries",
+      "path": "text_counters.text_prepare_nodes_skipped",
+      "op": "gte",
+      "value": 900,
+      "measured": 999.0,
+      "status": "ok"
+    }
+  ],
+  "frame_stages": {
+    "Batch": {
+      "status": "ran"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Submit": {
+      "status": "ran"
+    }
+  },
+  "command": [
+    "cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --output /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json --scenario /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/perf/scenarios/gpu-scene-text-retained.json"
+  ]
+}

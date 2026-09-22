@@ -206,7 +206,9 @@ struct ScenarioParams {
     /// frame: its color, or its container's opacity or transform. These are
     /// the #98 paint-only and compositor-only gates — the text never changes,
     /// so every frame must be answered without shaping, laying out,
-    /// rasterizing or resolving a glyph.
+    /// rasterizing or resolving a glyph. `resize` is the #99 constraint-only
+    /// gate: the labels' width changes, so every one is laid out again, from
+    /// the runs it already shaped.
     #[serde(default)]
     text_animation: Option<TextAnimation>,
 }
@@ -220,6 +222,8 @@ enum TextAnimation {
     Opacity,
     /// The list holding the labels turns.
     Transform,
+    /// Every label alternates between two widths it wraps inside.
+    Resize,
 }
 
 impl ScenarioParams {
@@ -403,6 +407,25 @@ fn text_counters_per_frame(
         "paint_shape_cache_misses".to_string(),
         shaping.paint_misses as f64 / per_frame,
     );
+    // #99 constraint-only. A node asks the engine's layout cache only when it
+    // needs a layout other than the one it holds, so the lookups are the nodes
+    // a width change reached; a new layout either reused the shaped runs it
+    // had (a width change) or had to shape again (new text or style).
+    out.insert(
+        "text_layout_lookups".to_string(),
+        shaping.layout_lookups as f64 / per_frame,
+    );
+    out.insert(
+        "text_constraint_only_relayouts".to_string(),
+        shaping.constraint_only_relayouts as f64 / per_frame,
+    );
+    out.insert(
+        "text_layouts_reshaped".to_string(),
+        shaping
+            .layouts_created
+            .saturating_sub(shaping.constraint_only_relayouts) as f64
+            / per_frame,
+    );
     let mut delta = |name: &str, after: u64, before: u64| {
         out.insert(
             name.to_string(),
@@ -495,6 +518,8 @@ fn run_scenario(scenario: ScenarioFile, args: &Args) -> Report {
 struct TextShapingWork {
     nodes_shaped: usize,
     layouts_created: usize,
+    constraint_only_relayouts: usize,
+    layout_lookups: usize,
     paint_misses: usize,
 }
 
@@ -690,6 +715,8 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
             let runtime_text = document.context().world().last_text_work_counters();
             shaping.nodes_shaped += runtime_text.text_nodes_shaped;
             shaping.layouts_created += runtime_text.layouts_created;
+            shaping.constraint_only_relayouts += runtime_text.constraint_only_relayouts;
+            shaping.layout_lookups += runtime_text.layout_cache_lookups;
             if args.allocation_counts {
                 allocation_report.observe(runtime_allocations, paint_allocations);
             }
@@ -840,7 +867,32 @@ fn animate_text(
                 .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
                 .expect("turn list");
         }
+        TextAnimation::Resize => {
+            let width = if frame.is_multiple_of(2) {
+                RESIZE_WIDTHS[0]
+            } else {
+                RESIZE_WIDTHS[1]
+            };
+            for text in &handles.texts {
+                document
+                    .context_mut()
+                    .set_component(*text, Text::new(RESIZE_TEXT).style(resize_style(width)))
+                    .expect("resize text");
+            }
+        }
     }
+}
+
+/// Both widths wrap [`RESIZE_TEXT`] onto more than one line, and the labels
+/// start at neither, so the first sampled frame is already a change.
+const RESIZE_WIDTHS: [f32; 2] = [72.0, 60.0];
+/// Words to wrap between: a width change moves line breaks, not just the box.
+const RESIZE_TEXT: &str = "UiOnly wraps here";
+
+fn resize_style(width: f32) -> NodeStyle {
+    let mut style = NodeStyle::default();
+    Arc::make_mut(&mut style.layout).width = Some(LengthSpec::Px(width));
+    style
 }
 
 const UI_ONLY_TEXT: &str = "UiOnly";
@@ -879,7 +931,14 @@ fn ui_document(params: &ScenarioParams) -> Result<(RuntimeDocument, DocumentHand
                 "text" => {
                     let child = document
                         .context_mut()
-                        .create_component(document_id, Text::new(UI_ONLY_TEXT))
+                        .create_component(
+                            document_id,
+                            if params.text_animation == Some(TextAnimation::Resize) {
+                                Text::new(RESIZE_TEXT)
+                            } else {
+                                Text::new(UI_ONLY_TEXT)
+                            },
+                        )
                         .expect("text");
                     document
                         .context_mut()

@@ -32,6 +32,30 @@
   ],
   "invariants": [
     {
+      "name": "text_retained_steady_shapes_only_what_changed",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 1,
+      "status": "required",
+      "note": "Issue #99 static steady: only the ticking label reaches the shaper; the 999 still labels are skipped on their revisions."
+    },
+    {
+      "name": "text_retained_steady_lays_out_only_what_changed",
+      "path": "text_counters.text_layouts_created",
+      "op": "lte",
+      "value": 1,
+      "status": "required",
+      "note": "One new layout, the ticker's. A still label keeps the layout it holds."
+    },
+    {
+      "name": "text_retained_steady_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The painter draws the layouts the Runtime retained, the ticker's new one included."
+    },
+    {
       "name": "text_retained_steady_rebuilds_only_what_changed",
       "path": "text_counters.text_instance_rebuilds",
       "op": "lte",

@@ -1,5 +1,5 @@
-"""Issue #98 retained-text work-counter extractor / gate tests: the ticker
-(static steady), paint-only and compositor-only rows."""
+"""Issue #98 / #99 retained-text work-counter extractor / gate tests: the
+ticker (static steady), paint-only, compositor-only and constraint-only rows."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,7 +15,9 @@ ANIMATED_IDS = {
     "gpu-scene-text-paint-color": "color",
     "gpu-scene-text-compositor-opacity": "opacity",
     "gpu-scene-text-compositor-transform": "transform",
+    "gpu-scene-text-constraint-resize": "resize",
 }
+RESIZE_ID = "gpu-scene-text-constraint-resize"
 EXPECTED_TEXT_IDS = {TICKER_ID, *ANIMATED_IDS}
 
 
@@ -23,8 +25,26 @@ def _quiet_text(scenario_id: str = TICKER_ID) -> dict[str, Any]:
     """What one retained frame owes.
 
     Beside a ticking label: that label and nothing else. Under a recolor, a
-    fade or a turn: nothing at all — the text is what it was.
+    fade or a turn: nothing at all — the text is what it was. Under a resize:
+    a new layout for every label, and none of it shaped.
     """
+    if scenario_id == RESIZE_ID:
+        return {
+            "glyph_resolve_requests": 6000.0,
+            "glyph_rasterized": 0.0,
+            "glyph_upload_bytes": 0.0,
+            "text_instance_rebuilds": 400.0,
+            "text_instance_upload_bytes": 190000.0,
+            "text_prepare_nodes_considered": 1000.0,
+            "text_prepare_nodes_skipped": 0.0,
+            "text_gpu_entries_active": 400.0,
+            "text_nodes_shaped": 0.0,
+            "text_layouts_created": 0.0,
+            "text_layout_lookups": 1000.0,
+            "text_constraint_only_relayouts": 0.0,
+            "text_layouts_reshaped": 0.0,
+            "paint_shape_cache_misses": 0.0,
+        }
     if scenario_id == TICKER_ID:
         return {
             "glyph_resolve_requests": 6.0,
@@ -204,6 +224,23 @@ def _self_test_retained_text(root: Path) -> list[str]:
                 "glyph_rasterized",
                 "glyph_upload_bytes",
                 "text_prepare_nodes_skipped",
+            ):
+                if counter not in gated:
+                    errors.append(f"{scenario_id} must gate {counter}")
+        elif scenario_id == RESIZE_ID:
+            gated = {
+                str(row["path"]).removeprefix("text_counters.")
+                for row in scenario.get("invariants") or []
+            }
+            # The #99 constraint-only gate, by name, and the row that proves the
+            # width change reached the text at all.
+            for counter in (
+                "text_nodes_shaped",
+                "text_layouts_reshaped",
+                "text_layout_lookups",
+                "paint_shape_cache_misses",
+                "glyph_rasterized",
+                "glyph_upload_bytes",
             ):
                 if counter not in gated:
                     errors.append(f"{scenario_id} must gate {counter}")

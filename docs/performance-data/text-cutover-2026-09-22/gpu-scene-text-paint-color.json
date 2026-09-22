@@ -1,0 +1,261 @@
+{
+  "schema_version": 1,
+  "runner": "nana",
+  "status": "ok",
+  "scenario_id": "gpu-scene-text-paint-color",
+  "timing_gate_enforceable": false,
+  "relative_gate_enforceable": false,
+  "machine": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "python": "3.14.7",
+    "hostname": "zt-admindeMac-mini.local",
+    "fixed_benchmark_machine": false,
+    "note": "This is the host that invoked the runner. GitHub `ubuntu-latest` / `macos-latest` weekly cron is not a named fixed benchmark machine (Issue #8 §8.2 / #12)."
+  },
+  "scenario": {
+    "schema_version": 1,
+    "id": "gpu-scene-text-paint-color",
+    "kind": "GpuScene",
+    "params": {
+      "composition": "UiOnly",
+      "viewport": [
+        1280,
+        800
+      ],
+      "host_texture": {
+        "slot": "content",
+        "width": 320,
+        "height": 180
+      },
+      "ui_nodes": [
+        "list",
+        "text",
+        "gpu-texture-view"
+      ],
+      "node_repeat": {
+        "text": 1000
+      },
+      "text_animation": "color"
+    },
+    "record": [
+      "batch",
+      "gpu_upload",
+      "encode",
+      "submit",
+      "work_counters"
+    ],
+    "invariants": [
+      {
+        "name": "text_paint_color_shapes_nothing",
+        "path": "text_counters.text_nodes_shaped",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "The Runtime measured no text node again: nothing about what any label says changed."
+      },
+      {
+        "name": "text_paint_color_lays_out_nothing",
+        "path": "text_counters.text_layouts_created",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "No paragraph was laid out again, by the Runtime or by the painter."
+      },
+      {
+        "name": "text_paint_color_paint_lays_out_nothing",
+        "path": "text_counters.paint_shape_cache_misses",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "The painter drew every label from a layout it already held."
+      },
+      {
+        "name": "text_paint_color_rasterizes_nothing",
+        "path": "text_counters.glyph_rasterized",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "No glyph bitmap was produced: the text and its size are what they were."
+      },
+      {
+        "name": "text_paint_color_uploads_no_atlas_region",
+        "path": "text_counters.glyph_upload_bytes",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "No atlas region reached the GPU."
+      },
+      {
+        "name": "text_paint_color_rebuilds_no_entry",
+        "path": "text_counters.text_instance_rebuilds",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "Every label was answered by its retained entry; none was resolved again."
+      },
+      {
+        "name": "text_paint_color_moves_no_instance",
+        "path": "text_counters.text_instance_upload_bytes",
+        "op": "lte",
+        "value": 0,
+        "status": "required",
+        "note": "A solid label's glyphs inherit the run row's color, so recoloring it rewrites no instance byte."
+      },
+      {
+        "name": "text_paint_color_answers_nodes_from_entries",
+        "path": "text_counters.text_prepare_nodes_skipped",
+        "op": "gte",
+        "value": 900,
+        "status": "required",
+        "note": "Nodes that reached a draw without resolving a glyph. Missing stays not-evaluable and must never be read as 0."
+      }
+    ],
+    "notes": "Issue #98 paint-only gate. Every one of a thousand labels changes its foreground color every frame and nothing else. A recolor is a run-row write: no shape, no layout, no raster, no atlas upload, no instance. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+  },
+  "equivalence": "same-scenario",
+  "source_binary": "nana-gpu-scene-benchmark",
+  "source_report": "/Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json",
+  "mapping_notes": [
+    "Loaded perf/scenarios/gpu-scene-text-paint-color.json and materialized its UiOnly params (viewport, host_texture slot, ui_nodes, node_repeat).",
+    "RuntimeDocument flush + HostTexture content slot + SceneWgpuPainter encode/submit. Not a private hosted-gpu-demo tree. No CPU readback.",
+    "gpu_upload_bytes counts observed queue.write_buffer on that path. NanaRenderer::text atlas uploads are reported separately as glyph_upload_bytes, not estimated into this one.",
+    "Batch / GpuUpload / Encode / Submit are FrameProfiler status=ran on the same encode/submit. Runtime-only drains keep those stages unsupported and omit GPU keys.",
+    "Adapter: Apple M4 (Metal).",
+    "text_counters are per sampled frame: what one frame asked the retained-text path to resolve, rebuild and upload again."
+  ],
+  "metrics": {
+    "batch_ms": {
+      "p50": 0.12875,
+      "p95": 0.13725,
+      "p99": 0.137542,
+      "max": 0.137542
+    },
+    "gpu_upload_ms": {
+      "p50": 0.019167,
+      "p95": 0.027583,
+      "p99": 0.030541,
+      "max": 0.030541
+    },
+    "encode_ms": {
+      "p50": 0.003709,
+      "p95": 0.005708,
+      "p99": 0.005915999999999999,
+      "max": 0.005915999999999999
+    },
+    "submit_ms": {
+      "p50": 0.046125000000000006,
+      "p95": 0.075959,
+      "p99": 0.0775,
+      "max": 0.0775
+    }
+  },
+  "work_counters": {
+    "batch_rebuilds": 0,
+    "draw_batches": 3,
+    "draw_calls": 3,
+    "gpu_upload_bytes": 48512,
+    "gpu_buffer_reallocations": 0
+  },
+  "text_counters": {
+    "glyph_rasterized": 0.0,
+    "glyph_resolve_requests": 0.0,
+    "glyph_upload_bytes": 0.0,
+    "paint_shape_cache_misses": 0.0,
+    "text_constraint_only_relayouts": 0.0,
+    "text_gpu_entries_active": 1000.0,
+    "text_instance_rebuilds": 0.0,
+    "text_instance_upload_bytes": 0.0,
+    "text_layout_lookups": 0.0,
+    "text_layouts_created": 0.0,
+    "text_layouts_reshaped": 0.0,
+    "text_nodes_shaped": 0.0,
+    "text_prepare_nodes_considered": 1000.0,
+    "text_prepare_nodes_culled": 0.0,
+    "text_prepare_nodes_skipped": 1000.0
+  },
+  "invariants": [
+    {
+      "name": "text_paint_color_shapes_nothing",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_lays_out_nothing",
+      "path": "text_counters.text_layouts_created",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_rebuilds_no_entry",
+      "path": "text_counters.text_instance_rebuilds",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_moves_no_instance",
+      "path": "text_counters.text_instance_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "measured": 0.0,
+      "status": "ok"
+    },
+    {
+      "name": "text_paint_color_answers_nodes_from_entries",
+      "path": "text_counters.text_prepare_nodes_skipped",
+      "op": "gte",
+      "value": 900,
+      "measured": 1000.0,
+      "status": "ok"
+    }
+  ],
+  "frame_stages": {
+    "Batch": {
+      "status": "ran"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Submit": {
+      "status": "ran"
+    }
+  },
+  "command": [
+    "cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --output /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/target/performance/issue8/gpu.json --scenario /Users/zt-c604184/Documents/workspace/sena-nana/NanaUI/perf/scenarios/gpu-scene-text-paint-color.json"
+  ]
+}
