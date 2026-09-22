@@ -72,6 +72,11 @@ done
 cargo run --release --locked -p nana-ui --features gpu --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 ```
 
+`--evaluate-invariants` 判定这五个 id（缺 `text_counters` 是 skipped，不是 ok）。PR CI 用
+`perf/fixtures/nana-gpu-scene-text-*.json`（真机 `nana-gpu-scene-benchmark` 原样输出）判定，
+每周的 macOS 任务现跑；重录 fixture 就是对每个 id 跑一次
+`cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --scenario perf/scenarios/<id>.json --output perf/fixtures/nana-<id>.json`。
+
 判据与前后数字见 [`docs/text-engine.md`](../docs/text-engine.md) 的「保留期文本」一节。
 
 ## Issue #87 compositor motion

@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "status": "ok",
+  "scenario_id": "gpu-scene-text-compositor-transform",
+  "composition": "UiOnly",
+  "materialization": {
+    "viewport": [
+      1280,
+      800
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 320,
+      "height": 180
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view"
+    ],
+    "node_repeat": {
+      "text": 1000
+    },
+    "shared_gpu_view_slot": false,
+    "text_ticker": false,
+    "text_animation": "transform",
+    "ui_entity_count": 1002,
+    "host_texture_resources": 1,
+    "scene_primitive_kinds": [
+      "host-texture",
+      "text"
+    ]
+  },
+  "frame_graph": {
+    "build_ms": 0.12316700000000001,
+    "pass_count": 3,
+    "resource_count": 2
+  },
+  "adapter": "Apple M4 (Metal)",
+  "frames": 20,
+  "gpu_work": {
+    "batch_rebuilds": 0,
+    "draw_batches": 3,
+    "draw_calls": 3,
+    "gpu_upload_bytes": 48608,
+    "gpu_buffer_reallocations": 0
+  },
+  "text_counters": {
+    "glyph_rasterized": 0.0,
+    "glyph_resolve_requests": 0.0,
+    "glyph_upload_bytes": 0.0,
+    "paint_shape_cache_misses": 0.0,
+    "text_constraint_only_relayouts": 0.0,
+    "text_gpu_entries_active": 1000.0,
+    "text_instance_rebuilds": 0.0,
+    "text_instance_upload_bytes": 0.0,
+    "text_layout_lookups": 0.0,
+    "text_layouts_created": 0.0,
+    "text_layouts_reshaped": 0.0,
+    "text_nodes_shaped": 0.0,
+    "text_prepare_nodes_considered": 1000.0,
+    "text_prepare_nodes_culled": 0.0,
+    "text_prepare_nodes_skipped": 1000.0
+  },
+  "frame_stages": {
+    "Accessibility": {
+      "status": "ran"
+    },
+    "Animation": {
+      "status": "skipped"
+    },
+    "Batch": {
+      "status": "ran"
+    },
+    "Encode": {
+      "status": "ran"
+    },
+    "Extract": {
+      "status": "ran"
+    },
+    "GpuUpload": {
+      "status": "ran"
+    },
+    "HitTest": {
+      "status": "ran"
+    },
+    "Input": {
+      "status": "skipped"
+    },
+    "Layout": {
+      "status": "skipped"
+    },
+    "Reconcile": {
+      "status": "skipped"
+    },
+    "Style": {
+      "status": "ran"
+    },
+    "Submit": {
+      "status": "ran"
+    },
+    "TextShape": {
+      "status": "ran"
+    }
+  },
+  "stages": {
+    "batch_ms": {
+      "p50": 0.156583,
+      "p95": 0.170709,
+      "p99": 0.171667,
+      "max": 0.171667
+    },
+    "gpu_upload_ms": {
+      "p50": 0.019834,
+      "p95": 0.025167000000000002,
+      "p99": 0.027583,
+      "max": 0.027583
+    },
+    "encode_ms": {
+      "p50": 0.003083,
+      "p95": 0.00425,
+      "p99": 0.004625,
+      "max": 0.004625
+    },
+    "submit_ms": {
+      "p50": 0.038166,
+      "p95": 0.12645800000000001,
+      "p99": 0.30650000000000005,
+      "max": 0.30650000000000005
+    }
+  },
+  "sampling": {
+    "elapsed_seconds": 0.015181041,
+    "warmup_seconds": 0.0073845,
+    "mode": "offscreen-submit",
+    "surface_present_measured": false,
+    "framework_cpu_prepare_ms": {
+      "p50": 0.6214999999999999,
+      "p95": 0.668458,
+      "p99": 0.7510420000000001,
+      "max": 0.7510420000000001
+    },
+    "runtime_passes": 20,
+    "structure_plan_rebuilds": 0,
+    "maximum_gpu_work_per_frame": {
+      "batch_rebuilds": 0,
+      "draw_batches": 3,
+      "draw_calls": 3,
+      "gpu_upload_bytes": 48608,
+      "gpu_buffer_reallocations": 0
+    }
+  }
+}

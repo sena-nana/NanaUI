@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from .extractors import extract_nana
-from .invariants import evaluate_invariants
+from .invariants import evaluate_invariants, judge_runner_invariants
 from .reports import key_error_reason
 from .schema import load_catalog, load_scenario
 
@@ -126,6 +126,11 @@ def _payload(scenario: dict[str, Any], text: dict[str, Any] | None) -> dict[str,
     return report
 
 
+def _decision(report: dict[str, Any], root: Path) -> str | None:
+    """What `--evaluate-invariants` makes of `report`."""
+    return judge_runner_invariants({**report, "runner": "nana"}, root=root).get("decision")
+
+
 def _self_test_retained_text(root: Path) -> list[str]:
     errors: list[str] = []
     catalog = load_catalog(root)
@@ -166,6 +171,10 @@ def _self_test_retained_text(root: Path) -> list[str]:
             errors.append(
                 f"{scenario_id} invariants must pass on a retained frame: {failed}"
             )
+        # `--evaluate-invariants` is what CI runs on the report. It has to
+        # judge this id, not wave it through as "not a §8.1 id".
+        if _decision(quiet, root) != "ok":
+            errors.append(f"{scenario_id} --evaluate-invariants must judge a retained frame ok")
         # The runner writes what `extract_nana` returns, so the counters have to
         # be in the payload the invariants were evaluated against — not stapled
         # to the report afterwards. Otherwise every text gate reads
@@ -212,6 +221,10 @@ def _self_test_retained_text(root: Path) -> list[str]:
                 errors.append(
                     f"{scenario_id} must fail {invariant['name']} on "
                     f"{counter}={noisy[counter]}"
+                )
+            if _decision(loud, root) != "failed":
+                errors.append(
+                    f"{scenario_id} --evaluate-invariants must fail {invariant['name']}"
                 )
         if scenario_id == TICKER_ID:
             gated = {
@@ -275,6 +288,8 @@ def _self_test_retained_text(root: Path) -> list[str]:
             errors.append(
                 f"{scenario_id} must not read missing text_counters as satisfied"
             )
+        if _decision(blind, root) == "ok":
+            errors.append(f"{scenario_id} --evaluate-invariants must not pass without text_counters")
 
         # The runner has to prove it ran the moving scene.
         silent = _payload(scenario, _quiet_text(scenario_id))
@@ -292,5 +307,20 @@ def _self_test_retained_text(root: Path) -> list[str]:
         except KeyError as exc:
             if echo not in key_error_reason(exc):
                 errors.append(f"{scenario_id} KeyError should name {echo}: {exc}")
+
+    # Both workflows judge every text gate: the PR job on the reports recorded
+    # on real hardware, the weekly macOS job on a live run.
+    pr_ci = (root / ".github" / "workflows" / "ci.yml").read_text()
+    weekly = (root / ".github" / "workflows" / "runtime-performance.yml").read_text()
+    jobs = {
+        "ci.yml": pr_ci.partition("issue8/text")[2],
+        "weekly macOS": weekly.split("macos-composition:", 1)[-1].partition("issue8/text")[2],
+    }
+    for scenario_id in sorted(EXPECTED_TEXT_IDS):
+        if not (root / "perf" / "fixtures" / f"nana-{scenario_id}.json").is_file():
+            errors.append(f"perf/fixtures/nana-{scenario_id}.json is missing")
+        for name, job in jobs.items():
+            if scenario_id not in job or "--evaluate-invariants target/performance/issue8/text" not in job:
+                errors.append(f"{name} must run and judge {scenario_id}")
 
     return errors

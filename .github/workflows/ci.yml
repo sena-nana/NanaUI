@@ -290,3 +290,17 @@ jobs:
             --from-report perf/fixtures/nana-gpu-scene-ui.json \
             --output target/performance/issue8/invariants/nana-gpu-scene-ui.json
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/invariants
+          # #98 / #99 retained-text gates, judged on reports recorded on real
+          # hardware (the weekly macOS job runs them live). Not §8.1 rows, so a
+          # directory of their own.
+          mkdir -p target/performance/issue8/text
+          for scenario in \
+            gpu-scene-text-retained gpu-scene-text-paint-color \
+            gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform \
+            gpu-scene-text-constraint-resize
+          do
+            python3 perf/runners/nana/run.py --scenario "$scenario" \
+              --from-report "perf/fixtures/nana-${scenario}.json" \
+              --output "target/performance/issue8/text/nana-${scenario}.json"
+          done
+          python3 perf/contract.py --evaluate-invariants target/performance/issue8/text

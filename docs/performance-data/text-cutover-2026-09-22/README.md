@@ -31,5 +31,18 @@ macOS，Apple M4（Metal），`--release --locked`。每个 JSON 是
 - IME 组字与 text-heavy table 的**产品引擎**计数：`perf/scenarios/ime.json` / `text-table.json`
   跑的是 em 宽度测试 shaper。编辑器每次组字只重排自己那一段由 `editable_text_node.rs` 的单测守着，
   表格由 `nana-text-paint-benchmark` 的 `table` / `table-scroll` workload 记录（不判定）。
-- 这五道门禁都**不在 CI 里真跑**：CI 只跑 `perf/contract.py --self-test`（合成数据，逐条验证
-  每个 invariant 单独都能打红）。真机数字就是这里这几份。
+- ~~这五道门禁都不在 CI 里真跑~~（已补上，见下）。
+
+## 之后补上的：CI 里的判定
+
+收口时 `perf/contract.py --evaluate-invariants` 把这五个 id 一律判成 **skipped**（「不是 §8.1
+honest-ok id」），也就是说即使有人把真机报告交给它，门禁也打不红。现在：
+
+- 判定器认 `catalog.json` 的 `nana_text_ids`：`text_counters.*` 全部量到且守住才是 ok，缺一条是
+  skipped（不许把缺失当作通过），和其他门禁混在一起时缺席的一律 fail-closed。它们不进
+  `SECTION_8_1_HONEST_OK_IDS`，§8.1 目录的完整性要求不变。
+- PR CI（`runtime-work-invariants`）用 `perf/fixtures/nana-gpu-scene-text-*.json` 判定——这是
+  本机（Apple M4）`nana-gpu-scene-benchmark` 的原样输出，和 `gpu-scene-ui` 的做法一样。
+- 每周的 `macos-composition` 任务在真 GPU 上现跑五道门禁并判定。
+- `--self-test` 用真正的判定器过一遍：安静帧 ok、任意一条计数打爆 failed、缺计数不是 ok，
+  并核对两个 workflow 都接了这五个 id。

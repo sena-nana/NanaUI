@@ -17,9 +17,21 @@ from .schema import (
     SECTION_8_1_STATIC_UI_IDS,
     SECTION_8_1_UNSUPPORTED_IDS,
     WORK_COUNTER_KEYS,
+    load_catalog,
     load_json,
     load_scenario,
 )
+
+
+def text_gate_ids(root: Path | None = None) -> frozenset[str]:
+    """The #98 / #99 retained-text gates (`catalog.json` `nana_text_ids`).
+
+    Not §8.1 catalog rows, but judged like them: a real report of one of these
+    is `ok` only when every `text_counters.*` row was measured and held. They
+    are outside `SECTION_8_1_HONEST_OK_IDS` so the §8.1 PR directory does not
+    have to carry them.
+    """
+    return frozenset(load_catalog(root).get("nana_text_ids") or [])
 
 
 
@@ -192,7 +204,9 @@ def is_runner_envelope(payload: Mapping[str, Any] | None) -> bool:
 
 
 
-def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
+def _skip_section_8_1(
+    scenario_id: str, runner: str, status: str, text_ids: frozenset[str]
+) -> str | None:
     if runner == "gpui":
         return "GPUI is #12 observation; skipped, not a Nana §8.1 gate"
     if runner == "iced":
@@ -201,7 +215,9 @@ def _skip_section_8_1(scenario_id: str, runner: str, status: str) -> str | None:
         return (
             f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
         )
-    if scenario_id not in SECTION_8_1_HONEST_OK_IDS:
+    if scenario_id in text_ids and runner != "nana":
+        return f"{scenario_id} is a Nana retained-text gate; skipped for {runner}"
+    if scenario_id not in SECTION_8_1_HONEST_OK_IDS and scenario_id not in text_ids:
         return (
             f"{scenario_id} is not a §8.1 honest-ok catalog id; skipped, not invariant-ok"
         )
@@ -244,7 +260,8 @@ def judge_runner_invariants(
     }
     if report.get("equivalence") is not None:
         judged["equivalence"] = report.get("equivalence")
-    skip = _skip_section_8_1(scenario_id, runner, status)
+    text_ids = text_gate_ids(root)
+    skip = _skip_section_8_1(scenario_id, runner, status, text_ids)
     if skip:
         judged["decision"] = "skipped"
         if status == "unsupported":
@@ -289,6 +306,15 @@ def judge_runner_invariants(
         judged["note"] = (
             f"{', '.join(unevaluable)} missing; vacuous ok is forbidden until runners "
             "export the measured value"
+        )
+        return judged
+    if scenario_id in text_ids and any(
+        item.get("status") == "not-evaluable" for item in evaluated
+    ):
+        judged["decision"] = "skipped"
+        judged["note"] = (
+            f"{scenario_id} text_counters missing; vacuous ok is forbidden until the "
+            "GPU scene report carries the counter. Do not invent 0."
         )
         return judged
     if scenario_id == "gpu-scene-ui" and any(
@@ -408,11 +434,12 @@ def evaluate_runner_invariant_paths(
         summary["status"] = "failed"
         return summary, EXIT_ERROR
     present_ok = {item.get("scenario_id") for item in ok}
+    gated = SECTION_8_1_HONEST_OK_IDS | text_gate_ids(root)
     gated_skipped = sorted(
         {
             str(item.get("scenario_id"))
             for item in skipped
-            if item.get("scenario_id") in SECTION_8_1_HONEST_OK_IDS
+            if item.get("scenario_id") in gated
             and item.get("runner") == "nana"
             and item.get("scenario_id") not in present_ok
         }
@@ -420,7 +447,7 @@ def evaluate_runner_invariant_paths(
     if ok and gated_skipped:
         summary["status"] = "failed"
         summary["note"] = (
-            "§8.1 honest-ok catalog id skipped; mixed skip is fail-closed: "
+            "gated Nana id skipped; mixed skip is fail-closed: "
             + ", ".join(gated_skipped)
         )
         return summary, EXIT_ERROR
