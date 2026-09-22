@@ -19,6 +19,8 @@ pub(super) struct MotionGpuResources {
     descriptors: wgpu::Buffer,
     keyframes: wgpu::Buffer,
     time: wgpu::Buffer,
+    /// What `time` holds, so a frame whose clock did not move writes nothing.
+    uploaded_time: Option<MotionGpuTime>,
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -91,6 +93,7 @@ impl MotionGpuResources {
             descriptors,
             keyframes,
             time,
+            uploaded_time: None,
             bind_layout,
             bind_group,
             dummy_group,
@@ -177,11 +180,15 @@ impl MotionGpuResources {
             );
         }
         let time = MotionGpuTime::new(scene.motion_gpu_now());
+        if self.uploaded_time == Some(time) {
+            return;
+        }
         queue.write_buffer(
             &self.time,
             0,
             motion_gpu_as_bytes(std::slice::from_ref(&time)),
         );
+        self.uploaded_time = Some(time);
     }
 
     /// Test/devtools only. Product present must not call this.
@@ -202,6 +209,7 @@ impl MotionGpuResources {
             0,
             motion_gpu_as_bytes(std::slice::from_ref(&time)),
         );
+        self.uploaded_time = Some(time);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("nana-ui.scene.motion.eval.target"),
             size: wgpu::Extent3d {

@@ -131,7 +131,7 @@ fn pack_caps(start: StrokeCap, end: StrokeCap) -> f32 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct Uniforms {
     transform: [f32; 16],
     viewport_scale: f32,
@@ -469,6 +469,8 @@ pub(super) struct MeshPipeline {
     bind_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
+    /// What `uniforms` holds, so a frame of the same size writes nothing.
+    uploaded_uniforms: Option<Uniforms>,
     clips: wgpu::Buffer,
     clip_capacity: usize,
     instances: wgpu::Buffer,
@@ -613,6 +615,7 @@ impl MeshPipeline {
             bind_layout,
             bind_group,
             uniforms,
+            uploaded_uniforms: None,
             clips,
             clip_capacity: INITIAL_CLIPS,
             instances: device.create_buffer(&wgpu::BufferDescriptor {
@@ -905,10 +908,14 @@ impl MeshPipeline {
             viewport_scale,
             _pad: [0.0; 3],
         };
-        let uniform_bytes = bytemuck::bytes_of(&uniforms);
-        queue.write_buffer(&self.uniforms, 0, uniform_bytes);
-        if let Some(work) = gpu_work {
-            work.record_upload(uniform_bytes.len());
+        // A write has a fixed cost far above these bytes; the size rarely changes.
+        if self.uploaded_uniforms != Some(uniforms) {
+            let uniform_bytes = bytemuck::bytes_of(&uniforms);
+            queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+            self.uploaded_uniforms = Some(uniforms);
+            if let Some(work) = gpu_work {
+                work.record_upload(uniform_bytes.len());
+            }
         }
         if self.paths.upload(device, queue, gpu_work) {
             self.bind_group = mesh_bind_group(
@@ -3227,6 +3234,7 @@ pub(super) struct MeshPipelineTarget {
     paths: PathBuffers,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
+    uploaded_uniforms: Option<Uniforms>,
     clips: wgpu::Buffer,
     clip_capacity: usize,
     instances: wgpu::Buffer,
@@ -3268,6 +3276,7 @@ impl MeshPipeline {
                 ),
                 paths,
                 uniforms,
+                uploaded_uniforms: None,
                 clips,
                 clip_capacity: INITIAL_CLIPS,
                 instances: device.create_buffer(&wgpu::BufferDescriptor {
@@ -3287,6 +3296,7 @@ impl MeshPipeline {
         std::mem::swap(&mut self.paths, &mut target.paths);
         std::mem::swap(&mut self.bind_group, &mut target.bind_group);
         std::mem::swap(&mut self.uniforms, &mut target.uniforms);
+        std::mem::swap(&mut self.uploaded_uniforms, &mut target.uploaded_uniforms);
         std::mem::swap(&mut self.clips, &mut target.clips);
         std::mem::swap(&mut self.clip_capacity, &mut target.clip_capacity);
         std::mem::swap(&mut self.instances, &mut target.instances);

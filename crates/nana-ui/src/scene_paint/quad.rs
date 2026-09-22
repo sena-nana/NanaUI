@@ -111,7 +111,7 @@ const _: () = assert!(std::mem::size_of::<QuadPaintData>() == 560);
 const _: () = assert!(std::mem::align_of::<QuadPaintData>() == 4);
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 struct Uniforms {
     transform: [f32; 16],
     scale: f32,
@@ -123,6 +123,8 @@ pub(super) struct QuadPipeline {
     pipeline_msaa: wgpu::RenderPipeline,
     bind_layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
+    /// What `uniforms` holds, so a frame of the same size writes nothing.
+    uploaded_uniforms: Option<Uniforms>,
     paint_buffer: wgpu::Buffer,
     paint_capacity: usize,
     url_view: wgpu::TextureView,
@@ -324,6 +326,7 @@ impl QuadPipeline {
             pipeline_msaa,
             bind_layout,
             uniforms,
+            uploaded_uniforms: None,
             paint_buffer,
             paint_capacity,
             url_view,
@@ -684,10 +687,14 @@ impl QuadPipeline {
             scale: scale_factor,
             _padding: [0.0; 3],
         };
-        let uniform_bytes = bytemuck::bytes_of(&uniforms);
-        queue.write_buffer(&self.uniforms, 0, uniform_bytes);
-        if let Some(work) = gpu_work {
-            work.record_upload(uniform_bytes.len());
+        // A write has a fixed cost far above these bytes; the size rarely changes.
+        if self.uploaded_uniforms != Some(uniforms) {
+            let uniform_bytes = bytemuck::bytes_of(&uniforms);
+            queue.write_buffer(&self.uniforms, 0, uniform_bytes);
+            self.uploaded_uniforms = Some(uniforms);
+            if let Some(work) = gpu_work {
+                work.record_upload(uniform_bytes.len());
+            }
         }
         if self.pending.is_empty() {
             return;
@@ -1780,6 +1787,7 @@ fn alpha_split_png_data_url() -> String {
 
 pub(super) struct QuadPipelineTarget {
     uniforms: wgpu::Buffer,
+    uploaded_uniforms: Option<Uniforms>,
     paint_buffer: wgpu::Buffer,
     paint_capacity: usize,
     url_bind_groups: HashMap<Option<String>, wgpu::BindGroup>,
@@ -1805,6 +1813,7 @@ impl QuadPipeline {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
+            uploaded_uniforms: None,
             paint_buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("nana.target.quad.paint"),
                 size: (INITIAL_INSTANCES * std::mem::size_of::<QuadPaintData>()) as u64,
@@ -1827,6 +1836,7 @@ impl QuadPipeline {
             pending_urls: Vec::new(),
         });
         std::mem::swap(&mut self.uniforms, &mut target.uniforms);
+        std::mem::swap(&mut self.uploaded_uniforms, &mut target.uploaded_uniforms);
         std::mem::swap(&mut self.paint_buffer, &mut target.paint_buffer);
         std::mem::swap(&mut self.paint_capacity, &mut target.paint_capacity);
         std::mem::swap(&mut self.url_bind_groups, &mut target.url_bind_groups);
