@@ -6318,26 +6318,25 @@ fn font_variation_transition_reverses_from_the_axis_it_shows() {
     bridge.tick_css_animations(&mut doc);
     doc.flush_host_frame();
     let turned = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
-    assert!((40.0..70.0).contains(&turned), "hover-in midway: {turned}");
+    assert!((turned - 50.0).abs() < 0.5, "hover-in midway: {turned}");
 
     doc.set_pointer_hover(0, None);
     bridge.reapply_interactive_cascade(&mut doc);
     doc.flush_host_frame();
     let start = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
-    // Wall-clock document time runs on between the reads, by up to a second
-    // under load, so the hover-in may have got close to 100 by now. What
-    // must not happen is a jump back to the destination 0; running on to
-    // 100 instead of reversing is caught below.
+    // The test clock stands still between settings, so the reverse starts
+    // exactly where the hover-in was, not at the destination 0.
     assert!(
-        start >= turned - 5.0,
+        (start - turned).abs() < 1e-3,
         "the reverse starts where the axis was ({turned}), not at 0: {start}"
     );
-    // Relative to now: the reverse started whenever the hover left.
+    // Halfway through the 2000ms reverse from `start` down to 0.
     doc.set_runtime_clock_for_test(doc.runtime_now() + Duration::from_millis(1000));
     bridge.tick_css_animations(&mut doc);
     doc.flush_host_frame();
     let back = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
     assert!(back < start && back > 0.0, "reversing: {start} -> {back}");
+    assert!((back - start / 2.0).abs() < 0.5, "reversing: {start} -> {back}");
     doc.set_runtime_clock_for_test(doc.runtime_now() + Duration::from_millis(3000));
     bridge.tick_css_animations(&mut doc);
     doc.flush_host_frame();

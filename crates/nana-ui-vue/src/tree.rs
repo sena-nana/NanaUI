@@ -426,6 +426,9 @@ pub struct NanaTreeDocument {
     /// Scene host epoch when wired through [`RuntimeAnimationClock`]; isolated
     /// tests leave this unset and fall back to [`Self::animation_epoch`].
     host_animation_epoch: Option<Instant>,
+    /// Frozen test clock; see [`Self::set_runtime_clock_for_test`].
+    #[cfg(test)]
+    frozen_runtime_clock: Option<std::time::Duration>,
 }
 
 const MAX_PENDING_ACCESSIBILITY_CHANGES: usize = 4_096;
@@ -540,6 +543,8 @@ impl NanaTreeDocument {
             host_texture_revision_overrides: HashMap::new(),
             animation_epoch: Instant::now(),
             host_animation_epoch: None,
+            #[cfg(test)]
+            frozen_runtime_clock: None,
         };
         doc.reset_layout_roots();
         doc
@@ -3087,6 +3092,10 @@ impl NanaTreeDocument {
     }
 
     pub fn runtime_now(&self) -> std::time::Duration {
+        #[cfg(test)]
+        if let (None, Some(frozen)) = (self.host_animation_epoch, self.frozen_runtime_clock) {
+            return frozen;
+        }
         let epoch = self.host_animation_epoch.unwrap_or(self.animation_epoch);
         Instant::now().saturating_duration_since(epoch)
     }
@@ -3106,13 +3115,12 @@ impl NanaTreeDocument {
             .and_then(|deadline| epoch.checked_add(deadline))
     }
 
-    /// Test hook: advance the monotonic CSS animation clock.
+    /// Test hook: set the CSS animation clock and hold it there, so reads
+    /// between two settings do not depend on wall-clock scheduling.
     #[cfg(test)]
     pub fn set_runtime_clock_for_test(&mut self, elapsed: std::time::Duration) {
         self.host_animation_epoch = None;
-        self.animation_epoch = Instant::now()
-            .checked_sub(elapsed)
-            .unwrap_or_else(Instant::now);
+        self.frozen_runtime_clock = Some(elapsed);
     }
 
     pub fn start_css_animation(&mut self, spec: nana_ui_runtime::AnimationSpec) {
