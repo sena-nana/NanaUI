@@ -93,6 +93,9 @@ winit = { workspace = true, optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 accesskit_macos = { workspace = true, optional = true }
 
+[dev-dependencies]
+pollster = { workspace = true }
+
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 accesskit_unix = { workspace = true, optional = true }
 
@@ -139,6 +142,10 @@ required-features = ["gpu"]
 [[bin]]
 name = "nana-text-paint-benchmark"
 path = "src/bin/nana-text-paint-benchmark.rs"
+required-features = ["gpu"]
+
+[[test]]
+name = "text_device_recreation"
 required-features = ["gpu"]
 
 
