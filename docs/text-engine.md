@@ -1422,6 +1422,19 @@ staging，并把传输排在下一次提交之前。手写 ring 需要 painter �
 排队的位图是 `Arc<GlyphImage>`，这同时是生命周期合同：raster cache 可以在上传真正发生前
 淘汰产出它的那一条，队列不会指向已释放的字节。
 
+### Device 丢失与重建
+
+宿主换 device 时（`switch_gpu`）清掉所有 painter，在新 device 上按需重建；atlas、instance
+arena 与 raster cache 都随旧 painter 一起走。画文本所需的一切都在这条线的 CPU 一侧：段落是
+Runtime 保留、随场景下发的那一份，face 在进程级引擎里，`bump_surface_generation` 只改场景
+代际、不触发 extract。所以新 device 的第一帧把用到的字形各栅格化、上传一次，**不排版、不塑形**。
+
+`crates/nana-ui/tests/text_device_recreation.rs` 钉住这一条：同一份场景在 device A 上画完、
+`destroy()` 掉 A，在新建的 device B 上用新 painter 再画——`text_retained_layouts_drawn` 等于
+段落数，画笔自己的段落缓存 0 命中 0 未命中，栅格化与上传次数与第一台 device 相同，读回的像素
+逐字节相同；接着同一个 painter 换到 2× 再画，画的仍是那几份保留 layout，只多了新尺寸的栅格化。
+它单独一个测试二进制，因为要建两台 device（见 `test_gpu.rs` 里 Windows NVIDIA 驱动的死锁）。
+
 ### 计数器
 
 `SceneWgpuPainter::text_glyph_counters()`：resolve 请求、栅格化次数、raster cache
@@ -2065,6 +2078,10 @@ aliased 模式会把字形吸到整像素，跟不上四分之一像素的亚像
   且不在离屏组里（`group_depth == 0`）。
 - 模式进了条目的有效性判据（`TextGpuEntry::mode`），一段文字进出不透明度组时会重新
   resolve；`set_subpixel_text` 切换时丢掉保留的 batch。
+- 谁来开：hosted 宿主按窗口 surface 的 alpha 模式与 `SubpixelOrder::system()` 每帧决定；
+  自己持有 surface、直接嵌 `SceneWgpuPainter` 的宿主（只开 `gpu` feature）调用同一个
+  公开的 `SceneWgpuPainter::set_subpixel_text`。离屏截图（devtools、Vue `scene-view`）不开，
+  保持灰度。
 
 ### 验证
 

@@ -18,7 +18,7 @@ mod motion;
 mod quad;
 mod text;
 
-pub(crate) use self::text::SubpixelOrder;
+pub use self::text::SubpixelOrder;
 pub use self::text::TextGlyphCounters;
 pub(crate) mod url_texture_cache;
 mod validate;
@@ -320,7 +320,11 @@ impl SceneWgpuPainter {
     /// writes a coverage per channel, which a compositor would read as
     /// colored alpha. Text inside an offscreen group stays grayscale either
     /// way. A device without dual-source blending ignores the request.
-    pub(crate) fn set_subpixel_text(&mut self, order: Option<SubpixelOrder>) {
+    ///
+    /// The hosted runtime decides this per window from the surface's alpha
+    /// mode and [`SubpixelOrder::system`]; a host that owns its surface makes
+    /// the same call.
+    pub fn set_subpixel_text(&mut self, order: Option<SubpixelOrder>) {
         if self.text.set_subpixel(&self.device, order) {
             // The retained batch holds instances resolved under the old mode.
             self.prepared_batch = None;

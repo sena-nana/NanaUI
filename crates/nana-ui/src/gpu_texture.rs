@@ -500,6 +500,7 @@ pub struct TextureSubscription {
 }
 impl TextureSubscription {
     /// Whether this subscription listens to `registry` (clones share observers).
+    #[cfg(feature = "hosted")]
     pub(crate) fn observes(&self, registry: &HostTextureRegistry) -> bool {
         Arc::ptr_eq(&self.observers, &registry.observers)
     }

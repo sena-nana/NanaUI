@@ -698,11 +698,13 @@ impl TextPipelineTarget {
     }
 }
 
-/// The order of a panel's color subpixels, left to right. Only Windows
-/// reports one; elsewhere only tests construct it.
-#[cfg_attr(not(windows), allow(dead_code))]
+/// The order of a panel's color subpixels, left to right.
+///
+/// [`SubpixelOrder::system`] reports it on Windows. A host that paints onto
+/// a surface of its own passes it to
+/// [`SceneWgpuPainter::set_subpixel_text`](crate::SceneWgpuPainter::set_subpixel_text).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SubpixelOrder {
+pub enum SubpixelOrder {
     Rgb,
     Bgr,
 }
@@ -711,7 +713,7 @@ impl SubpixelOrder {
     /// The order the system draws its own text with, when it draws it with
     /// subpixel coverage: ClearType's panel order on Windows while the user
     /// has it on, `None` everywhere else. Read once per process.
-    pub(crate) fn system() -> Option<Self> {
+    pub fn system() -> Option<Self> {
         #[cfg(windows)]
         {
             static ORDER: std::sync::OnceLock<Option<SubpixelOrder>> = std::sync::OnceLock::new();

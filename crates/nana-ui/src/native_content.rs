@@ -24,7 +24,10 @@ pub struct NativeContentRegion {
 /// GPU content is host textures — must not pay for [`native_content_regions`]
 /// at all. The plan's custom nodes are already compiled, so this is a walk over
 /// that list rather than over the scene.
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(feature = "hosted", target_os = "windows"))),
+    allow(dead_code)
+)]
 pub(crate) fn scene_has_native_content(scene: &UiScene) -> bool {
     let Ok(plan) = scene.frame_plan() else {
         return false;
@@ -126,7 +129,10 @@ struct NativeContentRevision {
 
 /// What this frame has to do to keep the platform compositor in step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(feature = "hosted", target_os = "windows"))),
+    allow(dead_code)
+)]
 pub(crate) enum NativeContentSync {
     /// Nothing to stage.
     Settled { present: bool },
@@ -139,7 +145,10 @@ pub(crate) enum NativeContentSync {
     Stage { present: bool },
 }
 
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(feature = "hosted", target_os = "windows"))),
+    allow(dead_code)
+)]
 impl NativeContentSync {
     /// Whether the scene has a native-content node at all.
     ///
@@ -184,7 +193,10 @@ pub(crate) struct NativeContentMirror {
     work: NativeContentWork,
 }
 
-#[cfg_attr(not(any(test, target_os = "windows")), allow(dead_code))]
+#[cfg_attr(
+    not(any(test, all(feature = "hosted", target_os = "windows"))),
+    allow(dead_code)
+)]
 impl NativeContentMirror {
     /// Resolves what this frame owes the compositor.
     ///
