@@ -427,6 +427,27 @@ mod tests {
         );
     }
 
+    /// A character measured before is measured the same way again: no cache
+    /// in front of the engine may answer with less than the layout does (a
+    /// missing ascent moves a one-character label's baseline by 0.2em).
+    #[test]
+    fn a_measurement_does_not_depend_on_what_was_measured_before() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shaper = NanaTextShaper::default();
+        let mut glyphs = GlyphCache::default();
+        let style = ComputedStyle {
+            font_size: 14.0,
+            ..ComputedStyle::default()
+        };
+        let id = StableNodeId::new(1).unwrap();
+        let text = TextContent { value: "A".into() };
+        let constraints = TextShapeConstraints::default();
+        let cold = shaper.shape_cached(id, &text, &style, constraints, &mut glyphs);
+        let warm = shaper.shape_cached(id, &text, &style, constraints, &mut glyphs);
+        assert!(cold.ascent.is_some());
+        assert_eq!(warm, cold);
+    }
+
     #[test]
     fn every_shaper_measures_through_one_engine() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -616,14 +637,11 @@ mod tests {
     }
 
     /// #59: vertical text is measured as a column — a line box across, its
-    /// vertical advances down — also on the one-character fast path, and its
-    /// upright advances never land in the per-character cache horizontal rich
-    /// text is measured from.
+    /// vertical advances down — and an editor's offsets stay across a line.
     #[test]
-    fn vertical_text_measures_as_a_column_and_keeps_its_advances_out_of_the_glyph_cache() {
+    fn vertical_text_measures_as_a_column() {
         let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let mut shaper = NanaTextShaper::default();
-        let mut glyphs = GlyphCache::default();
         let horizontal = ComputedStyle {
             font_size: 16.0,
             ..ComputedStyle::default()
@@ -636,14 +654,13 @@ mod tests {
             shaping: TextShaping::Advanced,
             ..TextShapeConstraints::default()
         };
-        let column = shaper.shape_cached(
+        let column = shaper.shape(
             node(),
             &TextContent {
                 value: "やや".into(),
             },
             &vertical,
             constraints,
-            &mut glyphs,
         );
         assert!(
             column.height > column.width,
@@ -653,40 +670,31 @@ mod tests {
             column.ascent, None,
             "a column hangs from a central baseline"
         );
-        assert_eq!(
-            glyphs.peek('や', &vertical),
-            None,
-            "an upright advance is not what `や` advances across a line"
-        );
-
-        // Seed the cache horizontally; a one-character vertical label must
-        // still not be answered from it.
-        shaper.shape_cached(
-            node(),
-            &TextContent {
-                value: "や".into()
-            },
-            &horizontal,
-            constraints,
-            &mut glyphs,
-        );
-        let across = glyphs.peek('や', &horizontal).expect("horizontal records");
-        let single = shaper.shape_cached(
+        let single = shaper.shape(
             node(),
             &TextContent {
                 value: "や".into()
             },
             &vertical,
             constraints,
-            &mut glyphs,
         );
         assert!(
             (single.width - 16.0 * 1.2).abs() < 0.01,
-            "one column is one line box wide, not {across}: {single:?}"
+            "one column is one line box wide: {single:?}"
         );
 
         // An editor's offsets are across a line whatever the node asks for:
         // its geometry is horizontal.
+        let across = shaper
+            .shape(
+                node(),
+                &TextContent {
+                    value: "や".into()
+                },
+                &horizontal,
+                constraints,
+            )
+            .width;
         let offset = shaper.horizontal_offset(
             node(),
             &TextContent {
@@ -699,90 +707,6 @@ mod tests {
             (offset - across).abs() < 0.01,
             "an editor offset is the horizontal advance {across}, got {offset}"
         );
-    }
-
-    /// The Runtime's own advance cache is not the engine's layout cache: it
-    /// answers what one character advances to, whatever string it came in, so
-    /// a one-character label is measured without laying anything out.
-    ///
-    /// Rich text measures its inline runs out of it character by character,
-    /// so every path that lays plain text out has to fill it — including the
-    /// engine path a world pass takes, which never calls `shape_cached`.
-    #[test]
-    fn every_path_that_lays_text_out_fills_the_glyph_cache() {
-        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
-        let mut shaper = NanaTextShaper::default();
-        let mut glyphs = GlyphCache::default();
-        let style = ComputedStyle {
-            font_size: 16.0,
-            ..ComputedStyle::default()
-        };
-        let constraints = TextShapeConstraints {
-            shaping: TextShaping::Advanced,
-            ..TextShapeConstraints::default()
-        };
-        let first = shaper.shape_cached(
-            node(),
-            &TextContent { value: "ab".into() },
-            &style,
-            constraints,
-            &mut glyphs,
-        );
-        assert_positive_finite(first);
-        let advance_a = glyphs.peek('a', &style).expect("shaped 'a' must be cached");
-        let advance_b = glyphs.peek('b', &style).expect("shaped 'b' must be cached");
-        assert!(advance_a > 0.0 && advance_a.is_finite());
-        assert!(advance_b > 0.0 && advance_b.is_finite());
-
-        let reused = shaper.shape_cached(
-            node(),
-            &TextContent { value: "a".into() },
-            &style,
-            constraints,
-            &mut glyphs,
-        );
-        assert!(
-            (reused.width - advance_a).abs() < 0.01,
-            "a one-character label is its cached advance: {} vs {advance_a}",
-            reused.width
-        );
-        assert!(reused.height.is_finite() && reused.height > 0.0);
-
-        // And the world pass, which resolves plain text through the engine.
-        let mut world = nana_ui_runtime::UiWorld::new();
-        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
-        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
-        let mut queue = nana_ui_runtime::MutationQueue::new();
-        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
-        queue.set_text(id, TextContent { value: "ab".into() });
-        world.commit(queue).unwrap();
-        let work = world.take_system_work();
-        world.resolve_styles(&work.style).unwrap();
-        let mut world_shaper = NanaTextShaper::default();
-        world.shape_text(&work.text, &mut world_shaper).unwrap();
-        let missed = world.last_work_counters();
-        assert_eq!(
-            missed.glyph_cache_misses,
-            Some(2),
-            "both characters were measured for the first time: {missed:?}"
-        );
-        assert_eq!(missed.glyph_cache_hits, Some(0));
-
-        let mut patch = nana_ui_runtime::MutationQueue::new();
-        patch.set_text(id, TextContent { value: "ba".into() });
-        world.commit(patch).unwrap();
-        let reused_work = world.take_system_work();
-        world.resolve_styles(&reused_work.style).unwrap();
-        world
-            .shape_text(&reused_work.text, &mut world_shaper)
-            .unwrap();
-        let hit = world.last_work_counters();
-        assert_eq!(
-            hit.glyph_cache_hits,
-            Some(2),
-            "the same two characters in the other order are both known: {hit:?}"
-        );
-        assert_eq!(hit.glyph_cache_misses, Some(0));
     }
 
     #[test]
@@ -851,9 +775,48 @@ mod tests {
             (beveled - unbeveled).abs() > 1.0,
             "BEVL must change outlines/advance, off={unbeveled} on={beveled}"
         );
+
+        // The Runtime path end to end: the style field CSS
+        // `font-variation-settings` lands in, a retained layout, and the face
+        // instance its runs carry to the rasterizer's key. `XXXX` is not an
+        // axis of this face and must be dropped, not become `wght`.
+        let mut world = nana_ui_runtime::UiWorld::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
+        queue.set_text(id, TextContent { value: "A".into() });
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.font_family = Some("NanaTestVF".into());
+        layout.font_size = Some(20.0);
+        layout.font_variation_settings = Some(vec![
+            FontVariationSetting::new(*b"BEVL", 100.0),
+            FontVariationSetting::new(*b"XXXX", 5.0),
+        ]);
+        queue.set_style(id, style);
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world
+            .shape_text(&work.text, &mut NanaTextShaper::default())
+            .unwrap();
+        let (_, retained) = world
+            .text_layout(id)
+            .expect("a text node retains its layout");
+        let instance = retained.runs.first().expect("one run").instance.clone();
+        let coords = &instance.expect("the run names its face instance").coords;
         assert!(
-            FontVariationSetting::wght_value(&with(*b"BEVL", 100.0).font_variations).is_none(),
-            "BEVL must not be remapped onto wght"
+            coords
+                .iter()
+                .any(|coord| coord.tag == *b"BEVL" && coord.value == 100.0),
+            "BEVL reaches the instance the painter rasterizes: {coords:?}"
+        );
+        assert!(
+            coords
+                .iter()
+                .all(|coord| coord.tag != *b"XXXX" && coord.tag != *b"wght"),
+            "an axis the face lacks is dropped, and nothing becomes wght: {coords:?}"
         );
     }
 

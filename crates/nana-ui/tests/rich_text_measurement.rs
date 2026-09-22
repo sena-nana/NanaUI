@@ -182,3 +182,66 @@ fn empty_text_is_held_open_at_one_line() {
     let height = cx.world().layout_box(id).unwrap().height;
     assert_eq!(height, nana_ui_core::type_scale::LINE);
 }
+
+/// Markdown geometry is measured by the engine that draws it (#99): the
+/// painter shapes a span's line as one run, so summing per-character advances
+/// (or estimating unseen ones) put the next span where the drawn text is not.
+#[test]
+fn a_markdown_span_is_as_wide_as_the_run_the_painter_shapes() {
+    use nana_ui_runtime::{MarkdownDrawingCommand, TextShapeConstraints, TextShaper};
+    // Kerning pairs, a ligature and a joining script. No trailing space: a
+    // measured width leaves hanging whitespace out, a span's geometry does not.
+    let first = "AVATAR office WAVY";
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let markdown = cx
+        .create_component(doc, NativeMarkdown::parse(&format!("{first}**bold** سلام")))
+        .unwrap();
+    let id = markdown.stable_id();
+    settle(&mut cx, doc, &[id]);
+
+    let world = cx.world();
+    let Some(ComponentGeometry::NativeMarkdown { drawing, .. }) = world.component_geometry(id)
+    else {
+        panic!("a markdown node has markdown geometry");
+    };
+    let runs = drawing
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            MarkdownDrawingCommand::Text {
+                bounds,
+                text,
+                size,
+                weight,
+                ..
+            } => Some((*bounds, text.to_string(), *size, *weight)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(runs.len() >= 2, "one run per span: {runs:?}");
+    let (bounds, text, size, weight) = &runs[0];
+    assert_eq!(text, first);
+
+    let mut style = world.computed_style(id).unwrap().clone();
+    style.font_size = *size;
+    style.font_weight = Some(*weight);
+    let shaped = NanaTextShaper::default().shape(
+        id,
+        &TextContent {
+            value: first.into(),
+        },
+        &style,
+        TextShapeConstraints::default(),
+    );
+    assert!(
+        (bounds.width - shaped.width).abs() < 0.01,
+        "the span is {} wide in the geometry and {} wide when the painter shapes it",
+        bounds.width,
+        shaped.width
+    );
+    assert!(
+        (runs[1].0.x - (bounds.x + bounds.width)).abs() < 0.01,
+        "the next span starts where the drawn run ends: {runs:?}"
+    );
+}

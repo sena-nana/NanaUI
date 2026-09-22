@@ -513,12 +513,18 @@ mod tests {
             width: 400.0,
             height: 100.0,
         };
-        let measure = |value: &str, _: f32, _: u16| match value {
-            "W" => 12.0,
-            "i" => 3.0,
-            " " => 4.0,
-            "中" | "文" => 13.0,
-            _ => 7.0,
+        let measure = |value: &str, _: f32, _: u16, _: bool| {
+            use unicode_segmentation::UnicodeSegmentation as _;
+            value
+                .graphemes(true)
+                .map(|grapheme| match grapheme {
+                    "W" => 12.0,
+                    "i" => 3.0,
+                    " " => 4.0,
+                    "中" | "文" => 13.0,
+                    _ => 7.0,
+                })
+                .collect::<Vec<f32>>()
         };
         let geometry =
             crate::rich_text::layout_markdown_measured(markdown.blocks(), bounds, Some(&measure));

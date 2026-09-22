@@ -3920,16 +3920,6 @@ impl UiWorld {
                     &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
                     &mut node_work,
                 );
-                // Rich text measures its inline runs out of the Runtime's
-                // per-character advance cache and falls back to a crude
-                // heuristic for anything missing, so the engine path has to
-                // fill it too — nothing on this path calls `shape_cached`.
-                crate::text_node::record_glyph_advances(
-                    &layout,
-                    source.text(),
-                    &style,
-                    shaper.glyphs,
-                );
                 if copied {
                     node_work.text_source_clones += 1;
                     self.record_string_clone(text_bytes);

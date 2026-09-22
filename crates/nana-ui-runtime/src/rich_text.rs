@@ -1571,12 +1571,19 @@ impl DocumentRun {
     }
 }
 
-type MarkdownMeasure<'a> = dyn Fn(&str, f32, u16) -> f32 + 'a;
+/// The advance of every grapheme of `text` (`graphemes(true)` order) when the
+/// whole of it is shaped as one unwrapped line at `size` / `weight` /
+/// italic. One call
+/// per line of a span rather than one per grapheme: kerning, ligatures and
+/// joining scripts only come out right when the run is shaped together, which
+/// is how the painter draws it.
+type MarkdownMeasure<'a> = dyn Fn(&str, f32, u16, bool) -> Vec<f32> + 'a;
 
 struct LayoutCursor<'a> {
     measure: Option<&'a MarkdownMeasure<'a>>,
     font_size: Option<f32>,
     font_weight: u16,
+    font_italic: bool,
     origin_x: f32,
     max_width: f32,
     line_height: f32,
@@ -1593,6 +1600,7 @@ impl<'a> LayoutCursor<'a> {
             measure: None,
             font_size: None,
             font_weight: 400,
+            font_italic: false,
             origin_x,
             max_width,
             line_height,
@@ -1614,6 +1622,47 @@ impl<'a> LayoutCursor<'a> {
         self
     }
 
+    /// Place a run of graphemes that contains no newline, measured together.
+    fn place_segment(&mut self, graphemes: &[&str]) -> Vec<LayoutBox> {
+        let advances = match (self.measure, self.font_size) {
+            (Some(measure), Some(size)) => {
+                let advances = measure(
+                    &graphemes.concat(),
+                    size,
+                    self.font_weight,
+                    self.font_italic,
+                );
+                (advances.len() == graphemes.len()).then_some(advances)
+            }
+            _ => None,
+        };
+        graphemes
+            .iter()
+            .enumerate()
+            .map(|(index, grapheme)| match &advances {
+                Some(advances) => self.advance_by(advances[index]),
+                None => self.place(grapheme),
+            })
+            .collect()
+    }
+
+    /// Place every grapheme of `text`, measuring each newline-free stretch as
+    /// one run.
+    fn place_text(&mut self, graphemes: &[&str]) -> Vec<LayoutBox> {
+        let mut bounds = Vec::with_capacity(graphemes.len());
+        for segment in graphemes.split_inclusive(|grapheme| is_newline(grapheme)) {
+            let (body, newline) = match segment.split_last() {
+                Some((last, body)) if is_newline(last) => (body, Some(*last)),
+                _ => (segment, None),
+            };
+            bounds.extend(self.place_segment(body));
+            if let Some(newline) = newline {
+                bounds.push(self.place(newline));
+            }
+        }
+        bounds
+    }
+
     fn place(&mut self, grapheme: &str) -> LayoutBox {
         if is_newline(grapheme) {
             let bounds = LayoutBox {
@@ -1626,14 +1675,14 @@ impl<'a> LayoutCursor<'a> {
             self.y += self.line_height;
             return bounds;
         }
-        let advance = self
-            .font_size
-            .map(|size| {
-                self.measure
-                    .map(|measure| measure(grapheme, size, self.font_weight))
-                    .unwrap_or_else(|| crate::markdown_drawing::text_advance(grapheme, size))
-            })
-            .unwrap_or(GRAPHEME_ADVANCE);
+        // Unmeasured: measured graphemes go through `place_segment`.
+        let advance = self.font_size.map_or(GRAPHEME_ADVANCE, |size| {
+            crate::markdown_drawing::text_advance(grapheme, size)
+        });
+        self.advance_by(advance)
+    }
+
+    fn advance_by(&mut self, advance: f32) -> LayoutBox {
         if self.max_width.is_finite()
             && self.x > self.line_start_x
             && self.x + advance > self.max_width
@@ -2019,6 +2068,7 @@ fn push_spans(
     let base_weight = cursor.font_weight;
     for (span_index, span) in spans.iter().enumerate() {
         cursor.font_weight = if span.strong { 700 } else { base_weight };
+        cursor.font_italic = span.emphasis;
         if let Some(resource) = span
             .image_resource
             .as_ref()
@@ -2092,22 +2142,27 @@ fn push_spans(
             cursor.x += width;
             continue;
         }
-        for grapheme in span.text.graphemes(true) {
-            if grapheme.is_empty() {
-                continue;
-            }
+        let graphemes = span
+            .text
+            .graphemes(true)
+            .filter(|grapheme| !grapheme.is_empty())
+            .collect::<Vec<_>>();
+        let link = span
+            .image
+            .as_deref()
+            .or(span.link.as_deref())
+            .map(Arc::<str>::from);
+        let bounds = cursor.place_text(&graphemes);
+        for (grapheme, bounds) in graphemes.into_iter().zip(bounds) {
             let separator = if first { first_separator } else { "" };
             first = false;
-            push_grapheme(
+            push_placed(
                 run,
-                cursor,
                 block_index,
                 span_index,
                 grapheme,
-                span.image
-                    .as_deref()
-                    .or(span.link.as_deref())
-                    .map(Arc::from),
+                bounds,
+                link.clone(),
                 separator,
             );
         }
@@ -2121,23 +2176,23 @@ fn push_source(
     source: &str,
     first_separator: &'static str,
 ) {
-    let mut first = true;
-    for grapheme in source.graphemes(true) {
-        if grapheme.is_empty() {
-            continue;
-        }
-        let separator = if first { first_separator } else { "" };
-        first = false;
-        push_grapheme(run, cursor, block_index, 0, grapheme, None, separator);
+    let graphemes = source
+        .graphemes(true)
+        .filter(|grapheme| !grapheme.is_empty())
+        .collect::<Vec<_>>();
+    let bounds = cursor.place_text(&graphemes);
+    for (index, (grapheme, bounds)) in graphemes.into_iter().zip(bounds).enumerate() {
+        let separator = if index == 0 { first_separator } else { "" };
+        push_placed(run, block_index, 0, grapheme, bounds, None, separator);
     }
 }
 
-fn push_grapheme(
+fn push_placed(
     run: &mut DocumentRun,
-    cursor: &mut LayoutCursor,
     block_index: usize,
     span_index: usize,
     grapheme: &str,
+    bounds: LayoutBox,
     link: Option<Arc<str>>,
     separator: &'static str,
 ) {
@@ -2145,7 +2200,7 @@ fn push_grapheme(
     run.separators.push(separator);
     run.graphemes.push(GraphemeGeometry {
         index,
-        bounds: cursor.place(grapheme),
+        bounds,
         grapheme: Arc::from(grapheme),
         span_index,
         block_index,
@@ -2296,7 +2351,8 @@ mod tests {
     #[test]
     fn markdown_line_breaks_are_invariant_under_viewport_translation() {
         let markdown = NativeMarkdown::parse("NATIVE_PARITY_FORK_A_20260903");
-        let measure = |_: &str, _: f32, _: u16| 7.2;
+        let measure =
+            |value: &str, _: f32, _: u16, _: bool| vec![7.2; value.graphemes(true).count()];
         let natural =
             layout_markdown_measured(markdown.blocks(), bounds(1000.0, 100.0), Some(&measure));
         let width = markdown_content_width(markdown.blocks(), &natural);

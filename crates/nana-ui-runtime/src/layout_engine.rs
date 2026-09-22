@@ -305,10 +305,15 @@ impl RuntimeLayoutEngine {
     ///
     /// Hidden / `display:none` nodes are omitted from the result (css-parity /
     /// Vue measure contract). Product `UiWorld` still records a zero box.
+    ///
+    /// Text leaves are measured by `shaper`, so a host passes the same one its
+    /// frames flush with: a style tree measured by a second shaper would give
+    /// boxes the painted text does not fit.
     pub fn layout_style_tree(
         self,
         root: &StyleLayoutNode,
         viewport: LayoutViewport,
+        shaper: &mut impl crate::TextShaper,
     ) -> Vec<(String, LayoutBox)> {
         let document = DocumentId::new(1).expect("document 1 is nonzero");
         let mut world = UiWorld::new();
@@ -381,7 +386,7 @@ impl RuntimeLayoutEngine {
             .resolve_styles(&order)
             .expect("style-tree style resolve is infallible");
         world
-            .shape_text(&order, &mut crate::MeasureTextShaper)
+            .shape_text(&order, shaper)
             .expect("style-tree text shaping is infallible");
         let layouts = self
             .layout_document(&world, document, viewport)

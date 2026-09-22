@@ -1435,7 +1435,11 @@ fn style_tree_matches_document_layout_for_row_gap() {
         text: None,
     };
     let boxes = RuntimeLayoutEngine
-        .layout_style_tree(&tree, LayoutViewport::new(400.0, 80.0))
+        .layout_style_tree(
+            &tree,
+            LayoutViewport::new(400.0, 80.0),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect::<HashMap<_, _>>();
     assert!((boxes["b"].x - 62.0).abs() < 0.01);
@@ -1465,7 +1469,11 @@ fn child_em_width_uses_parent_computed_font_size() {
         text: None,
     };
     let boxes = RuntimeLayoutEngine
-        .layout_style_tree(&tree, LayoutViewport::new(200.0, 80.0))
+        .layout_style_tree(
+            &tree,
+            LayoutViewport::new(200.0, 80.0),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect::<HashMap<_, _>>();
     assert_eq!(
@@ -1505,7 +1513,11 @@ fn child_em_padding_uses_parent_computed_font_size() {
         text: None,
     };
     let boxes = RuntimeLayoutEngine
-        .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+        .layout_style_tree(
+            &tree,
+            LayoutViewport::new(200.0, 200.0),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect::<HashMap<_, _>>();
     assert_eq!(
@@ -1546,7 +1558,11 @@ fn child_em_absolute_inset_uses_parent_computed_font_size() {
         text: None,
     };
     let boxes = RuntimeLayoutEngine
-        .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+        .layout_style_tree(
+            &tree,
+            LayoutViewport::new(200.0, 200.0),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect::<HashMap<_, _>>();
     assert_eq!(
@@ -1581,7 +1597,11 @@ fn child_em_min_height_uses_parent_computed_font_size() {
         text: None,
     };
     let boxes = RuntimeLayoutEngine
-        .layout_style_tree(&tree, LayoutViewport::new(200.0, 200.0))
+        .layout_style_tree(
+            &tree,
+            LayoutViewport::new(200.0, 200.0),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect::<HashMap<_, _>>();
     assert_eq!(
@@ -1592,7 +1612,11 @@ fn child_em_min_height_uses_parent_computed_font_size() {
 
 fn box_map(root: &StyleLayoutNode, vw: f32, vh: f32) -> HashMap<String, LayoutBox> {
     RuntimeLayoutEngine
-        .layout_style_tree(root, LayoutViewport::new(vw, vh))
+        .layout_style_tree(
+            root,
+            LayoutViewport::new(vw, vh),
+            &mut crate::MeasureTextShaper,
+        )
         .into_iter()
         .collect()
 }

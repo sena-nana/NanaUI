@@ -453,53 +453,6 @@ pub(crate) fn nana_text_constraints(
     nana
 }
 
-/// Record the advance of every glyph that is a whole single-character cluster
-/// into the Runtime's own [`GlyphCache`](crate::GlyphCache).
-///
-/// The cache answers a question no layout cache can: what one character
-/// advances to, independent of the string it appeared in. Rich text is what
-/// asks it — `world::geometry::rich_text` measures an inline run character by
-/// character out of this cache, and falls back to a crude `size * 0.6`
-/// heuristic when a character is missing. So every path that lays plain text
-/// out has to fill it, including the engine path that never calls
-/// [`TextShaper::shape_cached`](crate::TextShaper::shape_cached).
-///
-/// A cluster of two characters (a combining mark, an emoji sequence) has no
-/// per-character advance to record, and a character that shaped to several
-/// glyphs has no single one either — both are skipped rather than approximated.
-///
-/// So is an upright run of vertical text (#59): its advances are the face's
-/// *vertical* ones, and a proportional kana that advances 15.5px across a line
-/// advances a full 16px down a column. Recorded here, they would size the next
-/// horizontal rich-text run by the column's metrics. A sideways run is
-/// horizontal shaping and records like any other.
-pub(crate) fn record_glyph_advances(
-    layout: &nana_text::TextLayout,
-    text: &str,
-    style: &ComputedStyle,
-    glyphs: &mut crate::GlyphCache,
-) {
-    for run in layout
-        .runs
-        .iter()
-        .filter(|run| run.orientation != nana_text::RunOrientation::Upright)
-    {
-        for glyph in &run.glyphs {
-            let (start, end) = (glyph.cluster as usize, glyph.cluster_end as usize);
-            let Some(cluster) = text.get(start..end) else {
-                continue;
-            };
-            let mut chars = cluster.chars();
-            let (Some(ch), None) = (chars.next(), chars.next()) else {
-                continue;
-            };
-            if glyphs.lookup(ch, style).is_none() {
-                glyphs.insert(ch, style, glyph.advance_px);
-            }
-        }
-    }
-}
-
 /// The Runtime metrics contract read off a layout: the page size of its lines
 /// ([`TextLayout::physical_size`] — the widest line and the summed line boxes,
 /// crossed over for vertical text), and the first line's ascent.

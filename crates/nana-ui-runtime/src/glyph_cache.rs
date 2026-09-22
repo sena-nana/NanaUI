@@ -42,8 +42,11 @@ impl GlyphKey {
     }
 }
 
-/// Per-glyph advance cache used by production shaping (`NanaTextShaper`) and by
-/// any `TextShaper::shape_cached` backend.
+/// Per-glyph advance cache for a `TextShaper::shape_cached` backend that has no
+/// text engine of its own (the em-width `MeasureTextShaper` of tests and
+/// benchmarks). The `nana-text` shaper does not consult it (#99): the engine's
+/// layout cache already answers a repeated string, and a per-character answer
+/// cannot carry what a layout does (the first line's ascent, kerning).
 #[derive(Debug)]
 pub struct GlyphCache {
     entries: HashMap<GlyphKey, f32>,

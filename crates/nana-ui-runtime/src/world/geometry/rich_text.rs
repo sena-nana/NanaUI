@@ -77,40 +77,31 @@ impl UiWorld {
             .collect()
     }
 
+    /// Markdown geometry measured by the engine that shaped this world, the
+    /// one the painter draws the runs with. A world no engine has shaped (a
+    /// host shaper without one) keeps the em estimate.
     pub(crate) fn markdown_layout(
         &self,
         id: StableNodeId,
         blocks: &[crate::MarkdownBlock],
         bounds: LayoutBox,
     ) -> crate::rich_text::MarkdownGeometry {
-        let Some(style) = self.computed_style(id) else {
+        let (Some(style), Some(engine)) =
+            (self.computed_style(id), self.paint_text_engine.as_ref())
+        else {
             return crate::rich_text::layout_markdown(blocks, bounds);
         };
         crate::rich_text::layout_markdown_measured(
             blocks,
             bounds,
-            Some(&|grapheme, size, weight| {
+            Some(&|text, size, weight, italic| {
                 let mut measured = style.clone();
                 measured.font_size = size;
                 measured.font_weight = Some(weight);
-                let advances = grapheme
-                    .chars()
-                    .map(|ch| {
-                        self.glyph_cache.peek(ch, &measured).or_else(|| {
-                            if weight == 400 {
-                                measured.font_weight = style.font_weight;
-                                let value = self.glyph_cache.peek(ch, &measured);
-                                measured.font_weight = Some(weight);
-                                value
-                            } else {
-                                None
-                            }
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>();
-                advances
-                    .map(|values| values.into_iter().sum())
-                    .unwrap_or_else(|| crate::markdown_drawing::text_advance(grapheme, size))
+                measured.italic = italic;
+                // A markdown run is one unwrapped horizontal line.
+                measured.writing_mode = nana_ui_core::WritingModeSpec::HorizontalTb;
+                crate::text_engine_shaper::grapheme_advances(engine, text, &measured)
             }),
         )
     }

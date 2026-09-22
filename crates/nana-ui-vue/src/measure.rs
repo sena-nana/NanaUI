@@ -98,7 +98,11 @@ pub fn measure_layout(
     crate::css_map::with_active_viewport(vw, vh, || {
         crate::css_map::with_active_font_sizes(crate::css_map::FontSizeContext::default(), || {
             RuntimeLayoutEngine
-                .layout_style_tree(&to_style_tree(root), LayoutViewport::new(vw, vh))
+                .layout_style_tree(
+                    &to_style_tree(root),
+                    LayoutViewport::new(vw, vh),
+                    &mut nana_ui::NanaTextShaper::default(),
+                )
                 .into_iter()
                 .map(|(id, box_)| {
                     (

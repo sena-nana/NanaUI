@@ -22,8 +22,6 @@ use nana_js_engine::HostValue;
 use nana_ui_runtime::AccessibilityUpdate;
 #[cfg(feature = "graph-canvas")]
 use nana_ui_runtime::GraphCanvas as RuntimeGraphCanvas;
-#[cfg(not(feature = "scene-view"))]
-use nana_ui_runtime::MeasureTextShaper;
 #[cfg(all(test, feature = "rich-text"))]
 use nana_ui_runtime::NativeMarkdown as RuntimeNativeMarkdown;
 #[cfg(feature = "graph-canvas")]
@@ -3267,10 +3265,7 @@ impl NanaTreeDocument {
         crate::frame_profile::count(13);
         let viewport =
             LayoutViewport::new(self.logical_width.max(1.0), self.logical_height.max(1.0));
-        #[cfg(feature = "scene-view")]
         let mut shaper = nana_ui::NanaTextShaper::default();
-        #[cfg(not(feature = "scene-view"))]
-        let mut shaper = MeasureTextShaper;
         let update = self
             .runtime
             .runtime_document_mut()

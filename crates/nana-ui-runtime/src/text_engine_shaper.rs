@@ -257,28 +257,8 @@ impl NanaTextEngineShaper {
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
-        self.measure_into(id, text, style, constraints, None)
-    }
-
-    /// [`Self::measure`], optionally recording per-character advances into the
-    /// Runtime's own [`GlyphCache`].
-    ///
-    /// The cache is the Runtime's, not the engine's, and it answers a question
-    /// no layout cache can: what one character advances to, independent of the
-    /// string it appeared in. A one-character label — a counter digit, a
-    /// keyboard-hint letter — is then measured without laying anything out.
-    fn measure_into(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: Option<&mut GlyphCache>,
-    ) -> TextMetrics {
         // An editor measures from the geometry its probes read, so an edit
-        // lays out its own paragraph rather than the whole text. Its advances
-        // are deliberately not recorded: an editor's text is the longest in
-        // the document and none of it is a one-character label.
+        // lays out its own paragraph rather than the whole text.
         if let Some(metrics) = self.editor_metrics(id, &text.value, style, constraints) {
             return metrics;
         }
@@ -292,36 +272,60 @@ impl NanaTextEngineShaper {
             &mut self.work,
         );
         self.work.text_source_clones += 1;
-        if let Some(glyphs) = glyphs {
-            crate::text_node::record_glyph_advances(&layout, &text.value, style, glyphs);
-        }
         text_metrics_of_layout(&layout)
     }
 }
 
-fn single_char(text: &str) -> Option<char> {
-    let mut chars = text.chars();
-    match (chars.next(), chars.next()) {
-        (Some(ch), None) => Some(ch),
-        _ => None,
-    }
+/// The advance of every grapheme of `text` when all of it is shaped as one
+/// unwrapped line in `style`: the distance between the carets at consecutive
+/// grapheme boundaries. Not the widths of selection rects: every grapheme of a
+/// ligature selects the whole glyph, so those overlap.
+///
+/// Rich-text geometry places graphemes one by one; asking the engine for a
+/// whole run at once is what keeps kerning, ligatures and joining forms the
+/// ones the painter draws when it shapes the same run.
+#[cfg(feature = "rich-text")]
+pub(crate) fn grapheme_advances(
+    engine: &SharedTextEngine,
+    text: &str,
+    style: &ComputedStyle,
+) -> Vec<f32> {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let constraints = TextShapeConstraints::default();
+    let layout = nana_text::lock_text_engine(engine).layout(
+        text_kind(&constraints),
+        &TextSource::new(text),
+        &nana_text_style(style),
+        &nana_text_constraints(style, &constraints, TextHorizontalAlignment::Start),
+        &mut TextWorkCounters::default(),
+    );
+    let caret_x = |byte| {
+        [Affinity::Downstream, Affinity::Upstream]
+            .into_iter()
+            .find_map(|affinity| {
+                layout.caret_geometry(nana_text::CaretPosition::new(byte, affinity, 0))
+            })
+            .map(|caret| finite_or_zero(caret.x_px))
+    };
+    let xs = text
+        .grapheme_indices(true)
+        .map(|(index, _)| index)
+        .chain(std::iter::once(text.len()))
+        .map(caret_x)
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default();
+    xs.windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs())
+        .collect()
 }
 
+#[cfg(feature = "rich-text")]
 fn finite_or_zero(value: f32) -> f32 {
     if value.is_finite() && value > 0.0 {
         value
     } else {
         0.0
     }
-}
-
-/// The line box height the style asks for, in the same px space the engine
-/// reports. Mirrors `nana_text_style`'s 1.2em default, so the fast path and a
-/// real layout cannot disagree about how tall one line is.
-fn line_box_height(style: &ComputedStyle) -> f32 {
-    nana_text_style(style)
-        .line_height_px()
-        .unwrap_or(style.font_size * 1.2)
 }
 
 /// A byte offset a caret can stand at.
@@ -367,35 +371,6 @@ impl TextShaper for NanaTextEngineShaper {
         constraints: TextShapeConstraints,
     ) -> TextMetrics {
         self.measure(id, text, style, constraints)
-    }
-
-    fn shape_cached(
-        &mut self,
-        id: StableNodeId,
-        text: &TextContent,
-        style: &ComputedStyle,
-        constraints: TextShapeConstraints,
-        glyphs: &mut GlyphCache,
-    ) -> TextMetrics {
-        // One character in a box that cannot wrap or truncate is its advance
-        // and the style's line box, which the cache already holds if anything
-        // drew that character before. Across, that is: a vertical column
-        // (#59) is a line box wide and a vertical advance tall, and the cache
-        // holds neither.
-        if !constraints.wrap
-            && !constraints.ellipsis
-            && !style.writing_mode.is_vertical()
-            && let Some(ch) = single_char(&text.value)
-            && glyphs.peek(ch, style).is_some()
-            && let Some(advance) = glyphs.lookup(ch, style)
-        {
-            return TextMetrics {
-                width: finite_or_zero(advance),
-                height: finite_or_zero(line_box_height(style)),
-                ascent: None,
-            };
-        }
-        self.measure_into(id, text, style, constraints, Some(glyphs))
     }
 
     /// An editor with geometry is measured by summing its paragraphs, so the

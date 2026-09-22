@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_text::font::{FaceDescriptor, FontError, FontStyle, FontSystem, GenericFamily, font_blob};
-use nana_text::{NativeTextEngine, SharedTextEngine, TextEngine as _};
+use nana_text::{NativeTextEngine, SharedTextEngine};
 
 /// The bundled UI family, when `bundled-fonts` put it in the database.
 #[cfg(feature = "bundled-fonts")]
@@ -29,8 +29,7 @@ pub(crate) fn nana_text_engine() -> SharedTextEngine {
     Arc::clone(ENGINE.get_or_init(|| Arc::new(Mutex::new(NativeTextEngine::new(build_fonts())))))
 }
 
-/// Borrow the shared engine. Poisoning is recovered from for the same reason
-/// [`crate::nana_text::lock_font_system`] recovers from it: a panic elsewhere
+/// Borrow the shared engine. Poisoning is recovered from: a panic elsewhere
 /// leaves no half-applied state, because every cache insert is one operation.
 pub(crate) fn lock_engine(
     shared: &SharedTextEngine,
@@ -39,7 +38,9 @@ pub(crate) fn lock_engine(
 }
 
 /// The face-set generation the engine is currently on.
+#[cfg(feature = "gpu")]
 pub(crate) fn engine_font_generation() -> u64 {
+    use nana_text::TextEngine as _;
     let engine = nana_text_engine();
     let engine = lock_engine(&engine);
     engine.font_generation().get()
@@ -71,12 +72,12 @@ fn build_fonts() -> FontSystem {
     fonts
 }
 
-/// Mirror of [`crate::nana_text::register_host_font_face`] on the engine's
-/// font set: `@font-face` bytes under a declared CSS family and weight range.
+/// What [`crate::nana_text::register_host_font_face`] does to the one font
+/// set: `@font-face` bytes under a declared CSS family and weight range.
 ///
 /// Returns the number of faces the bytes contained, or 0 when they are not a
-/// font. Unlike the cosmic half this does not have to synthesise one alias per
-/// 100-weight step — [`FaceDescriptor::weight`] is a range.
+/// font. The weight range is registered as one face —
+/// [`FaceDescriptor::weight`] is a range, not one alias per 100-weight step.
 pub(crate) fn register_face_bytes(
     family: &str,
     data: Vec<u8>,

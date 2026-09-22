@@ -4210,7 +4210,11 @@ mod stack_direction_tests {
                 text: None,
             };
             RuntimeLayoutEngine
-                .layout_style_tree(&root, LayoutViewport::new(320.0, 480.0))
+                .layout_style_tree(
+                    &root,
+                    LayoutViewport::new(320.0, 480.0),
+                    &mut crate::MeasureTextShaper,
+                )
                 .into_iter()
                 .find(|(name, _)| name == "b")
                 .expect("second child")

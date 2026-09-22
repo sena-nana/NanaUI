@@ -11,16 +11,16 @@ name = "nana_ui_vue"
 path = "src/lib.rs"
 
 [features]
-calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar", "nana-ui?/calendar"]
-charts = ["nana-ui-runtime/charts", "nana-ui-scene/charts", "nana-ui?/charts"]
-controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls", "nana-ui?/controls"]
-graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas", "nana-ui?/graph-canvas"]
-image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer", "nana-ui?/image-viewer"]
-rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui?/rich-text"]
+calendar = ["nana-ui-runtime/calendar", "nana-ui-scene/calendar", "nana-ui/calendar"]
+charts = ["nana-ui-runtime/charts", "nana-ui-scene/charts", "nana-ui/charts"]
+controls = ["nana-ui-runtime/controls", "nana-ui-scene/controls", "nana-ui/controls"]
+graph-canvas = ["nana-ui-runtime/graph-canvas", "nana-ui-scene/graph-canvas", "nana-ui/graph-canvas"]
+image-viewer = ["nana-ui-runtime/image-viewer", "nana-ui-scene/image-viewer", "nana-ui/image-viewer"]
+rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui/rich-text"]
 components = ["calendar", "charts", "controls", "graph-canvas", "image-viewer", "rich-text"]
 default = []
 full = ["components", "hosted", "syntax-highlighting"]
-syntax-highlighting = ["nana-ui-runtime/syntax-highlighting", "nana-ui?/syntax-highlighting"]
+syntax-highlighting = ["nana-ui-runtime/syntax-highlighting", "nana-ui/syntax-highlighting"]
 benchmark = ["dep:serde", "dep:serde_json", "nana-ui-runtime/benchmark"]
 # Development-only reload. Off by default and never enabled by `full`: a product
 # build has no reason to carry a routine that tears its own tree down. The
@@ -29,10 +29,7 @@ benchmark = ["dep:serde", "dep:serde_json", "nana-ui-runtime/benchmark"]
 # a release binary's text as well.
 dev-reload = []
 # Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
-scene-view = [
-    "dep:nana-ui",
-    "nana-ui/gpu",
-]
+scene-view = ["nana-ui/gpu"]
 # Direct adapter into nana-ui's Scene-hosted runtime.
 hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]
 
@@ -48,7 +45,11 @@ nana-app-icon = { workspace = true, features = ["runtime"] }
 base64.workspace = true
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-nana-ui = { path = "../nana-ui", optional = true, default-features = false }
+# Always linked, painter or not: the Vue frame measures text with the one
+# process-wide `nana-text` engine (#99), and that engine lives in `nana-ui`.
+# Without `scene-view` this is nana-ui's no-GPU half, which adds nothing the
+# crates above do not already pull.
+nana-ui = { path = "../nana-ui", default-features = false }
 wgpu = { workspace = true, optional = true }
 nana-svg-raster.workspace = true
 # Intentionally NOT depending on nana-js-v8. Apps link the concrete engine.
