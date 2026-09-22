@@ -64,9 +64,11 @@ use nana_ui::runtime::{
     Skeleton as RuntimeSkeleton, Spinner as RuntimeSpinner, SplitPane as RuntimeSplitPane,
     StableNodeId, StatusBadge as RuntimeStatusBadge, Switch as RuntimeSwitch,
     TabOption as RuntimeTabOption, Tabs as RuntimeTabs, Text as RuntimeText,
-    TextArea as RuntimeTextArea, TextHorizontalAlignment, TextInput as RuntimeTextInput,
-    TextSelection, TextVerticalAlignment, Thumbnail as RuntimeThumbnail,
-    TimeSeriesChart as RuntimeTimeSeriesChart, Toast as RuntimeToast, TreeView as RuntimeTreeView,
+    TextArea as RuntimeTextArea, TextDiagnosticSeverity, TextDiagnosticSpan,
+    TextHorizontalAlignment, TextInput as RuntimeTextInput, TextSelection, TextSignatureHelp,
+    TextVerticalAlignment, Thumbnail as RuntimeThumbnail,
+    TimeSeriesChart as RuntimeTimeSeriesChart, TimeSeriesLayer as RuntimeTimeSeriesLayer,
+    Toast as RuntimeToast, TreeView as RuntimeTreeView,
     ValidationMessage as RuntimeValidationMessage, ValueEmphasis, Workspace as RuntimeWorkspace,
     WorkspaceRegionSlot, XYPad as RuntimeXYPad,
 };
@@ -655,6 +657,10 @@ fn runtime_fixture(
                 .secure(fixture.state == "secure"),
             )?
             .stable_id(),
+        Component::Textarea if fixture.state == "code-editor" => document
+            .context_mut()
+            .create_component(document_id, code_editor_textarea())?
+            .stable_id(),
         Component::Textarea => document
             .context_mut()
             .create_component(
@@ -687,6 +693,26 @@ fn runtime_fixture(
                     RuntimeCalendarDatum::<()>::new("2026-06-02", 4.0),
                     RuntimeCalendarDatum::<()>::new("2026-06-03", 8.0),
                 ]),
+            )?
+            .stable_id(),
+        Component::TimeSeriesChart if fixture.state == "stacked" => document
+            .context_mut()
+            .create_component(
+                document_id,
+                RuntimeTimeSeriesChart::new([3.0, 5.0, 4.0, 7.0])
+                    .stacked([
+                        RuntimeTimeSeriesLayer::new(
+                            "Revenue",
+                            [2.0, 3.0, 2.5, 4.0],
+                            SemanticColorRole::Accent,
+                        ),
+                        RuntimeTimeSeriesLayer::new(
+                            "运营成本",
+                            [1.0, 2.0, 1.5, 3.0],
+                            SemanticColorRole::Success,
+                        ),
+                    ])
+                    .axis_labels(["Q1", "Q2", "Q3", "Q4"]),
             )?
             .stable_id(),
         Component::TimeSeriesChart => document
@@ -1349,10 +1375,21 @@ fn runtime_fixture(
                 document_id,
                 RuntimeCommandPalette::new(
                     "命令面板",
-                    [
-                        CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
-                        CommandPaletteItem::new(ActionId::new("delete"), "删除"),
-                    ],
+                    if fixture.state == "shortcuts" {
+                        vec![
+                            CommandPaletteItem::new(ActionId::new("rename"), "重命名")
+                                .shortcut("F2"),
+                            CommandPaletteItem::new(ActionId::new("settings"), "打开设置")
+                                .shortcut("Ctrl+Alt+Delete"),
+                            CommandPaletteItem::new(ActionId::new("palette"), "命令面板")
+                                .shortcut("Ctrl+Shift+P"),
+                        ]
+                    } else {
+                        vec![
+                            CommandPaletteItem::new(ActionId::new("rename"), "重命名"),
+                            CommandPaletteItem::new(ActionId::new("delete"), "删除"),
+                        ]
+                    },
                 ),
             )?
             .stable_id(),

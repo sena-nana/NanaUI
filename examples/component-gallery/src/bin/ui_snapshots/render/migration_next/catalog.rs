@@ -244,6 +244,11 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         "the scrolled caret and text remain inside the content box",
     ),
     f(
+        Component::Textarea,
+        "code-editor",
+        "line-number gutter, diagnostic label and signature help are sized by nana-text measurement",
+    ),
+    f(
         Component::HostedTextarea,
         "rust",
         "committed rust text is colored by the Runtime highlight presenter",
@@ -267,6 +272,11 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::TimeSeriesChart,
         "series",
         "grid, area and line stay inside the 148px chart box",
+    ),
+    f(
+        Component::TimeSeriesChart,
+        "stacked",
+        "legend labels are as wide as nana-text measures them",
     ),
     f(
         Component::DonutChart,
@@ -1083,6 +1093,11 @@ pub(super) const FIXTURE_REGISTRY: &[Fixture] = &[
         Component::CommandPalette,
         "open",
         "command palette shows search field and windowed rows",
+    ),
+    f(
+        Component::CommandPalette,
+        "shortcuts",
+        "shortcut columns are as wide as nana-text measures them",
     ),
     f(
         Component::OverlayHost,

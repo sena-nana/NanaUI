@@ -192,3 +192,37 @@ pub(super) fn empty_message(state: &str) -> &'static str {
         _ => "Create the first project in this workspace",
     }
 }
+
+/// A code editor with every piece of chrome sized to measured text: a
+/// two-digit line-number gutter, an end-of-line diagnostic and signature help.
+pub(super) fn code_editor_textarea() -> RuntimeTextArea {
+    RuntimeTextArea::new(code_editor_source())
+        .height(96.0)
+        .line_numbers(true)
+        .diagnostics(Arc::from([TextDiagnosticSpan::new(
+            4,
+            5,
+            TextDiagnosticSeverity::Warning,
+        )
+        .with_message("未使用的变量 ready")]))
+        .signature(Some(TextSignatureHelp::new(
+            "mix",
+            "Blends two values.",
+            vec![
+                ("from".to_owned(), "start value".to_owned()),
+                ("to".to_owned(), "end value".to_owned()),
+            ],
+            1,
+        )))
+}
+
+/// Twelve lines, so the gutter holds two digits.
+pub(super) fn code_editor_source() -> String {
+    (1..=12)
+        .map(|line| match line {
+            1 => "let ready = mix(0.0, ".to_owned(),
+            _ => format!("// line {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

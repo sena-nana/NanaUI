@@ -138,6 +138,8 @@ pub(super) fn write_evidence(
                 };
                 let text_content_ok = if fixture.state == "placeholder" {
                     text.content.as_ref() == "Describe the issue"
+                } else if fixture.state == "code-editor" {
+                    *text.content == *code_editor_source()
                 } else {
                     text.content.as_ref() == textarea_value(fixture.state)
                 };
@@ -595,6 +597,10 @@ pub(super) fn write_evidence(
                     })
             })
         }
+    } else if fixture.component == Component::TimeSeriesChart && fixture.state == "stacked" {
+        // A stacked chart answers hover with a per-datum tooltip, so the
+        // pointer has to reach it — unlike the plain series below.
+        hit == Some(runtime.target)
     } else if matches!(
         fixture.component,
         // Leaf decorations: nothing inside them to reach, so being the hit
