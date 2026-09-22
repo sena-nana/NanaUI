@@ -90,10 +90,12 @@ impl DWriteGlyphRasterizer {
     /// built for the evicted ids go with them.
     pub(super) fn begin_frame(&mut self) -> Vec<GlyphVariationId> {
         let evicted = self.swash.begin_frame();
-        if !evicted.is_empty() {
+        if !evicted.is_empty()
+            && let Some(dwrite) = self.dwrite.as_mut()
+        {
             let gone: std::collections::HashSet<GlyphVariationId> =
                 evicted.iter().copied().collect();
-            self.dwrite
+            dwrite
                 .faces
                 .retain(|(_, variation, _), _| !gone.contains(variation));
         }
