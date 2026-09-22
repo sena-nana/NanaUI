@@ -151,17 +151,20 @@ impl AppContext {
             return Ok(true);
         }
         if let Some(entity) = self.view_entity::<SelectableRichText>(target) {
+            let geometry = self.read(entity, |view| {
+                self.world.selectable_rich_text_layout(target, view, bounds)
+            })?;
             self.update_component(entity, |view, cx| match phase {
                 RichPointerPhase::Down => {
-                    view.pointer_down(x, y, bounds);
+                    view.pointer_down_with_geometry(x, y, &geometry);
                 }
                 RichPointerPhase::Move => {
-                    if view.pointer_move(x, y, bounds) {
+                    if view.pointer_move_with_geometry(x, y, &geometry) {
                         cx.emit(RichTextEvent::SelectionChanged(view.selection_snapshot()));
                     }
                 }
                 RichPointerPhase::Up => {
-                    if let Some(event) = view.pointer_up(x, y, bounds) {
+                    if let Some(event) = view.pointer_up_with_geometry(x, y, &geometry) {
                         cx.emit(event);
                     }
                 }

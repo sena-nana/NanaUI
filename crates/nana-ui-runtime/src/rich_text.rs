@@ -1317,26 +1317,48 @@ impl SelectableRichText {
     }
 
     pub fn layout(&self, bounds: LayoutBox) -> RichTextGeometry {
-        let run = layout_rich_spans(&self.spans, bounds);
-        RichTextGeometry {
-            bounds: run.bounds,
-            graphemes: run.graphemes.clone(),
-            run,
-        }
+        RichTextGeometry::of(layout_rich_spans(&self.spans, bounds))
     }
 
     pub fn pointer_down(&self, x: f32, y: f32, bounds: LayoutBox) -> bool {
         let geometry = self.layout(bounds);
+        self.pointer_down_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_down_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &RichTextGeometry,
+    ) -> bool {
         self.selection.begin(&geometry.run, x, y)
     }
 
     pub fn pointer_move(&self, x: f32, y: f32, bounds: LayoutBox) -> bool {
         let geometry = self.layout(bounds);
+        self.pointer_move_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_move_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &RichTextGeometry,
+    ) -> bool {
         self.selection.drag(&geometry.run, x, y)
     }
 
     pub fn pointer_up(&self, x: f32, y: f32, bounds: LayoutBox) -> Option<RichTextEvent> {
         let geometry = self.layout(bounds);
+        self.pointer_up_with_geometry(x, y, &geometry)
+    }
+
+    pub(crate) fn pointer_up_with_geometry(
+        &self,
+        x: f32,
+        y: f32,
+        geometry: &RichTextGeometry,
+    ) -> Option<RichTextEvent> {
         self.selection.finish(&geometry.run, x, y)
     }
 
@@ -1359,10 +1381,6 @@ impl SelectableRichText {
     pub fn clear_selection(&self) {
         self.selection.clear();
     }
-
-    fn intrinsic_height(&self) -> f32 {
-        line_count(&self.plain_text()).max(1) as f32 * LINE_HEIGHT
-    }
 }
 
 impl ComponentView for SelectableRichText {
@@ -1382,6 +1400,7 @@ impl ComponentView for SelectableRichText {
                 },
             );
         }
+        let empty = plain.is_empty();
         let visual = StandardVisual::SelectableRichText {
             text: Arc::from(plain),
             selection: projected_selection(&self.selection),
@@ -1392,9 +1411,13 @@ impl ComponentView for SelectableRichText {
         let mut style = self.style.clone();
         let layout = Arc::make_mut(&mut style.layout);
         layout.width = Some(LengthSpec::Fill);
-        let height = self.intrinsic_height();
-        layout.height = Some(LengthSpec::Px(height));
-        layout.min_height = Some(LengthSpec::Px(height));
+        // The box is as tall as the plain text measures at its width, wrapped
+        // as the scene paints it. Only empty text, which measures no line, is
+        // held open at one.
+        layout.height = None;
+        if empty {
+            layout.min_height = Some(LengthSpec::Px(LINE_HEIGHT));
+        }
         project_common(
             id,
             world,
@@ -1431,6 +1454,16 @@ pub struct RichTextGeometry {
     pub bounds: LayoutBox,
     pub graphemes: Vec<GraphemeGeometry>,
     run: DocumentRun,
+}
+
+impl RichTextGeometry {
+    fn of(run: DocumentRun) -> Self {
+        Self {
+            bounds: run.bounds,
+            graphemes: run.graphemes.clone(),
+            run,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1488,12 +1521,18 @@ impl DocumentRun {
         if y > last_bottom {
             return length;
         }
+        // The line comes first: the nearest grapheme vertically, and only
+        // then the nearest along that line. A straight-line distance would
+        // let the end of a long line above beat the end of a short last line
+        // for a point to the right of both.
         let Some((index, bounds)) = self
             .graphemes
             .iter()
             .map(|item| (item.index, item.bounds))
             .min_by(|(_, left), (_, right)| {
-                point_box_distance_sq(x, y, *left).total_cmp(&point_box_distance_sq(x, y, *right))
+                let (left_x, left_y) = point_box_distance(x, y, *left);
+                let (right_x, right_y) = point_box_distance(x, y, *right);
+                left_y.total_cmp(&right_y).then(left_x.total_cmp(&right_x))
             })
         else {
             return 0;
@@ -1647,6 +1686,74 @@ fn layout_rich_spans(spans: &[RichSpan], bounds: LayoutBox) -> DocumentRun {
         bounds: LayoutBox { height, ..bounds },
         graphemes,
         separators,
+    }
+}
+
+/// Rich-span geometry read off the `nana-text` layout of the spans'
+/// concatenated text, placed at the content box `bounds`.
+///
+/// A grapheme the layout draws nothing for (collapsed whitespace) gets a
+/// zero-width box where the previous one ended, so offsets stay contiguous.
+pub(crate) fn layout_rich_spans_shaped(
+    spans: &[RichSpan],
+    bounds: LayoutBox,
+    layout: &nana_text::TextLayout,
+) -> RichTextGeometry {
+    let mut graphemes = Vec::new();
+    let mut offset = 0;
+    let mut previous = LayoutBox {
+        width: 0.0,
+        height: layout
+            .lines
+            .first()
+            .map_or(LINE_HEIGHT, |line| line.bounds.height),
+        ..bounds
+    };
+    for (span_index, span) in spans.iter().enumerate() {
+        for (start, grapheme) in span.text.grapheme_indices(true) {
+            let start = offset + start;
+            previous = layout
+                .selection_rects(start..start + grapheme.len())
+                .into_iter()
+                .reduce(nana_text::TextRect::union)
+                .map_or(
+                    LayoutBox {
+                        x: previous.x + previous.width,
+                        width: 0.0,
+                        ..previous
+                    },
+                    |rect| text_rect_at(bounds, rect),
+                );
+            graphemes.push(GraphemeGeometry {
+                index: graphemes.len(),
+                bounds: previous,
+                grapheme: Arc::from(grapheme),
+                span_index,
+                block_index: 0,
+                link: span.link.clone(),
+            });
+        }
+        offset += span.text.len();
+    }
+    let (_, height) = layout.physical_size();
+    RichTextGeometry::of(DocumentRun {
+        bounds: LayoutBox {
+            height: height.max(LINE_HEIGHT),
+            ..bounds
+        },
+        separators: vec![""; graphemes.len()],
+        graphemes,
+    })
+}
+
+/// A `nana-text` rect, which is relative to the text's origin, on the page of
+/// the content box `origin`.
+pub(crate) fn text_rect_at(origin: LayoutBox, rect: nana_text::TextRect) -> LayoutBox {
+    LayoutBox {
+        x: origin.x + rect.x,
+        y: origin.y + rect.y,
+        width: rect.width,
+        height: rect.height,
     }
 }
 
@@ -2109,10 +2216,6 @@ fn text_line_height(kind: MarkdownBlockKind) -> f32 {
     }
 }
 
-fn line_count(value: &str) -> usize {
-    value.split('\n').count()
-}
-
 fn usable_width(width: f32) -> f32 {
     if width.is_finite() && width > 0.0 {
         width
@@ -2125,7 +2228,8 @@ fn is_newline(value: &str) -> bool {
     matches!(value, "\n" | "\r" | "\r\n" | "\n\r")
 }
 
-fn point_box_distance_sq(x: f32, y: f32, bounds: LayoutBox) -> f32 {
+/// Distance from a point to a box along each axis, `(dx, dy)`.
+fn point_box_distance(x: f32, y: f32, bounds: LayoutBox) -> (f32, f32) {
     let dx = if x < bounds.x {
         bounds.x - x
     } else if x > bounds.x + bounds.width {
@@ -2140,7 +2244,7 @@ fn point_box_distance_sq(x: f32, y: f32, bounds: LayoutBox) -> f32 {
     } else {
         0.0
     };
-    dx.mul_add(dx, dy * dy)
+    (dx, dy)
 }
 
 #[cfg(test)]

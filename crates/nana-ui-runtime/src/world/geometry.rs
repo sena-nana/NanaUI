@@ -2504,13 +2504,8 @@ impl UiWorld {
                 selection,
             } => {
                 let selection_range = selection;
-                let (text, _, selection_color) = selectable_text_regions(
-                    content,
-                    text,
-                    *selection,
-                    style,
-                    &self.style_model.palette,
-                );
+                let (text, selection_color) =
+                    selectable_text_regions(content, text, style, &self.style_model.palette);
                 let geometry = self.markdown_layout(id, blocks, content);
                 Some(crate::ComponentGeometry::NativeMarkdown {
                     drawing: crate::markdown_drawing::document_with_geometry(
@@ -2532,13 +2527,9 @@ impl UiWorld {
             }
             #[cfg(feature = "rich-text")]
             StandardVisual::SelectableRichText { text, selection } => {
-                let (text, selection, selection_color) = selectable_text_regions(
-                    content,
-                    text,
-                    *selection,
-                    style,
-                    &self.style_model.palette,
-                );
+                let selection = self.selectable_rich_text_highlights(id, content, text, *selection);
+                let (text, selection_color) =
+                    selectable_text_regions(content, text, style, &self.style_model.palette);
                 Some(crate::ComponentGeometry::SelectableRichText {
                     text,
                     selection,
