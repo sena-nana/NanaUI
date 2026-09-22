@@ -251,12 +251,36 @@ impl Shared {
         {
             let mut requests = lock(&self.requests);
             self.worker_alive.store(false, Ordering::Release);
+            // A worker that died without being asked counts as shut down:
+            // nothing will drain again, so stop registering producers.
+            self.shutdown.store(true, Ordering::Release);
             // Dropping queued requests disconnects their reply channels.
             drop(std::mem::take(&mut *requests));
         }
+        // After a panic the call sites must go quiet too, and a later
+        // install must be able to take the slot.
+        let me = self as *const Shared as *mut Shared;
+        if GLOBAL
+            .compare_exchange(
+                me,
+                std::ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            THRESHOLD.store(u8::MAX, Ordering::Relaxed);
+            METRICS_ON.store(false, Ordering::Relaxed);
+        }
         self.release_producers();
-        if let Ok(mut state) = self.state.try_lock() {
-            state.release_memory();
+        // A panic poisons the state lock on the way out; the data is still
+        // fine to drop.
+        match self.state.try_lock() {
+            Ok(mut state) => state.release_memory(),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                poisoned.into_inner().release_memory()
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {}
         }
         let (done, signal) = &self.worker_done;
         *lock(done) = true;

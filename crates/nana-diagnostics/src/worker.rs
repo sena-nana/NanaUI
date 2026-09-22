@@ -611,6 +611,11 @@ pub(crate) fn run(shared: Arc<Shared>) {
             if due && !st.batch.is_empty() {
                 let batch = st.take_batch();
                 let prefix = output.needs_prefix(batch.len()).then(|| st.file_prefix(ts));
+                if matches!(output, Output::None) {
+                    // This batch (and the schemas in it) goes nowhere, so a
+                    // sink attached later needs the full prefix.
+                    st.batch_is_complete = false;
+                }
                 (Some(batch), prefix)
             } else {
                 st.urgent = false;

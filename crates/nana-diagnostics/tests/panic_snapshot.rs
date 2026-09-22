@@ -27,7 +27,8 @@ fn panic_hook_writes_a_snapshot_with_the_panic_message() {
         let _guard = nana_diagnostics::install(
             DiagnosticsConfig {
                 persist: PersistMode::Essential,
-                // The worker should not be what saves us.
+                // The worker should not be what saves us (clamped to 60 s,
+                // far longer than the child runs).
                 poll_interval: Duration::from_secs(3600),
                 ..DiagnosticsConfig::default()
             },

@@ -91,6 +91,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
+        let frame_started = nana_diagnostics::metrics_enabled().then(Instant::now);
+        if frame_started.is_some() {
+            // Deliver completion callbacks of earlier submissions for
+            // `gpu.completion`. Before the device-lost check, so a loss this
+            // poll reports is handled in this frame either way.
+            crate::host_diagnostics::poll_completions(self.graphics.resources().device());
+        }
         if self.graphics.take_device_lost() {
             self.recover_device(event_loop);
             self.rearm_frame_demand(id);
@@ -99,16 +106,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if !self.window_contexts.contains_key(&id) {
             self.rearm_frame_demand(id);
             return;
-        }
-        let frame_started = nana_diagnostics::metrics_enabled().then(Instant::now);
-        if frame_started.is_some() {
-            // Deliver completion callbacks of earlier submissions now, so
-            // `gpu.completion` is bounded by the redraw cadence. Non-blocking.
-            let _ = self
-                .graphics
-                .resources()
-                .device()
-                .poll(wgpu::PollType::Poll);
         }
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
@@ -329,16 +326,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let submit_started = std::time::Instant::now();
         let submission = self.graphics.resources().queue().submit([encoder.finish()]);
         if frame_started.is_some() {
-            let submitted = Instant::now();
-            self.graphics
-                .resources()
-                .queue()
-                .on_submitted_work_done(move || {
-                    nana_diagnostics::metric!(
-                        nana_diagnostics::framework::gpu::COMPLETION_NS,
-                        submitted.elapsed()
-                    );
-                });
+            crate::host_diagnostics::watch_submission(self.graphics.resources().queue());
         }
         if let Some(prepared) = prepared {
             prepared.submitted(self.graphics.resources().device(), submission);

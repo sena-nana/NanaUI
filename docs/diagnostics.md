@@ -131,7 +131,7 @@ chunk := kind:u8 len:u32le payload[len] crc32:u32le
 | Runtime | 每次 flush 的 CPU 总耗时与 9 个 Runtime 阶段直方图（复用 `FrameProfiler`，不重复计时）、flush 次数与轮数、不收敛 / 样式与文本布局失败计数 |
 | Layout | 每次布局耗时、调用数、整树布局数、dirty 根数、参与布局的盒子数 |
 | Text | shape / layout 缓存命中与未命中、字形解析数、字形图集开页（含图集总字节）/ 预算耗尽（每个图集只报一次）/ 压缩、驱逐数 |
-| GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll，误差不超过一个 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
+| GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll；两次 poll 相隔超过 50 ms（窗口空闲过）时丢弃该样本，所以误差不超过一个活跃 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
 | Window | 打开（物理尺寸）、关闭、缩放系数变化、遮挡、resize 次数 |
 | Host | 每次 redraw 的墙钟耗时（消息处理 + flush + 绘制 + submit + present，可能含 vsync 等待，不是 GPU 时间）、`Continuous` 窗口错过的帧周期数（丢帧）、每次排空时的程序消息队列深度、`HostFailure` 计数与故障（变体码 + 窗口 + 错误文本；同一变体每秒至多记一条，计数不漏）、运行失败、事件循环退出 |
 

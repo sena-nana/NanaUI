@@ -282,7 +282,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 break;
             }
             self.bind_after_present.insert(id);
-            drained += queued.len();
+            // Depth is what was waiting when the drain began; later rounds
+            // are messages the updates themselves sent.
+            if drained == 0 {
+                drained = queued.len();
+            }
             for boxed in queued {
                 let Ok(message) = boxed.downcast::<Program::Message>() else {
                     continue;

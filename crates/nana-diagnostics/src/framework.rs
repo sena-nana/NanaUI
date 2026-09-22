@@ -108,8 +108,9 @@ pub mod gpu {
     pub static SURFACE_TIMEOUT: Metric = Metric::counter(D, 9, "gpu.surface.timeout", "count");
     histogram!(
         /// Submit → the host observing the work complete. An upper bound on
-        /// GPU time: completion is noticed at the next redraw's poll, so the
-        /// error is at most one redraw interval. Exact GPU time needs
+        /// GPU time: completion is noticed at the next redraw's poll, and a
+        /// sample is kept only when that poll came within 50 ms of the one
+        /// before (after idle time it would measure the idle, not the GPU). Exact GPU time needs
         /// timestamp queries, which Metal cannot write inside an encoder.
         pub COMPLETION_NS, COMPLETION_CELLS, D, 10, "gpu.completion", "ns"
     );

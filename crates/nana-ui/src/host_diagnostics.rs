@@ -1,6 +1,8 @@
 //! Scene-host instrumentation (Issue #227). Everything here is free when
 //! diagnostics are off: one relaxed load per call site.
 
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use nana_diagnostics::framework::{gpu, host};
@@ -59,4 +61,41 @@ pub(crate) fn window_opened(
         width = geometry.physical_size.0,
         height = geometry.physical_size.1
     );
+}
+
+/// Longest gap between two completion polls for which a `gpu.completion`
+/// sample is still trusted. Beyond it the host was idle, and the sample
+/// would measure the idle time rather than the GPU.
+const COMPLETION_POLL_GAP: Duration = Duration::from_millis(50);
+
+static EPOCH: OnceLock<Instant> = OnceLock::new();
+/// Start of the latest and the previous completion poll, in ns since EPOCH.
+static POLL_NS: AtomicU64 = AtomicU64::new(0);
+static PREVIOUS_POLL_NS: AtomicU64 = AtomicU64::new(0);
+
+fn epoch_ns() -> u64 {
+    u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// Non-blocking poll that delivers earlier submissions' completion
+/// callbacks. Called at redraw start while metrics are on.
+pub(crate) fn poll_completions(device: &wgpu::Device) {
+    let now = epoch_ns();
+    PREVIOUS_POLL_NS.store(POLL_NS.swap(now, Ordering::Relaxed), Ordering::Relaxed);
+    let _ = device.poll(wgpu::PollType::Poll);
+}
+
+/// Time the submission just made until the host observes it complete.
+/// Dropped when the observing poll came long after the previous one: the
+/// host was idle and the sample would be idle time, not GPU time.
+pub(crate) fn watch_submission(queue: &wgpu::Queue) {
+    let submitted = Instant::now();
+    queue.on_submitted_work_done(move || {
+        let gap = POLL_NS
+            .load(Ordering::Relaxed)
+            .saturating_sub(PREVIOUS_POLL_NS.load(Ordering::Relaxed));
+        if Duration::from_nanos(gap) <= COMPLETION_POLL_GAP {
+            metric!(gpu::COMPLETION_NS, submitted.elapsed());
+        }
+    });
 }

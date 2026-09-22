@@ -50,7 +50,7 @@ fn session_key(name: &str) -> &str {
 
 /// Files of the `limit` most recently modified sessions (a session counts
 /// once however many rotations it has), newest session first.
-fn newest(dir: Option<&Path>, app_id: &str, limit: usize) -> Vec<PathBuf> {
+fn newest(dir: Option<&Path>, app_id: &str, limit: usize, group_rotations: bool) -> Vec<PathBuf> {
     let Some(Ok(read)) = dir.map(fs::read_dir) else {
         return Vec::new();
     };
@@ -70,7 +70,13 @@ fn newest(dir: Option<&Path>, app_id: &str, limit: usize) -> Vec<PathBuf> {
     let mut sessions: Vec<String> = Vec::new();
     let mut picked = Vec::new();
     for (_, path) in files {
-        let Some(key) = path.file_name().and_then(|n| n.to_str()).map(session_key) else {
+        let Some(key) = path.file_name().and_then(|n| n.to_str()).map(|name| {
+            if group_rotations {
+                session_key(name)
+            } else {
+                name
+            }
+        }) else {
             continue;
         };
         if !sessions.iter().any(|s| s == key) {
@@ -123,7 +129,7 @@ pub fn export_package_from(
         ("session", logs, options.max_sessions),
         ("snapshot", crash, options.max_snapshots),
     ] {
-        for path in newest(dir, app_id, limit) {
+        for path in newest(dir, app_id, limit, kind == "session") {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };

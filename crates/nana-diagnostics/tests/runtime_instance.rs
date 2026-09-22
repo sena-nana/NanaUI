@@ -195,7 +195,8 @@ fn full_ring_drops_newest_and_reports_it() {
         "drop",
         DiagnosticsConfig {
             ring_capacity: 8,
-            // The worker must not drain while we fill the ring.
+            // The worker must not drain while we fill the ring (clamped to
+            // 60 s, far longer than the test).
             poll_interval: Duration::from_secs(3600),
             ..config(PersistMode::All)
         },
@@ -736,4 +737,36 @@ fn the_header_records_the_monotonic_origin() {
         assert!(log.header.monotonic_start_ns > 0);
     }
     let _ = fs::remove_dir_all(dir);
+}
+
+#[derive(Clone, Default)]
+struct CaptureSink(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Sink for CaptureSink {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(())
+    }
+    fn flush(&mut self, _durable: bool) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sink_attached_later_still_gets_every_schema() {
+    // No logs directory: early batches have nowhere to go.
+    let diagnostics = Diagnostics::start(
+        config(PersistMode::All),
+        SessionMetadata::new("dev.nana.test", "Test", "1"),
+        DiagnosticsPaths::in_memory(),
+    );
+    diagnostics.emit(&INFO, &[Field::new("n", 1u64), Field::new("flag", true)]);
+    assert!(diagnostics.flush(false, Duration::from_secs(5)));
+    let sink = CaptureSink::default();
+    diagnostics.set_sink(Box::new(sink.clone()));
+    diagnostics.emit(&INFO, &[Field::new("n", 2u64), Field::new("flag", true)]);
+    diagnostics.shutdown();
+    let file = nlog::decode(&sink.0.lock().unwrap()).unwrap();
+    assert!(!file.truncated);
+    assert_eq!(events(&file, "test.info").len(), 1);
 }
