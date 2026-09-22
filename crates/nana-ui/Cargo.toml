@@ -66,8 +66,9 @@ base64 = { workspace = true, optional = true }
 # policy and lifetime; the shelf packer itself is not worth rewriting.
 etagere = { version = "0.2.15", optional = true }
 # Outline scaling and rasterization behind `scene_paint::text::raster` (#99).
-# The renderer owns the rasterizer boundary; the TrueType rasterizer under it
-# is not worth rewriting, and this is the one cosmic-text reached through.
+# The renderer owns the rasterizer boundary; the outline rasterizer under it is
+# not worth rewriting. On Windows DirectWrite takes outline glyphs and swash
+# keeps color, bitmap and sideways ones (`raster_dwrite.rs`).
 swash = { version = "0.2.10", optional = true }
 image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }

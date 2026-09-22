@@ -195,8 +195,10 @@ pub struct ShapedRun {
     /// The face at the axis coordinates and synthesis the glyphs were shaped
     /// with. A rasterizer needs exactly this to draw the same outlines the
     /// advances were measured from; re-deriving it from the style would
-    /// reintroduce a second instance resolution. `None` when the engine that
-    /// produced the run does not report it (the migration reference).
+    /// reintroduce a second instance resolution. `None` when the font layer
+    /// could not instantiate the face (it has no record of that id); the
+    /// painter then draws nothing for the run, whose advances still hold its
+    /// place in the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<FontInstanceKey>,
 }

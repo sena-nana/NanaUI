@@ -1,5 +1,7 @@
 # GPU 节点规模与 draw call 基线（2026-09-10）
 
+> 文中的 cryoglyph 路径（`prepare_cryoglyph`、`TextRenderer::prepare/render`、`TextArea`）是写这篇时的产品路径，已由 #97 的 `NanaRenderer::text` 取代，#99 起 cryoglyph 不在依赖图里。现在的文本绘制见 [`text-engine.md`](text-engine.md) 的「NanaRenderer::text」。
+
 这是**改动前的基线**，不是优化成果报告。它回答两个问题：一棵树上放几百个 shader 节点，成本长在哪；框架层的 draw call 到底有多少。
 
 ## 环境及可比性

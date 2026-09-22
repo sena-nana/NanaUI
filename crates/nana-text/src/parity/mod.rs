@@ -1,10 +1,9 @@
 //! Structural comparison of two layouts, and the corpus that drives it.
 //!
-//! This is the migration acceptance contract, and it has to outlive the engine
-//! it is currently calibrated against: [`compare`] is what Phase 0 uses to
-//! check the cosmic reference against committed goldens, and it is the same
-//! function later phases use to check a native engine against those goldens and
-//! against the reference.
+//! This is the migration acceptance contract, and it outlived the engine it
+//! was calibrated against: Phase 0 used [`compare`] to check the cosmic
+//! reference against the committed goldens, and it is the same function that
+//! now checks the native engine against those frozen goldens.
 //!
 //! Screenshots are not a substitute. A diff here names the line, the run, the
 //! glyph and the field.

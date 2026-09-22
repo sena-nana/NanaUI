@@ -15,27 +15,26 @@
 //!
 //! [`NativeTextEngine`] ties the three together behind [`TextEngine`]. Since
 //! Phase 4 (#95) the UiWorld's retained text nodes can resolve through it and
-//! keep their layouts behind [`TextLayoutStore`] handles. Since Phase 6 (#97)
-//! the painter is `nana-ui`'s own `NanaRenderer::text`, but it is still fed by
-//! that crate's cosmic-text shaper; drawing these retained layouts is #99.
+//! keep their layouts behind [`TextLayoutStore`] handles. Since #99 this crate
+//! is the only product text authority: Rust, NanaVue and Vue/CSS text is
+//! measured by it, and `nana-ui`'s `NanaRenderer::text` draws the layouts the
+//! Runtime retained.
 //!
 //! # Boundaries
 //!
 //! - **No `cosmic_text` or `cryoglyph` identifier appears under `src/`.** The
-//!   cosmic reference engine lives in `tests/reference/`, reachable only from a
-//!   dev dependency, so it can never enter a product dependency edge. It is
-//!   temporary and is deleted along with that dependency once a native engine
-//!   lands.
-//! - **The product painter does not use this crate yet.** Product text is still
-//!   measured by `nana-ui`'s cosmic-text shaper; the Runtime only resolves
-//!   through an engine for hosts that draw layouts.
+//!   cosmic reference engine that recorded the Phase 0 goldens was deleted in
+//!   #99; the goldens stay, and the native engine is checked against them.
+//!   `scripts/check-engine-boundary.py` keeps both engines out of every product
+//!   crate's dependency graph.
 //! - **Typography vocabulary is borrowed, not re-declared.** `TextStyle` and
 //!   `TextConstraints` are built from `nana_ui_core`'s backend-neutral
 //!   typography types so the eventual UiWorld adapter is a field-for-field move
 //!   rather than a dozen hand-written enum conversions. Only these items may be
 //!   named from `nana_ui_core`: `FontVariationSetting`, `FontKerningSpec`,
 //!   `LineBreakSpec`, `FontFeatureSetting`, `LineHeightSpec`, `WordBreakSpec`,
-//!   `TextWrapBreak`, `TextAlignSpec`, `DirSpec`, `WritingModeSpec`.
+//!   `TextWrapBreak`, `TextAlignSpec`, `DirSpec`, `WritingModeSpec`,
+//!   `TextOrientationSpec`, `WritingContext`.
 //!
 //! # Staleness
 //!

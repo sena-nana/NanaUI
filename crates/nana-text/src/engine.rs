@@ -2,11 +2,8 @@
 //!
 //! [`NativeTextEngine`] is the whole pipeline behind one call: the #90 font
 //! layer, the #91 shaper and its cache, and the #92 layout engine and its
-//! cache. It is what a UiWorld adapter will hold.
-//!
-//! The cosmic reference implementation still lives under `tests/`, where no
-//! product dependency edge can reach it; it records the migration goldens and
-//! is deleted with the corpus's reference column, not with this trait.
+//! cache. It is the one engine the product holds (`nana-ui`'s
+//! `SharedTextEngine`).
 
 use crate::constraints::TextConstraints;
 use crate::counters::TextWorkCounters;

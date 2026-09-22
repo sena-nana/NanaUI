@@ -8,7 +8,7 @@ NanaUI 自己的代码是 **MIT 或 Apache-2.0**（见 [LICENSE-MIT](../LICENSE-
 
 ## 结论
 
-- release 依赖图（`cargo tree --edges normal`）里 **587 个外部 crate，全部是宽松
+- release 依赖图（全平台的 normal + build 边，命令见文末）里 **586 个外部 crate，全部是宽松
   许可证**：MIT / Apache-2.0 / BSD / ISC / Zlib / Unicode-3.0 / 0BSD / CC0 /
   BSL-1.0 / CDLA-Permissive-2.0 及其组合。没有 copyleft-only 的边（两处
   `MIT OR Apache-2.0 OR LGPL-2.1-or-later` 都可以取宽松的那一支）。
@@ -16,10 +16,10 @@ NanaUI 自己的代码是 **MIT 或 Apache-2.0**（见 [LICENSE-MIT](../LICENSE-
   是一条边都没有。参照引擎已随之删除（见下）。
 - 从被替换的引擎**照抄过一段代码**：`SubpixelBin::split`。已就地署名，见「照抄了什么」。
 
-没有为「别让它回来」立门禁：依赖已经删了，`Cargo.lock` 里一条记录都没有。
-`scripts/check-engine-boundary.py`（CI 每次跑）守的是 `nana-text` **源码**里不得出现
-`cosmic_text` / `cryoglyph` / `glyphon` 标识符——那条是 #89 的 API 纯净度规则，不是
-依赖删除的看门狗。
+「别让它回来」由 `scripts/check-engine-boundary.py`（CI 每次跑）机器守着：任何工作区
+成员在任何 feature 下都不得有非 dev 边通向 `cosmic-text` / `cryoglyph` / `glyphon`，
+改了名的 fork 也算；只有 reference-only 的对照工具包可以例外。另有 #89 的一条源码规则：
+`nana-text/src` 里不得出现这三个标识符。
 
 ## 文本栈依赖谁的代码
 
@@ -40,6 +40,7 @@ NanaUI 自己的代码是 **MIT 或 Apache-2.0**（见 [LICENSE-MIT](../LICENSE-
 | `swash` | 0.2.10 | Apache-2.0 OR MIT | 字形轮廓缩放与栅格化。只在 `scene_paint/text/raster.rs` 后面 |
 | `zeno` | 0.3.3 | Apache-2.0 OR MIT | `swash` 的路径栅格化 |
 | `yazi` | 0.2.1 | Apache-2.0 OR MIT | `swash` 的 WOFF2 解压 |
+| `windows` | 0.62.2 | MIT OR Apache-2.0 | 仅 Windows：DirectWrite 栅格化 outline 字形与读系统 ClearType 设置，只在 `scene_paint/text/raster_dwrite.rs` 后面；彩色 / 位图 / 侧卧字形与失败时仍走 `swash` |
 | `etagere` | 0.2.15 | MIT/Apache-2.0 | glyph atlas 的矩形打包。只在 `scene_paint/text/atlas.rs` 后面 |
 
 「只许出现在某个文件」这一条由 `check-engine-boundary.py` 机器守着，所以这些
@@ -113,9 +114,13 @@ MIT OR Apache-2.0。它的一段代码仍在本仓库里，见「照抄了什么
 ## 怎么重跑这份审计
 
 ```bash
-# nana-text 的源码里没有被替换引擎的标识符（CI 也跑这一条）
+# 产品图里没有被替换的引擎、nana-text 源码里没有它们的标识符（CI 也跑这一条）
 python3 scripts/check-engine-boundary.py
 
-# release 依赖图里的许可证分布
-cargo tree --edges normal --workspace --prefix none | sort -u
+# release 依赖图里的外部 crate 与许可证（全平台，normal + build 边）
+cargo tree --edges normal,build --workspace --locked --target all --prefix none -f '{p}|{l}' \
+  | sed 's/ (\*)//' | sort -u | grep -v "(/"
 ```
+
+`grep -v "(/"` 去掉的是工作区自己的 path crate；git 依赖（`winit` 等）以 `(https://` 结尾，
+会留下来。只看 `--edges normal` 或只看本机平台，数出来的会更少，那不是依赖变了。

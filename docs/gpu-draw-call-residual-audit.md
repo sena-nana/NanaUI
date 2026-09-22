@@ -1,5 +1,7 @@
 # painter 里剩下的非 O(1) draw call，与静止帧的每帧成本（2026-09-10）
 
+> 文中的 cryoglyph 路径（`prepare_cryoglyph`、`TextRenderer::prepare/render`、`TextArea`）是写这篇时的产品路径，已由 #97 的 `NanaRenderer::text` 取代，#99 起 cryoglyph 不在依赖图里。现在的文本绘制见 [`text-engine.md`](text-engine.md) 的「NanaRenderer::text」。
+
 这是**调查报告**。第一到七节是调查本身（写的时候工作区没有任何实现改动）；第八节
 记录同一次会话里按它的结论落地的两项。它接着 [`gpu-ui-draw-call-plan.md`](gpu-ui-draw-call-plan.md)
 的三步（屏外文字剔除、相邻文字 run 合并、重叠感知批次合并）往下问两个问题：

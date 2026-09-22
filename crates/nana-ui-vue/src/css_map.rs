@@ -4933,7 +4933,7 @@ pub fn parse_css_font_kerning(input: &str) -> Option<FontKerningSpec> {
     }
 }
 
-/// CSS `word-break` subset. `keep-all` is skipped (no CJK keep-all in cosmic-text).
+/// CSS `word-break` subset. `keep-all` is skipped: `nana-text` has no CJK keep-all.
 pub fn parse_css_word_break(input: &str) -> Option<WordBreakSpec> {
     let expanded = expand_css_var_fallback(input.trim());
     match expanded.trim().to_ascii_lowercase().as_str() {

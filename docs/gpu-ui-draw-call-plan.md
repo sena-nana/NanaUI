@@ -1,5 +1,7 @@
 # 普通 UI 的 draw call：拆解、可行性与方案（2026-09-10）
 
+> 文中的 cryoglyph 路径（`prepare_cryoglyph`、`TextRenderer::prepare/render`、`TextArea`）是写这篇时的产品路径，已由 #97 的 `NanaRenderer::text` 取代，#99 起 cryoglyph 不在依赖图里。现在的文本绘制见 [`text-engine.md`](text-engine.md) 的「NanaRenderer::text」。
+
 这是**调查报告 + 方案**，没有任何实现改动。它回答三个问题：`gpu-scene-ui-dense-2k`
 那 1503 次 draw 到底是什么；上一轮方案里的「重叠感知批次合并」值不值得做；如果做，
 按什么顺序做、怎么验证。

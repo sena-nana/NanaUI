@@ -47,7 +47,7 @@ Vue + JS L1/L2（可选宿主）
 
 依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
 
-`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。它的 cosmic-text 参照引擎是 dev 依赖，只从 `tests/` 可达；#99 之后整个工作区的 `cargo tree --edges normal` 都不再含 cosmic-text 或 cryoglyph，脚本按全工作区守住这一条。
+`nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。#99 起 Rust、NanaVue 与 Vue/CSS 的文本都由它测量，`NanaRenderer::text` 画 Runtime 保留的那份 layout；cosmic-text 与 cryoglyph（含参照引擎）已从 `Cargo.lock` 删除，脚本按全工作区禁止任何产品 crate 再有通向它们（或它们改名的 fork）的非 dev 边。
 
 产品路径：
 

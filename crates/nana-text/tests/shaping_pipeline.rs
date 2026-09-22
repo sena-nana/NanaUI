@@ -626,11 +626,10 @@ fn ten_thousand_identical_labels_shape_once() {
     assert_eq!(counters.shape_cache_misses, 1);
     assert_eq!(counters.shape_cache_hits, 9_999);
     assert_eq!(counters.shape_runs_created, 1);
-    assert_eq!(counters.text_bytes_cloned_for_shape, 0);
 }
 
 #[test]
-fn repeated_lookups_of_one_source_hash_its_text_once_and_copy_nothing() {
+fn repeated_lookups_of_one_source_hash_its_text_once() {
     let (mut fonts, _) = system(&["noto-sans-sc"]);
     let mut shaper = Shaper::default();
     let source = TextSource::new("a long paragraph ".repeat(64));
@@ -645,7 +644,6 @@ fn repeated_lookups_of_one_source_hash_its_text_once_and_copy_nothing() {
     }
     let counters = shaper.counters();
     assert_eq!(counters.text_bytes_hashed, source.text().len());
-    assert_eq!(counters.text_bytes_cloned_for_shape, 0);
     assert_eq!(counters.shape_cache_hits, 99);
 }
 

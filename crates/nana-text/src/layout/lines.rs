@@ -27,8 +27,8 @@ const WIDTH_EPSILON_PX: f32 = 0.01;
 /// This is CSS's strut, and it is what holds a baseline still: with a strut,
 /// one emoji falling back to a taller face grows the reported ascent but does
 /// **not** move the baseline, so `Save` and `Save 🔥` sit on the same line.
-/// Without one, each line's baseline is centred on that line's own tallest run
-/// — the reference engine's rule, and it moves.
+/// Without one, each line's baseline is centred on that line's own tallest run,
+/// and it moves.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineStrut {
     pub metrics: RunMetrics,

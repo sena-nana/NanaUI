@@ -984,8 +984,8 @@ fn apply_text_decoration_line(style: &mut nana_ui_core::LayoutStyle, val: &str) 
                 saw = true;
             }
             "overline" | "blink" | "spelling-error" | "grammar-error" => {
-                // cosmic-text can overline; Scene stroke path only does
-                // underline / line-through. Unknown lines fail closed.
+                // The Scene decoration path only draws underline /
+                // line-through. The rest fail closed.
             }
             "solid" | "double" | "dotted" | "dashed" | "wavy" => {}
             _ => {}

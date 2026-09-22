@@ -227,17 +227,19 @@ Phase 0 没有产品生产者，这是设计如此。当时防止它们变成摆
 
 ## 边界如何被机器守住
 
-`scripts/check-engine-boundary.py` 多了三条规则，都带自测
-（`scripts/tests/test_engine_boundary.py`，现在真的在 CI 里跑了）：
+`scripts/check-engine-boundary.py` 守着下面这些规则，都带自测
+（`scripts/tests/test_engine_boundary.py`），CI 每次都跑：
 
-1. **产品图**：`nana-text` 不得有**非 dev** 边通向 `cosmic-text` / `cryoglyph` / `glyphon`。
-2. **源码**（承重的一条）：`crates/nana-text/src/**` 里不得出现 `cosmic_text` / `cryoglyph` /
+1. **产品图**（#99 §11）：**任何工作区成员**在任何 feature 组合下都不得有 normal / build 边
+   通向 `cosmic-text` / `cryoglyph` / `glyphon`，名字里**含有**它们的包也算——把 fork 改名成
+   `nana-cryoglyph` 继续当生产抽象，正是 #99 明令禁止的。允许的例外只有两种：dev 边，以及
+   `REFERENCE_ONLY_PACKAGES` 里的对照工具包（产品 crate 又不许依赖这种包）。这条门禁在依赖
+   删掉之后仍然保留：它防的是**将来**有人为了一个功能把旧引擎重新拉进来，而 `Cargo.lock`
+   只在它已经进来之后才看得出来。
+2. **源码**：`crates/nana-text/src/**` 里不得出现 `cosmic_text` / `cryoglyph` /
    `glyphon` 标识符。这条在参照引擎还活着时是唯一能说「核心 API 不出现 cosmic 类型」的机械
    手段（依赖图说不了，因为那时它是一条合法的 dev 依赖）；引擎删掉之后它守的是不许有人
    把它的类型再带回来。注释会被剥掉再扫，所以 `lib.rs` 可以正常地把边界写清楚。
-
-这两条都只管 `nana-text`。「别的 crate 不许依赖被替换的引擎」不靠门禁——依赖已经删了，
-`Cargo.lock` 里一条记录都没有，再为它立一道门禁是在给一件已经不存在的事上锁。
 3. **allowlist**：`crates/nana-text/src/**` 引用 `nana_ui_core::` 时，只许命中上面那张表里的项。
 4. **字体层后端**（#90）：`fontdb` 只许出现在 `src/font/discovery.rs`，`skrifa` 只许出现在
    `src/font/face.rs`，`icu_properties` 只许出现在 `src/font/unicode.rs`，`read_fonts` /
@@ -459,11 +461,12 @@ shape_cache_hits / misses / evictions      shape_cache_bytes / entries（读时�
 bidi_runs / script_runs                     未命中时切出的 level run 与 script run
 fallback_retries / fallback_fonts_examined
 text_bytes_hashed                           每个 source revision 一次
-text_bytes_cloned_for_shape                 key 共享 Arc<str>，恒为 0；将来引入复制时必须在此计数
 text_bytes_unshaped                         字体系统没有任何 face 时未出 run 的字节（不含段落分隔符）
 ```
 
-没有折进 `TextWorkCounters`：那里的 shape cache 口径要等 UiWorld 接缝真有 pass 时再填。
+`NativeTextEngine::layout` 把每次调用的 shape / layout cache 命中与未命中折进
+`TextWorkCounters`（`shape_cache_hits` / `layout_cache_hits` 等），帧计数器读的是那一份。
+`ShapeCounters` 本身留在 `nana-text` 里做诊断，不出 crate。
 
 ### 与 cosmic golden 对账
 
@@ -1266,11 +1269,39 @@ Issue #96 的「IME 单一语义后端」目前只兑现了一半，而且是有
   ——static steady / paint-only / compositor-only 三条门禁、#33 的 head-dirty
   网格（2k/4k/8k 节点上 `text_nodes_shaped` / `text_bytes_hashed` /
   `layouts_created` 全为 0）、以及 8000 行编辑器的每次编辑只重排一段。
-  没覆盖的几项（constraint-only resize、text-heavy table 等）在那篇里逐条写明。
-- **第三方与许可证**：[third-party.md](third-party.md)——release 依赖图 587 个
-  外部 crate 全是宽松许可证，`cryoglyph` 已不在 `Cargo.lock` 里，`cosmic-text`
-  只剩 `nana-text` 的一条 dev 边；从被替换引擎照抄的一处（`SubpixelBin::split`）
-  已就地署名。
+  那篇写于 constraint-only 门禁之前；2026-09-22 的收口报告见
+  [text-cutover-2026-09-22](performance-data/text-cutover-2026-09-22/README.md)（五道门禁，含新增的
+  `gpu-scene-text-constraint-resize`）。
+- **第三方与许可证**：[third-party.md](third-party.md)——release 依赖图（全平台 normal + build 边）
+  586 个外部 crate 全是宽松许可证，`cryoglyph` 与 `cosmic-text` 都不在 `Cargo.lock` 里；
+  照抄的片段（`SubpixelBin::split`、DirectWrite 覆盖率校正）已就地署名。
+- **依赖门禁**：`check-engine-boundary.py` 禁止任何工作区成员有通向 cosmic-text / cryoglyph /
+  glyphon（含改名 fork）的非 dev 边，见「边界如何被机器守住」。
+
+### 收口时补上的测量分叉（2026-09-22）
+
+cutover 之后仍有几条路径不经过 `nana-text` 量字，或者量了但答案取决于缓存冷热：
+
+| 路径 | 之前 | 现在 |
+| --- | --- | --- |
+| Markdown 几何（`UiWorld::markdown_layout`） | 逐字素从 Runtime 的 `GlyphCache` 取宽度求和，没见过的字按 0.6em 估算；画的时候同一 span 同一行却整段交给引擎排 | 每个 span 的每一行交给引擎整形一次（`text_engine_shaper::grapheme_advances`），逐字素 advance 取相邻 caret 之差。gallery 富文本页里粗体 span 之后的空隙因此消失：标题 run 61.20 → 44.90 px |
+| SelectableRichText 的框高、拖选与高亮 | 框高按 `\n` 行数写死，命中每个字素固定 12 px，高亮盖满内容框 | 框高由 Runtime 按框宽测量，命中与高亮都读节点保留的那份 `TextLayout`（680f28ba3） |
+| 单字符快路径（`NanaTextEngineShaper::shape_cached`） | 见过的字符直接返回缓存 advance、`ascent: None`：同一个 “A” 冷缓存 ascent 13.57、热缓存退回 0.8em 基线 | 删除。引擎自己的 layout cache 已经回答重复字符串；`GlyphCache` 只剩不带引擎的测试 shaper 用 |
+| 不带 `scene-view` 的 nana-ui-vue | `MeasureTextShaper`（em 宽度）：同一份 Vue 文档按 feature 换测量后端 | 始终用进程级引擎（`nana-ui` 无 GPU 部分成为必选依赖） |
+| `RuntimeLayoutEngine::layout_style_tree`（Vue 预绘制回退、css-parity） | 写死 `MeasureTextShaper` | 调用方传 shaper，Vue 传 `NanaTextShaper` |
+
+行为测试在 `crates/nana-ui/tests/rich_text_measurement.rs` 与 `nana_text.rs` 的
+`a_measurement_does_not_depend_on_what_was_measured_before`，各自在旧实现上 A/B 过（旧实现分别
+报 134.7 vs 121.0 px、ascent `None`）。
+
+**没改的**：
+
+- 一批控件 chrome 仍按字符数估宽度：`world/geometry.rs` 与 `menus.rs` 的 `estimated_text_width`
+  （快捷键徽标、菜单提示、命令面板、日历 tooltip）、签名帮助浮层、行号槽、图表图例。它们定的是
+  **盒子**，里面的字仍由引擎排和画，最坏是盒子偏宽 / 偏窄；换成真实测量需要在 geometry 阶段拿到
+  引擎，另开。
+- `PaintContext::measure_text` 与 `PaintRecording::record` 在没有引擎的世界里仍退回 em 估算——
+  那是「宿主没装引擎」的情形，产品宿主总是装的。
 
 ## NanaRenderer::text（Phase 6，#97）
 
@@ -1917,9 +1948,10 @@ entry 回答、陈旧句柄 0。
 cargo run --release --locked -p nana-ui --features gpu \
     --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 
-# #8 的三类文本门禁
+# #8 的文本门禁（#98 三类 + #99 constraint-only）
 for id in gpu-scene-text-retained gpu-scene-text-paint-color \
-          gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform; do
+          gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform \
+          gpu-scene-text-constraint-resize; do
   python3 perf/runners/nana/run.py --scenario "$id" --output "target/performance/issue98/$id.json"
 done
 python3 perf/contract.py --self-test
@@ -1927,10 +1959,11 @@ python3 perf/contract.py --self-test
 
 | 门禁 | 每帧动的是什么 | 判据 |
 | --- | --- | --- |
-| `gpu-scene-text-retained` | 一千个标签里一个换文本 | `text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900` |
+| `gpu-scene-text-retained` | 一千个标签里一个换文本 | `text_nodes_shaped ≤ 1`、`text_layouts_created ≤ 1`、`paint_shape_cache_misses ≤ 0`、`text_instance_rebuilds ≤ 1`、`glyph_rasterized ≤ 4`、`glyph_upload_bytes ≤ 4096`、`text_instance_upload_bytes ≤ 4096`、`text_prepare_nodes_skipped ≥ 900` |
 | `gpu-scene-text-paint-color` | 每个标签换前景色 | 塑形、排版（Runtime 与画笔两侧）、栅格化、atlas 上传、instance 重建与上传全为 0；`skipped ≥ 900` |
 | `gpu-scene-text-compositor-opacity` | 容器淡入淡出 | 同上 |
 | `gpu-scene-text-compositor-transform` | 容器在 −1.5° / 0° / +1.5° 间转 | 同上，instance 上传除外（每三帧经过一次恒等） |
+| `gpu-scene-text-constraint-resize`（#99） | 每个标签在两档宽度间交替 | 塑形、需要重新塑形的 layout、画笔自排、栅格化、atlas 上传全为 0；`text_layout_lookups ≥ 900` 证明宽度确实传到了文本。instance 重建不设门 |
 
 场景必须真的在动：`text_ticker` 或 `text_animation` 二选一，extractor 核对报告里回显的
 值，跑了不动的场景不算数——不动的话 painter 直接复用上一帧的批次，counter 全是 0，

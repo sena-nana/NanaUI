@@ -158,9 +158,6 @@ pub struct ShapeCounters {
     pub fallback_fonts_examined: usize,
     /// Text bytes fed to the content hash. Once per source revision.
     pub text_bytes_hashed: usize,
-    /// Text bytes copied to build or store a key. The key shares the
-    /// source's `Arc<str>`, so this stays 0 unless that changes.
-    pub text_bytes_cloned_for_shape: usize,
     /// Text bytes that produced no run at all: the font system has no face, or
     /// the face they resolved to could not be loaded or parsed and no
     /// candidate covered them. Paragraph separators are not counted.

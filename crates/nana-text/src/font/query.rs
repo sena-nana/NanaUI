@@ -322,9 +322,8 @@ impl FontQuery {
     /// **Weight / stretch precedence.** An explicit `"wght"` in
     /// `font-variation-settings` wins over `font-weight`, and an explicit
     /// `"wdth"` wins over stretch, for face *selection* as well as for the
-    /// axis coordinate. That is the product rule `nana-ui` already ships
-    /// (`wght` merges into weight), kept so the migration does not change which
-    /// face a page gets. Any other axis, including custom ones such as `BEVL`,
+    /// axis coordinate, the same rule the CSS mapping applies (`wght` merges
+    /// into weight). Any other axis, including custom ones such as `BEVL`,
     /// never influences selection and never becomes `wght`.
     pub fn from_style(style: &TextStyle, language: Option<LanguageTag>) -> Self {
         let mut families = style

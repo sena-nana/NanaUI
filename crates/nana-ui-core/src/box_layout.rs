@@ -278,7 +278,7 @@ impl WhiteSpaceSpec {
     }
 }
 
-/// CSS `word-break` subset mapped to cosmic-text wrap.
+/// CSS `word-break` subset. `keep-all` is not supported and parses as unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum WordBreakSpec {
     #[default]
@@ -298,7 +298,7 @@ pub enum OverflowWrapSpec {
     Anywhere,
 }
 
-/// cosmic-text wrap mode once wrapping is enabled.
+/// Where a wrapping line may break once wrapping is enabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize)]
 pub enum TextWrapBreak {
     #[default]
@@ -1012,8 +1012,9 @@ pub const TEXT_APPROX_ASCENT_EM: f32 = 0.8;
 
 /// Center of a CJK-oriented em square inside a line, measured from the line top.
 ///
-/// cosmic-text 0.19 splits extra leading above and below the (ascent+descent)
-/// box, then places the baseline at `ascent` into that box. Nana approximates
+/// The line box splits extra leading evenly above and below the
+/// (ascent+descent) box (CSS half-leading), then places the baseline at
+/// `ascent` into that box. Nana approximates
 /// ascent as 0.8em; the em square sits on the baseline, so its center is above
 /// the line-box midpoint by half the descent.
 pub fn glyph_box_center_from_line_top(line_height: f32, font_px: f32) -> f32 {
@@ -4156,7 +4157,7 @@ impl LayoutStyle {
         }
     }
 
-    /// cosmic-text wrap break once [`Self::text_wraps`] is true.
+    /// Wrap break once [`Self::text_wraps`] is true.
     pub fn text_wrap_break(&self) -> TextWrapBreak {
         if matches!(self.word_break, Some(WordBreakSpec::BreakAll)) {
             TextWrapBreak::Glyph
@@ -4426,7 +4427,7 @@ impl LayoutStyle {
 
     /// 第一行基线相对 border-box 顶边。
     ///
-    /// `shaped_ascent` 来自 cosmic-text / `TextMetrics`（第一行 `line_y - line_top`）。
+    /// `shaped_ascent` 来自 `nana-text` 排出的 `TextMetrics`（第一行 `line_y - line_top`）。
     /// 缺省仍用 [`TEXT_APPROX_ASCENT_EM`]（0.8em）。
     pub fn baseline_from_ascent(&self, fallback_font_px: f32, shaped_ascent: Option<f32>) -> f32 {
         let font = self.font_size.unwrap_or(fallback_font_px).max(0.0);
