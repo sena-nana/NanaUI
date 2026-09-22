@@ -3115,6 +3115,37 @@ pub(super) fn completion_popup_metrics(
     Some(metrics)
 }
 
+/// An editor's caret: a one-pixel rule standing `line_height` tall at `(x, y)`.
+///
+/// Horizontal and vertical editors both draw it from here, in text space, so
+/// the two cannot drift apart.
+pub(super) fn caret_rule(x: f32, y: f32, line_height: f32) -> LayoutBox {
+    LayoutBox {
+        x,
+        y,
+        width: 1.0,
+        height: line_height,
+    }
+}
+
+/// The underline under a composing run, in text space: `run` is the run's
+/// line box, the rule spans its inline extent (at least a pixel) and sits at
+/// its block end — below a horizontal line — or, for a vertical column, at its
+/// block start, where CJK sets its sidelines.
+pub(super) fn preedit_rule(run: LayoutBox, at_block_end: bool) -> LayoutBox {
+    let rule = LayoutBox {
+        width: run.width.max(1.0),
+        height: 2.0,
+        ..run
+    };
+    let y = if at_block_end {
+        run.y + run.height - rule.height
+    } else {
+        run.y
+    };
+    LayoutBox { y, ..rule }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn text_input_decorations(
     presentation: &TextInputPresentation,
@@ -3140,11 +3171,15 @@ pub(super) fn text_input_decorations(
         let preedit = presentation
             .preedit_lines
             .iter()
-            .map(|preedit| LayoutBox {
-                x: field_x(preedit.x),
-                y: content.y + preedit.y + preedit.height - scroll_y - 2.0,
-                width: preedit.width.max(1.0),
-                height: 2.0,
+            .map(|preedit| {
+                preedit_rule(
+                    LayoutBox {
+                        x: field_x(preedit.x),
+                        y: content.y + preedit.y - scroll_y,
+                        ..*preedit
+                    },
+                    true,
+                )
             })
             .collect();
         (selection, preedit)
@@ -3161,11 +3196,16 @@ pub(super) fn text_input_decorations(
             .collect();
         let preedit = presentation
             .preedit
-            .map(|(start, end)| LayoutBox {
-                x: field_x(start),
-                y: line_y + line_height - 2.0,
-                width: (end - start).max(1.0),
-                height: 2.0,
+            .map(|(start, end)| {
+                preedit_rule(
+                    LayoutBox {
+                        x: field_x(start),
+                        y: line_y,
+                        width: end - start,
+                        height: line_height,
+                    },
+                    true,
+                )
             })
             .into_iter()
             .collect();

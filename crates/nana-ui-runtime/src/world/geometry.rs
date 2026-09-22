@@ -454,11 +454,12 @@ impl UiWorld {
                     scroll_x,
                     scroll_y,
                 );
-                let caret = focused.then_some(LayoutBox {
-                    x: field_x(presentation.caret_x),
-                    y: line_y + presentation.caret_y,
-                    width: 1.0,
-                    height: line_height,
+                let caret = focused.then(|| {
+                    caret_rule(
+                        field_x(presentation.caret_x),
+                        line_y + presentation.caret_y,
+                        line_height,
+                    )
                 });
                 // 附加多光标：与主光标同形，用主光标色的半透明变体区分；
                 // 只随焦点出现（多行编辑器才有附加光标）。
@@ -476,12 +477,7 @@ impl UiWorld {
                     presentation
                         .additional_carets
                         .iter()
-                        .map(|(x, y)| LayoutBox {
-                            x: field_x(*x),
-                            y: line_y + *y,
-                            width: 1.0,
-                            height: line_height,
-                        })
+                        .map(|(x, y)| caret_rule(field_x(*x), line_y + *y, line_height))
                         .collect()
                 } else {
                     Vec::new()
@@ -2647,14 +2643,7 @@ fn vertical_text_input_geometry(
         return geometry;
     };
     let line = presentation.line_height.max(1.0);
-    let caret_at = |(inline, block): (f32, f32)| {
-        frame.field_rect(LayoutBox {
-            x: inline,
-            y: block,
-            width: 1.0,
-            height: line,
-        })
-    };
+    let caret_at = |(inline, block): (f32, f32)| frame.field_rect(caret_rule(inline, block, line));
     // Along the columns is the page's height, across them its width.
     text.bounds = frame.text_bounds(
         presentation.content_size.height,
@@ -2662,17 +2651,11 @@ fn vertical_text_input_geometry(
         multiline,
     );
     // The preedit underline runs beside the column, on its block-start side:
-    // the right of a `vertical-rl` column, where CJK sets its sidelines.
+    // the right of a `vertical-rl` column.
     let preedit = presentation
         .preedit_lines
         .iter()
-        .map(|rect| {
-            frame.field_rect(LayoutBox {
-                height: 2.0,
-                width: rect.width.max(1.0),
-                ..*rect
-            })
-        })
+        .map(|rect| frame.field_rect(preedit_rule(*rect, false)))
         .collect();
     crate::ComponentGeometry::TextInput {
         resize_grip,
