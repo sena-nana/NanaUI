@@ -23,7 +23,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             {
                 Ok(update) => update,
                 Err(error) => {
-                    self.program.host_failure(HostFailure::AccessibilityAction {
+                    self.report_host_failure(HostFailure::AccessibilityAction {
                         window: id,
                         error: error.to_string(),
                     });
@@ -131,6 +131,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 self.forward_window_event(event_loop, id, &event);
             }
             WinitWindowEvent::SurfaceResized(_) | WinitWindowEvent::ScaleFactorChanged { .. } => {
+                match &event {
+                    WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        nana_diagnostics::event!(
+                            nana_diagnostics::framework::window::SCALE_FACTOR_CHANGED,
+                            window = id.0,
+                            scale = *scale_factor
+                        );
+                    }
+                    _ => nana_diagnostics::metric!(nana_diagnostics::framework::window::RESIZES),
+                }
                 self.sync_window_mode(event_loop, id);
                 let geometry_changed = self.sync_geometry(id);
                 #[cfg(target_os = "macos")]
@@ -146,6 +156,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
             }
             WinitWindowEvent::Occluded(occluded) => {
+                nana_diagnostics::event!(
+                    nana_diagnostics::framework::window::OCCLUDED,
+                    window = id.0,
+                    occluded = *occluded
+                );
                 if *occluded {
                     self.occluded.insert(id);
                 } else {
@@ -306,7 +321,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Err(error) => {
                 // Drop this input event; the program sees the failure through
                 // host_failure instead of the process dying in the event loop.
-                self.program.host_failure(HostFailure::InputDispatch {
+                self.report_host_failure(HostFailure::InputDispatch {
                     window: id,
                     error: error.to_string(),
                 });
@@ -333,7 +348,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &self.context_for(id),
         );
         if let Err(error) = &program_input {
-            self.program.host_failure(HostFailure::InputHandler {
+            self.report_host_failure(HostFailure::InputHandler {
                 window: id,
                 error: error.to_string(),
             });

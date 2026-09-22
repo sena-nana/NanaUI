@@ -22,6 +22,7 @@
 | 颜色、尺寸、字体、主题 | [视觉](look.md) |
 | 无窗口跑起来看一眼(截图 / a11y / 点击) | [`$nanaui-agent-debug`](../.agents/skills/nanaui-agent-debug/SKILL.md) |
 | 改完代码最快看到新界面 | [开发期热重载](hot-reload.md) |
+| 日志、指标、崩溃快照、应用数据 / 日志目录 | [诊断与应用路径](diagnostics.md) |
 | 一个指针事件在两条路上各花多少 | [输入成本](input-cost.md) |
 | 文本 IR、迁移语料与 parity 验收（改文本引擎时） | [文本引擎](text-engine.md) |
 

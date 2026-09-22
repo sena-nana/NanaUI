@@ -676,6 +676,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         });
         window.request_redraw();
         self.prepare_window_chrome(id, geometry.maximized);
+        crate::host_diagnostics::window_opened(id, &geometry);
         Ok(WindowEvent::Ready { id, geometry })
     }
     pub(super) fn close_window(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
@@ -750,6 +751,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.window_ids.remove(&host.surface.window().id());
             self.ime.remove(&id);
             drop(host);
+            nana_diagnostics::event!(nana_diagnostics::framework::window::CLOSED, window = id.0);
             let update = self
                 .program
                 .window_event(WindowEvent::Closed { id }, &self.context_for(id));

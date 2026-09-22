@@ -325,7 +325,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             {
                 Ok(frame_update) => update = update.merge(frame_update),
                 Err(error) => {
-                    self.program.host_failure(HostFailure::AnimationFrame {
+                    self.report_host_failure(HostFailure::AnimationFrame {
                         window: id,
                         error: error.to_string(),
                     });

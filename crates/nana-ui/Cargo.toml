@@ -75,6 +75,7 @@ pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts"] }
 nana-frame-exchange = { workspace = true, optional = true }
 nana-ui-core.workspace = true
+nana-diagnostics.workspace = true
 nana-icons-tabler = { workspace = true, optional = true }
 nana-ui-runtime.workspace = true
 # Issue #96: IME surrounding-text rules come from the editable text path.

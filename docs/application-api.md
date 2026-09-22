@@ -6,7 +6,7 @@
 
 | 消费方 | crate / 包 | 入口 |
 | --- | --- | --- |
-| 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`ApplicationState`、`RuntimeApplication`、`run_runtime` |
+| 新的桌面界面 | `nana-ui`（feature `hosted`） | `nana_ui::runtime`、`ApplicationState`、`RuntimeApplication`、`NanaApplication::builder` / `run_runtime` |
 | 窗口设置 / 输入类型 | 通常经 `nana-ui` 再导出；需要时直接 `nana-ui-platform` | `WindowDescriptor`、`WindowHandle`、`InputEvent` |
 | Vue 宿主 | `nana-ui-vue` + `nana-js-v8` | `nana_ui_vue::prelude`（`VueRuntimeProgram::run`） |
 | Vue 控件 | `@nanaui/nanavue-components` | `NanaButton` 等 |
@@ -36,6 +36,10 @@ Vue 产品窗口需要 `nana-ui-vue` 的 `hosted`（隐含 `scene-view`，把 Ui
 | `accesskit-tree` | `AccessTreeProjector` 的 TreeUpdate 投影导出，给自接平台适配器的宿主（如 Android `accesskit_android`）；`hosted` 已隐含 |
 
 Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
+
+## 应用身份、路径与诊断
+
+进程级设置走 `NanaApplication::builder(ApplicationIdentity)`：解析并发布 `ApplicationPaths`（`NanaApplication::paths()` 随处可取），可选 `.diagnostics(DiagnosticsConfig::default())` 打开结构化诊断，然后 `.run::<P>(WindowDescriptor)`。`run_runtime` 仍可直接用，只是不设路径、不开诊断。业务不要自己拼 `./runtime/...` 或平台目录，从 `ApplicationPaths` 取逻辑位置（`runtime_resources`、`data`、`config`、`cache`、`logs`、`crash` 等）。`app_data_dir` 保留，在桌面平台的安装布局下与 `ApplicationPaths::data` 相同（便携版的 data 在 `<root>/data`）。详见 [诊断与应用路径](diagnostics.md)。
 
 ## RuntimeProgram
 

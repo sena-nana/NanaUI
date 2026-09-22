@@ -39,6 +39,7 @@ impl AppContext {
         // Match last_work_counters: an idle flush (no stage ran) must not wipe
         // the last non-empty product profile.
         if profile.any_stage_ran() {
+            record_frame_diagnostics(&profile);
             self.last_profile = profile;
         }
     }
@@ -273,6 +274,9 @@ impl AppContext {
             self.layout_full_invocations += 1;
         }
         let started = self.stage_clock();
+        // Diagnostics time layout even outside a profiled frame.
+        let diagnostics_clock =
+            started.or_else(|| nana_diagnostics::metrics_enabled().then(Instant::now));
         self.world.set_document_viewport(document, viewport);
         let result = (|| {
             self.position_open_tooltips(document)?;
@@ -339,6 +343,18 @@ impl AppContext {
             Ok(report)
         })();
         self.record_stage(FrameStage::Layout, started);
+        if let Some(clock) = diagnostics_clock {
+            use nana_diagnostics::{framework::layout, metric};
+            metric!(layout::PASS_NS, clock.elapsed());
+            metric!(layout::INVOCATIONS);
+            if force_full {
+                metric!(layout::FULL_INVOCATIONS);
+            }
+            metric!(layout::DIRTY_ROOTS, dirty.len());
+            if result.is_ok() {
+                metric!(layout::BOXES_LAID_OUT, self.last_layout_scope.len());
+            }
+        }
         result
     }
 
@@ -707,4 +723,40 @@ impl AppContext {
         frame.next_deadline = self.next_animation_deadline();
         frame
     }
+}
+
+/// Aggregate a finished frame profile into the process diagnostics (Issue
+/// #227). Reuses the profiler's measurements; nothing is timed twice.
+fn record_frame_diagnostics(profile: &FrameProfile) {
+    use nana_diagnostics::framework::runtime as rt;
+    if !nana_diagnostics::metrics_enabled() {
+        return;
+    }
+    rt::FLUSHES.record(1);
+    rt::FRAME_CPU_NS.record(duration_ns(profile.cpu_total));
+    for timing in &profile.stages {
+        if timing.status != crate::StageStatus::Ran {
+            continue;
+        }
+        let metric = match timing.stage {
+            FrameStage::Input => &rt::STAGE_INPUT_NS,
+            FrameStage::Reconcile => &rt::STAGE_RECONCILE_NS,
+            FrameStage::Style => &rt::STAGE_STYLE_NS,
+            FrameStage::TextShape => &rt::STAGE_TEXT_SHAPE_NS,
+            FrameStage::Layout => &rt::STAGE_LAYOUT_NS,
+            FrameStage::HitTest => &rt::STAGE_HIT_TEST_NS,
+            FrameStage::Accessibility => &rt::STAGE_ACCESSIBILITY_NS,
+            FrameStage::Animation => &rt::STAGE_ANIMATION_NS,
+            FrameStage::Extract => &rt::STAGE_EXTRACT_NS,
+            // GPU-host stages are recorded by the host that times them.
+            FrameStage::Batch | FrameStage::GpuUpload | FrameStage::Encode | FrameStage::Submit => {
+                continue;
+            }
+        };
+        metric.record(duration_ns(timing.duration));
+    }
+}
+
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }

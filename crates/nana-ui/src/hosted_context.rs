@@ -520,6 +520,7 @@ impl HostedGpuSurface {
                 Ok(HostedSurfaceFrame::Ready(frame))
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_OUTDATED);
                 // A stale swapchain is the common resize race. Reconfigure and
                 // retry once in the same frame so a resize step does not drop
                 // its redraw to the next event-loop iteration.
@@ -539,12 +540,16 @@ impl HostedGpuSurface {
                 }
             }
             wgpu::CurrentSurfaceTexture::Lost => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_LOST);
+                nana_diagnostics::event!(nana_diagnostics::framework::gpu::SURFACE_LOST_EVENT);
                 self.recover(instance, adapter, resources)?;
                 Ok(HostedSurfaceFrame::Retry)
             }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_TIMEOUT);
                 Ok(HostedSurfaceFrame::Skipped)
             }
+            wgpu::CurrentSurfaceTexture::Occluded => Ok(HostedSurfaceFrame::Skipped),
             wgpu::CurrentSurfaceTexture::Validation => Err(HostedGpuError::SurfaceValidation),
         };
         self.commit_target()?;

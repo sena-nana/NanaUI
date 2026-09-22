@@ -48,7 +48,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Err(error) => {
                 drop(encoder);
-                self.program.host_failure(HostFailure::ResourceProduction {
+                self.report_host_failure(HostFailure::ResourceProduction {
                     window: id,
                     error: error.to_string(),
                 });
@@ -100,6 +100,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
+        let frame_started = nana_diagnostics::metrics_enabled().then(Instant::now);
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
         if event_loop.exiting() || self.render_suspended || !self.can_present(id) {
@@ -117,8 +118,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .write_document(id, |document| document.flush(viewport, &mut self.text))
         else {
-            self.program
-                .host_failure(HostFailure::MissingDocument { window: id });
+            self.report_host_failure(HostFailure::MissingDocument { window: id });
             self.rearm_frame_demand(id);
             return;
         };
@@ -127,7 +127,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Err(error) => {
                 // The frame did not settle; Runtime restored its dirty work,
                 // so the next redraw retries. Skipping keeps the process alive.
-                self.program.host_failure(HostFailure::FrameDidNotSettle {
+                self.report_host_failure(HostFailure::FrameDidNotSettle {
                     window: id,
                     error: error.to_string(),
                 });
@@ -152,8 +152,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .write_document(id, |document| document.shared_scene())
         else {
-            self.program
-                .host_failure(HostFailure::MissingDocument { window: id });
+            self.report_host_failure(HostFailure::MissingDocument { window: id });
             self.rearm_frame_demand(id);
             return;
         };
@@ -170,6 +169,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
             Ok(HostedSurfaceFrame::Skipped) => {
+                nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
                 self.rearm_frame_demand(id);
                 return;
             }
@@ -199,7 +199,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     drop(encoder);
                     drop(target);
                     self.discard_frame(id, frame);
-                    self.program.host_failure(HostFailure::ResourceProduction {
+                    self.report_host_failure(HostFailure::ResourceProduction {
                         window: id,
                         error: error.to_string(),
                     });
@@ -272,8 +272,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     drop(encoder);
                     drop(target);
                     self.discard_frame(id, frame);
-                    self.program
-                        .host_failure(HostFailure::ResourceProduction { window: id, error });
+                    self.report_host_failure(HostFailure::ResourceProduction { window: id, error });
                     self.rearm_frame_demand(id);
                     return;
                 }
@@ -311,7 +310,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             drop(encoder);
             drop(target);
             self.discard_frame(id, frame);
-            self.program.host_failure(HostFailure::UnpaintableScene {
+            self.report_host_failure(HostFailure::UnpaintableScene {
                 window: id,
                 error: error.to_string(),
             });
@@ -323,9 +322,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(prepared) = prepared {
             prepared.submitted(self.graphics.resources().device(), submission);
         }
-        self.painter_mut(format)
-            .record_submit(submit_started.elapsed());
+        let submit = submit_started.elapsed();
+        let painter = self.painter_mut(format);
+        painter.record_submit(submit);
+        let gpu_work = painter.last_gpu_work();
         self.graphics.present(frame);
+        crate::host_diagnostics::frame_presented(frame_started, submit, gpu_work);
         if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics.apply_pending_reconfigure(&mut host.surface);
         }
@@ -337,7 +339,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(composition) = composition
             && let Err(error) = composition.commit()
         {
-            self.program.host_failure(HostFailure::ResourceProduction {
+            self.report_host_failure(HostFailure::ResourceProduction {
                 window: id,
                 error: error.to_string(),
             });
@@ -437,6 +439,17 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.graphics.acquire_surface_frame(&mut host.surface)
     }
     pub(super) fn recover_device(&mut self, _event_loop: &dyn ActiveEventLoop) {
+        // Present only on the first attempt after a loss; retries find none.
+        if let Some(lost) = self.graphics.take_device_lost_report() {
+            nana_diagnostics::fault!(
+                nana_diagnostics::framework::gpu::DEVICE_LOST,
+                reason = u64::from(lost.reason == "Destroyed");
+                "{}: {}",
+                lost.reason,
+                lost.message
+            );
+            nana_diagnostics::snapshot("device-lost");
+        }
         if self.embedded {
             self.render_suspended = true;
             self.next_gpu_retry = None;
@@ -462,6 +475,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         let Some((base, graphics)) = rebuilt else {
+            // Retried every GPU_RETRY_INTERVAL; report the first failure only.
+            if self.next_gpu_retry.is_none() {
+                nana_diagnostics::fault!(nana_diagnostics::framework::gpu::DEVICE_RECOVERY_FAILED);
+            }
             self.render_suspended = true;
             self.next_gpu_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
             return;
@@ -510,6 +527,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.program.host_textures(id)
         });
         self.program.rebuild_gpu(&self.context());
+        crate::host_diagnostics::record_adapter(self.graphics.adapter_info());
+        nana_diagnostics::event!(nana_diagnostics::framework::gpu::DEVICE_RECOVERED);
         self.request_redraw_all();
     }
     pub(super) fn suspend_surface(&mut self, id: WindowId, error: HostedGpuError) {
@@ -532,7 +551,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // and never let repeated appearance updates postpone or bypass this retry.
         if host.surface_retry.is_none() {
             host.surface_retry = Some(Instant::now() + GPU_RETRY_INTERVAL);
-            self.program.host_failure(HostFailure::SurfaceRecovery {
+            nana_diagnostics::event!(
+                nana_diagnostics::framework::gpu::SURFACE_SUSPENDED,
+                window = id.0
+            );
+            self.report_host_failure(HostFailure::SurfaceRecovery {
                 window: id,
                 error: error.to_string(),
             });

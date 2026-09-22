@@ -250,7 +250,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .unwrap_or_else(|error| {
                 // Drop this IME event instead of panicking; the program sees
                 // the failure through host_failure.
-                self.program.host_failure(HostFailure::ImeDispatch {
+                self.report_host_failure(HostFailure::ImeDispatch {
                     window: id,
                     error: error.to_string(),
                 });

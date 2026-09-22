@@ -39,6 +39,8 @@ mod gpu_work;
 #[cfg(feature = "graph-canvas")]
 pub mod graph;
 #[cfg(feature = "hosted")]
+mod host_diagnostics;
+#[cfg(feature = "hosted")]
 mod hosted_context;
 #[cfg(all(feature = "hosted", target_os = "windows"))]
 mod windows_composition;
@@ -49,8 +51,16 @@ pub use windows_composition::{
 };
 #[cfg(feature = "hosted")]
 mod application;
+mod application_builder;
 #[cfg(feature = "hosted")]
 pub use application::{ApplicationState, ApplicationWindow, RuntimeApplication};
+pub use application_builder::{
+    ApplicationSession, ApplicationStartError, NanaApplication, NanaApplicationBuilder,
+};
+/// Structured diagnostics (Issue #227): define application events and
+/// metrics with these types and record them with its macros.
+pub use nana_diagnostics as diagnostics;
+pub use nana_diagnostics::{DiagnosticsConfig, PersistMode};
 pub mod icons;
 pub mod layout;
 pub mod menu;
@@ -353,7 +363,8 @@ pub use nana_ui_core::{
     memory_store, shared_store, window_storage_key,
 };
 pub use nana_ui_platform::{
-    FileStore, PersistedWindowGeometry, app_data_dir, persist_live_window_geometry,
+    ApplicationIdentity, ApplicationLocation, ApplicationPaths, FileStore, PathsError,
+    PersistedWindowGeometry, RuntimeLayout, app_data_dir, persist_live_window_geometry,
     restore_window_geometry,
 };
 

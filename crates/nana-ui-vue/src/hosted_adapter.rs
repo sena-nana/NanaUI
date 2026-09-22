@@ -1310,10 +1310,12 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
             if let Err(error) = document.with_document_mut(|document| {
                 install_theme_tokens(document.context_mut(), theme, tokens)
             }) {
-                self.host_failure(nana_ui::HostFailure::DocumentAccess {
+                let failure = nana_ui::HostFailure::DocumentAccess {
                     window: id,
                     error: error.to_string(),
-                });
+                };
+                failure.record_diagnostics();
+                self.host_failure(failure);
                 return;
             }
         }

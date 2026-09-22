@@ -106,9 +106,9 @@ pub fn run_runtime_scene<Program: RuntimeProgram>(
         settings: Box::new(settings),
         startup_failure: Arc::clone(&startup_failure),
     };
-    event_loop
-        .run_app(runner)
-        .map_err(HostedRunError::EventLoop)?;
+    let run = event_loop.run_app(runner);
+    nana_diagnostics::event!(nana_diagnostics::framework::host::EVENT_LOOP_EXITED);
+    run.map_err(HostedRunError::EventLoop)?;
     match startup_failure.lock().ok().and_then(|guard| guard.clone()) {
         Some(message) => Err(HostedRunError::Startup(message)),
         None => Ok(()),
@@ -1091,6 +1091,11 @@ fn initialize<Program: RuntimeProgram>(
         WindowId::PRIMARY,
         ready.geometry_of(WindowId::PRIMARY).maximized,
     );
+    crate::host_diagnostics::record_adapter(ready.graphics.adapter_info());
+    crate::host_diagnostics::window_opened(
+        WindowId::PRIMARY,
+        &ready.geometry_of(WindowId::PRIMARY),
+    );
     let update = ready.program.window_event(
         WindowEvent::Ready {
             id: WindowId::PRIMARY,
@@ -1119,6 +1124,13 @@ fn initialize<Program: RuntimeProgram>(
 }
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
+    /// Every host failure goes through here: record it, then let the
+    /// program decide how to surface it.
+    pub(super) fn report_host_failure(&mut self, failure: HostFailure) {
+        failure.record_diagnostics();
+        self.program.host_failure(failure);
+    }
+
     fn update_image_targets(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
         let keys = scene_image_keys(scene);
         if self.image_window_keys.get(&id) == Some(&keys) {
@@ -3050,6 +3062,16 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     /// before forwarding further window events. This does not exit the host loop
     /// or install/replace the host's device callback.
     pub fn notify_device_lost(&mut self) {
+        // Embedded devices never raise the hosted device-lost flag; the
+        // embedder tells us here instead.
+        if !self.manager.render_suspended {
+            nana_diagnostics::fault!(
+                nana_diagnostics::framework::gpu::DEVICE_LOST,
+                reason = 0u64;
+                "reported by the embedding host"
+            );
+            nana_diagnostics::snapshot("device-lost");
+        }
         self.manager.render_suspended = true;
         self.manager.next_gpu_retry = None;
     }

@@ -4035,6 +4035,7 @@ impl UiWorld {
                 counters.record_glyph_cache(glyph_hits, glyph_misses);
             }
         });
+        record_text_diagnostics(&work);
         self.record_text_work(work);
     }
 
@@ -5518,5 +5519,26 @@ impl UiWorld {
             inline_scroll,
             block_scroll,
         })
+    }
+}
+
+/// Aggregate one text pass into the process diagnostics (Issue #227). Pure
+/// counter adds; nothing when diagnostics are off.
+fn record_text_diagnostics(work: &nana_text::TextWorkCounters) {
+    use nana_diagnostics::framework::text;
+    if !nana_diagnostics::metrics_enabled() {
+        return;
+    }
+    let pairs = [
+        (&text::SHAPE_HITS, work.shape_cache_hits),
+        (&text::SHAPE_MISSES, work.shape_cache_misses),
+        (&text::LAYOUT_HITS, work.layout_cache_hits),
+        (&text::LAYOUT_MISSES, work.layout_cache_misses),
+        (&text::GLYPHS_RESOLVED, work.glyphs_resolved),
+    ];
+    for (metric, value) in pairs {
+        if let Some(value) = value.filter(|v| *v > 0) {
+            metric.record(value as u64);
+        }
     }
 }

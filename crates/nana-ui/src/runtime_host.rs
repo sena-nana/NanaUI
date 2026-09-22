@@ -383,6 +383,90 @@ impl HostFailure {
     }
 }
 
+/// Whether a fault may be written now for the variant whose last write time
+/// is in `slot` (milliseconds, 0 = never): at most one per second, and only
+/// one of several racing threads wins.
+fn claim_fault_slot(slot: &std::sync::atomic::AtomicU64, now_ms: u64) -> bool {
+    use std::sync::atomic::Ordering;
+    let last = slot.load(Ordering::Relaxed);
+    if last != 0 && now_ms.saturating_sub(last) < 1000 {
+        return false;
+    }
+    slot.compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+}
+
+/// Record `failure` in diagnostics and hand it on.
+pub(crate) fn recorded(failure: HostFailure) -> HostFailure {
+    failure.record_diagnostics();
+    failure
+}
+
+impl HostFailure {
+    /// Stable numeric code of the variant, written to diagnostics logs.
+    /// Append-only.
+    pub fn code(&self) -> u64 {
+        match self {
+            Self::DocumentAccess { .. } => 1,
+            Self::AccessibilityAction { .. } => 2,
+            Self::ImeDispatch { .. } => 3,
+            Self::AnimationFrame { .. } => 4,
+            Self::InputDispatch { .. } => 5,
+            Self::InputHandler { .. } => 6,
+            Self::MissingDocument { .. } => 7,
+            Self::FrameDidNotSettle { .. } => 8,
+            Self::ResourceProduction { .. } => 9,
+            Self::UnpaintableScene { .. } => 10,
+            Self::SurfaceRecovery { .. } => 11,
+        }
+    }
+
+    /// Record this failure in diagnostics (Issue #227). Hosts call it where
+    /// they report the failure to the program; free when diagnostics are off.
+    ///
+    /// Every call is counted; the fault itself is written at most once per
+    /// second per variant, because a failure that recurs every frame (a
+    /// frame that never settles, a broken input handler) would otherwise
+    /// flood the log and the fault ring.
+    pub fn record_diagnostics(&self) {
+        use nana_diagnostics::framework::host;
+        use std::sync::atomic::AtomicU64;
+        static LAST_FAULT_MS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+        if !nana_diagnostics::enabled(host::FAILURE.severity) {
+            return;
+        }
+        nana_diagnostics::metric!(host::FAILURES);
+        // +1 so a failure in the first millisecond is not read as "never".
+        let now_ms = EPOCH
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis() as u64
+            + 1;
+        if !claim_fault_slot(
+            &LAST_FAULT_MS[self.code() as usize % LAST_FAULT_MS.len()],
+            now_ms,
+        ) {
+            return;
+        }
+        match self.error() {
+            Some(error) => nana_diagnostics::fault!(
+                host::FAILURE,
+                window = self.window().0,
+                kind = self.code();
+                "{self}: {error}"
+            ),
+            None => nana_diagnostics::fault!(
+                host::FAILURE,
+                window = self.window().0,
+                kind = self.code();
+                "{self}"
+            ),
+        }
+    }
+}
+
 impl fmt::Display for HostFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "host failure on window {}", self.window().0)?;
@@ -712,10 +796,10 @@ pub trait RuntimeProgram: Sized + 'static {
                     .apply_accessibility_action(document_id, request)
             })
             .map_err(|error| {
-                self.host_failure(HostFailure::DocumentAccess {
+                self.host_failure(recorded(HostFailure::DocumentAccess {
                     window: id,
                     error: error.to_string(),
-                });
+                }));
                 FrameworkError::InvalidInput
             })?
             .transpose()?
@@ -738,10 +822,10 @@ pub(crate) trait HostDocumentAccess: RuntimeProgram {
         match self.with_document(id, f) {
             Ok(value) => value,
             Err(error) => {
-                self.host_failure(HostFailure::DocumentAccess {
+                self.host_failure(recorded(HostFailure::DocumentAccess {
                     window: id,
                     error: error.to_string(),
-                });
+                }));
                 None
             }
         }
@@ -754,10 +838,10 @@ pub(crate) trait HostDocumentAccess: RuntimeProgram {
         match self.with_document_mut(id, f) {
             Ok(value) => value,
             Err(error) => {
-                self.host_failure(HostFailure::DocumentAccess {
+                self.host_failure(recorded(HostFailure::DocumentAccess {
                     window: id,
                     error: error.to_string(),
-                });
+                }));
                 None
             }
         }
@@ -1290,6 +1374,17 @@ fn next_continuous_deadline(
 #[cfg(test)]
 mod frame_schedule_tests {
     use super::*;
+
+    #[test]
+    fn host_failure_faults_are_limited_to_one_per_second_per_variant() {
+        let slot = std::sync::atomic::AtomicU64::new(0);
+        assert!(claim_fault_slot(&slot, 1));
+        assert!(!claim_fault_slot(&slot, 2));
+        assert!(!claim_fault_slot(&slot, 1000));
+        assert!(claim_fault_slot(&slot, 1001));
+        assert!(!claim_fault_slot(&slot, 1500));
+        assert!(claim_fault_slot(&slot, 2500));
+    }
     use std::time::Duration;
 
     fn fps(n: u32) -> FrameDemand {

@@ -169,6 +169,10 @@ impl RuntimeDocument {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
                 self.context.finish_frame_profile();
+                // The host reports the failure (rate-limited); count each one.
+                nana_diagnostics::metric!(
+                    nana_diagnostics::framework::runtime::FLUSH_DID_NOT_SETTLE
+                );
                 return Err(FrameworkError::FrameDidNotSettle);
             }
             passes += 1;
@@ -176,12 +180,14 @@ impl RuntimeDocument {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
                 self.context.finish_frame_profile();
+                nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
                 return Err(error);
             }
             if let Err(error) = run_text_and_layout(&mut self.context, &work) {
                 consumed.push(work);
                 restore_work(&mut self.context, consumed);
                 self.context.finish_frame_profile();
+                nana_diagnostics::metric!(nana_diagnostics::framework::runtime::FLUSH_FAILED);
                 return Err(error);
             }
             // Hit-test work is accumulated and applied once after the loop
@@ -280,6 +286,12 @@ impl RuntimeDocument {
             }
         }
         self.context.finish_frame_profile();
+        if passes > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::runtime::FLUSH_PASSES,
+                passes as u64
+            );
+        }
         let cursor_changed = self.context.take_window_cursor_dirty();
         Ok(RuntimeFrameUpdate {
             generation,

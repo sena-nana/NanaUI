@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use nana_ui::runtime::{Activate, Button, Entity, FrameworkError, List, Text};
 use nana_ui::{
-    ApplicationState, ApplicationWindow, RuntimeApplication, RuntimeProgramContext,
-    RuntimeProgramUpdate, WindowDescriptor, run_runtime,
+    ApplicationIdentity, ApplicationState, ApplicationWindow, DiagnosticsConfig, NanaApplication,
+    RuntimeApplication, RuntimeProgramContext, RuntimeProgramUpdate, WindowDescriptor,
 };
 use nana_ui_platform::WindowId;
 
@@ -72,7 +72,16 @@ impl ApplicationState for Counter {
 }
 
 fn main() -> Result<(), nana_ui::HostedRunError> {
-    run_runtime::<RuntimeApplication<Counter>>(
-        WindowDescriptor::new("NanaUI Counter").initial_size(480.0, 320.0),
-    )
+    // Identity names the per-user directories; diagnostics write `.nlog`
+    // session logs under `ApplicationPaths::logs`.
+    let identity = ApplicationIdentity::new(
+        "dev.nanaui.counter",
+        "NanaUI Counter",
+        env!("CARGO_PKG_VERSION"),
+    );
+    NanaApplication::builder(identity)
+        .diagnostics(DiagnosticsConfig::default())
+        .run::<RuntimeApplication<Counter>>(
+            WindowDescriptor::new("NanaUI Counter").initial_size(480.0, 320.0),
+        )
 }

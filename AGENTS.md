@@ -44,6 +44,7 @@ Read the focused contract document named by the selected skill before editing. R
 - Keep raw window handles out of ordinary controls. Native material failure returns the actual applied outcome or an explicit fallback.
 - Keep one WGPU major version across manifests, lockfile, and the resolved dependency graph. Never add a second Device/Queue or a product CPU readback path.
 - Do not add a WebView product shell, a second text engine, a second UI tree, or product-specific Live2D/Cubism types.
+- Framework diagnostics go through `nana-diagnostics` (`event!` / `metric!` / `fault!` with static descriptors in `nana_diagnostics::framework`, IDs append-only). No logging crate, `eprintln!`, formatting, or I/O on frame paths; high-frequency data is a metric, never a per-frame event. See `docs/diagnostics.md`.
 - Visible actions must be wired to real state. Do not add placeholder routes, agent/tool instructions, technical copy, or unconnected controls to product UI.
 
 ## Change and validation hygiene

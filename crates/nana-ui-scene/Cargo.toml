@@ -18,6 +18,7 @@ default = []
 benchmark = ["dep:serde", "dep:serde_json", "dep:nana-text", "nana-ui-core/bundled-font-regular", "nana-ui-runtime/benchmark"]
 
 [dependencies]
+nana-diagnostics.workspace = true
 nana-ui-core.workspace = true
 nana-ui-runtime.workspace = true
 lyon_tessellation.workspace = true

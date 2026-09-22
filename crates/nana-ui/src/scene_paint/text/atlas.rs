@@ -226,6 +226,9 @@ pub(super) struct GlyphAtlasManager {
     /// face set changed under the whole atlas, so every page is dropped rather
     /// than left holding bitmaps of faces that no longer exist.
     raster_generation: u64,
+    /// Budget exhaustion is reported once per atlas, not once per refused
+    /// page: a full atlas refuses on every miss.
+    budget_reported: bool,
 }
 
 impl GlyphAtlasManager {
@@ -278,6 +281,7 @@ impl GlyphAtlasManager {
             relocations: 0,
             stale_handle_rejects: Cell::new(0),
             raster_generation,
+            budget_reported: false,
         };
         // A bind group names both textures, so a mask-only frame still needs a
         // color view to point at. That is all these two are: 1×1 placeholders
@@ -738,6 +742,10 @@ impl GlyphAtlasManager {
                 entry.alloc = alloc;
             }
         }
+        nana_diagnostics::event!(
+            nana_diagnostics::framework::text::ATLAS_COMPACTED,
+            pages = self.pages.len()
+        );
         true
     }
 
@@ -751,6 +759,14 @@ impl GlyphAtlasManager {
         let bytes: usize = self.pages.iter().map(AtlasPage::bytes).sum();
         let next = (edge as usize) * (edge as usize) * kind.bytes_per_texel();
         if bytes + next > self.limits.byte_budget {
+            if !self.budget_reported {
+                self.budget_reported = true;
+                nana_diagnostics::event!(
+                    nana_diagnostics::framework::text::ATLAS_BUDGET_EXHAUSTED,
+                    bytes = bytes as u64,
+                    budget = self.limits.byte_budget as u64
+                );
+            }
             return None;
         }
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -775,6 +791,12 @@ impl GlyphAtlasManager {
             allocator: BucketedAtlasAllocator::new(size2(edge as i32, edge as i32)),
             edge,
         });
+        nana_diagnostics::event!(
+            nana_diagnostics::framework::text::ATLAS_PAGE_OPENED,
+            edge = edge,
+            bytes = next as u64,
+            atlas_bytes = (bytes + next) as u64
+        );
         Some((self.pages.len() - 1) as u32)
     }
 
@@ -813,6 +835,7 @@ impl GlyphAtlasManager {
             self.free_slot(index);
             self.evictions += 1;
         }
+        nana_diagnostics::metric!(nana_diagnostics::framework::text::ATLAS_EVICTIONS, drop);
         true
     }
 

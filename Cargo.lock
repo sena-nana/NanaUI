@@ -2347,6 +2347,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "nana-frame-exchange"
 version = "0.1.0"
 dependencies = [
@@ -2422,6 +2429,7 @@ dependencies = [
  "etagere",
  "image",
  "nana-app-icon",
+ "nana-diagnostics",
  "nana-frame-exchange",
  "nana-icons-tabler",
  "nana-svg-raster",
@@ -2508,6 +2516,7 @@ dependencies = [
  "futures-core",
  "hashbrown 0.16.1",
  "mermaid-svg",
+ "nana-diagnostics",
  "nana-text",
  "nana-ui-core",
  "pulldown-cmark",
@@ -2529,6 +2538,7 @@ version = "0.1.0"
 dependencies = [
  "i_overlay",
  "lyon_tessellation",
+ "nana-diagnostics",
  "nana-text",
  "nana-ui-core",
  "nana-ui-runtime",
