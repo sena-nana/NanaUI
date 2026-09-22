@@ -6336,7 +6336,10 @@ fn font_variation_transition_reverses_from_the_axis_it_shows() {
     doc.flush_host_frame();
     let back = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
     assert!(back < start && back > 0.0, "reversing: {start} -> {back}");
-    assert!((back - start / 2.0).abs() < 0.5, "reversing: {start} -> {back}");
+    assert!(
+        (back - start / 2.0).abs() < 0.5,
+        "reversing: {start} -> {back}"
+    );
     doc.set_runtime_clock_for_test(doc.runtime_now() + Duration::from_millis(3000));
     bridge.tick_css_animations(&mut doc);
     doc.flush_host_frame();
