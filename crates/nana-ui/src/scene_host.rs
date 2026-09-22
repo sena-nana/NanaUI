@@ -686,6 +686,10 @@ fn bootstrap_primary_window(
                          instead",
                         reason.label()
                     );
+                    nana_diagnostics::set_session_info(
+                        "window.presentation_fallback",
+                        reason.label(),
+                    );
                 }
                 // A composed target that could not be built for this window
                 // will not build for another, so the failure narrows the whole

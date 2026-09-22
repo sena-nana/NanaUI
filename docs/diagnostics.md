@@ -100,7 +100,7 @@ Flight Recorder 始终保留 `min_severity` 以上的全部事件，崩溃或显
 完整映射（runtime 目录、data、config、cache、Android）见 `nana-ui-platform/src/paths.rs` 模块文档。`<exe 目录>/runtime/manifest/portable` 存在时为便携版（macOS `.app` 内不支持）；从 Cargo `target/` 运行时 `layout()` 为 `Development`。
 
 - 会话日志：`{app}-{YYYYMMDDTHHMMSSZ}-{pid}.nlog`，超过 `max_file_bytes`（16 MiB）轮转为 `.1.nlog`、`.2.nlog`，从不覆盖已有文件。
-- 保留：按修改时间删最旧的，直到满足 `max_files`（32）、`max_total_bytes`（128 MiB）、`max_age`（14 天）；快照另限 `max_crash_files`（16）。只匹配本应用精确文件名模式，最近 `live_grace`（10 分钟）内改过的文件不删（可能属于另一个运行中的实例）。
+- 保留：按修改时间删最旧的，直到满足 `max_files`（32）、`max_total_bytes`（128 MiB）、`max_age`（14 天）；快照另限 `max_crash_files`（16）。只匹配本应用精确文件名模式；其它会话最近 `live_grace`（10 分钟）内改过的文件不删（可能属于另一个运行中的实例），本会话自己轮转出的文件和快照不受这条保护，所以一次失控的会话也不会突破预算。
 
 ## 崩溃与导出
 

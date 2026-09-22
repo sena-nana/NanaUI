@@ -128,12 +128,24 @@ pub(crate) fn write_new_file(dir: &Path, name: &str, bytes: &[u8]) -> io::Result
     Ok(path)
 }
 
+/// Whether `name` belongs to the session whose stem is `stem`: the stem
+/// followed by `.` (the log and its rotations) or `-` (its snapshots). A bare
+/// prefix match would let pid 12 claim pid 123's files.
+fn is_own_file(name: &str, stem: &str) -> bool {
+    name.strip_prefix(stem)
+        .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('-'))
+}
+
 /// Delete `app_id`'s oldest `.nlog` files under `dir` until the retention
-/// limits hold. Never touches `keep` or files modified within
-/// `retention.live_grace`.
+/// limits hold. Never touches `keep`. Files modified within
+/// `retention.live_grace` are spared only when they belong to *another*
+/// session (`own_stem` names this one): that is what protects a second
+/// running instance, and it must not let this session's own rotations or
+/// snapshots grow without bound.
 pub(crate) fn prune(
     dir: &Path,
     app_id: &str,
+    own_stem: Option<&str>,
     keep: Option<&Path>,
     max_files: usize,
     max_total_bytes: u64,
@@ -168,7 +180,12 @@ pub(crate) fn prune(
             // except for age, which is monotonic in this order as well.
             break;
         }
-        if keep == Some(path.as_path()) || age < retention.live_grace {
+        let own = own_stem.is_some_and(|stem| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| is_own_file(name, stem))
+        });
+        if keep == Some(path.as_path()) || (age < retention.live_grace && !own) {
             continue;
         }
         if fs::remove_file(&path).is_ok() {
@@ -271,6 +288,7 @@ impl RotatingLog {
         prune(
             &self.dir,
             &self.app_id,
+            Some(&self.stem),
             self.current_path(),
             self.retention.max_files,
             self.retention.max_total_bytes,
@@ -365,6 +383,15 @@ mod tests {
             "dev.nanax-20260922T010203Z-42.nlog",
             "dev.nana"
         ));
+    }
+
+    #[test]
+    fn own_files_need_a_separator_after_the_stem() {
+        let stem = "app-20260922T010203Z-12";
+        assert!(is_own_file("app-20260922T010203Z-12.nlog", stem));
+        assert!(is_own_file("app-20260922T010203Z-12.3.nlog", stem));
+        assert!(is_own_file("app-20260922T010203Z-12-panic.nlog", stem));
+        assert!(!is_own_file("app-20260922T010203Z-123.nlog", stem));
     }
 
     #[test]

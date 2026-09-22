@@ -127,6 +127,8 @@ jobs:
           # workspace-wide check, so without this line it can rot or be deleted
           # with CI still green. It is the Issue #33 / #89 migration baseline.
           cargo check -p nana-ui-scene --all-targets --features benchmark --locked
+          # Issue #227: the diagnostics hot-path benchmark, same reason.
+          cargo check -p nana-diagnostics --all-targets --features benchmark --locked
       - name: Check macOS WebView reference
         if: runner.os == 'macOS'
         working-directory: tools/css-parity-webview
@@ -134,7 +136,7 @@ jobs:
       - name: Enforce workspace Clippy
         run: cargo clippy --workspace --all-targets --locked --no-deps -- -D warnings
       - name: Enforce NanaUI and Gallery Clippy
-        run: cargo clippy -p nana-ui -p component-gallery --all-targets --all-features --locked --no-deps -- -D warnings
+        run: cargo clippy -p nana-ui -p component-gallery -p nana-diagnostics --all-targets --all-features --locked --no-deps -- -D warnings
 
   android-arm64-cross:
     # `scripts/check-android-arm64.sh` was only reachable from the

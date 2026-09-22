@@ -518,6 +518,7 @@ pub(crate) fn run(shared: Arc<Shared>) {
             dir,
             &meta.app_id,
             None,
+            None,
             config.retention.max_crash_files,
             u64::MAX,
             &config.retention,
@@ -676,13 +677,22 @@ fn write_snapshot(shared: &Shared, reason: &str, bytes: &[u8]) -> io::Result<Pat
     );
     let result = files::write_new_file(dir, &name, bytes);
     match &result {
-        Ok(_) => {
+        Ok(path) => {
             shared
                 .stats
                 .snapshots_written
                 .fetch_add(1, Ordering::Relaxed);
             let r = &shared.config.retention;
-            files::prune(dir, &meta.app_id, None, r.max_crash_files, u64::MAX, r);
+            let stem = files::session_stem(&meta.app_id, meta.wall_start_unix_ns, meta.pid);
+            files::prune(
+                dir,
+                &meta.app_id,
+                Some(&stem),
+                Some(path),
+                r.max_crash_files,
+                u64::MAX,
+                r,
+            );
         }
         Err(_) => {
             shared.stats.write_errors.fetch_add(1, Ordering::Relaxed);

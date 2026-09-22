@@ -611,3 +611,63 @@ fn dropping_every_handle_stops_the_worker() {
     }
     let _ = fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_flooding_session_keeps_its_own_logs_within_the_disk_budget() {
+    let mut config = config(PersistMode::All);
+    config.retention.max_file_bytes = 4 * 1024;
+    config.retention.max_total_bytes = 16 * 1024;
+    // The grace period protects *other* instances' recent files, not this
+    // session's own rotations.
+    config.retention.live_grace = Duration::from_secs(3600);
+    let (diagnostics, dir) = start("flood", config);
+    for n in 0..20_000u64 {
+        diagnostics.emit(&INFO, &[Field::new("n", n), Field::new("flag", true)]);
+        if n % 500 == 0 {
+            assert!(diagnostics.flush(false, Duration::from_secs(5)));
+        }
+    }
+    diagnostics.shutdown();
+    let total: u64 = nlogs(&dir.join("logs"))
+        .iter()
+        .map(|p| fs::metadata(p).unwrap().len())
+        .sum();
+    // Budget plus the one file being written when the last prune ran.
+    assert!(total <= 16 * 1024 + 8 * 1024, "logs grew to {total} bytes");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn essential_mode_writes_little_for_info_heavy_sessions() {
+    let (diagnostics, dir) = start("essential-volume", config(PersistMode::Essential));
+    for n in 0..50_000u64 {
+        diagnostics.emit(&INFO, &[Field::new("n", n), Field::new("flag", true)]);
+        if n % 1000 == 0 {
+            assert!(diagnostics.flush(false, Duration::from_secs(5)));
+        }
+    }
+    diagnostics.shutdown();
+    let total: u64 = nlogs(&dir.join("logs"))
+        .iter()
+        .map(|p| fs::metadata(p).unwrap().len())
+        .sum();
+    // Info events stay in the flight recorder; the log holds the header,
+    // schemas and markers only.
+    assert!(total < 4 * 1024, "essential log is {total} bytes");
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn repeated_snapshots_respect_the_crash_file_limit() {
+    let mut config = config(PersistMode::Off);
+    config.retention.max_crash_files = 3;
+    let (diagnostics, dir) = start("snapshots", config);
+    for n in 0..8u64 {
+        diagnostics
+            .snapshot_blocking(&format!("s{n}"), Duration::from_secs(5))
+            .unwrap();
+    }
+    diagnostics.shutdown();
+    assert_eq!(nlogs(&dir.join("crash")).len(), 3);
+    let _ = fs::remove_dir_all(dir);
+}
