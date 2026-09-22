@@ -19,9 +19,9 @@ use super::glyph::{
     GlyphFontId, GlyphRasterKey, GlyphRenderMode, GlyphSynthesis, GlyphVariationId, size_from_bits,
 };
 
-/// Synthetic-oblique slant, in degrees. The angle the reference backend faked
-/// italics at, so a face that had no italic before the cutover leans the same
-/// way after it.
+/// Synthetic-oblique slant, in degrees: 14°, the angle the previous text
+/// backend used, so a face without an italic kept leaning the same way through
+/// the #99 cutover.
 const OBLIQUE_DEGREES: f32 = 14.0;
 
 /// Synthetic-bold stroke as a fraction of the raster size. Stroke weight is
@@ -94,29 +94,6 @@ pub(super) trait GlyphRasterizer {
     fn rasterize(&mut self, request: &GlyphRasterRequest) -> Option<GlyphImage>;
 }
 
-/// One id for a set of axis coordinates.
-///
-/// Zero is the face's own default instance, which is why the empty set has to
-/// hash to it rather than to FNV's offset basis — and why a hash that lands on
-/// zero is nudged off it.
-fn variation_id(coords: &[AxisCoord]) -> GlyphVariationId {
-    if coords.is_empty() {
-        return GlyphVariationId(0);
-    }
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    let mut write = |bytes: [u8; 4]| {
-        for byte in bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    };
-    for coord in coords {
-        write(coord.tag);
-        write(coord.value.to_bits().to_be_bytes());
-    }
-    GlyphVariationId(if hash == 0 { 1 } else { hash })
-}
-
 /// `swash` behind the renderer's rasterizer boundary.
 ///
 /// Holds the face table that issues [`GlyphFontId`]s, so the ids the glyph IR
@@ -132,10 +109,16 @@ pub(super) struct SwashGlyphRasterizer {
     context: swash::scale::ScaleContext,
     faces: Vec<nana_text::FontId>,
     index: HashMap<nana_text::FontId, GlyphFontId>,
-    /// Axis coordinates behind each [`GlyphVariationId`] a run interned. The
-    /// key carries the id because a bitmap differs by coordinates; the scaler
-    /// needs the coordinates themselves.
-    variations: HashMap<u64, Arc<[AxisCoord]>>,
+    /// Axis coordinates behind each [`GlyphVariationId`] a run interned, at
+    /// index `id - 1` (zero is the face's default instance). The key carries
+    /// the id because a bitmap differs by coordinates; the scaler needs the
+    /// coordinates themselves.
+    ///
+    /// Issued in order and looked up by the coordinates themselves, like the
+    /// face ids: a hash of the coordinates would let two sets that collide
+    /// draw with the first one's axes and share its bitmaps.
+    variations: Vec<Arc<[AxisCoord]>>,
+    variation_index: HashMap<Arc<[AxisCoord]>, GlyphVariationId>,
     /// The face asked for last. Runs are contiguous by face, so a paragraph
     /// asks for the same one for every glyph and this keeps the hash lookup
     /// off the per-glyph path.
@@ -149,7 +132,8 @@ impl SwashGlyphRasterizer {
             context: swash::scale::ScaleContext::new(),
             faces: Vec::new(),
             index: HashMap::new(),
-            variations: HashMap::new(),
+            variations: Vec::new(),
+            variation_index: HashMap::new(),
             recent: None,
         }
     }
@@ -169,12 +153,7 @@ impl SwashGlyphRasterizer {
         instance: &FontInstanceKey,
     ) -> (GlyphFontId, GlyphVariationId, GlyphSynthesis) {
         let font = self.intern_face(instance.font);
-        let variation = variation_id(&instance.coords);
-        if variation.0 != 0 {
-            self.variations
-                .entry(variation.0)
-                .or_insert_with(|| Arc::clone(&instance.coords));
-        }
+        let variation = self.intern_variation(&instance.coords);
         let mut synthesis = GlyphSynthesis::NONE;
         if instance.synthesis.bold {
             synthesis = synthesis.with(GlyphSynthesis::FAKE_BOLD);
@@ -183,6 +162,19 @@ impl SwashGlyphRasterizer {
             synthesis = synthesis.with(GlyphSynthesis::FAKE_ITALIC);
         }
         (font, variation, synthesis)
+    }
+
+    fn intern_variation(&mut self, coords: &Arc<[AxisCoord]>) -> GlyphVariationId {
+        if coords.is_empty() {
+            return GlyphVariationId(0);
+        }
+        if let Some(variation) = self.variation_index.get(coords) {
+            return *variation;
+        }
+        self.variations.push(Arc::clone(coords));
+        let variation = GlyphVariationId(self.variations.len() as u64);
+        self.variation_index.insert(Arc::clone(coords), variation);
+        variation
     }
 
     fn intern_face(&mut self, face: nana_text::FontId) -> GlyphFontId {
@@ -220,9 +212,13 @@ impl SwashGlyphRasterizer {
     /// instance.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub(super) fn coords(&self, variation: GlyphVariationId) -> &[AxisCoord] {
-        self.variations
-            .get(&variation.0)
+        self.variation_coords(variation)
             .map_or(&[], |coords| coords)
+    }
+
+    fn variation_coords(&self, variation: GlyphVariationId) -> Option<&Arc<[AxisCoord]>> {
+        let index = usize::try_from(variation.0.checked_sub(1)?).ok()?;
+        self.variations.get(index)
     }
 
     #[cfg(test)]
@@ -246,12 +242,13 @@ impl GlyphRasterizer for SwashGlyphRasterizer {
         };
         let font = swash::FontRef::from_index(data.bytes(), data.index() as usize)?;
         let size = size_from_bits(key.size_bits);
+        let coords = self.variation_coords(key.variation).cloned();
         let mut builder = self
             .context
             .builder(font)
             .size(size)
             .hint(!key.synthesis.contains(GlyphSynthesis::DISABLE_HINTING));
-        if let Some(coords) = self.variations.get(&key.variation.0) {
+        if let Some(coords) = coords {
             builder = builder.variations(
                 coords
                     .iter()
@@ -431,6 +428,18 @@ mod tests {
         ));
         assert_eq!(default, GlyphVariationId(0));
         assert_ne!(varied, default, "coordinates change the bitmap");
+        let wide = vec![AxisCoord {
+            tag: *b"wdth",
+            value: 75.0,
+        }];
+        let (_, narrowed, _) = rasterizer.intern_instance(&instance(ids[0], wide.clone()));
+        assert_ne!(narrowed, varied, "other coordinates are another instance");
+        assert_eq!(rasterizer.coords(narrowed), wide.as_slice());
+        let (_, again, _) = rasterizer.intern_instance(&instance(ids[0], wide));
+        assert_eq!(
+            again, narrowed,
+            "the same coordinates are the same instance"
+        );
         assert_eq!(
             rasterizer.face_count(),
             1,
