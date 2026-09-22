@@ -174,7 +174,11 @@ impl NanaApplicationBuilder {
             meta = meta.extra("vendor", vendor);
         }
         // A second builder in one process keeps the first runtime.
-        nana_diagnostics::install(self.diagnostics, meta, diagnostic_paths).ok()
+        let guard = nana_diagnostics::install(self.diagnostics, meta, diagnostic_paths).ok();
+        // `start` runs on the thread that will drive the event loop: register
+        // it now so its first frame does not pay for ring allocation.
+        nana_diagnostics::register_thread();
+        guard
     }
 
     /// Start process services, run the Scene host, then shut down cleanly.

@@ -92,6 +92,9 @@ pub(crate) struct WorkerState {
     gauge_last: HashMap<SchemaKey, u64>,
     dropped_last: DropReport,
     header: Vec<u8>,
+    /// The batch still holds every schema / session-info chunk of the
+    /// session (true until the first file takes a prefix).
+    batch_is_complete: bool,
     pub(crate) current_log: Option<PathBuf>,
 }
 
@@ -121,6 +124,7 @@ impl WorkerState {
             gauge_last: HashMap::new(),
             dropped_last: (Vec::new(), Vec::new()),
             header: encode_header(meta, "session"),
+            batch_is_complete: true,
             current_log: None,
         }
     }
@@ -398,6 +402,11 @@ impl WorkerState {
     /// Header, schemas, session info: what a fresh session-log file needs
     /// before the batch.
     fn file_prefix(&mut self, ts_ns: u64) -> Vec<u8> {
+        // Until the first file is opened, every schema and session-info
+        // chunk is still in the batch; repeating them would only duplicate.
+        if std::mem::replace(&mut self.batch_is_complete, false) {
+            return self.header.clone();
+        }
         let info = self.session_info_chunk(ts_ns);
         let mut out = Vec::with_capacity(self.header.len() + self.schema_bytes.len() + info.len());
         out.extend_from_slice(&self.header);
@@ -520,12 +529,14 @@ pub(crate) fn run(shared: Arc<Shared>) {
             None,
             None,
             config.retention.max_crash_files,
-            u64::MAX,
+            config.retention.max_crash_bytes,
             &config.retention,
         );
     }
     let mut backoff = Backoff::new();
     let start = Instant::now();
+    // Intervals are clamped by `DiagnosticsConfig::sanitized`, so these
+    // additions cannot overflow.
     let mut next_metrics = start + config.metric_interval;
     let mut next_clock = start;
     let mut replies: Vec<Sender<()>> = Vec::new();
@@ -533,8 +544,9 @@ pub(crate) fn run(shared: Arc<Shared>) {
     loop {
         std::thread::park_timeout(config.poll_interval);
         // Every `Diagnostics` handle is gone: nobody can ask for a shutdown,
-        // so do it now rather than poll forever.
-        if Arc::strong_count(&shared) == 1 {
+        // so do it now rather than poll forever. The two references left are
+        // this loop's and the exit guard's (see `Diagnostics::start`).
+        if Arc::strong_count(&shared) <= 2 {
             shared.shutdown.store(true, Ordering::Release);
         }
         let shutting_down = shared.shutdown.load(Ordering::Acquire);
@@ -660,9 +672,8 @@ pub(crate) fn run(shared: Arc<Shared>) {
             break;
         }
     }
-    // Anything queued after the final take can never be served; dropping it
-    // disconnects the reply channels so waiters return at once.
-    drop(std::mem::take(&mut *lock(&shared.requests)));
+    // Pending requests, producers and history are released by the exit
+    // guard in `Diagnostics::start`, which also runs if this panics.
 }
 
 fn write_snapshot(shared: &Shared, reason: &str, bytes: &[u8]) -> io::Result<PathBuf> {
@@ -690,7 +701,7 @@ fn write_snapshot(shared: &Shared, reason: &str, bytes: &[u8]) -> io::Result<Pat
                 Some(&stem),
                 Some(path),
                 r.max_crash_files,
-                u64::MAX,
+                r.max_crash_bytes,
                 r,
             );
         }
@@ -710,7 +721,8 @@ pub(crate) fn snapshot_now(
     fault: Option<FaultRecord>,
     wait: Duration,
 ) -> io::Result<PathBuf> {
-    let deadline = Instant::now() + wait;
+    // `wait` may be `Duration::MAX` ("as long as it takes").
+    let deadline = Instant::now().checked_add(wait);
     let is_worker = IS_WORKER.with(|flag| flag.get());
     let mut state = loop {
         match shared.state.try_lock() {
@@ -719,7 +731,7 @@ pub(crate) fn snapshot_now(
             Err(std::sync::TryLockError::WouldBlock) => {
                 // The worker may be the thread that is panicking while it
                 // holds the lock: waiting would never succeed.
-                if is_worker || Instant::now() >= deadline {
+                if is_worker || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         "diagnostics state is busy",

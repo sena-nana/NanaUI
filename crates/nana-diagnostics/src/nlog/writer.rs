@@ -39,6 +39,7 @@ pub fn encode_header(meta: &SessionMetadata, reason: &str) -> Vec<u8> {
     put_str(&mut payload, std::env::consts::ARCH);
     put_varint(&mut payload, u64::from(meta.pid));
     put_varint(&mut payload, meta.wall_start_unix_ns);
+    put_varint(&mut payload, meta.monotonic_start_ns);
     put_varint(&mut payload, meta.extra.len() as u64);
     for (key, value) in &meta.extra {
         put_str(&mut payload, key);

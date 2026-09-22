@@ -123,6 +123,13 @@ fn session_log_round_trips_events_faults_threads_and_info() {
     assert_eq!(file.header.build_id, "abc");
     assert_eq!(file.header.reason, "session");
     assert_eq!(file.session_info("gpu.adapter"), Some("Test GPU"));
+    // The first file's prefix does not repeat what its first batch carries.
+    let info_chunks = file
+        .entries
+        .iter()
+        .filter(|e| matches!(e, Entry::SessionInfo { .. }))
+        .count();
+    assert_eq!(info_chunks, 1);
 
     let infos = events(&file, "test.info");
     assert_eq!(infos.len(), 10);
@@ -669,5 +676,64 @@ fn repeated_snapshots_respect_the_crash_file_limit() {
     }
     diagnostics.shutdown();
     assert_eq!(nlogs(&dir.join("crash")).len(), 3);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn never_intervals_do_not_overflow_and_max_waits_are_accepted() {
+    let (diagnostics, dir) = start(
+        "never",
+        DiagnosticsConfig {
+            metric_interval: Duration::MAX,
+            clock_sync_interval: Duration::MAX,
+            batch_interval: Duration::MAX,
+            flight_window: Duration::MAX,
+            ..config(PersistMode::All)
+        },
+    );
+    assert_eq!(diagnostics.config().flight_window, Duration::from_secs(120));
+    diagnostics.emit(&WARN, &[Field::new("ratio", 1.0f64)]);
+    assert!(diagnostics.flush(false, Duration::from_secs(5)));
+    diagnostics.shutdown();
+    // No worker left: the snapshot is written here, and a "forever" wait
+    // must not overflow the deadline arithmetic.
+    assert!(diagnostics.snapshot_blocking("late", Duration::MAX).is_ok());
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn concurrent_shutdowns_all_wait_for_the_final_flush() {
+    let (diagnostics, dir) = start("concurrent-shutdown", config(PersistMode::All));
+    diagnostics.emit(&WARN, &[Field::new("ratio", 1.0f64)]);
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let diagnostics = diagnostics.clone();
+            let logs = dir.join("logs");
+            std::thread::spawn(move || {
+                diagnostics.shutdown();
+                // Whichever call returns, the final marker is on disk.
+                let log = nlog::read_file(&nlogs(&logs)[0]).unwrap();
+                assert!(matches!(
+                    log.entries.last(),
+                    Some(Entry::Marker { text, .. }) if text == "shutdown"
+                ));
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_header_records_the_monotonic_origin() {
+    let (diagnostics, dir) = start("monotonic", config(PersistMode::All));
+    diagnostics.emit(&WARN, &[Field::new("ratio", 1.0f64)]);
+    diagnostics.shutdown();
+    let log = nlog::read_file(&nlogs(&dir.join("logs"))[0]).unwrap();
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
+        assert!(log.header.monotonic_start_ns > 0);
+    }
     let _ = fs::remove_dir_all(dir);
 }

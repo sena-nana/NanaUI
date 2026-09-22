@@ -36,6 +36,7 @@
 //! metric!(TRACK_NS, std::time::Duration::from_micros(250));
 //! ```
 
+mod clock;
 mod crash;
 mod export;
 mod files;

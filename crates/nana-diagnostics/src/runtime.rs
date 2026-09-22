@@ -6,7 +6,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -77,8 +77,12 @@ pub(crate) struct Shared {
     /// Set once when the worker starts; unparking a finished thread is
     /// harmless, so it is never cleared. Lock-free for the fault path.
     worker_thread: OnceLock<std::thread::Thread>,
-    /// Disconnects when the worker exits, so shutdown can wait with a bound.
-    worker_exited: Mutex<Option<mpsc::Receiver<()>>>,
+    /// False once the worker thread has exited, normally or by panic. Only
+    /// changes under the `requests` lock (see `Shared::request`).
+    worker_alive: AtomicBool,
+    /// Set (and signalled) when the worker has finished its final flush, so
+    /// every concurrent `shutdown` waits for it with a bound.
+    worker_done: (Mutex<bool>, Condvar),
     pub(crate) shutdown: AtomicBool,
     pub(crate) stats: Stats,
 }
@@ -156,7 +160,15 @@ impl Shared {
             retired: AtomicBool::new(false),
             orphaned: AtomicBool::new(false),
         });
-        lock(&self.producers).push(producer.clone());
+        {
+            let mut producers = lock(&self.producers);
+            // Shutdown may have emptied the list since the check above; a
+            // producer added now would never be drained or orphaned.
+            if self.shutdown.load(Ordering::Acquire) {
+                return None;
+            }
+            producers.push(producer.clone());
+        }
         list.push((self.id, producer.clone()));
         Some(producer)
     }
@@ -224,7 +236,7 @@ impl Shared {
     pub(crate) fn request(&self, request: Request) -> bool {
         {
             let mut requests = lock(&self.requests);
-            if self.shutdown.load(Ordering::Acquire) || self.worker_thread.get().is_none() {
+            if self.shutdown.load(Ordering::Acquire) || !self.worker_alive.load(Ordering::Acquire) {
                 return false;
             }
             requests.push(request);
@@ -233,10 +245,39 @@ impl Shared {
         true
     }
 
-    fn orphan_producers(&self) {
-        for producer in lock(&self.producers).iter() {
-            producer.orphaned.store(true, Ordering::Release);
+    /// Worker exit, however it happened: refuse and drop pending requests,
+    /// release the producers and the history, and wake every waiter.
+    pub(crate) fn worker_exited(&self) {
+        {
+            let mut requests = lock(&self.requests);
+            self.worker_alive.store(false, Ordering::Release);
+            // Dropping queued requests disconnects their reply channels.
+            drop(std::mem::take(&mut *requests));
         }
+        self.release_producers();
+        if let Ok(mut state) = self.state.try_lock() {
+            state.release_memory();
+        }
+        let (done, signal) = &self.worker_done;
+        *lock(done) = true;
+        signal.notify_all();
+    }
+
+    /// Orphan every producer (their thread-locals drop them on next
+    /// registration), fold their loss counters into the totals, and forget
+    /// them. Idempotent.
+    fn release_producers(&self) {
+        let mut producers = lock(&self.producers);
+        for producer in producers.iter() {
+            producer.orphaned.store(true, Ordering::Release);
+            self.stats
+                .retired_events_dropped
+                .fetch_add(producer.events.dropped(), Ordering::Relaxed);
+            self.stats
+                .retired_faults_dropped
+                .fetch_add(producer.faults.dropped(), Ordering::Relaxed);
+        }
+        producers.clear();
     }
 }
 
@@ -278,12 +319,18 @@ impl Diagnostics {
         meta: SessionMetadata,
         paths: DiagnosticsPaths,
     ) -> Self {
+        let config = config.sanitized();
         let enabled = config.enabled;
         let min_severity = if enabled {
             config.min_severity as u8
         } else {
             u8::MAX
         };
+        // One instant for both clocks: the header records where the session's
+        // monotonic zero sits on the platform clock `Instant` reads.
+        let start = Instant::now();
+        let mut meta = meta;
+        meta.monotonic_start_ns = crate::clock::monotonic_now_ns();
         let state = WorkerState::new(&config, &meta);
         let shared = Arc::new(Shared {
             id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
@@ -291,35 +338,47 @@ impl Diagnostics {
             config,
             meta,
             paths,
-            start: Instant::now(),
+            start,
             producers: Mutex::new(Vec::new()),
             next_thread: AtomicU32::new(1),
             state: Mutex::new(state),
             requests: Mutex::new(Vec::new()),
             worker: Mutex::new(None),
             worker_thread: OnceLock::new(),
-            worker_exited: Mutex::new(None),
+            worker_alive: AtomicBool::new(false),
+            worker_done: (Mutex::new(!enabled), Condvar::new()),
             shutdown: AtomicBool::new(!enabled),
             stats: Stats::default(),
         });
         if enabled {
             let worker_shared = shared.clone();
-            let (exit_tx, exit_rx) = mpsc::channel::<()>();
+            // Alive before the thread exists, so a request sent right after
+            // `start` is queued rather than refused.
+            shared.worker_alive.store(true, Ordering::Release);
             match std::thread::Builder::new()
                 .name("nana-diagnostics".into())
                 .spawn(move || {
-                    let _exit = exit_tx;
+                    // Runs on normal exit and on panic alike.
+                    struct Exit(Arc<Shared>);
+                    impl Drop for Exit {
+                        fn drop(&mut self) {
+                            self.0.worker_exited();
+                        }
+                    }
+                    let exit = Exit(worker_shared.clone());
                     worker::run(worker_shared);
+                    drop(exit);
                 }) {
                 Ok(handle) => {
                     let _ = shared.worker_thread.set(handle.thread().clone());
                     *lock(&shared.worker) = Some(handle);
-                    *lock(&shared.worker_exited) = Some(exit_rx);
                 }
                 // No worker: rings fill and drop, producers never notice.
                 // Snapshots still work from the calling thread.
                 Err(_) => {
                     shared.stats.write_errors.fetch_add(1, Ordering::Relaxed);
+                    shared.worker_alive.store(false, Ordering::Release);
+                    *lock(&shared.worker_done.0) = true;
                 }
             }
         }
@@ -493,38 +552,24 @@ impl Diagnostics {
             shared.shutdown.store(true, Ordering::Release);
         }
         shared.wake();
-        let exited = lock(&shared.worker_exited).take();
-        let handle = lock(&shared.worker).take();
-        if let Some(handle) = handle
-            && handle.thread().id() != std::thread::current().id()
-        {
-            let finished = exited.is_none_or(|rx| {
-                rx.recv_timeout(SHUTDOWN_WAIT) != Err(mpsc::RecvTimeoutError::Timeout)
-            });
-            if finished {
+        if !IS_WORKER.with(|flag| flag.get()) {
+            // Every caller waits (concurrent shutdowns included), bounded so
+            // a hung disk or sink cannot hang application exit.
+            let (done, signal) = &shared.worker_done;
+            let guard = lock(done);
+            let (guard, _) = signal
+                .wait_timeout_while(guard, SHUTDOWN_WAIT, |done| !*done)
+                .unwrap_or_else(PoisonError::into_inner);
+            let finished = *guard;
+            drop(guard);
+            // Unfinished: leave the handle for a later `shutdown`; the worker
+            // frees its own state when (if) it gets there.
+            if finished && let Some(handle) = lock(&shared.worker).take() {
                 let _ = handle.join();
             }
         }
-        shared.orphan_producers();
-        {
-            let mut producers = lock(&shared.producers);
-            for producer in producers.iter() {
-                shared
-                    .stats
-                    .retired_events_dropped
-                    .fetch_add(producer.events.dropped(), Ordering::Relaxed);
-                shared
-                    .stats
-                    .retired_faults_dropped
-                    .fetch_add(producer.faults.dropped(), Ordering::Relaxed);
-            }
-            producers.clear();
-        }
-        // Rings and history are dead weight now; a global instance's
-        // `Shared` is intentionally leaked, so release them explicitly.
-        if let Ok(mut state) = shared.state.try_lock() {
-            state.release_memory();
-        }
+        // Covers the no-worker case; idempotent after the worker's own exit.
+        shared.release_producers();
     }
 
     pub fn stats(&self) -> DiagnosticsStats {

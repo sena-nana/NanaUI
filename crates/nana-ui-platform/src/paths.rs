@@ -265,8 +265,19 @@ fn strip_verbatim(path: PathBuf) -> PathBuf {
     if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{unc}"));
     }
+    // Only when the plain form means the same file: short enough for the
+    // legacy APIs, and no component ending in `.` or ` ` (which the plain
+    // form would silently trim).
     match text.strip_prefix(r"\\?\") {
-        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        Some(rest)
+            if rest.as_bytes().get(1) == Some(&b':')
+                && rest.len() < 260
+                && !rest
+                    .split('\\')
+                    .any(|part| part.ends_with('.') || part.ends_with(' ')) =>
+        {
+            PathBuf::from(rest)
+        }
         _ => path,
     }
 }
@@ -688,6 +699,12 @@ mod tests {
         assert_eq!(
             strip_verbatim(PathBuf::from(r"\\?\UNC\server\share\App.exe")),
             PathBuf::from(r"\\server\share\App.exe")
+        );
+        let long = format!(r"\\?\C:\{}\App.exe", "d".repeat(300));
+        assert_eq!(strip_verbatim(PathBuf::from(&long)), PathBuf::from(&long));
+        assert_eq!(
+            strip_verbatim(PathBuf::from(r"\\?\C:\odd.\App.exe")),
+            PathBuf::from(r"\\?\C:\odd.\App.exe")
         );
         assert_eq!(
             strip_verbatim(PathBuf::from("/opt/app/app")),

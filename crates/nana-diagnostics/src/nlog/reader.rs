@@ -45,6 +45,8 @@ pub struct SessionHeader {
     pub arch: String,
     pub pid: u32,
     pub wall_start_unix_ns: u64,
+    /// Session zero on the platform monotonic clock (0 = not recorded).
+    pub monotonic_start_ns: u64,
     pub extra: Vec<(String, String)>,
 }
 
@@ -336,6 +338,7 @@ fn decode_chunk(file: &mut NlogFile, kind: ChunkKind, c: &mut Cursor<'_>) -> Opt
             h.arch = c.string()?;
             h.pid = c.u32()?;
             h.wall_start_unix_ns = c.varint()?;
+            h.monotonic_start_ns = c.varint()?;
             let extra = c.count()?;
             h.extra = (0..extra)
                 .map(|_| Some((c.string()?, c.string()?)))

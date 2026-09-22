@@ -106,6 +106,13 @@ pub mod gpu {
     pub static SURFACE_OUTDATED: Metric = Metric::counter(D, 7, "gpu.surface.outdated", "count");
     pub static SURFACE_LOST: Metric = Metric::counter(D, 8, "gpu.surface.lost", "count");
     pub static SURFACE_TIMEOUT: Metric = Metric::counter(D, 9, "gpu.surface.timeout", "count");
+    histogram!(
+        /// Submit → the host observing the work complete. An upper bound on
+        /// GPU time: completion is noticed at the next redraw's poll, so the
+        /// error is at most one redraw interval. Exact GPU time needs
+        /// timestamp queries, which Metal cannot write inside an encoder.
+        pub COMPLETION_NS, COMPLETION_CELLS, D, 10, "gpu.completion", "ns"
+    );
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
         EventDescriptor::new(D, 1, "gpu.surface_lost", Severity::Warn, &[]);
@@ -173,6 +180,13 @@ pub mod host {
         pub REDRAW_NS, REDRAW_CELLS, D, 1, "host.redraw", "ns");
     /// Every `HostFailure`, including the ones rate-limited out of the log.
     pub static FAILURES: Metric = Metric::counter(D, 2, "host.failures", "count");
+    /// Frame periods a `FrameDemand::Continuous` window missed entirely.
+    pub static FRAMES_DROPPED: Metric = Metric::counter(D, 3, "host.frames_dropped", "count");
+    histogram!(
+        /// Program messages waiting when a window drained its queue (only
+        /// non-empty drains are sampled).
+        pub MESSAGE_QUEUE_DEPTH, MESSAGE_QUEUE_DEPTH_CELLS, D, 4, "host.message_queue_depth", "count"
+    );
 
     /// Fault, at most once per second per `kind` (see [`FAILURES`] for the
     /// full count). `kind` is the `HostFailure` variant's stable code.

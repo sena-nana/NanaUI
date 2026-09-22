@@ -14,7 +14,7 @@ use crate::session::unix_now_ns;
 
 #[derive(Debug, Clone)]
 pub struct PackageOptions {
-    /// Most recent session logs to include.
+    /// Most recent sessions to include (all rotations of each).
     pub max_sessions: usize,
     /// Most recent crash snapshots to include.
     pub max_snapshots: usize,
@@ -35,6 +35,21 @@ impl Default for PackageOptions {
     }
 }
 
+/// A session log and its rotations share one key: the name without `.nlog`
+/// and without a trailing `.{n}` rotation index. Snapshots are keyed by
+/// their full name (each is complete on its own).
+fn session_key(name: &str) -> &str {
+    let base = name.strip_suffix(".nlog").unwrap_or(name);
+    match base.rsplit_once('.') {
+        Some((head, index)) if !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()) => {
+            head
+        }
+        _ => base,
+    }
+}
+
+/// Files of the `limit` most recently modified sessions (a session counts
+/// once however many rotations it has), newest session first.
 fn newest(dir: Option<&Path>, app_id: &str, limit: usize) -> Vec<PathBuf> {
     let Some(Ok(read)) = dir.map(fs::read_dir) else {
         return Vec::new();
@@ -52,7 +67,21 @@ fn newest(dir: Option<&Path>, app_id: &str, limit: usize) -> Vec<PathBuf> {
         })
         .collect();
     files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
-    files.into_iter().take(limit).map(|(_, p)| p).collect()
+    let mut sessions: Vec<String> = Vec::new();
+    let mut picked = Vec::new();
+    for (_, path) in files {
+        let Some(key) = path.file_name().and_then(|n| n.to_str()).map(session_key) else {
+            continue;
+        };
+        if !sessions.iter().any(|s| s == key) {
+            if sessions.len() == limit {
+                continue;
+            }
+            sessions.push(key.to_owned());
+        }
+        picked.push(path);
+    }
+    picked
 }
 
 /// Build a package from log and crash directories without a live runtime
@@ -64,12 +93,25 @@ pub fn export_package_from(
     dest: &Path,
     options: &PackageOptions,
 ) -> io::Result<PathBuf> {
-    let root = dest.join(format!(
+    // Never merge into (and overwrite) an earlier export from the same second.
+    fs::create_dir_all(dest)?;
+    let base = format!(
         "{}-diagnostics-{}",
         sanitize(app_id),
         file_stamp(unix_now_ns())
-    ));
-    fs::create_dir_all(&root)?;
+    );
+    let mut root = dest.join(&base);
+    let mut attempt = 1;
+    loop {
+        match fs::create_dir(&root) {
+            Ok(()) => break,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 1000 => {
+                root = dest.join(format!("{base}-{attempt}"));
+                attempt += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
     let export = ExportOptions {
         redact_home: options.redact_home,
     };
@@ -150,5 +192,26 @@ impl Diagnostics {
             dest,
             options,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::session_key;
+
+    #[test]
+    fn rotations_share_their_session_key() {
+        assert_eq!(
+            session_key("dev.app-20260922T010203Z-7.nlog"),
+            "dev.app-20260922T010203Z-7"
+        );
+        assert_eq!(
+            session_key("dev.app-20260922T010203Z-7.3.nlog"),
+            "dev.app-20260922T010203Z-7"
+        );
+        assert_eq!(
+            session_key("dev.app-20260922T010203Z-7-panic.nlog"),
+            "dev.app-20260922T010203Z-7-panic"
+        );
     }
 }

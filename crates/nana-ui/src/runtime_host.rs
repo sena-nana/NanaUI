@@ -1364,16 +1364,48 @@ fn next_continuous_deadline(
     now: Instant,
     period: std::time::Duration,
 ) -> Option<Instant> {
-    let mut next = hit.checked_add(period)?;
-    while next <= now {
-        next = next.checked_add(period)?;
+    let (next, missed) = continuous_deadline_after(hit, now, period)?;
+    if missed > 0 {
+        nana_diagnostics::metric!(nana_diagnostics::framework::host::FRAMES_DROPPED, missed);
     }
     Some(next)
+}
+
+/// The first period boundary after `now`, and how many whole periods
+/// between `hit` and it went by without a frame.
+fn continuous_deadline_after(
+    hit: Instant,
+    now: Instant,
+    period: std::time::Duration,
+) -> Option<(Instant, u64)> {
+    let mut next = hit.checked_add(period)?;
+    let mut missed = 0;
+    while next <= now {
+        next = next.checked_add(period)?;
+        missed += 1;
+    }
+    Some((next, missed))
 }
 
 #[cfg(test)]
 mod frame_schedule_tests {
     use super::*;
+
+    #[test]
+    fn missed_continuous_periods_are_counted() {
+        let t0 = Instant::now();
+        let period = Duration::from_millis(10);
+        // On time: served before the next boundary.
+        assert_eq!(
+            continuous_deadline_after(t0, t0 + Duration::from_millis(3), period),
+            Some((t0 + period, 0))
+        );
+        // Served 35 ms late: the 10, 20 and 30 ms boundaries all passed.
+        assert_eq!(
+            continuous_deadline_after(t0, t0 + Duration::from_millis(35), period),
+            Some((t0 + Duration::from_millis(40), 3))
+        );
+    }
 
     #[test]
     fn host_failure_faults_are_limited_to_one_per_second_per_variant() {

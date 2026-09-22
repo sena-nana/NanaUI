@@ -270,6 +270,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
     pub(super) fn drain_program_messages(&mut self, id: WindowId) -> RuntimeProgramUpdate {
         let mut update = RuntimeProgramUpdate::default();
+        let mut drained = 0usize;
         for _ in 0..MAX_PROGRAM_DISPATCHES {
             let queued = self
                 .program
@@ -281,12 +282,19 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 break;
             }
             self.bind_after_present.insert(id);
+            drained += queued.len();
             for boxed in queued {
                 let Ok(message) = boxed.downcast::<Program::Message>() else {
                     continue;
                 };
                 update = update.merge(self.program.update(*message, &self.context_for(id)));
             }
+        }
+        if drained > 0 {
+            nana_diagnostics::metric!(
+                nana_diagnostics::framework::host::MESSAGE_QUEUE_DEPTH,
+                drained
+            );
         }
         update
     }

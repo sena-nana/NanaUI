@@ -24,6 +24,6 @@ name = "nana-diagnostics-benchmark"
 path = "src/bin/nana-diagnostics-benchmark.rs"
 required-features = ["benchmark"]
 
-# Only for lowering the worker thread's priority.
+# Worker thread priority and the monotonic clock origin.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_System_Performance", "Win32_System_Threading"] }

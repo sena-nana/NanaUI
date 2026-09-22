@@ -88,6 +88,8 @@ let _span = span!(TRACK_NS);         // 作用域耗时进直方图
 
 Flight Recorder 始终保留 `min_severity` 以上的全部事件，崩溃或显式导出时写成快照。
 
+配置在 `Diagnostics::start` 时经 `DiagnosticsConfig::sanitized` 钳制：`flight_window` 限 30–120 s，`poll_interval` 1 ms–60 s，其余间隔最长 1 h（传 `Duration::MAX` 表示“很少”，不会溢出），环容量有上下限。
+
 ## 文件与保留
 
 路径来自 `ApplicationPaths`：
@@ -100,7 +102,7 @@ Flight Recorder 始终保留 `min_severity` 以上的全部事件，崩溃或显
 完整映射（runtime 目录、data、config、cache、Android）见 `nana-ui-platform/src/paths.rs` 模块文档。`<exe 目录>/runtime/manifest/portable` 存在时为便携版（macOS `.app` 内不支持）；从 Cargo `target/` 运行时 `layout()` 为 `Development`。
 
 - 会话日志：`{app}-{YYYYMMDDTHHMMSSZ}-{pid}.nlog`，超过 `max_file_bytes`（16 MiB）轮转为 `.1.nlog`、`.2.nlog`，从不覆盖已有文件。
-- 保留：按修改时间删最旧的，直到满足 `max_files`（32）、`max_total_bytes`（128 MiB）、`max_age`（14 天）；快照另限 `max_crash_files`（16）。只匹配本应用精确文件名模式；其它会话最近 `live_grace`（10 分钟）内改过的文件不删（可能属于另一个运行中的实例），本会话自己轮转出的文件和快照不受这条保护，所以一次失控的会话也不会突破预算。
+- 保留：按修改时间删最旧的，直到满足 `max_files`（32）、`max_total_bytes`（128 MiB）、`max_age`（14 天）；快照另限 `max_crash_files`（16）和 `max_crash_bytes`（64 MiB）。只匹配本应用精确文件名模式；其它会话最近 `live_grace`（10 分钟）内改过的文件不删（可能属于另一个运行中的实例），本会话自己轮转出的文件和快照不受这条保护，所以一次失控的会话也不会突破预算。
 
 ## 崩溃与导出
 
@@ -118,7 +120,7 @@ file  := "NANALOG\0" format_version:u16le chunk*
 chunk := kind:u8 len:u32le payload[len] crc32:u32le
 ```
 
-第一个块是 Header（schema 版本、会话 id、app id / 名称 / 版本 / build id、框架版本、OS / 架构、pid、墙钟起点）。事件只存单调时间增量、域 + ID、线程号和 typed 值；名字、字段名、单位由 EventSchema / MetricSchema 块在同一文件中先行给出，读取端不需要应用二进制。GPU 适配器这类启动后才知道的信息走 SessionInfo 块；ClockSync 块每分钟记一次单调时间与墙钟的对照，覆盖系统睡眠。
+第一个块是 Header（schema 版本、会话 id、app id / 名称 / 版本 / build id、框架版本、OS / 架构、pid、墙钟起点、单调时钟起点）。单调时钟起点取自 Rust `Instant` 背后的同一个平台时钟（macOS `CLOCK_UPTIME_RAW`、Linux / Android `CLOCK_MONOTONIC`、Windows QPC），可以和同一台机器同一次开机的其它日志对齐。事件只存单调时间增量、域 + ID、线程号和 typed 值；名字、字段名、单位由 EventSchema / MetricSchema 块在同一文件中先行给出，读取端不需要应用二进制。GPU 适配器这类启动后才知道的信息走 SessionInfo 块；ClockSync 块每分钟记一次单调时间与墙钟的对照，覆盖系统睡眠。
 
 读取端逐块校验 CRC，遇到截断或损坏就停，报告此前全部内容（`NlogFile::truncated`）。未知块类型跳过。
 
@@ -129,9 +131,9 @@ chunk := kind:u8 len:u32le payload[len] crc32:u32le
 | Runtime | 每次 flush 的 CPU 总耗时与 9 个 Runtime 阶段直方图（复用 `FrameProfiler`，不重复计时）、flush 次数与轮数、不收敛 / 样式与文本布局失败计数 |
 | Layout | 每次布局耗时、调用数、整树布局数、dirty 根数、参与布局的盒子数 |
 | Text | shape / layout 缓存命中与未命中、字形解析数、字形图集开页（含图集总字节）/ 预算耗尽（每个图集只报一次）/ 压缩、驱逐数 |
-| GPU | submit 耗时、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
+| GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll，误差不超过一个 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
 | Window | 打开（物理尺寸）、关闭、缩放系数变化、遮挡、resize 次数 |
-| Host | 每次 redraw 的墙钟耗时（消息处理 + flush + 绘制 + submit + present，可能含 vsync 等待，不是 GPU 时间）、`HostFailure` 计数与故障（变体码 + 窗口 + 错误文本；同一变体每秒至多记一条，计数不漏）、运行失败、事件循环退出 |
+| Host | 每次 redraw 的墙钟耗时（消息处理 + flush + 绘制 + submit + present，可能含 vsync 等待，不是 GPU 时间）、`Continuous` 窗口错过的帧周期数（丢帧）、每次排空时的程序消息队列深度、`HostFailure` 计数与故障（变体码 + 窗口 + 错误文本；同一变体每秒至多记一条，计数不漏）、运行失败、事件循环退出 |
 
 每帧都可能重复的失败（帧不收敛、输入处理器报错）只在宿主层记故障并限流，Runtime 层只计数，避免同一次失败记两遍、也避免逐帧刷日志。
 

@@ -183,8 +183,10 @@ pub fn to_text(file: &NlogFile, options: &ExportOptions) -> String {
                                 "    {name} n={} min={} p50~{} p99~{} max={} mean={mean} {unit}",
                                 sample.count,
                                 sample.min,
-                                histogram_quantile(&sample.buckets, sample.count, 0.5),
-                                histogram_quantile(&sample.buckets, sample.count, 0.99),
+                                histogram_quantile(&sample.buckets, sample.count, 0.5)
+                                    .clamp(sample.min, sample.max.max(sample.min)),
+                                histogram_quantile(&sample.buckets, sample.count, 0.99)
+                                    .clamp(sample.min, sample.max.max(sample.min)),
                                 sample.max,
                             );
                         }

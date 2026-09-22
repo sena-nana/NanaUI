@@ -21,6 +21,11 @@ pub struct SessionMetadata {
     pub session_id: u64,
     pub pid: u32,
     pub wall_start_unix_ns: u64,
+    /// The session's monotonic zero on the platform clock Rust's `Instant`
+    /// reads (`CLOCK_UPTIME_RAW` / `CLOCK_MONOTONIC` / QPC), in ns. Set by
+    /// `Diagnostics::start`; lets a reader line events up with other logs of
+    /// the same machine and boot. 0 where the clock is not read.
+    pub monotonic_start_ns: u64,
 }
 
 impl SessionMetadata {
@@ -42,6 +47,7 @@ impl SessionMetadata {
             session_id: wall_start_unix_ns ^ (u64::from(pid) << 32).rotate_left(17),
             pid,
             wall_start_unix_ns,
+            monotonic_start_ns: 0,
         }
     }
 
@@ -111,8 +117,11 @@ pub struct Retention {
     pub max_files: usize,
     pub max_age: Duration,
     pub max_crash_files: usize,
-    /// Files modified more recently than this are never pruned: they may
-    /// belong to another running instance.
+    /// Byte budget of this app's snapshots in the crash directory.
+    pub max_crash_bytes: u64,
+    /// Other sessions' files modified more recently than this are never
+    /// pruned: they may belong to another running instance. This session's
+    /// own rotations and snapshots are not protected.
     pub live_grace: Duration,
 }
 
@@ -124,6 +133,7 @@ impl Default for Retention {
             max_files: 32,
             max_age: Duration::from_secs(14 * 24 * 60 * 60),
             max_crash_files: 16,
+            max_crash_bytes: 64 * 1024 * 1024,
             live_grace: Duration::from_secs(10 * 60),
         }
     }
@@ -143,7 +153,8 @@ pub struct DiagnosticsConfig {
     pub fault_ring_capacity: usize,
     /// How often the worker drains the rings.
     pub poll_interval: Duration,
-    /// Flight recorder keeps this much recent history...
+    /// Flight recorder keeps this much recent history (clamped to
+    /// 30–120 s)...
     pub flight_window: Duration,
     /// ...but never more than this many encoded bytes.
     pub flight_bytes: usize,
@@ -192,6 +203,27 @@ impl Default for DiagnosticsConfig {
 }
 
 impl DiagnosticsConfig {
+    /// Clamp every knob into a range the runtime can honour: no zero poll
+    /// that spins the worker, no interval so long that deadline arithmetic
+    /// overflows (`Duration::MAX` means "rarely", not "panic"), rings of a
+    /// usable size, and the flight window Issue #227 specifies.
+    pub fn sanitized(mut self) -> Self {
+        let clamp = |d: Duration, lo: u64, hi: u64| {
+            d.clamp(Duration::from_millis(lo), Duration::from_millis(hi))
+        };
+        const HOUR: u64 = 60 * 60 * 1000;
+        self.poll_interval = clamp(self.poll_interval, 1, 60_000);
+        self.flight_window = clamp(self.flight_window, 30_000, 120_000);
+        self.batch_interval = clamp(self.batch_interval, 10, HOUR);
+        self.metric_interval = clamp(self.metric_interval, 100, HOUR);
+        self.clock_sync_interval = clamp(self.clock_sync_interval, 1_000, HOUR);
+        self.ring_capacity = self.ring_capacity.clamp(8, 1 << 20);
+        self.fault_ring_capacity = self.fault_ring_capacity.clamp(2, 4096);
+        self.flight_bytes = self.flight_bytes.max(64 * 1024);
+        self.batch_bytes = self.batch_bytes.max(1024);
+        self
+    }
+
     /// Nothing recorded.
     pub fn disabled() -> Self {
         Self {

@@ -101,6 +101,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let frame_started = nana_diagnostics::metrics_enabled().then(Instant::now);
+        if frame_started.is_some() {
+            // Deliver completion callbacks of earlier submissions now, so
+            // `gpu.completion` is bounded by the redraw cadence. Non-blocking.
+            let _ = self
+                .graphics
+                .resources()
+                .device()
+                .poll(wgpu::PollType::Poll);
+        }
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
         if event_loop.exiting() || self.render_suspended || !self.can_present(id) {
@@ -319,6 +328,18 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         let submit_started = std::time::Instant::now();
         let submission = self.graphics.resources().queue().submit([encoder.finish()]);
+        if frame_started.is_some() {
+            let submitted = Instant::now();
+            self.graphics
+                .resources()
+                .queue()
+                .on_submitted_work_done(move || {
+                    nana_diagnostics::metric!(
+                        nana_diagnostics::framework::gpu::COMPLETION_NS,
+                        submitted.elapsed()
+                    );
+                });
+        }
         if let Some(prepared) = prepared {
             prepared.submitted(self.graphics.resources().device(), submission);
         }
