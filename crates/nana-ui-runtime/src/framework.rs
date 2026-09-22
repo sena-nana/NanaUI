@@ -890,6 +890,9 @@ pub struct AppContext {
     /// Opt-in reproject when the installed component recipes change,
     /// registered from [`ComponentView::wants_recipe_reproject`].
     recipe_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
+    /// Opt-in reproject when the host's text backend changes, registered from
+    /// [`ComponentView::wants_text_backend_reproject`].
+    text_backend_reproject_views: HashMap<StableNodeId, ChildReprojectFn>,
     /// Nodes queued for one child-structure reproject; deduplicated per drain.
     pending_child_reprojects: Vec<StableNodeId>,
     /// Guards reentrant drains while a reproject commits its own mutations.
@@ -1179,6 +1182,7 @@ impl AppContext {
             child_reproject_views: HashMap::new(),
             metrics_reproject_views: HashMap::new(),
             recipe_reproject_views: HashMap::new(),
+            text_backend_reproject_views: HashMap::new(),
             pending_child_reprojects: Vec::new(),
             draining_child_reprojects: false,
             event_handlers: HashMap::new(),
@@ -1423,6 +1427,23 @@ impl AppContext {
             reproject(self, id)?;
         }
         Ok(())
+    }
+
+    /// Reprojects [`ComponentView::wants_text_backend_reproject`] views if the
+    /// last text pass saw a new backend. Returns whether any did, since their
+    /// projection can move layout the pass already measured against.
+    pub(crate) fn reproject_text_backend_views(&mut self) -> Result<bool, FrameworkError> {
+        if !self.world.take_text_backend_changed() || self.text_backend_reproject_views.is_empty() {
+            return Ok(false);
+        }
+        let ids: Vec<_> = self.text_backend_reproject_views.keys().copied().collect();
+        for id in ids {
+            let Some(reproject) = self.text_backend_reproject_views.get(&id).copied() else {
+                continue;
+            };
+            reproject(self, id)?;
+        }
+        Ok(true)
     }
 
     /// Same shape as [`Self::reproject_metrics_views`], different trigger.
@@ -2707,6 +2728,8 @@ impl AppContext {
         self.metrics_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.recipe_reproject_views
+            .retain(|id, _| !removed.contains(id));
+        self.text_backend_reproject_views
             .retain(|id, _| !removed.contains(id));
         self.pending_child_reprojects
             .retain(|id| !removed.contains(id));

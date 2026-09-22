@@ -107,7 +107,9 @@ impl AppContext {
             .shape_text(ids, shaper)
             .map_err(FrameworkError::from);
         self.record_stage(FrameStage::TextShape, started);
-        result
+        result?;
+        self.reproject_text_backend_views()?;
+        Ok(())
     }
 
     pub fn shape_text_for_layout(
@@ -121,7 +123,8 @@ impl AppContext {
             .shape_text_for_layout(document, shaper)
             .map_err(FrameworkError::from);
         self.record_stage(FrameStage::TextShape, started);
-        result
+        let reshaped = result?;
+        Ok(self.reproject_text_backend_views()? || reshaped)
     }
 
     /// [`Self::shape_text_for_layout`] restricted to `ids` (the last layout
@@ -137,7 +140,8 @@ impl AppContext {
             .shape_text_for_layout_scoped(ids, shaper)
             .map_err(FrameworkError::from);
         self.record_stage(FrameStage::TextShape, started);
-        result
+        let reshaped = result?;
+        Ok(self.reproject_text_backend_views()? || reshaped)
     }
 
     /// Compute and atomically publish canonical Runtime layout for one window.

@@ -7,7 +7,6 @@ use nana_ui_core::{
     DialogSize,
 };
 
-use crate::menus::estimated_text_width;
 use crate::overlay_surfaces::{MODAL_PAD_X, modal_root_style, modal_surface_bounds};
 use crate::query::query_matches;
 use crate::view_components::project_common;
@@ -269,6 +268,7 @@ pub(crate) fn command_palette_geometry(
     rows: &[PaletteRowData],
     palette: &nana_ui_core::SemanticPalette,
     metrics: nana_ui_core::ThemeMetrics,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentGeometry {
     let input_height = ControlSize::Medium.height_in(metrics);
     let row_height = palette_row_height(metrics);
@@ -345,7 +345,7 @@ pub(crate) fn command_palette_geometry(
                 height: row_height,
             };
             let shortcut = row.shortcut.as_ref().map(|shortcut| {
-                let shortcut_width = estimated_text_width(shortcut, SHORTCUT_TEXT_SIZE);
+                let shortcut_width = measure.width(shortcut, SHORTCUT_TEXT_SIZE, None);
                 ComponentTextRegion {
                     bounds: LayoutBox {
                         x: bounds.x + bounds.width - ROW_PAD_X - shortcut_width,
@@ -564,6 +564,7 @@ mod tests {
             &rows,
             &nana_ui_core::SemanticPalette::dark(),
             nana_ui_core::UI_METRICS,
+            crate::text_width::ChromeTextMeasure::ESTIMATE,
         );
         let crate::ComponentGeometry::CommandPalette { rows, .. } = geometry else {
             panic!("command palette geometry");
@@ -571,7 +572,8 @@ mod tests {
         let row = &rows[0];
         let shortcut = row.shortcut.as_ref().expect("shortcut region");
         // "Ctrl+Alt+Delete" at 10px ≈ 93px, far past the old fixed 70px box.
-        let estimated = estimated_text_width(shortcut.content.as_ref(), SHORTCUT_TEXT_SIZE);
+        let estimated =
+            crate::text_width::estimated_text_width(shortcut.content.as_ref(), SHORTCUT_TEXT_SIZE);
         assert!(
             estimated > 80.0,
             "estimate {estimated} should exceed the old box"

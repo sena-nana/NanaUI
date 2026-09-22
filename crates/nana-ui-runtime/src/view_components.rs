@@ -285,6 +285,20 @@ pub trait ComponentView: Clone + Send + 'static {
     {
         false
     }
+
+    /// Opt in to one reprojection when the host's text backend changes — the
+    /// first engine a world is shaped through included.
+    ///
+    /// For geometry `project` spends from a text measurement (an editor's
+    /// line-number gutter): a component is projected before any host has
+    /// shaped, so without this its first measurement is the estimate and
+    /// stays one until its data next changes. Defaults to `false`.
+    fn wants_text_backend_reproject() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2323,10 +2337,16 @@ impl ComponentView for TextArea {
         true
     }
 
+    /// The line-number gutter is measured in `project`.
+    fn wants_text_backend_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        let size = nana_ui_core::ControlSize::Medium;
         let visual = StandardVisual::TextInput {
             placeholder: Arc::clone(&self.placeholder),
-            size: nana_ui_core::ControlSize::Medium,
+            size,
             secure: false,
             invalid: self.invalid,
             steppers: false,
@@ -2416,8 +2436,9 @@ impl ComponentView for TextArea {
         if self.line_numbers || !self.code_folds.is_empty() || !self.git_gutter.is_empty() {
             // Reserve the left marker lane even before fold/git results arrive,
             // so asynchronous decorations do not move the source horizontally.
-            // Labels use the control's caption size, independently of source text.
-            let label_size = (nana_ui_core::ControlSize::Medium.text_size() - 1.0).max(10.0);
+            // Measured at the size the scene paints line labels at: the
+            // control's caption size, independently of source text.
+            let label_size = size.caption_size();
             let digits = if self.line_numbers {
                 let lines = self
                     .state
@@ -2430,7 +2451,17 @@ impl ComponentView for TextArea {
             } else {
                 0
             };
-            let gutter = 18.0 + digits as f32 * label_size * 0.65 + 4.0;
+            // Each digit is given the widest digit's advance, so the gutter
+            // holds while the line count stays within the same digit count.
+            let digit_width = if digits == 0 {
+                0.0
+            } else {
+                let measure = world.chrome_text_measure(id);
+                (0..=9)
+                    .map(|digit| measure.width(&digit.to_string(), label_size, None))
+                    .fold(0.0, f32::max)
+            };
+            let gutter = 18.0 + digits as f32 * digit_width + 4.0;
             let named = effective_style
                 .control_padding_x
                 .map(|padding| padding.resolve(world.theme_metrics()))

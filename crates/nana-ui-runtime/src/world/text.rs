@@ -1842,11 +1842,13 @@ fn derive_diagnostic_decorations(
     let mut labels = Vec::new();
     let mut lines: Vec<_> = winners.into_iter().collect();
     lines.sort_by_key(|(line, _)| *line);
+    let engine = shaper.text_engine();
+    let measure = crate::text_width::ChromeTextMeasure::new(engine.as_ref(), Some(style));
     for (_, winner) in lines {
         let end = line_end_offset(&source.text.value, winner.offset);
         let (x, y, height) =
             shaper.text_position(id, &source.text, end, style, presentation_constraints);
-        let width = (font_size * 0.55 * winner.message.chars().count() as f32).max(1.0);
+        let width = measure.width(&winner.message, font_size, None).max(1.0);
         let rect = LayoutBox {
             x: x + DIAGNOSTIC_LABEL_GAP,
             y,
@@ -2931,14 +2933,15 @@ pub(super) fn signature_popup_geometry(
     viewport: LayoutBox,
     font_size: f32,
     palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> Option<crate::TextSignaturePopup> {
     const H_PAD: f32 = 10.0;
     const V_PAD: f32 = 6.0;
     const GAP: f32 = 4.0;
     const MAX_WIDTH: f32 = 420.0;
+    const ACTIVE_WEIGHT: u16 = 600;
     let line_height = anchor.line_height.max(1.0);
-    let em = font_size.max(1.0) * 0.55;
-    let measure = |value: &str| (value.chars().count() as f32 * em).max(1.0);
+    let measure = |value: &str, weight| measure.width(value, font_size, weight).max(1.0);
     let names: Vec<&str> = help.params.iter().map(|(name, _)| name.as_str()).collect();
     let active = help.active_index.min(names.len().saturating_sub(1));
     let prefix = if names.is_empty() {
@@ -2973,13 +2976,13 @@ pub(super) fn signature_popup_geometry(
             (!doc.is_empty()).then_some(doc)
         })
         .map(|doc| doc.lines().next().unwrap_or(doc).to_owned());
-    let prefix_w = measure(&prefix);
+    let prefix_w = measure(&prefix, None);
     let active_w = if active_name.is_empty() {
         0.0
     } else {
-        measure(active_name)
+        measure(active_name, Some(ACTIVE_WEIGHT))
     };
-    let suffix_w = measure(&suffix);
+    let suffix_w = measure(&suffix, None);
     let content_w = (prefix_w + active_w + suffix_w).clamp(1.0, MAX_WIDTH - H_PAD * 2.0);
     let panel = anchored_overlay_panel(
         anchor,
@@ -3032,7 +3035,7 @@ pub(super) fn signature_popup_geometry(
             active_w.min(remaining),
             active_name,
             palette.accent.as_rgba_array(),
-            Some(600),
+            Some(ACTIVE_WEIGHT),
         )
     });
     if let Some(active) = &active_region {
@@ -4001,6 +4004,9 @@ impl UiWorld {
     /// fonts.
     fn observe_text_backend(&mut self, epoch: TextBackendEpoch) {
         let previous = self.text_backend.replace(epoch);
+        if previous != Some(epoch) {
+            self.text_backend_changed = true;
+        }
         if previous.is_none_or(|previous| previous == epoch) {
             return;
         }

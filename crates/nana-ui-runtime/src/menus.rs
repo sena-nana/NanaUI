@@ -650,22 +650,6 @@ impl crate::ComponentView for ContextMenu {
 /// Hint text renders at a fixed compact size regardless of control size.
 const HINT_TEXT_SIZE: f32 = nana_ui_core::type_scale::HINT;
 
-/// Rough text advance estimate: ASCII glyphs are narrow, every other script
-/// gets a full em. Mirrors `world.rs`'s classifier so hint regions can size
-/// themselves without clipping or overflowing.
-pub(crate) fn estimated_text_width(text: &str, font_size: f32) -> f32 {
-    text.chars()
-        .map(|ch| {
-            if ch.is_ascii() {
-                font_size * 0.62
-            } else {
-                font_size
-            }
-        })
-        .sum::<f32>()
-        .max(font_size)
-}
-
 pub(crate) fn action_menu_item_geometry(
     bounds: LayoutBox,
     label: &Arc<str>,
@@ -677,6 +661,7 @@ pub(crate) fn action_menu_item_geometry(
     style: &ComputedStyle,
     palette: &SemanticPalette,
     metrics: ThemeMetrics,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> ComponentGeometry {
     let pad = size.padding_x_in(metrics);
     let icon_color = if disabled {
@@ -688,7 +673,7 @@ pub(crate) fn action_menu_item_geometry(
     };
     let (cursor, icon) = menu_option_icon(bounds, icon, size, icon_color, metrics);
     let hint_width = hint
-        .map(|hint| estimated_text_width(hint, HINT_TEXT_SIZE))
+        .map(|hint| measure.width(hint, HINT_TEXT_SIZE, None))
         .unwrap_or(0.0);
     let hint_gap = if hint.is_some() { ICON_GAP } else { 0.0 };
     let label_right = bounds.x + bounds.width - pad - hint_width - hint_gap;
@@ -1305,16 +1290,6 @@ mod tests {
     }
 
     #[test]
-    fn hint_width_estimate_classifies_ascii_and_cjk_glyphs() {
-        let ascii = estimated_text_width("Shortcut", HINT_TEXT_SIZE);
-        let cjk = estimated_text_width("复制", HINT_TEXT_SIZE);
-        // 8 ASCII glyphs at 11px ≈ 8 × 0.62 × 11 = 54.56px.
-        assert!((ascii - 54.56).abs() < 0.5, "ascii estimate {ascii}");
-        // 2 CJK glyphs at 11px ≈ 22px, not inflated by UTF-8 byte counts.
-        assert!((cjk - 22.0).abs() < 0.5, "cjk estimate {cjk}");
-    }
-
-    #[test]
     fn hint_region_keeps_its_end_edge_and_stays_clear_of_the_label() {
         let bounds = LayoutBox {
             x: 40.0,
@@ -1335,6 +1310,7 @@ mod tests {
             &style,
             &palette,
             nana_ui_core::UI_METRICS,
+            crate::text_width::ChromeTextMeasure::ESTIMATE,
         ) {
             ComponentGeometry::ActionMenuItem { label, hint, .. } => {
                 (label, hint.expect("hint region"))
@@ -1345,7 +1321,8 @@ mod tests {
         let (long_label, long_hint) = geometry(&Arc::from("Ctrl+Shift+P"));
 
         for (label, hint) in [(&short_label, &short_hint), (&long_label, &long_hint)] {
-            let hint_width = estimated_text_width(hint.content.as_ref(), HINT_TEXT_SIZE);
+            let hint_width =
+                crate::text_width::estimated_text_width(hint.content.as_ref(), HINT_TEXT_SIZE);
             assert!((hint.bounds.width - hint_width).abs() < 0.5);
             // End edge stays pinned to the trailing padding edge.
             let hint_end = hint.bounds.x + hint.bounds.width;

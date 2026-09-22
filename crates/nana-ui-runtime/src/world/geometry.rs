@@ -52,6 +52,7 @@ pub(super) fn key_capture_geometry(
     content: LayoutBox,
     recording: bool,
     style_model: StyleModelRef,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentGeometry {
     let palette = style_model;
     let label: Arc<str> = if recording {
@@ -60,7 +61,7 @@ pub(super) fn key_capture_geometry(
         Arc::from("Idle")
     };
     crate::ComponentGeometry::KeyCaptureLayer {
-        badge: key_badge_region(content, &label, !recording, style_model),
+        badge: key_badge_region(content, &label, !recording, style_model, measure),
         background: Some(if recording {
             palette.color(SemanticColorRole::AccentSoft).as_rgba_array()
         } else {
@@ -72,9 +73,10 @@ pub(super) fn key_capture_geometry(
 pub(super) fn keymap_geometry(
     content: LayoutBox,
     style_model: StyleModelRef,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentGeometry {
     crate::ComponentGeometry::KeymapLayer {
-        badge: key_badge_region(content, "Keymap", false, style_model),
+        badge: key_badge_region(content, "Keymap", false, style_model, measure),
     }
 }
 
@@ -83,6 +85,7 @@ pub(super) fn key_badge_region(
     label: &str,
     muted: bool,
     palette: StyleModelRef,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentTextRegion {
     let metrics = palette.metrics;
     let height = nana_ui_core::ControlSize::Small.height_in(metrics);
@@ -91,11 +94,12 @@ pub(super) fn key_badge_region(
     // as a key cap rather than as a letter with a box round it.
     const MIN_WIDTH: f32 = nana_ui_core::space::XXXL * 4.0;
     let font_size = nana_ui_core::type_scale::META;
+    const FONT_WEIGHT: u16 = 600;
     crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: origin.x,
             y: origin.y,
-            width: (estimated_text_width(label, font_size) + PAD * 2.0).max(MIN_WIDTH),
+            width: (measure.width(label, font_size, Some(FONT_WEIGHT)) + PAD * 2.0).max(MIN_WIDTH),
             height: height.min(origin.height.max(height)),
         },
         content: Arc::from(label),
@@ -105,21 +109,8 @@ pub(super) fn key_badge_region(
             palette.color(SemanticColorRole::Text).as_rgba_array()
         }),
         font_size,
-        font_weight: Some(600),
+        font_weight: Some(FONT_WEIGHT),
     }
-}
-
-pub(super) fn estimated_text_width(text: &str, font_size: f32) -> f32 {
-    text.chars()
-        .map(|ch| {
-            if ch.is_ascii() {
-                font_size * 0.62
-            } else {
-                font_size
-            }
-        })
-        .sum::<f32>()
-        .max(font_size)
 }
 
 #[cfg(feature = "charts")]
@@ -1135,6 +1126,7 @@ impl UiWorld {
                                     bounds,
                                     size.text_size(),
                                     &self.style_model.palette,
+                                    self.chrome_text_measure(id),
                                 )
                             })
                         } else {
@@ -1637,7 +1629,7 @@ impl UiWorld {
                     width: (fallback_right - fallback_x).max(0.0),
                     height: content.height,
                 });
-                // 单行 detail：小字号 muted 文本右对齐；label 估宽避让，
+                // 单行 detail：小字号 muted 文本右对齐；label 测宽避让，
                 // 放不下时 detail 占剩余宽度、超出交给省略号（与 LabeledValue
                 // 的值侧同款规则）。
                 let detail_region =
@@ -1648,9 +1640,13 @@ impl UiWorld {
                             let label_size = style.font_size;
                             let detail_size = (label_size - 1.0).max(10.0);
                             let gap = nana_ui_core::space::MD;
-                            let label_natural =
-                                estimated_text_width(self.text(id).unwrap_or_default(), label_size);
-                            let detail_natural = estimated_text_width(&detail, detail_size);
+                            let measure = self.chrome_text_measure(id);
+                            let label_natural = measure.width(
+                                self.text(id).unwrap_or_default(),
+                                label_size,
+                                style.font_weight,
+                            );
+                            let detail_natural = measure.width(&detail, detail_size, None);
                             let min_detail_visible = nana_ui_core::space::XXXL;
                             let detail_width =
                                 if label_natural + gap + detail_natural <= label_rect.width {
@@ -1910,13 +1906,14 @@ impl UiWorld {
                 let value_size = nana_ui_core::type_scale::META;
                 let label_height = (label_size * 1.2).min(bounds.height.max(label_size));
                 let value_height = (value_size * 1.2).min(bounds.height.max(value_size));
-                // 属性名按自身文本估宽保底,不再压缩到字号常数;两侧都放得下时各取自然宽度。
+                // 属性名按自身文本测宽保底,不再压缩到字号常数;两侧都放得下时各取自然宽度。
+                let measure = self.chrome_text_measure(id);
                 let label_natural = if label.is_empty() {
                     0.0
                 } else {
-                    estimated_text_width(label, label_size)
+                    measure.width(label, label_size, None)
                 };
-                let value_natural = estimated_text_width(value, value_size);
+                let value_natural = measure.width(value, value_size, Some(*value_weight));
                 let min_value_visible = nana_ui_core::space::XXXL;
                 // 放不下时值侧占满剩余宽度,超出部分由文本图元的省略号收尾;
                 // 仅属性名自身就放不下(剩余为负)才回退最小可见宽度。
@@ -2333,6 +2330,7 @@ impl UiWorld {
                 style,
                 &self.style_model.palette,
                 self.style_model.metrics,
+                self.chrome_text_measure(id),
             )),
             StandardVisual::TreeView { rows, size } => Some(crate::tree_view::tree_view_geometry(
                 bounds,
@@ -2356,6 +2354,7 @@ impl UiWorld {
                 rows,
                 &self.style_model.palette,
                 self.style_model.metrics,
+                self.chrome_text_measure(id),
             )),
             StandardVisual::QrCode { modules, width } => {
                 let (module_size, (ox, oy)) = crate::qr_code::module_geometry(bounds, *width);
@@ -2407,6 +2406,7 @@ impl UiWorld {
                 active_title.as_deref(),
                 self.style_model.theme_mode,
                 &self.style_model.palette,
+                self.chrome_text_measure(id),
             )),
             #[cfg(feature = "charts")]
             StandardVisual::DonutChart {
@@ -2449,6 +2449,7 @@ impl UiWorld {
                 *active,
                 &self.style_model.palette,
                 self.style_model.opacity,
+                self.chrome_text_measure(id),
             )),
             #[cfg(feature = "charts")]
             StandardVisual::TimeSeriesChart { values } => Some(time_series_geometry(
@@ -2592,10 +2593,17 @@ impl UiWorld {
                 &self.style_model.palette,
                 self.style_model.metrics,
             )),
-            StandardVisual::KeyCaptureLayer { recording } => {
-                Some(key_capture_geometry(content, *recording, self.style_model))
-            }
-            StandardVisual::KeymapLayer => Some(keymap_geometry(content, self.style_model)),
+            StandardVisual::KeyCaptureLayer { recording } => Some(key_capture_geometry(
+                content,
+                *recording,
+                self.style_model,
+                self.chrome_text_measure(id),
+            )),
+            StandardVisual::KeymapLayer => Some(keymap_geometry(
+                content,
+                self.style_model,
+                self.chrome_text_measure(id),
+            )),
             _ => None,
         }
     }

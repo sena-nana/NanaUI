@@ -13,6 +13,7 @@ pub(in crate::world) fn calendar_heatmap_geometry(
     active_title: Option<&str>,
     mode: ThemeMode,
     palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentGeometry {
     let painted = cells
         .iter()
@@ -50,6 +51,7 @@ pub(in crate::world) fn calendar_heatmap_geometry(
             nana_ui_core::type_scale::HINT,
             true,
             palette,
+            measure,
         )
     }));
     labels.extend(day_labels.iter().map(|label| {
@@ -61,10 +63,18 @@ pub(in crate::world) fn calendar_heatmap_geometry(
             nana_ui_core::type_scale::HINT,
             false,
             palette,
+            measure,
         )
     }));
     let hover = active.and_then(|index| cells.get(index)).map(|cell| {
-        calendar_hover_chrome(bounds, cell, cell_size, active_title.unwrap_or(""), palette)
+        calendar_hover_chrome(
+            bounds,
+            cell,
+            cell_size,
+            active_title.unwrap_or(""),
+            palette,
+            measure,
+        )
     });
     crate::ComponentGeometry::CalendarHeatmap {
         cells: painted,
@@ -79,13 +89,14 @@ pub(in crate::world) fn calendar_hover_chrome(
     cell_size: f32,
     title: &str,
     palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::CalendarHoverGeometry {
     let pad_x = TooltipConfig::PADDING_X;
     let pad_y = TooltipConfig::PADDING_Y;
     let font_size = TooltipConfig::FONT_SIZE;
     let gap = TooltipConfig::default().gap;
     let max_width = TooltipConfig::default().max_width;
-    let text_width = estimated_text_width(title, font_size);
+    let text_width = measure.width(title, font_size, None);
     let tooltip_width = (text_width + pad_x * 2.0).clamp(font_size + pad_x * 2.0, max_width);
     let tooltip_height = font_size + pad_y * 2.0;
     let ring = LayoutBox {
@@ -139,8 +150,9 @@ pub(in crate::world) fn axis_label_region(
     font_size: f32,
     center: bool,
     palette: &SemanticPalette,
+    measure: crate::text_width::ChromeTextMeasure<'_>,
 ) -> crate::ComponentTextRegion {
-    let width = estimated_text_width(text, font_size) + nana_ui_core::space::XXS;
+    let width = measure.width(text, font_size, None) + nana_ui_core::space::XXS;
     crate::ComponentTextRegion {
         bounds: LayoutBox {
             x: bounds.x + x - if center { width * 0.5 } else { 0.0 },

@@ -103,6 +103,7 @@ mod text_layout_cache;
 mod text_node;
 #[cfg(any(test, feature = "benchmark"))]
 pub mod text_shape_stats;
+mod text_width;
 mod thumbnail;
 mod toast;
 mod tree_view;

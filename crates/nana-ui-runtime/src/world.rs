@@ -596,6 +596,10 @@ pub struct UiWorld {
     /// The backend plain text last resolved against. A different one on a
     /// later pass means every resolved text node is stale.
     text_backend: Option<crate::text_node::TextBackendEpoch>,
+    /// Whether `text_backend` changed — its first install included —
+    /// since the framework last asked, for geometry a component spends at
+    /// projection time from a measurement.
+    text_backend_changed: bool,
     /// Text work of the last pass, or of the last frame that ran one.
     text_work: nana_text::TextWorkCounters,
     /// Text work of the frame being accumulated.
@@ -756,6 +760,7 @@ impl UiWorld {
             text_layout_cache: crate::text_layout_cache::TextLayoutCache::default(),
             glyph_cache: crate::GlyphCache::default(),
             text_backend: None,
+            text_backend_changed: false,
             text_work: nana_text::TextWorkCounters::default(),
             text_frame_work: nana_text::TextWorkCounters::default(),
             pending_edit_work: nana_text::TextWorkCounters::default(),
@@ -1414,6 +1419,23 @@ impl UiWorld {
 
     pub fn computed_style(&self, id: StableNodeId) -> Option<&ComputedStyle> {
         self.nodes.get(id).map(|node| node.resolved.0.as_ref())
+    }
+
+    /// Whether the text backend changed since the last call, and clears it.
+    pub(crate) fn take_text_backend_changed(&mut self) -> bool {
+        std::mem::take(&mut self.text_backend_changed)
+    }
+
+    /// Measures chrome text painted on `id` through the engine that shaped
+    /// this world, or by estimate before any engine has.
+    pub(crate) fn chrome_text_measure(
+        &self,
+        id: StableNodeId,
+    ) -> crate::text_width::ChromeTextMeasure<'_> {
+        crate::text_width::ChromeTextMeasure::new(
+            self.paint_text_engine.as_ref(),
+            self.computed_style(id),
+        )
     }
 
     /// Whether a mounted node is visible through every retained overlay branch.

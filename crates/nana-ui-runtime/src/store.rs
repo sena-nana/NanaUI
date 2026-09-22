@@ -527,14 +527,7 @@ impl NodeStore {
         let measuring = self
             .visuals
             .iter()
-            .filter(|(_, visual)| {
-                matches!(
-                    visual,
-                    StandardVisual::EmptyState { .. }
-                        | StandardVisual::ModalFrame { .. }
-                        | StandardVisual::TextInput { .. }
-                )
-            })
+            .filter(|(_, visual)| measures_text_each_pass(visual))
             .map(|(id, _)| *id);
         resolved.chain(measuring)
     }
@@ -563,6 +556,27 @@ impl NodeStore {
             .filter(|(_, state)| state.diagnostic)
             .map(|(id, _)| *id)
             .collect()
+    }
+}
+
+/// Visuals that measure text of their own every pass — intrinsic text, or
+/// chrome sized to the text painted into it — and so are never stamped.
+fn measures_text_each_pass(visual: &StandardVisual) -> bool {
+    match visual {
+        StandardVisual::EmptyState { .. }
+        | StandardVisual::ModalFrame { .. }
+        | StandardVisual::TextInput { .. }
+        | StandardVisual::KeyCaptureLayer { .. }
+        | StandardVisual::KeymapLayer
+        | StandardVisual::ListItem { .. }
+        | StandardVisual::LabeledValue { .. }
+        | StandardVisual::ActionMenuItem { .. }
+        | StandardVisual::CommandPalette { .. } => true,
+        #[cfg(feature = "calendar")]
+        StandardVisual::CalendarHeatmap { .. } => true,
+        #[cfg(feature = "charts")]
+        StandardVisual::StackedTimeSeriesChart { .. } => true,
+        _ => false,
     }
 }
 
