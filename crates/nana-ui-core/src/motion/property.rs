@@ -21,7 +21,7 @@ pub enum AnimationClass {
 
 /// Properties the Motion IR can address. CSS names resolve through
 /// [`AnimatableProperty::from_css_name`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AnimatableProperty {
     Transform,
     Opacity,
@@ -37,7 +37,11 @@ pub enum AnimatableProperty {
     Padding,
     Margin,
     FontSize,
-    FontAxis,
+    /// One `font-variation-settings` axis, by its OpenType tag. A CSS
+    /// `font-variation-settings` value is a list, so it compiles to one track
+    /// per axis; there is no track for "the axes" as a whole, and an axis is
+    /// never folded onto `wght`.
+    FontAxis([u8; 4]),
     Display,
     /// Unit progress `0..=1`. Runtime `AnimationSpec` samples this until a
     /// property-classified track is compiled.
@@ -61,7 +65,7 @@ impl AnimatableProperty {
             Self::Padding => "padding",
             Self::Margin => "margin",
             Self::FontSize => "font-size",
-            Self::FontAxis => "font-variation-settings",
+            Self::FontAxis(_) => "font-variation-settings",
             Self::Display => "display",
             Self::Progress => "progress",
         }
@@ -85,11 +89,15 @@ impl AnimatableProperty {
             | Self::Padding
             | Self::Margin
             | Self::FontSize
-            | Self::FontAxis => AnimationClass::Layout,
+            | Self::FontAxis(_) => AnimationClass::Layout,
             Self::Display => AnimationClass::Discrete,
         }
     }
 
+    /// `font-variation-settings` resolves to nothing here: the name does not
+    /// say which axis, and a track is always one axis
+    /// ([`Self::FontAxis`]). Its class is [`AnimationClass::Layout`] all the
+    /// same; see [`classify_animatable_property`].
     pub fn from_css_name(name: &str) -> Option<Self> {
         let n = name.trim().to_ascii_lowercase();
         Some(match n.as_str() {
@@ -109,7 +117,6 @@ impl AnimatableProperty {
             "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
             | "margin-inline" | "margin-block" => Self::Margin,
             "font-size" => Self::FontSize,
-            "font-variation-settings" | "font-axis" => Self::FontAxis,
             "display" => Self::Display,
             "progress" => Self::Progress,
             _ => return None,
@@ -120,6 +127,15 @@ impl AnimatableProperty {
     /// not the wording of this string.
     pub fn diagnostic_hint(self) -> String {
         let name = self.css_name();
+        if let Self::FontAxis(tag) = self {
+            // A glyph variation has no compositor equivalent: scaling the old
+            // outlines is not the new instance, so there is no transform to
+            // suggest.
+            return format!(
+                "Animating `{name}` axis `{}` reshapes, re-lays-out and re-rasterizes the text on every sample.",
+                String::from_utf8_lossy(&tag)
+            );
+        }
         match self.animation_class() {
             AnimationClass::Layout => format!(
                 "Animating `{name}` requires layout on every sample. Consider a presentation transform / FLIP transition if visual scaling is sufficient."
@@ -137,10 +153,32 @@ impl AnimatableProperty {
     }
 }
 
+impl std::fmt::Display for AnimatableProperty {
+    /// The CSS name, and for a font axis the axis as well:
+    /// `font-variation-settings "wdth"`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FontAxis(tag) => write!(
+                f,
+                "{} \"{}\"",
+                self.css_name(),
+                String::from_utf8_lossy(tag)
+            ),
+            _ => f.write_str(self.css_name()),
+        }
+    }
+}
+
 /// Registry lookup: CSS name → property + class.
 pub fn classify_animatable_property(name: &str) -> Option<(AnimatableProperty, AnimationClass)> {
     let property = AnimatableProperty::from_css_name(name)?;
     Some((property, property.animation_class()))
+}
+
+/// Whether `name` is `font-variation-settings`, which compiles to one
+/// [`AnimatableProperty::FontAxis`] track per axis.
+pub fn is_font_variation_settings(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("font-variation-settings")
 }
 
 /// Captured First / Last box. Origin and size match Runtime layout boxes.
@@ -205,7 +243,6 @@ mod tests {
             ("padding", AnimationClass::Layout),
             ("margin", AnimationClass::Layout),
             ("font-size", AnimationClass::Layout),
-            ("font-variation-settings", AnimationClass::Layout),
             ("display", AnimationClass::Discrete),
         ];
         for (name, class) in cases {
@@ -213,6 +250,30 @@ mod tests {
             assert_eq!(got, class, "{name}");
             assert_eq!(property.animation_class(), class);
         }
+    }
+
+    /// A font axis is text work (shape, layout, raster), never a compositor
+    /// property, whatever the axis — and the property name alone names no
+    /// axis, so it is not one track.
+    #[test]
+    fn font_axes_are_layout_class_per_axis_tracks() {
+        assert_eq!(
+            classify_animatable_property("font-variation-settings"),
+            None
+        );
+        for tag in [*b"wght", *b"wdth", *b"BEVL", *b"opsz"] {
+            let axis = AnimatableProperty::FontAxis(tag);
+            assert_eq!(axis.animation_class(), AnimationClass::Layout);
+            assert_eq!(axis.css_name(), "font-variation-settings");
+        }
+        assert_ne!(
+            AnimatableProperty::FontAxis(*b"wght"),
+            AnimatableProperty::FontAxis(*b"BEVL")
+        );
+        assert_eq!(
+            AnimatableProperty::FontAxis(*b"BEVL").to_string(),
+            "font-variation-settings \"BEVL\""
+        );
     }
 
     #[test]

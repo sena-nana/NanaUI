@@ -503,6 +503,9 @@ pub struct UnsupportedCssReport {
     pub writing_modes: usize,
     /// Nodes with a malformed `font-variation-settings` declaration.
     pub font_variations: usize,
+    /// Nodes whose `font-variation-settings` transition or animation moves an
+    /// axis no face of their text has: it runs, and changes nothing.
+    pub font_axis_animations: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

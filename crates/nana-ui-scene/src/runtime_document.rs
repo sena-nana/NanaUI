@@ -264,7 +264,11 @@ impl RuntimeDocument {
             let presentation = world.presentation_store();
             let descriptors = world.motion_descriptors();
             let now = world.animation_now();
-            if !presentation.is_empty() || self.scene.compositor_needs_tick() {
+            // Font-axis overlays are the style's, read when it resolves; only
+            // compositor ones are the scene's to present.
+            if presentation.has_class(nana_ui_core::motion::AnimationClass::Compositor)
+                || self.scene.compositor_needs_tick()
+            {
                 // `context` and `scene` are disjoint: bind compositor overlays
                 // from the live stores. Cloning the descriptor slab would copy
                 // Occupied boxes / keyframes every compositor-only frame.

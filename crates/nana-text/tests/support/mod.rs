@@ -69,6 +69,7 @@ pub fn run(
             line_gap_px: 0.0,
         },
         instance: None,
+        ignored_axes: Vec::new(),
     }
 }
 

@@ -6,10 +6,14 @@
 //!
 //! ## Same-property composition
 //!
-//! For one `(target, property)`, the winning overlay is the applying track with
-//! the latest [`crate::motion::MotionTiming::start`]. Equal starts: higher
+//! For one `(target, property)`, the winning overlay is the applying track in
+//! the highest [`MotionLayer`], then with the latest
+//! [`crate::motion::MotionTiming::start`]. Equal starts: higher
 //! [`crate::motion::MotionTrackId`] wins. Tracks with `applies = false` are
 //! skipped. Values are never blended.
+//!
+//! A track stays here after it finishes only when it fills forwards; that
+//! *hold* lasts until the same id runs again or its owner stops it.
 
 use std::{collections::HashMap, time::Duration};
 
@@ -21,12 +25,27 @@ use super::{
     track_completion_deadline,
 };
 
+/// The authoring layer a track belongs to. Between tracks that animate one
+/// property at once, a higher layer wins, as the CSS cascade puts transitions
+/// above animations; start time only decides within a layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum MotionLayer {
+    /// A CSS `@keyframes` animation.
+    CssAnimation,
+    /// Component and application motion.
+    #[default]
+    Runtime,
+    /// A CSS transition.
+    CssTransition,
+}
+
 /// One overlay record. `logical` is the UiWorld target captured at
 /// start/retarget; presentation is always `evaluate_track` at the query time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresentationOverlay {
     pub track: MotionTrack,
     pub logical: MotionValue,
+    pub layer: MotionLayer,
 }
 
 /// Overlay of Motion tracks in the same id space as Runtime `AnimationId`.
@@ -34,6 +53,9 @@ pub struct PresentationOverlay {
 pub struct PresentationStore {
     tracks: HashMap<MotionTrackId, PresentationOverlay>,
     by_property: HashMap<(MotionTargetId, AnimatableProperty), Vec<MotionTrackId>>,
+    /// Properties with overlays, by target: what [`Self::properties_of`] and
+    /// [`Self::remove_target`] read instead of scanning every track.
+    by_target: HashMap<MotionTargetId, Vec<AnimatableProperty>>,
 }
 
 impl PresentationStore {
@@ -58,12 +80,25 @@ impl PresentationStore {
     }
 
     pub fn insert(&mut self, track: MotionTrack, logical: MotionValue) {
+        self.insert_in_layer(track, logical, MotionLayer::Runtime);
+    }
+
+    pub fn insert_in_layer(
+        &mut self,
+        track: MotionTrack,
+        logical: MotionValue,
+        layer: MotionLayer,
+    ) {
         let id = track.id;
         let key = (track.target, track.property);
-        if let Some(previous) = self
-            .tracks
-            .insert(id, PresentationOverlay { track, logical })
-        {
+        if let Some(previous) = self.tracks.insert(
+            id,
+            PresentationOverlay {
+                track,
+                logical,
+                layer,
+            },
+        ) {
             let old_key = (previous.track.target, previous.track.property);
             if old_key != key {
                 self.unindex(old_key, id);
@@ -82,12 +117,39 @@ impl PresentationStore {
 
     pub fn remove_target(&mut self, target: MotionTargetId) -> Vec<PresentationOverlay> {
         let ids = self
-            .tracks
-            .values()
-            .filter(|overlay| overlay.track.target == target)
-            .map(|overlay| overlay.track.id)
+            .properties_of(target)
+            .flat_map(|property| self.track_ids(target, property))
             .collect::<Vec<_>>();
         ids.into_iter().filter_map(|id| self.remove(id)).collect()
+    }
+
+    /// Overlay ids on `(target, property)`. Does not evaluate.
+    pub fn track_ids(
+        &self,
+        target: MotionTargetId,
+        property: AnimatableProperty,
+    ) -> impl Iterator<Item = MotionTrackId> + '_ {
+        self.by_property
+            .get(&(target, property))
+            .into_iter()
+            .flatten()
+            .copied()
+    }
+
+    /// Whether any overlay is of `class`. Scans the (target, property) keys,
+    /// not the tracks.
+    pub fn has_class(&self, class: super::property::AnimationClass) -> bool {
+        self.by_property
+            .keys()
+            .any(|(_, property)| property.animation_class() == class)
+    }
+
+    /// Properties `target` has overlays for. Does not evaluate.
+    pub fn properties_of(
+        &self,
+        target: MotionTargetId,
+    ) -> impl Iterator<Item = AnimatableProperty> + '_ {
+        self.by_target.get(&target).into_iter().flatten().copied()
     }
 
     /// Winning applying sample for `(target, property)` at `now`.
@@ -172,7 +234,7 @@ impl PresentationStore {
         now: Duration,
     ) -> Option<MotionTrackId> {
         let ids = self.by_property.get(&(target, property))?;
-        let mut best: Option<(Duration, MotionTrackId)> = None;
+        let mut best: Option<(MotionLayer, Duration, MotionTrackId)> = None;
         for id in ids {
             let Some(overlay) = self.tracks.get(id) else {
                 continue;
@@ -181,24 +243,22 @@ impl PresentationStore {
             if sample.applied_value().is_none() {
                 continue;
             }
-            let start = overlay.track.timing.start;
-            let better = match best {
-                None => true,
-                Some((best_start, best_id)) => {
-                    start > best_start || (start == best_start && *id > best_id)
-                }
-            };
-            if better {
-                best = Some((start, *id));
+            let rank = (overlay.layer, overlay.track.timing.start, *id);
+            if best.is_none_or(|best| rank > best) {
+                best = Some(rank);
             }
         }
-        best.map(|(_, id)| id)
+        best.map(|(_, _, id)| id)
     }
 
     fn index(&mut self, key: (MotionTargetId, AnimatableProperty), id: MotionTrackId) {
         let list = self.by_property.entry(key).or_default();
         if !list.contains(&id) {
             list.push(id);
+        }
+        let properties = self.by_target.entry(key.0).or_default();
+        if !properties.contains(&key.1) {
+            properties.push(key.1);
         }
     }
 
@@ -209,6 +269,12 @@ impl PresentationStore {
         list.retain(|existing| *existing != id);
         if list.is_empty() {
             self.by_property.remove(&key);
+            if let Some(properties) = self.by_target.get_mut(&key.0) {
+                properties.retain(|property| *property != key.1);
+                if properties.is_empty() {
+                    self.by_target.remove(&key.0);
+                }
+            }
         }
     }
 }
@@ -345,5 +411,37 @@ mod tests {
         store.insert(opacity_track(1, 0, 100, 0.0, 1.0), MotionValue::Scalar(1.0));
         assert!(store.retains_unmounted(target(1), Duration::from_millis(40)));
         assert!(!store.retains_unmounted(target(1), Duration::from_millis(100)));
+    }
+
+    /// A CSS transition wins over a CSS animation on the same property even
+    /// when the animation started later: layers first, then start.
+    #[test]
+    fn a_higher_layer_wins_before_start_time_does() {
+        let mut store = PresentationStore::new();
+        store.insert_in_layer(
+            opacity_track(1, 0, 100, 0.0, 1.0),
+            MotionValue::Scalar(1.0),
+            MotionLayer::CssTransition,
+        );
+        store.insert_in_layer(
+            opacity_track(2, 20, 100, 1.0, 0.0),
+            MotionValue::Scalar(1.0),
+            MotionLayer::CssAnimation,
+        );
+        assert_eq!(
+            store.winning_track_id(
+                target(1),
+                AnimatableProperty::Opacity,
+                Duration::from_millis(50)
+            ),
+            Some(id(1))
+        );
+        assert_eq!(
+            store.properties_of(target(1)).collect::<Vec<_>>(),
+            vec![AnimatableProperty::Opacity]
+        );
+        store.remove_target(target(1));
+        assert!(store.is_empty());
+        assert_eq!(store.properties_of(target(1)).count(), 0);
     }
 }

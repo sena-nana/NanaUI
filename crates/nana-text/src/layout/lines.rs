@@ -798,6 +798,7 @@ impl<'a> Builder<'a> {
             origin_x_px: 0.0,
             metrics: run.metrics,
             instance: run.instance.clone(),
+            ignored_axes: run.ignored_axes.clone(),
         }
     }
 

@@ -56,7 +56,7 @@ NanaUI 的默认外观是给桌面产品用的：深色和浅色、紧凑、弱�
 
 ## 运动与浮层
 
-Runtime 侧栏折叠 260ms，分组展开 260ms，EaseInOutCubic。只有动画在跑时才要帧；反向从当前进度接着走。Vue 路径的 `@keyframes` 编译进同一条 Motion IR：`opacity` / `transform` 走 compositor overlay，`color` / `filter` 走 Paint-class CPU，都不是布局条件；`width` / `height` 仍是 Layout-class。
+Runtime 侧栏折叠 260ms，分组展开 260ms，EaseInOutCubic。只有动画在跑时才要帧；反向从当前进度接着走。Vue 路径的 `@keyframes` 编译进同一条 Motion IR：`opacity` / `transform` 走 compositor overlay，`color` / `filter` 走 Paint-class CPU，都不是布局条件；`width` / `height` 仍是 Layout-class；`font-variation-settings` 按轴编译成 Layout-class track，每一帧都是真实的字形变体（重新 shaping 与栅格），不是缩放。
 
 菜单默认和触发它的控件起始边对齐，靠近窗口边缘时由控件收回来，应用不要算坐标。
 

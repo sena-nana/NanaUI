@@ -43,6 +43,7 @@ impl UiWorld {
             };
             if sample.finished {
                 self.animations.remove(&id);
+                self.untrack_layout_length(sample.target, id);
                 if !fill_forwards {
                     self.unbind_presentation(id.track_id());
                 }
@@ -164,6 +165,18 @@ impl UiWorld {
         self.animations.contains_key(&id)
     }
 
+    /// Whether `id` finished but still holds its property, because it fills
+    /// forwards. It holds until the same id runs again or its owner stops it
+    /// ([`crate::MutationQueue::stop_animation`]).
+    pub fn animation_is_held(&self, id: AnimationId) -> bool {
+        !self.animations.contains_key(&id) && self.presentation.get(id.track_id()).is_some()
+    }
+
+    /// Running, or finished and still holding: stopping it changes something.
+    pub fn animation_is_live(&self, id: AnimationId) -> bool {
+        self.animations.contains_key(&id) || self.presentation.get(id.track_id()).is_some()
+    }
+
     pub(crate) fn animation_timing_start(&self, id: AnimationId) -> Option<Duration> {
         self.animations
             .get(&id)
@@ -229,6 +242,16 @@ impl UiWorld {
     pub(super) fn install_animation(&mut self, spec: AnimationSpec) {
         let spec = self.apply_retarget(spec);
         let id = spec.id;
+        // The same id may come back on another node or property; its old
+        // index entry must not keep answering for that node.
+        if let Some(previous) = self.animations.get(&id).map(|active| active.spec.target) {
+            self.untrack_layout_length(previous, id);
+        }
+        if is_layout_length(spec.property) {
+            let tracks = self.layout_length_tracks.entry(spec.target).or_default();
+            tracks.retain(|track| *track != id);
+            tracks.push(id);
+        }
         let active = crate::animation::ActiveAnimation::new(spec.clone());
         let deadline = active.next_deadline;
         if let Some(previous) = self.animations.insert(id, active) {
@@ -251,9 +274,11 @@ impl UiWorld {
 
     pub(super) fn cancel_animation(&mut self, id: AnimationId) -> bool {
         let Some(animation) = self.animations.remove(&id) else {
+            // A finished run's hold, if it left one.
             self.unbind_presentation(id.track_id());
             return false;
         };
+        self.untrack_layout_length(animation.spec.target, id);
         self.animation_deadlines
             .remove(&(animation.next_deadline, id));
         self.unbind_presentation(id.track_id());
@@ -269,13 +294,14 @@ impl UiWorld {
         let Some(animation) = self.animations.remove(&id) else {
             return false;
         };
+        self.untrack_layout_length(animation.spec.target, id);
         self.animation_deadlines
             .remove(&(animation.next_deadline, id));
         let now = self.animation_now;
         let mut spec = animation.spec;
-        snap_spec_to_completion(&mut spec, now);
         let fill_forwards = spec.playback.fill_mode.applies_forwards();
-        if fill_forwards && spec.uses_presentation_overlay() {
+        snap_spec_to_completion(&mut spec, now);
+        if fill_forwards && spec.has_overlay() {
             self.install_presentation_overlay(&spec);
         } else {
             self.unbind_presentation(id.track_id());
@@ -393,6 +419,8 @@ impl UiWorld {
         if let Some(target) = MotionTargetId::new(spec.target.get())
             && let Some(sample) = self.presentation.sample(target, spec.property, now)
             && let Some(value) = sample.applied_value()
+            // An axis a keyframe leaves out is absent: no value to start from.
+            && !value.is_absent()
         {
             spec.from = value;
             spec.velocity = sample.velocity;
@@ -403,16 +431,18 @@ impl UiWorld {
         if spec.from == rest
             && let Some(logical) = self.logical_motion_value(spec.target, spec.property)
         {
+            // Nothing is in flight here, only a start value to find, so the
+            // run keeps its own delay: during it the logical value shows,
+            // which is where the run starts.
             spec.from = logical;
             spec.velocity = logical.zero_velocity();
             spec.timing.start = now;
-            spec.timing.delay = Duration::ZERO;
         }
         spec
     }
 
     fn install_presentation_overlay(&mut self, spec: &AnimationSpec) {
-        if !spec.uses_presentation_overlay() {
+        if !spec.has_overlay() {
             self.unbind_presentation(spec.id.track_id());
             return;
         }
@@ -422,13 +452,125 @@ impl UiWorld {
         let logical = self
             .logical_motion_value(spec.target, spec.property)
             .unwrap_or(track.rest_value());
-        let _ = self.motion_descriptors.bind(&track);
-        self.presentation.insert(track, logical);
+        if spec.uses_presentation_overlay() {
+            let _ = self.motion_descriptors.bind(&track);
+        }
+        self.presentation
+            .insert_in_layer(track, logical, spec.layer);
+        if matches!(spec.property, crate::AnimatableProperty::FontAxis(_)) {
+            // A replaced run may have been holding the axis at another value.
+            self.mark_font_axes_changed(spec.target);
+        }
     }
 
     fn unbind_presentation(&mut self, id: nana_ui_core::motion::MotionTrackId) {
-        self.presentation.remove(id);
+        if let Some(overlay) = self.presentation.remove(id)
+            && matches!(
+                overlay.track.property,
+                crate::AnimatableProperty::FontAxis(_)
+            )
+            && let Some(target) = StableNodeId::new(overlay.track.target.get())
+        {
+            // The axis falls back to what the style says without it.
+            self.mark_font_axes_changed(target);
+        }
         self.motion_descriptors.cancel(id);
+    }
+}
+
+impl UiWorld {
+    /// A finished app or component run holds its value over the logical
+    /// style only until the property is written again with another value:
+    /// the later write is what the author means now. Writing the same value
+    /// back — a component re-projecting its style, a Vue cascade sync — keeps
+    /// the hold. CSS animation holds are the cascade's to end
+    /// (`animation-name`), as in CSS.
+    pub(super) fn release_rewritten_holds(
+        &mut self,
+        id: StableNodeId,
+        previous: &nana_ui_core::LayoutStyle,
+        next: &nana_ui_core::LayoutStyle,
+    ) {
+        let Some(target) = MotionTargetId::new(id.get()) else {
+            return;
+        };
+        let rewritten: Vec<crate::AnimatableProperty> =
+            self.presentation
+                .properties_of(target)
+                .filter(|property| match property {
+                    crate::AnimatableProperty::Opacity => previous.opacity != next.opacity,
+                    crate::AnimatableProperty::Transform => {
+                        previous.transform != next.transform
+                            || previous.transform_3d != next.transform_3d
+                    }
+                    crate::AnimatableProperty::FontAxis(tag) => {
+                        let axis = |layout: &nana_ui_core::LayoutStyle| {
+                            layout.font_variation_settings.as_deref().map(|axes| {
+                                nana_ui_core::FontVariationSetting::axis_value(axes, *tag)
+                            })
+                        };
+                        axis(previous) != axis(next)
+                    }
+                    _ => false,
+                })
+                .collect();
+        if rewritten.is_empty() {
+            return;
+        }
+        // The FLIP invert hold is the list move's, which ends it with its play
+        // track; a style write in between does not.
+        let flip = crate::component_animation_id(crate::component_animation_kinds::FLIP, id);
+        for property in rewritten {
+            let held: Vec<_> = self
+                .presentation
+                .track_ids(target, property)
+                .filter(|track| {
+                    let animation = AnimationId::new(track.get()).expect("track ids are nonzero");
+                    Some(animation) != flip
+                        && !self.animations.contains_key(&animation)
+                        && self
+                            .presentation
+                            .get(*track)
+                            .is_some_and(|overlay| overlay.layer == crate::MotionLayer::Runtime)
+                })
+                .collect();
+            for track in held {
+                self.unbind_presentation(track);
+            }
+        }
+    }
+}
+
+fn is_layout_length(property: crate::AnimatableProperty) -> bool {
+    matches!(
+        property,
+        crate::AnimatableProperty::Width
+            | crate::AnimatableProperty::Height
+            | crate::AnimatableProperty::Padding
+            | crate::AnimatableProperty::Margin
+    )
+}
+
+impl UiWorld {
+    fn untrack_layout_length(&mut self, target: StableNodeId, id: AnimationId) {
+        if let Some(tracks) = self.layout_length_tracks.get_mut(&target) {
+            tracks.retain(|track| *track != id);
+            if tracks.is_empty() {
+                self.layout_length_tracks.remove(&target);
+            }
+        }
+    }
+
+    /// `target`'s running layout-length tracks, in start order.
+    pub(super) fn layout_length_tracks(
+        &self,
+        target: StableNodeId,
+    ) -> impl Iterator<Item = &crate::animation::ActiveAnimation> {
+        self.layout_length_tracks
+            .get(&target)
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.animations.get(id))
     }
 }
 
@@ -443,9 +585,20 @@ fn apply_track_to_spec(spec: &mut AnimationSpec, track: &nana_ui_core::motion::M
 }
 
 fn snap_spec_to_completion(spec: &mut AnimationSpec, _now: Duration) {
+    // The value the run ends on, not its last keyframe: an alternating or
+    // reversed run ends on another stop.
     let rest = spec
         .to_motion_track()
-        .map(|track| track.rest_value())
+        .map(|track| {
+            if track.curve.is_physics() {
+                // A spring or decay settles within a tolerance of its rest;
+                // finishing it is the rest itself.
+                return track.rest_value();
+            }
+            nana_ui_core::motion::track_completion_deadline(&track)
+                .map(|end| crate::evaluate_track(&track, end).value)
+                .unwrap_or_else(|| track.rest_value())
+        })
         .unwrap_or(spec.from);
     spec.from = rest;
     spec.to = crate::MotionTo::Value(rest);
@@ -465,6 +618,7 @@ impl UiWorld {
                 (animation.spec.target == id).then_some((animation_id, animation.next_deadline))
             })
             .collect::<Vec<_>>();
+        self.layout_length_tracks.remove(&id);
         for (animation_id, deadline) in cancelled {
             self.animations.remove(&animation_id);
             self.animation_deadlines.remove(&(deadline, animation_id));
@@ -513,6 +667,7 @@ impl UiWorld {
             .collect::<Vec<_>>();
         for (animation_id, deadline, target) in cancelled {
             self.animations.remove(&animation_id);
+            self.untrack_layout_length(target, animation_id);
             self.animation_deadlines.remove(&(deadline, animation_id));
             self.unbind_presentation(animation_id.track_id());
             self.pending_animation_events.push(AnimationEvent {

@@ -120,14 +120,15 @@ pub use animation::{
     FlipRect, Keyframe, MOTION_DESCRIPTOR_VERSION, MotionCodecError, MotionCodecId,
     MotionCodecInfo, MotionCodecRegistry, MotionCurve, MotionDescriptor, MotionDescriptorError,
     MotionDescriptorStore, MotionEvaluatorBackend, MotionGraph, MotionHandle, MotionInspectorEntry,
-    MotionInterrupt, MotionSample, MotionTargetId, MotionTiming, MotionTo, MotionTrack,
-    MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters, PresentationOverlay,
-    PresentationPair, PresentationSlot, PresentationStore, Spring, SpringParams, StepJump,
-    Timeline, classify_animatable_property, compile_motion_descriptor, component_animation_id,
-    component_animation_kinds, cpu_fallback_reason, decode_motion_track, evaluate_descriptor,
-    evaluate_progress, evaluate_track, evaluate_track_at, invert_flip_translate,
-    layout_flip_hold_spec, layout_flip_play_spec, layout_flip_spec, loading_animation,
-    retarget_track, track_completion_deadline, workspace_animation,
+    MotionInterrupt, MotionLayer, MotionSample, MotionTargetId, MotionTiming, MotionTo,
+    MotionTrack, MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters,
+    PresentationOverlay, PresentationPair, PresentationSlot, PresentationStore, Spring,
+    SpringParams, StepJump, Timeline, classify_animatable_property, compile_motion_descriptor,
+    component_animation_id, component_animation_kinds, cpu_fallback_reason, decode_motion_track,
+    evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
+    invert_flip_translate, is_font_variation_settings, layout_flip_hold_spec,
+    layout_flip_play_spec, layout_flip_spec, loading_animation, retarget_track,
+    track_completion_deadline, workspace_animation,
 };
 pub use avatar::{Avatar, DEFAULT_SIZE as AVATAR_DEFAULT_SIZE};
 pub use bars::{StatusBar, Toolbar};

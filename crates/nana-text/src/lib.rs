@@ -43,6 +43,7 @@
 //! integers rather than a re-fingerprint of the text. See
 //! [`TextLayout::is_stale`].
 
+mod bounded;
 pub mod constraints;
 pub mod counters;
 pub mod edit;

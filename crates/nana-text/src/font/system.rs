@@ -449,6 +449,11 @@ struct NewFace {
     origin: FontOrigin,
 }
 
+/// Cached family selections, one per distinct query, kept before the least
+/// recently used go. An animated `wght` / `wdth` asks with a new weight or
+/// stretch on every frame.
+const SELECTION_CAP: usize = 1024;
+
 pub struct FontSystem {
     /// Process-unique identity. `FontId`s and generations are numbered per
     /// system from zero, so anything caching them across calls (the shaper)
@@ -461,7 +466,7 @@ pub struct FontSystem {
     generation: FontGeneration,
     registrations: u64,
     policy: FallbackPolicy,
-    selections: HashMap<FontQuery, Arc<FontSelection>>,
+    selections: crate::bounded::BoundedCache<FontQuery, Arc<FontSelection>>,
     coverage: CoverageCache,
     /// The face a database-wide scan found for one codepoint, or `None` when
     /// nothing in the database covers it. See [`Self::scan_database`].
@@ -492,7 +497,7 @@ impl FontSystem {
             generation: FontGeneration::default(),
             registrations: 0,
             policy,
-            selections: HashMap::new(),
+            selections: crate::bounded::BoundedCache::new(SELECTION_CAP),
             coverage: CoverageCache::new(DEFAULT_COVERAGE_BUDGET_BYTES),
             scanned: HashMap::new(),
             counters: FontCounters::default(),
@@ -1268,5 +1273,32 @@ impl FontSystem {
 
     pub fn reset_counters(&mut self) {
         self.counters = FontCounters::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `wght` animation selects with a new weight every frame. The cache
+    /// keeps its ceiling instead of every weight it was ever asked for.
+    #[test]
+    fn selections_for_animated_weights_stay_bounded() {
+        let mut system = FontSystem::hermetic();
+        for step in 0..SELECTION_CAP * 3 {
+            let query = FontQuery {
+                weight: crate::font::FontWeight(100.0 + step as f32 * 0.25),
+                ..FontQuery::default()
+            };
+            let selection = system.select(&query);
+            assert_eq!(selection.query, query);
+            assert!(system.selections.len() <= SELECTION_CAP);
+        }
+        let query = FontQuery::default();
+        let first = system.select(&query);
+        assert!(
+            Arc::ptr_eq(&first, &system.select(&query)),
+            "a live query still hits"
+        );
     }
 }

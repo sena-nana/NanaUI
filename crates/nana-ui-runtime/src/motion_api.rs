@@ -1,7 +1,10 @@
 //! Rust L3 declarative motion frontend. Compiles to [`AnimationSpec`] /
 //! [`MotionTrack`]; not a second timeline.
 
-use std::{hash::Hasher, time::Duration};
+use std::{
+    hash::{Hash, Hasher},
+    time::Duration,
+};
 
 use nana_ui_core::{PaintTransform, Spring};
 
@@ -33,6 +36,7 @@ impl<'a> NodeMotion<'a> {
             transform: None,
             width: None,
             height: None,
+            font_axes: Vec::new(),
             duration: nana_ui_core::motion::HOVER_COLOR,
             easing: Easing::EaseOutCubic,
             delay: Duration::ZERO,
@@ -91,6 +95,7 @@ pub struct TransitionBuilder<'a> {
     transform: Option<PaintTransform>,
     width: Option<f32>,
     height: Option<f32>,
+    font_axes: Vec<([u8; 4], f32)>,
     duration: Duration,
     easing: Easing,
     delay: Duration,
@@ -115,6 +120,19 @@ impl TransitionBuilder<'_> {
 
     pub fn height(mut self, value: f32) -> Self {
         self.height = Some(value);
+        self
+    }
+
+    /// One `font-variation-settings` axis, by tag, to `value` — the same
+    /// per-axis track a CSS transition on `font-variation-settings` compiles
+    /// to. It starts from the value the node's axes give `tag` now (declared
+    /// or inherited). An axis the node's axes do not name has no value to
+    /// start from (its default is the face's), so it takes `value` at once
+    /// instead of inventing one; an axis the face lacks is ignored when the
+    /// text is shaped, never mapped onto `wght`.
+    pub fn font_axis(mut self, tag: [u8; 4], value: f32) -> Self {
+        self.font_axes.retain(|(axis, _)| *axis != tag);
+        self.font_axes.push((tag, value));
         self
     }
 
@@ -149,6 +167,8 @@ impl TransitionBuilder<'_> {
         );
         timing.delay = self.delay;
         let curve = MotionCurve::Easing(self.easing);
+        // Forwards: the run holds its target once it ends, over the logical
+        // style, until the property is next written with another value.
         let playback = AnimationPlayback {
             iteration_count: AnimationIteration::ONCE,
             direction: AnimationDirection::Normal,
@@ -196,6 +216,16 @@ impl TransitionBuilder<'_> {
                 playback,
             ));
         }
+        for &(tag, value) in &self.font_axes {
+            self.queue.start_animation(user_spec(
+                self.target,
+                AnimatableProperty::FontAxis(tag),
+                MotionValue::Scalar(value),
+                timing,
+                curve,
+                playback,
+            ));
+        }
     }
 }
 
@@ -223,6 +253,13 @@ impl SpringBuilder<'_> {
 
     pub fn transform(mut self) -> Self {
         self.property = Some(AnimatableProperty::Transform);
+        self
+    }
+
+    /// Springs one font axis to the rest value, from its current value. See
+    /// [`TransitionBuilder::font_axis`].
+    pub fn font_axis(mut self, tag: [u8; 4]) -> Self {
+        self.property = Some(AnimatableProperty::FontAxis(tag));
         self
     }
 
@@ -441,6 +478,7 @@ impl AnimationSpec {
             to: track.to.clone(),
             velocity: track.velocity,
             interrupt: MotionInterrupt::Replace,
+            layer: crate::MotionLayer::Runtime,
         }
     }
 }
@@ -449,7 +487,8 @@ fn user_animation_id(target: StableNodeId, property: AnimatableProperty) -> Opti
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hasher.write_u64(USER_MOTION);
     hasher.write_u64(target.get());
-    hasher.write_u8(property_tag(property));
+    // A font axis's tag is part of it: `wdth` and `BEVL` are two tracks.
+    property.hash(&mut hasher);
     AnimationId::new(hasher.finish())
 }
 
@@ -462,31 +501,10 @@ fn user_timeline_animation_id(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hasher.write_u64(USER_MOTION);
     hasher.write_u64(target.get());
-    hasher.write_u8(property_tag(property));
+    // A font axis's tag is part of it: `wdth` and `BEVL` are two tracks.
+    property.hash(&mut hasher);
     hasher.write_u64(track.get());
     AnimationId::new(hasher.finish())
-}
-
-fn property_tag(property: AnimatableProperty) -> u8 {
-    match property {
-        AnimatableProperty::Transform => 1,
-        AnimatableProperty::Opacity => 2,
-        AnimatableProperty::Clip => 3,
-        AnimatableProperty::Color => 4,
-        AnimatableProperty::Background => 5,
-        AnimatableProperty::Blur => 6,
-        AnimatableProperty::Filter => 7,
-        AnimatableProperty::Shadow => 8,
-        AnimatableProperty::ShaderParameter => 9,
-        AnimatableProperty::Width => 10,
-        AnimatableProperty::Height => 11,
-        AnimatableProperty::Padding => 12,
-        AnimatableProperty::Margin => 13,
-        AnimatableProperty::FontSize => 14,
-        AnimatableProperty::FontAxis => 15,
-        AnimatableProperty::Display => 16,
-        AnimatableProperty::Progress => 17,
-    }
 }
 
 fn user_spec(
@@ -510,5 +528,6 @@ fn user_spec(
         to: MotionTo::Value(to),
         velocity: to.zero_velocity(),
         interrupt: MotionInterrupt::Retarget,
+        layer: crate::MotionLayer::Runtime,
     }
 }

@@ -835,6 +835,9 @@ impl TextPipeline {
             self.raster.invalidate();
             self.drop_every_entry();
         }
+        // Evicted variation ids are never reissued, so what is keyed by one
+        // goes cold instead of wrong, and ages out of the raster cache.
+        let _ = self.rasterizer.begin_frame();
         self.atlas.begin_frame(self.raster.generation());
         self.shape_cache.begin_frame();
         let target = &mut self.target;
@@ -2561,6 +2564,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An animated font axis interns a new coordinate set every frame. Past
+    /// the ceiling the coldest sets go, one by one: the glyph caches of every
+    /// other text stay, a set in use keeps its id, and no id is reissued.
+    #[test]
+    fn variation_ids_are_bounded_by_evicting_the_coldest_sets() {
+        use raster::VARIATION_CAP;
+
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        pipeline.begin_frame([64, 64]);
+        let Some(face) = ({
+            let engine = crate::text_engine::lock_engine(&pipeline.engine);
+            engine.fonts().faces().into_iter().next()
+        }) else {
+            return;
+        };
+        let intern = |pipeline: &mut TextPipeline, value: usize| {
+            pipeline
+                .rasterizer
+                .intern_instance(&nana_text::font::FontInstanceKey {
+                    font: face,
+                    coords: vec![nana_text::font::AxisCoord {
+                        tag: *b"wdth",
+                        value: value as f32,
+                    }]
+                    .into(),
+                    synthesis: nana_text::font::Synthesis::default(),
+                })
+                .1
+        };
+        let first = intern(&mut pipeline, 0);
+        for value in 1..VARIATION_CAP {
+            intern(&mut pipeline, value);
+        }
+        let epoch = pipeline.raster.generation();
+        for _ in 0..4 {
+            pipeline.begin_frame([64, 64]);
+        }
+        // The first set stays warm; everything else from that frame is cold.
+        assert_eq!(intern(&mut pipeline, 0), first);
+        let newest = intern(&mut pipeline, VARIATION_CAP);
+        pipeline.begin_frame([64, 64]);
+        assert!(pipeline.rasterizer.variation_count() <= VARIATION_CAP);
+        assert_eq!(
+            pipeline.raster.generation(),
+            epoch,
+            "no glyph cache starts over"
+        );
+        assert_eq!(intern(&mut pipeline, 0), first, "a set in use keeps its id");
+        assert_eq!(intern(&mut pipeline, VARIATION_CAP), newest);
+        let again = intern(&mut pipeline, 1);
+        assert!(
+            again.0 > newest.0,
+            "an evicted set comes back under a new id"
+        );
     }
 
     #[test]

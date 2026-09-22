@@ -43,7 +43,7 @@ impl MotionCodecId {
             | AnimatableProperty::Padding
             | AnimatableProperty::Margin
             | AnimatableProperty::FontSize
-            | AnimatableProperty::FontAxis
+            | AnimatableProperty::FontAxis(_)
             | AnimatableProperty::Display
             | AnimatableProperty::Progress => None,
         }

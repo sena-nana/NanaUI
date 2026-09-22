@@ -74,10 +74,21 @@ impl UiWorld {
                 .font_features
                 .clone()
                 .unwrap_or_else(|| inherited.font_features.clone()),
-            font_variations: layout
-                .font_variation_settings
-                .clone()
-                .unwrap_or_else(|| inherited.font_variations.clone()),
+            font_variations: {
+                let mut axes = layout
+                    .font_variation_settings
+                    .clone()
+                    .unwrap_or_else(|| inherited.font_variations.clone());
+                for (tag, value) in self.font_axis_overlay(id) {
+                    match value {
+                        Some(value) => {
+                            nana_ui_core::FontVariationSetting::set_axis(&mut axes, tag, value)
+                        }
+                        None => axes.retain(|axis| axis.tag != tag),
+                    }
+                }
+                axes
+            },
             font_kerning: layout.font_kerning.unwrap_or(inherited.font_kerning),
             word_break: layout.word_break.unwrap_or(inherited.word_break),
             line_break: layout.line_break.unwrap_or(inherited.line_break),

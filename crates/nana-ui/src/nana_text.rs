@@ -820,6 +820,139 @@ mod tests {
         );
     }
 
+    /// Issue #85: an animated axis is a real glyph variation. Every sample of
+    /// a font-axis Motion track reaches the face instance the runs are shaped
+    /// and rasterized with, and the advance moves with it — no compositor
+    /// scale stands in for the variation.
+    #[test]
+    fn font_axis_motion_reshapes_with_each_sampled_instance() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes = include_bytes!("nana_text/fixtures/nana-wdth-bevl.ttf");
+        assert!(register_host_font_bytes(bytes.to_vec()).unwrap() > 0);
+        let mut world = nana_ui_runtime::UiWorld::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
+        queue.set_text(id, TextContent { value: "AA".into() });
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.font_family = Some("NanaTestVF".into());
+        layout.font_size = Some(20.0);
+        layout.font_variation_settings = Some(vec![
+            FontVariationSetting::new(*b"wdth", 50.0),
+            FontVariationSetting::new(*b"BEVL", 0.0),
+        ]);
+        queue.set_style(id, style);
+        queue
+            .node(id, std::time::Duration::ZERO)
+            .transition()
+            .font_axis(*b"wdth", 200.0)
+            .font_axis(*b"BEVL", 100.0)
+            .duration(std::time::Duration::from_millis(100))
+            .ease(nana_ui_runtime::Easing::Linear)
+            .start();
+        world.commit(queue).unwrap();
+        let mut shaper = NanaTextShaper::default();
+        let mut widths = Vec::new();
+        for (ms, wdth, bevl) in [(0, 50.0, 0.0), (50, 125.0, 50.0), (100, 200.0, 100.0)] {
+            world.advance_animations(std::time::Duration::from_millis(ms));
+            let work = world.take_system_work();
+            assert!(
+                work.text.contains(&id),
+                "{ms}ms: the sample schedules text work"
+            );
+            world.resolve_styles(&work.style).unwrap();
+            world.shape_text(&work.text, &mut shaper).unwrap();
+            let (_, retained) = world.text_layout(id).expect("retained layout");
+            let coords = retained.runs[0]
+                .instance
+                .clone()
+                .expect("the run names its face instance")
+                .coords;
+            let coord = |tag: [u8; 4]| {
+                coords
+                    .iter()
+                    .find(|coord| coord.tag == tag)
+                    .map(|coord| coord.value)
+            };
+            assert_eq!(coord(*b"wdth"), Some(wdth), "{ms}ms: {coords:?}");
+            // The instance leaves out a coordinate at the axis default (0).
+            assert_eq!(coord(*b"BEVL").unwrap_or(0.0), bevl, "{ms}ms: {coords:?}");
+            assert!(
+                coords.iter().all(|coord| coord.tag != *b"wght"),
+                "{ms}ms: {coords:?}"
+            );
+            widths.push(retained.bounds.width);
+            if ms == 50 {
+                assert!(
+                    world
+                        .inspect_motion()
+                        .iter()
+                        .all(|entry| entry.ineffective_reason.is_none()),
+                    "axes the face has take effect"
+                );
+            }
+        }
+        assert!(
+            widths[0] + 1.0 < widths[1] && widths[1] + 1.0 < widths[2],
+            "the advance follows the sampled wdth: {widths:?}"
+        );
+    }
+
+    /// An animated axis no face of the text has is reported rather than
+    /// passed over in silence, and never mapped onto another axis.
+    #[test]
+    fn an_animated_axis_the_face_lacks_is_reported() {
+        let _font_test = FONT_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes = include_bytes!("nana_text/fixtures/nana-wdth-bevl.ttf");
+        assert!(register_host_font_bytes(bytes.to_vec()).unwrap() > 0);
+        let mut world = nana_ui_runtime::UiWorld::new();
+        let document = nana_ui_runtime::DocumentId::new(1).unwrap();
+        let id = nana_ui_runtime::StableNodeId::new(1).unwrap();
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue.create(id, document, nana_ui_runtime::NodeKind::Text);
+        queue.set_text(id, TextContent { value: "A".into() });
+        let mut style = nana_ui_runtime::NodeStyle::default();
+        let layout = std::sync::Arc::make_mut(&mut style.layout);
+        layout.font_family = Some("NanaTestVF".into());
+        layout.font_size = Some(20.0);
+        layout.font_variation_settings = Some(vec![FontVariationSetting::new(*b"XXXX", 0.0)]);
+        queue.set_style(id, style);
+        world.commit(queue).unwrap();
+        let mut shaper = NanaTextShaper::default();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+
+        let mut queue = nana_ui_runtime::MutationQueue::new();
+        queue
+            .node(id, std::time::Duration::ZERO)
+            .transition()
+            .font_axis(*b"XXXX", 100.0)
+            .duration(std::time::Duration::from_millis(100))
+            .ease(nana_ui_runtime::Easing::Linear)
+            .start();
+        world.commit(queue).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        world.shape_text(&work.text, &mut shaper).unwrap();
+        let entry = world
+            .inspect_motion()
+            .into_iter()
+            .find(|entry| entry.property == nana_ui_runtime::AnimatableProperty::FontAxis(*b"XXXX"))
+            .expect("the track is inspectable");
+        assert!(entry.ineffective_reason.is_some(), "{entry:?}");
+        assert!(
+            !world
+                .inspect_motion()
+                .iter()
+                .any(|entry| entry.property
+                    == nana_ui_runtime::AnimatableProperty::FontAxis(*b"wght")),
+            "nothing became wght"
+        );
+    }
+
     #[test]
     #[cfg(feature = "bundled-fonts")]
     fn css_family_alias_shapes_loaded_face() {

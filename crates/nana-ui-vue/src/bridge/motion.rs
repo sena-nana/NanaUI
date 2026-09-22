@@ -23,6 +23,15 @@ pub(super) struct State {
     pub(super) css_keyframes_overlays: HashMap<WidgetId, Vec<nana_ui_runtime::AnimationId>>,
     /// Widgets whose `@keyframes` still have a CPU Progress spec.
     pub(super) css_keyframes_cpu: HashSet<WidgetId>,
+    /// Overlay tracks of the widget's current `@keyframes`, kept after they
+    /// finish: one that fills forwards still holds its property in Runtime
+    /// until the animation is replaced or removed.
+    pub(super) css_keyframes_tracks: HashMap<WidgetId, Vec<nana_ui_runtime::AnimationId>>,
+    /// Axes each widget's CSS transitions and animations move, for the
+    /// diagnostic that reports an axis no face of the text has.
+    pub(super) css_font_axes: HashMap<WidgetId, Vec<[u8; 4]>>,
+    /// Widgets such a track currently runs on, as of the last refresh.
+    pub(super) ineffective_font_axes: usize,
     /// TransitionGroup FLIP paint overlay. Applied after cascade; never LayoutBox.
     pub(super) paint_transform_overlays: HashMap<WidgetId, nana_ui_core::PaintTransform>,
     /// JS cleared the overlay; consume on class recascade / layout resolve.
@@ -186,7 +195,7 @@ impl MessageBridge {
         {
             let easing =
                 crate::css_interactive_apply::easing_from_css(&motion.transition_timing_function);
-            let duration = std::time::Duration::from_secs_f32(duration_ms / 1000.0);
+            let duration = crate::css_interactive_apply::css_ms_duration(duration_ms);
             if let Some(spec) =
                 nana_ui_runtime::layout_flip_play_spec(node, overlay, now, duration, easing)
             {
@@ -263,7 +272,16 @@ impl MessageBridge {
 }
 
 impl MessageBridge {
+    /// The widget's cascaded paint, with its axes as the cascade gives them
+    /// (inherited ones included).
     pub(super) fn snapshot_widget(&self, id: WidgetId) -> Option<CssPaintSnapshot> {
+        let mut snapshot = self.widget_paint(id)?;
+        snapshot.font_variations = self.cascaded_font_variations(id);
+        Some(snapshot)
+    }
+
+    /// The widget's own layout as a snapshot; its axes are the caller's to fill.
+    fn widget_paint(&self, id: WidgetId) -> Option<CssPaintSnapshot> {
         let widget = self.widgets.get(&id)?;
         Some(CssPaintSnapshot::from_layout_resolved(
             &widget.props.layout,
@@ -271,6 +289,37 @@ impl MessageBridge {
             widget.props.containing_block_height,
             self.cascade.layout_viewport,
         ))
+    }
+
+    /// The axes the cascade gives `id`: its own declaration, else the nearest
+    /// ancestor's. Widgets do not copy inherited axes (Runtime inherits them),
+    /// so an inherited value is found here, not on the widget.
+    pub(super) fn cascaded_font_variations(
+        &self,
+        id: WidgetId,
+    ) -> Option<Vec<nana_ui_core::FontVariationSetting>> {
+        let mut current = Some(id);
+        while let Some(id) = current {
+            let widget = self.widgets.get(&id)?;
+            if let Some(axes) = &widget.props.layout.font_variation_settings {
+                return (!axes.is_empty()).then(|| axes.clone());
+            }
+            current = widget.parent;
+        }
+        None
+    }
+
+    /// The axes `id` shows right now in Runtime: a transition that starts or
+    /// retargets mid-flight starts from these, not from the cascade, which
+    /// already moved to the new destination.
+    pub(super) fn presented_font_variations(
+        doc: &crate::tree::NanaTreeDocument,
+        id: WidgetId,
+    ) -> Option<Vec<nana_ui_core::FontVariationSetting>> {
+        let style = doc
+            .world()
+            .computed_style(nana_ui_runtime::StableNodeId::new(id)?)?;
+        (!style.font_variations.is_empty()).then(|| style.font_variations.clone())
     }
 
     /// Interruption from is the current visual, not logical. Compositor
@@ -281,7 +330,8 @@ impl MessageBridge {
         doc: &crate::tree::NanaTreeDocument,
         id: WidgetId,
     ) -> Option<CssPaintSnapshot> {
-        let mut snapshot = self.snapshot_widget(id)?;
+        let mut snapshot = self.widget_paint(id)?;
+        snapshot.font_variations = Self::presented_font_variations(doc, id);
         let Some(node) = nana_ui_runtime::StableNodeId::new(id) else {
             return Some(snapshot);
         };
@@ -352,6 +402,7 @@ impl MessageBridge {
             }
         }
         self.sync_widget_layouts_for(doc, &[id]);
+        self.note_css_font_axes(id, &compiled.overlays);
         for spec in &compiled.overlays {
             let spec = if retarget {
                 spec.clone()
@@ -389,9 +440,17 @@ impl MessageBridge {
             },
         );
         self.queue_motion_cancel(id);
+        // Pinning holds `from` until the first CPU sample rewrites it. Font
+        // axes have no such sample — Runtime overlays them on the computed
+        // style — so they must not pin, or an unlisted property that changed
+        // alongside them would stay at its old value.
         if compiled.cpu.is_some()
             || compiled.overlays.iter().any(|spec| {
-                spec.property.animation_class() == nana_ui_runtime::AnimationClass::Layout
+                matches!(
+                    spec.property,
+                    nana_ui_runtime::AnimatableProperty::Width
+                        | nana_ui_runtime::AnimatableProperty::Height
+                )
             })
         {
             self.pin_host_driven_transition_paint(doc, id, &from);
@@ -408,6 +467,18 @@ impl MessageBridge {
         compiled: crate::css_interactive_apply::CompiledCssMotion,
     ) {
         self.sync_widget_layouts_for(doc, &[id]);
+        self.note_css_font_axes(id, &compiled.overlays);
+        let tracks = compiled.overlay_ids();
+        for previous in self
+            .motion
+            .css_keyframes_tracks
+            .insert(id, tracks.clone())
+            .unwrap_or_default()
+        {
+            if !tracks.contains(&previous) {
+                stop_live_track(doc, previous);
+            }
+        }
         for spec in &compiled.overlays {
             doc.start_css_animation(spec.clone());
         }
@@ -418,9 +489,7 @@ impl MessageBridge {
         if compiled.overlays.is_empty() {
             self.motion.css_keyframes_overlays.remove(&id);
         } else {
-            self.motion
-                .css_keyframes_overlays
-                .insert(id, compiled.overlay_ids());
+            self.motion.css_keyframes_overlays.insert(id, tracks);
         }
         if compiled.cpu.is_some() {
             self.motion.css_keyframes_cpu.insert(id);
@@ -428,6 +497,108 @@ impl MessageBridge {
             self.motion.css_keyframes_cpu.remove(&id);
         }
         self.queue_motion_cancel(id);
+    }
+
+    /// `animation-name` no longer names the running animation: its tracks
+    /// stop, and what the finished ones held goes back to the cascade — a
+    /// fill lasts only as long as its animation applies.
+    pub(super) fn remove_css_keyframes(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        id: WidgetId,
+    ) {
+        for track in self
+            .motion
+            .css_keyframes_tracks
+            .remove(&id)
+            .unwrap_or_default()
+        {
+            stop_live_track(doc, track);
+        }
+        self.clear_css_keyframes(id);
+    }
+
+    /// Stops `id`'s running font-axis transition tracks, so its text shows
+    /// the cascaded axes at once: the change they were heading for is gone
+    /// and the new one does not interpolate.
+    pub(super) fn stop_css_font_axis_transition(
+        &mut self,
+        doc: &mut crate::tree::NanaTreeDocument,
+        id: WidgetId,
+    ) {
+        let Some(mut transition) = self.motion.css_transitions.get(&id).cloned() else {
+            return;
+        };
+        let tags = self
+            .motion
+            .css_font_axes
+            .get(&id)
+            .cloned()
+            .unwrap_or_default();
+        for tag in tags {
+            let track = crate::css_interactive_apply::css_transition_font_axis_id(id, tag);
+            if transition.tracks_sample(track) {
+                stop_live_track(doc, track);
+                transition.note_finished(track);
+            }
+        }
+        if transition.all_tracks_finished() {
+            self.motion.css_transitions.remove(&id);
+            self.motion.css_transition_base.remove(&id);
+            self.motion.css_transition_progress.remove(&id);
+        } else {
+            self.motion.css_transitions.insert(id, transition);
+        }
+    }
+
+    /// Remembers which axes `specs` move on `id`.
+    pub(super) fn note_css_font_axes(
+        &mut self,
+        id: WidgetId,
+        specs: &[nana_ui_runtime::AnimationSpec],
+    ) {
+        let axes = self.motion.css_font_axes.entry(id).or_default();
+        for spec in specs {
+            if let nana_ui_runtime::AnimatableProperty::FontAxis(tag) = spec.property
+                && !axes.contains(&tag)
+            {
+                axes.push(tag);
+            }
+        }
+    }
+
+    /// Counts widgets with a live CSS font-axis track that changes nothing,
+    /// for [`crate::css_cascade::UnsupportedCssReport::font_axis_animations`].
+    /// Read after the frame shaped its text: which faces a text uses is only
+    /// known then.
+    #[cfg_attr(not(feature = "scene-view"), allow(dead_code))]
+    pub(crate) fn refresh_font_axis_diagnostics(&mut self, doc: &crate::tree::NanaTreeDocument) {
+        if self.motion.css_font_axes.is_empty() {
+            self.motion.ineffective_font_axes = 0;
+            return;
+        }
+        let world = doc.world();
+        self.motion.css_font_axes.retain(|widget, axes| {
+            axes.retain(|tag| {
+                world.animation_is_live(crate::css_interactive_apply::css_transition_font_axis_id(
+                    *widget, *tag,
+                )) || world.animation_is_live(
+                    crate::css_interactive_apply::css_keyframes_font_axis_id(*widget, *tag),
+                )
+            });
+            !axes.is_empty()
+        });
+        self.motion.ineffective_font_axes = self
+            .motion
+            .css_font_axes
+            .iter()
+            .filter(|(widget, axes)| {
+                nana_ui_runtime::StableNodeId::new(**widget).is_some_and(|node| {
+                    axes.iter()
+                        .any(|tag| world.font_axis_is_ineffective(node, *tag))
+                })
+            })
+            .count();
     }
 
     pub(super) fn clear_css_keyframes(&mut self, id: WidgetId) {
@@ -452,6 +623,15 @@ impl MessageBridge {
 impl MessageBridge {
     pub fn computed_motion_for(&self, id: WidgetId) -> Option<&CssComputedMotion> {
         self.motion.computed_motion.get(&id)
+    }
+}
+
+/// Stops a track that is still running or still holds its property.
+/// Anything else is already gone, and asking Runtime to stop it would fail
+/// the batch it is committed with.
+fn stop_live_track(doc: &mut crate::tree::NanaTreeDocument, id: nana_ui_runtime::AnimationId) {
+    if doc.world().animation_is_live(id) {
+        doc.stop_css_animation(id);
     }
 }
 

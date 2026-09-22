@@ -1364,6 +1364,8 @@ impl MessageBridge {
         }
         self.roots.retain(|&r| r != id);
         self.cascade.unsupported_css.forget(id);
+        self.motion.css_font_axes.remove(&id);
+        self.motion.css_keyframes_tracks.remove(&id);
         self.motion.computed_motion.remove(&id);
         self.motion.css_transitions.remove(&id);
         self.motion.css_transition_base.remove(&id);

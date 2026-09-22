@@ -59,6 +59,12 @@ nana_ui::runtime → UiWorld → ExtractedNode → UiScene → SceneWgpuPainter
 
 **逻辑值 ≠ 呈现值。** `UiWorld` 是逻辑 / base 权威；瞬时呈现存在 transient `PresentationStore` overlay（按 node + property 查询；`applies=false` 时用 `applied_value()`）。例如 `opacity: 0 → 1` 时逻辑透明度在开始时已是目标值，overlay 负责过渡，而不是每帧把 `UiWorld` 写成 `0.01`、`0.02`。业务读属性得到逻辑状态；绘制、命中、焦点、无障碍在需要时按同一 timestamp 求 presentation。动画完成走 start / completion **deadline**，不靠逐帧 CPU sample 才知道结束。
 
+fill forwards 的 track 结束后，末值作为 **hold** 留在 overlay 上。L3 `transition()` / `motion(Spring)` / `Timeline`（`MotionLayer::Runtime`）的 hold 只保持到该属性下一次被写成**不同的值**：之后的 `set_style` 照常生效；组件重新投影、Vue 层叠同步把同一个值写回不算新写入，hold 不受影响（逻辑值由组件 / 层叠持有，L3 不去改写它）。CSS `@keyframes` 的 hold 按 CSS 层叠压过样式，由 `animation-name` 结束（不再命名、指向不存在的规则）。任何 hold 也可被同 id 再启动、`StopAnimation`（对已结束的 hold 同样有效）或节点移除结束。CSS transition 不留 hold：层叠本就是终点。
+
+**取值范围。** track 的目标与关键帧按样式的规则校验：越界（如 opacity 不在 `0..=1`、负的 width）或非有限值在提交时返回 `InvalidAnimation`，不替作者钳成别的值；起点只要求有限，因为被打断的 track 可能从回弹途中的越界值起步。两端之间的采样不钳：回弹曲线与 spring 的越界是有意的，由消费端钳到能呈现的范围——opacity 在 CPU compositor 与 GPU quad 都钳到 `0..=1`，width / height / padding 停在 0，字体轴由 nana-text 钳到字体自身的轴范围。
+
+同一属性同时有多条 track 时，先比 `MotionLayer`（CSS transition 高于 Runtime 高于 CSS animation，与 CSS 层叠一致），再比 start，最后比 id；不混合。
+
 Compositor-safe 属性按 `AnimationClass::Compositor` 分类，不得实现成每帧改 UiWorld 属性。Compositor track 另编译为 generational `MotionDescriptor` slab：start/retarget/cancel 更新 descriptor，稳态帧只按 timestamp 走同一 `evaluate_track`。产品 present 禁止 CPU readback。Scene layer / GPU Quad 分流见 [`runtime-scene.md`](runtime-scene.md)。
 
 默认执行类由 `AnimatableProperty::animation_class()` 决定，组件不能改 class：
@@ -70,7 +76,8 @@ Compositor-safe 属性按 `AnimationClass::Compositor` 分类，不得实现成�
 | `shader-parameter` | Compositor | overlay；需注册 typed codec | 无默认 Quad GPU 路径 |
 | `color` / `background` / `blur` / `filter` / `shadow` | Paint | CPU 插值 | 可能每 sample 脏 paint/extract；不是 filter GPU |
 | `width` / `height` / `padding` / `margin` | Layout | CPU layout，写 px | 每 sample layout；不要偷成 scale |
-| `font-size` / `font-axis` | Layout | 非 compositor（排版 / 绘制也会受影响） | [#85](https://github.com/sena-nana/NanaUI/issues/85) 不强制 GPU |
+| `font-size` | Layout | 非 compositor（排版 / 绘制也会受影响） | 不强制 GPU |
+| `font-variation-settings`（`FontAxis(tag)`，每轴一条 track） | Layout | track 存在 `PresentationStore`（按 target 索引），样式解析时叠到计算样式的 `font_variations`，子孙随继承拿到（自己声明轴的子树不受影响、不被标脏）；#88 脏图按 `SHAPE_STYLE` 重新 shaping / 排版 / 栅格；值未变的 sample 不产生工作 | 每 sample 都是真实字形实例；不得换成 scale / transform（[#85](https://github.com/sena-nana/NanaUI/issues/85)）。字体没有的轴照常运行但不生效，`inspect_motion` 的 `ineffective_reason` 与 Vue `nana.css` 警告会报出来，不映射成 `wght` |
 | `display` | Discrete | snap | 不插值 |
 
 `#8` 的 `animations_considered` / `animation_deadlines_scanned` 稀疏门禁仍有效。compositor-only 稳态结构门禁（无 query 时 UiWorld / layout / style / extract / CPU sample 均为 0）见 [`perf/README.md`](../perf/README.md) 的 `compositor-steady`。开发诊断走 `AnimatableProperty::diagnostic_hint()` 与 `UiWorld::inspect_motion()`；hint 文案以代码为准，文档不硬编码整句，也不写进产品 UI。

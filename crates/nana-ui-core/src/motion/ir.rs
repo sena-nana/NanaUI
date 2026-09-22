@@ -52,6 +52,15 @@ pub enum MotionValue {
 }
 
 impl MotionValue {
+    /// A font-axis keyframe for a list that does not name the axis: the
+    /// axis is left out, so the face's default applies. Only a font-axis
+    /// keyframe list carries it.
+    pub const ABSENT: Self = Self::Scalar(f32::NAN);
+
+    pub fn is_absent(self) -> bool {
+        matches!(self, Self::Scalar(v) if v.is_nan())
+    }
+
     pub fn zero_velocity(self) -> Self {
         match self {
             Self::Scalar(_) => Self::Scalar(0.0),
@@ -358,8 +367,16 @@ impl MotionTrack {
         self.playback.evaluation_clock(now, hold_at)
     }
 
+    /// Endpoints are checked as the style would check them: the target and
+    /// every keyframe must be a value the property accepts (an opacity in
+    /// `0..=1`, a finite non-negative width…), so an out-of-range target fails
+    /// here rather than being clamped into something the author did not
+    /// write. The start only has to be finite: a run retargeted mid-flight
+    /// starts wherever an overshooting curve had got to. Samples between the
+    /// endpoints are not clamped either — overshoot is what such a curve is
+    /// for — each consumer clamps to what it can show.
     pub fn is_valid(&self) -> bool {
-        if !value_fits(self.property, self.from) {
+        if !value_fits(self.property, self.from) || !start_fits(self.property, self.from) {
             return false;
         }
         if !self.velocity_fits() {
@@ -367,15 +384,16 @@ impl MotionTrack {
         }
         match &self.to {
             MotionTo::Value(to) => {
-                if !value_fits(self.property, *to) {
+                if !value_fits(self.property, *to) || !target_fits(self.property, *to, false) {
                     return false;
                 }
             }
             MotionTo::Keyframes(stops) => {
                 if !keyframes_monotonic(stops)
-                    || stops
-                        .iter()
-                        .any(|stop| !value_fits(self.property, stop.value))
+                    || stops.iter().any(|stop| {
+                        !value_fits(self.property, stop.value)
+                            || !target_fits(self.property, stop.value, true)
+                    })
                 {
                     return false;
                 }
@@ -423,11 +441,50 @@ pub(super) fn value_fits(property: AnimatableProperty, value: MotionValue) -> bo
             | AnimatableProperty::Padding
             | AnimatableProperty::Margin
             | AnimatableProperty::FontSize
-            | AnimatableProperty::FontAxis
+            | AnimatableProperty::FontAxis(_)
             | AnimatableProperty::Progress,
             MotionValue::Scalar(_),
         ) => true,
         _ => false,
+    }
+}
+
+fn finite(value: MotionValue) -> bool {
+    match value {
+        MotionValue::Scalar(v) => v.is_finite(),
+        MotionValue::Color(channels) => channels.iter().all(|c| c.is_finite()),
+        MotionValue::Transform(t) => [t.a, t.b, t.c, t.d, t.e, t.f].iter().all(|v| v.is_finite()),
+        MotionValue::Discrete(_) => true,
+    }
+}
+
+fn absent_axis(property: AnimatableProperty, value: MotionValue) -> bool {
+    matches!(property, AnimatableProperty::FontAxis(_)) && value.is_absent()
+}
+
+fn start_fits(property: AnimatableProperty, value: MotionValue) -> bool {
+    finite(value) || absent_axis(property, value)
+}
+
+fn target_fits(property: AnimatableProperty, value: MotionValue, keyframe: bool) -> bool {
+    if keyframe && absent_axis(property, value) {
+        return true;
+    }
+    if !finite(value) {
+        return false;
+    }
+    match (property, value) {
+        (AnimatableProperty::Opacity, MotionValue::Scalar(v)) => (0.0..=1.0).contains(&v),
+        (
+            AnimatableProperty::Width
+            | AnimatableProperty::Height
+            | AnimatableProperty::Padding
+            | AnimatableProperty::Blur,
+            MotionValue::Scalar(v),
+        ) => v >= 0.0,
+        (AnimatableProperty::FontSize, MotionValue::Scalar(v)) => v > 0.0,
+        (_, MotionValue::Color(channels)) => channels.iter().all(|c| (0.0..=1.0).contains(c)),
+        _ => true,
     }
 }
 
@@ -440,6 +497,9 @@ pub(super) fn keyframes_monotonic(stops: &[Keyframe]) -> bool {
 /// Authored graph. Compiling yields the same host-clock tracks; it does not
 /// create a second timeline authority.
 #[derive(Debug, Clone, PartialEq)]
+// An authoring tree, compiled once and dropped: boxing every track to shrink
+// the combinator variants would cost an allocation per track for nothing.
+#[allow(clippy::large_enum_variant)]
 pub enum MotionGraph {
     Track(MotionTrack),
     Sequence(Vec<MotionGraph>),
@@ -742,6 +802,41 @@ mod tests {
             },
         ]);
         assert!(!keys.is_valid());
+    }
+
+    /// A target outside what the property accepts is refused, not clamped;
+    /// a start past it (an overshoot being retargeted) is fine.
+    #[test]
+    fn targets_must_be_values_the_property_accepts() {
+        let mut track = timed(1, 0, 100);
+        track.to = MotionTo::Value(MotionValue::Scalar(3.0));
+        assert!(!track.is_valid(), "opacity 3");
+        track.to = MotionTo::Value(MotionValue::Scalar(f32::NAN));
+        assert!(!track.is_valid(), "NaN target");
+        track.to = MotionTo::Value(MotionValue::Scalar(0.5));
+        track.from = MotionValue::Scalar(1.05);
+        assert!(track.is_valid(), "an overshoot may be where a run starts");
+        track.from = MotionValue::Scalar(f32::INFINITY);
+        assert!(!track.is_valid());
+
+        let mut axis = timed(2, 0, 100);
+        axis.property = AnimatableProperty::FontAxis(*b"BEVL");
+        axis.from = MotionValue::Scalar(f32::NAN);
+        axis.to = MotionTo::Keyframes(vec![
+            Keyframe {
+                offset: 0.0,
+                value: MotionValue::Scalar(f32::NAN),
+                easing: None,
+            },
+            Keyframe {
+                offset: 1.0,
+                value: MotionValue::Scalar(500.0),
+                easing: None,
+            },
+        ]);
+        assert!(axis.is_valid(), "an absent axis in a keyframe list");
+        axis.to = MotionTo::Value(MotionValue::Scalar(f32::NAN));
+        assert!(!axis.is_valid(), "but not as a target of its own");
     }
 
     #[test]

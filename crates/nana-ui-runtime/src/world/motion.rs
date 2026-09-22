@@ -19,6 +19,21 @@ struct LayoutClassOverlay {
     margin: Option<f32>,
 }
 
+/// A layout length as a box can take it. An overshooting curve can carry a
+/// width, height or padding below zero on its way; the box stops at zero
+/// rather than laying out a negative size. A margin may be negative.
+fn shown_length(property: crate::AnimatableProperty, px: f32) -> f32 {
+    match property {
+        crate::AnimatableProperty::Margin => px,
+        _ => px.max(0.0),
+    }
+}
+
+/// What a change to an inherited text input dirties, on the node and every
+/// descendant inheriting it: a style write and a font-axis sample alike.
+pub(super) const INHERITED_TEXT_DIRTY: u16 =
+    DirtyMask::STYLE | DirtyMask::TEXT | DirtyMask::LAYOUT | DirtyMask::INPUT | DirtyMask::RENDER;
+
 fn scale_transform(scale: f32) -> PaintTransform {
     PaintTransform {
         a: scale,
@@ -225,12 +240,7 @@ impl UiWorld {
         let now = self.animation_now;
         let mut overlay = LayoutClassOverlay::default();
         let mut any = false;
-        for animation in self.animations.values() {
-            if animation.spec.target != id
-                || animation.spec.property.animation_class() != crate::AnimationClass::Layout
-            {
-                continue;
-            }
+        for animation in self.layout_length_tracks(id) {
             let Some(track) = animation.spec.to_motion_track() else {
                 continue;
             };
@@ -244,6 +254,7 @@ impl UiWorld {
             if !px.is_finite() {
                 continue;
             }
+            let px = shown_length(animation.spec.property, px);
             match animation.spec.property {
                 crate::AnimatableProperty::Width => overlay.width = Some(px),
                 crate::AnimatableProperty::Height => overlay.height = Some(px),
@@ -256,9 +267,183 @@ impl UiWorld {
         any.then_some(overlay)
     }
 
+    /// The axes `id` declares, or inherits when it declares none, without its
+    /// own in-flight axis tracks: what a font-axis track starts from, and
+    /// what a finished one that fills forwards writes into.
+    pub(crate) fn logical_font_variations(
+        &self,
+        id: StableNodeId,
+    ) -> Vec<nana_ui_core::FontVariationSetting> {
+        if !self.contains(id) {
+            return Vec::new();
+        }
+        let record = self.record(id);
+        if let Some(axes) = &record.style.layout.font_variation_settings {
+            return axes.clone();
+        }
+        record
+            .hierarchy
+            .parent
+            .and_then(|parent| self.computed_style(parent))
+            .map(|style| style.font_variations.clone())
+            .unwrap_or_default()
+    }
+
+    /// `id`'s font-axis values at the animation clock, from its overlays:
+    /// the in-flight tracks and the holds finished ones that fill forwards
+    /// left, one winner per axis by [`nana_ui_core::motion::PresentationStore`]'s
+    /// rule.
+    ///
+    /// Style resolution lays these over the node's computed axes, so a sample
+    /// lands in `ComputedStyle::font_variations` — the text style shaping
+    /// reads — and descendants inherit it, while the authored list stays what
+    /// the author wrote. The text dirty graph sees an axis change there as
+    /// `SHAPE_STYLE`, like any other. A node without axis overlays pays one
+    /// map lookup.
+    ///
+    /// `None` is an axis the animated list leaves out (a keyframe that does
+    /// not name it samples as NaN): it is dropped from the computed axes, so
+    /// the face's default applies.
+    pub(super) fn font_axis_overlay(&self, id: StableNodeId) -> Vec<([u8; 4], Option<f32>)> {
+        let Some(target) = MotionTargetId::new(id.get()) else {
+            return Vec::new();
+        };
+        let now = self.animation_now;
+        self.presentation
+            .properties_of(target)
+            .filter_map(|property| {
+                let crate::AnimatableProperty::FontAxis(tag) = property else {
+                    return None;
+                };
+                match self.presentation.applied_value(target, property, now)? {
+                    value if value.is_absent() => Some((tag, None)),
+                    crate::MotionValue::Scalar(value) if value.is_finite() => {
+                        Some((tag, Some(value)))
+                    }
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    /// Records that what `target`'s axes resolve to changed: the style
+    /// resolves again, then the text work the axis change classifies as.
+    ///
+    /// Axes inherit as one list, so a descendant that declares its own does
+    /// not see this node's at all; the walk stops there instead of restyling
+    /// and reshaping a subtree the change cannot reach.
+    pub(super) fn mark_font_axes_changed(&mut self, target: StableNodeId) {
+        if !self.contains(target) {
+            return;
+        }
+        for id in self.axis_inheritors(target) {
+            let _ = self.mark(id, INHERITED_TEXT_DIRTY);
+        }
+        self.account_animation_dirty(INHERITED_TEXT_DIRTY);
+    }
+
+    /// `id` and every descendant that takes its axes from it: the walk stops
+    /// at a node declaring its own list.
+    fn axis_inheritors(&self, id: StableNodeId) -> Vec<StableNodeId> {
+        let mut found = Vec::new();
+        let mut stack = vec![id];
+        while let Some(node) = stack.pop() {
+            found.push(node);
+            stack.extend(
+                self.record(node)
+                    .hierarchy
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|child| {
+                        self.record(*child)
+                            .style
+                            .layout
+                            .font_variation_settings
+                            .is_none()
+                    }),
+            );
+        }
+        found
+    }
+
+    /// Whether animating axis `tag` of `id` changes nothing: every run of
+    /// every text taking its axes from `id` was shaped by a face without the
+    /// axis. `false` until something was shaped, and for `wght` / `wdth`,
+    /// which steer which face is picked even where no face has the axis.
+    pub fn font_axis_is_ineffective(&self, id: StableNodeId, tag: [u8; 4]) -> bool {
+        if tag == nana_ui_core::FontVariationSetting::WGHT
+            || tag == nana_ui_core::FontVariationSetting::WDTH
+            || !self.contains(id)
+        {
+            return false;
+        }
+        let mut shaped = false;
+        for node in self.axis_inheritors(id) {
+            if let Some((_, layout)) = self.text_layout(node) {
+                for run in &layout.runs {
+                    if !run.ignored_axes.contains(&tag) {
+                        return false;
+                    }
+                    shaped = true;
+                }
+            }
+        }
+        shaped
+    }
+
+    /// Developer diagnostic for a track that changes nothing it animates.
+    pub(crate) fn ineffective_motion_reason(
+        &self,
+        id: StableNodeId,
+        property: crate::AnimatableProperty,
+    ) -> Option<String> {
+        let crate::AnimatableProperty::FontAxis(tag) = property else {
+            return None;
+        };
+        self.font_axis_is_ineffective(id, tag).then(|| {
+            format!(
+                "no face the text is shaped with has axis `{}`; it is ignored, not mapped onto another axis",
+                String::from_utf8_lossy(&tag)
+            )
+        })
+    }
+
+    /// A font-axis sample. The value itself is read back through
+    /// [`Self::font_axis_overlay`] when the style resolves, so this only
+    /// schedules that work — and not even that when the node already shows
+    /// the value (a flat keyframe stretch, a hold being re-sampled).
+    pub(super) fn apply_font_axis_sample(
+        &mut self,
+        sample: &crate::AnimationSample,
+        tag: [u8; 4],
+    ) -> bool {
+        if !self.contains(sample.target) {
+            return false;
+        }
+        if !sample.finished {
+            let Some(crate::MotionValue::Scalar(value)) = sample.applied_value() else {
+                // Before a delay with no backwards fill: nothing is shown yet.
+                return false;
+            };
+            let shown = self.computed_style(sample.target).and_then(|style| {
+                nana_ui_core::FontVariationSetting::axis_value(&style.font_variations, tag)
+            });
+            let showing = (!crate::MotionValue::Scalar(value).is_absent()).then_some(value);
+            if shown == showing {
+                return false;
+            }
+        }
+        self.mark_font_axes_changed(sample.target);
+        true
+    }
+
     pub(super) fn apply_layout_class_sample(&mut self, sample: &crate::AnimationSample) -> bool {
         if sample.property.animation_class() != crate::AnimationClass::Layout {
             return false;
+        }
+        if let crate::AnimatableProperty::FontAxis(tag) = sample.property {
+            return self.apply_font_axis_sample(sample, tag);
         }
         let Some(crate::MotionValue::Scalar(px)) = sample
             .applied_value()
@@ -269,7 +454,7 @@ impl UiWorld {
         if !px.is_finite() || !self.contains(sample.target) {
             return false;
         }
-        let length = LengthSpec::Px(px);
+        let length = LengthSpec::Px(shown_length(sample.property, px));
         let layout = Arc::make_mut(&mut self.record_mut(sample.target).style.layout);
         let changed = match sample.property {
             crate::AnimatableProperty::Width => {
@@ -348,6 +533,7 @@ mod tests {
         cx.resolve_styles(&work.style).unwrap();
     }
 
+    /// What shows: the overlay while one applies, else the logical opacity.
     fn alpha(cx: &AppContext, id: StableNodeId) -> f32 {
         match cx.world().presentation_applied_value(
             id,
@@ -355,7 +541,7 @@ mod tests {
             cx.world().animation_now(),
         ) {
             Some(crate::MotionValue::Scalar(value)) => value,
-            _ => 1.0,
+            _ => logical_opacity(cx, id).unwrap_or(1.0),
         }
     }
 
@@ -735,6 +921,68 @@ mod tests {
         assert!((alpha(&cx, id) - 0.625).abs() < 1e-4);
     }
 
+    /// An L3 transition holds its target over the logical style once it ends,
+    /// but only until the property is written again with another value: the
+    /// later write shows as written, not under a stale hold. Writing the same
+    /// value back, as a component re-projecting its style does, keeps it.
+    #[test]
+    fn a_style_write_after_an_l3_transition_shows_as_written() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Fade")).unwrap();
+        let id = button.stable_id();
+        tick(&mut cx, 0);
+        let mut queue = MutationQueue::new();
+        queue
+            .node(id, Duration::ZERO)
+            .transition()
+            .opacity(0.0)
+            .duration(Duration::from_millis(100))
+            .ease(crate::Easing::Linear)
+            .start();
+        cx.commit_mutations(queue).unwrap();
+        tick(&mut cx, 100);
+        assert_eq!(alpha(&cx, id), 0.0);
+        cx.update_component(button, |_, _| {}).unwrap();
+        tick(&mut cx, 110);
+        assert_eq!(alpha(&cx, id), 0.0, "a re-projection is not a new write");
+
+        let mut style = cx.world().node_style(id).unwrap().clone();
+        Arc::make_mut(&mut style.layout).opacity = Some(1.0);
+        let mut write = MutationQueue::new();
+        write.set_style(id, style);
+        cx.commit_mutations(write).unwrap();
+        tick(&mut cx, 120);
+        assert_eq!(alpha(&cx, id), 1.0);
+    }
+
+    /// An L3 transition whose start value comes from the logical style still
+    /// waits out its own delay.
+    #[test]
+    fn an_l3_transition_keeps_its_delay() {
+        let mut cx = AppContext::new();
+        let doc = DocumentId::new(1).unwrap();
+        let button = cx.create_component(doc, Button::new("Later")).unwrap();
+        let id = button.stable_id();
+        tick(&mut cx, 0);
+        let mut queue = MutationQueue::new();
+        queue
+            .node(id, Duration::ZERO)
+            .transition()
+            .opacity(0.0)
+            .duration(Duration::from_millis(100))
+            .delay(Duration::from_millis(50))
+            .ease(crate::Easing::Linear)
+            .start();
+        cx.commit_mutations(queue).unwrap();
+        tick(&mut cx, 25);
+        assert_eq!(alpha(&cx, id), 1.0, "still in the delay");
+        tick(&mut cx, 100);
+        assert!((alpha(&cx, id) - 0.5).abs() < 1e-4);
+        tick(&mut cx, 150);
+        assert_eq!(alpha(&cx, id), 0.0);
+    }
+
     /// A sequence that touches one property twice compiles to two tracks. Both
     /// have to install: keying the animation on `(node, property)` alone lets
     /// the second overwrite the first in the same batch, so the opening stage
@@ -797,5 +1045,488 @@ mod tests {
             nearly_closed < 0.2,
             "and it is nearly done: {nearly_closed}"
         );
+    }
+
+    use crate::MotionTo;
+
+    const BEVL: [u8; 4] = *b"BEVL";
+    const WDTH: [u8; 4] = *b"wdth";
+
+    /// A paragraph that declares `BEVL 0, wdth 100`, with a text child that
+    /// inherits them.
+    fn axis_world() -> (UiWorld, StableNodeId, StableNodeId) {
+        let mut world = UiWorld::new();
+        let doc = DocumentId::new(1).unwrap();
+        let root = StableNodeId::new(1).unwrap();
+        let paragraph = StableNodeId::new(2).unwrap();
+        let text = StableNodeId::new(3).unwrap();
+        let mut create = MutationQueue::new();
+        create.create(root, doc, NodeKind::Document);
+        create.create(paragraph, doc, NodeKind::Element { tag: "p".into() });
+        create.create(text, doc, NodeKind::Text);
+        create.insert(root, paragraph, None);
+        create.insert(paragraph, text, None);
+        create.set_text(
+            text,
+            TextContent {
+                value: "Axis".into(),
+            },
+        );
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).font_variation_settings = Some(vec![
+            nana_ui_core::FontVariationSetting::new(BEVL, 0.0),
+            nana_ui_core::FontVariationSetting::new(WDTH, 100.0),
+        ]);
+        create.set_style(paragraph, style);
+        world.commit(create).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        (world, paragraph, text)
+    }
+
+    fn computed_axis(world: &UiWorld, id: StableNodeId, tag: [u8; 4]) -> Option<f32> {
+        nana_ui_core::FontVariationSetting::axis_value(
+            &world.computed_style(id).unwrap().font_variations,
+            tag,
+        )
+    }
+
+    fn authored_axis(world: &UiWorld, id: StableNodeId, tag: [u8; 4]) -> Option<f32> {
+        world
+            .node_style(id)
+            .and_then(|style| style.layout.font_variation_settings.as_deref())
+            .and_then(|axes| nana_ui_core::FontVariationSetting::axis_value(axes, tag))
+    }
+
+    fn axis_transition(world: &mut UiWorld, id: StableNodeId, now_ms: u64, tag: [u8; 4], to: f32) {
+        let mut queue = MutationQueue::new();
+        queue
+            .node(id, Duration::from_millis(now_ms))
+            .transition()
+            .font_axis(tag, to)
+            .duration(Duration::from_millis(100))
+            .ease(crate::Easing::Linear)
+            .start();
+        world.commit(queue).unwrap();
+    }
+
+    /// Issue #85: a font-axis track is a Motion track whose samples land in
+    /// the computed text style — the node's and every inheriting
+    /// descendant's — and cost what the #88 dirty graph says an axis change
+    /// costs: shaping and layout, never a compositor overlay.
+    #[test]
+    fn a_font_axis_sample_reaches_the_text_style_and_reshapes_its_text() {
+        let (mut world, paragraph, text) = axis_world();
+        axis_transition(&mut world, paragraph, 0, BEVL, 100.0);
+        let mut shape = world.text_revisions(text).unwrap().shape;
+        for (ms, expected) in [(0, 0.0), (50, 50.0), (100, 100.0)] {
+            world.advance_animations(Duration::from_millis(ms));
+            let work = world.take_system_work();
+            for id in [paragraph, text] {
+                assert!(work.style.contains(&id), "{ms}ms: style");
+                assert!(work.layout.contains(&id), "{ms}ms: layout");
+            }
+            assert!(work.text.contains(&text), "{ms}ms: text");
+            world.resolve_styles(&work.style).unwrap();
+            for id in [paragraph, text] {
+                let got = computed_axis(&world, id, BEVL).unwrap();
+                assert!((got - expected).abs() < 1e-3, "{ms}ms: {got}");
+                assert_eq!(computed_axis(&world, id, WDTH), Some(100.0));
+            }
+            let revisions = world.text_revisions(text).unwrap();
+            if ms > 0 {
+                assert_ne!(revisions.shape, shape, "{ms}ms: the text reshapes");
+            }
+            shape = revisions.shape;
+            assert_eq!(
+                authored_axis(&world, paragraph, BEVL),
+                Some(0.0),
+                "the authored axes stay the author's"
+            );
+            if ms < 100 {
+                let inspected = world
+                    .inspect_motion()
+                    .into_iter()
+                    .find(|entry| entry.property == crate::AnimatableProperty::FontAxis(BEVL))
+                    .expect("the axis track is inspectable");
+                assert_eq!(inspected.class, crate::AnimationClass::Layout);
+                assert_eq!(inspected.evaluator, crate::MotionEvaluatorBackend::Cpu);
+                assert_eq!(
+                    inspected.gpu_handle.filter(|handle| !handle.is_null()),
+                    None,
+                    "a glyph variation is not a compositor descriptor"
+                );
+                assert_eq!(inspected.base, Some(crate::MotionValue::Scalar(0.0)));
+                assert!(
+                    matches!(inspected.presentation, Some(crate::MotionValue::Scalar(v)) if (v - expected).abs() < 1e-3)
+                );
+            }
+        }
+        assert_eq!(world.next_animation_deadline(), None);
+        tick_world(&mut world, 1000);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(100.0));
+        assert_eq!(computed_axis(&world, text, WDTH), Some(100.0));
+        assert_eq!(
+            authored_axis(&world, paragraph, BEVL),
+            Some(0.0),
+            "held, not written"
+        );
+        assert_eq!(
+            world
+                .node_style(text)
+                .unwrap()
+                .layout
+                .font_variation_settings,
+            None,
+            "the child still inherits"
+        );
+    }
+
+    /// A hold yields to the next write of its axis, and the next run starts
+    /// from what that write shows.
+    #[test]
+    fn after_a_run_the_style_owns_the_axis_again() {
+        let (mut world, paragraph, text) = axis_world();
+        axis_transition(&mut world, paragraph, 0, BEVL, 100.0);
+        tick_world(&mut world, 100);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(100.0));
+
+        let mut write = MutationQueue::new();
+        let mut style = world.node_style(paragraph).unwrap().clone();
+        Arc::make_mut(&mut style.layout).font_variation_settings = Some(vec![
+            nana_ui_core::FontVariationSetting::new(BEVL, 30.0),
+            nana_ui_core::FontVariationSetting::new(WDTH, 100.0),
+        ]);
+        write.set_style(paragraph, style);
+        world.commit(write).unwrap();
+        tick_world(&mut world, 150);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(30.0));
+
+        axis_transition(&mut world, paragraph, 200, BEVL, 0.0);
+        tick_world(&mut world, 200);
+        assert_eq!(
+            computed_axis(&world, text, BEVL),
+            Some(30.0),
+            "no jump at the start"
+        );
+        tick_world(&mut world, 250);
+        assert!((computed_axis(&world, text, BEVL).unwrap() - 15.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn font_axes_are_separate_tracks_and_retarget_from_their_current_value() {
+        let (mut world, paragraph, _) = axis_world();
+        let mut queue = MutationQueue::new();
+        queue
+            .node(paragraph, Duration::ZERO)
+            .transition()
+            .font_axis(BEVL, 100.0)
+            .font_axis(WDTH, 200.0)
+            .duration(Duration::from_millis(100))
+            .ease(crate::Easing::Linear)
+            .start();
+        world.commit(queue).unwrap();
+        tick_world(&mut world, 50);
+        assert!((computed_axis(&world, paragraph, BEVL).unwrap() - 50.0).abs() < 1e-3);
+        assert!((computed_axis(&world, paragraph, WDTH).unwrap() - 150.0).abs() < 1e-3);
+
+        // Retargeting `BEVL` leaves the `wdth` track alone and starts from
+        // where `BEVL` is, not from its authored value.
+        axis_transition(&mut world, paragraph, 50, BEVL, 0.0);
+        tick_world(&mut world, 50);
+        assert!((computed_axis(&world, paragraph, BEVL).unwrap() - 50.0).abs() < 1e-3);
+        tick_world(&mut world, 100);
+        assert!((computed_axis(&world, paragraph, BEVL).unwrap() - 25.0).abs() < 1e-3);
+        assert!((computed_axis(&world, paragraph, WDTH).unwrap() - 200.0).abs() < 1e-3);
+    }
+
+    /// No style says what an axis the list does not name starts at — only the
+    /// face knows its default — so there is nothing to interpolate from, and
+    /// the axis takes its value at once instead of an invented start.
+    #[test]
+    fn an_undeclared_axis_takes_its_value_without_an_invented_start() {
+        let (mut world, paragraph, text) = axis_world();
+        axis_transition(&mut world, paragraph, 0, *b"opsz", 24.0);
+        tick_world(&mut world, 0);
+        assert_eq!(computed_axis(&world, text, *b"opsz"), Some(24.0));
+        assert_eq!(computed_axis(&world, text, *b"wght"), None);
+        tick_world(&mut world, 100);
+        assert_eq!(computed_axis(&world, text, *b"opsz"), Some(24.0));
+        assert_eq!(authored_axis(&world, paragraph, *b"opsz"), None);
+    }
+
+    /// Stopping a track removes its overlay; the style has to resolve again
+    /// or the text keeps the last sample forever.
+    #[test]
+    fn a_cancelled_run_falls_back_to_the_authored_axes() {
+        let (mut world, paragraph, text) = axis_world();
+        axis_transition(&mut world, paragraph, 0, BEVL, 100.0);
+        tick_world(&mut world, 50);
+        assert!((computed_axis(&world, text, BEVL).unwrap() - 50.0).abs() < 1e-3);
+        let id = *world
+            .animations
+            .keys()
+            .next()
+            .expect("the axis track is active");
+        let mut stop = MutationQueue::new();
+        stop.stop_animation(id);
+        world.commit(stop).unwrap();
+        let work = world.take_system_work();
+        assert!(work.text.contains(&text));
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(computed_axis(&world, text, BEVL), Some(0.0));
+        assert_eq!(authored_axis(&world, paragraph, BEVL), Some(0.0));
+    }
+
+    fn axis_track(id: u64, from: f32, to: MotionTo, start_ms: u64) -> crate::MotionTrack {
+        crate::MotionTrack {
+            id: crate::MotionTrackId::new(id).unwrap(),
+            target: crate::MotionTargetId::new(2).unwrap(),
+            property: crate::AnimatableProperty::FontAxis(BEVL),
+            from: crate::MotionValue::Scalar(from),
+            to,
+            timing: crate::MotionTiming::new(
+                Duration::from_millis(start_ms),
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+            ),
+            curve: crate::MotionCurve::Easing(crate::Easing::Linear),
+            playback: crate::AnimationPlayback::running(
+                crate::AnimationIteration::ONCE,
+                crate::AnimationDirection::Normal,
+                crate::AnimationFillMode::Forwards,
+            ),
+            velocity: crate::MotionValue::Scalar(0.0),
+        }
+    }
+
+    /// A sequence may move one axis twice. The second stage starts later, so
+    /// it is over the hold the first stage left, whatever their ids hash to.
+    #[test]
+    fn a_later_stage_on_an_axis_wins_over_an_earlier_hold() {
+        use crate::{MotionGraph, Timeline};
+        for (first, second) in [(1, 2), (2, 1), (9, 3)] {
+            let (mut world, paragraph, text) = axis_world();
+            let mut queue = MutationQueue::new();
+            queue
+                .node(paragraph, Duration::ZERO)
+                .timeline(Timeline::sequence([
+                    MotionGraph::track(axis_track(
+                        first,
+                        0.0,
+                        MotionTo::Value(crate::MotionValue::Scalar(100.0)),
+                        0,
+                    )),
+                    MotionGraph::track(axis_track(
+                        second,
+                        100.0,
+                        MotionTo::Value(crate::MotionValue::Scalar(20.0)),
+                        0,
+                    )),
+                ]))
+                .start();
+            world.commit(queue).unwrap();
+            tick_world(&mut world, 100);
+            assert_eq!(computed_axis(&world, text, BEVL), Some(100.0));
+            tick_world(&mut world, 150);
+            assert!(
+                (computed_axis(&world, text, BEVL).unwrap() - 60.0).abs() < 1e-3,
+                "ids {first}/{second}: the running stage shows"
+            );
+            tick_world(&mut world, 300);
+            assert_eq!(
+                computed_axis(&world, text, BEVL),
+                Some(20.0),
+                "ids {first}/{second}: the last stage's end stays"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_a_finished_run_gives_its_axis_back() {
+        use crate::{MotionGraph, Timeline};
+        let (mut world, paragraph, text) = axis_world();
+        let mut queue = MutationQueue::new();
+        queue
+            .node(paragraph, Duration::ZERO)
+            .timeline(Timeline::parallel([MotionGraph::track(axis_track(
+                3,
+                0.0,
+                MotionTo::Value(crate::MotionValue::Scalar(100.0)),
+                0,
+            ))]))
+            .start();
+        world.commit(queue).unwrap();
+        tick_world(&mut world, 100);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(100.0));
+        assert_eq!(
+            authored_axis(&world, paragraph, BEVL),
+            Some(0.0),
+            "an effect, not a write"
+        );
+        let held = world
+            .presentation_store()
+            .overlays()
+            .map(|overlay| AnimationId::new(overlay.track.id.get()).unwrap())
+            .next()
+            .expect("a hold");
+        assert!(world.animation_is_held(held));
+        let mut stop = MutationQueue::new();
+        stop.stop_animation(held);
+        world.commit(stop).unwrap();
+        let work = world.take_system_work();
+        assert!(work.text.contains(&text), "releasing a hold reshapes");
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(computed_axis(&world, text, BEVL), Some(0.0));
+        assert!(!world.animation_is_held(held));
+    }
+
+    /// Finishing early holds the value the run would have ended on. Two
+    /// alternating runs end where they began, not on the last keyframe.
+    #[test]
+    fn finishing_an_alternating_run_holds_where_it_ends() {
+        use crate::{Keyframe, MotionGraph, Timeline};
+        let (mut world, paragraph, text) = axis_world();
+        let stop = |offset: f32, value: f32| Keyframe {
+            offset,
+            value: crate::MotionValue::Scalar(value),
+            easing: None,
+        };
+        let mut track = axis_track(
+            5,
+            0.0,
+            MotionTo::Keyframes(vec![stop(0.0, 0.0), stop(1.0, 80.0)]),
+            0,
+        );
+        track.playback.iteration_count = crate::AnimationIteration::Count(2);
+        track.playback.direction = crate::AnimationDirection::Alternate;
+        let mut queue = MutationQueue::new();
+        queue
+            .node(paragraph, Duration::ZERO)
+            .timeline(Timeline::parallel([MotionGraph::track(track)]))
+            .start();
+        world.commit(queue).unwrap();
+        tick_world(&mut world, 50);
+        let id = *world.animations.keys().next().expect("running");
+        let mut finish = MutationQueue::new();
+        finish.finish_animation(id);
+        world.commit(finish).unwrap();
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
+        assert_eq!(computed_axis(&world, text, BEVL), Some(0.0));
+    }
+
+    /// As in the CSS cascade, a transition on an axis wins over an animation
+    /// on it, whichever started later.
+    #[test]
+    fn a_css_transition_on_an_axis_wins_over_a_css_animation() {
+        let (mut world, paragraph, text) = axis_world();
+        let spec = |id: u64, start: u64, to: f32, layer: crate::MotionLayer| {
+            crate::AnimationSpec::new(
+                AnimationId::new(id).unwrap(),
+                paragraph,
+                Duration::from_millis(start),
+                Duration::from_millis(100),
+                Duration::from_millis(16),
+                crate::Easing::Linear,
+            )
+            .with_property(crate::AnimatableProperty::FontAxis(BEVL))
+            .with_range(
+                crate::MotionValue::Scalar(0.0),
+                MotionTo::Value(crate::MotionValue::Scalar(to)),
+            )
+            .with_layer(layer)
+        };
+        let mut queue = MutationQueue::new();
+        queue.start_animation(spec(1, 0, 100.0, crate::MotionLayer::CssTransition));
+        queue.start_animation(spec(2, 20, 50.0, crate::MotionLayer::CssAnimation));
+        world.commit(queue).unwrap();
+        tick_world(&mut world, 50);
+        assert!((computed_axis(&world, text, BEVL).unwrap() - 50.0).abs() < 1e-3);
+        tick_world(&mut world, 110);
+        // The transition is over; the animation still runs and now shows.
+        assert!((computed_axis(&world, text, BEVL).unwrap() - 45.0).abs() < 1e-3);
+    }
+
+    /// A later run on an axis holds over an earlier run's hold: its end is
+    /// what stays, not the older value resurfacing.
+    #[test]
+    fn a_later_run_is_not_undone_by_an_earlier_hold() {
+        use crate::{MotionGraph, Timeline};
+        let (mut world, paragraph, text) = axis_world();
+        let mut queue = MutationQueue::new();
+        queue
+            .node(paragraph, Duration::ZERO)
+            .timeline(Timeline::parallel([MotionGraph::track(axis_track(
+                4,
+                0.0,
+                MotionTo::Value(crate::MotionValue::Scalar(20.0)),
+                0,
+            ))]))
+            .start();
+        world.commit(queue).unwrap();
+        tick_world(&mut world, 100);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(20.0));
+        axis_transition(&mut world, paragraph, 150, BEVL, 80.0);
+        tick_world(&mut world, 200);
+        assert!((computed_axis(&world, text, BEVL).unwrap() - 50.0).abs() < 1e-3);
+        tick_world(&mut world, 300);
+        assert_eq!(computed_axis(&world, text, BEVL), Some(80.0));
+    }
+
+    /// A target the style would refuse is refused as the style refuses it,
+    /// not clamped into something the author did not write.
+    #[test]
+    fn an_out_of_range_target_is_refused_not_clamped() {
+        let (mut world, paragraph, _) = axis_world();
+        let mut queue = MutationQueue::new();
+        queue
+            .node(paragraph, Duration::ZERO)
+            .transition()
+            .opacity(3.0)
+            .duration(Duration::from_millis(100))
+            .start();
+        assert!(matches!(
+            world.commit(queue),
+            Err(UiWorldError::InvalidAnimation(_))
+        ));
+    }
+
+    /// An overshooting curve may carry a width below zero on its way; the box
+    /// stops at zero instead of laying out a negative size.
+    #[test]
+    fn an_overshooting_width_stops_at_zero() {
+        let (mut world, paragraph, _) = axis_world();
+        let spec = crate::AnimationSpec::new(
+            AnimationId::new(77).unwrap(),
+            paragraph,
+            Duration::ZERO,
+            Duration::from_millis(100),
+            Duration::from_millis(16),
+            // Out and past the end, then back: a "back-out" curve.
+            crate::Easing::CubicBezier([0.3, 1.8, 0.6, 1.0]),
+        )
+        .with_property(crate::AnimatableProperty::Width)
+        .with_range(
+            crate::MotionValue::Scalar(10.0),
+            MotionTo::Value(crate::MotionValue::Scalar(0.0)),
+        );
+        let mut queue = MutationQueue::new();
+        queue.start_animation(spec);
+        world.commit(queue).unwrap();
+        let mut lowest = f32::MAX;
+        for ms in (0..=100).step_by(10) {
+            tick_world(&mut world, ms);
+            if let Some(LengthSpec::Px(px)) = world.node_style(paragraph).unwrap().layout.width {
+                lowest = lowest.min(px);
+            }
+        }
+        assert_eq!(lowest, 0.0, "reached zero and went no further");
+    }
+
+    fn tick_world(world: &mut UiWorld, ms: u64) {
+        world.advance_animations(Duration::from_millis(ms));
+        let work = world.take_system_work();
+        world.resolve_styles(&work.style).unwrap();
     }
 }

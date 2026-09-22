@@ -16,7 +16,6 @@ use crate::metrics::RunMetrics;
 use crate::shaping::{ShapeCounters, ShapeRequest, ShapedText, Shaper};
 use crate::source::TextSource;
 use crate::style::{TextKind, TextStyle};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The character a truncated line ends with. One character, shaped like any
@@ -71,6 +70,11 @@ pub struct TextEngineEpoch {
     pub language_generation: u64,
 }
 
+/// Strut metrics kept, by face instance and size, before the least recently
+/// used go. An animated axis or size asks with a new instance or size on every
+/// frame.
+const STRUT_CAP: usize = 1024;
+
 /// Fonts, shaping and layout behind one call.
 pub struct NativeTextEngine {
     fonts: FontSystem,
@@ -86,7 +90,7 @@ pub struct NativeTextEngine {
     /// face's metrics tables, and every text node of one style asks for the
     /// same answer, so it is read once per face instance rather than once per
     /// node per frame.
-    struts: HashMap<(FontInstanceKey, u32), RunMetrics>,
+    struts: crate::bounded::BoundedCache<(FontInstanceKey, u32), RunMetrics>,
     /// The font generation `struts` was filled under.
     strut_generation: FontGeneration,
 }
@@ -100,7 +104,7 @@ impl NativeTextEngine {
             ellipsis: TextSource::new(ELLIPSIS),
             language: None,
             language_generation: 0,
-            struts: HashMap::new(),
+            struts: crate::bounded::BoundedCache::new(STRUT_CAP),
             strut_generation: FontGeneration::default(),
         }
     }

@@ -48,6 +48,9 @@ pub struct MotionInspectorEntry {
     pub layer: Option<u64>,
     pub layer_promotion_reason: Option<&'static str>,
     pub cpu_fallback_reason: Option<String>,
+    /// Why the track changes nothing it animates, such as a font axis no face
+    /// of the text has. `None` for a track that takes effect.
+    pub ineffective_reason: Option<String>,
     pub base: Option<MotionValue>,
     pub presentation: Option<MotionValue>,
     pub next_deadline: Option<Duration>,
@@ -68,7 +71,7 @@ impl MotionInspectorEntry {
         format!(
             "Node #{} {}\nClass: {}\nEvaluator: {}\nLayer: {}\nRuntime samples/frame: {}",
             self.node,
-            self.property.css_name(),
+            self.property,
             self.class.inspector_label(),
             self.evaluator.label(),
             layer,
@@ -83,6 +86,9 @@ impl MotionInspectorEntry {
         }
         if let Some(reason) = self.cpu_fallback_reason.as_deref() {
             lines.push(format!("CPU fallback: {reason}"));
+        }
+        if let Some(reason) = self.ineffective_reason.as_deref() {
+            lines.push(format!("No effect: {reason}"));
         }
         if let Some(deadline) = self.next_deadline {
             lines.push(format!("Next deadline: {deadline:?}"));
@@ -243,6 +249,7 @@ mod tests {
             layer: Some(7),
             layer_promotion_reason: Some("transform/opacity presentation"),
             cpu_fallback_reason: None,
+            ineffective_reason: None,
             base: None,
             presentation: None,
             next_deadline: None,

@@ -235,7 +235,9 @@ fn solid_fs_main(
 
     let quad_color = mixed_color * quad_alpha;
 
-    let motion_opacity = motion_sample_scalar(motion_evaluate(paint._pad_tail1), 1.0);
+    // The sample is the curve's, overshoot included; what the quad can show
+    // is an opacity, as the CPU compositor clamps it too.
+    let motion_opacity = clamp(motion_sample_scalar(motion_evaluate(paint._pad_tail1), 1.0), 0.0, 1.0);
 
     if input.shadow_color.a > 0.0 {
         let css_spread = input.shadow_spread_radius - outline_px;

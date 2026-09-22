@@ -57,6 +57,11 @@ impl UiWorld {
             AnimatableProperty::Display => Some(MotionValue::Discrete(display_tag(
                 layout.display.unwrap_or(DisplaySpec::Flex),
             ))),
+            AnimatableProperty::FontAxis(tag) => nana_ui_core::FontVariationSetting::axis_value(
+                &self.logical_font_variations(id),
+                tag,
+            )
+            .map(MotionValue::Scalar),
             AnimatableProperty::Color
             | AnimatableProperty::Clip
             | AnimatableProperty::Blur
@@ -64,7 +69,6 @@ impl UiWorld {
             | AnimatableProperty::Shadow
             | AnimatableProperty::ShaderParameter
             | AnimatableProperty::FontSize
-            | AnimatableProperty::FontAxis
             | AnimatableProperty::Progress => None,
         }
     }
@@ -161,6 +165,8 @@ impl UiWorld {
                 layer: None,
                 layer_promotion_reason: None,
                 cpu_fallback_reason: cpu_fallback_reason(track.property, has_gpu),
+                ineffective_reason: StableNodeId::new(node)
+                    .and_then(|id| self.ineffective_motion_reason(id, track.property)),
                 base: pair.as_ref().map(|pair| pair.logical),
                 presentation: pair.map(|pair| pair.presentation),
                 next_deadline,
@@ -191,6 +197,7 @@ impl UiWorld {
                 layer: None,
                 layer_promotion_reason: None,
                 cpu_fallback_reason: cpu_fallback_reason(spec.property, has_gpu),
+                ineffective_reason: self.ineffective_motion_reason(spec.target, spec.property),
                 base: self.logical_motion_value(spec.target, spec.property),
                 presentation: None,
                 next_deadline: Some(animation.next_deadline),
@@ -201,7 +208,7 @@ impl UiWorld {
                 render_nodes_reextracted_from_animation: extract,
             });
         }
-        entries.sort_by_key(|entry| (entry.node, entry.property.css_name()));
+        entries.sort_by_key(|entry| (entry.node, entry.property));
         entries
     }
 

@@ -513,7 +513,7 @@ impl Shaper {
         segment: &StyleSegment<'_>,
         scale: f32,
     ) -> Option<ShapedRun> {
-        let (raw, instance) = piece.shaped?;
+        let (raw, mut instance) = piece.shaped?;
         if raw.is_empty() {
             return None;
         }
@@ -574,6 +574,10 @@ impl Shaper {
             origin_x_px: 0.0,
             glyphs,
             metrics,
+            ignored_axes: instance
+                .as_mut()
+                .map(|instance| std::mem::take(&mut instance.ignored_axes))
+                .unwrap_or_default(),
             instance: instance.map(|instance| instance.key),
         })
     }

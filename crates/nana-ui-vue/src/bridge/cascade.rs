@@ -187,15 +187,11 @@ impl MessageBridge {
                 if widget.props.attrs.contains_key(GENERATED_PSEUDO_ATTR) {
                     return None;
                 }
-                Some((
-                    *id,
-                    CssPaintSnapshot::from_layout_resolved(
-                        &widget.props.layout,
-                        widget.props.containing_block_width,
-                        widget.props.containing_block_height,
-                        self.cascade.layout_viewport,
-                    ),
-                ))
+                // What the cascade said before this pass, not what shows: an
+                // animation's value is not a change the cascade made, and a
+                // transition only runs for one (a running transition's own
+                // retarget reads what shows).
+                Some((*id, self.snapshot_widget(*id)?))
             })
             .collect();
         // Steady-state frames recascade nothing and must not bump the
@@ -216,14 +212,24 @@ impl MessageBridge {
             let Some(motion) = self.motion.computed_motion.get(&id).cloned() else {
                 continue;
             };
+            // A name no `@keyframes` defines runs no animation, so the one it
+            // replaced stops as surely as with `none`.
             if motion.animation_name.eq_ignore_ascii_case("none")
-                || motion.animation_name.is_empty()
+                || !self.cascade.keyframes.contains_key(&motion.animation_name)
             {
-                self.clear_css_keyframes(id);
+                self.remove_css_keyframes(doc, id);
             } else if let Some(rule) = self.cascade.keyframes.get(&motion.animation_name).cloned()
                 && !self.motion.css_transitions.contains_key(&id)
                 && self.should_start_keyframes(id, &motion.animation_name)
-                && let Some(compiled) = compile_css_keyframes(id, &motion, &rule, now)
+                && let Some(compiled) = compile_css_keyframes(
+                    id,
+                    &motion,
+                    &rule,
+                    &self
+                        .snapshot_widget(id)
+                        .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default())),
+                    now,
+                )
             {
                 self.start_compiled_keyframes(doc, id, motion.animation_name.clone(), compiled);
             }
@@ -243,6 +249,10 @@ impl MessageBridge {
                     .unwrap_or_else(|| CssPaintSnapshot::from_layout(&LayoutStyle::default()));
                 if let Some(compiled) = compile_css_transition(id, &motion, &current, &to, now) {
                     self.start_compiled_transition(doc, id, current, to, compiled, true);
+                } else {
+                    // Nothing to retarget: a running axis track is heading to
+                    // a destination the cascade no longer has.
+                    self.stop_css_font_axis_transition(doc, id);
                 }
                 continue;
             }
@@ -525,7 +535,14 @@ impl MessageBridge {
         if let Some(parent_id) = self.widgets.get(&id).and_then(|w| w.parent)
             && let Some(parent) = self.widgets.get(&parent_id)
         {
+            let declares_axes = layout.font_variation_settings.is_some();
             layout.inherit_typography_from(&parent.props.layout);
+            if !declares_axes {
+                // Runtime inherits the axes itself. A copy here would read as
+                // the child's own declaration there and hide the parent's
+                // font-axis Motion tracks (Issue #85) from the text inside it.
+                layout.font_variation_settings = None;
+            }
         }
         if !self.cascade.generated_pseudo_rules.is_empty() {
             let matched = crate::css_interactive::matched_generated_pseudo(
@@ -1086,7 +1103,10 @@ impl MessageBridge {
     }
 
     pub fn unsupported_css(&self) -> crate::css_cascade::UnsupportedCssReport {
-        self.cascade.unsupported_css.report()
+        crate::css_cascade::UnsupportedCssReport {
+            font_axis_animations: self.motion.ineffective_font_axes,
+            ..self.cascade.unsupported_css.report()
+        }
     }
 }
 

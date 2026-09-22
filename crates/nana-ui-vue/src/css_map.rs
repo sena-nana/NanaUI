@@ -2822,7 +2822,9 @@ impl LayoutStyleCss for LayoutStyle {
                 self.paint.visibility = Some(VisibilitySpec::Visible);
             }
             "opacity" => {
-                if let Ok(v) = val.trim().parse::<f32>() {
+                if let Ok(v) = val.trim().parse::<f32>()
+                    && v.is_finite()
+                {
                     self.opacity = Some(v.clamp(0.0, 1.0));
                 }
             }

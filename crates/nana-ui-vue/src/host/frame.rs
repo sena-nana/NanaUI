@@ -23,8 +23,17 @@ impl VueHost {
             doc.flush_host_frame();
             self.report_commit_rejections(&mut doc);
         }
-        self.report_unsupported_css();
         self.flush_runtime_scene(logical_width, logical_height)?;
+        {
+            // After the scene flush, which shaped this frame's text: which
+            // faces a text uses is only known then. Refreshed with or without
+            // a sink: `unsupported_css()` reports it either way. Bridge before
+            // document, the order every other path takes them.
+            let mut bridge = self.bridge.lock().expect("vue bridge");
+            let doc = self.document.lock().expect("vue doc");
+            bridge.refresh_font_axis_diagnostics(&doc);
+        }
+        self.report_unsupported_css();
 
         // Re-recording every painted box is a full-tree walk plus one `record`
         // per node, and `record` takes three locks -- on a 2,000 node tree that

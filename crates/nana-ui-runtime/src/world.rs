@@ -551,6 +551,9 @@ pub struct UiWorld {
     pending_render_removals: Vec<StableNodeId>,
     pending_accessibility_removals: Vec<StableNodeId>,
     animations: HashMap<AnimationId, ActiveAnimation>,
+    /// Running width / height / padding / margin tracks by target, in start
+    /// order: what a node's layout overlay reads instead of every animation.
+    layout_length_tracks: HashMap<StableNodeId, Vec<AnimationId>>,
     pub(crate) animation_now: Duration,
     presentation: nana_ui_core::motion::PresentationStore,
     /// Input / a11y / focus queries increment this. Idle `advance_animations`
@@ -731,6 +734,7 @@ impl UiWorld {
             pending_render_removals: Vec::new(),
             pending_accessibility_removals: Vec::new(),
             animations: HashMap::new(),
+            layout_length_tracks: HashMap::new(),
             animation_now: Duration::ZERO,
             presentation: nana_ui_core::motion::PresentationStore::new(),
             presentation_query_samples: Cell::new(0),

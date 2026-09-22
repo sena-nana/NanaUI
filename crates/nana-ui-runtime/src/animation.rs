@@ -8,12 +8,13 @@ pub use nana_ui_core::motion::{
     MOTION_DESCRIPTOR_VERSION, MotionCodecError, MotionCodecId, MotionCodecInfo,
     MotionCodecRegistry, MotionCurve, MotionDescriptor, MotionDescriptorError,
     MotionDescriptorStore, MotionEvaluatorBackend, MotionGraph, MotionHandle, MotionInspectorEntry,
-    MotionInterrupt, MotionSample, MotionTargetId, MotionTiming, MotionTo, MotionTrack,
-    MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters, PresentationOverlay,
-    PresentationPair, PresentationSlot, PresentationStore, Spring, SpringParams, StepJump,
-    Timeline, classify_animatable_property, compile_motion_descriptor, cpu_fallback_reason,
-    decode_motion_track, evaluate_descriptor, evaluate_progress, evaluate_track, evaluate_track_at,
-    invert_flip_translate, retarget_track, track_completion_deadline,
+    MotionInterrupt, MotionLayer, MotionSample, MotionTargetId, MotionTiming, MotionTo,
+    MotionTrack, MotionTrackId, MotionValue, MotionValueKind, MotionWorkCounters,
+    PresentationOverlay, PresentationPair, PresentationSlot, PresentationStore, Spring,
+    SpringParams, StepJump, Timeline, classify_animatable_property, compile_motion_descriptor,
+    cpu_fallback_reason, decode_motion_track, evaluate_descriptor, evaluate_progress,
+    evaluate_track, evaluate_track_at, invert_flip_translate, is_font_variation_settings,
+    retarget_track, track_completion_deadline,
 };
 
 /// Stable identity for one logical animation. Starting the same ID again
@@ -205,6 +206,8 @@ pub struct AnimationSpec {
     /// Same-id start: replace the previous timeline, or retarget from the
     /// current presentation sample.
     pub interrupt: MotionInterrupt,
+    /// Which layer wins when another track animates the property at once.
+    pub layer: MotionLayer,
 }
 
 impl AnimationSpec {
@@ -235,6 +238,7 @@ impl AnimationSpec {
             to: MotionTo::Value(MotionValue::Scalar(1.0)),
             velocity: MotionValue::Scalar(0.0),
             interrupt: MotionInterrupt::Replace,
+            layer: MotionLayer::Runtime,
         }
     }
 
@@ -267,6 +271,18 @@ impl AnimationSpec {
     pub fn with_interrupt(mut self, interrupt: MotionInterrupt) -> Self {
         self.interrupt = interrupt;
         self
+    }
+
+    pub fn with_layer(mut self, layer: MotionLayer) -> Self {
+        self.layer = layer;
+        self
+    }
+
+    /// Whether samples of this track live in the presentation overlay:
+    /// compositor properties, read at paint, and font axes, read when the
+    /// style resolves.
+    pub fn has_overlay(&self) -> bool {
+        self.uses_presentation_overlay() || matches!(self.property, AnimatableProperty::FontAxis(_))
     }
 
     /// Overlay + descriptor path for compositor-safe properties only.

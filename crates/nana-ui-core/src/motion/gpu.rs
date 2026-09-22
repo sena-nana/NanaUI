@@ -257,7 +257,7 @@ pub fn pack_property(property: AnimatableProperty) -> u32 {
         AnimatableProperty::Padding => 11,
         AnimatableProperty::Margin => 12,
         AnimatableProperty::FontSize => 13,
-        AnimatableProperty::FontAxis => 14,
+        AnimatableProperty::FontAxis(_) => 14,
         AnimatableProperty::Display => 15,
         AnimatableProperty::Progress => 16,
     }

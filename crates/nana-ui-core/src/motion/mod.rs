@@ -59,10 +59,10 @@ pub use playback::{
     AnimationDirection, AnimationFillMode, AnimationIteration, AnimationPlayState,
     AnimationPlayback, MotionTiming, TimedProgress,
 };
-pub use presentation::{PresentationOverlay, PresentationStore};
+pub use presentation::{MotionLayer, PresentationOverlay, PresentationStore};
 pub use property::{
     AnimatableProperty, AnimationClass, FlipRect, classify_animatable_property,
-    invert_flip_translate,
+    invert_flip_translate, is_font_variation_settings,
 };
 
 use std::time::Duration;

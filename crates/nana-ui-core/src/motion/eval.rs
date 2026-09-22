@@ -1282,6 +1282,8 @@ mod tests {
     #[test]
     fn keyframes_empty_exact_stop_and_unsorted_contract() {
         let mut track = track(MotionCurve::Easing(Easing::Linear));
+        // Stops past 1 are not opacities; the contract here is the stops'.
+        track.property = AnimatableProperty::Width;
         track.to = MotionTo::Keyframes(Vec::new());
         assert_eq!(
             scalar(&evaluate_track(&track, Duration::from_millis(40))),

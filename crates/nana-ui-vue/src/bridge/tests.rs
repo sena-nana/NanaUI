@@ -6117,3 +6117,417 @@ fn a_paint_prop_parses_to_a_painter_and_reports_a_bad_script() {
             .is_some_and(|error| error.contains("command 0"))
     );
 }
+
+fn runtime_axis(doc: &crate::tree::NanaTreeDocument, id: u64, tag: [u8; 4]) -> Option<f32> {
+    let style = doc
+        .world()
+        .computed_style(nana_ui_runtime::StableNodeId::new(id).unwrap())?;
+    nana_ui_core::FontVariationSetting::axis_value(&style.font_variations, tag)
+}
+
+/// A `<p class="axis">` with a text child, whose hover rule moves `BEVL`.
+fn font_axis_transition_doc(
+    sheet: &str,
+) -> (
+    crate::tree::NanaTreeDocument,
+    MessageBridge,
+    crate::tree::NodeHandle,
+    crate::tree::NodeHandle,
+) {
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let paragraph = doc.create_element("p");
+    let text = doc.create_text("Axis");
+    doc.insert(paragraph, root, None);
+    doc.insert(text, paragraph, None);
+    bridge.register(
+        paragraph.0,
+        WidgetKind::Text,
+        WidgetProps {
+            class_names: vec!["axis".into()],
+            element_tag: "p".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.register(
+        text.0,
+        WidgetKind::Text,
+        WidgetProps {
+            label: "Axis".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.insert_child(text.0, paragraph.0, None);
+    bridge.inject_stylesheet(sheet);
+    bridge.resolve_document_layout(&mut doc);
+    doc.set_runtime_clock_for_test(std::time::Duration::ZERO);
+    doc.flush_host_frame();
+    (doc, bridge, paragraph, text)
+}
+
+/// Issue #85: a CSS transition on `font-variation-settings` is a Motion track
+/// per axis, and the text inside the element — not only the element — reads
+/// the sampled axis.
+#[test]
+fn font_variation_transition_animates_the_text_it_contains() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, text) = font_axis_transition_doc(
+        ".axis { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; \
+                 transition: font-variation-settings 2000ms linear; } \
+         .axis:hover { font-variation-settings: \"wdth\" 100, \"BEVL\" 100; }",
+    );
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(0.0));
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    for id in [paragraph.0, text.0] {
+        let start = runtime_axis(&doc, id, *b"BEVL").unwrap();
+        assert!(
+            start < 10.0,
+            "the transition starts where the axis was, not at the hover value: {start}"
+        );
+    }
+    let axis_track =
+        crate::css_interactive_apply::css_transition_font_axis_id(paragraph.0, *b"BEVL");
+    assert!(doc.world().animation_is_active(axis_track));
+    assert!(
+        !doc.world().animation_is_active(
+            crate::css_interactive_apply::css_transition_font_axis_id(paragraph.0, *b"wdth")
+        ),
+        "an axis that does not change gets no track"
+    );
+
+    doc.set_runtime_clock_for_test(Duration::from_millis(1000));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    // The document clock is wall time past the test's mark, so under load a
+    // sample lands a little late; the text must still read its parent's value.
+    let parent_mid = runtime_axis(&doc, paragraph.0, *b"BEVL").unwrap();
+    assert!(
+        (40.0..70.0).contains(&parent_mid),
+        "mid-transition BEVL {parent_mid}"
+    );
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(parent_mid));
+    for id in [paragraph.0, text.0] {
+        assert_eq!(runtime_axis(&doc, id, *b"wdth"), Some(100.0));
+        assert_eq!(
+            runtime_axis(&doc, id, *b"wght"),
+            None,
+            "never folded onto wght"
+        );
+    }
+
+    doc.set_runtime_clock_for_test(Duration::from_millis(2200));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    for id in [paragraph.0, text.0] {
+        assert_eq!(runtime_axis(&doc, id, *b"BEVL"), Some(100.0));
+    }
+    assert!(!doc.world().animation_is_active(axis_track));
+    assert!(
+        bridge
+            .take_motion_completes()
+            .iter()
+            .any(|complete| complete.widget_id == paragraph.0
+                && complete.event_type == "transitionend"),
+        "the axis track finishing ends the transition"
+    );
+}
+
+/// Lists that name different axes have nothing to interpolate: the change is
+/// discrete, and no track invents a start for the missing axis.
+#[test]
+fn font_variation_transition_between_different_axes_is_discrete() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, text) = font_axis_transition_doc(
+        ".axis { font-variation-settings: \"wdth\" 100; \
+                 transition: font-variation-settings 200ms linear; } \
+         .axis:hover { font-variation-settings: \"BEVL\" 100; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(100));
+    bridge.tick_css_animations(&mut doc);
+    bridge.resolve_document_layout(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(100.0));
+    assert_eq!(runtime_axis(&doc, text.0, *b"wdth"), None);
+    assert!(!doc.world().animation_is_active(
+        crate::css_interactive_apply::css_transition_font_axis_id(paragraph.0, *b"BEVL")
+    ));
+}
+
+#[test]
+fn font_variation_keyframes_drive_one_track_per_axis() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, text) = font_axis_transition_doc(
+        "@keyframes breathe { \
+             from { font-variation-settings: \"BEVL\" 0, \"wdth\" 50; } \
+             50% { font-variation-settings: \"BEVL\" 100, \"wdth\" 50; } \
+             to { font-variation-settings: \"BEVL\" 0, \"wdth\" 150; } } \
+         .axis { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; } \
+         .axis:hover { animation: breathe 2000ms linear; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    for axis in [*b"BEVL", *b"wdth"] {
+        assert!(doc.world().animation_is_active(
+            crate::css_interactive_apply::css_keyframes_font_axis_id(paragraph.0, axis)
+        ));
+    }
+    doc.set_runtime_clock_for_test(Duration::from_millis(500));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let bevl = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    // Wall-clock document time: both the start and the sample drift a little.
+    assert!((40.0..70.0).contains(&bevl), "quarter way: BEVL {bevl}");
+    assert_eq!(runtime_axis(&doc, text.0, *b"wdth"), Some(50.0));
+    doc.set_runtime_clock_for_test(Duration::from_millis(1500));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let bevl = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    let wdth = runtime_axis(&doc, text.0, *b"wdth").unwrap();
+    assert!((30.0..60.0).contains(&bevl), "three quarters: BEVL {bevl}");
+    assert!((90.0..120.0).contains(&wdth), "three quarters: wdth {wdth}");
+    // Fill `none`: once it ends, the element's own axes are back.
+    doc.set_runtime_clock_for_test(Duration::from_millis(2200));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(0.0));
+    assert_eq!(runtime_axis(&doc, text.0, *b"wdth"), Some(100.0));
+}
+
+/// Leaving hover mid-transition reverses from where the axis is, instead of
+/// running on to the old destination or jumping.
+#[test]
+fn font_variation_transition_reverses_from_the_axis_it_shows() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, text) = font_axis_transition_doc(
+        ".axis { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; \
+                 transition: font-variation-settings 2000ms linear; } \
+         .axis:hover { font-variation-settings: \"BEVL\" 100, \"wdth\" 100; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(1000));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let turned = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    assert!((40.0..70.0).contains(&turned), "hover-in midway: {turned}");
+
+    doc.set_pointer_hover(0, None);
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    let start = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    // Wall-clock document time runs on between the reads, by up to a second
+    // under load, so the hover-in may have got close to 100 by now. What
+    // must not happen is a jump back to the destination 0; running on to
+    // 100 instead of reversing is caught below.
+    assert!(
+        start >= turned - 5.0,
+        "the reverse starts where the axis was ({turned}), not at 0: {start}"
+    );
+    // Relative to now: the reverse started whenever the hover left.
+    doc.set_runtime_clock_for_test(doc.runtime_now() + Duration::from_millis(1000));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let back = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    assert!(back < start && back > 0.0, "reversing: {start} -> {back}");
+    doc.set_runtime_clock_for_test(doc.runtime_now() + Duration::from_millis(3000));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(0.0));
+}
+
+/// An element whose axes are inherited transitions from the inherited value,
+/// as CSS interpolates computed values.
+#[test]
+fn an_inherited_font_variation_transitions_to_a_declared_one() {
+    use std::time::Duration;
+
+    let mut doc = crate::tree::NanaTreeDocument::new(800, 600, 1.0);
+    let mut bridge = MessageBridge::new();
+    let root = doc.mount_root();
+    let outer = doc.create_element("div");
+    let paragraph = doc.create_element("p");
+    let text = doc.create_text("Axis");
+    doc.insert(outer, root, None);
+    doc.insert(paragraph, outer, None);
+    doc.insert(text, paragraph, None);
+    bridge.register(
+        outer.0,
+        WidgetKind::Column,
+        WidgetProps {
+            class_names: vec!["outer".into()],
+            element_tag: "div".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.register(
+        paragraph.0,
+        WidgetKind::Text,
+        WidgetProps {
+            class_names: vec!["axis".into()],
+            element_tag: "p".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.register(
+        text.0,
+        WidgetKind::Text,
+        WidgetProps {
+            label: "Axis".into(),
+            ..WidgetProps::default()
+        },
+    );
+    bridge.insert_child(paragraph.0, outer.0, None);
+    bridge.insert_child(text.0, paragraph.0, None);
+    bridge.inject_stylesheet(
+        ".outer { font-variation-settings: \"BEVL\" 0; } \
+         .axis { transition: font-variation-settings 2000ms linear; } \
+         .axis:hover { font-variation-settings: \"BEVL\" 100; }",
+    );
+    bridge.resolve_document_layout(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::ZERO);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(0.0));
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(1000));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let mid = runtime_axis(&doc, text.0, *b"BEVL").unwrap();
+    assert!((40.0..70.0).contains(&mid), "from the inherited 0: {mid}");
+}
+
+/// A fill lasts as long as its animation applies: once `animation-name` stops
+/// naming it, the axis it held goes back to the cascade.
+#[test]
+fn removing_the_animation_releases_the_axis_it_held() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, text) = font_axis_transition_doc(
+        "@keyframes lean { \
+             from { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; } \
+             to { font-variation-settings: \"BEVL\" 100, \"wdth\" 100; } } \
+         .axis { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; } \
+         .axis:hover { animation: lean 100ms linear forwards; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(200));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(100.0), "held");
+
+    doc.set_pointer_hover(0, None);
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(runtime_axis(&doc, text.0, *b"BEVL"), Some(0.0), "released");
+}
+
+/// The same holds for compositor properties: an opacity fill ends with the
+/// animation that left it.
+#[test]
+fn removing_the_animation_releases_the_opacity_it_held() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, _) = font_axis_transition_doc(
+        "@keyframes fade { from { opacity: 1; } to { opacity: 0.2; } } \
+         .axis:hover { animation: fade 100ms linear forwards; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(200));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    let now = doc.runtime_now();
+    assert!((presented_opacity(&doc, paragraph.0, now) - 0.2).abs() < 1e-4);
+
+    doc.set_pointer_hover(0, None);
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.flush_host_frame();
+    assert_eq!(
+        doc.world().presentation_applied_value(
+            nana_ui_runtime::StableNodeId::new(paragraph.0).unwrap(),
+            nana_ui_runtime::AnimatableProperty::Opacity,
+            doc.runtime_now(),
+        ),
+        None,
+        "the fill ended with its animation"
+    );
+}
+
+/// Moving an axis no face of the text has is reported, not passed over in
+/// silence; the count falls once the track is gone.
+#[test]
+fn a_font_axis_animation_the_face_cannot_show_is_reported() {
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, _) = font_axis_transition_doc(
+        ".axis { font-variation-settings: \"ZZZZ\" 0; \
+                 transition: font-variation-settings 200ms linear; } \
+         .axis:hover { font-variation-settings: \"ZZZZ\" 100; }",
+    );
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    doc.set_runtime_clock_for_test(Duration::from_millis(50));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    bridge.refresh_font_axis_diagnostics(&doc);
+    assert_eq!(bridge.unsupported_css().font_axis_animations, 1);
+
+    doc.set_runtime_clock_for_test(Duration::from_millis(400));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    bridge.refresh_font_axis_diagnostics(&doc);
+    assert_eq!(bridge.unsupported_css().font_axis_animations, 0);
+}
+
+/// App motion on a Vue node holds its end through the bridge writing the
+/// cascade back: re-syncing the same value is not a new write.
+#[test]
+fn an_app_run_on_a_vue_node_survives_cascade_syncs() {
+    use nana_ui_runtime::{
+        AnimatableProperty, AnimationDirection, AnimationFillMode, AnimationId, AnimationIteration,
+        AnimationPlayback, AnimationSpec, Easing, MotionTo, MotionValue, StableNodeId,
+    };
+    use std::time::Duration;
+
+    let (mut doc, mut bridge, paragraph, _) =
+        font_axis_transition_doc(".axis { opacity: 1; } .axis:hover { color: red; }");
+    let spec = AnimationSpec::new(
+        AnimationId::new(0x5151).unwrap(),
+        StableNodeId::new(paragraph.0).unwrap(),
+        doc.runtime_now(),
+        Duration::from_millis(50),
+        Duration::from_millis(16),
+        Easing::Linear,
+    )
+    .with_property(AnimatableProperty::Opacity)
+    .with_range(
+        MotionValue::Scalar(1.0),
+        MotionTo::Value(MotionValue::Scalar(0.3)),
+    )
+    .with_playback(AnimationPlayback::running(
+        AnimationIteration::ONCE,
+        AnimationDirection::Normal,
+        AnimationFillMode::Forwards,
+    ));
+    doc.start_css_animation(spec);
+    doc.set_runtime_clock_for_test(Duration::from_millis(200));
+    bridge.tick_css_animations(&mut doc);
+    doc.flush_host_frame();
+    // A hover recascades the node and syncs its layout back.
+    doc.set_pointer_hover(0, Some(paragraph));
+    bridge.reapply_interactive_cascade(&mut doc);
+    bridge.resolve_document_layout(&mut doc);
+    doc.flush_host_frame();
+    let now = doc.runtime_now();
+    assert!((presented_opacity(&doc, paragraph.0, now) - 0.3).abs() < 1e-4);
+}

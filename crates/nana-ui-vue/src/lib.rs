@@ -844,15 +844,25 @@ impl VueHost {
                 current.font_variations - last.font_variations
             ));
         }
-        if parts.is_empty() {
-            return;
+        if !parts.is_empty() {
+            self.report_diagnostic(
+                "nana.css",
+                JsDiagnosticLevel::Warning,
+                format!("unsupported CSS ignored by layout: {}", parts.join(", ")),
+                None,
+            );
         }
-        self.report_diagnostic(
-            "nana.css",
-            JsDiagnosticLevel::Warning,
-            format!("unsupported CSS ignored by layout: {}", parts.join(", ")),
-            None,
-        );
+        if current.font_axis_animations > last.font_axis_animations {
+            self.report_diagnostic(
+                "nana.css",
+                JsDiagnosticLevel::Warning,
+                format!(
+                    "{} font-variation-settings animation(s) move an axis no face of their text has; the axis is ignored, not mapped onto another",
+                    current.font_axis_animations - last.font_axis_animations
+                ),
+                None,
+            );
+        }
     }
 
     /// Forward host-op commit rejections and invalid `paint` scripts recorded

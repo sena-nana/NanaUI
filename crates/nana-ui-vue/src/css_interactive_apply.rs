@@ -2,10 +2,12 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
+use nana_ui_core::FontVariationSetting;
 use nana_ui_runtime::{
     AnimatableProperty, AnimationClass, AnimationDirection, AnimationFillMode, AnimationId,
     AnimationIteration, AnimationPlayState, AnimationPlayback, AnimationSpec, Easing, Keyframe,
-    MotionCurve, MotionTo, MotionValue, StableNodeId, StepJump, classify_animatable_property,
+    MotionCurve, MotionLayer, MotionTo, MotionValue, StableNodeId, StepJump,
+    classify_animatable_property, is_font_variation_settings,
 };
 
 use crate::{
@@ -114,6 +116,10 @@ impl InteractiveRuntimeSnapshot {
 /// (`min()`/`max()`/`clamp()`, other calc than percent±px) fail closed — they
 /// take the target, they do not snap-fake a mid. Padding is not in this
 /// snapshot. `MotionDeclarations` stays animation/transition longhands.
+///
+/// `font_variations` is only compared and compiled, never lerped or applied
+/// here: each axis is its own Motion track, and Runtime lays its samples over
+/// the computed text style.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CssPaintSnapshot {
     pub opacity: Option<f32>,
@@ -125,6 +131,7 @@ pub struct CssPaintSnapshot {
     pub filter: Option<nana_ui_core::box_layout::ColorFilter>,
     pub width: Option<nana_ui_core::box_layout::LengthSpec>,
     pub height: Option<nana_ui_core::box_layout::LengthSpec>,
+    pub font_variations: Option<Vec<FontVariationSetting>>,
 }
 
 impl CssPaintSnapshot {
@@ -148,6 +155,7 @@ impl CssPaintSnapshot {
             filter: layout.paint.filter,
             width: layout.width,
             height: layout.height,
+            font_variations: layout.font_variation_settings.clone(),
         }
     }
 
@@ -307,6 +315,32 @@ pub fn css_keyframes_overlay_id(widget_id: u64, property: AnimatableProperty) ->
             | (widget_id & CSS_WIDGET_ID_MASK),
     )
     .expect("css keyframes overlay id is nonzero")
+}
+
+/// `font-variation-settings` compiles to one track per axis. A 32-bit axis tag
+/// and a 48-bit widget id do not both fit beside the base and the property
+/// tag, so the low bits hash the pair; the tag keeps the ids apart from every
+/// other property's.
+const CSS_FONT_AXIS_TAG: u64 = 7;
+
+fn css_font_axis_id(base: u64, widget_id: u64, axis: [u8; 4]) -> AnimationId {
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hasher.write_u64(widget_id);
+    hasher.write(&axis);
+    AnimationId::new(
+        base | (CSS_FONT_AXIS_TAG << CSS_OVERLAY_TAG_SHIFT)
+            | (hasher.finish() & CSS_WIDGET_ID_MASK),
+    )
+    .expect("css font axis id is nonzero")
+}
+
+pub fn css_transition_font_axis_id(widget_id: u64, axis: [u8; 4]) -> AnimationId {
+    css_font_axis_id(CSS_TRANSITION_ANIMATION_BASE, widget_id, axis)
+}
+
+pub fn css_keyframes_font_axis_id(widget_id: u64, axis: [u8; 4]) -> AnimationId {
+    css_font_axis_id(CSS_KEYFRAMES_ANIMATION_BASE, widget_id, axis)
 }
 
 pub fn apply_interactive_declarations(
@@ -758,7 +792,7 @@ fn parse_animation_shorthand(raw: &str) -> Option<AnimationShorthand> {
     let mut play_state = String::new();
     for token in tokens {
         let lower = token.to_ascii_lowercase();
-        if lower.ends_with("ms") || lower.ends_with('s') {
+        if is_css_time_token(&lower) {
             if duration.is_empty() {
                 duration = token;
             } else if delay.is_empty() {
@@ -829,8 +863,11 @@ fn is_css_timing_function(token: &str) -> bool {
         || token.starts_with("steps(")
 }
 
+/// A `<time>`: a number with an `s` or `ms` unit. The suffix alone is not
+/// one — `font-variation-settings` and an animation called `pulses` end in `s`
+/// too, and taking them for a duration loses the property or the name.
 fn is_css_time_token(token: &str) -> bool {
-    token.ends_with("ms") || token.ends_with('s')
+    parse_css_time_token(token).is_some()
 }
 
 fn split_css_tokens(raw: &str) -> Vec<String> {
@@ -917,6 +954,13 @@ fn parse_css_time_token(trimmed: &str) -> Option<f32> {
             .map(|v| (v * 1000.0).max(0.0));
     }
     None
+}
+
+/// A parsed CSS time in milliseconds as a [`Duration`], to the nanosecond.
+/// `from_secs_f32(ms / 1000.0)` makes `200ms` 200.000003ms, so a CSS track
+/// would end a frame later than the same track authored in Rust.
+pub fn css_ms_duration(ms: f32) -> Duration {
+    Duration::from_nanos((f64::from(ms.max(0.0)) * 1_000_000.0).round() as u64)
 }
 
 pub fn parse_css_time_ms(raw: &str) -> Option<f32> {
@@ -1097,6 +1141,8 @@ pub fn lerp_paint_for_properties(
         } else {
             to.height.or(from.height)
         },
+        // Font axes interpolate on their own Motion tracks, not in this lerp.
+        font_variations: None,
     }
 }
 
@@ -1393,6 +1439,7 @@ pub fn compile_css_transition(
         compositor_css_names()
             .into_iter()
             .chain(cpu_css_names())
+            .chain(["font-variation-settings"])
             .map(str::to_string)
             .collect()
     } else {
@@ -1402,6 +1449,12 @@ pub fn compile_css_transition(
         let duration = css_list_at(&durations, index);
         let delay = css_list_at(&delays, index);
         let timing = css_list_at(&timings, index);
+        if is_font_variation_settings(property) {
+            overlays.extend(font_axis_transition_specs(
+                widget_id, from, to, duration, delay, timing, now,
+            ));
+            continue;
+        }
         if let Some(animatable) = compositor_css_property(property) {
             if !snapshot_property_changed(from, to, animatable) {
                 continue;
@@ -1453,10 +1506,13 @@ pub fn compile_css_transition(
 
 /// Compile `@keyframes` onto Motion IR. Opacity/transform become compositor
 /// overlay keyframe tracks; remaining paint/layout longhands keep a Progress spec.
+/// `base` is the element's own style, without the animation: what a missing
+/// `0%` / `100%` stop is.
 pub fn compile_css_keyframes(
     widget_id: u64,
     motion: &CssComputedMotion,
     rule: &KeyframesRule,
+    base: &CssPaintSnapshot,
     now: Duration,
 ) -> Option<CompiledCssMotion> {
     if motion.animation_name.eq_ignore_ascii_case("none") {
@@ -1465,9 +1521,18 @@ pub fn compile_css_keyframes(
     let playback = playback_from_computed(motion);
     let mut overlays = Vec::new();
     let mut has_cpu = false;
+    let stops = keyframe_stops(rule);
     for name in keyframe_declared_names(rule) {
+        if is_font_variation_settings(&name) {
+            overlays.extend(font_axis_keyframe_specs(
+                widget_id, &stops, base, motion, now,
+            ));
+            continue;
+        }
         if let Some(property) = compositor_css_property(&name) {
-            if let Some(spec) = overlay_keyframe_spec(widget_id, property, rule, motion, now) {
+            if let Some(spec) =
+                overlay_keyframe_spec(widget_id, property, &stops, base, motion, now)
+            {
                 overlays.push(spec);
             }
             continue;
@@ -1528,8 +1593,8 @@ fn timing_spec(
         return None;
     }
     let delay_ms = parse_css_time_ms(delay_raw).unwrap_or(0.0);
-    let duration = Duration::from_secs_f32(duration_ms / 1000.0);
-    let delay = Duration::from_secs_f32(delay_ms / 1000.0);
+    let duration = css_ms_duration(duration_ms);
+    let delay = css_ms_duration(delay_ms);
     let start = now.checked_add(delay)?;
     let mut spec = AnimationSpec::new(
         id,
@@ -1540,9 +1605,13 @@ fn timing_spec(
         easing_from_css(timing_raw),
     )
     .with_curve(curve_from_css(timing_raw));
-    if let Some(playback) = playback {
-        spec = spec.with_playback(playback);
-    }
+    // A keyframes spec has its playback; a transition's is the default.
+    spec = match playback {
+        Some(playback) => spec
+            .with_playback(playback)
+            .with_layer(MotionLayer::CssAnimation),
+        None => spec.with_layer(MotionLayer::CssTransition),
+    };
     Some(spec)
 }
 
@@ -1576,11 +1645,12 @@ fn overlay_transition_spec(
 fn overlay_keyframe_spec(
     widget_id: u64,
     property: AnimatableProperty,
-    rule: &KeyframesRule,
+    stops: &[(f32, CssPaintSnapshot)],
+    base: &CssPaintSnapshot,
     motion: &CssComputedMotion,
     now: Duration,
 ) -> Option<AnimationSpec> {
-    let (from, to) = motion_keyframes_for_property(rule, property)?;
+    let (from, to) = motion_keyframes_for_property(stops, property, base)?;
     Some(
         timing_spec(
             css_keyframes_overlay_id(widget_id, property),
@@ -1594,6 +1664,164 @@ fn overlay_keyframe_spec(
         .with_property(property)
         .with_range(from, to),
     )
+}
+
+/// One Layout-class track per axis, from the axis's value in `from` to its
+/// value in `to`.
+///
+/// Only lists naming the same axes interpolate
+/// ([`FontVariationSetting::interpolable_pairs`]); any other change is
+/// discrete, and the cascade has already written the destination. Each track
+/// fills backwards so a delayed transition shows its start value, as CSS
+/// transitions do, instead of the destination the cascade already holds.
+fn font_axis_transition_specs(
+    widget_id: u64,
+    from: &CssPaintSnapshot,
+    to: &CssPaintSnapshot,
+    duration_raw: &str,
+    delay_raw: &str,
+    timing_raw: &str,
+    now: Duration,
+) -> Vec<AnimationSpec> {
+    let empty = Vec::new();
+    let Some(pairs) = FontVariationSetting::interpolable_pairs(
+        from.font_variations.as_ref().unwrap_or(&empty),
+        to.font_variations.as_ref().unwrap_or(&empty),
+    ) else {
+        return Vec::new();
+    };
+    pairs
+        .into_iter()
+        .filter(|(_, from, to)| from != to)
+        .filter_map(|(axis, from, to)| {
+            let mut spec = timing_spec(
+                css_transition_font_axis_id(widget_id, axis),
+                widget_id,
+                duration_raw,
+                delay_raw,
+                timing_raw,
+                now,
+                None,
+            )?;
+            spec.playback.fill_mode = AnimationFillMode::Backwards;
+            Some(
+                spec.with_property(AnimatableProperty::FontAxis(axis))
+                    .with_range(
+                        MotionValue::Scalar(from),
+                        MotionTo::Value(MotionValue::Scalar(to)),
+                    ),
+            )
+        })
+        .collect()
+}
+
+/// One keyframe track per axis any stop names, across the stops that declare
+/// `font-variation-settings`, completed as CSS completes a keyframe list.
+///
+/// - A missing `0%` / `100%` stop is the element's own axes (`base`).
+/// - A segment between lists naming the same axes interpolates axis by axis;
+///   one between lists naming different axes has nothing to interpolate and
+///   switches where its eased progress reaches one half, as CSS switches a
+///   discrete value.
+/// - A stop that does not name an axis leaves it out of the list: the value
+///   is [`MotionValue::ABSENT`], which Runtime drops from the
+///   computed axes, so the face's own default applies — not a guessed value,
+///   and not the element's declaration the animated list replaces.
+fn font_axis_keyframe_specs(
+    widget_id: u64,
+    stops: &[(f32, CssPaintSnapshot)],
+    base: &CssPaintSnapshot,
+    motion: &CssComputedMotion,
+    now: Duration,
+) -> Vec<AnimationSpec> {
+    let base_axes =
+        FontVariationSetting::normalized(base.font_variations.as_deref().unwrap_or(&[]));
+    let mut stops: Vec<(f32, Vec<FontVariationSetting>)> = stops
+        .iter()
+        .filter_map(|(offset, paint)| {
+            Some((
+                *offset,
+                FontVariationSetting::normalized(paint.font_variations.as_deref()?),
+            ))
+        })
+        .collect();
+    if stops.is_empty() {
+        return Vec::new();
+    }
+    if stops.first().is_some_and(|(offset, _)| *offset > 0.0) {
+        stops.insert(0, (0.0, base_axes.clone()));
+    }
+    if stops.last().is_some_and(|(offset, _)| *offset < 1.0) {
+        stops.push((1.0, base_axes));
+    }
+    let mut axes: Vec<[u8; 4]> = stops
+        .iter()
+        .flat_map(|(_, stop)| stop.iter().map(|axis| axis.tag))
+        .collect();
+    axes.sort_unstable();
+    axes.dedup();
+    let value = |stop: &[FontVariationSetting], axis: [u8; 4]| {
+        FontVariationSetting::axis_value(stop, axis)
+            .map_or(MotionValue::ABSENT, MotionValue::Scalar)
+    };
+    let switch_at = eased_half(curve_from_css(&motion.animation_timing_function));
+    axes.into_iter()
+        .filter_map(|axis| {
+            let mut frames = Vec::with_capacity(stops.len() * 2);
+            for (index, (offset, stop)) in stops.iter().enumerate() {
+                if index > 0 {
+                    let (previous_offset, previous) = &stops[index - 1];
+                    if !FontVariationSetting::same_axes(previous, stop) {
+                        let middle = previous_offset + (offset - previous_offset) * switch_at;
+                        frames.push(Keyframe {
+                            offset: middle,
+                            value: value(previous, axis),
+                            easing: None,
+                        });
+                        frames.push(Keyframe {
+                            offset: middle,
+                            value: value(stop, axis),
+                            easing: None,
+                        });
+                    }
+                }
+                frames.push(Keyframe {
+                    offset: *offset,
+                    value: value(stop, axis),
+                    easing: None,
+                });
+            }
+            let from = frames.first()?.value;
+            Some(
+                timing_spec(
+                    css_keyframes_font_axis_id(widget_id, axis),
+                    widget_id,
+                    &motion.animation_duration,
+                    &motion.animation_delay,
+                    &motion.animation_timing_function,
+                    now,
+                    Some(playback_from_computed(motion)),
+                )?
+                .with_property(AnimatableProperty::FontAxis(axis))
+                .with_range(from, MotionTo::Keyframes(frames)),
+            )
+        })
+        .collect()
+}
+
+/// The linear progress at which `curve` reaches one half — where a discrete
+/// value switches within an interval it eases.
+fn eased_half(curve: MotionCurve) -> f32 {
+    let (mut below, mut above) = (0.0f32, 1.0f32);
+    for _ in 0..32 {
+        let middle = (below + above) / 2.0;
+        if curve.sample_progress(middle) >= 0.5 {
+            above = middle;
+        } else {
+            below = middle;
+        }
+    }
+    above
 }
 
 fn compositor_css_property(name: &str) -> Option<AnimatableProperty> {
@@ -1711,30 +1939,39 @@ fn keyframe_declared_names(rule: &KeyframesRule) -> Vec<String> {
     names
 }
 
-fn motion_keyframes_for_property(
-    rule: &KeyframesRule,
-    property: AnimatableProperty,
-) -> Option<(MotionValue, MotionTo)> {
+/// Each block's declarations as a snapshot, at its unit offset, in offset
+/// order. A block with several selectors (`0%, 100% { … }`) is a stop at
+/// each of them.
+fn keyframe_stops(rule: &KeyframesRule) -> Vec<(f32, CssPaintSnapshot)> {
     let mut stops: Vec<(f32, CssPaintSnapshot)> = rule
         .blocks
         .iter()
-        .filter_map(|block| {
-            let offset = block
-                .selectors
-                .iter()
-                .map(|sel| match sel {
+        .flat_map(|block| {
+            let paint = paint_from_entries(&block.declaration_entries);
+            block.selectors.iter().map(move |sel| {
+                let percent = match sel {
                     KeyframeSelector::From => 0.0,
                     KeyframeSelector::To => 100.0,
                     KeyframeSelector::Percent(p) => *p,
-                })
-                .fold(f32::INFINITY, f32::min);
-            (offset < f32::INFINITY)
-                .then_some((offset, paint_from_entries(&block.declaration_entries)))
+                };
+                ((percent / 100.0).clamp(0.0, 1.0), paint.clone())
+            })
         })
         .collect();
     stops.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    stops
+}
+
+/// A missing `0%` / `100%` stop is the element's own value (`base`), as CSS
+/// completes a keyframe list; the first declared stop is not stretched back
+/// to the start.
+fn motion_keyframes_for_property(
+    stops: &[(f32, CssPaintSnapshot)],
+    property: AnimatableProperty,
+    base: &CssPaintSnapshot,
+) -> Option<(MotionValue, MotionTo)> {
     let mut values = Vec::new();
-    for (percent, paint) in &stops {
+    for (offset, paint) in stops {
         let Some(value) = snapshot_motion_value(paint, property) else {
             continue;
         };
@@ -1745,13 +1982,31 @@ fn motion_keyframes_for_property(
             continue;
         }
         values.push(Keyframe {
-            offset: (percent / 100.0).clamp(0.0, 1.0),
+            offset: *offset,
             value,
             easing: None,
         });
     }
     if values.is_empty() {
         return None;
+    }
+    let own = snapshot_motion_value(base, property)?;
+    if values[0].offset > 0.0 {
+        values.insert(
+            0,
+            Keyframe {
+                offset: 0.0,
+                value: own,
+                easing: None,
+            },
+        );
+    }
+    if values.last().is_some_and(|stop| stop.offset < 1.0) {
+        values.push(Keyframe {
+            offset: 1.0,
+            value: own,
+            easing: None,
+        });
     }
     let from = values[0].value;
     Some((from, MotionTo::Keyframes(values)))
@@ -2025,6 +2280,19 @@ mod tests {
             compiled.cpu.is_some(),
             "percentage width must still animate"
         );
+    }
+
+    /// A property or an animation name ending in `s` is not a `<time>`.
+    #[test]
+    fn names_ending_in_s_are_not_durations() {
+        let parsed =
+            parse_transition_shorthand("font-variation-settings 200ms linear").expect("transition");
+        assert_eq!(parsed.property, "font-variation-settings");
+        assert_eq!(parsed.duration, "200ms");
+        assert_eq!(parsed.delay, "0s");
+        let parsed = parse_animation_shorthand("pulses 1s infinite").expect("animation");
+        assert_eq!(parsed.name, "pulses");
+        assert_eq!(parsed.duration, "1s");
     }
 
     /// `transition-duration` defaults to `0s` per item. An item that omits it
@@ -2367,5 +2635,400 @@ mod tests {
         .expect("keyframes");
         let mid = keyframe_paint_at(&rule, 0.5).expect("sample");
         assert_eq!(mid.width, Some(LengthSpec::Px(25.0)));
+    }
+
+    /// Issue #85 parity fixture: the same font-axis motion authored as CSS
+    /// (L1) and through the Rust motion API (L3) is the same Motion track.
+    /// Both run in a Runtime of their own on the same clock, and every frame
+    /// must agree on the value the text shapes with, on whether the text
+    /// reshaped (the #88 invalidation class), and on the execution class.
+    mod font_axis_parity {
+        use std::{sync::Arc, time::Duration};
+
+        use nana_ui_core::FontVariationSetting;
+        use nana_ui_runtime::{
+            AnimationClass, AnimationDirection, AnimationFillMode, AnimationIteration,
+            AnimationPlayback, DocumentId, Easing, Keyframe, MotionCurve, MotionGraph,
+            MotionTargetId, MotionTiming, MotionTo, MotionTrack, MotionTrackId, MotionValue,
+            MutationQueue, NodeKind, NodeStyle, StableNodeId, TextContent, Timeline, UiWorld,
+        };
+
+        use super::super::*;
+
+        const BEVL: [u8; 4] = *b"BEVL";
+        const WDTH: [u8; 4] = *b"wdth";
+        const PARAGRAPH: u64 = 2;
+        const TEXT: u64 = 3;
+
+        fn axes(bevl: f32) -> Vec<FontVariationSetting> {
+            vec![
+                FontVariationSetting::new(BEVL, bevl),
+                FontVariationSetting::new(WDTH, 100.0),
+            ]
+        }
+
+        fn id(raw: u64) -> StableNodeId {
+            StableNodeId::new(raw).unwrap()
+        }
+
+        /// A paragraph declaring `axes(bevl)` with a text child, resolved.
+        fn world(bevl: f32) -> UiWorld {
+            let mut world = UiWorld::new();
+            let doc = DocumentId::new(1).unwrap();
+            let mut create = MutationQueue::new();
+            create.create(id(1), doc, NodeKind::Document);
+            create.create(id(PARAGRAPH), doc, NodeKind::Element { tag: "p".into() });
+            create.create(id(TEXT), doc, NodeKind::Text);
+            create.insert(id(1), id(PARAGRAPH), None);
+            create.insert(id(PARAGRAPH), id(TEXT), None);
+            create.set_text(
+                id(TEXT),
+                TextContent {
+                    value: "Axis".into(),
+                },
+            );
+            create.set_style(id(PARAGRAPH), paragraph_style(bevl));
+            world.commit(create).unwrap();
+            let work = world.take_system_work();
+            world.resolve_styles(&work.style).unwrap();
+            world
+        }
+
+        fn paragraph_style(bevl: f32) -> NodeStyle {
+            let mut style = NodeStyle::default();
+            Arc::make_mut(&mut style.layout).font_variation_settings = Some(axes(bevl));
+            style
+        }
+
+        #[derive(Debug, PartialEq)]
+        struct Frame {
+            ms: u64,
+            bevl: f32,
+            reshaped: bool,
+            classes: Vec<AnimationClass>,
+        }
+
+        fn frames(world: &mut UiWorld, times: &[u64]) -> Vec<Frame> {
+            times
+                .iter()
+                .map(|&ms| {
+                    let shape = world.text_revisions(id(TEXT)).unwrap().shape;
+                    world.advance_animations(Duration::from_millis(ms));
+                    let work = world.take_system_work();
+                    world.resolve_styles(&work.style).unwrap();
+                    let bevl = FontVariationSetting::axis_value(
+                        &world.computed_style(id(TEXT)).unwrap().font_variations,
+                        BEVL,
+                    )
+                    .unwrap();
+                    Frame {
+                        ms,
+                        // Rounded so both sides compare the same float noise.
+                        bevl: (bevl * 1000.0).round() / 1000.0,
+                        reshaped: world.text_revisions(id(TEXT)).unwrap().shape != shape,
+                        // Running tracks only: once a run ends, L3 holds its
+                        // value while CSS leaves it to the cascade, which
+                        // already is that value — neither does work.
+                        classes: world
+                            .inspect_motion()
+                            .into_iter()
+                            .filter(|entry| entry.next_deadline.is_some())
+                            .map(|entry| {
+                                assert_eq!(entry.property, AnimatableProperty::FontAxis(BEVL));
+                                entry.class
+                            })
+                            .collect(),
+                    }
+                })
+                .collect()
+        }
+
+        #[test]
+        fn css_and_l3_transitions_are_the_same_font_axis_motion() {
+            let cases = [
+                ("linear", 0, Easing::Linear),
+                (
+                    "ease-in-out",
+                    50,
+                    Easing::CubicBezier([0.42, 0.0, 0.58, 1.0]),
+                ),
+                ("cubic-bezier(0.2, 0.8, 0.2, 1)", 0, Easing::MENU_POP),
+            ];
+            let times = [0, 25, 50, 75, 100, 150, 200, 250, 300];
+            for (timing, delay_ms, easing) in cases {
+                // L1: the cascade has already written the destination; the
+                // compiled track is what moves the axis from where it was.
+                let motion = CssComputedMotion {
+                    transition_property: "font-variation-settings".into(),
+                    transition_duration: "200ms".into(),
+                    transition_delay: format!("{delay_ms}ms"),
+                    transition_timing_function: timing.into(),
+                    ..CssComputedMotion::default()
+                };
+                let mut from = CssPaintSnapshot::from_layout(&LayoutStyle::default());
+                from.font_variations = Some(axes(0.0));
+                let mut to = from.clone();
+                to.font_variations = Some(vec![
+                    FontVariationSetting::new(WDTH, 100.0),
+                    FontVariationSetting::new(BEVL, 100.0),
+                ]);
+                let compiled =
+                    compile_css_transition(PARAGRAPH, &motion, &from, &to, Duration::ZERO)
+                        .expect("compiled");
+                assert!(compiled.cpu.is_none());
+                assert_eq!(
+                    compiled.overlays.len(),
+                    1,
+                    "one track, for the axis that moves"
+                );
+                let mut css = world(0.0);
+                let mut queue = MutationQueue::new();
+                queue.set_style(id(PARAGRAPH), paragraph_style(100.0));
+                for spec in compiled.overlays {
+                    queue.start_animation(spec);
+                }
+                css.commit(queue).unwrap();
+
+                // L3: the same axis, value, timing and curve.
+                let mut rust = world(0.0);
+                let mut queue = MutationQueue::new();
+                queue
+                    .node(id(PARAGRAPH), Duration::ZERO)
+                    .transition()
+                    .font_axis(BEVL, 100.0)
+                    .duration(Duration::from_millis(200))
+                    .delay(Duration::from_millis(delay_ms))
+                    .ease(easing)
+                    .start();
+                rust.commit(queue).unwrap();
+
+                let l1 = frames(&mut css, &times);
+                let l3 = frames(&mut rust, &times);
+                assert_eq!(l1, l3, "{timing} delay {delay_ms}ms");
+                assert!(
+                    l1.iter().any(|frame| frame.reshaped),
+                    "{timing}: the axis moved"
+                );
+                assert!(
+                    l1.iter()
+                        .all(|frame| frame.classes.iter().all(|c| *c == AnimationClass::Layout))
+                );
+                assert_eq!(l1.last().unwrap().bevl, 100.0);
+            }
+        }
+
+        #[test]
+        fn css_keyframes_and_an_l3_timeline_are_the_same_font_axis_motion() {
+            let (sheet, _) = crate::css_cascade::parse_stylesheet_full(
+                "@keyframes breathe { \
+                     from { font-variation-settings: \"BEVL\" 0, \"wdth\" 100; } \
+                     50% { font-variation-settings: \"BEVL\" 100, \"wdth\" 100; } \
+                     to { font-variation-settings: \"BEVL\" 20, \"wdth\" 100; } }",
+                0,
+            );
+            let rule = sheet.keyframes.get("breathe").expect("keyframes");
+            let motion = CssComputedMotion {
+                animation_name: "breathe".into(),
+                animation_duration: "200ms".into(),
+                animation_delay: "0s".into(),
+                animation_timing_function: "linear".into(),
+                animation_iteration_count: "2".into(),
+                animation_direction: "alternate".into(),
+                animation_fill_mode: "forwards".into(),
+                animation_play_state: "running".into(),
+                ..CssComputedMotion::default()
+            };
+            let mut base = CssPaintSnapshot::from_layout(&LayoutStyle::default());
+            base.font_variations = Some(axes(0.0));
+            let compiled = compile_css_keyframes(PARAGRAPH, &motion, rule, &base, Duration::ZERO)
+                .expect("compiled");
+            assert!(
+                compiled.cpu.is_none(),
+                "font axes need no CPU progress spec"
+            );
+            // `wdth` holds 100 at every stop; its track is flat but real.
+            assert_eq!(compiled.overlays.len(), 2);
+            let mut css = world(0.0);
+            let mut queue = MutationQueue::new();
+            for spec in compiled
+                .overlays
+                .into_iter()
+                .filter(|spec| spec.property == AnimatableProperty::FontAxis(BEVL))
+            {
+                queue.start_animation(spec);
+            }
+            css.commit(queue).unwrap();
+
+            let stop = |offset: f32, bevl: f32| Keyframe {
+                offset,
+                value: MotionValue::Scalar(bevl),
+                easing: None,
+            };
+            let track = MotionTrack {
+                id: MotionTrackId::new(1).unwrap(),
+                target: MotionTargetId::new(PARAGRAPH).unwrap(),
+                property: AnimatableProperty::FontAxis(BEVL),
+                from: MotionValue::Scalar(0.0),
+                to: MotionTo::Keyframes(vec![stop(0.0, 0.0), stop(0.5, 100.0), stop(1.0, 20.0)]),
+                timing: MotionTiming::new(
+                    Duration::ZERO,
+                    Duration::from_millis(200),
+                    Duration::from_millis(16),
+                ),
+                curve: MotionCurve::Easing(Easing::Linear),
+                playback: AnimationPlayback::running(
+                    AnimationIteration::Count(2),
+                    AnimationDirection::Alternate,
+                    AnimationFillMode::Forwards,
+                ),
+                velocity: MotionValue::Scalar(0.0),
+            };
+            let mut rust = world(0.0);
+            let mut queue = MutationQueue::new();
+            queue
+                .node(id(PARAGRAPH), Duration::ZERO)
+                .timeline(Timeline::parallel([MotionGraph::track(track)]))
+                .start();
+            rust.commit(queue).unwrap();
+
+            let times = [0, 50, 100, 150, 200, 250, 300, 350, 400, 450];
+            let l1 = frames(&mut css, &times);
+            let l3 = frames(&mut rust, &times);
+            assert_eq!(l1, l3);
+            assert_eq!(l1[2].bevl, 100.0);
+            assert_eq!(l1[4].bevl, 20.0);
+            assert_eq!(l1[6].bevl, 100.0);
+            // Two alternating runs end where they began, and fill forwards.
+            assert_eq!(l1.last().unwrap().bevl, 0.0);
+        }
+
+        fn keyframes_world(css: &str, base: CssPaintSnapshot) -> UiWorld {
+            keyframes_world_timed(css, base, "linear")
+        }
+
+        fn keyframes_world_timed(css: &str, base: CssPaintSnapshot, timing: &str) -> UiWorld {
+            let (sheet, _) = crate::css_cascade::parse_stylesheet_full(css, 0);
+            let rule = sheet.keyframes.values().next().expect("keyframes");
+            let motion = CssComputedMotion {
+                animation_name: "k".into(),
+                animation_duration: "200ms".into(),
+                animation_delay: "0s".into(),
+                animation_timing_function: timing.into(),
+                animation_iteration_count: "1".into(),
+                animation_direction: "normal".into(),
+                animation_fill_mode: "none".into(),
+                animation_play_state: "running".into(),
+                ..CssComputedMotion::default()
+            };
+            let compiled = compile_css_keyframes(PARAGRAPH, &motion, rule, &base, Duration::ZERO)
+                .expect("compiled");
+            let mut world = world(0.0);
+            let mut queue = MutationQueue::new();
+            for spec in compiled.overlays {
+                queue.start_animation(spec);
+            }
+            world.commit(queue).unwrap();
+            world
+        }
+
+        fn axes_at(world: &mut UiWorld, ms: u64) -> Vec<([u8; 4], f32)> {
+            world.advance_animations(Duration::from_millis(ms));
+            let work = world.take_system_work();
+            world.resolve_styles(&work.style).unwrap();
+            FontVariationSetting::normalized(
+                &world.computed_style(id(TEXT)).unwrap().font_variations,
+            )
+            .into_iter()
+            .map(|axis| (axis.tag, (axis.value * 1000.0).round() / 1000.0))
+            .collect()
+        }
+
+        fn base() -> CssPaintSnapshot {
+            let mut base = CssPaintSnapshot::from_layout(&LayoutStyle::default());
+            base.font_variations = Some(axes(0.0));
+            base
+        }
+
+        /// A keyframe list without `0%` / `100%` starts and ends at the
+        /// element's own axes rather than stretching its one stop.
+        #[test]
+        fn missing_end_keyframes_are_the_elements_own_axes() {
+            let mut world = keyframes_world(
+                "@keyframes k { 50% { font-variation-settings: \"BEVL\" 100, \"wdth\" 100; } }",
+                base(),
+            );
+            let bevl = |axes: Vec<([u8; 4], f32)>| {
+                axes.iter()
+                    .find(|(tag, _)| *tag == BEVL)
+                    .map(|(_, value)| *value)
+            };
+            assert_eq!(bevl(axes_at(&mut world, 50)), Some(50.0));
+            assert_eq!(bevl(axes_at(&mut world, 100)), Some(100.0));
+            assert_eq!(bevl(axes_at(&mut world, 150)), Some(50.0));
+        }
+
+        /// Stops naming different axes have nothing to interpolate: the list
+        /// switches halfway, and an axis the current list does not name is
+        /// absent — the face's default, not the element's declaration.
+        #[test]
+        fn keyframes_naming_different_axes_switch_lists_halfway() {
+            let mut world = keyframes_world(
+                "@keyframes k { from { font-variation-settings: \"BEVL\" 40; } \
+                 to { font-variation-settings: \"wdth\" 150; } }",
+                base(),
+            );
+            assert_eq!(axes_at(&mut world, 50), vec![(BEVL, 40.0)]);
+            assert_eq!(axes_at(&mut world, 150), vec![(WDTH, 150.0)]);
+            // Fill `none`: the element's own axes come back.
+            assert_eq!(axes_at(&mut world, 250), vec![(BEVL, 0.0), (WDTH, 100.0)]);
+        }
+
+        /// The switch follows the easing: `ease-in` reaches half its change
+        /// late, so the list switches late too.
+        #[test]
+        fn a_discrete_switch_follows_the_easing() {
+            let css = "@keyframes k { from { font-variation-settings: \"BEVL\" 40; } \
+                       to { font-variation-settings: \"wdth\" 150; } }";
+            let mut eased = keyframes_world_timed(css, base(), "ease-in");
+            assert_eq!(axes_at(&mut eased, 120), vec![(BEVL, 40.0)]);
+            assert_eq!(axes_at(&mut eased, 150), vec![(WDTH, 150.0)]);
+            let mut linear = keyframes_world(css, base());
+            assert_eq!(axes_at(&mut linear, 120), vec![(WDTH, 150.0)]);
+        }
+
+        #[test]
+        fn missing_end_keyframes_are_the_elements_own_opacity() {
+            let (sheet, _) = crate::css_cascade::parse_stylesheet_full(
+                "@keyframes k { 50% { opacity: 0; } }",
+                0,
+            );
+            let rule = sheet.keyframes.values().next().expect("keyframes");
+            let motion = CssComputedMotion {
+                animation_name: "k".into(),
+                animation_duration: "200ms".into(),
+                animation_timing_function: "linear".into(),
+                ..CssComputedMotion::default()
+            };
+            let mut own = CssPaintSnapshot::from_layout(&LayoutStyle::default());
+            own.opacity = Some(0.8);
+            let compiled = compile_css_keyframes(PARAGRAPH, &motion, rule, &own, Duration::ZERO)
+                .expect("compiled");
+            let spec = compiled
+                .overlays
+                .into_iter()
+                .find(|spec| spec.property == AnimatableProperty::Opacity)
+                .expect("an opacity track");
+            let track = spec.to_motion_track().unwrap();
+            let at =
+                |ms: u64| match nana_ui_runtime::evaluate_track(&track, Duration::from_millis(ms))
+                    .value
+                {
+                    MotionValue::Scalar(value) => (value * 1000.0).round() / 1000.0,
+                    other => panic!("{other:?}"),
+                };
+            assert_eq!(at(0), 0.8);
+            assert_eq!(at(50), 0.4);
+            assert_eq!(at(150), 0.4);
+        }
     }
 }

@@ -201,6 +201,12 @@ pub struct ShapedRun {
     /// place in the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<FontInstanceKey>,
+    /// Axes the style asked for that the face does not have, sorted
+    /// ([`crate::font::FontInstance::ignored_axes`]). They change nothing about
+    /// these glyphs; kept so a caller animating one can say so rather than
+    /// reshape for nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_axes: Vec<[u8; 4]>,
 }
 
 impl ShapedRun {

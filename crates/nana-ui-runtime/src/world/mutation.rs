@@ -394,7 +394,16 @@ impl<'a> ValidationPlan<'a> {
                     self.animations_mut()
                         .insert(animation.id, animation.clone());
                 }
-                UiMutation::StopAnimation { id } | UiMutation::FinishAnimation { id } => {
+                UiMutation::StopAnimation { id } => {
+                    // A finished run that fills forwards still holds its
+                    // property; stopping it is how its owner gives it back.
+                    if self.animations_mut().remove(id).is_none()
+                        && self.source.presentation.get(id.track_id()).is_none()
+                    {
+                        return Err(UiWorldError::MissingAnimation(*id));
+                    }
+                }
+                UiMutation::FinishAnimation { id } => {
                     if self.animations_mut().remove(id).is_none() {
                         return Err(UiWorldError::MissingAnimation(*id));
                     }
@@ -1359,6 +1368,7 @@ impl UiWorld {
                     self.mark(*id, DirtyMask::TEXT);
                 }
                 self.write_node_style(*id, style.clone());
+                self.release_rewritten_holds(*id, &previous.layout, &style.layout);
                 self.sync_node_presence(*id);
 
                 if !style_excluding_transform_and_cursor_eq(&previous, style) {
@@ -1386,14 +1396,7 @@ impl UiWorld {
                     self.mark_subtree(*id, DirtyMask::STYLE);
                 }
                 if inherited_text_changed {
-                    self.mark_subtree(
-                        *id,
-                        DirtyMask::STYLE
-                            | DirtyMask::TEXT
-                            | DirtyMask::LAYOUT
-                            | DirtyMask::INPUT
-                            | DirtyMask::RENDER,
-                    );
+                    self.mark_subtree(*id, super::motion::INHERITED_TEXT_DIRTY);
                 }
                 if omits_box_changed {
                     self.mark_subtree(

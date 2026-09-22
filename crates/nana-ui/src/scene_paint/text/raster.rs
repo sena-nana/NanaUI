@@ -94,6 +94,18 @@ pub(super) trait GlyphRasterizer {
     fn rasterize(&mut self, request: &GlyphRasterRequest) -> Option<GlyphImage>;
 }
 
+/// Distinct axis-coordinate sets kept before the least recently used go. An
+/// animated font axis (Issue #85) is a new set on every sampled frame.
+pub(super) const VARIATION_CAP: usize = 4096;
+/// Frames a set stays after its last use, whatever the count: the frame that
+/// interned it and the one after may still rasterize with it.
+const VARIATION_PIN_FRAMES: u64 = 2;
+
+struct InternedVariation {
+    coords: Arc<[AxisCoord]>,
+    last_used: u64,
+}
+
 /// `swash` behind the renderer's rasterizer boundary.
 ///
 /// Holds the face table that issues [`GlyphFontId`]s, so the ids the glyph IR
@@ -109,16 +121,21 @@ pub(super) struct SwashGlyphRasterizer {
     context: swash::scale::ScaleContext,
     faces: Vec<nana_text::FontId>,
     index: HashMap<nana_text::FontId, GlyphFontId>,
-    /// Axis coordinates behind each [`GlyphVariationId`] a run interned, at
-    /// index `id - 1` (zero is the face's default instance). The key carries
-    /// the id because a bitmap differs by coordinates; the scaler needs the
-    /// coordinates themselves.
+    /// Axis coordinates behind each [`GlyphVariationId`] a run interned (zero
+    /// is the face's default instance). The key carries the id because a
+    /// bitmap differs by coordinates; the scaler needs the coordinates
+    /// themselves.
     ///
     /// Issued in order and looked up by the coordinates themselves, like the
     /// face ids: a hash of the coordinates would let two sets that collide
-    /// draw with the first one's axes and share its bitmaps.
-    variations: Vec<Arc<[AxisCoord]>>,
+    /// draw with the first one's axes and share its bitmaps. An id is never
+    /// issued twice, so one evicted here ([`Self::begin_frame`]) cannot come
+    /// back naming other coordinates; bitmaps keyed by it just go cold.
+    variations: HashMap<GlyphVariationId, InternedVariation>,
     variation_index: HashMap<Arc<[AxisCoord]>, GlyphVariationId>,
+    issued_variations: u64,
+    /// Frames begun, for the variations' last use.
+    frame: u64,
     /// The face asked for last. Runs are contiguous by face, so a paragraph
     /// asks for the same one for every glyph and this keeps the hash lookup
     /// off the per-glyph path.
@@ -132,8 +149,10 @@ impl SwashGlyphRasterizer {
             context: swash::scale::ScaleContext::new(),
             faces: Vec::new(),
             index: HashMap::new(),
-            variations: Vec::new(),
+            variations: HashMap::new(),
             variation_index: HashMap::new(),
+            issued_variations: 0,
+            frame: 0,
             recent: None,
         }
     }
@@ -168,13 +187,62 @@ impl SwashGlyphRasterizer {
         if coords.is_empty() {
             return GlyphVariationId(0);
         }
+        let frame = self.frame;
         if let Some(variation) = self.variation_index.get(coords) {
+            if let Some(interned) = self.variations.get_mut(variation) {
+                interned.last_used = frame;
+            }
             return *variation;
         }
-        self.variations.push(Arc::clone(coords));
-        let variation = GlyphVariationId(self.variations.len() as u64);
+        self.issued_variations += 1;
+        let variation = GlyphVariationId(self.issued_variations);
+        self.variations.insert(
+            variation,
+            InternedVariation {
+                coords: Arc::clone(coords),
+                last_used: frame,
+            },
+        );
         self.variation_index.insert(Arc::clone(coords), variation);
         variation
+    }
+
+    /// Coordinate sets holding an id.
+    #[cfg(test)]
+    pub(super) fn variation_count(&self) -> usize {
+        self.variations.len()
+    }
+
+    /// Starts a frame. Past [`VARIATION_CAP`] the least recently used sets
+    /// not used in the last [`VARIATION_PIN_FRAMES`] frames go, and their ids
+    /// are returned. Nothing rasterizes with one again: a run that shows those
+    /// coordinates later interns them afresh, and an entry already built
+    /// holds its atlas cells, not the id's coordinates.
+    pub(super) fn begin_frame(&mut self) -> Vec<GlyphVariationId> {
+        self.frame += 1;
+        if self.variations.len() <= VARIATION_CAP {
+            return Vec::new();
+        }
+        let pinned_since = self.frame.saturating_sub(VARIATION_PIN_FRAMES);
+        let mut cold: Vec<(u64, GlyphVariationId)> = self
+            .variations
+            .iter()
+            .filter(|(_, interned)| interned.last_used < pinned_since)
+            .map(|(id, interned)| (interned.last_used, *id))
+            .collect();
+        // Down to three quarters, so the scan runs once per many frames
+        // rather than on every new set.
+        let excess = self.variations.len() - VARIATION_CAP * 3 / 4;
+        cold.sort_unstable_by_key(|(last_used, id)| (*last_used, id.0));
+        cold.truncate(excess);
+        cold.into_iter()
+            .map(|(_, id)| {
+                if let Some(interned) = self.variations.remove(&id) {
+                    self.variation_index.remove(&interned.coords);
+                }
+                id
+            })
+            .collect()
     }
 
     fn intern_face(&mut self, face: nana_text::FontId) -> GlyphFontId {
@@ -217,8 +285,9 @@ impl SwashGlyphRasterizer {
     }
 
     fn variation_coords(&self, variation: GlyphVariationId) -> Option<&Arc<[AxisCoord]>> {
-        let index = usize::try_from(variation.0.checked_sub(1)?).ok()?;
-        self.variations.get(index)
+        self.variations
+            .get(&variation)
+            .map(|interned| &interned.coords)
     }
 
     #[cfg(test)]

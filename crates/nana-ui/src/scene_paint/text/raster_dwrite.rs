@@ -80,6 +80,25 @@ impl DWriteGlyphRasterizer {
     ) -> (GlyphFontId, GlyphVariationId, GlyphSynthesis) {
         self.swash.intern_instance(instance)
     }
+
+    #[cfg(test)]
+    pub(super) fn variation_count(&self) -> usize {
+        self.swash.variation_count()
+    }
+
+    /// See [`SwashGlyphRasterizer::begin_frame`]. The DirectWrite faces
+    /// built for the evicted ids go with them.
+    pub(super) fn begin_frame(&mut self) -> Vec<GlyphVariationId> {
+        let evicted = self.swash.begin_frame();
+        if !evicted.is_empty() {
+            let gone: std::collections::HashSet<GlyphVariationId> =
+                evicted.iter().copied().collect();
+            self.dwrite
+                .faces
+                .retain(|(_, variation, _), _| !gone.contains(variation));
+        }
+        evicted
+    }
 }
 
 impl GlyphRasterizer for DWriteGlyphRasterizer {
