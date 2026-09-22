@@ -1,0 +1,29 @@
+[package]
+name = "nana-diagnostics"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Low-overhead structured diagnostics: events, metrics, faults, flight recorder, and the .nlog format"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+# Builds the `nana-diagnostics-benchmark` bin.
+benchmark = []
+
+[lib]
+name = "nana_diagnostics"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nana-nlog"
+path = "src/bin/nana-nlog.rs"
+
+[[bin]]
+name = "nana-diagnostics-benchmark"
+path = "src/bin/nana-diagnostics-benchmark.rs"
+required-features = ["benchmark"]
+
+# Only for lowering the worker thread's priority.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Threading"] }

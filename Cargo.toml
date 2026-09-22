@@ -16,6 +16,7 @@ members = [
     "crates/nana-ui-platform",
     "crates/nana-ui-devtools",
     "crates/nana-frame-exchange",
+    "crates/nana-diagnostics",
     "crates/nana-ui-dev",
     "platform/android",
     "examples/component-gallery",
@@ -42,6 +43,7 @@ nana-ui-vue = { path = "crates/nana-ui-vue" }
 nana-ui-platform = { path = "crates/nana-ui-platform", default-features = false }
 nana-ui-devtools = { path = "crates/nana-ui-devtools" }
 nana-frame-exchange = { path = "crates/nana-frame-exchange" }
+nana-diagnostics = { path = "crates/nana-diagnostics" }
 nana-ui-dev = { path = "crates/nana-ui-dev" }
 nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
