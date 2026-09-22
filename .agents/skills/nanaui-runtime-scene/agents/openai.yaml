@@ -1,0 +1,4 @@
+interface:
+  display_name: "NanaUI Runtime and Scene"
+  short_description: "Maintain the retained Runtime and UiScene contract"
+  default_prompt: "Use $nanaui-runtime-scene to implement or review NanaUI Runtime and UiScene changes."
