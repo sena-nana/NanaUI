@@ -7,10 +7,12 @@ Workspace members must not depend on iced / iced-wgpu / iced-winit / gpui.
 nana-ui-runtime and nana-ui-scene must stay backend-neutral (no Iced, WGPU,
 or native GPU implementation crates).
 
-nana-text (Issue #89) must not name cosmic-text or cryoglyph anywhere under
-src/, and may borrow only the typography vocabulary from nana-ui-core. The
-source rule is the load-bearing one: it is what "no cosmic type reaches the core
-API" means mechanically.
+No workspace member may have a non-dev edge to cosmic-text, cryoglyph or
+glyphon, under any feature, nor to a renamed fork of one (Issue #99 §11). Only
+a reference-only tooling crate may keep one, and no product crate may reach
+such a crate. nana-text (Issue #89) additionally must not name those engines
+anywhere under src/, and may borrow only the typography vocabulary from
+nana-ui-core.
 
 nana-text's font layer (Issue #90), shaper (Issue #91) and layout engine
 (Issue #92) use fontdb, skrifa, icu_properties, harfrust, unicode-bidi and
@@ -33,13 +35,14 @@ GPUI_PACKAGES = {"gpui"}
 ICED_WINIT_MARKERS = ("iced-rs/winit",)
 BACKEND_NEUTRAL_PACKAGES = {"nana-ui-runtime", "nana-ui-scene"}
 # Issue #89. `nana-text` owns the text IR, and its *sources* must not name the
-# engine it replaced even in a type position. This outlived the dependency: the
-# engine is gone from the tree, and what this still says is that nobody may
-# bring a type of it back in through a new edge.
+# engine it replaced even in a type position.
 TEXT_NEUTRAL_PACKAGES = {"nana-text"}
-# The text engines NanaUI replaced (#88). Gone from the tree entirely since
-# #99; the rule stays scoped to nana-text, whose whole point is to be free of
-# them.
+# The text engines NanaUI replaced (#88). Issue #99 §11: `nana-text` +
+# `NanaRenderer::text` is the only product text stack, so no workspace member
+# may reach one of these through a normal or build edge under any feature. A
+# package whose name *contains* one of them counts too: renaming the fork
+# (`nana-cryoglyph`) is exactly the long-lived production abstraction #99 rules
+# out. Dev edges and reference-only crates are the sanctioned exceptions.
 LEGACY_TEXT_PACKAGES = {"cosmic-text", "cryoglyph", "glyphon"}
 # Migration-only crates. Nothing in the product may depend on one. These are
 # Cargo *package* names, which are not always the lib target name: the crate in
@@ -120,6 +123,11 @@ def metadata(manifest: Path) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
+def is_legacy_text_package(name: str) -> bool:
+    name = name.replace("_", "-")
+    return any(legacy in name for legacy in LEGACY_TEXT_PACKAGES)
+
+
 def check_dependency_graph(data: dict) -> list[str]:
     failures = []
     packages = {p["id"]: p for p in data["packages"]}
@@ -135,8 +143,7 @@ def check_dependency_graph(data: dict) -> list[str]:
         forbidden = ICED_PACKAGES | GPUI_PACKAGES
         if name in BACKEND_NEUTRAL_PACKAGES:
             forbidden |= GPU_BACKEND_PACKAGES
-        if name in TEXT_NEUTRAL_PACKAGES:
-            forbidden |= LEGACY_TEXT_PACKAGES
+        forbid_legacy_text = name not in REFERENCE_ONLY_PACKAGES
         while pending:
             dependency, path = pending.pop()
             if dependency in seen:
@@ -146,6 +153,8 @@ def check_dependency_graph(data: dict) -> list[str]:
             path = path + [package["name"]]
             if package["name"].replace("_", "-") in forbidden:
                 failures.append("forbidden product dependency: " + " -> ".join(path))
+            elif forbid_legacy_text and is_legacy_text_package(package["name"]):
+                failures.append("replaced text engine in the product graph: " + " -> ".join(path))
             pending.extend((child, path) for child in graph.get(dependency, []))
     return failures
 
@@ -179,8 +188,8 @@ def check_text_engine_sources(crate_root: Path) -> list[str]:
     typography vocabulary in nana-ui-core.
 
     This is the mechanical form of "the core API contains no cosmic types": the
-    dependency graph alone cannot say it, because the reference engine is a
-    legitimate dev dependency.
+    dependency graph alone cannot say it, because a dev edge to a reference
+    engine is allowed.
     """
     failures = []
     source_dir = crate_root / "src"
@@ -191,7 +200,7 @@ def check_text_engine_sources(crate_root: Path) -> list[str]:
         where = source.relative_to(ROOT) if source.is_relative_to(ROOT) else source
         for legacy in ("cosmic_text", "cryoglyph", "glyphon"):
             if re.search(rf"\b{legacy}\b", text):
-                failures.append(f"{where} names {legacy}; the reference engine belongs in tests/")
+                failures.append(f"{where} names {legacy}; a reference engine belongs in tests/")
         # `use nana_ui_core::{A, B}` as well as a bare `nana_ui_core::A` path.
         for group in re.findall(r"nana_ui_core::\{([^}]*)\}", text):
             for item in group.split(","):

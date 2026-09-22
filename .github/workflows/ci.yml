@@ -36,7 +36,7 @@ jobs:
             libvulkan1 mesa-vulkan-drivers libasound2-dev
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Check Iced engine dependency boundary
+      - name: Check engine and text-stack dependency boundary
         run: python3 scripts/check-engine-boundary.py
       - name: Self-test repository gate scripts
         run: python3 -m unittest discover -s scripts/tests -v
