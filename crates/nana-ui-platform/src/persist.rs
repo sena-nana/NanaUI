@@ -309,6 +309,10 @@ fn valid_app_id(app_id: &str) -> bool {
 /// Host-chosen application data directory. The framework never writes here
 /// unless the host opens a [`FileStore`] on the returned path.
 ///
+/// New code should resolve [`crate::ApplicationPaths`] and use its `data`
+/// location, which this matches on desktop platforms for installed (not
+/// portable) layouts.
+///
 /// - macOS: `~/Library/Application Support/{app_id}`
 /// - Windows: `%APPDATA%/{app_id}`
 /// - Linux: `$XDG_DATA_HOME/{app_id}` or `~/.local/share/{app_id}`
@@ -343,7 +347,7 @@ pub fn app_data_dir(app_id: &str) -> Option<PathBuf> {
     #[cfg(target_os = "android")]
     {
         let _ = app_id;
-        android_files_dir()
+        android_dir("getFilesDir")
     }
     #[cfg(not(any(
         target_os = "macos",
@@ -357,13 +361,15 @@ pub fn app_data_dir(app_id: &str) -> Option<PathBuf> {
     }
 }
 
+/// `Context.<method>()` → `File.getAbsolutePath()`, for the `()Ljava/io/File;`
+/// directory getters (`getFilesDir`, `getCacheDir`).
 #[cfg(target_os = "android")]
-fn android_files_dir() -> Option<PathBuf> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(android_files_dir_inner)).ok()?
+pub(crate) fn android_dir(method: &str) -> Option<PathBuf> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| android_dir_inner(method))).ok()?
 }
 
 #[cfg(target_os = "android")]
-fn android_files_dir_inner() -> Option<PathBuf> {
+fn android_dir_inner(method: &str) -> Option<PathBuf> {
     use std::mem::ManuallyDrop;
 
     use jni::JavaVM;
@@ -375,7 +381,7 @@ fn android_files_dir_inner() -> Option<PathBuf> {
     let context =
         ManuallyDrop::new(unsafe { JObject::from_raw(ctx.context() as jni::sys::jobject) });
     let files = env
-        .call_method(&*context, "getFilesDir", "()Ljava/io/File;", &[])
+        .call_method(&*context, method, "()Ljava/io/File;", &[])
         .ok()?
         .l()
         .ok()?;
