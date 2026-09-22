@@ -18,7 +18,7 @@ pub struct Metric {
     pub descriptor: MetricDescriptor,
     registered: AtomicBool,
     next: AtomicPtr<Metric>,
-    /// Counter total / gauge value / histogram sample count.
+    /// Counter total / gauge value (unused by histograms).
     value: AtomicU64,
     hist: Option<&'static HistogramCells>,
 }
@@ -105,11 +105,16 @@ impl Metric {
         self.register();
         match self.hist {
             Some(cells) => {
-                self.value.fetch_add(1, Ordering::Relaxed);
                 cells.buckets[bucket_index(value)].fetch_add(1, Ordering::Relaxed);
                 cells.sum.fetch_add(value, Ordering::Relaxed);
-                cells.min.fetch_min(value, Ordering::Relaxed);
-                cells.max.fetch_max(value, Ordering::Relaxed);
+                // Read first: once the interval's extremes settle, neither
+                // needs a read-modify-write.
+                if value < cells.min.load(Ordering::Relaxed) {
+                    cells.min.fetch_min(value, Ordering::Relaxed);
+                }
+                if value > cells.max.load(Ordering::Relaxed) {
+                    cells.max.fetch_max(value, Ordering::Relaxed);
+                }
             }
             None if self.descriptor.kind == MetricKind::Gauge => {
                 self.value.store(value, Ordering::Relaxed);
@@ -120,7 +125,8 @@ impl Metric {
         }
     }
 
-    /// Counter total, gauge value, or histogram sample count.
+    /// Counter total or gauge value (0 for histograms; snapshots carry
+    /// their counts).
     pub fn value(&self) -> u64 {
         self.value.load(Ordering::Relaxed)
     }
@@ -228,7 +234,7 @@ metric_value!(u8, u16, u32, u64, usize);
 impl MetricValue for Duration {
     #[inline(always)]
     fn to_metric(self) -> u64 {
-        u64::try_from(self.as_nanos()).unwrap_or(u64::MAX)
+        crate::record::saturating_ns(self)
     }
 }
 

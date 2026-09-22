@@ -81,8 +81,14 @@ impl FieldValue for Duration {
     const KIND: FieldKind = FieldKind::U64;
     #[inline(always)]
     fn to_bits(self) -> u64 {
-        u64::try_from(self.as_nanos()).unwrap_or(u64::MAX)
+        saturating_ns(self)
     }
+}
+
+/// `duration` in nanoseconds, saturating at `u64::MAX` (~584 years).
+#[inline(always)]
+pub(crate) fn saturating_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// One argument as the macros hand it over: the call-site name (checked

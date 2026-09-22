@@ -728,12 +728,13 @@ impl AppContext {
 /// Aggregate a finished frame profile into the process diagnostics (Issue
 /// #227). Reuses the profiler's measurements; nothing is timed twice.
 fn record_frame_diagnostics(profile: &FrameProfile) {
+    use nana_diagnostics::MetricValue;
     use nana_diagnostics::framework::runtime as rt;
     if !nana_diagnostics::metrics_enabled() {
         return;
     }
     rt::FLUSHES.record(1);
-    rt::FRAME_CPU_NS.record(duration_ns(profile.cpu_total));
+    rt::FRAME_CPU_NS.record(profile.cpu_total.to_metric());
     for timing in &profile.stages {
         if timing.status != crate::StageStatus::Ran {
             continue;
@@ -753,10 +754,6 @@ fn record_frame_diagnostics(profile: &FrameProfile) {
                 continue;
             }
         };
-        metric.record(duration_ns(timing.duration));
+        metric.record(timing.duration.to_metric());
     }
-}
-
-fn duration_ns(duration: Duration) -> u64 {
-    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }

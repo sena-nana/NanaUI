@@ -31,7 +31,7 @@ pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
 pub use paths::{
     ApplicationIdentity, ApplicationLocation, ApplicationPaths, PathEnvironment, PathPlatform,
-    PathsError, RuntimeLayout, portable_marker_path,
+    PathsError, RuntimeLayout,
 };
 pub use persist::{
     FileStore, PersistedWindowGeometry, app_data_dir, persist_live_window_geometry,

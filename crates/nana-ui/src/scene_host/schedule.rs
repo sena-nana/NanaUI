@@ -337,10 +337,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             {
                 Ok(frame_update) => update = update.merge(frame_update),
                 Err(error) => {
-                    self.report_host_failure(HostFailure::AnimationFrame {
-                        window: id,
-                        error: error.to_string(),
-                    });
+                    self.program
+                        .report_host_failure(HostFailure::AnimationFrame {
+                            window: id,
+                            error: error.to_string(),
+                        });
                 }
             }
             if cpu_wake_redraw(true, had_samples) {

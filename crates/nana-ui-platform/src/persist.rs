@@ -297,7 +297,7 @@ fn utf8_len_prefixed(bytes: &[u8], i: &mut usize) -> Option<String> {
     String::from_utf8(slice.to_vec()).ok()
 }
 
-fn valid_app_id(app_id: &str) -> bool {
+pub(crate) fn valid_app_id(app_id: &str) -> bool {
     !app_id.is_empty()
         && !app_id.starts_with(['/', '\\'])
         && !app_id.contains('\0')

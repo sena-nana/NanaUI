@@ -10,12 +10,15 @@
 //! Diagnostics are opt-in: without `.diagnostics(..)` nothing is recorded and
 //! every framework call site costs one relaxed atomic load.
 
-use std::fmt;
+use std::sync::OnceLock;
 
 use nana_diagnostics::{
     Diagnostics, DiagnosticsConfig, DiagnosticsGuard, DiagnosticsPaths, SessionMetadata,
 };
-use nana_ui_platform::{ApplicationIdentity, ApplicationPaths, PathsError, RuntimeLayout};
+use nana_ui_platform::{ApplicationIdentity, ApplicationPaths};
+
+/// The paths the first started builder resolved; first one wins.
+static PATHS: OnceLock<ApplicationPaths> = OnceLock::new();
 
 /// Entry point for process-level setup.
 pub struct NanaApplication;
@@ -29,10 +32,9 @@ impl NanaApplication {
         }
     }
 
-    /// The paths published by the running application, if it was started
-    /// through a builder.
+    /// The paths published by the first builder started in this process.
     pub fn paths() -> Option<&'static ApplicationPaths> {
-        ApplicationPaths::current()
+        PATHS.get()
     }
 
     /// The process's diagnostics runtime, if one is installed.
@@ -47,21 +49,6 @@ pub struct NanaApplicationBuilder {
     paths: Option<ApplicationPaths>,
     diagnostics: DiagnosticsConfig,
 }
-
-#[derive(Debug)]
-pub enum ApplicationStartError {
-    Paths(PathsError),
-}
-
-impl fmt::Display for ApplicationStartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Paths(e) => write!(f, "cannot resolve application paths: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ApplicationStartError {}
 
 /// Keeps process-level services alive. Dropping it shuts diagnostics down
 /// with a final durable flush, so bind it for the life of the app.
@@ -103,82 +90,28 @@ impl NanaApplicationBuilder {
     /// run their own loop (Vue, embedded); [`Self::run`] calls this.
     ///
     /// Never fails the application: when the platform directories cannot be
-    /// resolved, the session has no paths and diagnostics stay in memory
-    /// (snapshots cannot be written). Use [`Self::try_start`] to treat that
-    /// as an error instead.
+    /// resolved it logs to stderr, the session has no paths, and diagnostics
+    /// stay in memory.
     pub fn start(self) -> ApplicationSession {
-        match self.try_start() {
-            Ok(session) => session,
-            Err((builder, error)) => {
-                eprintln!("NanaUI: {error}; running without application paths");
-                builder.start_without_paths()
-            }
-        }
-    }
-
-    /// Like [`Self::start`], but hands the builder back when the paths
-    /// cannot be resolved.
-    #[allow(clippy::result_large_err)]
-    pub fn try_start(self) -> Result<ApplicationSession, (Self, ApplicationStartError)> {
-        let resolved = match &self.paths {
-            Some(paths) => Ok(paths.clone()),
+        let resolved = match self.paths {
+            Some(paths) => Ok(paths),
             None => ApplicationPaths::resolve(&self.identity),
         };
-        match resolved {
-            Ok(paths) => {
-                // First publisher wins; a second builder in one process
-                // shares it.
-                let paths = paths.install_current();
-                let diagnostics_paths = DiagnosticsPaths::new(paths.logs(), paths.crash());
-                let diagnostics = self.install_diagnostics(Some(paths), diagnostics_paths);
-                Ok(ApplicationSession {
-                    paths: Some(paths),
-                    diagnostics,
-                })
+        let paths = match resolved {
+            Ok(paths) => Some(PATHS.get_or_init(|| paths)),
+            Err(error) => {
+                eprintln!(
+                    "NanaUI: cannot resolve application paths: {error}; running without them"
+                );
+                None
             }
-            Err(error) => Err((self, ApplicationStartError::Paths(error))),
-        }
-    }
-
-    fn start_without_paths(self) -> ApplicationSession {
-        let diagnostics = self.install_diagnostics(None, DiagnosticsPaths::in_memory());
-        ApplicationSession {
-            paths: None,
-            diagnostics,
-        }
-    }
-
-    fn install_diagnostics(
-        self,
-        paths: Option<&ApplicationPaths>,
-        diagnostic_paths: DiagnosticsPaths,
-    ) -> Option<DiagnosticsGuard> {
-        if !self.diagnostics.enabled {
-            return None;
-        }
-
-        let identity = &self.identity;
-        let layout = match paths.map(ApplicationPaths::layout) {
-            Some(RuntimeLayout::Installed) => "installed",
-            Some(RuntimeLayout::Portable) => "portable",
-            Some(RuntimeLayout::Development) => "development",
-            None => "unresolved",
         };
-        let mut meta = SessionMetadata::new(&identity.id, &identity.name, &identity.version)
-            .framework_version(env!("CARGO_PKG_VERSION"))
-            .extra("layout", layout);
-        if let Some(build_id) = &identity.build_id {
-            meta = meta.build_id(build_id);
-        }
-        if let Some(vendor) = &identity.vendor {
-            meta = meta.extra("vendor", vendor);
-        }
-        // A second builder in one process keeps the first runtime.
-        let guard = nana_diagnostics::install(self.diagnostics, meta, diagnostic_paths).ok();
-        // `start` runs on the thread that will drive the event loop: register
-        // it now so its first frame does not pay for ring allocation.
-        nana_diagnostics::register_thread();
-        guard
+        let diagnostics = if self.diagnostics.enabled {
+            install_diagnostics(&self.identity, self.diagnostics, paths)
+        } else {
+            None
+        };
+        ApplicationSession { paths, diagnostics }
     }
 
     /// Start process services, run the Scene host, then shut down cleanly.
@@ -207,6 +140,32 @@ impl NanaApplicationBuilder {
         drop(session);
         result
     }
+}
+
+fn install_diagnostics(
+    identity: &ApplicationIdentity,
+    config: DiagnosticsConfig,
+    paths: Option<&ApplicationPaths>,
+) -> Option<DiagnosticsGuard> {
+    let layout = paths.map_or("unresolved", |p| p.layout().as_str());
+    let mut meta = SessionMetadata::new(&identity.id, &identity.name, &identity.version)
+        .framework_version(env!("CARGO_PKG_VERSION"))
+        .extra("layout", layout);
+    if let Some(build_id) = &identity.build_id {
+        meta = meta.build_id(build_id);
+    }
+    if let Some(vendor) = &identity.vendor {
+        meta = meta.extra("vendor", vendor);
+    }
+    let files = paths.map_or_else(DiagnosticsPaths::in_memory, |p| {
+        DiagnosticsPaths::new(p.logs(), p.crash())
+    });
+    // A second builder in one process keeps the first runtime.
+    let guard = nana_diagnostics::install(config, meta, files).ok();
+    // `start` runs on the thread that will drive the event loop: register
+    // it now so its first frame does not pay for ring allocation.
+    nana_diagnostics::register_thread();
+    guard
 }
 
 #[cfg(feature = "hosted")]

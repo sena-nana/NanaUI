@@ -226,9 +226,6 @@ pub(super) struct GlyphAtlasManager {
     /// face set changed under the whole atlas, so every page is dropped rather
     /// than left holding bitmaps of faces that no longer exist.
     raster_generation: u64,
-    /// Budget exhaustion is reported once per atlas, not once per refused
-    /// page: a full atlas refuses on every miss.
-    budget_reported: bool,
 }
 
 impl GlyphAtlasManager {
@@ -281,7 +278,6 @@ impl GlyphAtlasManager {
             relocations: 0,
             stale_handle_rejects: Cell::new(0),
             raster_generation,
-            budget_reported: false,
         };
         // A bind group names both textures, so a mask-only frame still needs a
         // color view to point at. That is all these two are: 1×1 placeholders
@@ -759,10 +755,16 @@ impl GlyphAtlasManager {
         let bytes: usize = self.pages.iter().map(AtlasPage::bytes).sum();
         let next = (edge as usize) * (edge as usize) * kind.bytes_per_texel();
         if bytes + next > self.limits.byte_budget {
-            if !self.budget_reported {
-                self.budget_reported = true;
+            use nana_diagnostics::framework::text;
+            // A full atlas refuses on every miss: count each refusal, but
+            // describe the situation at most every ten seconds.
+            static EXHAUSTED: nana_diagnostics::Throttle = nana_diagnostics::Throttle::new();
+            nana_diagnostics::metric!(text::ATLAS_BUDGET_REFUSALS);
+            if nana_diagnostics::enabled(text::ATLAS_BUDGET_EXHAUSTED.severity)
+                && EXHAUSTED.allow(std::time::Duration::from_secs(10))
+            {
                 nana_diagnostics::event!(
-                    nana_diagnostics::framework::text::ATLAS_BUDGET_EXHAUSTED,
+                    text::ATLAS_BUDGET_EXHAUSTED,
                     bytes = bytes as u64,
                     budget = self.limits.byte_budget as u64
                 );

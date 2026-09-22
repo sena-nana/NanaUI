@@ -17,8 +17,9 @@ use std::time::{Duration, Instant};
 use crate::files::{self, Backoff, RotatingLog, Sink};
 use crate::metric::{self, Metric};
 use crate::nlog::{ChunkWriter, encode_header, writer::SnapshotValue};
-use crate::record::{FaultRecord, Record};
-use crate::runtime::{IS_WORKER, Shared, lock};
+use crate::record::FaultRecord;
+use crate::record::saturating_ns;
+use crate::runtime::{Producer, Shared, lock};
 use crate::schema::{EventDescriptor, MetricDescriptor, MetricKind, SchemaKey, Severity};
 use crate::session::{DiagnosticsConfig, PersistMode, SessionMetadata};
 
@@ -86,8 +87,10 @@ pub(crate) struct WorkerState {
     batch_since: Option<Instant>,
     /// Flush the batch at the end of this tick regardless of size/age.
     urgent: bool,
-    records: Vec<Record>,
-    faults: Vec<FaultRecord>,
+    /// The producer list as of `producers_generation`, so an idle tick does
+    /// not clone it.
+    producers: Vec<Arc<Producer>>,
+    producers_generation: u64,
     counter_last: HashMap<SchemaKey, u64>,
     gauge_last: HashMap<SchemaKey, u64>,
     dropped_last: DropReport,
@@ -112,14 +115,14 @@ impl WorkerState {
             flight: FlightRecorder {
                 chunks: VecDeque::new(),
                 bytes: 0,
-                window_ns: u64::try_from(config.flight_window.as_nanos()).unwrap_or(u64::MAX),
+                window_ns: saturating_ns(config.flight_window),
                 max_bytes: config.flight_bytes,
             },
             batch: Vec::new(),
             batch_since: None,
             urgent: false,
-            records: Vec::new(),
-            faults: Vec::new(),
+            producers: Vec::new(),
+            producers_generation: u64::MAX,
             counter_last: HashMap::new(),
             gauge_last: HashMap::new(),
             dropped_last: (Vec::new(), Vec::new()),
@@ -129,13 +132,9 @@ impl WorkerState {
         }
     }
 
-    fn persists(&self) -> bool {
-        self.persist != PersistMode::Off
-    }
-
     /// Append to the batch (when persisting) and start its age clock.
     fn batch_append(&mut self, bytes: &[u8]) {
-        if !self.persists() || bytes.is_empty() {
+        if self.persist == PersistMode::Off || bytes.is_empty() {
             return;
         }
         if self.batch.is_empty() {
@@ -144,10 +143,26 @@ impl WorkerState {
         self.batch.extend_from_slice(bytes);
     }
 
+    /// Encode one chunk into the batch and the flight recorder.
+    fn emit(&mut self, ts_ns: u64, encode: impl FnOnce(&mut ChunkWriter, &mut Vec<u8>)) {
+        let mut chunk = Vec::new();
+        encode(&mut self.writer, &mut chunk);
+        self.batch_append(&chunk);
+        self.flight.push(ts_ns, chunk);
+    }
+
+    /// Encode one schema-class chunk into the batch and every future prefix.
+    fn emit_schema(&mut self, encode: impl FnOnce(&mut ChunkWriter, &mut Vec<u8>)) {
+        let start = self.schema_bytes.len();
+        encode(&mut self.writer, &mut self.schema_bytes);
+        let chunk = self.schema_bytes[start..].to_vec();
+        self.batch_append(&chunk);
+    }
+
     fn schema(&mut self, shared: &Shared, event: &'static EventDescriptor) {
         let key = event.key();
         match self.events.get(&key) {
-            Some(known) if std::ptr::eq(*known, event) => return,
+            Some(known) if std::ptr::eq(*known, event) => {}
             Some(known) => {
                 if known.name != event.name || known.fields != event.fields {
                     shared
@@ -155,133 +170,86 @@ impl WorkerState {
                         .schema_conflicts
                         .fetch_add(1, Ordering::Relaxed);
                 }
-                return;
             }
-            None => {}
+            None => {
+                self.events.insert(key, event);
+                self.emit_schema(|w, out| w.event_schema(out, event));
+            }
         }
-        self.events.insert(key, event);
-        let mut chunk = Vec::new();
-        self.writer.event_schema(&mut chunk, event);
-        self.schema_bytes.extend_from_slice(&chunk);
-        self.batch_append(&chunk);
     }
 
-    fn metric_schema(&mut self, descriptor: MetricDescriptor) -> bool {
-        if self.metrics.contains_key(&descriptor.key()) {
-            return true;
-        }
-        self.metrics.insert(descriptor.key(), descriptor);
-        let mut chunk = Vec::new();
-        self.writer.metric_schema(&mut chunk, &descriptor);
-        self.schema_bytes.extend_from_slice(&chunk);
-        self.batch_append(&chunk);
-        true
-    }
-
-    fn thread(&mut self, thread: u32, name: &str) {
-        if self.threads.insert(thread) {
-            let mut chunk = Vec::new();
-            self.writer.thread_name(&mut chunk, thread, name);
-            self.schema_bytes.extend_from_slice(&chunk);
-            self.batch_append(&chunk);
-        }
+    fn fault(&mut self, shared: &Shared, fault: &FaultRecord) {
+        self.schema(shared, fault.record.event);
+        self.emit(fault.record.ts_ns, |w, out| w.fault(out, fault));
+        self.urgent = true;
     }
 
     /// Pull everything out of every ring. Caller holds `Shared::state`,
     /// which makes this the only consumer.
     pub(crate) fn drain(&mut self, shared: &Shared) {
-        // Snapshot the list and drain without holding `producers`: a thread
-        // registering its first event must never wait on this (possibly
-        // descheduled, low-priority) worker.
-        let producers: Vec<Arc<crate::runtime::Producer>> = lock(&shared.producers).clone();
-        self.records.clear();
-        self.faults.clear();
+        // Refresh the list only when it changed, and drain without holding
+        // `producers`: a thread registering its first event must never wait
+        // on this (possibly descheduled, low-priority) worker.
+        let generation = shared.producers_generation.load(Ordering::Acquire);
+        if generation != self.producers_generation {
+            self.producers = lock(&shared.producers).clone();
+            self.producers_generation = generation;
+        }
+        let mut records = Vec::new();
+        let mut faults = Vec::new();
         let mut retired_any = false;
+        let producers = std::mem::take(&mut self.producers);
         for producer in &producers {
             // Read `retired` first: a retired producer pushes nothing more,
             // so draining after the load cannot miss a record.
             let retired = producer.retired.load(Ordering::Acquire);
-            let before = self.records.len() + self.faults.len();
+            let before = records.len() + faults.len();
             // SAFETY: we hold `Shared::state`, the consumer lock.
             while let Some(record) = unsafe { producer.events.pop() } {
-                self.records.push(record);
+                records.push(record);
             }
             while let Some(fault) = unsafe { producer.faults.pop() } {
-                self.faults.push(fault);
+                faults.push(fault);
             }
-            if self.records.len() + self.faults.len() > before {
-                self.thread(producer.thread, &producer.name);
+            if records.len() + faults.len() > before && self.threads.insert(producer.thread) {
+                self.emit_schema(|w, out| w.thread_name(out, producer.thread, &producer.name));
             }
             retired_any |= retired;
         }
         if retired_any {
-            let mut list = lock(&shared.producers);
-            list.retain(|producer| {
-                // Only drop what this pass saw retired *and* drained.
-                let gone = producer.retired.load(Ordering::Acquire)
-                    && producers.iter().any(|seen| Arc::ptr_eq(seen, producer))
-                    && producer.events.is_empty()
-                    && producer.faults.is_empty();
-                if gone {
-                    shared
-                        .stats
-                        .retired_events_dropped
-                        .fetch_add(producer.events.dropped(), Ordering::Relaxed);
-                    shared
-                        .stats
-                        .retired_faults_dropped
-                        .fetch_add(producer.faults.dropped(), Ordering::Relaxed);
-                }
-                !gone
-            });
+            shared.forget_retired(&producers);
         }
+        self.producers = producers;
 
-        let records = std::mem::take(&mut self.records);
-        let faults = std::mem::take(&mut self.faults);
+        let mut previous: Option<&'static EventDescriptor> = None;
         for record in &records {
-            self.schema(shared, record.event);
+            // Events arrive in runs of the same descriptor.
+            if !previous.is_some_and(|p| std::ptr::eq(p, record.event)) {
+                self.schema(shared, record.event);
+                previous = Some(record.event);
+            }
         }
-        for fault in &faults {
-            self.schema(shared, fault.record.event);
-        }
-
-        if !records.is_empty() {
-            let mut sorted = records;
-            sorted.sort_by_key(|r| r.ts_ns);
-            let last_ts = sorted.last().map_or(0, |r| r.ts_ns);
+        if let Some(last) = records.iter().map(|r| r.ts_ns).max() {
+            records.sort_by_key(|r| r.ts_ns);
             let mut all = Vec::new();
-            self.writer.events(&mut all, &sorted);
+            self.writer.events(&mut all, &records);
             match self.persist {
                 PersistMode::All => self.batch_append(&all),
                 PersistMode::Essential => {
-                    let important: Vec<Record> = sorted
-                        .iter()
-                        .copied()
-                        .filter(|r| r.event.severity >= Severity::Warn)
-                        .collect();
-                    let mut chunk = Vec::new();
-                    self.writer.events(&mut chunk, &important);
-                    self.batch_append(&chunk);
+                    records.retain(|r| r.event.severity >= Severity::Warn);
+                    let mut important = Vec::new();
+                    self.writer.events(&mut important, &records);
+                    self.batch_append(&important);
                 }
                 PersistMode::Off => {}
             }
-            self.flight.push(last_ts, all);
-            sorted.clear();
-            self.records = sorted;
-        } else {
-            self.records = records;
+            self.flight.push(last, all);
         }
 
-        let mut faults = faults;
         faults.sort_by_key(|f| f.record.ts_ns);
-        for fault in faults.drain(..) {
-            let mut chunk = Vec::new();
-            self.writer.fault(&mut chunk, &fault);
-            self.batch_append(&chunk);
-            self.flight.push(fault.record.ts_ns, chunk);
-            self.urgent = true;
+        for fault in &faults {
+            self.fault(shared, fault);
         }
-        self.faults = faults;
     }
 
     fn snapshot_metrics(&mut self, ts_ns: u64) {
@@ -314,14 +282,13 @@ impl WorkerState {
                     _ => continue,
                 },
             };
-            self.metric_schema(descriptor);
+            if self.metrics.insert(key, descriptor).is_none() {
+                self.emit_schema(|w, out| w.metric_schema(out, &descriptor));
+            }
             items.push((descriptor, value));
         }
         if !items.is_empty() {
-            let mut chunk = Vec::new();
-            self.writer.metric_snapshot(&mut chunk, ts_ns, &items);
-            self.batch_append(&chunk);
-            self.flight.push(ts_ns, chunk);
+            self.emit(ts_ns, |w, out| w.metric_snapshot(out, ts_ns, &items));
         }
     }
 
@@ -348,10 +315,7 @@ impl WorkerState {
         if (&threads, &stats) == (&self.dropped_last.0, &self.dropped_last.1) {
             return;
         }
-        let mut chunk = Vec::new();
-        self.writer.dropped(&mut chunk, ts_ns, &threads, &stats);
-        self.batch_append(&chunk);
-        self.flight.push(ts_ns, chunk);
+        self.emit(ts_ns, |w, out| w.dropped(out, ts_ns, &threads, &stats));
         self.dropped_last = (threads, stats);
     }
 
@@ -360,43 +324,39 @@ impl WorkerState {
         self.flight.chunks = VecDeque::new();
         self.flight.bytes = 0;
         self.batch = Vec::new();
-        self.records = Vec::new();
-        self.faults = Vec::new();
+        self.producers = Vec::new();
     }
 
-    fn session_info_chunk(&mut self, ts_ns: u64) -> Vec<u8> {
-        let mut chunk = Vec::new();
+    /// Every session-info pair so far, as one chunk (empty when none).
+    fn session_info_chunk(&mut self, out: &mut Vec<u8>, ts_ns: u64) {
         if !self.session_info.is_empty() {
-            let pairs = self.session_info.clone();
-            self.writer.session_info(&mut chunk, ts_ns, &pairs);
+            self.writer.session_info(out, ts_ns, &self.session_info);
         }
-        chunk
     }
 
     fn set_session_info(&mut self, ts_ns: u64, key: String, value: String) {
-        match self.session_info.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = value.clone(),
-            None => self.session_info.push((key.clone(), value.clone())),
-        }
+        let index = match self.session_info.iter().position(|(k, _)| *k == key) {
+            Some(index) => {
+                self.session_info[index].1 = value;
+                index
+            }
+            None => {
+                self.session_info.push((key, value));
+                self.session_info.len() - 1
+            }
+        };
         let mut chunk = Vec::new();
-        self.writer.session_info(&mut chunk, ts_ns, &[(key, value)]);
-        self.batch_append(&chunk);
+        self.writer.session_info(
+            &mut chunk,
+            ts_ns,
+            std::slice::from_ref(&self.session_info[index]),
+        );
         // Not pushed to the flight recorder: snapshots carry the full set.
+        self.batch_append(&chunk);
     }
 
     fn marker(&mut self, ts_ns: u64, text: &str) {
-        let mut chunk = Vec::new();
-        self.writer.marker(&mut chunk, ts_ns, text);
-        self.batch_append(&chunk);
-        self.flight.push(ts_ns, chunk);
-    }
-
-    fn clock_sync(&mut self, ts_ns: u64) {
-        let mut chunk = Vec::new();
-        self.writer
-            .clock_sync(&mut chunk, ts_ns, crate::session::unix_now_ns());
-        self.batch_append(&chunk);
-        self.flight.push(ts_ns, chunk);
+        self.emit(ts_ns, |w, out| w.marker(out, ts_ns, text));
     }
 
     /// Header, schemas, session info: what a fresh session-log file needs
@@ -407,20 +367,20 @@ impl WorkerState {
         if std::mem::replace(&mut self.batch_is_complete, false) {
             return self.header.clone();
         }
-        let info = self.session_info_chunk(ts_ns);
-        let mut out = Vec::with_capacity(self.header.len() + self.schema_bytes.len() + info.len());
-        out.extend_from_slice(&self.header);
+        let mut out = self.header.clone();
         out.extend_from_slice(&self.schema_bytes);
-        out.extend_from_slice(&info);
+        self.session_info_chunk(&mut out, ts_ns);
         out
     }
 
     /// A complete, self-describing snapshot file.
     fn snapshot_bytes(&mut self, meta: &SessionMetadata, reason: &str, ts_ns: u64) -> Vec<u8> {
-        let mut out = encode_header(meta, &format!("snapshot:{reason}"));
+        let header = encode_header(meta, &format!("snapshot:{reason}"));
+        let mut out =
+            Vec::with_capacity(header.len() + self.schema_bytes.len() + self.flight.bytes + 1024);
+        out.extend_from_slice(&header);
         out.extend_from_slice(&self.schema_bytes);
-        let info = self.session_info_chunk(ts_ns);
-        out.extend_from_slice(&info);
+        self.session_info_chunk(&mut out, ts_ns);
         for (_, chunk) in &self.flight.chunks {
             out.extend_from_slice(chunk);
         }
@@ -506,20 +466,16 @@ fn guarded(output: &mut Output, op: impl FnOnce(&mut Output) -> io::Result<()>) 
 }
 
 pub(crate) fn run(shared: Arc<Shared>) {
-    IS_WORKER.with(|flag| flag.set(true));
     crate::priority::lower_current_thread();
     let config = shared.config.clone();
     let meta = shared.meta.clone();
     let mut output = match (&shared.paths.logs, config.persist) {
-        (Some(dir), mode) if mode != PersistMode::Off => {
-            let stem = files::session_stem(&meta.app_id, meta.wall_start_unix_ns, meta.pid);
-            Output::Files(RotatingLog::new(
-                dir.clone(),
-                &meta.app_id,
-                stem,
-                config.retention.clone(),
-            ))
-        }
+        (Some(dir), mode) if mode != PersistMode::Off => Output::Files(RotatingLog::new(
+            dir.clone(),
+            &meta.app_id,
+            shared.stem.clone(),
+            config.retention.clone(),
+        )),
         _ => Output::None,
     };
     if let Some(dir) = &shared.paths.crash {
@@ -560,7 +516,9 @@ pub(crate) fn run(shared: Arc<Shared>) {
             st.drain(&shared);
             let ts = shared.now_ns();
             if now >= next_clock {
-                st.clock_sync(ts);
+                st.emit(ts, |w, out| {
+                    w.clock_sync(out, ts, crate::session::unix_now_ns())
+                });
                 next_clock = now + config.clock_sync_interval;
             }
             if now >= next_metrics || shutting_down {
@@ -685,12 +643,7 @@ fn write_snapshot(shared: &Shared, reason: &str, bytes: &[u8]) -> io::Result<Pat
     let Some(dir) = &shared.paths.crash else {
         return Err(io::Error::other("no crash directory configured"));
     };
-    let meta = &shared.meta;
-    let name = format!(
-        "{}-{}",
-        files::session_stem(&meta.app_id, meta.wall_start_unix_ns, meta.pid),
-        files::sanitize(reason)
-    );
+    let name = format!("{}-{}", shared.stem, files::sanitize(reason));
     let result = files::write_new_file(dir, &name, bytes);
     match &result {
         Ok(path) => {
@@ -699,11 +652,10 @@ fn write_snapshot(shared: &Shared, reason: &str, bytes: &[u8]) -> io::Result<Pat
                 .snapshots_written
                 .fetch_add(1, Ordering::Relaxed);
             let r = &shared.config.retention;
-            let stem = files::session_stem(&meta.app_id, meta.wall_start_unix_ns, meta.pid);
             files::prune(
                 dir,
-                &meta.app_id,
-                Some(&stem),
+                &shared.meta.app_id,
+                Some(&shared.stem),
                 Some(path),
                 r.max_crash_files,
                 r.max_crash_bytes,
@@ -728,7 +680,7 @@ pub(crate) fn snapshot_now(
 ) -> io::Result<PathBuf> {
     // `wait` may be `Duration::MAX` ("as long as it takes").
     let deadline = Instant::now().checked_add(wait);
-    let is_worker = IS_WORKER.with(|flag| flag.get());
+    let is_worker = shared.on_worker_thread();
     let mut state = loop {
         match shared.state.try_lock() {
             Ok(guard) => break guard,
@@ -749,12 +701,7 @@ pub(crate) fn snapshot_now(
     state.drain(shared);
     let ts = shared.now_ns();
     if let Some(fault) = fault {
-        state.schema(shared, fault.record.event);
-        let mut chunk = Vec::new();
-        state.writer.fault(&mut chunk, &fault);
-        state.batch_append(&chunk);
-        state.flight.push(fault.record.ts_ns, chunk);
-        state.urgent = true;
+        state.fault(shared, &fault);
     }
     state.snapshot_metrics(ts);
     state.report_dropped(shared, ts);

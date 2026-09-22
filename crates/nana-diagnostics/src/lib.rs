@@ -51,17 +51,18 @@ mod runtime;
 mod schema;
 mod session;
 mod span;
+mod throttle;
 mod worker;
 
 pub use crash::install_panic_hook;
-pub use export::{ExportOptions, histogram_quantile, to_json_lines, to_text};
+pub use export::{ExportOptions, to_json_lines, to_text};
 pub use files::Sink;
 pub use metric::{HISTOGRAM_BUCKETS, HistogramCells, HistogramSample, Metric, MetricValue};
 pub use package::{PackageOptions, export_package_from};
 pub use record::{Field, FieldValue};
 pub use runtime::{
     __private, AlreadyInstalled, Diagnostics, DiagnosticsGuard, DiagnosticsStats, enabled, global,
-    install, marker, metrics_enabled, register_thread, set_session_info, snapshot,
+    install, metrics_enabled, register_thread, set_session_info, snapshot,
 };
 pub use schema::{
     Domain, EventDescriptor, FieldDescriptor, FieldKind, MAX_FIELDS, MetricDescriptor, MetricKind,
@@ -69,6 +70,7 @@ pub use schema::{
 };
 pub use session::{DiagnosticsConfig, DiagnosticsPaths, PersistMode, Retention, SessionMetadata};
 pub use span::SpanGuard;
+pub use throttle::Throttle;
 
 /// Record a structured event on the global instance.
 ///

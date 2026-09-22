@@ -6,8 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::export::json_str;
 use crate::export::{ExportOptions, to_json_lines, to_text};
-use crate::files::{file_stamp, is_session_file, sanitize};
+use crate::files::{create_unique, file_stamp, is_session_file, sanitize};
 use crate::nlog::read_file;
 use crate::runtime::Diagnostics;
 use crate::session::unix_now_ns;
@@ -54,12 +55,13 @@ fn newest(dir: Option<&Path>, app_id: &str, limit: usize, group_rotations: bool)
     let Some(Ok(read)) = dir.map(fs::read_dir) else {
         return Vec::new();
     };
+    let app = sanitize(app_id);
     let mut files: Vec<(SystemTime, PathBuf)> = read
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            if !is_session_file(name, app_id) {
+            if !is_session_file(name, &app) {
                 return None;
             }
             let modified = entry.metadata().ok()?.modified().ok()?;
@@ -106,23 +108,18 @@ pub fn export_package_from(
         sanitize(app_id),
         file_stamp(unix_now_ns())
     );
-    let mut root = dest.join(&base);
-    let mut attempt = 1;
-    loop {
-        match fs::create_dir(&root) {
-            Ok(()) => break,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 1000 => {
-                root = dest.join(format!("{base}-{attempt}"));
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    let ((), root, _) = create_unique(
+        |n| match n {
+            0 => dest.join(&base),
+            n => dest.join(format!("{base}-{n}")),
+        },
+        |path| fs::create_dir(path),
+    )?;
     let export = ExportOptions {
         redact_home: options.redact_home,
     };
     let mut manifest = String::from("{\n  \"app_id\": ");
-    push_json_str(&mut manifest, app_id);
+    json_str(&mut manifest, app_id);
     manifest.push_str(",\n  \"files\": [");
     let mut first = true;
     for (kind, dir, limit) in [
@@ -152,9 +149,9 @@ pub fn export_package_from(
             manifest.push_str(if first { "\n    " } else { ",\n    " });
             first = false;
             manifest.push_str("{\"kind\": ");
-            push_json_str(&mut manifest, kind);
+            json_str(&mut manifest, kind);
             manifest.push_str(", \"name\": ");
-            push_json_str(&mut manifest, stem);
+            json_str(&mut manifest, stem);
             manifest.push_str(match truncated {
                 Some(true) => ", \"readable\": true, \"truncated\": true}",
                 Some(false) => ", \"readable\": true, \"truncated\": false}",
@@ -165,21 +162,6 @@ pub fn export_package_from(
     manifest.push_str("\n  ]\n}\n");
     fs::write(root.join("manifest.json"), manifest)?;
     Ok(root)
-}
-
-fn push_json_str(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' | '\\' => {
-                out.push('\\');
-                out.push(c);
-            }
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 impl Diagnostics {

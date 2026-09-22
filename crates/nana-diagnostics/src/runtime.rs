@@ -1,7 +1,7 @@
 //! The diagnostics runtime: producer registration, the emit path, the
 //! process-wide default instance, and the control API.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::record::{FaultRecord, Field, Record, pack};
+use crate::record::{FaultRecord, Field, Record, pack, saturating_ns};
 use crate::ring::Ring;
 use crate::schema::{EventDescriptor, Severity};
 use crate::session::{DiagnosticsConfig, DiagnosticsPaths, SessionMetadata};
@@ -65,9 +65,14 @@ pub(crate) struct Shared {
     pub(crate) config: DiagnosticsConfig,
     pub(crate) meta: SessionMetadata,
     pub(crate) paths: DiagnosticsPaths,
+    /// `{app}-{stamp}-{pid}`: the session log's and its snapshots' name.
+    pub(crate) stem: String,
     start: Instant,
     min_severity: u8,
     pub(crate) producers: Mutex<Vec<Arc<Producer>>>,
+    /// Bumped whenever `producers` changes, so the worker re-reads it only
+    /// then.
+    pub(crate) producers_generation: AtomicU64,
     next_thread: AtomicU32,
     /// Consumer side of every ring plus all encoder state. Whoever holds it
     /// is the one consumer the SPSC rings allow.
@@ -103,13 +108,64 @@ impl Drop for LocalProducers {
 
 thread_local! {
     static LOCAL: LocalProducers = const { LocalProducers(RefCell::new(Vec::new())) };
-    pub(crate) static IS_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+impl Stats {
+    /// Fold a producer's loss counters into the totals before forgetting it.
+    fn absorb(&self, producer: &Producer) {
+        self.retired_events_dropped
+            .fetch_add(producer.events.dropped(), Ordering::Relaxed);
+        self.retired_faults_dropped
+            .fetch_add(producer.faults.dropped(), Ordering::Relaxed);
+    }
 }
 
 impl Shared {
     #[inline]
     pub(crate) fn now_ns(&self) -> u64 {
-        u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        saturating_ns(self.start.elapsed())
+    }
+
+    /// Whether the caller is this instance's worker thread.
+    pub(crate) fn on_worker_thread(&self) -> bool {
+        self.worker_thread
+            .get()
+            .is_some_and(|thread| thread.id() == std::thread::current().id())
+    }
+
+    /// Clear the global slot if it holds this instance, and silence every
+    /// call site. The leaked reference keeps `Shared` valid for producers
+    /// that loaded the pointer before the swap.
+    fn uninstall_global(&self) {
+        let me = self as *const Shared as *mut Shared;
+        if GLOBAL
+            .compare_exchange(
+                me,
+                std::ptr::null_mut(),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            THRESHOLD.store(u8::MAX, Ordering::Relaxed);
+            METRICS_ON.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// Forget retired producers the worker saw in `drained` and emptied.
+    pub(crate) fn forget_retired(&self, drained: &[Arc<Producer>]) {
+        let mut list = lock(&self.producers);
+        list.retain(|producer| {
+            let gone = producer.retired.load(Ordering::Acquire)
+                && drained.iter().any(|seen| Arc::ptr_eq(seen, producer))
+                && producer.events.is_empty()
+                && producer.faults.is_empty();
+            if gone {
+                self.stats.absorb(producer);
+            }
+            !gone
+        });
+        self.producers_generation.fetch_add(1, Ordering::Release);
     }
 
     /// Run `f` with this thread's producer, registering one on first use.
@@ -168,6 +224,7 @@ impl Shared {
                 return None;
             }
             producers.push(producer.clone());
+            self.producers_generation.fetch_add(1, Ordering::Release);
         }
         list.push((self.id, producer.clone()));
         Some(producer)
@@ -199,6 +256,9 @@ impl Shared {
         fields: &[Field],
         message: Option<Box<str>>,
     ) {
+        if (event.severity as u8) < self.min_severity {
+            return;
+        }
         let ts_ns = self.now_ns();
         let (len, values) = pack(event, fields);
         let mut pushed = false;
@@ -259,19 +319,7 @@ impl Shared {
         }
         // After a panic the call sites must go quiet too, and a later
         // install must be able to take the slot.
-        let me = self as *const Shared as *mut Shared;
-        if GLOBAL
-            .compare_exchange(
-                me,
-                std::ptr::null_mut(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            THRESHOLD.store(u8::MAX, Ordering::Relaxed);
-            METRICS_ON.store(false, Ordering::Relaxed);
-        }
+        self.uninstall_global();
         self.release_producers();
         // A panic poisons the state lock on the way out; the data is still
         // fine to drop.
@@ -294,14 +342,10 @@ impl Shared {
         let mut producers = lock(&self.producers);
         for producer in producers.iter() {
             producer.orphaned.store(true, Ordering::Release);
-            self.stats
-                .retired_events_dropped
-                .fetch_add(producer.events.dropped(), Ordering::Relaxed);
-            self.stats
-                .retired_faults_dropped
-                .fetch_add(producer.faults.dropped(), Ordering::Relaxed);
+            self.stats.absorb(producer);
         }
         producers.clear();
+        self.producers_generation.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -356,14 +400,17 @@ impl Diagnostics {
         let mut meta = meta;
         meta.monotonic_start_ns = crate::clock::monotonic_now_ns();
         let state = WorkerState::new(&config, &meta);
+        let stem = crate::files::session_stem(&meta.app_id, meta.wall_start_unix_ns, meta.pid);
         let shared = Arc::new(Shared {
             id: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             min_severity,
             config,
             meta,
             paths,
+            stem,
             start,
             producers: Mutex::new(Vec::new()),
+            producers_generation: AtomicU64::new(0),
             next_thread: AtomicU32::new(1),
             state: Mutex::new(state),
             requests: Mutex::new(Vec::new()),
@@ -461,9 +508,6 @@ impl Diagnostics {
     /// Record a fault. Faults use a separate emergency ring and wake the
     /// worker so they reach disk promptly.
     pub fn fault(&self, event: &'static EventDescriptor, fields: &[Field], message: Option<&str>) {
-        if (event.severity as u8) < self.shared.min_severity {
-            return;
-        }
         self.shared.fault(event, fields, message.map(Into::into));
     }
 
@@ -555,28 +599,14 @@ impl Diagnostics {
     /// hang application exit); later events are discarded.
     pub fn shutdown(&self) {
         let shared = &self.shared;
-        let me = Arc::as_ptr(shared) as *mut Shared;
-        if GLOBAL
-            .compare_exchange(
-                me,
-                std::ptr::null_mut(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            // The leaked reference keeps `Shared` valid for any producer that
-            // loaded the pointer before this swap.
-            THRESHOLD.store(u8::MAX, Ordering::Relaxed);
-            METRICS_ON.store(false, Ordering::Relaxed);
-        }
+        shared.uninstall_global();
         {
             // Under the requests lock: see `Shared::request`.
             let _requests = lock(&shared.requests);
             shared.shutdown.store(true, Ordering::Release);
         }
         shared.wake();
-        if !IS_WORKER.with(|flag| flag.get()) {
+        if !shared.on_worker_thread() {
             // Every caller waits (concurrent shutdowns included), bounded so
             // a hung disk or sink cannot hang application exit.
             let (done, signal) = &shared.worker_done;
@@ -661,6 +691,10 @@ pub fn install(
     meta: SessionMetadata,
     paths: DiagnosticsPaths,
 ) -> Result<DiagnosticsGuard, AlreadyInstalled> {
+    // Cheap early answer; `install_global` below settles any race.
+    if !GLOBAL.load(Ordering::Acquire).is_null() {
+        return Err(AlreadyInstalled);
+    }
     let panic_hook = config.enabled && config.panic_hook;
     let diagnostics = Diagnostics::start(config, meta, paths);
     let guard = match diagnostics.install_global() {
@@ -709,13 +743,6 @@ pub fn register_thread() {
 pub fn set_session_info(key: impl Into<String>, value: impl Into<String>) {
     if let Some(diagnostics) = global() {
         diagnostics.set_session_info(key, value);
-    }
-}
-
-/// See [`Diagnostics::marker`].
-pub fn marker(text: impl Into<String>) {
-    if let Some(diagnostics) = global() {
-        diagnostics.marker(text);
     }
 }
 

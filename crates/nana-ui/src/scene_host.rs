@@ -73,9 +73,9 @@ use winit::window::{
 use crate::accessibility::HostedAccessibility;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
-    HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor, gated_runtime_window_update,
-    runtime_ime_surrounding, runtime_text_input_request,
+    HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, ReportHostFailure, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, WindowDescriptor,
+    gated_runtime_window_update, runtime_ime_surrounding, runtime_text_input_request,
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
@@ -1128,13 +1128,6 @@ fn initialize<Program: RuntimeProgram>(
 }
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
-    /// Every host failure goes through here: record it, then let the
-    /// program decide how to surface it.
-    pub(super) fn report_host_failure(&mut self, failure: HostFailure) {
-        failure.record_diagnostics();
-        self.program.host_failure(failure);
-    }
-
     fn update_image_targets(&mut self, id: WindowId, scene: &nana_ui_scene::UiScene) {
         let keys = scene_image_keys(scene);
         if self.image_window_keys.get(&id) == Some(&keys) {

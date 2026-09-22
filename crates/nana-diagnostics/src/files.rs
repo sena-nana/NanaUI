@@ -16,31 +16,25 @@ pub trait Sink: Send {
     fn flush(&mut self, durable: bool) -> io::Result<()>;
 }
 
-/// `2026-09-22T10:15:30Z` → `20260922T101530Z`.
-pub(crate) fn file_stamp(unix_ns: u64) -> String {
+/// UTC calendar fields of a Unix time: `(y, m, d, hh, mm, ss, ms)`.
+fn utc(unix_ns: u64) -> (i64, u32, u32, u64, u64, u64, u64) {
     let secs = unix_ns / 1_000_000_000;
     let (y, m, d) = civil_from_days((secs / 86_400) as i64);
     let rem = secs % 86_400;
-    format!(
-        "{y:04}{m:02}{d:02}T{:02}{:02}{:02}Z",
-        rem / 3600,
-        (rem / 60) % 60,
-        rem % 60
-    )
+    let ms = (unix_ns / 1_000_000) % 1000;
+    (y, m, d, rem / 3600, (rem / 60) % 60, rem % 60, ms)
+}
+
+/// `2026-09-22T10:15:30Z` → `20260922T101530Z`.
+pub(crate) fn file_stamp(unix_ns: u64) -> String {
+    let (y, m, d, hh, mm, ss, _) = utc(unix_ns);
+    format!("{y:04}{m:02}{d:02}T{hh:02}{mm:02}{ss:02}Z")
 }
 
 /// ISO-8601 UTC with milliseconds, for text export.
 pub(crate) fn iso8601(unix_ns: u64) -> String {
-    let secs = unix_ns / 1_000_000_000;
-    let millis = (unix_ns / 1_000_000) % 1000;
-    let (y, m, d) = civil_from_days((secs / 86_400) as i64);
-    let rem = secs % 86_400;
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{millis:03}Z",
-        rem / 3600,
-        (rem / 60) % 60,
-        rem % 60
-    )
+    let (y, m, d, hh, mm, ss, ms) = utc(unix_ns);
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}.{ms:03}Z")
 }
 
 /// Howard Hinnant's days-from-civil inverse.
@@ -86,13 +80,13 @@ pub(crate) fn session_stem(app_id: &str, wall_start_unix_ns: u64, pid: u32) -> S
     )
 }
 
-/// Whether `name` is one of `app_id`'s session logs or snapshots:
-/// `{app}-{YYYYMMDD}T{HHMMSS}Z-{pid}…​.nlog`. A plain `{app}-` prefix match
-/// would also claim `{app}-beta-…`, another app's files.
-pub(crate) fn is_session_file(name: &str, app_id: &str) -> bool {
-    let app = sanitize(app_id);
+/// Whether `name` is one of an app's session logs or snapshots:
+/// `{app}-{YYYYMMDD}T{HHMMSS}Z-{pid}…​.nlog`, where `app` is the
+/// [`sanitize`]d app id. A plain `{app}-` prefix match would also claim
+/// `{app}-beta-…`, another app's files.
+pub(crate) fn is_session_file(name: &str, app: &str) -> bool {
     let Some(rest) = name
-        .strip_prefix(app.as_str())
+        .strip_prefix(app)
         .and_then(|rest| rest.strip_prefix('-'))
     else {
         return false;
@@ -108,21 +102,41 @@ pub(crate) fn is_session_file(name: &str, app_id: &str) -> bool {
         && stamp[17].is_ascii_digit()
 }
 
+/// Create the first of `candidate(0)`, `candidate(1)`, … that does not exist
+/// yet. Never overwrites: a same-second restart, or a stale file, keeps its
+/// contents.
+pub(crate) fn create_unique<T>(
+    mut candidate: impl FnMut(u32) -> PathBuf,
+    create: impl Fn(&Path) -> io::Result<T>,
+) -> io::Result<(T, PathBuf, u32)> {
+    for attempt in 0..10_000 {
+        let path = candidate(attempt);
+        match create(&path) {
+            Ok(created) => return Ok((created, path, attempt)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "no free file name",
+    ))
+}
+
+fn create_new_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
 /// Write `bytes` to a new file in `dir` and put it on disk.
 pub(crate) fn write_new_file(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<PathBuf> {
     fs::create_dir_all(dir)?;
-    let mut path = dir.join(format!("{name}.nlog"));
-    let mut attempt = 1;
-    let mut file = loop {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => break file,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists && attempt < 100 => {
-                path = dir.join(format!("{name}-{attempt}.nlog"));
-                attempt += 1;
-            }
-            Err(e) => return Err(e),
-        }
-    };
+    let (mut file, path, _) = create_unique(
+        |n| match n {
+            0 => dir.join(format!("{name}.nlog")),
+            n => dir.join(format!("{name}-{n}.nlog")),
+        },
+        create_new_file,
+    )?;
     file.write_all(bytes)?;
     file.sync_data()?;
     Ok(path)
@@ -150,17 +164,18 @@ pub(crate) fn prune(
     max_files: usize,
     max_total_bytes: u64,
     retention: &Retention,
-) -> usize {
+) {
     let Ok(read) = fs::read_dir(dir) else {
-        return 0;
+        return;
     };
+    let app = sanitize(app_id);
     let now = SystemTime::now();
     let mut files: Vec<(PathBuf, SystemTime, u64)> = read
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let path = entry.path();
             let name = path.file_name()?.to_str()?;
-            if !is_session_file(name, app_id) {
+            if !is_session_file(name, &app) {
                 return None;
             }
             let meta = entry.metadata().ok()?;
@@ -171,7 +186,6 @@ pub(crate) fn prune(
     files.sort_by_key(|(_, modified, _)| *modified);
     let mut count = files.len();
     let mut total: u64 = files.iter().map(|(_, _, len)| len).sum();
-    let mut removed = 0;
     for (path, modified, len) in files {
         let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
         let over = count > max_files || total > max_total_bytes || age > retention.max_age;
@@ -191,10 +205,8 @@ pub(crate) fn prune(
         if fs::remove_file(&path).is_ok() {
             count -= 1;
             total = total.saturating_sub(len);
-            removed += 1;
         }
     }
-    removed
 }
 
 /// Rotating session log in a directory.
@@ -263,28 +275,17 @@ impl RotatingLog {
             let _ = file.flush();
         }
         fs::create_dir_all(&self.dir)?;
-        // Never truncate: a same-second restart of the same pid (or a stale
-        // file) must not lose an earlier session's log.
-        let (file, path) = loop {
-            let name = match self.index {
-                0 => format!("{}.nlog", self.stem),
-                n => format!("{}.{n}.nlog", self.stem),
-            };
-            self.index += 1;
-            let path = self.dir.join(name);
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(file) => break (file, path),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists && self.index < 10_000 => {}
-                Err(e) => return Err(e),
-            }
-        };
+        let first = self.index;
+        let (file, path, taken) = create_unique(
+            |n| match first + n {
+                0 => self.dir.join(format!("{}.nlog", self.stem)),
+                i => self.dir.join(format!("{}.{i}.nlog", self.stem)),
+            },
+            create_new_file,
+        )?;
+        self.index = first + taken + 1;
         self.file = Some((file, path));
         self.written = 0;
-        self.prune();
-        Ok(())
-    }
-
-    pub(crate) fn prune(&self) -> usize {
         prune(
             &self.dir,
             &self.app_id,
@@ -293,7 +294,8 @@ impl RotatingLog {
             self.retention.max_files,
             self.retention.max_total_bytes,
             &self.retention,
-        )
+        );
+        Ok(())
     }
 
     pub(crate) fn flush(&mut self, durable: bool) -> io::Result<()> {

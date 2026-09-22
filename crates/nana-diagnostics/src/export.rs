@@ -41,14 +41,9 @@ impl Redactor {
     }
 }
 
-fn event_label(file: &NlogFile, key: SchemaKey) -> String {
-    file.event_name(key)
-        .map_or_else(|| format!("{}:{}", key.domain.0, key.id), str::to_owned)
-}
-
-fn metric_label(file: &NlogFile, key: SchemaKey) -> String {
-    file.metric_name(key)
-        .map_or_else(|| format!("{}:{}", key.domain.0, key.id), str::to_owned)
+/// A schema name, or `domain:id` when the file did not carry the schema.
+fn label(name: Option<&str>, key: SchemaKey) -> String {
+    name.map_or_else(|| format!("{}:{}", key.domain.0, key.id), str::to_owned)
 }
 
 fn thread_label(file: &NlogFile, thread: u32) -> String {
@@ -71,7 +66,7 @@ fn field_names(file: &NlogFile, key: SchemaKey, count: usize) -> Vec<String> {
 
 /// Approximate quantile from log2 buckets: the lower bound of the bucket
 /// holding it.
-pub fn histogram_quantile(buckets: &[(u8, u64)], count: u64, q: f64) -> u64 {
+pub(crate) fn histogram_quantile(buckets: &[(u8, u64)], count: u64, q: f64) -> u64 {
     if count == 0 {
         return 0;
     }
@@ -146,7 +141,7 @@ pub fn to_text(file: &NlogFile, options: &ExportOptions) -> String {
                 let _ = write!(
                     out,
                     "[{severity:<5}] {tag}{} thread={}",
-                    event_label(file, *key),
+                    label(file.event_name(*key), *key),
                     thread_label(file, *thread)
                 );
                 for (name, value) in field_names(file, *key, values.len()).iter().zip(values) {
@@ -164,7 +159,7 @@ pub fn to_text(file: &NlogFile, options: &ExportOptions) -> String {
             Entry::Metrics { samples, .. } => {
                 let _ = writeln!(out, "[metrics]");
                 for sample in samples {
-                    let name = metric_label(file, sample.key());
+                    let name = label(file.metric_name(sample.key()), sample.key());
                     let unit = file
                         .metric_schemas
                         .get(&sample.key())
@@ -225,7 +220,7 @@ pub fn to_text(file: &NlogFile, options: &ExportOptions) -> String {
     out
 }
 
-fn json_str(out: &mut String, value: &str) {
+pub(crate) fn json_str(out: &mut String, value: &str) {
     out.push('"');
     for c in value.chars() {
         match c {
@@ -245,18 +240,9 @@ fn json_str(out: &mut String, value: &str) {
 
 fn json_value(out: &mut String, value: &Value) {
     match value {
-        Value::U64(v) => {
-            let _ = write!(out, "{v}");
-        }
-        Value::I64(v) => {
-            let _ = write!(out, "{v}");
-        }
-        Value::F64(v) if v.is_finite() => {
-            let _ = write!(out, "{v}");
-        }
-        Value::F64(_) => out.push_str("null"),
-        Value::Bool(v) => {
-            let _ = write!(out, "{v}");
+        Value::F64(v) if !v.is_finite() => out.push_str("null"),
+        value => {
+            let _ = write!(out, "{value}");
         }
     }
 }
@@ -326,7 +312,7 @@ pub fn to_json_lines(file: &NlogFile, options: &ExportOptions) -> String {
                 ..
             } => {
                 out.push_str(",\"name\":");
-                json_str(&mut out, &event_label(file, *key));
+                json_str(&mut out, &label(file.event_name(*key), *key));
                 let severity = file
                     .event_schemas
                     .get(key)
@@ -367,7 +353,10 @@ pub fn to_json_lines(file: &NlogFile, options: &ExportOptions) -> String {
                         out.push(',');
                     }
                     out.push_str("{\"name\":");
-                    json_str(&mut out, &metric_label(file, sample.key()));
+                    json_str(
+                        &mut out,
+                        &label(file.metric_name(sample.key()), sample.key()),
+                    );
                     match sample {
                         MetricSample::Counter { total, delta, .. } => {
                             let _ = write!(

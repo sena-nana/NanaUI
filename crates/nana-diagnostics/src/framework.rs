@@ -8,10 +8,12 @@ use crate::metric::{HistogramCells, Metric};
 use crate::schema::{Domain, EventDescriptor, FieldDescriptor as F, Severity};
 
 macro_rules! histogram {
-    ($(#[$meta:meta])* $vis:vis $name:ident, $cells:ident, $domain:expr, $id:expr, $label:expr, $unit:expr) => {
-        static $cells: HistogramCells = HistogramCells::new();
+    ($(#[$meta:meta])* $vis:vis $name:ident, $domain:expr, $id:expr, $label:expr, $unit:expr) => {
         $(#[$meta])*
-        $vis static $name: Metric = Metric::histogram($domain, $id, $label, $unit, &$cells);
+        $vis static $name: Metric = Metric::histogram($domain, $id, $label, $unit, {
+            static CELLS: HistogramCells = HistogramCells::new();
+            &CELLS
+        });
     };
 }
 
@@ -21,10 +23,10 @@ pub mod runtime {
 
     histogram!(
         /// CPU time of each profiled flush that ran at least one stage.
-        pub FRAME_CPU_NS, FRAME_CPU_CELLS, D, 1, "runtime.flush.cpu", "ns");
+        pub FRAME_CPU_NS, D, 1, "runtime.flush.cpu", "ns");
     /// Profiled flushes that ran at least one stage (failed ones included).
     pub static FLUSHES: Metric = Metric::counter(D, 2, "runtime.flushes", "count");
-    histogram!(pub FLUSH_PASSES, FLUSH_PASSES_CELLS, D, 3, "runtime.flush.passes", "count");
+    histogram!(pub FLUSH_PASSES, D, 3, "runtime.flush.passes", "count");
     /// Flushes that hit the pass limit. The host reports the failure itself
     /// (rate-limited); this counts every occurrence.
     pub static FLUSH_DID_NOT_SETTLE: Metric =
@@ -32,28 +34,28 @@ pub mod runtime {
     /// Flushes that failed in style resolution or text / layout.
     pub static FLUSH_FAILED: Metric = Metric::counter(D, 5, "runtime.flush.failed", "count");
 
-    histogram!(pub STAGE_INPUT_NS, STAGE_INPUT_CELLS, D, 10, "runtime.stage.input", "ns");
-    histogram!(pub STAGE_RECONCILE_NS, STAGE_RECONCILE_CELLS, D, 11, "runtime.stage.reconcile", "ns");
-    histogram!(pub STAGE_STYLE_NS, STAGE_STYLE_CELLS, D, 12, "runtime.stage.style", "ns");
-    histogram!(pub STAGE_TEXT_SHAPE_NS, STAGE_TEXT_SHAPE_CELLS, D, 13, "runtime.stage.text_shape", "ns");
-    histogram!(pub STAGE_LAYOUT_NS, STAGE_LAYOUT_CELLS, D, 14, "runtime.stage.layout", "ns");
-    histogram!(pub STAGE_HIT_TEST_NS, STAGE_HIT_TEST_CELLS, D, 15, "runtime.stage.hit_test", "ns");
-    histogram!(pub STAGE_ACCESSIBILITY_NS, STAGE_ACCESSIBILITY_CELLS, D, 16, "runtime.stage.accessibility", "ns");
-    histogram!(pub STAGE_ANIMATION_NS, STAGE_ANIMATION_CELLS, D, 17, "runtime.stage.animation", "ns");
-    histogram!(pub STAGE_EXTRACT_NS, STAGE_EXTRACT_CELLS, D, 18, "runtime.stage.extract", "ns");
+    histogram!(pub STAGE_INPUT_NS, D, 10, "runtime.stage.input", "ns");
+    histogram!(pub STAGE_RECONCILE_NS, D, 11, "runtime.stage.reconcile", "ns");
+    histogram!(pub STAGE_STYLE_NS, D, 12, "runtime.stage.style", "ns");
+    histogram!(pub STAGE_TEXT_SHAPE_NS, D, 13, "runtime.stage.text_shape", "ns");
+    histogram!(pub STAGE_LAYOUT_NS, D, 14, "runtime.stage.layout", "ns");
+    histogram!(pub STAGE_HIT_TEST_NS, D, 15, "runtime.stage.hit_test", "ns");
+    histogram!(pub STAGE_ACCESSIBILITY_NS, D, 16, "runtime.stage.accessibility", "ns");
+    histogram!(pub STAGE_ANIMATION_NS, D, 17, "runtime.stage.animation", "ns");
+    histogram!(pub STAGE_EXTRACT_NS, D, 18, "runtime.stage.extract", "ns");
 }
 
 pub mod layout {
     use super::*;
     const D: Domain = Domain::LAYOUT;
 
-    histogram!(pub PASS_NS, PASS_CELLS, D, 1, "layout.pass", "ns");
+    histogram!(pub PASS_NS, D, 1, "layout.pass", "ns");
     pub static INVOCATIONS: Metric = Metric::counter(D, 2, "layout.invocations", "count");
     pub static FULL_INVOCATIONS: Metric = Metric::counter(D, 3, "layout.full_invocations", "count");
-    histogram!(pub DIRTY_ROOTS, DIRTY_ROOTS_CELLS, D, 4, "layout.dirty_roots", "count");
+    histogram!(pub DIRTY_ROOTS, D, 4, "layout.dirty_roots", "count");
     histogram!(
         /// Boxes the layout engine emitted for the pass.
-        pub BOXES_LAID_OUT, BOXES_LAID_OUT_CELLS, D, 5, "layout.boxes_laid_out", "count");
+        pub BOXES_LAID_OUT, D, 5, "layout.boxes_laid_out", "count");
 }
 
 pub mod text {
@@ -66,6 +68,9 @@ pub mod text {
     pub static LAYOUT_MISSES: Metric = Metric::counter(D, 4, "text.layout.misses", "count");
     pub static GLYPHS_RESOLVED: Metric = Metric::counter(D, 5, "text.glyphs_resolved", "count");
     pub static ATLAS_EVICTIONS: Metric = Metric::counter(D, 6, "text.atlas.evictions", "count");
+    /// Page requests the byte budget refused (the event is throttled).
+    pub static ATLAS_BUDGET_REFUSALS: Metric =
+        Metric::counter(D, 7, "text.atlas.budget_refusals", "count");
 
     pub static ATLAS_PAGE_OPENED: EventDescriptor = EventDescriptor::new(
         D,
@@ -95,12 +100,12 @@ pub mod gpu {
     const D: Domain = Domain::GPU;
 
     pub static UPLOAD_BYTES: Metric = Metric::counter(D, 1, "gpu.upload_bytes", "bytes");
-    histogram!(pub DRAW_CALLS, DRAW_CALLS_CELLS, D, 2, "gpu.draw_calls", "count");
+    histogram!(pub DRAW_CALLS, D, 2, "gpu.draw_calls", "count");
     pub static FRAMES_PRESENTED: Metric = Metric::counter(D, 3, "gpu.frames_presented", "count");
     pub static FRAMES_SKIPPED: Metric = Metric::counter(D, 4, "gpu.frames_skipped", "count");
     histogram!(
         /// `queue.submit` wall time.
-        pub SUBMIT_NS, SUBMIT_CELLS, D, 5, "gpu.submit", "ns");
+        pub SUBMIT_NS, D, 5, "gpu.submit", "ns");
     pub static BUFFER_REALLOCATIONS: Metric =
         Metric::counter(D, 6, "gpu.buffer_reallocations", "count");
     pub static SURFACE_OUTDATED: Metric = Metric::counter(D, 7, "gpu.surface.outdated", "count");
@@ -112,7 +117,7 @@ pub mod gpu {
         /// sample is kept only when that poll came within 50 ms of the one
         /// before (after idle time it would measure the idle, not the GPU). Exact GPU time needs
         /// timestamp queries, which Metal cannot write inside an encoder.
-        pub COMPLETION_NS, COMPLETION_CELLS, D, 10, "gpu.completion", "ns"
+        pub COMPLETION_NS, D, 10, "gpu.completion", "ns"
     );
 
     pub static SURFACE_LOST_EVENT: EventDescriptor =
@@ -178,7 +183,7 @@ pub mod host {
         /// Wall time of one presented redraw: program messages, document
         /// flush, paint, submit, and present (which can wait for vsync).
         /// Not GPU time.
-        pub REDRAW_NS, REDRAW_CELLS, D, 1, "host.redraw", "ns");
+        pub REDRAW_NS, D, 1, "host.redraw", "ns");
     /// Every `HostFailure`, including the ones rate-limited out of the log.
     pub static FAILURES: Metric = Metric::counter(D, 2, "host.failures", "count");
     /// Frame periods a `FrameDemand::Continuous` window missed entirely.
@@ -186,7 +191,7 @@ pub mod host {
     histogram!(
         /// Program messages waiting when a window drained its queue (only
         /// non-empty drains are sampled).
-        pub MESSAGE_QUEUE_DEPTH, MESSAGE_QUEUE_DEPTH_CELLS, D, 4, "host.message_queue_depth", "count"
+        pub MESSAGE_QUEUE_DEPTH, D, 4, "host.message_queue_depth", "count"
     );
 
     /// Fault, at most once per second per `kind` (see [`FAILURES`] for the

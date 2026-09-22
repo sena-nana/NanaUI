@@ -48,10 +48,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
             Err(error) => {
                 drop(encoder);
-                self.report_host_failure(HostFailure::ResourceProduction {
-                    window: id,
-                    error: error.to_string(),
-                });
+                self.program
+                    .report_host_failure(HostFailure::ResourceProduction {
+                        window: id,
+                        error: error.to_string(),
+                    });
                 false
             }
         }
@@ -124,7 +125,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .write_document(id, |document| document.flush(viewport, &mut self.text))
         else {
-            self.report_host_failure(HostFailure::MissingDocument { window: id });
+            self.program
+                .report_host_failure(HostFailure::MissingDocument { window: id });
             self.rearm_frame_demand(id);
             return;
         };
@@ -133,10 +135,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Err(error) => {
                 // The frame did not settle; Runtime restored its dirty work,
                 // so the next redraw retries. Skipping keeps the process alive.
-                self.report_host_failure(HostFailure::FrameDidNotSettle {
-                    window: id,
-                    error: error.to_string(),
-                });
+                self.program
+                    .report_host_failure(HostFailure::FrameDidNotSettle {
+                        window: id,
+                        error: error.to_string(),
+                    });
                 self.rearm_frame_demand(id);
                 return;
             }
@@ -158,7 +161,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .program
             .write_document(id, |document| document.shared_scene())
         else {
-            self.report_host_failure(HostFailure::MissingDocument { window: id });
+            self.program
+                .report_host_failure(HostFailure::MissingDocument { window: id });
             self.rearm_frame_demand(id);
             return;
         };
@@ -205,10 +209,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     drop(encoder);
                     drop(target);
                     self.discard_frame(id, frame);
-                    self.report_host_failure(HostFailure::ResourceProduction {
-                        window: id,
-                        error: error.to_string(),
-                    });
+                    self.program
+                        .report_host_failure(HostFailure::ResourceProduction {
+                            window: id,
+                            error: error.to_string(),
+                        });
                     self.rearm_frame_demand(id);
                     return;
                 }
@@ -278,7 +283,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     drop(encoder);
                     drop(target);
                     self.discard_frame(id, frame);
-                    self.report_host_failure(HostFailure::ResourceProduction { window: id, error });
+                    self.program
+                        .report_host_failure(HostFailure::ResourceProduction { window: id, error });
                     self.rearm_frame_demand(id);
                     return;
                 }
@@ -316,10 +322,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             drop(encoder);
             drop(target);
             self.discard_frame(id, frame);
-            self.report_host_failure(HostFailure::UnpaintableScene {
-                window: id,
-                error: error.to_string(),
-            });
+            self.program
+                .report_host_failure(HostFailure::UnpaintableScene {
+                    window: id,
+                    error: error.to_string(),
+                });
             self.rearm_frame_demand(id);
             return;
         }
@@ -348,10 +355,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(composition) = composition
             && let Err(error) = composition.commit()
         {
-            self.report_host_failure(HostFailure::ResourceProduction {
-                window: id,
-                error: error.to_string(),
-            });
+            self.program
+                .report_host_failure(HostFailure::ResourceProduction {
+                    window: id,
+                    error: error.to_string(),
+                });
             self.request_redraw(id);
             return;
         }
@@ -564,10 +572,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 nana_diagnostics::framework::gpu::SURFACE_SUSPENDED,
                 window = id.0
             );
-            self.report_host_failure(HostFailure::SurfaceRecovery {
-                window: id,
-                error: error.to_string(),
-            });
+            self.program
+                .report_host_failure(HostFailure::SurfaceRecovery {
+                    window: id,
+                    error: error.to_string(),
+                });
         }
     }
 

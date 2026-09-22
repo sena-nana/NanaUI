@@ -1314,8 +1314,7 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
                     window: id,
                     error: error.to_string(),
                 };
-                failure.record_diagnostics();
-                self.host_failure(failure);
+                nana_ui::ReportHostFailure::report_host_failure(self, failure);
                 return;
             }
         }

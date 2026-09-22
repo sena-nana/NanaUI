@@ -29,7 +29,6 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 /// Who the application is. `id` names its per-user directories, so keep it
 /// stable across releases (reverse-DNS is conventional).
@@ -75,6 +74,16 @@ pub enum RuntimeLayout {
     /// Running from a Cargo `target/` directory. Runtime directories may not
     /// exist; writable ones are the platform's standard directories.
     Development,
+}
+
+impl RuntimeLayout {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::Portable => "portable",
+            Self::Development => "development",
+        }
+    }
 }
 
 /// A logical location. See the module docs for each platform's mapping.
@@ -197,7 +206,7 @@ const VARS: [&str; 7] = [
 ];
 
 /// Where the portable marker lives for an executable outside a bundle.
-pub fn portable_marker_path(executable: &Path) -> Option<PathBuf> {
+fn portable_marker_path(executable: &Path) -> Option<PathBuf> {
     Some(
         executable
             .parent()?
@@ -303,16 +312,10 @@ fn is_cargo_target(executable: &Path) -> bool {
         .any(|dir| dir.file_name().is_some_and(|name| name == "target"))
 }
 
-/// Stricter than `app_data_dir`'s historical rule: the id also names log
-/// files and directories on every platform, so characters Windows reserves
-/// in file names are rejected too.
+/// `app_data_dir`'s rule, plus the characters Windows reserves in file
+/// names: the id also names log files and directories on every platform.
 fn valid_app_id(app_id: &str) -> bool {
-    !app_id.is_empty()
-        && !app_id.starts_with(['/', '\\'])
-        && !app_id.contains(['\0', ':', '<', '>', '"', '|', '?', '*'])
-        && app_id
-            .split(['/', '\\'])
-            .all(|part| !part.is_empty() && part != "." && part != "..")
+    crate::persist::valid_app_id(app_id) && !app_id.contains([':', '<', '>', '"', '|', '?', '*'])
 }
 
 /// The resolved locations for one application on one machine.
@@ -322,8 +325,6 @@ pub struct ApplicationPaths {
     layout: RuntimeLayout,
     locations: BTreeMap<ApplicationLocation, PathBuf>,
 }
-
-static CURRENT: OnceLock<ApplicationPaths> = OnceLock::new();
 
 impl ApplicationPaths {
     /// Resolve for the running process.
@@ -364,6 +365,17 @@ impl ApplicationPaths {
                 RuntimeLayout::Installed
             };
 
+        // `<root>/runtime/{bin,resources,plugins,tools,manifest}`.
+        let runtime_tree = |map: &mut BTreeMap<_, _>, root: &Path| {
+            let runtime = root.join("runtime");
+            map.insert(L::AppRoot, root.to_path_buf());
+            map.insert(L::RuntimeBin, runtime.join("bin"));
+            map.insert(L::RuntimeResources, runtime.join("resources"));
+            map.insert(L::RuntimePlugins, runtime.join("plugins"));
+            map.insert(L::RuntimeTools, runtime.join("tools"));
+            map.insert(L::RuntimeManifest, runtime.join("manifest"));
+        };
+
         // Read-only runtime locations.
         match (&bundle, env.platform) {
             (Some(bundle), _) => {
@@ -378,16 +390,9 @@ impl ApplicationPaths {
                     contents.join("Resources").join("manifest"),
                 );
             }
+            // Android's tree lives under the files directory, below.
             (None, PathPlatform::Android) => {}
-            (None, _) => {
-                let runtime = exe_dir.join("runtime");
-                map.insert(L::AppRoot, exe_dir.clone());
-                map.insert(L::RuntimeBin, runtime.join("bin"));
-                map.insert(L::RuntimeResources, runtime.join("resources"));
-                map.insert(L::RuntimePlugins, runtime.join("plugins"));
-                map.insert(L::RuntimeTools, runtime.join("tools"));
-                map.insert(L::RuntimeManifest, runtime.join("manifest"));
-            }
+            (None, _) => runtime_tree(&mut map, &exe_dir),
         }
 
         // Writable per-user locations.
@@ -443,13 +448,7 @@ impl ApplicationPaths {
                         .android_cache_dir
                         .clone()
                         .unwrap_or_else(|| files.join("cache"));
-                    let runtime = files.join("runtime");
-                    map.insert(L::AppRoot, files.clone());
-                    map.insert(L::RuntimeBin, runtime.join("bin"));
-                    map.insert(L::RuntimeResources, runtime.join("resources"));
-                    map.insert(L::RuntimePlugins, runtime.join("plugins"));
-                    map.insert(L::RuntimeTools, runtime.join("tools"));
-                    map.insert(L::RuntimeManifest, runtime.join("manifest"));
+                    runtime_tree(&mut map, &files);
                     map.insert(L::Config, files.join("config"));
                     map.insert(L::Logs, files.join("logs"));
                     map.insert(L::Crash, files.join("crash"));
@@ -527,18 +526,6 @@ impl ApplicationPaths {
     }
     pub fn crash(&self) -> &Path {
         self.get(ApplicationLocation::Crash)
-    }
-
-    /// Publish these paths as the process's application paths and return
-    /// the published value. The first call wins: later calls return the
-    /// paths already published (compare with `==` to detect that).
-    pub fn install_current(self) -> &'static Self {
-        CURRENT.get_or_init(|| self)
-    }
-
-    /// The paths published by [`Self::install_current`], if any.
-    pub fn current() -> Option<&'static Self> {
-        CURRENT.get()
     }
 }
 

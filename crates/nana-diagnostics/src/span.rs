@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use crate::metric::Metric;
+use crate::metric::{Metric, MetricValue};
 use crate::runtime::metrics_enabled;
 
 /// Records the elapsed nanoseconds into its histogram on drop. When metrics
@@ -21,23 +21,13 @@ impl SpanGuard {
             start: metrics_enabled().then(Instant::now),
         }
     }
-
-    /// Always measures, regardless of the global switch (for instances and
-    /// tests).
-    pub fn always(metric: &'static Metric) -> Self {
-        Self {
-            metric,
-            start: Some(Instant::now()),
-        }
-    }
 }
 
 impl Drop for SpanGuard {
     #[inline]
     fn drop(&mut self) {
         if let Some(start) = self.start {
-            self.metric
-                .record(u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            self.metric.record(start.elapsed().to_metric());
         }
     }
 }

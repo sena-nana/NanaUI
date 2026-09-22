@@ -23,10 +23,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             {
                 Ok(update) => update,
                 Err(error) => {
-                    self.report_host_failure(HostFailure::AccessibilityAction {
-                        window: id,
-                        error: error.to_string(),
-                    });
+                    self.program
+                        .report_host_failure(HostFailure::AccessibilityAction {
+                            window: id,
+                            error: error.to_string(),
+                        });
                     continue;
                 }
             };
@@ -321,10 +322,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             Err(error) => {
                 // Drop this input event; the program sees the failure through
                 // host_failure instead of the process dying in the event loop.
-                self.report_host_failure(HostFailure::InputDispatch {
-                    window: id,
-                    error: error.to_string(),
-                });
+                self.program
+                    .report_host_failure(HostFailure::InputDispatch {
+                        window: id,
+                        error: error.to_string(),
+                    });
                 nana_ui_platform::InputDisposition::default()
             }
         };
@@ -348,7 +350,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             &self.context_for(id),
         );
         if let Err(error) = &program_input {
-            self.report_host_failure(HostFailure::InputHandler {
+            self.program.report_host_failure(HostFailure::InputHandler {
                 window: id,
                 error: error.to_string(),
             });

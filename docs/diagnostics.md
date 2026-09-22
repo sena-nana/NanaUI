@@ -18,7 +18,7 @@ NanaApplication::builder(ApplicationIdentity::new("dev.nana.live", "NanaLive", e
 
 - 不调 `.diagnostics(..)` 就不开：框架里每个埋点只剩一次 Relaxed 原子读。
 - `run` 返回时做最终排空和 `sync_data`。自己跑事件循环的宿主（Vue、嵌入式）用 `let _session = builder.start();` 持有 `ApplicationSession`，退出时 drop 它（`let _ = …` 会立刻关掉诊断）。
-- 平台目录解析失败（容器里没有 `HOME`、缺 `LOCALAPPDATA` 等）不会拦住应用启动：打一行 stderr，`session.paths()` 为 `None`，诊断只留在内存里。要把它当错误处理，用 `try_start()`。
+- 平台目录解析失败（容器里没有 `HOME`、缺 `LOCALAPPDATA` 等）不会拦住应用启动：打一行 stderr，`session.paths()` 为 `None`，诊断只留在内存里。
 - 不经 builder 的旧入口 `run_runtime` 行为不变，诊断保持关闭。
 
 最小例子：`crates/nana-ui/examples/application-counter.rs`。
@@ -54,7 +54,7 @@ let _span = span!(TRACK_NS);         // 作用域耗时进直方图
 | 种类 | 用途 | 成本（M4，release，本机负载 ~3） |
 | --- | --- | --- |
 | `metric!` 计数 / 仪表 | 帧数、字节、队列深度 | ~1.6 ns |
-| `metric!` 直方图 | 帧时间、GPU 时间 | ~4.5 ns |
+| `metric!` 直方图 | 帧时间、GPU 时间 | ~1.8 ns |
 | `span!` | 作用域耗时 | ~39 ns（两次读时钟） |
 | `event!` | 低频结构化事件，最多 4 个 typed 字段 | ~24 ns |
 | `fault!` | 错误；独立应急环，唤醒 worker 尽快落盘 | 有消息时分配一次 |
@@ -62,7 +62,7 @@ let _span = span!(TRACK_NS);         // 作用域耗时进直方图
 
 高频数据用指标，不要逐帧发事件：worker 每 `metric_interval`（默认 10 s）取一次快照写入。字段名只在 debug 构建里和描述符比对。
 
-数字来自 `cargo run --release -p nana-diagnostics --features benchmark --bin nana-diagnostics-benchmark`；同一个直方图被 4 个线程同时写时约 270 ns/次（缓存行争用），高频多线程指标请各线程用各自的指标。
+数字来自 `cargo run --release -p nana-diagnostics --features benchmark --bin nana-diagnostics-benchmark`；同一个直方图被 4 个线程同时写时约 160 ns/次（缓存行争用），高频多线程指标请各线程用各自的指标。
 
 ## 运行时模型
 
@@ -130,7 +130,7 @@ chunk := kind:u8 len:u32le payload[len] crc32:u32le
 | --- | --- |
 | Runtime | 每次 flush 的 CPU 总耗时与 9 个 Runtime 阶段直方图（复用 `FrameProfiler`，不重复计时）、flush 次数与轮数、不收敛 / 样式与文本布局失败计数 |
 | Layout | 每次布局耗时、调用数、整树布局数、dirty 根数、参与布局的盒子数 |
-| Text | shape / layout 缓存命中与未命中、字形解析数、字形图集开页（含图集总字节）/ 预算耗尽（每个图集只报一次）/ 压缩、驱逐数 |
+| Text | shape / layout 缓存命中与未命中、字形解析数、字形图集开页（含图集总字节）/ 预算拒绝计数（事件每 10 s 至多一条）/ 压缩、驱逐数 |
 | GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll；两次 poll 相隔超过 50 ms（窗口空闲过）时丢弃该样本，所以误差不超过一个活跃 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
 | Window | 打开（物理尺寸）、关闭、缩放系数变化、遮挡、resize 次数 |
 | Host | 每次 redraw 的墙钟耗时（消息处理 + flush + 绘制 + submit + present，可能含 vsync 等待，不是 GPU 时间）、`Continuous` 窗口错过的帧周期数（丢帧）、每次排空时的程序消息队列深度、`HostFailure` 计数与故障（变体码 + 窗口 + 错误文本；同一变体每秒至多记一条，计数不漏）、运行失败、事件循环退出 |

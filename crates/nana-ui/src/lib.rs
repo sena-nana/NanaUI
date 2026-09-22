@@ -54,9 +54,7 @@ mod application;
 mod application_builder;
 #[cfg(feature = "hosted")]
 pub use application::{ApplicationState, ApplicationWindow, RuntimeApplication};
-pub use application_builder::{
-    ApplicationSession, ApplicationStartError, NanaApplication, NanaApplicationBuilder,
-};
+pub use application_builder::{ApplicationSession, NanaApplication, NanaApplicationBuilder};
 /// Structured diagnostics (Issue #227): define application events and
 /// metrics with these types and record them with its macros.
 pub use nana_diagnostics as diagnostics;
@@ -298,8 +296,9 @@ pub use runtime_animation::RuntimeAnimationClock;
 pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 #[cfg(feature = "hosted")]
 pub use runtime_host::{
-    FrameDemand, HostFailure, RoutedInput, RuntimeProgram, RuntimeProgramContext,
-    RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime, run_runtime_with_store,
+    FrameDemand, HostFailure, ReportHostFailure, RoutedInput, RuntimeProgram,
+    RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
+    run_runtime_with_store,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]
