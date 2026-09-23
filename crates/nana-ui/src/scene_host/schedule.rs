@@ -61,7 +61,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.host_work_deadline = None;
         self.drain_window_requests(event_loop);
         self.apply_pending_icons();
-        self.drain_startup_messages(event_loop);
         self.process_startup_requests(event_loop);
         self.complete_file_dialogs(event_loop);
         self.drain_host_messages(event_loop);
@@ -73,7 +72,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if self.shutting_down || event_loop.exiting() {
                     return false;
                 }
-                let Ok(message) = self.messages.try_recv() else {
+                // Startup messages go first: they were returned before
+                // anything else could be sent.
+                let Some(message) = self
+                    .startup_messages
+                    .pop_front()
+                    .or_else(|| self.messages.try_recv().ok())
+                else {
                     return false;
                 };
                 self.process_message(event_loop, message);
@@ -83,6 +88,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
         if remaining {
             self.host_work.wake();
+        } else {
+            self.startup_messages_applied();
         }
     }
     pub(super) fn process_message(
@@ -196,7 +203,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .is_some_and(|host| host.surface_retry.is_none())
             && !self.occluded.contains(&id)
-            && !self.startup_holds(id)
             && self.window(id).is_some_and(|window| {
                 window.is_visible() != Some(false) && window.is_minimized() != Some(true)
             })

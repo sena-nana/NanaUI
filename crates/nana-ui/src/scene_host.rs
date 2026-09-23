@@ -101,11 +101,7 @@ pub fn run_runtime_scene<Program: RuntimeProgram>(
 ) -> Result<(), HostedRunError> {
     let entry = Instant::now();
     let options = crate::runtime_host::take_pending_startup();
-    nana_diagnostics::event!(
-        nana_diagnostics::framework::host::STARTUP_PHASE,
-        phase = 0u64,
-        elapsed_ns = 0u64
-    );
+    startup::startup_event(startup::StartupMark::Entry, Duration::ZERO);
     let event_loop = EventLoop::new().map_err(HostedRunError::EventLoop)?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let (message_tx, message_rx) = mpsc::channel();
@@ -553,11 +549,24 @@ impl<Program: RuntimeProgram> SceneRunner<Program> {
         }
     }
 
+    /// When the startup times event-loop callbacks, the start of this one.
+    fn block_started(&self) -> Option<Instant> {
+        let measures = match self {
+            Self::Starting(_) => true,
+            Self::Ready(ready) => ready.startup.measures_blocks(),
+            Self::Loading(_) | Self::Finished { .. } => false,
+        };
+        measures.then(Instant::now)
+    }
+
     /// Longest event-thread callback while the startup is measured.
-    fn note_block(&mut self, started: Instant) {
+    fn note_block(&mut self, started: Option<Instant>) {
+        let Some(started) = started else {
+            return;
+        };
         match self {
             Self::Starting(pending) => pending.note_block(started.elapsed()),
-            Self::Ready(ready) => ready.note_startup_block(started),
+            Self::Ready(ready) => ready.note_startup_block(started.elapsed()),
             Self::Loading(_) | Self::Finished { .. } => {}
         }
     }
@@ -568,7 +577,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         if !matches!(self, Self::Loading(_)) {
             return;
         }
-        let started = Instant::now();
+        let started = Some(Instant::now());
         let Self::Loading(loading) = std::mem::replace(
             self,
             Self::Finished {
@@ -591,7 +600,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let started = Instant::now();
+        let started = self.block_started();
         match self {
             Self::Starting(_) => self.poll_startup(event_loop),
             Self::Ready(ready) => ready.drain_host_work(event_loop),
@@ -606,7 +615,7 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         window_id: winit::window::WindowId,
         event: WinitWindowEvent,
     ) {
-        let started = Instant::now();
+        let started = self.block_started();
         match self {
             Self::Starting(pending) => {
                 if let WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
@@ -641,10 +650,10 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let started = self.block_started();
         let Self::Ready(ready) = self else {
             return;
         };
-        let started = Instant::now();
         ready.about_to_wait(event_loop);
         self.note_block(started);
     }
@@ -700,35 +709,9 @@ fn bootstrap_primary_window(
     theme: crate::ThemeMode,
     material_mode: crate::MaterialEffect,
 ) -> Result<PrimaryBootstrap, String> {
-    use crate::presentation::{resolve_window_surface_target, window_surface_request};
-
-    // Two separate questions, in order. First: can this process present
-    // through a platform compositor at all? That is the GPU backend's answer,
-    // it is process-wide, and it has to be settled before any window exists
-    // because the redirection bitmap is a creation-time flag. Second: does
-    // *this* window want that path? That is per window, and every other window
-    // this process opens asks it again for itself.
     let bootstrap = gpu_bootstrap(policy, Some(&shared_gpu));
-    let availability = composition_availability(&bootstrap);
-    let requested_target = window_surface_request(
-        settings.surface,
-        window_wants_transparent_surface(settings.transparent, material_mode),
-        policy,
-    );
-    let mut attempt = resolve_window_surface_target(
-        requested_target,
-        settings.surface.requires_composition(),
-        availability,
-    );
-    if let Some(reason) = attempt.forbidden_fallback() {
-        // The application said it would rather not start than present this
-        // window another way.
-        return Err(format!(
-            "window requires a platform compositor surface: {}",
-            reason.label()
-        ));
-    }
-    let mut last_error = None;
+    let mut attempt = primary_surface_target(settings, policy, &bootstrap)?;
+    let mut composed_error = None;
     loop {
         match attach_primary_surface(
             event_loop,
@@ -738,13 +721,8 @@ fn bootstrap_primary_window(
             theme,
             material_mode,
         )
-        .and_then(|bound| match composition_fault_injection() {
-            // The composed path's failure branch is not reachable from a test
-            // that has no way to make DirectComposition fail, so the
-            // acceptance probe asks for it explicitly.
-            Some(reason) if attempt.resolved.composed() => Err(reason),
-            _ => Ok(bound),
-        }) {
+        .and_then(|bound| composed_fault(attempt).map_or(Ok(bound), Err))
+        {
             Ok(PrimaryAttachment {
                 window,
                 graphics,
@@ -752,29 +730,8 @@ fn bootstrap_primary_window(
                 requested_material,
                 applied_material,
             }) => {
-                if let Some(reason) = attempt.fallback {
-                    eprintln!(
-                        "nana window surface: {}; presenting through the plain window path \
-                         instead",
-                        reason.label()
-                    );
-                    nana_diagnostics::set_session_info(
-                        "window.presentation_fallback",
-                        reason.label(),
-                    );
-                }
-                // A composed target that could not be built for this window
-                // will not build for another, so the failure narrows the whole
-                // process. Otherwise the answer is the device this bootstrap
-                // actually ended up on, which is the only thing a later window
-                // can be created against.
-                let composition = match attempt.fallback {
-                    Some(_) => crate::presentation::CompositionAvailability::Unavailable,
-                    None => crate::presentation::CompositionAvailability::for_backend(
-                        policy,
-                        graphics.adapter_info().backend,
-                    ),
-                };
+                let composition =
+                    settle_primary_target(attempt, policy, graphics.adapter_info().backend);
                 return Ok(PrimaryBootstrap {
                     window,
                     graphics,
@@ -785,28 +742,103 @@ fn bootstrap_primary_window(
                     applied_material,
                 });
             }
-            Err(error) => match next_bootstrap_attempt(attempt) {
-                // The provisional window and its composition objects were
-                // dropped by the failed attempt; the plain retry creates its
-                // own window rather than adopting that HWND.
-                Some(next) => {
-                    last_error = Some(error);
-                    attempt = next;
-                }
-                // The plain path is the last one there is. A failure here is a
-                // real startup failure, and it names the composed attempt too
-                // when there was one.
-                None => {
-                    return Err(match last_error {
-                        Some(composed) => {
-                            format!("{error} (after composition failed: {composed})")
-                        }
-                        None => error,
-                    });
-                }
-            },
+            // The provisional window and its composition objects were dropped
+            // by the failed attempt; the plain retry creates its own window
+            // rather than adopting that HWND.
+            Err(error) => {
+                attempt = next_primary_target(attempt, error, &mut composed_error)?;
+            }
         }
     }
+}
+
+/// The target the primary window starts on.
+///
+/// Two separate questions, in order. First: can this process present through
+/// a platform compositor at all? That is the GPU backend's answer, it is
+/// process-wide, and it has to be settled before any window exists because the
+/// redirection bitmap is a creation-time flag. Second: does *this* window want
+/// that path? That is per window, and every other window this process opens
+/// asks it again for itself.
+fn primary_surface_target(
+    settings: &WindowDescriptor,
+    policy: crate::GpuBackendPolicy,
+    bootstrap: &crate::hosted_context::GpuBootstrap,
+) -> Result<crate::presentation::ResolvedSurfaceTarget, String> {
+    use crate::presentation::{resolve_window_surface_target, window_surface_request};
+    let requested = window_surface_request(
+        settings.surface,
+        window_wants_transparent_surface(settings.transparent, nana_window::MaterialEffect::Solid),
+        policy,
+    );
+    let target = resolve_window_surface_target(
+        requested,
+        settings.surface.requires_composition(),
+        composition_availability(bootstrap),
+    );
+    match target.forbidden_fallback() {
+        // The application said it would rather not start than present this
+        // window another way.
+        Some(reason) => Err(format!(
+            "window requires a platform compositor surface: {}",
+            reason.label()
+        )),
+        None => Ok(target),
+    }
+}
+
+/// The target to try after `failed` could not be built. The plain path is the
+/// last one there is: a failure there is a real startup failure, and it names
+/// the composed attempt too when there was one.
+fn next_primary_target(
+    failed: crate::presentation::ResolvedSurfaceTarget,
+    error: String,
+    composed_error: &mut Option<String>,
+) -> Result<crate::presentation::ResolvedSurfaceTarget, String> {
+    match next_bootstrap_attempt(failed) {
+        Some(next) => {
+            *composed_error = Some(error);
+            Ok(next)
+        }
+        None => Err(match composed_error.take() {
+            Some(composed) => format!("{error} (after composition failed: {composed})"),
+            None => error,
+        }),
+    }
+}
+
+/// Reports a fallback the primary window ended up on, and answers what later
+/// windows can be composed against. A composed target that could not be built
+/// for this window will not build for another, so that failure narrows the
+/// whole process; otherwise the answer is the device the window ended up on.
+fn settle_primary_target(
+    target: crate::presentation::ResolvedSurfaceTarget,
+    policy: crate::GpuBackendPolicy,
+    backend: wgpu::Backend,
+) -> crate::presentation::CompositionAvailability {
+    use crate::presentation::CompositionAvailability;
+    match target.fallback {
+        Some(reason) => {
+            eprintln!(
+                "nana window surface: {}; presenting through the plain window path instead",
+                reason.label()
+            );
+            nana_diagnostics::set_session_info("window.presentation_fallback", reason.label());
+            CompositionAvailability::Unavailable
+        }
+        None => CompositionAvailability::for_backend(policy, backend),
+    }
+}
+
+/// The composed path's failure branch is not reachable from a test that has
+/// no way to make DirectComposition fail, so the acceptance probe asks for it
+/// explicitly.
+fn composed_fault(target: crate::presentation::ResolvedSurfaceTarget) -> Option<String> {
+    target
+        .resolved
+        .composed()
+        .then(composition_fault_injection)
+        .flatten()
 }
 
 /// The GPU bootstrap this process starts from.
@@ -865,9 +897,14 @@ pub(super) fn next_bootstrap_attempt(
 /// product reads it; it exists so "the composition target could not be built"
 /// is a state a real run can be put into on purpose.
 fn composition_fault_injection() -> Option<String> {
-    std::env::var_os("NANA_FORCE_COMPOSITION_FAILURE")
-        .filter(|value| !value.is_empty() && value != "0")
-        .map(|_| "composition failure requested by NANA_FORCE_COMPOSITION_FAILURE".to_owned())
+    fault_flag("NANA_FORCE_COMPOSITION_FAILURE")
+        .then(|| "composition failure requested by NANA_FORCE_COMPOSITION_FAILURE".to_owned())
+}
+
+/// A fault-injection switch for an acceptance probe: set, non-empty and not
+/// `0`. Nothing in the product sets one.
+fn fault_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// A window bound to one presentation target, and what its material request
@@ -1134,12 +1171,12 @@ fn complete_startup<Program: RuntimeProgram>(
         presentation,
         CompositionWork::default(),
         window.theme().map(system_appearance_from_winit),
+        &host_startup.handle,
     )
     .with_windows(&windows)
     .with_window_tag(settings.tag.clone())
     .with_reduced_motion(reduced_motion)
-    .with_store(Arc::clone(&store))
-    .with_startup(host_startup.handle.clone());
+    .with_store(Arc::clone(&store));
     host_startup.ui_ready_begins();
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
@@ -1303,13 +1340,16 @@ fn complete_startup<Program: RuntimeProgram>(
         &ready.geometry_of(WindowId::PRIMARY),
     );
     let shown_early = ready.startup.shown_early();
-    let mut startup = startup;
-    if shown_early {
-        // The window is already on screen behind its splash: the startup
-        // messages are applied in batches over the next turns, and an
-        // immediate takeover waits for them.
-        ready.startup_messages = std::mem::take(&mut startup).into();
-    }
+    // With the window already on screen behind its splash, the startup
+    // messages are applied in batches over the next turns, and an immediate
+    // takeover waits for them; otherwise they are applied before the show.
+    let startup = if shown_early {
+        ready.startup_messages = startup.into();
+        ready.host_work.wake();
+        Vec::new()
+    } else {
+        startup
+    };
     let policy = ready.program.startup_takeover();
     ready.startup_ui_ready(policy);
     let update = ready.program.window_event(
@@ -1320,15 +1360,11 @@ fn complete_startup<Program: RuntimeProgram>(
         &ready.context(),
     );
     ready.apply_update(event_loop, update, None);
-    if ready.startup_messages.is_empty() {
-        for message in startup {
-            if event_loop.exiting() {
-                break;
-            }
-            ready.process_message(event_loop, message);
+    for message in startup {
+        if event_loop.exiting() {
+            break;
         }
-    } else {
-        ready.host_work.wake();
+        ready.process_message(event_loop, message);
     }
     if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
         if !shown_early {
@@ -1381,6 +1417,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.window(id)
                 .and_then(|w| w.theme())
                 .map(system_appearance_from_winit),
+            &self.startup.handle,
         )
         .with_windows(&self.windows)
         .with_window_tag(
@@ -1390,7 +1427,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         )
         .with_reduced_motion(self.reduced_motion)
         .with_store(Arc::clone(&self.store))
-        .with_startup(self.startup.handle.clone())
     }
 
     fn apply_update(
@@ -1520,6 +1556,7 @@ fn program_context<Message: Send + 'static>(
     presentation: ResolvedWindowPresentation,
     composition_work: CompositionWork,
     appearance: Option<nana_ui_platform::SystemAppearance>,
+    startup: &crate::StartupHandle,
 ) -> RuntimeProgramContext<Message> {
     RuntimeProgramContext::new(
         id,
@@ -1536,6 +1573,7 @@ fn program_context<Message: Send + 'static>(
         // System-wide preference: sampling the primary window is enough, and
         // the window handle itself never crosses this boundary.
         appearance,
+        startup.clone(),
     )
 }
 

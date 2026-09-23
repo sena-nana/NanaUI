@@ -611,8 +611,9 @@ impl HostedGpuContext {
         want_transparent: bool,
         mode: HostedSurfaceMode,
     ) -> Result<Self, HostedGpuError> {
-        let target = HostedSurfaceTarget::new(mode, window.clone())?;
-        Self::new_with_target(window, required_features, want_transparent, target).await
+        let (pending, request) =
+            PendingPrimarySurface::begin(window, required_features, want_transparent, mode, None)?;
+        pending.finish(request.acquire().await?)
     }
 
     /// Rebuild GPU resources while retaining the primary native visual tree.
@@ -624,92 +625,20 @@ impl HostedGpuContext {
         &mut self,
         required_features: wgpu::Features,
     ) -> Result<(), HostedGpuError> {
-        let (shared, surface, _, _) = Self::acquire_device(
+        let AcquiredDevice {
+            shared, surface, ..
+        } = DeviceRequest::new(
             self.primary.window.clone(),
             required_features,
             &self.primary.target,
-        )
+            None,
+        )?
+        .acquire()
         .await?;
         self.primary
             .rebind(surface, shared.resources.adapter(), &shared.resources)?;
         self.shared = shared;
         Ok(())
-    }
-
-    async fn new_with_target(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        want_transparent: bool,
-        target: HostedSurfaceTarget,
-    ) -> Result<Self, HostedGpuError> {
-        Self::new_with_target_on(window, required_features, want_transparent, target, None).await
-    }
-
-    async fn new_with_target_on(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        want_transparent: bool,
-        target: HostedSurfaceTarget,
-        instance: Option<wgpu::Instance>,
-    ) -> Result<Self, HostedGpuError> {
-        let (shared, surface, capabilities, format) =
-            Self::acquire_device_on(window.clone(), required_features, &target, instance).await?;
-        let primary = configure_surface(
-            window,
-            surface,
-            format,
-            &capabilities,
-            &shared.resources,
-            want_transparent,
-            target,
-        )?;
-        Ok(Self { shared, primary })
-    }
-
-    /// A new device for `target`, plus its not-yet-configured surface.
-    async fn acquire_device(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        target: &HostedSurfaceTarget,
-    ) -> Result<
-        (
-            HostedGpuShared,
-            wgpu::Surface<'static>,
-            wgpu::SurfaceCapabilities,
-            wgpu::TextureFormat,
-        ),
-        HostedGpuError,
-    > {
-        Self::acquire_device_on(window, required_features, target, None).await
-    }
-
-    /// `instance` is a bootstrap's, when one already narrowed the backends and
-    /// enumerated adapters to answer a capability question. Building a second
-    /// instance for the same backend is initialisation done twice, and leaves
-    /// the probe and the device free to disagree.
-    async fn acquire_device_on(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        target: &HostedSurfaceTarget,
-        instance: Option<wgpu::Instance>,
-    ) -> Result<
-        (
-            HostedGpuShared,
-            wgpu::Surface<'static>,
-            wgpu::SurfaceCapabilities,
-            wgpu::TextureFormat,
-        ),
-        HostedGpuError,
-    > {
-        let acquired = DeviceRequest::new(window, required_features, target, instance)?
-            .acquire()
-            .await?;
-        Ok((
-            acquired.shared,
-            acquired.surface,
-            acquired.capabilities,
-            acquired.format,
-        ))
     }
 
     #[cfg(target_os = "windows")]
@@ -807,11 +736,17 @@ impl HostedGpuShared {
     pub(crate) async fn rebuild_for_surface(
         surface: &mut HostedGpuSurface,
     ) -> Result<Self, HostedGpuError> {
-        let (shared, raw, _, _) = HostedGpuContext::acquire_device(
+        let AcquiredDevice {
+            shared,
+            surface: raw,
+            ..
+        } = DeviceRequest::new(
             surface.window.clone(),
             wgpu::Features::empty(),
             &surface.target,
-        )
+            None,
+        )?
+        .acquire()
         .await?;
         surface.rebind(raw, shared.resources.adapter(), &shared.resources)?;
         Ok(shared)

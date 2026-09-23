@@ -146,7 +146,7 @@ pack 在 manifest 里记录其路径前缀；运行时按最长前缀把查找�
 - `bootstrap-ui` 如果用了 `after-bootstrap-ui` 的钥匙，报 `StartupKeyCycle`。这把钥匙只能靠这个 UI 驱动的流程取得，应用会永远卡在空白窗口。
 - `depends_on` 只能指向同类或更早的类。DFS 会报出依赖环。
 
-Early Splash 本身见 [两阶段启动](startup.md)：Logo 目前只能编进二进制，还不从 `early-splash` pack 读取，这个类别只约束 pack 本身。
+Early Splash 本身见 [两阶段启动](startup.md)。`SplashLogo::packaged("nana://res/…")` 从 `early-splash` pack 读 Logo（`nana_package::read_early_splash`）：只打开 manifest 为这个路径钉住的那一个 pack；它若不是 `early-splash` 类就直接拒绝，不打开；不调用 `KeyProvider`；读数据之前先按 TOC 检查 1 MiB 上限。
 
 ### 格式（v1，小端）
 
@@ -295,6 +295,7 @@ nana-packager validate "out/app/Nana Fixture.app" --trust-key ed25519:… --run 
 | `distribution.no-updater` | 没有 updater 文件，也没有 `NANA-UPDATER-V1` 标记；Steam 包命中即失败 |
 | `run.launch-from-foreign-cwd` | 在无关目录下以 `NANA_PACKAGE_VALIDATE=1` 启动；应用在开窗前自检（布局、manifest、身份、每个 pack 经 `nana://res/` 读一条），打印一行 JSON 后退出 |
 | `tamper.*` | 先跑未篡改的副本作对照（`tamper.control`，必须通过，否则后面的用例没有意义）；再分别破坏 manifest、pack header、TOC、首个真实 record（按 TOC 定位，不是补零区），删掉 pack，以及 `--tamper-drop-env NAME` 去掉应用的钥匙来源。每种都必须由应用自检报出 `"ok":false`；崩溃或卡死算失败 |
+| `startup.early-splash-logo` | 只在 `--run` 且应用声明了 packaged Logo 时出现。应用自检按宿主的逻辑从 `early-splash` pack 读这个 Logo，并检查 PNG 头与上限 |
 | not executed | EarlySplash、UiReady 交接（#225，能力已实现，但包内自检在开窗前退出，观测不到屏幕上的原生画面；用 `startup-splash --probe` 在真窗口上验证）、安装包往返（F）、StaticAppPlan（#158）：明确报未执行 |
 
 `--run` 只能在与包同平台的主机上执行，交叉目标报 not executed。PR CI 用 `--release` 构建 fixture；真正的 `dist`（fat LTO）产物放到定时或发布流程里校验。
@@ -325,7 +326,7 @@ nana-packager macos-app --exe PATH --name NAME --identifier ID --out DIR [--icon
 - 平台签名 adapter（codesign、公证、Authenticode、MSIX、Linux 包签名）：已有合同与状态上报，实际一律报 `NotExecuted`，打包后请用平台工具签名。
 - 安装包后端（MSIX / MSI / dmg / pkg / deb / AppImage），以及它的往返校验。
 - 可选自更新（G）。它的标记 `NANA-UPDATER-V1` 已经保留，不允许出现在 Steam 包里。
-- 从 `early-splash` pack 读取 Early Splash 的 Logo；打包校验对 Early Splash 与 UiReady 交接的真窗口检查（#225 的能力本身见 [两阶段启动](startup.md)）。
+- 打包校验对 Early Splash 与 UiReady 交接的真窗口检查（#225 的能力本身见 [两阶段启动](startup.md)）。打包器本身也不检查 `early-splash` pack 里的 PNG 是否满足 Logo 上限。
 - StaticAppPlan 指纹（#158）。
 - JS / Vue 的应用 bundle 还不从 pack 读取；`nana://app/` 与 `nana://res/` 是否互为别名尚未决定。
 - Android APK 的 assets 不是文件，pack 挂载需要一个 AssetManager 数据源。

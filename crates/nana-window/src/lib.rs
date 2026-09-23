@@ -51,8 +51,8 @@ pub use size_move::LiveSizeMove;
 pub use splash::{
     LogoInfo, MAX_LOGO_DECODED_BYTES, MAX_LOGO_EDGE, MAX_LOGO_ENCODED_BYTES, NativeSplash,
     SplashAnimation, SplashAnimationOutcome, SplashBackground, SplashFailure, SplashHandoff,
-    SplashLogo, SplashLogoError, SplashOutcome, SplashSkip, SplashSpec, SplashStaticReason,
-    SplashWork,
+    SplashLogo, SplashLogoError, SplashLogoSource, SplashOutcome, SplashPackageError, SplashSkip,
+    SplashSpec, SplashStaticReason, SplashWork, validate_logo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

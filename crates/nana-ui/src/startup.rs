@@ -25,7 +25,8 @@ use std::time::{Duration, Instant};
 pub use nana_window::{
     LogoInfo, MAX_LOGO_DECODED_BYTES, MAX_LOGO_EDGE, MAX_LOGO_ENCODED_BYTES, SplashAnimation,
     SplashAnimationOutcome, SplashBackground, SplashFailure, SplashLogo, SplashLogoError,
-    SplashOutcome, SplashSkip, SplashSpec, SplashStaticReason, SplashWork,
+    SplashLogoSource, SplashOutcome, SplashPackageError, SplashSkip, SplashSpec,
+    SplashStaticReason, SplashWork, validate_logo,
 };
 
 /// What an application asks of its startup, before anything else of it runs.
@@ -38,6 +39,24 @@ impl StartupOptions {
     pub const fn with_splash(mut self, splash: SplashSpec) -> Self {
         self.splash = Some(splash);
         self
+    }
+}
+
+/// The PNG `logo` names: the embedded bytes, or one read of the package's
+/// `early-splash` pack.
+pub(crate) fn resolve_splash_logo(
+    logo: SplashLogo,
+) -> Result<std::borrow::Cow<'static, [u8]>, SplashFailure> {
+    match logo.source() {
+        SplashLogoSource::Embedded(png) => Ok(std::borrow::Cow::Borrowed(png)),
+        #[cfg(feature = "packaged-resources")]
+        SplashLogoSource::Packaged(url) => {
+            crate::packaged_resources::read_splash_logo(url).map(std::borrow::Cow::Owned)
+        }
+        #[cfg(not(feature = "packaged-resources"))]
+        SplashLogoSource::Packaged(_) => {
+            Err(SplashFailure::Package(SplashPackageError::Unsupported))
+        }
     }
 }
 
@@ -124,6 +143,10 @@ pub struct StartupWork {
     pub devices_requested: usize,
     /// Scene painters created (one per surface format) before the handoff.
     pub painters_created: usize,
+    /// Reading a [`SplashLogo::packaged`] logo out of the package: one read,
+    /// on the event thread, before the window is shown. `None` for an
+    /// embedded logo, and when no splash was attempted.
+    pub splash_logo_read: Option<Duration>,
     pub splash: SplashWork,
 }
 
@@ -213,15 +236,6 @@ impl StartupHandle {
             Instant::now(),
             SplashOutcome::Skipped(SplashSkip::NotConfigured),
         )
-    }
-
-    /// The record a context carries until its host attaches its own: one per
-    /// process, so building a context allocates nothing for it.
-    pub(crate) fn unattached() -> Self {
-        static UNATTACHED: std::sync::OnceLock<StartupHandle> = std::sync::OnceLock::new();
-        UNATTACHED
-            .get_or_init(|| Self::settled(SplashOutcome::Skipped(SplashSkip::NotConfigured)))
-            .clone()
     }
 
     /// A record for a host with no startup of its own to report — an embedded

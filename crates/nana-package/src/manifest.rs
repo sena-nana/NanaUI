@@ -416,6 +416,28 @@ impl PackageManifest {
     pub fn pack(&self, name: &str) -> Option<&ManifestPack> {
         self.resource_packs.iter().find(|pack| pack.name == name)
     }
+
+    /// The pack a logical path routes to: the longest prefix that
+    /// [claims](prefix_claims) it. The runtime's `nana://res/` mount and
+    /// the Early Splash read route the same way.
+    pub fn route(&self, path: &str) -> Option<&ManifestPack> {
+        self.resource_packs
+            .iter()
+            .flat_map(|pack| pack.prefixes.iter().map(move |prefix| (prefix, pack)))
+            .filter(|(prefix, _)| prefix_claims(prefix, path))
+            .max_by_key(|(prefix, _)| prefix.len())
+            .map(|(_, pack)| pack)
+    }
+}
+
+/// Whether a pack prefix claims `path`: one ending in `/` claims everything
+/// under it, any other exactly one path.
+pub fn prefix_claims(prefix: &str, path: &str) -> bool {
+    if prefix.ends_with('/') {
+        path.starts_with(prefix)
+    } else {
+        path == prefix
+    }
 }
 
 impl ManifestPack {

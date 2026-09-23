@@ -30,27 +30,52 @@ pub const MAX_LOGO_EDGE: u32 = 1024;
 /// Largest logo once decoded to 32-bit pixels.
 pub const MAX_LOGO_DECODED_BYTES: usize = 4 * 1024 * 1024;
 
-/// A PNG compiled into the binary. Nothing is fetched, scanned or resolved to
-/// show it.
+/// The logo's PNG. Nothing is fetched, scanned or resolved to show it beyond
+/// the one source named here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SplashLogo {
-    png: &'static [u8],
+    source: SplashLogoSource,
+}
+
+/// Where a logo's bytes come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplashLogoSource {
+    /// Compiled into the binary.
+    Embedded(&'static [u8]),
+    /// A `nana://res/` URL into the package's `early-splash` pack. The host
+    /// reads it once, before the window is shown, from the one pack the
+    /// package manifest pins for it; see `docs/startup.md`.
+    Packaged(&'static str),
 }
 
 impl SplashLogo {
+    /// A PNG compiled into the binary.
     pub const fn png(bytes: &'static [u8]) -> Self {
-        Self { png: bytes }
+        Self {
+            source: SplashLogoSource::Embedded(bytes),
+        }
     }
 
-    pub const fn bytes(self) -> &'static [u8] {
-        self.png
+    /// A PNG in the package's `early-splash` pack, named by its
+    /// `nana://res/` URL. Needs `nana-ui`'s `packaged-resources` feature and
+    /// `NanaApplicationBuilder::resource_packs`; without them the splash
+    /// fails with [`SplashPackageError::Unsupported`] or
+    /// [`SplashPackageError::NotMounted`] and the application starts anyway.
+    pub const fn packaged(url: &'static str) -> Self {
+        Self {
+            source: SplashLogoSource::Packaged(url),
+        }
     }
 
-    /// Checks the PNG signature and header against the limits without
-    /// decoding any pixels.
-    pub fn validate(self) -> Result<LogoInfo, SplashLogoError> {
-        validate_png(self.png)
+    pub const fn source(self) -> SplashLogoSource {
+        self.source
     }
+}
+
+/// Checks a logo's PNG signature and header against the limits without
+/// decoding any pixels.
+pub fn validate_logo(png: &[u8]) -> Result<LogoInfo, SplashLogoError> {
+    validate_png(png)
 }
 
 /// Pixel size read from a logo's PNG header.
@@ -310,6 +335,8 @@ impl SplashSkip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SplashFailure {
     Logo(SplashLogoError),
+    /// A [`SplashLogo::packaged`] logo could not be read.
+    Package(SplashPackageError),
     Native(String),
 }
 
@@ -317,7 +344,69 @@ impl std::fmt::Display for SplashFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Logo(error) => error.fmt(f),
+            Self::Package(error) => write!(f, "packaged logo unavailable: {error}"),
             Self::Native(reason) => write!(f, "native splash failed: {reason}"),
+        }
+    }
+}
+
+/// Why a packaged logo could not be read. Nothing but the one pack the
+/// manifest pins for the URL was opened, and nothing unverified was used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SplashPackageError {
+    /// This build reads no packages (`nana-ui` without `packaged-resources`).
+    Unsupported,
+    /// No package is mounted: `resource_packs` was not configured, or the
+    /// package manifest is missing or invalid (its own fault says which).
+    NotMounted,
+    /// Not a `nana://res/` URL of a logical package path.
+    InvalidUrl,
+    /// No pack claims the path, or its pack holds no such entry.
+    NotFound,
+    /// The path belongs to a pack of another class, which was not opened:
+    /// only `early-splash` packs are read before the runtime exists.
+    NotEarlySplash { pack: String, class: &'static str },
+    /// The pack could not be opened or the entry failed verification.
+    /// `code` is `nana_package::PackError::code`.
+    Pack {
+        pack: String,
+        code: u64,
+        reason: String,
+    },
+    /// The development layout's loose resource directory could not be read.
+    Io(String),
+}
+
+impl SplashPackageError {
+    /// Stable code for diagnostics.
+    pub const fn code(&self) -> u64 {
+        match self {
+            Self::Unsupported => 1,
+            Self::NotMounted => 2,
+            Self::InvalidUrl => 3,
+            Self::NotFound => 4,
+            Self::NotEarlySplash { .. } => 5,
+            Self::Pack { .. } => 6,
+            Self::Io(_) => 7,
+        }
+    }
+}
+
+impl std::fmt::Display for SplashPackageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("this build reads no packages"),
+            Self::NotMounted => f.write_str("no package is mounted"),
+            Self::InvalidUrl => f.write_str("not a nana://res/ URL"),
+            Self::NotFound => f.write_str("no early-splash pack holds it"),
+            Self::NotEarlySplash { pack, class } => write!(
+                f,
+                "it belongs to pack `{pack}` of class {class}, not an early-splash pack"
+            ),
+            Self::Pack { pack, code, reason } => {
+                write!(f, "pack `{pack}`: {reason} (code {code})")
+            }
+            Self::Io(reason) => write!(f, "cannot read it: {reason}"),
         }
     }
 }
@@ -400,15 +489,18 @@ impl NativeSplash {
     /// Puts the splash over `window`'s client area. Call before the window is
     /// first shown, on the thread that owns it.
     ///
-    /// `system_background` is what [`SplashBackground::System`] resolves to;
-    /// `reduced_motion` turns every preset into a still logo.
+    /// `png` is the logo `spec.logo` names, as the host resolved it; it is
+    /// copied or decoded here and not kept. `system_background` is what
+    /// [`SplashBackground::System`] resolves to; `reduced_motion` turns every
+    /// preset into a still logo.
     pub fn show<W: HasWindowHandle + ?Sized>(
         window: &W,
         spec: &SplashSpec,
+        png: &[u8],
         system_background: FallbackColor,
         reduced_motion: bool,
     ) -> (Option<Self>, SplashOutcome) {
-        let info = match spec.logo.validate() {
+        let info = match validate_png(png) {
             Ok(info) => info,
             Err(error) => return (None, SplashOutcome::Failed(SplashFailure::Logo(error))),
         };
@@ -425,7 +517,7 @@ impl NativeSplash {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             let request = platform::Request {
-                png: spec.logo.bytes(),
+                png,
                 info,
                 logo_size: spec.clamped_logo_size(),
                 background,
@@ -449,7 +541,7 @@ impl NativeSplash {
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         {
-            let _ = (window, info, background, animation);
+            let _ = (window, png, info, background, animation);
             (
                 None,
                 SplashOutcome::Skipped(SplashSkip::PlatformUnsupported),

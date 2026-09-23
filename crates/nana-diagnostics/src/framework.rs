@@ -237,6 +237,20 @@ pub mod host {
     /// Longest single event-loop callback between host entry and handoff.
     pub static STARTUP_LONGEST_BLOCK_NS: Metric =
         Metric::gauge(D, 5, "host.startup.longest_block", "ns");
+    /// Reading a packaged Early Splash logo out of the package's
+    /// `early-splash` pack, on the event thread before the window is shown.
+    pub static STARTUP_SPLASH_LOGO_READ_NS: Metric =
+        Metric::gauge(D, 6, "host.startup.splash_logo_read", "ns");
+    /// Fault: a packaged Early Splash logo could not be read; the application
+    /// starts without a splash. `code` is `SplashPackageError::code`; the
+    /// message names the URL and the reason.
+    pub static SPLASH_LOGO_FAILED: EventDescriptor = EventDescriptor::new(
+        D,
+        7,
+        "host.splash_logo_failed",
+        Severity::Warn,
+        &[F::u64("code")],
+    );
 }
 
 pub mod diagnostics {

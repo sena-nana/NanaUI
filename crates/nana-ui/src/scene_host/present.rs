@@ -144,7 +144,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         };
-        let flushed = self.note_startup_flush(id);
         // A cursor declaration can change while the pointer is stationary;
         // refresh the native cursor after the document's computed styles settle.
         // Ordinary redraws keep the pointer-event throttle and avoid a full
@@ -175,7 +174,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let format = host.surface.format();
         // Decided before the drawable is acquired: a macOS handoff changes how
         // this frame is presented.
-        let takes_over = self.prepare_startup_frame(id, flushed);
+        let takes_over = self.prepare_startup_frame(id);
+        // A primary window under its splash lays out and settles like any
+        // other, so a takeover finds its first frame ready, but presents
+        // nothing until something asked to take over.
+        if self.startup_holds(id) {
+            self.rearm_frame_demand(id);
+            return;
+        }
         let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {

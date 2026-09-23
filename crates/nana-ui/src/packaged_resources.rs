@@ -74,6 +74,9 @@ static MANIFEST: OnceLock<PackageManifest> = OnceLock::new();
 /// The installed mount, kept for the self-check (the `nana-ui-core` hook
 /// holds a type-erased handle to the same mount).
 static MOUNT: OnceLock<Arc<PackMount>> = OnceLock::new();
+/// The installed development source, kept for the Early Splash logo read.
+#[cfg_attr(not(feature = "hosted"), allow(dead_code))]
+static LOOSE: OnceLock<Arc<LooseSource>> = OnceLock::new();
 
 /// The package manifest the application started with, if it has one.
 pub(crate) fn package_manifest() -> Option<&'static PackageManifest> {
@@ -104,6 +107,9 @@ struct PackMount {
     packs: Vec<LazyPack>,
     keys: Arc<dyn KeyProvider>,
     trust: TrustPolicy,
+    /// RuntimeResources, where the manifest's pack files are.
+    #[cfg_attr(not(feature = "hosted"), allow(dead_code))]
+    resources: PathBuf,
 }
 
 impl PackMount {
@@ -111,13 +117,7 @@ impl PackMount {
         self.packs
             .iter()
             .flat_map(|pack| pack.prefixes.iter().map(move |prefix| (prefix, pack)))
-            .filter(|(prefix, _)| {
-                if prefix.ends_with('/') {
-                    path.starts_with(prefix.as_str())
-                } else {
-                    path == prefix.as_str()
-                }
-            })
+            .filter(|(prefix, _)| nana_package::manifest::prefix_claims(prefix, path))
             .max_by_key(|(prefix, _)| prefix.len())
             .map(|(_, pack)| pack)
     }
@@ -236,15 +236,20 @@ struct LooseSource {
     root: PathBuf,
 }
 
-impl PackagedResourceSource for LooseSource {
+impl LooseSource {
     /// `path` is already a validated logical path: join its segments (no
     /// second URL decoding), then require it to stay inside the root.
-    fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, PackagedReadError> {
+    fn locate(&self, path: &str) -> Option<PathBuf> {
         let file = path
             .split('/')
             .fold(self.root.clone(), |dir, part| dir.join(part));
-        let file = nana_ui_core::canonicalize_within_jail(&file, &self.root)
-            .ok_or(PackagedReadError::NotFound)?;
+        nana_ui_core::canonicalize_within_jail(&file, &self.root)
+    }
+}
+
+impl PackagedResourceSource for LooseSource {
+    fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, PackagedReadError> {
+        let file = self.locate(path).ok_or(PackagedReadError::NotFound)?;
         let len = std::fs::metadata(&file)
             .map_err(|_| PackagedReadError::NotFound)?
             .len();
@@ -253,6 +258,82 @@ impl PackagedResourceSource for LooseSource {
         }
         std::fs::read(&file).map_err(|_| PackagedReadError::Io)
     }
+}
+
+/// Read the Early Splash logo `url` names (Issue #225): one entry of the
+/// `early-splash` pack the package manifest routes it to, pinned by the
+/// manifest, never through a key provider, capped at the logo limit before
+/// any data is read. Nothing else in the package is opened or scanned. In
+/// the development layout without a manifest, the one file under the loose
+/// root; the class rule has no pack to apply to there, so the packaged build
+/// is what proves the path is in an `early-splash` pack.
+#[cfg(feature = "hosted")]
+pub(crate) fn read_splash_logo(url: &str) -> Result<Vec<u8>, crate::startup::SplashFailure> {
+    use crate::startup::{
+        MAX_LOGO_ENCODED_BYTES, SplashFailure, SplashLogoError, SplashPackageError,
+    };
+    use nana_package::EarlySplashError;
+
+    let package = |error| SplashFailure::Package(error);
+    let path = nana_ui_core::packaged_logical_path(url, None)
+        .filter(|_| nana_ui_core::is_packaged_url(url))
+        .ok_or(package(SplashPackageError::InvalidUrl))?;
+    let max = MAX_LOGO_ENCODED_BYTES as u64;
+    let too_large = |bytes: u64| {
+        SplashFailure::Logo(SplashLogoError::TooLarge {
+            bytes: usize::try_from(bytes).unwrap_or(usize::MAX),
+        })
+    };
+    if let (Some(manifest), Some(mount)) = (MANIFEST.get(), MOUNT.get()) {
+        let started = Instant::now();
+        let mut stats = ReadStats::default();
+        let result = nana_package::read_early_splash(
+            manifest,
+            &mount.resources,
+            &path,
+            &mount.trust,
+            max,
+            &mut stats,
+        );
+        metric!(resource_diag::READS);
+        metric!(resource_diag::BYTES_READ, stats.bytes_read);
+        return match result {
+            Ok(bytes) => {
+                metric!(resource_diag::ENTRY_READ_NS, started.elapsed());
+                Ok(bytes)
+            }
+            Err(EarlySplashError::InvalidPath) => Err(package(SplashPackageError::InvalidUrl)),
+            Err(EarlySplashError::NotFound) => Err(package(SplashPackageError::NotFound)),
+            Err(EarlySplashError::WrongClass { pack, class }) => {
+                Err(package(SplashPackageError::NotEarlySplash {
+                    pack,
+                    class: class.as_str(),
+                }))
+            }
+            Err(EarlySplashError::TooLarge { bytes }) => Err(too_large(bytes)),
+            Err(EarlySplashError::Pack { pack, error }) => {
+                if error.is_integrity_failure() {
+                    metric!(resource_diag::INTEGRITY_FAILURES);
+                }
+                Err(package(SplashPackageError::Pack {
+                    pack,
+                    code: error.code(),
+                    reason: error.to_string(),
+                }))
+            }
+        };
+    }
+    let loose = LOOSE.get().ok_or(package(SplashPackageError::NotMounted))?;
+    let file = loose
+        .locate(&path)
+        .ok_or(package(SplashPackageError::NotFound))?;
+    let len = std::fs::metadata(&file)
+        .map_err(|error| package(SplashPackageError::Io(error.to_string())))?
+        .len();
+    if len > max {
+        return Err(too_large(len));
+    }
+    std::fs::read(&file).map_err(|error| package(SplashPackageError::Io(error.to_string())))
 }
 
 /// Which `nana://res/` source startup installed.
@@ -321,7 +402,7 @@ fn mount(
                     identity.id, identity.version
                 );
             }
-            let resources = paths.runtime_resources();
+            let resources = paths.runtime_resources().to_path_buf();
             let packs = manifest
                 .resource_packs
                 .iter()
@@ -339,6 +420,7 @@ fn mount(
                 packs,
                 keys: options.keys.clone(),
                 trust: options.trust.clone(),
+                resources,
             });
             let installed = nana_ui_core::install_packaged_source(mount.clone());
             if installed {
@@ -348,9 +430,11 @@ fn mount(
         }
         Err(ManifestError::Missing) if paths.layout() == RuntimeLayout::Development => {
             if let Some(root) = &options.loose_root {
-                let installed = nana_ui_core::install_packaged_source(Arc::new(LooseSource {
-                    root: root.clone(),
-                }));
+                let loose = Arc::new(LooseSource { root: root.clone() });
+                let installed = nana_ui_core::install_packaged_source(loose.clone());
+                if installed {
+                    let _ = LOOSE.set(loose);
+                }
                 mounted.source = installed.then_some(Source::Loose);
             }
         }
@@ -369,17 +453,22 @@ fn mount(
 /// Called from `NanaApplicationBuilder::start`. Returns the process exit
 /// code when startup was a self-check (the caller shuts diagnostics down,
 /// so faults recorded here reach the log, and exits).
+///
+/// `splash_logo` is the `nana://res/` URL of the application's packaged
+/// Early Splash logo, if it declared one; the self-check reads it exactly as
+/// the host would.
 pub(crate) fn start(
     identity: &ApplicationIdentity,
     paths: Option<&ApplicationPaths>,
     options: Option<&ResourcePackOptions>,
+    splash_logo: Option<&'static str>,
 ) -> Option<i32> {
     let self_check = std::env::var_os(SELF_CHECK_ENV).is_some_and(|v| v == "1");
     let default = ResourcePackOptions::new();
     let mounted = options.map(|options| mount(identity, paths, options));
     self_check.then(|| {
         let mounted = mounted.unwrap_or_else(|| mount(identity, paths, &default));
-        run_self_check(paths, &mounted)
+        run_self_check(paths, &mounted, splash_logo)
     })
 }
 
@@ -393,7 +482,11 @@ struct CheckLine {
 
 /// Print `{"nana_package_validate":1,...}` and return the exit code: 0 when
 /// every check passed, 3 otherwise. Never prints key material.
-fn run_self_check(paths: Option<&ApplicationPaths>, mounted: &Mounted) -> i32 {
+fn run_self_check(
+    paths: Option<&ApplicationPaths>,
+    mounted: &Mounted,
+    splash_logo: Option<&'static str>,
+) -> i32 {
     let mut checks = Vec::new();
     let mut push = |name, ok, detail: Option<String>| checks.push(CheckLine { name, ok, detail });
 
@@ -460,6 +553,13 @@ fn run_self_check(paths: Option<&ApplicationPaths>, mounted: &Mounted) -> i32 {
             Some(format!("{error} (code {})", error.code())),
         ),
     }
+    #[cfg(feature = "hosted")]
+    if let Some(url) = splash_logo {
+        let (ok, detail) = splash_logo_check(url);
+        push("startup.early-splash-logo", ok, Some(detail));
+    }
+    #[cfg(not(feature = "hosted"))]
+    let _ = splash_logo;
     let ok = checks.iter().all(|c| c.ok);
     // Fixed key order: the validator finds the line by its prefix.
     let checks = serde_json::to_string(&checks).expect("checks serialize");
@@ -468,6 +568,17 @@ fn run_self_check(paths: Option<&ApplicationPaths>, mounted: &Mounted) -> i32 {
         nana_package::SELF_CHECK_PREFIX
     );
     if ok { 0 } else { 3 }
+}
+
+/// The packaged Early Splash logo, read and header-checked as the host
+/// would before showing it. The native splash itself needs a window.
+#[cfg(feature = "hosted")]
+fn splash_logo_check(url: &str) -> (bool, String) {
+    use crate::startup::{SplashFailure, validate_logo};
+    match read_splash_logo(url).and_then(|png| validate_logo(&png).map_err(SplashFailure::Logo)) {
+        Ok(info) => (true, format!("{url}: {}x{}", info.width, info.height)),
+        Err(failure) => (false, format!("{url}: {failure}")),
+    }
 }
 
 /// Open `pack` with the application's keys and read every entry: the first
@@ -523,6 +634,7 @@ mod tests {
             packs,
             keys: Arc::new(NoKeys),
             trust: TrustPolicy::AllowUnsigned,
+            resources: PathBuf::from("/nonexistent"),
         }
     }
 

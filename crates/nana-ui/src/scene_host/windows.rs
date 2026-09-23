@@ -626,12 +626,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             presentation,
             self.composition_work_of(id),
             window.theme().map(system_appearance_from_winit),
+            &self.startup.handle,
         )
         .with_windows(&self.windows)
         .with_window_tag(settings.tag.clone())
         .with_reduced_motion(self.reduced_motion)
-        .with_store(Arc::clone(&self.store))
-        .with_startup(self.startup.handle.clone());
+        .with_store(Arc::clone(&self.store));
         if let Err(error) = self.program.initialize_window(id, &context) {
             self.windows.unregister(id);
             self.program.discard_window(id);

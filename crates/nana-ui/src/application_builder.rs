@@ -32,7 +32,7 @@ impl NanaApplication {
             #[cfg(feature = "packaged-resources")]
             resource_packs: None,
             #[cfg(feature = "hosted")]
-            startup: crate::StartupOptions::default(),
+            splash: None,
         }
     }
 
@@ -74,7 +74,7 @@ pub struct NanaApplicationBuilder {
     #[cfg(feature = "packaged-resources")]
     resource_packs: Option<crate::packaged_resources::ResourcePackOptions>,
     #[cfg(feature = "hosted")]
-    startup: crate::StartupOptions,
+    splash: Option<crate::SplashSpec>,
 }
 
 /// Keeps process-level services alive. Dropping it shuts diagnostics down
@@ -113,18 +113,11 @@ impl NanaApplicationBuilder {
         self
     }
 
-    /// Startup options for [`Self::run`]; see [`crate::startup`].
-    #[cfg(feature = "hosted")]
-    pub fn startup(mut self, startup: crate::StartupOptions) -> Self {
-        self.startup = startup;
-        self
-    }
-
     /// Show `splash` on the primary window before the GPU device and the
-    /// program exist (Issue #225). Shorthand for [`Self::startup`].
+    /// program exist; see [`crate::startup`].
     #[cfg(feature = "hosted")]
     pub fn early_splash(mut self, splash: crate::SplashSpec) -> Self {
-        self.startup.splash = Some(splash);
+        self.splash = Some(splash);
         self
     }
 
@@ -149,6 +142,8 @@ impl NanaApplicationBuilder {
     /// resolved it logs to stderr, the session has no paths, and diagnostics
     /// stay in memory.
     pub fn start(self) -> ApplicationSession {
+        #[cfg(feature = "packaged-resources")]
+        let splash_logo = self.packaged_splash_logo();
         let resolved = match self.paths {
             Some(paths) => Ok(paths),
             None => ApplicationPaths::resolve(&self.identity),
@@ -168,9 +163,12 @@ impl NanaApplicationBuilder {
             None
         };
         #[cfg(feature = "packaged-resources")]
-        if let Some(code) =
-            crate::packaged_resources::start(&self.identity, paths, self.resource_packs.as_ref())
-        {
+        if let Some(code) = crate::packaged_resources::start(
+            &self.identity,
+            paths,
+            self.resource_packs.as_ref(),
+            splash_logo,
+        ) {
             // Self-check: flush diagnostics (faults recorded while mounting)
             // and exit before any window, device or program exists.
             drop(diagnostics);
@@ -179,15 +177,30 @@ impl NanaApplicationBuilder {
         ApplicationSession { paths, diagnostics }
     }
 
+    /// The `nana://res/` URL of a packaged Early Splash logo, for the
+    /// package self-check.
+    #[cfg(feature = "packaged-resources")]
+    fn packaged_splash_logo(&self) -> Option<&'static str> {
+        #[cfg(feature = "hosted")]
+        if let Some(crate::SplashLogoSource::Packaged(url)) =
+            self.splash.map(|splash| splash.logo.source())
+        {
+            return Some(url);
+        }
+        None
+    }
+
     /// Start process services, run the Scene host, then shut down cleanly.
     #[cfg(feature = "hosted")]
     pub fn run<Program: crate::RuntimeProgram>(
         self,
         settings: crate::WindowDescriptor,
     ) -> Result<(), crate::HostedRunError> {
-        let startup = self.startup;
+        let startup = crate::StartupOptions {
+            splash: self.splash,
+        };
         let session = self.start();
-        let result = crate::run_runtime_with_startup::<Program>(settings, startup);
+        let result = crate::with_startup(startup, || crate::run_runtime::<Program>(settings));
         record_run_result(&result);
         drop(session);
         result
@@ -200,7 +213,9 @@ impl NanaApplicationBuilder {
         settings: crate::WindowDescriptor,
         store: crate::SharedStore,
     ) -> Result<(), crate::HostedRunError> {
-        let startup = self.startup;
+        let startup = crate::StartupOptions {
+            splash: self.splash,
+        };
         let session = self.start();
         let result = crate::with_startup(startup, || {
             crate::run_runtime_with_store::<Program>(settings, store)

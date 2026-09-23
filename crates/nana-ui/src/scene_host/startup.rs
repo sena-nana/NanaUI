@@ -1,5 +1,5 @@
-//! The standalone host's startup (Issue #225): the window and its splash
-//! first, the device on a thread of its own, then the program and the
+//! The standalone host's startup (Issue #225): the window, its device request
+//! on a thread of its own and its splash first, then the program and the
 //! handoff.
 //!
 //! The ordering rules live in [`StartupCoordinator`], kept off the window and
@@ -9,6 +9,9 @@
 //! may the primary window present yet, and does this presented frame end the
 //! splash. Frames that were skipped, retried or failed never reach it: the
 //! host only reports a frame after its `present` succeeded.
+//!
+//! Everything that only matters until the handoff lives in [`ActiveStartup`]
+//! and is dropped with it; afterwards the host keeps nothing but the record.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,10 +20,7 @@ use nana_window::{NativeSplash, SplashHandoff};
 
 use super::*;
 use crate::hosted_context::{AcquiredDevice, DeviceRequest, PendingPrimarySurface};
-use crate::presentation::{
-    CompositionAvailability, ResolvedSurfaceTarget, resolve_window_surface_target,
-    window_surface_request,
-};
+use crate::presentation::ResolvedSurfaceTarget;
 use crate::startup::{
     SplashOutcome, SplashSkip, StartupError, StartupHandle, StartupOptions, StartupPhase,
     StartupRequest, StartupStatus, StartupTakeover, StartupTicket,
@@ -29,6 +29,27 @@ use crate::startup::{
 /// How long the Windows handoff waits between checks that the takeover
 /// frame's GPU work has completed. Only while that one frame is in flight.
 const LATCH_POLL: Duration = Duration::from_millis(2);
+
+/// The milestones `host.startup_phase` reports, by their stable number.
+#[derive(Clone, Copy)]
+#[repr(u64)]
+pub(super) enum StartupMark {
+    Entry = 0,
+    SplashCommitted = 1,
+    UiReady = 2,
+    TakeoverRequested = 3,
+    TakeoverFrame = 4,
+    HandedOff = 5,
+    SplashReleased = 6,
+}
+
+pub(super) fn startup_event(mark: StartupMark, at: Duration) {
+    nana_diagnostics::event!(
+        host::STARTUP_PHASE,
+        phase = mark as u64,
+        elapsed_ns = u64::try_from(at.as_nanos()).unwrap_or(u64::MAX)
+    );
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StartupCoordinator {
@@ -76,29 +97,27 @@ impl StartupCoordinator {
             return false;
         }
         self.phase = StartupPhase::UiReady;
-        match policy {
-            StartupTakeover::Immediate => {
-                self.phase = StartupPhase::TakeoverRequested;
-                self.requested_after = Some(flush);
-                true
-            }
-            StartupTakeover::Deferred => false,
-        }
+        policy == StartupTakeover::Immediate && self.take_over(flush)
     }
 
+    /// Returns whether this was a new request. A repeated one keeps the first
+    /// target: it named content that is already in every later frame.
     pub(super) fn request(
         &mut self,
         ticket: StartupTicket,
         flush: u64,
-    ) -> Result<(), StartupError> {
+    ) -> Result<bool, StartupError> {
         self.check(ticket)?;
-        if self.phase == StartupPhase::UiReady {
-            self.phase = StartupPhase::TakeoverRequested;
-            self.requested_after = Some(flush);
+        Ok(self.take_over(flush))
+    }
+
+    fn take_over(&mut self, flush: u64) -> bool {
+        if self.phase != StartupPhase::UiReady {
+            return false;
         }
-        // A repeated request keeps the first target: it named content that is
-        // already in every later frame.
-        Ok(())
+        self.phase = StartupPhase::TakeoverRequested;
+        self.requested_after = Some(flush);
+        true
     }
 
     pub(super) fn cancel(&mut self, ticket: StartupTicket) -> Result<(), StartupError> {
@@ -150,11 +169,6 @@ impl StartupCoordinator {
     /// replaced); the next presented frame decides instead.
     pub(super) fn reopen(&mut self) {
         self.committed = false;
-    }
-
-    pub(super) fn handed_off(&mut self) {
-        self.phase = StartupPhase::HandedOff;
-        self.requested_after = None;
     }
 }
 
@@ -231,50 +245,9 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         } = loading;
         let store = prepare_primary_descriptor(&mut settings)?;
         let policy = Program::gpu_backend_policy();
-        // Two separate questions, in order. First: can this process present
-        // through a platform compositor at all? That is the GPU backend's
-        // answer, it is process-wide, and it has to be settled before any
-        // window exists because the redirection bitmap is a creation-time
-        // flag. Second: does *this* window want that path? Every other window
-        // asks it again for itself.
         let mut bootstrap = gpu_bootstrap(policy, None);
-        let requested = window_surface_request(
-            settings.surface,
-            window_wants_transparent_surface(settings.transparent, crate::MaterialEffect::Solid),
-            policy,
-        );
-        let target = resolve_window_surface_target(
-            requested,
-            settings.surface.requires_composition(),
-            composition_availability(&bootstrap),
-        );
-        if let Some(reason) = target.forbidden_fallback() {
-            // The application said it would rather not start than present
-            // this window another way.
-            return Err(format!(
-                "window requires a platform compositor surface: {}",
-                reason.label()
-            ));
-        }
-        let icons = {
-            let (sender, receiver) = mpsc::channel();
-            let per_window = settings.icon.clone();
-            std::thread::Builder::new()
-                .name("nana-startup-icons".into())
-                .spawn({
-                    let proxy = proxy.clone();
-                    move || {
-                        if sender
-                            .send(SceneIcons::render(per_window.as_ref(), true))
-                            .is_ok()
-                        {
-                            proxy.wake_up();
-                        }
-                    }
-                })
-                .ok()
-                .map(|_| receiver)
-        };
+        let target = primary_surface_target(&settings, policy, &bootstrap)?;
+        let icons = spawn_icon_render(&settings, &proxy);
         let mut pending = Self {
             channels: StartupChannels {
                 proxy,
@@ -370,17 +343,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     /// next target, or gives up with the whole story.
     fn fall_back(&mut self, error: String) -> Result<(), String> {
         self.attempt = None;
-        match next_bootstrap_attempt(self.target) {
-            Some(next) => {
-                self.composed_error = Some(error);
-                self.target = next;
-                Ok(())
-            }
-            None => Err(match self.composed_error.take() {
-                Some(composed) => format!("{error} (after composition failed: {composed})"),
-                None => error,
-            }),
-        }
+        self.target = next_primary_target(self.target, error, &mut self.composed_error)?;
+        Ok(())
     }
 
     fn start_attempt(
@@ -396,6 +360,18 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             crate::ThemeMode::default(),
             crate::MaterialEffect::Solid,
         )?;
+        // The device request goes first: the splash then overlaps it instead
+        // of delaying it. The splash sits above the surface whichever order
+        // the two reach the compositor in.
+        let (surface, request) = PendingPrimarySurface::begin(
+            Arc::clone(&window),
+            wgpu::Features::empty(),
+            requested_material.wants_transparent_surface(),
+            surface_mode_for(target),
+            instance,
+        )
+        .map_err(|error| error.to_string())?;
+        let device = spawn_device_request(request, self.channels.proxy.clone())?;
         // The accessibility adapter belongs to the window before it is first
         // shown, which with a splash is now.
         #[cfg(not(target_os = "android"))]
@@ -405,32 +381,21 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             window.scale_factor() as f32,
         ));
         let (splash, outcome) = self.show_splash(window.as_ref(), target);
-        let work = splash.as_ref().map(NativeSplash::work).unwrap_or_default();
         let committed = splash.is_some().then(|| self.handle.elapsed());
         if splash.is_some() {
             windows::set_native_visible(window.as_ref(), true, self.settings.focus_on_show);
         }
         nana_diagnostics::event!(host::SPLASH_OUTCOME, outcome = outcome.code());
         if let Some(at) = committed {
-            startup_phase_event(1, at);
+            startup_event(StartupMark::SplashCommitted, at);
         }
+        let work = splash.as_ref().map(NativeSplash::work).unwrap_or_default();
         self.handle.update(|status| {
             status.splash = outcome;
             status.timeline.splash_committed = committed;
             status.work.splash = work;
+            status.work.devices_requested += 1;
         });
-        let want_transparent = requested_material.wants_transparent_surface();
-        let (surface, request) = PendingPrimarySurface::begin(
-            Arc::clone(&window),
-            wgpu::Features::empty(),
-            want_transparent,
-            surface_mode_for(target),
-            instance,
-        )
-        .map_err(|error| error.to_string())?;
-        let device = spawn_device_request(request, self.channels.proxy.clone())?;
-        self.handle
-            .update(|status| status.work.devices_requested += 1);
         self.attempt = Some(Attempt {
             splash,
             #[cfg(not(target_os = "android"))]
@@ -453,36 +418,63 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         let Some(spec) = self.options.splash else {
             return (None, SplashOutcome::Skipped(SplashSkip::NotConfigured));
         };
-        let skip = if !self.settings.visible {
-            Some(SplashSkip::HiddenStart)
-        } else if target.composed() {
-            Some(SplashSkip::CompositionTarget)
-        } else if !NativeSplash::platform_supported() {
-            Some(SplashSkip::PlatformUnsupported)
-        } else {
-            None
-        };
-        if let Some(skip) = skip {
-            return (None, SplashOutcome::Skipped(skip));
+        if !self.settings.visible {
+            return (None, SplashOutcome::Skipped(SplashSkip::HiddenStart));
         }
+        if target.composed() {
+            return (None, SplashOutcome::Skipped(SplashSkip::CompositionTarget));
+        }
+        // Before the logo is resolved: a platform without a splash reads
+        // nothing for one.
+        if !NativeSplash::platform_supported() {
+            return (
+                None,
+                SplashOutcome::Skipped(SplashSkip::PlatformUnsupported),
+            );
+        }
+        let png = match self.read_splash_logo(spec.logo) {
+            Ok(png) => png,
+            Err(failure) => return (None, SplashOutcome::Failed(failure)),
+        };
         let theme = match window.theme() {
             Some(WinitTheme::Light) => crate::ThemeMode::Light,
             Some(WinitTheme::Dark) => crate::ThemeMode::Dark,
             None => crate::ThemeMode::default(),
         };
-        let background = theme.palette().background;
-        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let (red, green, blue, alpha) = theme.palette().background.to_u8_rgba();
         NativeSplash::show(
             window,
             &spec,
-            FallbackColor::rgba(
-                channel(background.r),
-                channel(background.g),
-                channel(background.b),
-                channel(background.a),
-            ),
+            &png,
+            FallbackColor::rgba(red, green, blue, alpha),
             nana_window::system_reduced_motion().unwrap_or(false),
         )
+    }
+
+    /// The logo's PNG. A packaged one is one read of the package's
+    /// `early-splash` pack, timed into the startup record; only a plain
+    /// target shows a splash, so a startup reads it at most once.
+    fn read_splash_logo(
+        &self,
+        logo: crate::SplashLogo,
+    ) -> Result<std::borrow::Cow<'static, [u8]>, crate::SplashFailure> {
+        let crate::SplashLogoSource::Packaged(url) = logo.source() else {
+            return crate::startup::resolve_splash_logo(logo);
+        };
+        let started = std::time::Instant::now();
+        let result = crate::startup::resolve_splash_logo(logo);
+        let elapsed = started.elapsed();
+        nana_diagnostics::metric!(host::STARTUP_SPLASH_LOGO_READ_NS, elapsed);
+        self.handle
+            .update(|status| status.work.splash_logo_read = Some(elapsed));
+        if let Err(crate::SplashFailure::Package(error)) = &result {
+            nana_diagnostics::fault!(
+                host::SPLASH_LOGO_FAILED,
+                code = error.code();
+                "Early Splash logo {url}: {error}"
+            );
+        }
+        result
     }
 
     /// Binds the surface to the device the startup thread produced and runs
@@ -506,17 +498,11 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             .attempt
             .take()
             .expect("a device result belongs to an attempt");
-        let composed = self.target.resolved.composed();
+        let target = self.target;
         let bound = start
             .device
             .and_then(|device| surface.finish(device).map_err(|error| error.to_string()))
-            .and_then(|context| match composition_fault_injection() {
-                // The composed path's failure branch is not reachable from a
-                // test that has no way to make DirectComposition fail, so the
-                // acceptance probe asks for it explicitly.
-                Some(reason) if composed => Err(reason),
-                _ => Ok(context),
-            });
+            .and_then(|context| composed_fault(target).map_or(Ok(context), Err));
         let context = match bound {
             Ok(context) => context,
             Err(error) => {
@@ -528,24 +514,10 @@ impl<Message: Send + 'static> PendingStartup<Message> {
             }
         };
         provisional.keep();
-        if let Some(reason) = self.target.fallback {
-            eprintln!(
-                "nana window surface: {}; presenting through the plain window path instead",
-                reason.label()
-            );
-            nana_diagnostics::set_session_info("window.presentation_fallback", reason.label());
-        }
         let (graphics, surface) = context.into_parts();
-        // A composed target that could not be built for this window will not
-        // build for another, so the failure narrows the whole process.
-        let composition = match self.target.fallback {
-            Some(_) => CompositionAvailability::Unavailable,
-            None => {
-                CompositionAvailability::for_backend(self.policy, graphics.adapter_info().backend)
-            }
-        };
-        let shown_early = splash.is_some();
-        let startup = HostStartup::new(self.handle, splash, shown_early, self.longest_block);
+        let composition =
+            settle_primary_target(target, self.policy, graphics.adapter_info().backend);
+        let startup = HostStartup::new(self.handle, splash, self.longest_block);
         complete_startup::<Program>(
             event_loop,
             self.channels,
@@ -557,7 +529,7 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                     window,
                     graphics,
                     surface,
-                    target: self.target,
+                    target,
                     composition,
                     requested_material,
                     applied_material,
@@ -573,6 +545,33 @@ impl<Message: Send + 'static> PendingStartup<Message> {
     }
 }
 
+/// Renders the macOS Dock icon — a padded, re-encoded PNG, the one icon that
+/// is expensive — while the device is requested. Elsewhere the window
+/// attributes already carry the (cached) icon and nothing is spawned.
+fn spawn_icon_render(
+    settings: &WindowDescriptor,
+    proxy: &EventLoopProxy,
+) -> Option<Receiver<SceneIcons>> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let (sender, receiver) = mpsc::channel();
+    let per_window = settings.icon.clone();
+    let proxy = proxy.clone();
+    std::thread::Builder::new()
+        .name("nana-startup-icons".into())
+        .spawn(move || {
+            if sender
+                .send(SceneIcons::render(per_window.as_ref(), true))
+                .is_ok()
+            {
+                proxy.wake_up();
+            }
+        })
+        .ok()
+        .map(|_| receiver)
+}
+
 /// Requests the device on a thread of its own and wakes the event loop when
 /// it has one. A platform device request cannot be cancelled once it has
 /// started; a startup cancelled meanwhile simply never takes the result.
@@ -584,10 +583,13 @@ fn spawn_device_request(
     std::thread::Builder::new()
         .name("nana-startup-gpu".into())
         .spawn(move || {
-            if let Some(delay) = startup_fault_delay("NANA_STARTUP_GPU_DELAY_MS") {
-                std::thread::sleep(delay);
+            if let Some(delay) = std::env::var("NANA_STARTUP_GPU_DELAY_MS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+            {
+                std::thread::sleep(Duration::from_millis(delay));
             }
-            let device = if startup_fault_flag("NANA_STARTUP_GPU_FAIL") {
+            let device = if fault_flag("NANA_STARTUP_GPU_FAIL") {
                 drop(request);
                 Err("GPU initialization failure requested by NANA_STARTUP_GPU_FAIL".into())
             } else {
@@ -610,35 +612,21 @@ fn spawn_device_request(
     Ok(receiver)
 }
 
-/// Startup fault injection for the acceptance probe (`startup-splash`), in the
-/// manner of `NANA_FORCE_COMPOSITION_FAILURE`: nothing in the product sets it.
-fn startup_fault_flag(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|value| !value.is_empty() && value != "0")
-}
-
-fn startup_fault_delay(name: &str) -> Option<Duration> {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|&millis| millis > 0)
-        .map(Duration::from_millis)
-}
-
-fn startup_phase_event(phase: u64, at: Duration) {
-    nana_diagnostics::event!(
-        host::STARTUP_PHASE,
-        phase = phase,
-        elapsed_ns = u64::try_from(at.as_nanos()).unwrap_or(u64::MAX)
-    );
-}
-
-/// The host's side of a startup once the program exists: the coordinator,
-/// the splash it owns until handoff, and the record programs read.
+/// The host's side of a startup once the program exists.
 pub(super) struct HostStartup {
+    /// The record programs read. Outlives the startup.
     pub(super) handle: StartupHandle,
+    /// Everything that matters only until the handoff; `None` from then on.
+    active: Option<Box<ActiveStartup>>,
+    /// Longest event-loop callback so far, while callbacks are measured. The
+    /// callback that performs the handoff — often the longest, with the first
+    /// frame in it — still counts; measuring stops after it.
+    longest_block: Option<Duration>,
+}
+
+struct ActiveStartup {
     coordinator: StartupCoordinator,
     splash: Option<NativeSplash>,
-    shown_early: bool,
     /// Windows: set by the queue once the takeover frame's GPU work has
     /// completed; the splash comes off after the next compositor pass.
     latch: Option<Arc<AtomicBool>>,
@@ -647,81 +635,85 @@ pub(super) struct HostStartup {
     /// An `Immediate` takeover waiting for the startup messages: the frame
     /// that removes the splash has to show their effects too.
     auto_takeover: bool,
-    longest_block: Duration,
-    /// When the handoff completed: a callback that started before it still
-    /// belongs to the startup, and the one that performed the handoff — often
-    /// the longest, with the first frame in it — is exactly such a callback.
-    handed_off_at: Option<Instant>,
 }
 
 impl HostStartup {
-    fn new(
-        handle: StartupHandle,
-        splash: Option<NativeSplash>,
-        shown_early: bool,
-        longest_block: Duration,
-    ) -> Self {
+    fn new(handle: StartupHandle, splash: Option<NativeSplash>, longest_block: Duration) -> Self {
         Self {
-            coordinator: StartupCoordinator::new(splash.is_some()),
             handle,
-            splash,
-            shown_early,
-            latch: None,
-            primary_flushes: 0,
-            auto_takeover: false,
-            longest_block,
-            handed_off_at: None,
+            active: Some(Box::new(ActiveStartup {
+                coordinator: StartupCoordinator::new(splash.is_some()),
+                splash,
+                latch: None,
+                primary_flushes: 0,
+                auto_takeover: false,
+            })),
+            longest_block: Some(longest_block),
         }
     }
 
     /// An embedded host's record: nothing to hand off, nothing to measure.
     pub(super) fn settled(outcome: SplashOutcome) -> Self {
-        let mut coordinator = StartupCoordinator::new(false);
-        coordinator.handed_off();
         Self {
             handle: StartupHandle::settled(outcome),
-            coordinator,
-            splash: None,
-            shown_early: false,
-            latch: None,
-            primary_flushes: 0,
-            auto_takeover: false,
-            longest_block: Duration::ZERO,
-            handed_off_at: Some(Instant::now()),
+            active: None,
+            longest_block: None,
         }
     }
 
-    pub(super) const fn shown_early(&self) -> bool {
-        self.shown_early
+    /// The window was put on screen with its splash, before the program.
+    pub(super) fn shown_early(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.coordinator.splash)
     }
 
-    const fn measuring(&self) -> bool {
-        !matches!(self.coordinator.phase(), StartupPhase::HandedOff)
-    }
-
-    /// Whether a callback that started at `started` is part of the startup.
-    fn measures(&self, started: Instant) -> bool {
-        self.handed_off_at.is_none_or(|at| started <= at)
+    /// Whether event-loop callbacks are still timed.
+    pub(super) const fn measures_blocks(&self) -> bool {
+        self.longest_block.is_some()
     }
 
     /// `RuntimeProgram::initialize` is about to be called.
     pub(super) fn ui_ready_begins(&mut self) {
-        if !self.measuring() {
+        if self.active.is_none() {
             return;
         }
         let at = self.handle.elapsed();
-        startup_phase_event(2, at);
+        startup_event(StartupMark::UiReady, at);
         self.handle
             .update(|status| status.timeline.ui_ready = Some(at));
     }
 
     fn publish(&self, change: impl FnOnce(&mut StartupStatus)) {
-        let phase = self.coordinator.phase();
-        let ticket = self.coordinator.ticket();
+        let (phase, ticket) = self
+            .active
+            .as_ref()
+            .map_or((StartupPhase::HandedOff, None), |active| {
+                (active.coordinator.phase(), active.coordinator.ticket())
+            });
         self.handle.update(|status| {
             status.phase = phase;
             status.ticket = ticket;
             change(status);
+        });
+    }
+
+    /// Takes the splash off — as the handoff, or because the window is
+    /// closing — and records its release.
+    fn release_splash(&mut self, handoff: bool) {
+        let Some(splash) = self.active.as_mut().and_then(|active| active.splash.take()) else {
+            return;
+        };
+        let work = if handoff {
+            splash.remove()
+        } else {
+            splash.discard()
+        };
+        let at = self.handle.elapsed();
+        startup_event(StartupMark::SplashReleased, at);
+        self.handle.update(|status| {
+            status.timeline.splash_released = Some(at);
+            status.work.splash = work;
         });
     }
 }
@@ -730,50 +722,47 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `initialize` returned; the program's takeover policy is known.
     ///
     /// With startup messages still queued, an `Immediate` takeover is asked
-    /// for once they have been applied ([`Self::drain_startup_messages`]).
+    /// for once they have been applied ([`Self::drain_host_messages`]).
     pub(super) fn startup_ui_ready(&mut self, policy: StartupTakeover) {
-        if self.startup.coordinator.phase() != StartupPhase::Starting {
+        let waits = !self.startup_messages.is_empty();
+        let Some(active) = self.startup.active.as_mut() else {
             return;
-        }
-        let policy = if policy == StartupTakeover::Immediate && !self.startup_messages.is_empty() {
-            self.startup.auto_takeover = true;
+        };
+        let policy = if policy == StartupTakeover::Immediate && waits {
+            active.auto_takeover = true;
             StartupTakeover::Deferred
         } else {
             policy
         };
-        let requested = self
-            .startup
-            .coordinator
-            .ui_ready(policy, self.startup.primary_flushes);
-        let at = requested.then(|| self.startup.handle.elapsed());
-        if let Some(at) = at {
-            startup_phase_event(3, at);
+        if active.coordinator.ui_ready(policy, active.primary_flushes) {
+            self.takeover_requested();
+        } else {
+            self.startup.publish(|_| {});
         }
-        self.startup.publish(|status| {
-            if at.is_some() {
-                status.timeline.takeover_requested = at;
-            }
-        });
     }
 
     /// Whether `id` must not present yet; see [`StartupCoordinator::holds_presents`].
     pub(super) fn startup_holds(&self, id: WindowId) -> bool {
-        self.startup.coordinator.holds_presents(id)
+        self.startup
+            .active
+            .as_ref()
+            .is_some_and(|active| active.coordinator.holds_presents(id))
     }
 
-    /// Counts a settled flush of `id`'s document and returns the primary
-    /// window's flush sequence.
-    pub(super) fn note_startup_flush(&mut self, id: WindowId) -> u64 {
+    /// A settled flush of `id` is about to be presented. Returns whether this
+    /// frame ends the startup, and if so readies the window's presentation for
+    /// the splash's handoff.
+    pub(super) fn prepare_startup_frame(&mut self, id: WindowId) -> bool {
+        let Some(active) = self.startup.active.as_mut() else {
+            return false;
+        };
         if id == WindowId::PRIMARY {
-            self.startup.primary_flushes += 1;
+            active.primary_flushes += 1;
         }
-        self.startup.primary_flushes
-    }
-
-    /// Whether the frame about to be presented for `id` ends the startup, and
-    /// if so, readies the window's presentation for the splash's handoff.
-    pub(super) fn prepare_startup_frame(&mut self, id: WindowId, flush: u64) -> bool {
-        if !self.startup.coordinator.completes_with(id, flush) {
+        if !active
+            .coordinator
+            .completes_with(id, active.primary_flushes)
+        {
             return false;
         }
         // The drawable and the splash's removal have to land in one Core
@@ -781,8 +770,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // has to be set before the drawable is acquired; the pin is released
         // by the ordinary idle unpin once the turn is over.
         #[cfg(target_os = "macos")]
-        if self
-            .startup
+        if active
             .splash
             .as_ref()
             .is_some_and(|splash| splash.handoff() == SplashHandoff::SameTransaction)
@@ -794,27 +782,35 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     /// The frame [`Self::prepare_startup_frame`] picked was presented.
     pub(super) fn startup_frame_presented(&mut self, event_loop: &dyn ActiveEventLoop) {
-        self.startup.coordinator.frame_committed();
+        let Some(active) = self.startup.active.as_mut() else {
+            return;
+        };
+        active.coordinator.frame_committed();
+        let flush_after_gpu = active
+            .splash
+            .as_ref()
+            .is_some_and(|splash| splash.handoff() == SplashHandoff::AfterCompositorFlush);
         let at = self.startup.handle.elapsed();
-        startup_phase_event(4, at);
+        startup_event(StartupMark::TakeoverFrame, at);
         self.startup
             .handle
             .update(|status| status.timeline.first_frame_submitted = Some(at));
-        match self.startup.splash.as_ref().map(NativeSplash::handoff) {
-            Some(SplashHandoff::AfterCompositorFlush) => {
-                let latch = Arc::new(AtomicBool::new(false));
-                let done = Arc::clone(&latch);
-                let proxy = self.proxy.clone();
-                self.graphics
-                    .resources()
-                    .queue()
-                    .on_submitted_work_done(move || {
-                        done.store(true, Ordering::Release);
-                        proxy.wake_up();
-                    });
-                self.startup.latch = Some(latch);
-            }
-            Some(SplashHandoff::SameTransaction) | None => self.startup_handed_off(event_loop),
+        if !flush_after_gpu {
+            self.startup_handed_off(event_loop);
+            return;
+        }
+        let latch = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&latch);
+        let proxy = self.proxy.clone();
+        self.graphics
+            .resources()
+            .queue()
+            .on_submitted_work_done(move || {
+                done.store(true, Ordering::Release);
+                proxy.wake_up();
+            });
+        if let Some(active) = self.startup.active.as_mut() {
+            active.latch = Some(latch);
         }
     }
 
@@ -824,7 +820,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         &mut self,
         event_loop: &dyn ActiveEventLoop,
     ) -> Option<Instant> {
-        let latch = self.startup.latch.as_ref()?;
+        let latch = self.startup.active.as_ref()?.latch.as_ref()?;
         if !latch.load(Ordering::Acquire) {
             let _ = self
                 .graphics
@@ -833,7 +829,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .poll(wgpu::PollType::Poll);
         }
         if latch.load(Ordering::Acquire) {
-            self.startup.latch = None;
             self.startup_handed_off(event_loop);
             None
         } else {
@@ -843,59 +838,26 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn startup_handed_off(&mut self, event_loop: &dyn ActiveEventLoop) {
         let at = self.startup.handle.elapsed();
-        let splash = self.startup.splash.take().map(NativeSplash::remove);
-        let released = splash.map(|_| self.startup.handle.elapsed());
-        self.startup.coordinator.handed_off();
-        self.startup.handed_off_at = Some(Instant::now());
-        startup_phase_event(5, at);
-        if let Some(released) = released {
-            startup_phase_event(6, released);
-        }
-        let longest = self.startup.longest_block;
-        nana_diagnostics::metric!(host::STARTUP_LONGEST_BLOCK_NS, longest);
-        self.startup.publish(|status| {
-            status.timeline.handoff_completed = Some(at);
-            if released.is_some() {
-                status.timeline.splash_released = released;
-            }
-            if let Some(work) = splash {
-                status.work.splash = work;
-            }
-            status.work.longest_event_thread_block = longest;
-        });
+        self.startup.release_splash(true);
+        self.startup.active = None;
+        startup_event(StartupMark::HandedOff, at);
+        self.startup
+            .publish(|status| status.timeline.handoff_completed = Some(at));
         self.notify_startup_changed(event_loop);
     }
 
-    /// Applies the startup messages `initialize` returned, in batches that let
-    /// the loop turn, then asks for the `Immediate` takeover they held back.
-    pub(super) fn drain_startup_messages(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if !self.startup_messages.is_empty() {
-            let more = schedule::drain_host_batch(
-                || {
-                    if self.shutting_down || event_loop.exiting() {
-                        return false;
-                    }
-                    let Some(message) = self.startup_messages.pop_front() else {
-                        return false;
-                    };
-                    self.process_message(event_loop, message);
-                    true
-                },
-                Instant::now,
-            );
-            if more && !self.startup_messages.is_empty() {
-                self.host_work.wake();
-                return;
-            }
-            self.startup_messages.clear();
-        }
-        if std::mem::take(&mut self.startup.auto_takeover)
-            && let Some(ticket) = self.startup.coordinator.ticket()
-            && self
-                .startup
+    /// With the startup messages applied, asks for the `Immediate` takeover
+    /// they held back.
+    pub(super) fn startup_messages_applied(&mut self) {
+        let Some(active) = self.startup.active.as_mut() else {
+            return;
+        };
+        if std::mem::take(&mut active.auto_takeover)
+            && let Some(ticket) = active.coordinator.ticket()
+            && active
                 .coordinator
-                .request(ticket, self.startup.primary_flushes)
-                .is_ok()
+                .request(ticket, active.primary_flushes)
+                .unwrap_or(false)
         {
             self.takeover_requested();
         }
@@ -904,7 +866,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// The coordinator accepted a takeover: record it and draw the frame.
     fn takeover_requested(&mut self) {
         let at = self.startup.handle.elapsed();
-        startup_phase_event(3, at);
+        startup_event(StartupMark::TakeoverRequested, at);
         self.startup
             .publish(|status| status.timeline.takeover_requested = Some(at));
         self.request_redraw(WindowId::PRIMARY);
@@ -914,40 +876,39 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// to confirm the takeover frame would wait forever: the next frame, on
     /// the new device, takes over instead.
     pub(super) fn reset_startup_latch(&mut self) {
-        if self.startup.latch.take().is_some() {
-            self.startup.coordinator.reopen();
+        if let Some(active) = self.startup.active.as_mut()
+            && active.latch.take().is_some()
+        {
+            active.coordinator.reopen();
         }
     }
 
     /// Applies takeover requests made through [`crate::StartupHandle`].
     pub(super) fn process_startup_requests(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if self.startup.active.is_none() {
+            return;
+        }
         for request in self.startup.handle.take_requests() {
-            let before = self.startup.coordinator.phase();
-            let applied = match request {
-                StartupRequest::TakeOver(ticket) => self
-                    .startup
-                    .coordinator
-                    .request(ticket, self.startup.primary_flushes),
-                StartupRequest::Cancel(ticket) => self.startup.coordinator.cancel(ticket),
+            let Some(active) = self.startup.active.as_mut() else {
+                return;
             };
-            let after = self.startup.coordinator.phase();
-            if applied.is_err()
-                || (before == after && matches!(request, StartupRequest::TakeOver(_)))
-            {
+            let applied = match request {
+                StartupRequest::TakeOver(ticket) => {
+                    active.coordinator.request(ticket, active.primary_flushes)
+                }
+                StartupRequest::Cancel(ticket) => active.coordinator.cancel(ticket).map(|()| true),
+            };
+            if applied != Ok(true) {
                 continue;
             }
+            // The program asked or withdrew itself; nothing is asked on its
+            // behalf any more.
+            active.auto_takeover = false;
             match request {
-                StartupRequest::TakeOver(_) => {
-                    // The program asked itself; nothing is asked on its behalf.
-                    self.startup.auto_takeover = false;
-                    self.takeover_requested();
-                }
-                StartupRequest::Cancel(_) => {
-                    // The program withdrew; nothing is requested on its behalf.
-                    self.startup.auto_takeover = false;
-                    self.startup
-                        .publish(|status| status.timeline.takeover_requested = None);
-                }
+                StartupRequest::TakeOver(_) => self.takeover_requested(),
+                StartupRequest::Cancel(_) => self
+                    .startup
+                    .publish(|status| status.timeline.takeover_requested = None),
             }
             self.notify_startup_changed(event_loop);
         }
@@ -962,39 +923,42 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// The primary window is closing: nothing is left for the splash to
     /// cover, and it has to come off before the window goes.
     pub(super) fn release_startup_splash(&mut self) {
-        self.startup.latch = None;
-        let Some(splash) = self.startup.splash.take() else {
-            return;
-        };
-        let work = splash.discard();
-        let released = self.startup.handle.elapsed();
-        startup_phase_event(6, released);
-        self.startup.handle.update(|status| {
-            status.timeline.splash_released = Some(released);
-            status.work.splash = work;
-        });
+        if let Some(active) = self.startup.active.as_mut() {
+            active.latch = None;
+        }
+        self.startup.release_splash(false);
     }
 
     /// The primary window's backing scale changed while its splash is up.
     pub(super) fn rescale_startup_splash(&mut self, id: WindowId, scale: f64) {
         if id == WindowId::PRIMARY
-            && let Some(splash) = self.startup.splash.as_mut()
+            && let Some(splash) = self
+                .startup
+                .active
+                .as_mut()
+                .and_then(|active| active.splash.as_mut())
         {
             splash.set_scale_factor(scale);
         }
     }
 
-    pub(super) fn note_startup_block(&mut self, started: Instant) {
-        let elapsed = started.elapsed();
-        if self.startup.measures(started) && elapsed > self.startup.longest_block {
-            self.startup.longest_block = elapsed;
-            self.startup
-                .handle
-                .update(|status| status.work.longest_event_thread_block = elapsed);
-            if !self.startup.measuring() {
-                nana_diagnostics::metric!(host::STARTUP_LONGEST_BLOCK_NS, elapsed);
-            }
+    /// Records one timed event-loop callback. The first one after the handoff
+    /// finalizes the measurement.
+    pub(super) fn note_startup_block(&mut self, elapsed: Duration) {
+        let Some(longest) = self.startup.longest_block.as_mut() else {
+            return;
+        };
+        if elapsed > *longest {
+            *longest = elapsed;
         }
+        let longest = *longest;
+        if self.startup.active.is_none() {
+            self.startup.longest_block = None;
+            nana_diagnostics::metric!(host::STARTUP_LONGEST_BLOCK_NS, longest);
+        }
+        self.startup
+            .handle
+            .update(|status| status.work.longest_event_thread_block = longest);
     }
 
     /// Applies the primary window's icons once the startup thread has
@@ -1019,9 +983,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     /// Counts a painter created for the startup (the startup thread's, or one
-    /// built on the event thread while the startup is measured).
+    /// built on the event thread before the handoff).
     pub(super) fn note_startup_painter(&self) {
-        if self.startup.measuring() {
+        if self.startup.active.is_some() {
             self.startup
                 .handle
                 .update(|status| status.work.painters_created += 1);
@@ -1128,21 +1092,6 @@ mod tests {
         startup.request(ticket, 5).unwrap();
         startup.request(ticket, 8).unwrap();
         assert!(startup.completes_with(WindowId::PRIMARY, 6));
-    }
-
-    #[test]
-    fn handed_off_is_final() {
-        let mut startup = ready(StartupTakeover::Immediate);
-        let ticket = startup.ticket().unwrap();
-        startup.handed_off();
-        assert_eq!(startup.ticket(), None);
-        assert_eq!(
-            startup.request(ticket, 99),
-            Err(StartupError::AlreadyHandedOff)
-        );
-        assert_eq!(startup.cancel(ticket), Err(StartupError::AlreadyHandedOff));
-        assert!(!startup.holds_presents(WindowId::PRIMARY));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 100));
     }
 
     #[test]

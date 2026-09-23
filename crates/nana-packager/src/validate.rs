@@ -206,11 +206,21 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
 
     let host = TargetPlatform::from_triple(&TargetPlatform::host_triple()).ok();
     let runnable = host == Some(located.platform);
+    // The application's own verdict on its packaged Early Splash logo, when
+    // it declares one: read from the early-splash pack and header-checked
+    // exactly as the host does before showing it.
+    let mut splash_logo = None;
     if options.run {
         if runnable {
             let status = match self_check(&exe_path, &options.run_env, &[]) {
-                Ok(check) if check.passed() => Status::Pass,
-                Ok(check) => Status::Fail(check.describe()),
+                Ok(check) => {
+                    splash_logo = check.app_check(SPLASH_LOGO_CHECK);
+                    if check.passed() {
+                        Status::Pass
+                    } else {
+                        Status::Fail(check.describe())
+                    }
+                }
                 Err(error) => Status::Fail(error),
             };
             report.push("run.launch-from-foreign-cwd", status);
@@ -243,12 +253,23 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
         }
     }
 
+    if let Some((ok, detail)) = splash_logo {
+        report.push(
+            SPLASH_LOGO_CHECK,
+            if ok {
+                Status::Pass
+            } else {
+                Status::Fail(detail.unwrap_or_default())
+            },
+        );
+    }
     for (name, reason) in [
         (
             "startup.early-splash",
             "the self-check exits before any window, so it cannot see a native splash; \
-             verify on a real window with `startup-splash --probe` (Issue #225); \
-             the logo is not read from the early-splash pack yet",
+             verify on a real window with `startup-splash --probe` (Issue #225). A logo the \
+             application reads from its early-splash pack (`SplashLogo::packaged`) is checked \
+             by the self-check and reported as `startup.early-splash-logo` under `--run`",
         ),
         (
             "startup.ui-ready-handoff",
@@ -846,6 +867,9 @@ fn check_distribution(
 }
 
 /// What one self-check launch produced.
+/// The self-check entry for a packaged Early Splash logo (`nana-ui`).
+const SPLASH_LOGO_CHECK: &str = "startup.early-splash-logo";
+
 struct SelfCheck {
     success: bool,
     status: String,
@@ -872,6 +896,24 @@ impl SelfCheck {
                 .report
                 .as_deref()
                 .is_some_and(|r| r.contains("\"ok\":false"))
+    }
+
+    /// One named check from the application's report: whether it passed,
+    /// and its detail.
+    fn app_check(&self, name: &str) -> Option<(bool, Option<String>)> {
+        let report: serde_json::Value = serde_json::from_str(self.report.as_deref()?).ok()?;
+        let check = report
+            .get("checks")?
+            .as_array()?
+            .iter()
+            .find(|check| check.get("name").and_then(|n| n.as_str()) == Some(name))?;
+        Some((
+            check.get("ok")?.as_bool()?,
+            check
+                .get("detail")
+                .and_then(|d| d.as_str())
+                .map(str::to_owned),
+        ))
     }
 
     fn describe(&self) -> String {
@@ -1206,5 +1248,27 @@ mod tests {
         ] {
             assert!(!is_debug_crt(name), "{name}");
         }
+    }
+
+    #[test]
+    fn the_application_verdict_on_its_splash_logo_is_read_from_its_report() {
+        let check = |report: &str| SelfCheck {
+            success: true,
+            status: "exit status: 0".into(),
+            report: Some(report.into()),
+            stderr: String::new(),
+        };
+        let with_logo = check(
+            r#"{"nana_package_validate":1,"ok":false,"checks":[{"name":"pack.entries","ok":true,"detail":"splash"},{"name":"startup.early-splash-logo","ok":false,"detail":"nana://res/x.png: no early-splash pack holds it"}]}"#,
+        );
+        assert_eq!(
+            with_logo.app_check(SPLASH_LOGO_CHECK),
+            Some((
+                false,
+                Some("nana://res/x.png: no early-splash pack holds it".into())
+            ))
+        );
+        let without = check(r#"{"nana_package_validate":1,"ok":true,"checks":[]}"#);
+        assert_eq!(without.app_check(SPLASH_LOGO_CHECK), None);
     }
 }

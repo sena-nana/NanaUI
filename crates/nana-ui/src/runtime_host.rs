@@ -110,6 +110,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
         tasks: SyncSender<Task<Message>>,
         system_appearance: Option<SystemAppearance>,
+        startup: crate::StartupHandle,
     ) -> Self {
         Self {
             window_id,
@@ -124,13 +125,8 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             system_appearance,
             reduced_motion: false,
             store: memory_store(),
-            startup: crate::StartupHandle::unattached(),
+            startup,
         }
-    }
-
-    pub(crate) fn with_startup(mut self, startup: crate::StartupHandle) -> Self {
-        self.startup = startup;
-        self
     }
 
     pub(crate) fn with_reduced_motion(mut self, reduced: bool) -> Self {
@@ -1000,7 +996,7 @@ pub(crate) fn take_pending_startup() -> crate::StartupOptions {
 }
 
 /// Runs `run` with `startup` as the options the next host started on this
-/// thread picks up. Front ends that wrap [`run_runtime`] (the Vue host, a
+/// thread picks up (`run_runtime(..)` inside it shows the Early Splash). Front ends that wrap [`run_runtime`] (the Vue host, a
 /// builder) pass their startup through here instead of growing a parameter
 /// for every entry point.
 pub fn with_startup<R>(startup: crate::StartupOptions, run: impl FnOnce() -> R) -> R {
@@ -1013,14 +1009,6 @@ pub fn with_startup<R>(startup: crate::StartupOptions, run: impl FnOnce() -> R) 
     PENDING_STARTUP.with(|slot| *slot.borrow_mut() = Some(startup));
     let _clear = Clear;
     run()
-}
-
-/// Same as [`run_runtime`], with an Early Splash or other startup options.
-pub fn run_runtime_with_startup<Program: RuntimeProgram>(
-    settings: WindowDescriptor,
-    startup: crate::StartupOptions,
-) -> Result<(), crate::HostedRunError> {
-    with_startup(startup, || crate::run_runtime_scene::<Program>(settings))
 }
 
 pub(crate) fn take_pending_store() -> SharedStore {

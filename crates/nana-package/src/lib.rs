@@ -8,17 +8,21 @@
 //!   ([`TrustPolicy`]).
 //! - [`identity`]: the application identity marker a binary embeds through
 //!   `nana_ui_platform::application_identity!`.
+//! - [`early_splash`]: the one read an application makes before the Nana
+//!   runtime exists, its Early Splash logo.
 //!
 //! Everything here reads. Building packs, generating keys and signing is the
 //! build-side `nana-packager`, which never ships inside an application. See
 //! `docs/packaging.md` for the byte layouts and the security model.
 
+pub mod early_splash;
 pub mod hash;
 pub mod identity;
 pub mod keys;
 pub mod manifest;
 pub mod pack;
 
+pub use early_splash::{EarlySplashError, read_early_splash};
 pub use identity::{EmbeddedIdentity, MarkerError, find_marker};
 pub use keys::{
     ContentKey, KeyError, KeyId, KeyProvider, KeyRequest, NoKeys, PublisherKey, PublisherKeyId,

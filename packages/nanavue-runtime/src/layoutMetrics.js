@@ -69,8 +69,11 @@ export function hostCall(name, args) {
     throw new Error("__nanaHost.call is not registered");
   }
   const values = Array.isArray(args) ? args : [];
-  // Window service operations carry their own identity and are host-global.
-  if (name.startsWith("window") && name !== "windowCall") return host.call(name, values);
+  // Window service and startup operations carry their own identity and are
+  // host-global.
+  if ((name.startsWith("window") && name !== "windowCall") || name.startsWith("startup")) {
+    return host.call(name, values);
+  }
   let windowId = Number(globalThis.__nanaActiveWindowId || 0);
   if (!windowId && values.length) windowId = nanaWindowIdFromNode(values[0]);
   const targetId = name === "windowCall" ? Number(values[0]) : windowId;

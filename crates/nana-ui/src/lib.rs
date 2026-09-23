@@ -108,8 +108,9 @@ pub use scene_host::CompositionWork;
 #[cfg(feature = "hosted")]
 pub use startup::{
     SplashAnimation, SplashAnimationOutcome, SplashBackground, SplashFailure, SplashLogo,
-    SplashOutcome, SplashSkip, SplashSpec, StartupError, StartupHandle, StartupOptions,
-    StartupPhase, StartupStatus, StartupTakeover, StartupTicket, StartupTimeline, StartupWork,
+    SplashLogoSource, SplashOutcome, SplashPackageError, SplashSkip, SplashSpec, StartupError,
+    StartupHandle, StartupOptions, StartupPhase, StartupStatus, StartupTakeover, StartupTicket,
+    StartupTimeline, StartupWork,
 };
 #[cfg(feature = "gpu")]
 mod scene_paint;
@@ -315,7 +316,7 @@ pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 pub use runtime_host::{
     FrameDemand, HostFailure, ReportHostFailure, RoutedInput, RuntimeProgram,
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
-    run_runtime_with_startup, run_runtime_with_store, with_startup,
+    run_runtime_with_store, with_startup,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]

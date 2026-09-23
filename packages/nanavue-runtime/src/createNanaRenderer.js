@@ -1112,16 +1112,10 @@ globalThis.Nana.windows = {
 // read of its one record plus two requests. A bundle that loads late reads
 // `state` instead of waiting for an event it may already have missed.
 const nanaStartupListeners = new Set();
-function nanaStartupCall(name, args) {
-  const host = globalThis.__nanaHost;
-  if (!host || typeof host.call !== "function") throw new Error("__nanaHost.call is not registered");
-  // Host-global: never routed through a window.
-  return host.call(name, args);
-}
 globalThis.Nana.startup = {
   /** `{ phase, splash, ticket, timeline }`, current at the time of the read. */
   get state() {
-    return nanaStartupCall("startupStatus", []);
+    return hostCall("startupStatus", []);
   },
   /**
    * Keep the Early Splash after this bundle has been evaluated. Only takes
@@ -1129,15 +1123,15 @@ globalThis.Nana.startup = {
    * returns whether it did.
    */
   deferTakeover() {
-    return nanaStartupCall("startupDeferTakeover", []) === true;
+    return hostCall("startupDeferTakeover", []) === true;
   },
   /** Let the current primary document replace the splash once it has a frame. */
   takeOver(ticket) {
-    return nanaStartupCall("startupTakeOver", ticket == null ? [] : [ticket]);
+    return hostCall("startupTakeOver", ticket == null ? [] : [ticket]);
   },
   /** Withdraw a takeover that has not completed; its ticket is retired. */
   cancelTakeover(ticket) {
-    return nanaStartupCall("startupCancelTakeover", ticket == null ? [] : [ticket]);
+    return hostCall("startupCancelTakeover", ticket == null ? [] : [ticket]);
   },
   /** Called with the whole record each time the startup moves on. */
   onChange(listener) {

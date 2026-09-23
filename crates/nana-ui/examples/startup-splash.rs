@@ -10,6 +10,9 @@
 //! --no-splash               no Early Splash
 //! --animation=NAME          none | fade | pulse | rotate (default fade)
 //! --bad-logo                a logo that is not a PNG
+//! --packaged-logo[=URL]     read the logo from the package's early-splash pack
+//!                           (default nana://res/splash-logo.png); from
+//!                           `examples/assets` when run from `target/`
 //! --defer=MS                keep the splash until MS after UiReady, then take over
 //! --cancel-first            with --defer: request, cancel, then request again
 //! --app-ms=MS               simulated business initialization (default 1500)
@@ -27,7 +30,7 @@ use std::time::Duration;
 
 use nana_ui::runtime::{Entity, FrameworkError, List, Text};
 use nana_ui::{
-    ApplicationIdentity, ApplicationState, ApplicationWindow, NanaApplication, RuntimeApplication,
+    ApplicationState, ApplicationWindow, NanaApplication, RuntimeApplication,
     RuntimeProgramContext, RuntimeProgramUpdate, SplashAnimation, SplashLogo, SplashSpec,
     StartupPhase, StartupStatus, StartupTakeover, WindowDescriptor,
 };
@@ -35,12 +38,15 @@ use nana_ui_platform::WindowId;
 
 static LOGO: &[u8] = include_bytes!("assets/splash-logo.png");
 static NOT_A_LOGO: &[u8] = b"this is not a PNG";
+/// The same PNG, as the packaged build's early-splash pack holds it.
+const PACKAGED_LOGO: &str = "nana://res/splash-logo.png";
 
 #[derive(Clone, Default)]
 struct Options {
     splash: bool,
     animation: Option<SplashAnimation>,
     bad_logo: bool,
+    packaged_logo: Option<&'static str>,
     defer: Option<u64>,
     cancel_first: bool,
     app_ms: u64,
@@ -73,6 +79,14 @@ fn options() -> Options {
                 });
             }
             "--bad-logo" => options.bad_logo = true,
+            "--packaged-logo" => {
+                options.packaged_logo = Some(if value.is_empty() {
+                    PACKAGED_LOGO
+                } else {
+                    // A process-lifetime option, like the embedded logo.
+                    Box::leak(value.to_owned().into_boxed_str())
+                });
+            }
             "--defer" => options.defer = Some(millis(value)),
             "--cancel-first" => options.cancel_first = true,
             "--app-ms" => options.app_ms = millis(value),
@@ -321,15 +335,19 @@ fn report(status: &StartupStatus, idle_frames: u64) {
     let work = &status.work;
     println!(
         concat!(
-            "{{\"phase\":\"{}\",\"splash\":\"{:?}\",",
+            "{{\"phase\":\"{}\",\"splash\":\"{}\",",
             "\"splash_committed_ms\":{},\"ui_ready_ms\":{},\"takeover_requested_ms\":{},",
             "\"first_frame_submitted_ms\":{},\"handoff_completed_ms\":{},\"splash_released_ms\":{},",
             "\"longest_block_ms\":{:.3},\"devices_requested\":{},\"painters_created\":{},",
             "\"logo_decodes\":{},\"logo_uploads\":{},\"animation_submissions\":{},",
-            "\"splash_commits\":{},\"splash_live_resources\":{},\"idle_frames\":{}}}"
+            "\"splash_commits\":{},\"splash_live_resources\":{},\"logo_source\":\"{}\",",
+            "\"splash_logo_read_ms\":{},\"idle_frames\":{}}}"
         ),
         status.phase.label(),
-        status.splash,
+        // The outcome's Debug form quotes pack names and reasons.
+        format!("{:?}", status.splash)
+            .replace('\\', "\\\\")
+            .replace('"', "\\\""),
         millis(timeline.splash_committed),
         millis(timeline.ui_ready),
         millis(timeline.takeover_requested),
@@ -344,6 +362,12 @@ fn report(status: &StartupStatus, idle_frames: u64) {
         work.splash.animation_submissions,
         work.splash.commits,
         work.splash.live_resources,
+        if with_options(|options| options.packaged_logo.is_some()) {
+            "packaged"
+        } else {
+            "embedded"
+        },
+        millis(work.splash_logo_read),
         idle_frames,
     );
     let mut failures = Vec::new();
@@ -375,6 +399,13 @@ fn report(status: &StartupStatus, idle_frames: u64) {
             failures.push("the splash animation was submitted more than once");
         }
     }
+    // One read of the package for a packaged logo that was attempted, none
+    // for an embedded one.
+    let attempted = !matches!(status.splash, nana_ui::SplashOutcome::Skipped(_));
+    let packaged = with_options(|options| options.packaged_logo.is_some());
+    if work.splash_logo_read.is_some() != (packaged && attempted) {
+        failures.push("the logo read does not match the logo source");
+    }
     if idle_frames > 0 {
         failures.push("the window kept drawing after the handoff");
     }
@@ -386,18 +417,32 @@ fn report(status: &StartupStatus, idle_frames: u64) {
 
 fn main() {
     let options = with_options(Options::clone);
-    let mut builder = NanaApplication::builder(ApplicationIdentity::new(
-        "dev.nanaui.startup-splash",
-        "NanaUI Startup",
-        env!("CARGO_PKG_VERSION"),
+    // With the identity marker, so `nana-packager` can package the example.
+    let mut builder = NanaApplication::builder(nana_ui_platform::application_identity!(
+        id: "dev.nanaui.startup-splash",
+        name: "NanaUI Startup",
+        version: env!("CARGO_PKG_VERSION"),
     ));
     if options.splash {
-        let logo = SplashLogo::png(if options.bad_logo { NOT_A_LOGO } else { LOGO });
+        let logo = match options.packaged_logo {
+            Some(url) => SplashLogo::packaged(url),
+            None => SplashLogo::png(if options.bad_logo { NOT_A_LOGO } else { LOGO }),
+        };
         let mut splash = SplashSpec::new(logo).with_logo_size(128.0, 128.0);
         if let Some(animation) = options.animation {
             splash = splash.with_animation(animation);
         }
         builder = builder.early_splash(splash);
+    }
+    // A packaged logo is read through the package mount: the manifest's
+    // early-splash pack in a package, `examples/assets` from `target/`.
+    // Without `packaged-resources` the splash reports `Unsupported`.
+    #[cfg(feature = "packaged-resources")]
+    if options.packaged_logo.is_some() {
+        builder = builder.resource_packs(
+            nana_ui::ResourcePackOptions::new()
+                .loose_root(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/assets")),
+        );
     }
     let mut window = WindowDescriptor::new("NanaUI Startup").initial_size(640.0, 420.0);
     window.visible = !options.hidden;

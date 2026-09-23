@@ -63,7 +63,7 @@
 ### API 变化
 
 - 新增 `nana_ui::startup` 模块，并在 crate 根再导出：`StartupOptions`、`SplashSpec` / `SplashLogo` / `SplashAnimation` / `SplashBackground`、`SplashOutcome`、`StartupHandle`、`StartupStatus`、`StartupPhase`、`StartupTicket`、`StartupTakeover`、`StartupTimeline`、`StartupWork`、`StartupError`。
-- 入口：`NanaApplicationBuilder::early_splash(spec)` / `startup(options)`、`run_runtime_with_startup`、`with_startup`（给包装 `run_runtime` 的前端用，例如 Vue）。
+- 入口：`NanaApplicationBuilder::early_splash(spec)`；不走 builder 的宿主与包装 `run_runtime` 的前端（例如 Vue）用 `with_startup(options, || ..)`。
 - `RuntimeProgram` 新增两个有默认实现的方法：`startup_takeover()`（默认 `Immediate`）与 `startup_changed(..)`。`ApplicationState` 同名。`RuntimeProgramContext::startup()` 返回启动记录。
 - `nana-window` 新增 `NativeSplash` 及其类型；原生句柄仍只在 `nana-window` 内。
 - `nana-diagnostics` 在 `framework::host` 追加事件 `STARTUP_PHASE`（id 4）、`SPLASH_OUTCOME`（5）、`STARTUP_FAILED`（6）和 gauge `STARTUP_LONGEST_BLOCK_NS`（metric id 5）。
@@ -84,3 +84,16 @@
 | --- | --- |
 | 所有应用 | 无需改动。自定义 `HostApiRegistry` 若注册了上面四个 `startup*` 名字，需要改名 |
 | 想要启动 Logo 的应用 | builder 加 `.early_splash(SplashSpec::new(SplashLogo::png(include_bytes!(..))))`；`initialize` 里的重活改为任务；要等数据再切界面的，实现 `startup_takeover()` 返回 `Deferred`，准备好后 `context.startup().take_over(ticket)` |
+| 用 `nana-packager` 打包、想把 Logo 放进包里的应用 | 开 `packaged-resources`，配 `resource_packs(..)`，Logo 放进 `class = "early-splash"` 的 pack，改用 `SplashLogo::packaged("nana://res/…")`。见下一节 |
+
+### Early Splash 从 `early-splash` pack 读 Logo
+
+合同见[两阶段启动](startup.md#从-early-splash-pack-读取-logo)。
+
+- `SplashLogo` 新增 `SplashLogo::packaged(url)` 与 `source()`（返回 `SplashLogoSource::{Embedded, Packaged}`）。删除了 `SplashLogo::bytes()` 与 `SplashLogo::validate()`，改用自由函数 `validate_logo(png)`。
+- `NativeSplash::show` 多了一个参数：宿主解析出的 PNG 字节，`show(window, spec, png, background, reduced_motion)`。
+- `SplashFailure` 新增变体 `Package(SplashPackageError)`。对 `SplashFailure` 做穷尽 `match` 的代码要补上这个分支。
+- `StartupWork` 新增字段 `splash_logo_read: Option<Duration>`。用结构体字面量构造 `StartupWork` 的代码要补上这个字段。
+- `nana-package` 新增 `read_early_splash`、`EarlySplashError`、`PackageManifest::route` 与 `manifest::prefix_claims`（`nana://res/` 挂载也改用这条前缀规则，行为不变）。
+- `nana-diagnostics` 在 `framework::host` 追加 gauge `STARTUP_SPLASH_LOGO_READ_NS`（metric id 6）和事件 `SPLASH_LOGO_FAILED`（id 7）。
+- 打包自检多了一项 `startup.early-splash-logo`，只在应用声明了 packaged Logo 时出现。`nana-packager validate --run` 会把它单独报出来。

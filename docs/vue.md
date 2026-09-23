@@ -59,7 +59,7 @@ JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布�
 
 ## 启动
 
-Early Splash 在 Rust 侧配置：`nana_ui::with_startup(StartupOptions::default().with_splash(spec), || VueRuntimeProgram::run(...))`。bundle 在 `UiReady` 求值，那时 Logo 已在屏幕上。`Nana.startup` 是宿主启动记录的投影：`state` 随时读取（`{ phase, splash, ticket, timeline }`），`deferTakeover()` 只在首次求值时有效，`takeOver()` / `cancelTakeover()` 发请求，`onChange(listener)` 收宿主的 `startup` 事件。Vue 宿主默认主题是 `Light`，splash 的 `SplashBackground::System` 跟随系统明暗，两者不一致时给 splash 传 `Color(..)`。合同见 [两阶段启动](startup.md)。
+Early Splash 在 Rust 侧配置：`nana_ui::with_startup(StartupOptions { splash: Some(spec) }, || VueRuntimeProgram::run(...))`。bundle 在 `UiReady` 求值，那时 Logo 已在屏幕上。`Nana.startup` 是宿主启动记录的投影：`state` 随时读取（`{ phase, splash, ticket, timeline }`），`deferTakeover()` 只在首次求值时有效，`takeOver()` / `cancelTakeover()` 发请求，`onChange(listener)` 收宿主的 `startup` 事件。Vue 宿主默认主题是 `Light`，splash 的 `SplashBackground::System` 跟随系统明暗，两者不一致时给 splash 传 `Color(..)`。合同见 [两阶段启动](startup.md)。
 
 ## 两种写法，同一棵树
 
