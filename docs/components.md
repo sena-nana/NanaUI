@@ -203,7 +203,7 @@ IME 预编辑存在 world 的 `ime` 槽而不是编辑器的 `value` 里，所�
 
 多数需求用现有控件组合即可。真要新增一种会参与排版、点击和绘制的控件：
 
-1. 实现 Runtime 的 `ComponentView` / `RegisterableComponent`。
+1. 实现 Runtime 的 `ComponentView` / `RegisterableComponent`。`ComponentView` 要求 `PartialEq`，`project` 读的每个字段都要参与比较：相等的写入会被跳过。`project` 读共享的内部可变状态，或者往别的组件的节点上打补丁时，实现 `always_reproject` 返回 `true`。
 2. 用 `UiExtension` + `ExtensionRegistrar::register_component` 登记。稳定身份是 `ComponentTypeId`（如 `nana.button`、`app.preview-card`）。
 3. 若 Vue 也要用，登记的 tag 等于 `ComponentTypeId` 去掉 `nana.` 前缀。和 HTML 同语义就用原生标签（`button`、`table`/`tr`/`td`、`ul`/`li`、`details`）。语义不同就换名（`search-dropdown`，不是 HTML `<search>`）。Vue tag 和 Rust `create_component<C>` 解析同一张 `ComponentRegistry`。未登记、也不是已知 HTML 的 tag 会报错，不会当成布局盒。
 

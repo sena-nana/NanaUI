@@ -111,6 +111,11 @@ set_component(entity, Button::new(…))     // 整体换 props，保留交互态
 什么该活下来（`Select` / `Dropdown` / `SearchDropdown` 保留展开与高亮，
 `SearchDropdown` 还保留用户已输入的查询与光标）。props 真的变了仍会重置交互态。
 
+刷新时把整张列表按当前值重写一遍是可以的：组件与原值相等、闭包也没排 mutation 和事件时，
+`update_component` / `set_component` 直接返回，不投影也不提交，应用不需要自己按行指纹跳过。
+组件自身没变、只是它投影时读的 world 状态变了，用 `reproject_component(entity)` 重新投影；
+空闭包的 `update_component` 不再有这个作用。
+
 已经持有实体、切换时还要保留其状态的区域，可用
 `reconcile_children(parent_id, &[child_id, ...]) -> Result<bool, FrameworkError>`。
 它发布父节点的完整子节点顺序，省略的子树停放而不销毁，合法跨父节点移动以及

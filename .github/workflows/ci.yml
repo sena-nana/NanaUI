@@ -196,6 +196,11 @@ jobs:
             scoped_layout_touches_only_the_change_closure_and_matches_full_recompute \
             scoped_layout_matches_full_recompute_across_container_shapes_and_edits \
             scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows \
+            scoped_layout_contained_edit_stays_flat_beside_a_parked_row \
+            rewriting_a_list_with_its_own_values_does_no_work \
+            an_unchanged_update_skips_projection_and_reproject_component_forces_it \
+            putting_a_child_back_where_it_is_or_reparking_it_is_no_work \
+            rewriting_an_assembled_composite_with_its_own_values_is_no_work \
             content_growth_under_a_child_moves_its_siblings \
             content_growth_under_a_child_moves_its_siblings_when_the_container_hugs \
             flipping_a_container_to_a_row_remeasures_children_that_depend_on_the_direction \

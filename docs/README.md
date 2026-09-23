@@ -66,4 +66,4 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [LiliaCode 组件恢复（2026-09-10）](liliacode-component-restoration-2026-09-10.md)
 - [窗口全屏与跨线程最新帧（2026-09-14）](consumer-upgrade-2026-09-14.md)
 - [窗口不出现在任务栏（2026-09-15）](consumer-upgrade-2026-09-15.md)
-- [应用打包与资源包（2026-09-23）](consumer-upgrade-2026-09-23.md)
+- [应用打包与资源包；未变化的写入不再有成本（2026-09-23）](consumer-upgrade-2026-09-23.md)

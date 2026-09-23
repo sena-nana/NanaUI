@@ -1,0 +1,1610 @@
+{
+  "schema_version": 1,
+  "phase": "card-update",
+  "samples": 60,
+  "warmup": 10,
+  "cells": [
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.180416,
+        "p50": 0.19354100000000002,
+        "p95": 0.201208,
+        "mean": 0.1951437666666667
+      },
+      "flush_ms": {
+        "min": 0.001209,
+        "p50": 0.001375,
+        "p95": 0.001708,
+        "mean": 0.0014416833333333345
+      },
+      "generations": 20.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000042
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.00020800000000000001
+        ],
+        [
+          "Extract",
+          0.000167
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.186125,
+        "p50": 0.19574999999999998,
+        "p95": 0.212167,
+        "mean": 0.19887641666666667
+      },
+      "flush_ms": {
+        "min": 0.001209,
+        "p50": 0.0013340000000000001,
+        "p95": 0.001791,
+        "mean": 0.001427100000000001
+      },
+      "generations": 20.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000042
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.00020800000000000001
+        ],
+        [
+          "Extract",
+          0.000167
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.173667,
+        "p50": 0.191083,
+        "p95": 0.20583400000000002,
+        "mean": 0.19100975
+      },
+      "flush_ms": {
+        "min": 0.001166,
+        "p50": 0.0013340000000000001,
+        "p95": 0.001625,
+        "mean": 0.0014194833333333345
+      },
+      "generations": 20.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000042
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.00020800000000000001
+        ],
+        [
+          "Extract",
+          0.000167
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 2.9246670000000003,
+        "p50": 3.072292,
+        "p95": 3.199084,
+        "mean": 3.0885534333333333
+      },
+      "flush_ms": {
+        "min": 0.008375,
+        "p50": 0.009458,
+        "p95": 0.013542,
+        "mean": 0.010114550000000005
+      },
+      "generations": 200.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000125
+        ],
+        [
+          "TextShape",
+          0.000625
+        ],
+        [
+          "Accessibility",
+          0.0012079999999999999
+        ],
+        [
+          "Extract",
+          0.001041
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 2.8948340000000004,
+        "p50": 3.1128750000000003,
+        "p95": 3.2193330000000002,
+        "mean": 3.11546115
+      },
+      "flush_ms": {
+        "min": 0.008,
+        "p50": 0.009708999999999999,
+        "p95": 0.013291,
+        "mean": 0.010023583333333336
+      },
+      "generations": 200.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000084
+        ],
+        [
+          "TextShape",
+          0.000583
+        ],
+        [
+          "Accessibility",
+          0.001166
+        ],
+        [
+          "Extract",
+          0.0014160000000000002
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 3.020791,
+        "p50": 3.1294999999999997,
+        "p95": 3.3536249999999996,
+        "mean": 3.143345116666666
+      },
+      "flush_ms": {
+        "min": 0.008916,
+        "p50": 0.010125,
+        "p95": 0.013333,
+        "mean": 0.010667333333333336
+      },
+      "generations": 200.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000125
+        ],
+        [
+          "TextShape",
+          0.000584
+        ],
+        [
+          "Accessibility",
+          0.001167
+        ],
+        [
+          "Extract",
+          0.001625
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.16020800000000002,
+        "p50": 0.165333,
+        "p95": 0.17316700000000002,
+        "mean": 0.16630559999999997
+      },
+      "flush_ms": {
+        "min": 0.000125,
+        "p50": 0.000166,
+        "p95": 0.000167,
+        "mean": 0.00015619999999999997
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.159458,
+        "p50": 0.169166,
+        "p95": 0.18770799999999999,
+        "mean": 0.17263124999999996
+      },
+      "flush_ms": {
+        "min": 0.000125,
+        "p50": 0.000167,
+        "p95": 0.000292,
+        "mean": 0.00021104999999999998
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 40,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.150041,
+        "p50": 0.165875,
+        "p95": 0.176083,
+        "mean": 0.16695696666666668
+      },
+      "flush_ms": {
+        "min": 0.000125,
+        "p50": 0.000167,
+        "p95": 0.000209,
+        "mean": 0.00018476666666666656
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 1.7930419999999998,
+        "p50": 1.900166,
+        "p95": 2.14175,
+        "mean": 1.9184424333333332
+      },
+      "flush_ms": {
+        "min": 0.00020800000000000001,
+        "p50": 0.0005,
+        "p95": 0.00125,
+        "mean": 0.000597266666666667
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 1.730416,
+        "p50": 1.833834,
+        "p95": 1.9308750000000001,
+        "mean": 1.8417945166666672
+      },
+      "flush_ms": {
+        "min": 0.00020800000000000001,
+        "p50": 0.000417,
+        "p95": 0.001291,
+        "mean": 0.000543716666666667
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "noop",
+      "rows": 400,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 1.722458,
+        "p50": 1.833875,
+        "p95": 1.8947079999999998,
+        "mean": 1.8325305666666667
+      },
+      "flush_ms": {
+        "min": 0.00020800000000000001,
+        "p50": 0.000458,
+        "p95": 0.0012079999999999999,
+        "mean": 0.0005735500000000004
+      },
+      "generations": 0.0,
+      "idle_flushes": 60,
+      "stages_p50_ms": [],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 0,
+      "render_nodes_extracted": 0
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.001584,
+        "p50": 0.001791,
+        "p95": 0.0018750000000000001,
+        "mean": 0.0017785000000000012
+      },
+      "flush_ms": {
+        "min": 0.00925,
+        "p50": 0.01025,
+        "p95": 0.010417000000000001,
+        "mean": 0.010208266666666669
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.0011250000000000001
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.005084
+        ],
+        [
+          "Extract",
+          0.0026249999999999997
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.001625,
+        "p50": 0.00175,
+        "p95": 0.001792,
+        "mean": 0.0017340666666666679
+      },
+      "flush_ms": {
+        "min": 0.009708,
+        "p50": 0.010583,
+        "p95": 0.010792,
+        "mean": 0.010517966666666672
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001084
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.0053750000000000004
+        ],
+        [
+          "Extract",
+          0.0027080000000000003
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.0015409999999999998,
+        "p50": 0.001709,
+        "p95": 0.001792,
+        "mean": 0.001709666666666668
+      },
+      "flush_ms": {
+        "min": 0.009459,
+        "p50": 0.010625,
+        "p95": 0.010875,
+        "mean": 0.010437516666666665
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001083
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.0053750000000000004
+        ],
+        [
+          "Extract",
+          0.00275
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 0.001542,
+        "p50": 0.00175,
+        "p95": 0.001792,
+        "mean": 0.0017430166666666676
+      },
+      "flush_ms": {
+        "min": 0.009583,
+        "p50": 0.010709,
+        "p95": 0.011083,
+        "mean": 0.01087573333333333
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.0011250000000000001
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.0053750000000000004
+        ],
+        [
+          "Extract",
+          0.002791
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 0.001458,
+        "p50": 0.001667,
+        "p95": 0.00175,
+        "mean": 0.0016618500000000014
+      },
+      "flush_ms": {
+        "min": 0.009333000000000001,
+        "p50": 0.010332999999999998,
+        "p95": 0.010583,
+        "mean": 0.010203433333333336
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.0011250000000000001
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.005083000000000001
+        ],
+        [
+          "Extract",
+          0.0027089999999999996
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 0.001583,
+        "p50": 0.001708,
+        "p95": 0.001833,
+        "mean": 0.0017012666666666677
+      },
+      "flush_ms": {
+        "min": 0.009958,
+        "p50": 0.010334,
+        "p95": 0.010959,
+        "mean": 0.010677883333333337
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001083
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.005208
+        ],
+        [
+          "Extract",
+          0.002667
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.0015409999999999998,
+        "p50": 0.001708,
+        "p95": 0.001833,
+        "mean": 0.0016860333333333342
+      },
+      "flush_ms": {
+        "min": 0.004625,
+        "p50": 0.005125,
+        "p95": 0.005332999999999999,
+        "mean": 0.00520835
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001083
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.001333
+        ],
+        [
+          "Extract",
+          0.002166
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.001625,
+        "p50": 0.00175,
+        "p95": 0.001833,
+        "mean": 0.001754900000000001
+      },
+      "flush_ms": {
+        "min": 0.0047079999999999995,
+        "p50": 0.0052499999999999995,
+        "p95": 0.0053750000000000004,
+        "mean": 0.005224283333333331
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001083
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.001333
+        ],
+        [
+          "Extract",
+          0.0022500000000000003
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 40,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.0015,
+        "p50": 0.001708,
+        "p95": 0.00175,
+        "mean": 0.0016784666666666678
+      },
+      "flush_ms": {
+        "min": 0.004667,
+        "p50": 0.0052499999999999995,
+        "p95": 0.005458,
+        "mean": 0.005241033333333335
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001084
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.001333
+        ],
+        [
+          "Extract",
+          0.0022919999999999998
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 0.001583,
+        "p50": 0.00175,
+        "p95": 0.001833,
+        "mean": 0.0017500333333333345
+      },
+      "flush_ms": {
+        "min": 0.0048330000000000005,
+        "p50": 0.0053750000000000004,
+        "p95": 0.005582999999999999,
+        "mean": 0.005361733333333333
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001166
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.001375
+        ],
+        [
+          "Extract",
+          0.0022500000000000003
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 0.0015,
+        "p50": 0.001709,
+        "p95": 0.001792,
+        "mean": 0.0017048500000000012
+      },
+      "flush_ms": {
+        "min": 0.004834,
+        "p50": 0.0053750000000000004,
+        "p95": 0.005541,
+        "mean": 0.005329166666666668
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.001166
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.001333
+        ],
+        [
+          "Extract",
+          0.002333
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "select",
+      "rows": 400,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 0.001542,
+        "p50": 0.001708,
+        "p95": 0.001791,
+        "mean": 0.0017027166666666678
+      },
+      "flush_ms": {
+        "min": 0.004791,
+        "p50": 0.005334,
+        "p95": 0.0055,
+        "mean": 0.005320150000000002
+      },
+      "generations": 2.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.0011250000000000001
+        ],
+        [
+          "TextShape",
+          0.000125
+        ],
+        [
+          "Accessibility",
+          0.0013340000000000001
+        ],
+        [
+          "Extract",
+          0.0022919999999999998
+        ]
+      ],
+      "children_measured": 0.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 0,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 2,
+      "render_nodes_extracted": 2
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.001,
+        "p50": 0.0011250000000000001,
+        "p95": 0.0015,
+        "mean": 0.0011993833333333343
+      },
+      "flush_ms": {
+        "min": 0.055041,
+        "p50": 0.06229200000000001,
+        "p95": 0.072333,
+        "mean": 0.0636853
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001
+        ],
+        [
+          "Layout",
+          0.046625
+        ],
+        [
+          "Accessibility",
+          0.0038330000000000005
+        ],
+        [
+          "Extract",
+          0.006792
+        ]
+      ],
+      "children_measured": 152.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.001083,
+        "p50": 0.001167,
+        "p95": 0.001209,
+        "mean": 0.0011652000000000008
+      },
+      "flush_ms": {
+        "min": 0.149209,
+        "p50": 0.176958,
+        "p95": 0.196542,
+        "mean": 0.1763916333333334
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001001
+        ],
+        [
+          "Layout",
+          0.160209
+        ],
+        [
+          "Accessibility",
+          0.003791
+        ],
+        [
+          "Extract",
+          0.007
+        ]
+      ],
+      "children_measured": 253.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.0011250000000000001,
+        "p50": 0.001209,
+        "p95": 0.0014169999999999999,
+        "mean": 0.0012638333333333343
+      },
+      "flush_ms": {
+        "min": 0.15470899999999999,
+        "p50": 0.183666,
+        "p95": 0.202,
+        "mean": 0.18325489999999997
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001083
+        ],
+        [
+          "Layout",
+          0.167083
+        ],
+        [
+          "Accessibility",
+          0.003917
+        ],
+        [
+          "Extract",
+          0.007083
+        ]
+      ],
+      "children_measured": 256.65,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 0,
+      "parked": true,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 0.001042,
+        "p50": 0.00125,
+        "p95": 0.0015,
+        "mean": 0.0012812666666666675
+      },
+      "flush_ms": {
+        "min": 0.29975,
+        "p50": 0.32725,
+        "p95": 0.35291700000000004,
+        "mean": 0.32975485
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001083
+        ],
+        [
+          "Layout",
+          0.309291
+        ],
+        [
+          "Accessibility",
+          0.003875
+        ],
+        [
+          "Extract",
+          0.007167
+        ]
+      ],
+      "children_measured": 1232.0,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 2000,
+      "parked": true,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 0.0012079999999999999,
+        "p50": 0.0015,
+        "p95": 0.001916,
+        "mean": 0.0015201166666666678
+      },
+      "flush_ms": {
+        "min": 1.338208,
+        "p50": 1.510875,
+        "p95": 1.6114169999999999,
+        "mean": 1.5057021333333331
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001167
+        ],
+        [
+          "Layout",
+          1.4925419999999998
+        ],
+        [
+          "Accessibility",
+          0.004125
+        ],
+        [
+          "Extract",
+          0.007500000000000001
+        ]
+      ],
+      "children_measured": 2226.9,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 8000,
+      "parked": true,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 0.001167,
+        "p50": 0.001375,
+        "p95": 0.001834,
+        "mean": 0.0015487166666666677
+      },
+      "flush_ms": {
+        "min": 1.3172089999999999,
+        "p50": 1.5059170000000002,
+        "p95": 1.6047500000000001,
+        "mean": 1.5018479833333334
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.0011250000000000001
+        ],
+        [
+          "Layout",
+          1.488791
+        ],
+        [
+          "Accessibility",
+          0.004
+        ],
+        [
+          "Extract",
+          0.00725
+        ]
+      ],
+      "children_measured": 2229.5,
+      "plans_reused": 0.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 250,
+      "write_ms": {
+        "min": 0.000958,
+        "p50": 0.0011250000000000001,
+        "p95": 0.001167,
+        "mean": 0.0010875000000000008
+      },
+      "flush_ms": {
+        "min": 0.014624999999999999,
+        "p50": 0.016375,
+        "p95": 0.016833,
+        "mean": 0.016095766666666667
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.000959
+        ],
+        [
+          "Layout",
+          0.007
+        ],
+        [
+          "Accessibility",
+          0.001
+        ],
+        [
+          "Extract",
+          0.006167000000000001
+        ]
+      ],
+      "children_measured": 4.0,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 2250,
+      "write_ms": {
+        "min": 0.001042,
+        "p50": 0.0011250000000000001,
+        "p95": 0.0015,
+        "mean": 0.0013430000000000007
+      },
+      "flush_ms": {
+        "min": 0.017041,
+        "p50": 0.017875000000000002,
+        "p95": 0.021542000000000002,
+        "mean": 0.01877638333333333
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001041
+        ],
+        [
+          "Layout",
+          0.008167
+        ],
+        [
+          "Accessibility",
+          0.001042
+        ],
+        [
+          "Extract",
+          0.006375
+        ]
+      ],
+      "children_measured": 7.05,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 40,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 8250,
+      "write_ms": {
+        "min": 0.001083,
+        "p50": 0.001166,
+        "p95": 0.0015,
+        "mean": 0.0011840833333333343
+      },
+      "flush_ms": {
+        "min": 0.016084,
+        "p50": 0.018000000000000002,
+        "p95": 0.023,
+        "mean": 0.018904199999999993
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001042
+        ],
+        [
+          "Layout",
+          0.00825
+        ],
+        [
+          "Accessibility",
+          0.001042
+        ],
+        [
+          "Extract",
+          0.0065
+        ]
+      ],
+      "children_measured": 6.9,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 0,
+      "parked": false,
+      "append": false,
+      "nodes": 2410,
+      "write_ms": {
+        "min": 0.000959,
+        "p50": 0.0011250000000000001,
+        "p95": 0.0012079999999999999,
+        "mean": 0.0011125666666666676
+      },
+      "flush_ms": {
+        "min": 0.0155,
+        "p50": 0.017292,
+        "p95": 0.017833,
+        "mean": 0.017425599999999996
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001041
+        ],
+        [
+          "Layout",
+          0.007625
+        ],
+        [
+          "Accessibility",
+          0.001
+        ],
+        [
+          "Extract",
+          0.006458
+        ]
+      ],
+      "children_measured": 4.0,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 2000,
+      "parked": false,
+      "append": false,
+      "nodes": 4410,
+      "write_ms": {
+        "min": 0.001,
+        "p50": 0.0011250000000000001,
+        "p95": 0.001209,
+        "mean": 0.0011278000000000009
+      },
+      "flush_ms": {
+        "min": 0.016042,
+        "p50": 0.017708,
+        "p95": 0.019541000000000003,
+        "mean": 0.018063166666666665
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001041
+        ],
+        [
+          "Layout",
+          0.008042
+        ],
+        [
+          "Accessibility",
+          0.001
+        ],
+        [
+          "Extract",
+          0.006375
+        ]
+      ],
+      "children_measured": 6.85,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    },
+    {
+      "operation": "label",
+      "rows": 400,
+      "filler": 8000,
+      "parked": false,
+      "append": false,
+      "nodes": 10410,
+      "write_ms": {
+        "min": 0.000959,
+        "p50": 0.001167,
+        "p95": 0.001625,
+        "mean": 0.0015832166666666675
+      },
+      "flush_ms": {
+        "min": 0.016082999999999997,
+        "p50": 0.018792,
+        "p95": 0.021707999999999998,
+        "mean": 0.019622266666666666
+      },
+      "generations": 1.0,
+      "idle_flushes": 0,
+      "stages_p50_ms": [
+        [
+          "Style",
+          0.000083
+        ],
+        [
+          "TextShape",
+          0.001041
+        ],
+        [
+          "Layout",
+          0.008749999999999999
+        ],
+        [
+          "Accessibility",
+          0.001042
+        ],
+        [
+          "Extract",
+          0.006458
+        ]
+      ],
+      "children_measured": 7.1,
+      "plans_reused": 10.0,
+      "layout_nodes": 10,
+      "hit_test_nodes_rebuilt": null,
+      "accessibility_projected": 1,
+      "render_nodes_extracted": 10
+    }
+  ]
+}

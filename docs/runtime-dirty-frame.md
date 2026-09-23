@@ -36,6 +36,12 @@
   `bind_semantic_slots` 每事件为那个 2,000 孩子的容器扫一遍 `data-slot`，**而它绑的
   `Stack` 根本不读 slot**；把"这个组件读不读 slot"声明进注册表之后，settle 再降到
   **0.303 / 0.281**。
+- **第六轮（Issue #228）：真实文档里快路径一直是关着的。** 只要世界里有一个 park/detach 的
+  节点——真实应用几乎总有——`children_layout_style_is_local` 就对所有容器返回 false，
+  `presence_live` 对每次查询沿祖先链走到根。前五轮的基准从不 park，所以都没看到。修掉之后，
+  应用写法的卡片改一行 label：400 行 + 8,000 个无关节点从 1.37 ms 降到 0.016 ms（兄弟扫描
+  2,236 → 4），与没有 parked 节点时相同。同一轮让 `update_component` 对未变化的组件直接
+  返回，并让"放回原位 / 再停放一次"不再算结构改动，整张卡片重写一遍相同值时 flush 空闲。
 - 附带发现：**13 个 `FrameStage` 漏计了一次大回流帧的 45%**。已修，但这让 Extract 的历史
   基线不可比，见最后一节。
 
@@ -212,9 +218,9 @@ width 和 height 都能从样式解析出确定值时，它们从头到尾没被
 于是这一趟只需要下降到变更闭包真正触及的那几个子节点。
 
 只有闭包内的子节点需要复检：影响布局的 `set_style` 会 `mark_subtree(LAYOUT)`，而那正是它
-进入闭包的原因。`UiWorld::children_layout_style_is_local` 挡住三处例外——祖先能在不碰子节点
-的情况下改变它的 effective style（`detached` 非空、父节点是 overlay host、父节点是菜单面），
-报 false 只是让调用方走慢路径，永远安全。
+进入闭包的原因。`UiWorld::children_layout_style_is_local` 挡住例外——祖先能在不碰子节点
+的情况下改变它的 effective style（父节点是 overlay host、父节点是菜单面），报 false 只是让
+调用方走慢路径，永远安全。（原先还有一条"`detached` 非空"，Issue #228 去掉了，见"第六轮"。）
 
 计划的查找由**闭包驱动**（`affected_entries` 在按 id 排序的索引上二分），不是遍历子节点列表
 ——否则快路径本身还是 O(子节点数)，那正是它要消掉的成本。
@@ -623,7 +629,8 @@ O(文档) 的**,那一帧要把计划建起来。改完之后:
   一条断言:每种形状都必须真的复用过一次测量计划,否则它守的是空气。
 - 哈内斯里"删一行"与"加一行"的**顺序换了**:`detach` 会在世界里留下一个游离节点,
   `children_layout_style_is_local` 从此对整轮返回 false,两份计划都被退休——放在它后面的
-  `append` 什么也没验证。
+  `append` 什么也没验证。(第六轮去掉了这个全局条件,哈内斯在 detach 之后又加了 park、
+  编辑、挂回的步骤,并断言这段里计划确实被复用过。)
 
 ### 端到端一开始是 0,原因是一处"同一份布局的两种拼法"
 
@@ -1046,6 +1053,140 @@ Issue #95 之后,第二条换成了保留文本节点的 revision 戳:跳过判�
 `high-refresh-performance.md` 里 40.9 / 51.9 ms 那组数是在 CI 机器（GitHub `ubuntu-latest`）
 上记的，与 Apple Silicon 本地数不可比，从这里判断不了它们现在会不会过。
 
+## 第六轮：按应用的写法量（Issue #228）
+
+NanaLive 排查动作/表情切换卡顿时，在真实 `ControlProgram` 上采样：37 行的表演卡片，每 100 ms
+切换一次。应用侧的问题修完后，剩下的 UI 线程开销在两处：`update_component` 空写照走完整流程，
+以及一行 `selected`/`label` 变了，flush 的布局、presence、命中测试、无障碍都按整棵文档重做。
+
+前五轮的基准是裸 mutation 队列上的平铺列表，**不 park 任何节点**，写法也不是应用的写法。这一轮
+新加了 [`nana-card-update-benchmark`](../crates/nana-ui-scene/src/bin/nana-card-update-benchmark.rs)：
+
+- 用真实组件搭：每行一个 `ListItem`，leading 是 `Thumbnail`，trailing 是 `Switch` 加两个
+  `Button`，通过 `set_list_item_slots` 挂槽；卡片之上有 8 层容器。
+- 刷新按 NanaLive `paint_card_items` 的写法，逐行逐组件重写，去掉它的行指纹。
+- 没有图片的行 park 掉缩略图（`--parked on`，一半的行）。
+- 分别扫卡片行数（`--rows`）和文档里的无关节点数（`--filler`）：一行改动欠下的工作量与这两者
+  都无关，任何随 `--filler` 增长的开销都是整文档工作。
+
+### 修复前：parked 节点让整个世界的快路径失效
+
+每个格子取 3 轮交替跑的 min（Apple M4，release）。`label` 是改最后一行的标签（宽度会变）：
+
+| parked | 行数 | 无关节点 | flush 前 | flush 后 | 兄弟扫描 前 → 后 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 否 | 40 | 0 | 0.0147 | 0.0143 | 4 → 4 |
+| 否 | 400 | 8,000 | 0.0156 | 0.0158 | 7 → 7 |
+| 是 | 40 | 0 | 0.0560 | 0.0143 | 152 → 2 |
+| 是 | 40 | 8,000 | 0.1476 | 0.0150 | 255 → 4 |
+| 是 | 400 | 0 | 0.2989 | 0.0147 | 1,232 → 2 |
+| 是 | 400 | 8,000 | 1.3718 | 0.0155 | 2,236 → 4 |
+
+没有 parked 节点时，一行改动本来就是常数。**有一个 parked 节点，它就随行数和文档规模增长**，
+增长全在 Layout 段。原因有两处：
+
+1. `UiWorld::children_layout_style_is_local` 的第一个条件是 `self.detached.is_empty()`。这是
+   全局条件：世界里只要有一个 detached 或 parked 节点，所有容器的 `ContainerPlan` 和
+   `MeasurePlan` 都关掉，每个受影响容器全量扫兄弟。
+2. `presence_live` 在 `detached` 非空时，对每次查询新建一个 `AncestorMemo`，沿祖先链走到根。
+   `effective_layout_style`、`take_system_work`、命中测试的 `hit_motion_layout`、无障碍的祖先
+   变换，都是逐节点调用它。
+
+这两处的设计目的，是防祖先在不碰子节点的情况下改掉子节点的 effective style。但 presence 在
+父子之间不会不同：
+
+- 只有 unlink 了的根才会进 `detached`；
+- 父节点列表里的孩子与父节点同挂载态；
+- 子树重新挂入时，`Insert` 已经把整棵子树标成 `ALL` 脏。
+
+所以去掉了全局条件。presence 这边：park 的根整棵子树都是 `Parked`，`is_mounted` 已经能判掉，
+只有 Detach 了但仍是 `Mounted` 的根才需要走祖先链。现在单独记这类根，集合为空时
+`presence_live` 就等于 `is_mounted`；debug 构建下每次都与逐级遍历比对。
+
+`select`（选中从一行移到另一行）不牵动布局。修复前有 parked 节点时是 0.009 ms，修复后
+0.0046 ms，与没有 parked 节点时相同；差的那一半就是 presence 查询。
+
+### 空写：不是投影贵，是框架的固定开销和结构抖动
+
+`project` 本来就按值比较 world，重写相同值不会产生 mutation。空写的成本来自两处：
+
+- **每次调用的框架开销。** clone、投影里的分配（`ListItem::effective_style_in` 每次都
+  `Arc::make_mut` 深拷一份 layout）、`commit_mutations` 的前后扫描、`sync_component_lifecycle`
+  的逐类型分支。`ComponentView` 现在要求 `PartialEq`：闭包之后组件与原值相等、没有排 mutation
+  和事件时，直接返回。
+- **结构性空写。** 这部分的量级更大：
+  - 对已停放的缩略图再 park 一次，会把子树从文档里再退役一遍；
+  - `append_child` 一个已经在末尾的孩子，会失效整条祖先链的布局；
+  - assembler 每次写都用一串 `append_child` 保证子节点顺序，在已经排好的列表上，每个孩子
+    依次被挪到末尾。净结果不变，布局却失效了 N 次。
+
+  world 现在跳过“放回原位 / 再停放一次 / 再 detach 一次”这三种写入，整批都是这种写入时不
+  bump generation；assembler 改用 `append_children`，子节点已经按该顺序排在末尾时什么都不做。
+
+`noop` 是整张卡片重写一遍相同值，`--append off` 表示只靠 `set_list_item_slots` 挂槽：
+
+| parked | 行数 | 写入 前 | 写入 后 | flush 前 | flush 后 | generation 前 → 后 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 否 | 40 | 0.1476 | 0.0650 | 空闲 | 空闲 | 0 → 0 |
+| 否 | 400 | 1.7228 | 0.7004 | 空闲 | 空闲 | 0 → 0 |
+| 是 | 40 | 0.1762 | 0.0652 | 0.0011 | 空闲 | 20 → 0 |
+| 是 | 400 | 2.9247 | 0.6822 | 0.0083 | 空闲 | 200 → 0 |
+
+40 行约 200 次调用，每次不到 0.5 µs，接近一次 clone 加一次比较。
+
+`--append on` 是 NanaLive 现在的写法：每次刷新先 `append_child(item, thumb)`，再调用
+`set_list_item_slots`。前一个调用把缩略图挪到末尾，后一个再挪回来，每行两次**真实**换位。
+DOM 语义的 `append_child` 本来就是这样，框架不该替应用省掉，所以这一档修复后仍有工作：
+parked 时 40 行 flush 0.43 → 0.18 ms，400 行 5.0 → 2.1 ms。降下来的那部分是快路径重新打开
+的收益。应用该做的，是删掉那次多余的 `append_child`，见
+[消费方升级记录](consumer-upgrade-2026-09-23.md)。
+
+### 审计守卫抓出来的，和它抓不了的
+
+短路是在“跳过本该做的工作”，失败是静默的。开发时在短路分支上挂了一条审计：原值再投影一次，
+必须什么都不产生。跑全套测试，它抓出了 7 类真问题，都已经修掉：
+
+- **observer 处理器原地改 view。** 之前要等之后某次写入才顺带投影出去。现在事件投递后会重投影
+  被改动的 observer，只有 handler 调用了 `reassemble()` 才组装。
+- **Tabs 下的 `SegmentedOption` 不继承外观。** 它只从 `SegmentedControl` 父节点继承尺寸与
+  chrome，挂在 `Tabs` 下时，靠的是之后一次无关的 Tabs 写入顺带同步。
+- **停放时原地改 view 后没人投影。** `suspend_component_lifecycle` 会清掉 TextArea 的拖拽
+  高度、图表的 active、IconButton 的 tooltip。
+- **菜单浮层停放时每次投影都请求 surface open。** world 对未挂载节点会忽略这个请求，于是每次
+  投影都再请求一遍。现在停放时不请求，重新挂载时重投影。
+- **`SearchDropdown` 投影的写入顺序反了。** 同一批里先写标签、再卸输入框，而卸输入框会清空
+  节点文本。关闭后节点文本其实是空的，要等下一次写入才补回来。
+- **`Card` 空标题、`TextArea` 无补全时，每次投影都发一条无效 mutation。**
+- **`NativeMarkdown` / `SelectableRichText` 的 `PartialEq` 只比部分字段。**
+
+剩下的全是**多写者**：
+
+- 容器往它托管的内容节点上打补丁，例如 PaneTree 让内容撑满、Workspace 给区域内容写样式；
+- 内容组件自己投影时会覆盖这些补丁。
+
+旧行为是每次无变化的写入都把补丁冲掉，要等容器下次重投影才补回来。短路之后补丁保留，
+结果反而是对的。守卫区分不了这两种情况，所以分诊完就移除了。容器侧用 `always_reproject`
+保持每次都投影；视觉层面由像素快照（620/620）和语义快照（146/146）兜底。
+
+presence 的快路径没有误报，守卫作为 `debug_assert!` 留在代码里。
+
+### 守它的是什么
+
+| 测试 | 守什么 | 在坏实现上 |
+| --- | --- | --- |
+| `rewriting_a_list_with_its_own_values_does_no_work` | 40 行重写相同值不 bump generation、不留工作 | — |
+| `an_unchanged_update_skips_projection_and_reproject_component_forces_it` | 相等时不投影、`reproject_component` 仍投影 | 去掉短路 → 投影次数不符 |
+| `an_observer_changed_by_its_handler_is_projected` | observer 原地修改被投影 | 去掉 observer 重投影 → 失败 |
+| `putting_a_child_back_where_it_is_or_reparking_it_is_no_work` | 放回原位 / 再停放不算改动，真实换位仍标脏 | `is_structural_noop` 恒 false → 失败 |
+| `rewriting_an_assembled_composite_with_its_own_values_is_no_work` | assembler 重跑不 bump generation | 去掉 `append_children` 的判定 → 失败 |
+| `scoped_layout_contained_edit_stays_flat_beside_a_parked_row` | 旁边有 parked 行时包含型编辑不随文档增长扫兄弟 | 恢复全局条件 → 64/512 行扫 66/514 个 |
+| `scoped_layout_matches_full_recompute_across_container_shapes_and_edits` | detach/park/挂回之后逐节点与全量一致，且计划确实被复用 | 恢复全局条件 → "no plan was reused" |
+
+旧基准不回退：`nana-dirty-frame-benchmark` 在 `paint`/`layout`/`nested-auto`/`layout-auto` ×
+`head`/`tail`、1,000 行的 8 个格子里，前后比在 0.99–1.06 之间（绝对差 < 0.0001 ms）；
+`nana-framework-benchmark` 的 `canonical_layout_5000_nodes_ms` p50 从 1.964 ms 到 1.955 ms。
+原始报告在 [`performance-data/card-update-2026-09-23/`](performance-data/card-update-2026-09-23/)。
+
 ## 附带：13 个 FrameStage 漏计了大回流帧的 45%
 
 量 `head` 的时候发现，8,002 节点那一帧 flush 是 30.0 ms，而六个"跑了"的分段加起来只有
@@ -1091,6 +1232,16 @@ cargo build --release -p nana-ui-scene --features benchmark --bin nana-dirty-fra
 `layout_document_observed` 的四个子阶段），`--output` 写 JSON。第五轮的两份报告是
 `performance-data/runtime-dirty-frame-2026-09-08/dirty-frame-measure-plan-{before,after}.json`。
 
+第六轮（Issue #228）的应用写法卡片：
+
+```bash
+cargo build --release -p nana-ui-scene --features benchmark --bin nana-card-update-benchmark
+# 全网格：noop/select/label × parked on/off × rows 40,400 × filler 0,2000,8000
+./target/release/nana-card-update-benchmark --samples 60 --warmup 10 --output card.json
+# NanaLive 去掉多余 append_child 之后的写法
+./target/release/nana-card-update-benchmark --append off --op noop
+```
+
 全量通道的两项（`canonical_layout_5000_nodes_ms`、5,000 节点首次系统处理）来自另一个二进制：
 
 ```bash
@@ -1104,6 +1255,8 @@ cargo build --release --locked -p nana-ui-runtime --features benchmark \
 ## 边界
 
 - 单机单次（macOS / Apple Silicon，release），没有跨机器复现，也没有进 CI 的性能门禁。
+- 第六轮的卡片基准是应用写法的近似，不是 NanaLive 的 `ControlProgram` 本身：真实程序要加载
+  Live2D 模型，本轮没有在它上面复测，数字只能说明框架侧的曲线。
 - 基准的文档是一个平铺的定高列表。真实文档有嵌套、滚动容器、overlay，容器的分支会不同。
 - 五种形状都不覆盖文本内容变化、结构增删、视口变化。文本增长与结构增删只在
   `layout_engine` 的差分哈内斯里覆盖（那里是正确性，不是时间）。

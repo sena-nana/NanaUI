@@ -1,0 +1,1376 @@
+{
+ "schema_version": 1,
+ "phase": "card-update-ab",
+ "note": "min over 3 interleaved rounds per side, 60 samples / 10 warmup, Apple M4, release",
+ "base": "main bc0731206",
+ "cells": [
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014584,
+    "generations": 1.0,
+    "children_measured": 4.0
+   },
+   "after": {
+    "write_min_ms": 0.000959,
+    "flush_min_ms": 0.014583,
+    "generations": 1.0,
+    "children_measured": 4.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015542000000000002,
+    "generations": 1.0,
+    "children_measured": 6.8
+   },
+   "after": {
+    "write_min_ms": 0.000959,
+    "flush_min_ms": 0.015083,
+    "generations": 1.0,
+    "children_measured": 7.1
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015625,
+    "generations": 1.0,
+    "children_measured": 7.25
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015167,
+    "generations": 1.0,
+    "children_measured": 7.15
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.000959,
+    "flush_min_ms": 0.015166,
+    "generations": 1.0,
+    "children_measured": 4.0
+   },
+   "after": {
+    "write_min_ms": 0.001083,
+    "flush_min_ms": 0.015333000000000001,
+    "generations": 1.0,
+    "children_measured": 4.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.016042,
+    "generations": 1.0,
+    "children_measured": 6.75
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015541,
+    "generations": 1.0,
+    "children_measured": 6.85
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015666,
+    "generations": 1.0,
+    "children_measured": 7.05
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015458,
+    "generations": 1.0,
+    "children_measured": 7.35
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.055041,
+    "generations": 1.0,
+    "children_measured": 152.0
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014208,
+    "generations": 1.0,
+    "children_measured": 2.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001083,
+    "flush_min_ms": 0.14754199999999998,
+    "generations": 1.0,
+    "children_measured": 254.9
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014917,
+    "generations": 1.0,
+    "children_measured": 3.9
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001042,
+    "flush_min_ms": 0.14391600000000002,
+    "generations": 1.0,
+    "children_measured": 253.55
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014667,
+    "generations": 1.0,
+    "children_measured": 4.05
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001042,
+    "flush_min_ms": 0.29862500000000003,
+    "generations": 1.0,
+    "children_measured": 1232.0
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.014791,
+    "generations": 1.0,
+    "children_measured": 2.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0012079999999999999,
+    "flush_min_ms": 1.332584,
+    "generations": 1.0,
+    "children_measured": 2232.15
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015042,
+    "generations": 1.0,
+    "children_measured": 4.3
+   }
+  },
+  {
+   "operation": "label",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001167,
+    "flush_min_ms": 1.312666,
+    "generations": 1.0,
+    "children_measured": 2234.65
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015125,
+    "generations": 1.0,
+    "children_measured": 3.9
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.01475,
+    "generations": 1.0,
+    "children_measured": 4.0
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014334,
+    "generations": 1.0,
+    "children_measured": 4.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.0155,
+    "generations": 1.0,
+    "children_measured": 7.3
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015291999999999998,
+    "generations": 1.0,
+    "children_measured": 7.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.000959,
+    "flush_min_ms": 0.015458,
+    "generations": 1.0,
+    "children_measured": 7.05
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015166,
+    "generations": 1.0,
+    "children_measured": 6.75
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.01475,
+    "generations": 1.0,
+    "children_measured": 4.0
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015290999999999999,
+    "generations": 1.0,
+    "children_measured": 4.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.000917,
+    "flush_min_ms": 0.015542000000000002,
+    "generations": 1.0,
+    "children_measured": 7.05
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015667,
+    "generations": 1.0,
+    "children_measured": 6.75
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015583999999999999,
+    "generations": 1.0,
+    "children_measured": 6.9
+   },
+   "after": {
+    "write_min_ms": 0.001,
+    "flush_min_ms": 0.015792,
+    "generations": 1.0,
+    "children_measured": 6.85
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001041,
+    "flush_min_ms": 0.056,
+    "generations": 1.0,
+    "children_measured": 152.0
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014334,
+    "generations": 1.0,
+    "children_measured": 2.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001041,
+    "flush_min_ms": 0.139875,
+    "generations": 1.0,
+    "children_measured": 254.15
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015083,
+    "generations": 1.0,
+    "children_measured": 3.8
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001041,
+    "flush_min_ms": 0.147584,
+    "generations": 1.0,
+    "children_measured": 253.55
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014957999999999999,
+    "generations": 1.0,
+    "children_measured": 3.95
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0011250000000000001,
+    "flush_min_ms": 0.298917,
+    "generations": 1.0,
+    "children_measured": 1232.0
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.014708,
+    "generations": 1.0,
+    "children_measured": 2.0
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001166,
+    "flush_min_ms": 1.368667,
+    "generations": 1.0,
+    "children_measured": 2238.4
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.015042,
+    "generations": 1.0,
+    "children_measured": 3.95
+   }
+  },
+  {
+   "operation": "label",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001209,
+    "flush_min_ms": 1.37175,
+    "generations": 1.0,
+    "children_measured": 2238.85
+   },
+   "after": {
+    "write_min_ms": 0.000958,
+    "flush_min_ms": 0.0155,
+    "generations": 1.0,
+    "children_measured": 3.7
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.147625,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.065042,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.1535,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.067041,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.150041,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.066542,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 1.72275,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.7004170000000001,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 1.701292,
+    "flush_min_ms": 0.00020800000000000001,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.7077500000000001,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 1.722458,
+    "flush_min_ms": 0.000166,
+    "generations": 0.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.700083,
+    "flush_min_ms": 0.000166,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.176167,
+    "flush_min_ms": 0.0011250000000000001,
+    "generations": 20.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.065166,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.174041,
+    "flush_min_ms": 0.0011250000000000001,
+    "generations": 20.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.066417,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.173667,
+    "flush_min_ms": 0.001166,
+    "generations": 20.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.066958,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 2.9246670000000003,
+    "flush_min_ms": 0.00825,
+    "generations": 200.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.682208,
+    "flush_min_ms": 0.000166,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 2.8948340000000004,
+    "flush_min_ms": 0.008,
+    "generations": 200.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.687667,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 3.000459,
+    "flush_min_ms": 0.008333,
+    "generations": 200.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.684834,
+    "flush_min_ms": 0.000125,
+    "generations": 0.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.427875,
+    "flush_min_ms": 0.357125,
+    "generations": 80.0,
+    "children_measured": 280.5
+   },
+   "after": {
+    "write_min_ms": 0.343708,
+    "flush_min_ms": 0.344709,
+    "generations": 80.0,
+    "children_measured": 280.1
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.426417,
+    "flush_min_ms": 0.402041,
+    "generations": 80.0,
+    "children_measured": 438.95
+   },
+   "after": {
+    "write_min_ms": 0.3455,
+    "flush_min_ms": 0.410416,
+    "generations": 80.0,
+    "children_measured": 439.7
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.434209,
+    "flush_min_ms": 0.40254199999999996,
+    "generations": 80.0,
+    "children_measured": 441.55
+   },
+   "after": {
+    "write_min_ms": 0.345042,
+    "flush_min_ms": 0.417,
+    "generations": 80.0,
+    "children_measured": 439.85
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 5.277292,
+    "flush_min_ms": 4.902792,
+    "generations": 800.0,
+    "children_measured": 2796.35
+   },
+   "after": {
+    "write_min_ms": 4.222417,
+    "flush_min_ms": 4.734999999999999,
+    "generations": 800.0,
+    "children_measured": 2804.8
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 5.2416659999999995,
+    "flush_min_ms": 5.707333,
+    "generations": 800.0,
+    "children_measured": 4389.85
+   },
+   "after": {
+    "write_min_ms": 4.229083,
+    "flush_min_ms": 5.52475,
+    "generations": 800.0,
+    "children_measured": 4392.9
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 5.437125,
+    "flush_min_ms": 6.169917,
+    "generations": 800.0,
+    "children_measured": 4393.9
+   },
+   "after": {
+    "write_min_ms": 4.270083,
+    "flush_min_ms": 5.866125,
+    "generations": 800.0,
+    "children_measured": 4406.65
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.368625,
+    "flush_min_ms": 0.425042,
+    "generations": 60.0,
+    "children_measured": 326.0
+   },
+   "after": {
+    "write_min_ms": 0.207,
+    "flush_min_ms": 0.18241700000000002,
+    "generations": 40.0,
+    "children_measured": 140.9
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.364959,
+    "flush_min_ms": 0.519667,
+    "generations": 60.0,
+    "children_measured": 464.9
+   },
+   "after": {
+    "write_min_ms": 0.20862499999999998,
+    "flush_min_ms": 0.208333,
+    "generations": 40.0,
+    "children_measured": 220.95
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.37125,
+    "flush_min_ms": 0.513667,
+    "generations": 60.0,
+    "children_measured": 467.1
+   },
+   "after": {
+    "write_min_ms": 0.205583,
+    "flush_min_ms": 0.212541,
+    "generations": 40.0,
+    "children_measured": 219.55
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 5.4687920000000005,
+    "flush_min_ms": 5.034375,
+    "generations": 600.0,
+    "children_measured": 3026.0
+   },
+   "after": {
+    "write_min_ms": 2.3987079999999996,
+    "flush_min_ms": 2.094042,
+    "generations": 400.0,
+    "children_measured": 1400.8
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 5.492375,
+    "flush_min_ms": 6.167083,
+    "generations": 600.0,
+    "children_measured": 4433.25
+   },
+   "after": {
+    "write_min_ms": 2.391958,
+    "flush_min_ms": 2.366792,
+    "generations": 400.0,
+    "children_measured": 2206.2
+   }
+  },
+  {
+   "operation": "noop",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 5.540708,
+    "flush_min_ms": 6.168,
+    "generations": 600.0,
+    "children_measured": 4427.0
+   },
+   "after": {
+    "write_min_ms": 2.500916,
+    "flush_min_ms": 2.456042,
+    "generations": 400.0,
+    "children_measured": 2197.8
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004625,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004625,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.0047079999999999995,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001459,
+    "flush_min_ms": 0.004666,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001458,
+    "flush_min_ms": 0.004667,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004791,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.00475,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001542,
+    "flush_min_ms": 0.00475,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004834,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004792,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004791,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001583,
+    "flush_min_ms": 0.004792,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.009208000000000001,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001583,
+    "flush_min_ms": 0.004625,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.009375,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004625,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.009417,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004541,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001542,
+    "flush_min_ms": 0.009417,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004541,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001458,
+    "flush_min_ms": 0.009333000000000001,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004542,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": false,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.009208000000000001,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004542,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004667,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004667,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001458,
+    "flush_min_ms": 0.004583,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004667,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004792,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.00475,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004625,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.00475,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004875,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001542,
+    "flush_min_ms": 0.0048330000000000005,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": false,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001458,
+    "flush_min_ms": 0.00475,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004792,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001459,
+    "flush_min_ms": 0.009209,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.0045000000000000005,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.00925,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.004583,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 40,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.001458,
+    "flush_min_ms": 0.009290999999999999,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001542,
+    "flush_min_ms": 0.004667,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 0,
+   "base": {
+    "write_min_ms": 0.001459,
+    "flush_min_ms": 0.009125,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015409999999999998,
+    "flush_min_ms": 0.0045839999999999995,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 2000,
+   "base": {
+    "write_min_ms": 0.001459,
+    "flush_min_ms": 0.009375,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.004583,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  },
+  {
+   "operation": "select",
+   "append": true,
+   "parked": true,
+   "rows": 400,
+   "filler": 8000,
+   "base": {
+    "write_min_ms": 0.0015,
+    "flush_min_ms": 0.009333000000000001,
+    "generations": 2.0,
+    "children_measured": 0.0
+   },
+   "after": {
+    "write_min_ms": 0.001542,
+    "flush_min_ms": 0.004583,
+    "generations": 2.0,
+    "children_measured": 0.0
+   }
+  }
+ ]
+}
