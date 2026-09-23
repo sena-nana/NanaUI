@@ -1,0 +1,192 @@
+//! macOS Early Splash: two `CALayer`s on the content view's root layer.
+//!
+//! wgpu (through raw-window-metal) adds its `CAMetalLayer` as a *sublayer* of
+//! that root layer, after this splash exists, so the container carries a
+//! z-position no Metal sublayer has: whatever order the siblings end up in,
+//! the splash stays on top until it is removed.
+
+use objc2::rc::Retained;
+use objc2::{AnyThread, MainThreadMarker};
+use objc2_app_kit::{NSImage, NSView};
+use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::CGColor;
+use objc2_foundation::{NSData, NSNumber, NSString};
+use objc2_quartz_core::{
+    CAAutoresizingMask, CABasicAnimation, CALayer, CAMediaTiming, CAMediaTimingFunction,
+    CATransaction, kCAGravityResizeAspect, kCAMediaTimingFunctionEaseInEaseOut,
+    kCAMediaTimingFunctionLinear,
+};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+use super::{LogoInfo, SplashAnimation, SplashFailure, SplashLogoError, SplashWork};
+use crate::material::FallbackColor;
+
+/// Above any sibling the view's root layer will be given.
+const SPLASH_Z: f64 = 1.0e6;
+
+pub(super) struct Request<'a> {
+    pub(super) png: &'a [u8],
+    #[allow(dead_code)]
+    pub(super) info: LogoInfo,
+    pub(super) logo_size: (f64, f64),
+    pub(super) background: Option<FallbackColor>,
+    pub(super) animation: SplashAnimation,
+}
+
+pub(super) struct Splash {
+    container: Retained<CALayer>,
+    logo: Retained<CALayer>,
+}
+
+impl Splash {
+    pub(super) fn show<W: HasWindowHandle + ?Sized>(
+        window: &W,
+        request: &Request<'_>,
+        work: &mut SplashWork,
+    ) -> Result<(Self, bool), SplashFailure> {
+        let native = |reason: &str| SplashFailure::Native(reason.to_owned());
+        let mtm = MainThreadMarker::new().ok_or_else(|| native("not on the main thread"))?;
+        let handle = window
+            .window_handle()
+            .map_err(|error| SplashFailure::Native(error.to_string()))?;
+        let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+            return Err(native("not an AppKit window"));
+        };
+        // SAFETY: the AppKit handle's ns_view is a live NSView owned by this
+        // window, and `mtm` witnesses the main thread.
+        let view: &NSView = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+        let _ = mtm;
+        view.setWantsLayer(true);
+        let root = view.layer().ok_or_else(|| native("view has no layer"))?;
+        let scale = view
+            .window()
+            .map_or(1.0, |window| window.backingScaleFactor());
+
+        // One decode, by ImageIO; the header was checked against the limits
+        // before this.
+        let data = NSData::with_bytes(request.png);
+        work.logo_decodes += 1;
+        let image = NSImage::initWithData(NSImage::alloc(), &data).ok_or_else(|| {
+            SplashFailure::Logo(SplashLogoError::Decode("ImageIO rejected the PNG".into()))
+        })?;
+
+        CATransaction::begin();
+        // A new sublayer would otherwise fade in with Core Animation's implicit
+        // action; the splash is either there or it is not.
+        CATransaction::setDisableActions(true);
+        let bounds = root.bounds();
+        let container = CALayer::new();
+        container.setFrame(bounds);
+        container.setAutoresizingMask(
+            CAAutoresizingMask::LayerWidthSizable | CAAutoresizingMask::LayerHeightSizable,
+        );
+        container.setZPosition(SPLASH_Z);
+        container.setContentsScale(scale);
+        if let Some(color) = request.background {
+            let color = CGColor::new_srgb(
+                f64::from(color.red) / 255.0,
+                f64::from(color.green) / 255.0,
+                f64::from(color.blue) / 255.0,
+                f64::from(color.alpha) / 255.0,
+            );
+            container.setBackgroundColor(Some(&color));
+        }
+
+        let logo = CALayer::new();
+        let (width, height) = request.logo_size;
+        logo.setBounds(CGRect::new(
+            CGPoint::new(0.0, 0.0),
+            CGSize::new(width, height),
+        ));
+        logo.setPosition(CGPoint::new(
+            bounds.origin.x + bounds.size.width / 2.0,
+            bounds.origin.y + bounds.size.height / 2.0,
+        ));
+        // Flexible margins on every side keep the logo centred as the window
+        // resizes, with no callback.
+        logo.setAutoresizingMask(
+            CAAutoresizingMask::LayerMinXMargin
+                | CAAutoresizingMask::LayerMaxXMargin
+                | CAAutoresizingMask::LayerMinYMargin
+                | CAAutoresizingMask::LayerMaxYMargin,
+        );
+        // SAFETY: kCAGravityResizeAspect is a constant owned by Core Animation.
+        logo.setContentsGravity(unsafe { kCAGravityResizeAspect });
+        let contents_scale = image.recommendedLayerContentsScale(scale);
+        let contents = image.layerContentsForContentsScale(contents_scale);
+        // SAFETY: `layerContentsForContentsScale:` returns an object CALayer
+        // accepts as contents.
+        unsafe { logo.setContents(Some(&contents)) };
+        logo.setContentsScale(contents_scale);
+        work.logo_uploads += 1;
+
+        let animated = match animation(request.animation) {
+            Some(animation) => {
+                logo.addAnimation_forKey(&animation, Some(&NSString::from_str("nana.splash")));
+                work.animation_submissions += 1;
+                true
+            }
+            None => false,
+        };
+        container.addSublayer(&logo);
+        root.addSublayer(&container);
+        CATransaction::commit();
+        work.commits += 1;
+        Ok((Self { container, logo }, animated))
+    }
+
+    pub(super) const fn live_resources(&self) -> usize {
+        2
+    }
+
+    /// Detaches both layers. Inside an event-loop turn this nests into the
+    /// turn's implicit transaction, which is the one a transaction-mode
+    /// drawable presented earlier in the same turn is published with.
+    pub(super) fn remove(self, work: &mut SplashWork, _handoff: bool) {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        self.logo.removeAllAnimations();
+        self.container.removeFromSuperlayer();
+        CATransaction::commit();
+        work.commits += 1;
+    }
+}
+
+/// The preset as one `CABasicAnimation`, or `None` for a still logo.
+fn animation(preset: SplashAnimation) -> Option<Retained<CABasicAnimation>> {
+    let (key_path, from, to, duration, repeat, autoreverses, timing) = match preset {
+        SplashAnimation::None => return None,
+        SplashAnimation::FadeIn => ("opacity", 0.0, 1.0, 0.35, 0.0, false, false),
+        SplashAnimation::Pulse => ("opacity", 1.0, 0.45, 0.9, f32::INFINITY, true, false),
+        SplashAnimation::Rotate => (
+            "transform.rotation.z",
+            0.0,
+            -std::f64::consts::TAU,
+            1.2,
+            f32::INFINITY,
+            false,
+            true,
+        ),
+    };
+    let animation = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str(key_path)));
+    let from = NSNumber::numberWithDouble(from);
+    let to = NSNumber::numberWithDouble(to);
+    // SAFETY: NSNumber is a valid from/to value for scalar key paths.
+    unsafe {
+        animation.setFromValue(Some(&from));
+        animation.setToValue(Some(&to));
+    }
+    animation.setDuration(duration);
+    animation.setRepeatCount(repeat);
+    animation.setAutoreverses(autoreverses);
+    // SAFETY: the timing-function names are constants owned by Core Animation.
+    let name = unsafe {
+        if timing {
+            kCAMediaTimingFunctionLinear
+        } else {
+            kCAMediaTimingFunctionEaseInEaseOut
+        }
+    };
+    animation.setTimingFunction(Some(&CAMediaTimingFunction::functionWithName(name)));
+    Some(animation)
+}

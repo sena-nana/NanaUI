@@ -3,7 +3,8 @@
 //! Windows reports it as "Show animations in Windows"
 //! (`SPI_GETCLIENTAREAANIMATION`) and broadcasts `WM_SETTINGCHANGE` with
 //! `SPI_SETCLIENTAREAANIMATION` when the user flips it; the host's per-window
-//! subclass records that broadcast. Other platforms do not report it yet.
+//! subclass records that broadcast. macOS reports the current value of
+//! "Reduce motion" but not its changes. Other platforms do not report it yet.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -32,7 +33,18 @@ pub fn system_reduced_motion() -> Option<bool> {
         };
         (ok != 0).then_some(animations == 0)
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        // `-[NSWorkspace accessibilityDisplayShouldReduceMotion]` (macOS
+        // 10.12+). Only the value at the time of the call: nothing here
+        // observes the change notification, so no change is reported.
+        let workspace: objc2::rc::Retained<objc2::runtime::NSObject> =
+            unsafe { objc2::msg_send![objc2::class!(NSWorkspace), sharedWorkspace] };
+        let reduce: bool =
+            unsafe { objc2::msg_send![&*workspace, accessibilityDisplayShouldReduceMotion] };
+        Some(reduce)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         None
     }

@@ -282,8 +282,24 @@ fn set_metal_present_transaction<W: HasWindowHandle + ?Sized>(window: &W, enable
     let Some(layer) = view.layer() else {
         return false;
     };
-    let Ok(metal) = layer.downcast::<CAMetalLayer>() else {
-        return false;
+    // raw-window-metal, which wgpu creates its surface through, leaves the
+    // view's own layer in place and adds the CAMetalLayer as a sublayer of it;
+    // only a view that already had a Metal layer is used as is.
+    let metal = match layer.downcast::<CAMetalLayer>() {
+        Ok(metal) => metal,
+        Err(layer) => {
+            // SAFETY: `sublayers` is read on the main thread that owns the view.
+            let Some(sublayers) = (unsafe { layer.sublayers() }) else {
+                return false;
+            };
+            let Some(metal) = sublayers
+                .iter()
+                .find_map(|sublayer| sublayer.downcast::<CAMetalLayer>().ok())
+            else {
+                return false;
+            };
+            metal
+        }
     };
     metal.setPresentsWithTransaction(enabled);
     true

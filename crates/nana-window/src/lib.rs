@@ -13,6 +13,7 @@ mod menu;
 mod motion_preference;
 mod platform;
 mod size_move;
+mod splash;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use chrome::LiveFrameMove;
@@ -47,6 +48,12 @@ pub use menu::{
 pub use motion_preference::{system_reduced_motion, take_reduced_motion_change};
 pub use pointer::pointer_in_client_area;
 pub use size_move::LiveSizeMove;
+pub use splash::{
+    LogoInfo, MAX_LOGO_DECODED_BYTES, MAX_LOGO_EDGE, MAX_LOGO_ENCODED_BYTES, NativeSplash,
+    SplashAnimation, SplashAnimationOutcome, SplashBackground, SplashFailure, SplashHandoff,
+    SplashLogo, SplashLogoError, SplashOutcome, SplashSkip, SplashSpec, SplashStaticReason,
+    SplashWork,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipTaskbarError {
