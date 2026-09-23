@@ -1734,6 +1734,7 @@ fn apply_window_transparency(window: &dyn winit::window::Window, requested: crat
 /// A transparent window draws its own edge instead, as it must on Windows,
 /// where such a window gets no system shadow either. A material backdrop
 /// (vibrancy) fills the whole window, so its shadow stays the window's own.
+#[cfg(any(target_os = "macos", test))]
 const fn wants_system_shadow(effect: crate::MaterialEffect) -> bool {
     !matches!(effect, crate::MaterialEffect::Transparent)
 }
