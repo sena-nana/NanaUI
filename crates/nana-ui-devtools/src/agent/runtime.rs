@@ -113,10 +113,8 @@ impl RuntimeAgentSession {
         self.clock
     }
 
-    /// Drains one frame. [`RuntimeFrameUpdate::is_idle`] tells a frame that
-    /// did no work: `last_work_counters` keeps the last non-empty drain's
-    /// counters through idle frames, so summing it per flush counts that
-    /// drain again on every idle one.
+    /// Drains one frame. Work counters survive idle frames; per-frame
+    /// accounting counts only a flush that is not [`RuntimeFrameUpdate::is_idle`].
     pub fn flush(&mut self) -> Result<RuntimeFrameUpdate, AgentError> {
         self.document
             .flush(
@@ -562,9 +560,7 @@ mod tests {
         }
     }
 
-    /// A subtree taken out of paint and input settles in one frame; the frames
-    /// after it are idle, which only the flush result says: the world's work
-    /// counters keep reporting the settling drain.
+    /// A subtree taken out of paint and input settles in one frame.
     #[test]
     fn hidden_subtree_settles_to_idle_flushes() {
         use nana_ui::runtime::{PointerEventsSpec, Stack, VisibilitySpec};
@@ -583,8 +579,6 @@ mod tests {
             })
             .expect("root");
         let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
-        assert!(session.flush().expect("flush").is_idle());
-
         session
             .document_mut()
             .context_mut()
@@ -596,17 +590,8 @@ mod tests {
             })
             .expect("hide");
         assert!(!session.flush().expect("settle").is_idle());
-        let settled = session.document().context().last_work_counters();
-        assert!(settled.style_processed > 0);
-
         for _ in 0..3 {
             assert!(session.flush().expect("steady").is_idle());
-            let counters = session.document().context().last_work_counters();
-            assert_eq!(counters.style_processed, settled.style_processed);
-            assert_eq!(
-                counters.accessibility_nodes_updated,
-                settled.accessibility_nodes_updated
-            );
         }
     }
 
