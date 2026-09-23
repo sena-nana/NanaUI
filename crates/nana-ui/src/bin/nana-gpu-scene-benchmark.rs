@@ -203,8 +203,9 @@ struct ScenarioParams {
     #[serde(default)]
     text_ticker: bool,
     /// Animate something about the text other than what it says, every
-    /// frame: its color, or its container's opacity or transform. These are
-    /// the #98 paint-only and compositor-only gates — the text never changes,
+    /// frame: its color, or its container's opacity or transform, or a
+    /// fraction of a pixel's slide. These are the #98 paint-only and
+    /// compositor-only gates and #223's sub-pixel one — the text never changes,
     /// so every frame must be answered without shaping, laying out,
     /// rasterizing or resolving a glyph. `resize` is the #99 constraint-only
     /// gate: the labels' width changes, so every one is laid out again, from
@@ -222,6 +223,9 @@ enum TextAnimation {
     Opacity,
     /// The list holding the labels turns.
     Transform,
+    /// The list holding the labels slides sideways by 0.37 px a frame: a
+    /// trackpad's horizontal scroll, as the painter sees it (#223).
+    Slide,
     /// Every label alternates between two widths it wraps inside.
     Resize,
 }
@@ -872,6 +876,22 @@ fn animate_text(
                 .context_mut()
                 .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
                 .expect("turn list");
+        }
+        TextAnimation::Slide => {
+            // A pure translation that is almost never a whole pixel. The
+            // painter snaps it, which is what keeps every label's glyphs; the
+            // Runtime's scroll offset reaches it the same way, as a
+            // translation of everything under the scroller. Eight pixels of
+            // travel keeps every label as much on screen as it started.
+            let mut style = root_style();
+            Arc::make_mut(&mut style.layout).transform = Some(PaintTransform {
+                e: -(frame as f32 * 0.37 % 8.0),
+                ..PaintTransform::default()
+            });
+            document
+                .context_mut()
+                .set_component(handles.root, List::new().label(ROOT_LABEL).style(style))
+                .expect("slide list");
         }
         TextAnimation::Resize => {
             let width = if frame.is_multiple_of(2) {

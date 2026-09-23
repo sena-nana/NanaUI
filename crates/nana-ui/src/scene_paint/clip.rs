@@ -75,30 +75,77 @@ pub(super) fn transform_point_projective(
     [xp / w, yp / w]
 }
 
+/// Where scene space lands in paint space, and the device pixels per logical
+/// px of the grid [`paint_transform`] snaps a translation to — a primitive's
+/// and each of its clips' alike, so a clip stays on the pixel of what it clips.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct PaintOrigin {
+    pub offset: [f32; 2],
+    pub scale: f32,
+}
+
+impl PaintOrigin {
+    pub(super) fn new(offset: [f32; 2], scale: f32) -> Self {
+        Self { offset, scale }
+    }
+}
+
+/// A 1x paint at `offset`, which is what the geometry tests draw.
+#[cfg(test)]
+impl From<[f32; 2]> for PaintOrigin {
+    fn from(offset: [f32; 2]) -> Self {
+        Self::new(offset, 1.0)
+    }
+}
+
 /// Scene origin is a post-translation of every primitive and clip.
 /// For a homography, that is `a' = a + ox*g` (not merely `e += ox`).
-pub(super) fn paint_affine(transform: [f32; 6], origin: [f32; 2]) -> [f32; 6] {
+pub(super) fn paint_affine(transform: [f32; 6], origin: PaintOrigin) -> [f32; 6] {
     paint_transform(transform, [0.0, 0.0], origin).0
 }
 
+/// `transform` in paint space, a pure translation snapped to whole device
+/// pixels (see [`snap_translation`]).
 pub(super) fn paint_transform(
     [a, b, c, d, e, f]: [f32; 6],
     [g, h]: [f32; 2],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> ([f32; 6], [f32; 2]) {
-    let ox = origin[0];
-    let oy = origin[1];
-    (
-        [
-            a + ox * g,
-            b + oy * g,
-            c + ox * h,
-            d + oy * h,
-            e + ox,
-            f + oy,
-        ],
-        [g, h],
-    )
+    let [ox, oy] = origin.offset;
+    let affine = [
+        a + ox * g,
+        b + oy * g,
+        c + ox * h,
+        d + oy * h,
+        e + ox,
+        f + oy,
+    ];
+    (snap_translation(affine, [g, h], origin.scale), [g, h])
+}
+
+/// A pure translation moved to the nearest whole device pixel; anything else
+/// as it is (#223).
+///
+/// The scroll offset stays fractional — a trackpad's slow deltas are smaller
+/// than a pixel — and what is drawn is snapped, as a browser presents a
+/// composited scroll. Snapping the final translation rather than the scroll
+/// term keeps everything under a scroll on the same whole pixels (a label's
+/// glyphs at the same phase, text on its background) and a frozen row, which
+/// cancels the scroll with a translation of its own, exactly where it was.
+/// Hit testing keeps the exact offset: under half a device pixel apart.
+pub(super) fn snap_translation(affine: [f32; 6], persp: [f32; 2], scale: f32) -> [f32; 6] {
+    if !is_translation_projective(affine, persp) {
+        return affine;
+    }
+    let [a, b, c, d, e, f] = affine;
+    [
+        a,
+        b,
+        c,
+        d,
+        (e * scale).round() / scale,
+        (f * scale).round() / scale,
+    ]
 }
 
 #[cfg(test)]
@@ -106,7 +153,7 @@ pub(super) fn is_translation(transform: [f32; 6]) -> bool {
     is_translation_projective(transform, [0.0, 0.0])
 }
 
-pub(super) fn is_translation_projective([a, b, c, d, _, _]: [f32; 6], [g, h]: [f32; 2]) -> bool {
+pub(crate) fn is_translation_projective([a, b, c, d, _, _]: [f32; 6], [g, h]: [f32; 2]) -> bool {
     a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 && g.abs() <= 1e-8 && h.abs() <= 1e-8
 }
 
@@ -120,8 +167,50 @@ pub(super) fn snap_centered_origin(
     scale: f32,
 ) -> (f32, f32) {
     let px = (logical_extent * scale).round().max(1.0);
-    let origin = (logical_center * scale - px * 0.5).round();
+    let origin = round_on_grid(logical_center * scale - px * 0.5);
     (origin, px)
+}
+
+/// `local + translation` for a snapped translation, added in device pixels.
+///
+/// Added in logical px, the snapped translation's own rounding error — a few
+/// thousandths of a pixel forty thousand pixels down a list — would push a
+/// position exactly on a tie of the grid (a 16 px icon at an odd y at 150%, a
+/// clip edge on a pixel at 120%) to either side of it from frame to frame.
+/// Here what is left is an ulp of the result, which [`grid_slack`] covers.
+pub(crate) fn on_grid(local: f32, translation: f32, scale: f32) -> f32 {
+    (local * scale + (translation * scale).round()) / scale
+}
+
+/// `bounds` moved by the translation of `affine`, on the grid (see [`on_grid`]).
+pub(super) fn translated_on_grid(bounds: LogicalRect, affine: [f32; 6], scale: f32) -> LogicalRect {
+    LogicalRect {
+        x: on_grid(bounds.x, affine[4], scale),
+        y: on_grid(bounds.y, affine[5], scale),
+        width: bounds.width.max(0.0),
+        height: bounds.height.max(0.0),
+    }
+}
+
+/// How far a position on the grid can come back from its pixel: a few ulps,
+/// and never less than the quad shader's own edge slack (`quad_solid.wgsl`).
+fn grid_slack(value: f32) -> f32 {
+    (value.abs() * f32::EPSILON * 8.0).max(1.0e-3)
+}
+
+/// The device pixels a span covers, an edge a few ulps past a pixel boundary
+/// counted as on it: the column beyond must not flicker in and out.
+pub(crate) fn covered_span(start: f32, end: f32) -> (f32, f32) {
+    (
+        (start + grid_slack(start)).floor(),
+        (end - grid_slack(end)).ceil(),
+    )
+}
+
+/// `round`, a tie a few ulps short rounding up with it — up, as the quad
+/// shader's edges do, not away from zero.
+fn round_on_grid(value: f32) -> f32 {
+    (value + grid_slack(value)).round()
 }
 
 fn near_zero(value: f32) -> bool {
@@ -266,7 +355,7 @@ impl FragmentClip {
 
 fn axis_aligned_rounded_clip(
     clip: &nana_ui_scene::ClipRegion,
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Option<FragmentClip> {
     if clip.transform.is_projective() {
         return None;
@@ -286,7 +375,7 @@ fn axis_aligned_rounded_clip(
 
 fn axis_aligned_rounded_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     clips
         .iter()
@@ -294,7 +383,7 @@ fn axis_aligned_rounded_fragment_clips(
         .collect()
 }
 
-fn polygon_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<FragmentClip> {
+fn polygon_clip(clip: &nana_ui_scene::ClipRegion, origin: PaintOrigin) -> Option<FragmentClip> {
     let points = clip.polygon_clip.as_ref()?;
     if points.len() != 1 && points.len() < 3 {
         return None;
@@ -314,7 +403,7 @@ fn polygon_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<Fr
 
 pub(super) fn polygon_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     clips
         .iter()
@@ -324,7 +413,7 @@ pub(super) fn polygon_fragment_clips(
 
 /// Outer-to-inner non-axis-aligned clips. Empty when every clip is axis-aligned
 /// (GPU scissor is exact) or the list is empty.
-fn rotated_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<FragmentClip> {
+fn rotated_clip(clip: &nana_ui_scene::ClipRegion, origin: PaintOrigin) -> Option<FragmentClip> {
     if clip.transform.is_projective() {
         return None;
     }
@@ -345,7 +434,7 @@ fn rotated_clip(clip: &nana_ui_scene::ClipRegion, origin: [f32; 2]) -> Option<Fr
 
 pub(super) fn rotated_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     clips
         .iter()
@@ -357,7 +446,7 @@ pub(super) fn rotated_fragment_clips(
 pub(super) fn local_rect_clip(
     bounds: nana_ui_scene::SceneRect,
     transform: nana_ui_scene::AffineTransform,
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> FragmentClip {
     if transform.is_projective() {
         return FragmentClip::PASS;
@@ -370,7 +459,10 @@ pub(super) fn local_rect_clip(
 
 /// Innermost rotated clip for Quad/Mesh/Text/HostTexture vertex attrs.
 /// Extra outers are [`extra_fragment_clips`] and dest-composited.
-pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2]) -> FragmentClip {
+pub(super) fn fragment_clip(
+    clips: &[nana_ui_scene::ClipRegion],
+    origin: PaintOrigin,
+) -> FragmentClip {
     // Innermost first, so the answer is the first match rather than the last
     // element of three lists. Every primitive of every frame asks this, and a
     // `FragmentClip` is thirty words: collecting the other candidates only to
@@ -401,7 +493,7 @@ pub(super) fn fragment_clip(clips: &[nana_ui_scene::ClipRegion], origin: [f32; 2
 /// polygon ([`mesh_extra_fragment_clips`]). Unique by bit pattern.
 pub(super) fn extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     // The overwhelming majority of nodes are under plain axis-aligned clips,
     // which the scissor handles exactly. Answering those costs one cheap
@@ -470,7 +562,7 @@ fn push_unique_clip(extras: &mut Vec<FragmentClip>, clip: FragmentClip) {
 /// Mesh GpuClip owns the innermost polygon; drop it from dest extras.
 pub(super) fn mesh_extra_fragment_clips(
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     let mut extras = extra_fragment_clips(clips, origin);
     let inner = fragment_clip(clips, origin);
@@ -635,7 +727,7 @@ pub(super) fn transformed_aabb_projective(
 pub(super) fn translated_rect(
     bounds: SceneRect,
     transform: [f32; 6],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> LogicalRect {
     translated_rect_projective(bounds, transform, [0.0, 0.0], origin)
 }
@@ -644,9 +736,12 @@ pub(super) fn translated_rect_projective(
     bounds: SceneRect,
     transform: [f32; 6],
     persp: [f32; 2],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> LogicalRect {
     let (matrix, persp) = paint_transform(transform, persp, origin);
+    if is_translation_projective(matrix, persp) {
+        return translated_on_grid(local_rect(bounds), matrix, origin.scale);
+    }
     transformed_aabb_projective(local_rect(bounds), matrix, persp)
 }
 
@@ -668,7 +763,7 @@ pub(super) fn paint_origin(target_origin: [f32; 2], scene_origin: [f32; 2]) -> [
 pub(super) fn intersect_clips(
     viewport: LogicalRect,
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Option<LogicalRect> {
     clips.iter().try_fold(viewport, |visible, clip| {
         visible.intersection(translated_rect_projective(
@@ -690,10 +785,8 @@ pub(super) fn physical_scissor(
     } else {
         1.0
     };
-    let left = (clip.x * scale).floor();
-    let top = (clip.y * scale).floor();
-    let right = ((clip.x + clip.width) * scale).ceil();
-    let bottom = ((clip.y + clip.height) * scale).ceil();
+    let (left, right) = covered_span(clip.x * scale, (clip.x + clip.width) * scale);
+    let (top, bottom) = covered_span(clip.y * scale, (clip.y + clip.height) * scale);
     let x = left.max(0.0).min(target[0] as f32);
     let y = top.max(0.0).min(target[1] as f32);
     let max_x = right.max(0.0).min(target[0] as f32);
@@ -805,7 +898,7 @@ mod tests {
 
     #[test]
     fn scene_origin_subtracts_layout_origin() {
-        let origin = paint_origin([0.0, 0.0], [40.0, 20.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [40.0, 20.0]));
         let rect = translated_rect(
             SceneRect {
                 x: 52.0,
@@ -836,8 +929,12 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         }];
-        let visible =
-            intersect_clips(viewport, &clips, paint_origin([0.0, 0.0], [0.0, 0.0])).unwrap();
+        let visible = intersect_clips(
+            viewport,
+            &clips,
+            PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0])),
+        )
+        .unwrap();
         assert_eq!(visible.x, 15.0);
         assert_eq!(visible.y, 18.0);
         assert_eq!(visible.width, 50.0);
@@ -858,7 +955,14 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         }];
-        assert!(intersect_clips(viewport, &clips, paint_origin([0.0, 0.0], [0.0, 0.0])).is_none());
+        assert!(
+            intersect_clips(
+                viewport,
+                &clips,
+                PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]))
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -888,8 +992,12 @@ mod tests {
                 polygon_clip: None,
             },
         ];
-        let visible =
-            intersect_clips(viewport, &clips, paint_origin([0.0, 0.0], [40.0, 20.0])).unwrap();
+        let visible = intersect_clips(
+            viewport,
+            &clips,
+            PaintOrigin::from(paint_origin([0.0, 0.0], [40.0, 20.0])),
+        )
+        .unwrap();
         assert_eq!(visible.x, 10.0);
         assert_eq!(visible.y, 10.0);
         assert_eq!(visible.width, 20.0);
@@ -915,7 +1023,10 @@ mod tests {
         assert!(is_translation(IDENTITY_AFFINE));
         assert!(!is_translation([0.0, 1.0, -1.0, 0.0, 5.0, 7.0]));
         assert_eq!(
-            paint_affine([1.0, 0.0, 0.0, 1.0, 4.0, 6.0], [-40.0, -20.0]),
+            paint_affine(
+                [1.0, 0.0, 0.0, 1.0, 4.0, 6.0],
+                PaintOrigin::from([-40.0, -20.0])
+            ),
             [1.0, 0.0, 0.0, 1.0, -36.0, -14.0]
         );
         assert_eq!(
@@ -925,11 +1036,103 @@ mod tests {
     }
 
     #[test]
+    fn a_translation_lands_on_whole_device_pixels_and_nothing_else_moves() {
+        for scale in [1.0f32, 1.1, 1.2, 1.25, 1.5, 1.75, 2.0] {
+            for offset in [0.37f32, -0.37, 0.5, -12.63, 4095.81, -8191.2] {
+                let origin = PaintOrigin::new([0.0, 0.0], scale);
+                let snapped = paint_affine([1.0, 0.0, 0.0, 1.0, offset, -offset], origin);
+                for (axis, logical) in [(4, offset), (5, -offset)] {
+                    let physical = snapped[axis] * scale;
+                    assert!(
+                        (physical - physical.round()).abs() <= 1e-3,
+                        "{offset} at {scale}x must land on a device pixel, got {physical}"
+                    );
+                    assert!(
+                        (physical - logical * scale).abs() <= 0.5 + 1e-3,
+                        "and on the nearest one: {physical} for {}",
+                        logical * scale
+                    );
+                }
+            }
+        }
+        // The scene origin is part of the translation that is snapped: what
+        // lands on the grid is the paint-space position.
+        let origin = PaintOrigin::new([-0.25, 0.0], 1.0);
+        assert_eq!(paint_affine([1.0, 0.0, 0.0, 1.0, 3.0, 0.0], origin)[4], 3.0);
+        // Anything but a translation is left to its own snapping rules.
+        let origin = PaintOrigin::new([0.0, 0.0], 1.0);
+        let turned = [0.0, 1.0, -1.0, 0.0, 5.37, 7.37];
+        assert_eq!(paint_affine(turned, origin), turned);
+        let zoomed = [2.0, 0.0, 0.0, 2.0, 5.37, 7.37];
+        assert_eq!(paint_affine(zoomed, origin), zoomed);
+        let tilted = paint_transform([1.0, 0.0, 0.0, 1.0, 5.37, 7.37], [0.01, 0.0], origin);
+        assert_eq!(tilted.0[4], 5.37);
+    }
+
+    #[test]
+    fn a_snapped_translation_moves_ties_and_clip_edges_by_whole_pixels() {
+        // Positions a whole or a half device pixel from the grid are where the
+        // rounding error a snapped translation carries would pick a side: a
+        // 16 px icon at an odd y at 150%, a clip edge on a pixel at 120%.
+        // Scrolled — a little, or forty thousand pixels down a list, where
+        // the translation's own ulp is thousandths of a pixel — each must
+        // move by exactly the translation's pixels, the way a quad does.
+        for scale in [1.1f32, 1.2, 1.25, 1.5, 1.75] {
+            let origin = PaintOrigin::new([0.0, 0.0], scale);
+            for base in (100..300).chain(40_000..40_200) {
+                let y = base as f32;
+                let scrolled = |offset: f32| {
+                    paint_affine([1.0, 0.0, 0.0, 1.0, 0.0, 100.0 - y - offset], origin)
+                };
+                let still = scrolled(0.0);
+                let icon = |f: f32| snap_centered_origin(on_grid(y + 8.0, f, scale), 16.0, scale).0;
+                let edges = |f: f32| {
+                    let rect = translated_rect_projective(
+                        SceneRect {
+                            x: y,
+                            y,
+                            width: 30.0,
+                            height: 30.0,
+                        },
+                        [1.0, 0.0, 0.0, 1.0, 0.0, f],
+                        [0.0; 2],
+                        PaintOrigin::new([0.0, 0.0], scale),
+                    );
+                    let rect = LogicalRect { x: 0.0, ..rect };
+                    let scissor = physical_scissor(rect, scale, [u32::MAX; 2]).unwrap();
+                    (scissor.y as f32, scissor.height)
+                };
+                let (top, height) = edges(still[5]);
+                for step in 1..100 {
+                    let f = scrolled(step as f32 * 0.37)[5];
+                    let pixels = ((f - still[5]) * scale).round();
+                    assert_eq!(
+                        icon(f),
+                        icon(still[5]) + pixels,
+                        "an icon at {y} scrolled {f} at {scale}x"
+                    );
+                    assert_eq!(
+                        edges(f),
+                        (top + pixels, height),
+                        "a clip at {y} scrolled {f} at {scale}x"
+                    );
+                }
+            }
+        }
+        // A tie above the target's top edge rounds the way the quad shader's
+        // edges do — up — not away from zero.
+        assert_eq!(
+            snap_centered_origin(-1.5 / 1.5 + 8.0 / 1.5, 16.0 / 1.5, 1.5).0,
+            -1.0
+        );
+    }
+
+    #[test]
     fn paint_transform_bakes_scene_origin_into_homography() {
         let matrix = [1.0, 0.0, 0.0, 1.0, 4.0, 6.0];
         let persp = [0.01, 0.0];
         let origin = [-40.0, -20.0];
-        let (baked, out_persp) = paint_transform(matrix, persp, origin);
+        let (baked, out_persp) = paint_transform(matrix, persp, PaintOrigin::from(origin));
         assert_eq!(out_persp, persp);
         assert!((baked[0] - (1.0 + origin[0] * persp[0])).abs() < 1e-6);
         assert_eq!(baked[4], 4.0 + origin[0]);
@@ -995,7 +1198,7 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         }];
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         let aabb = intersect_clips(viewport, &clips, origin).unwrap();
         let clip = fragment_clip(&clips, origin);
         assert!(point_in_fragment_clip(32.0, 32.0, clip));
@@ -1029,7 +1232,10 @@ mod tests {
             polygon_clip: None,
         }];
         assert_eq!(
-            fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0])),
+            fragment_clip(
+                &clips,
+                PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]))
+            ),
             FragmentClip::PASS
         );
     }
@@ -1058,7 +1264,7 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         }];
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         let clip = fragment_clip(&clips, origin);
         let physical = clip.for_physical_pixels(2.0);
         assert!(point_in_fragment_clip(32.0, 32.0, clip));
@@ -1101,14 +1307,17 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
         }];
-        let clip = fragment_clip(&clips, paint_origin([0.0, 0.0], [0.0, 0.0]));
+        let clip = fragment_clip(
+            &clips,
+            PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0])),
+        );
         assert!(
             clip.polygon_count >= 3,
             "ancestor polygon must reach FragmentClip, not PASS AABB"
         );
         assert!(point_in_fragment_clip(32.0, 24.0, clip));
         assert!(!point_in_fragment_clip(4.0, 60.0, clip));
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         assert_eq!(
             extra_fragment_clips(&clips, origin).len(),
             1,
@@ -1122,7 +1331,7 @@ mod tests {
 
     #[test]
     fn overflow_aabb_plus_polygon_stays_scissor_and_gpu_clip() {
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         let clips = [
             ClipRegion::axis_aligned(
                 SceneRect {
@@ -1163,7 +1372,7 @@ mod tests {
 
     #[test]
     fn inset_round_plus_polygon_keeps_round_as_dest() {
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         let clips = [
             ClipRegion {
                 bounds: SceneRect {
@@ -1216,7 +1425,7 @@ mod tests {
     #[test]
     fn rotated_outer_polygon_is_not_dest_wrapped_twice() {
         let k = std::f32::consts::FRAC_1_SQRT_2;
-        let origin = paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0]));
         let rotated = AffineTransform::from_matrix(
             nana_ui_core::PaintTransform {
                 a: k,
@@ -1279,7 +1488,7 @@ mod tests {
                 corner_radius: 0.0,
                 polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
             }],
-            paint_origin([0.0, 0.0], [0.0, 0.0]),
+            PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0])),
         )
         .pop()
         .expect("triangle clip");
@@ -1310,7 +1519,7 @@ mod tests {
             corner_radius: 24.0,
             polygon_clip: None,
         }];
-        let origin = paint_origin([0.0, 0.0], [-16.0, -16.0]);
+        let origin = PaintOrigin::from(paint_origin([0.0, 0.0], [-16.0, -16.0]));
         let rounded = fragment_clip(&clips, origin);
         let mut sharp = rounded;
         sharp.corner_radius = 0.0;
@@ -1341,7 +1550,7 @@ mod tests {
                 corner_radius: 0.0,
                 polygon_clip: Some(vec![[0.0, 0.0], [64.0, 0.0], [32.0, 64.0]]),
             }],
-            paint_origin([0.0, 0.0], [0.0, 0.0]),
+            PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0])),
         )
         .pop()
         .expect("triangle clip");
@@ -1357,7 +1566,7 @@ mod tests {
         assert!(!point_in_fragment_clip(8.0, 120.0, physical_2x));
     }
 
-    fn nested_rotated_45_clips() -> ([ClipRegion; 2], [f32; 2]) {
+    fn nested_rotated_45_clips() -> ([ClipRegion; 2], PaintOrigin) {
         let k = std::f32::consts::FRAC_1_SQRT_2;
         // Outer is the smaller parallelogram so a probe can sit inside the
         // overflowing inner diamond and still miss the outer one.
@@ -1403,7 +1612,10 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         };
-        ([outer, inner], paint_origin([0.0, 0.0], [0.0, 0.0]))
+        (
+            [outer, inner],
+            PaintOrigin::from(paint_origin([0.0, 0.0], [0.0, 0.0])),
+        )
     }
 
     #[test]

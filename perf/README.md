@@ -41,7 +41,7 @@ DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——
 
 ## Issue #98 保留期文本
 
-`catalog.json` 的 `nana_text_ids` 是 #98 的三类文本门禁加 #99 的 constraint-only 门禁，都是一千个文本节点：
+`catalog.json` 的 `nana_text_ids` 是 #98 的三类文本门禁，加 #223 的亚像素平移门禁和 #99 的 constraint-only 门禁，都是一千个文本节点：
 
 | id | 每帧动的是什么 | 判据 |
 | --- | --- | --- |
@@ -49,6 +49,7 @@ DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——
 | `gpu-scene-text-paint-color` | 每个标签换前景色 | paint-only：不塑形、不排版、不栅格化、不传 atlas，也不重建 / 重传 instance |
 | `gpu-scene-text-compositor-opacity` | 装标签的列表淡入淡出 | compositor-only：同上 |
 | `gpu-scene-text-compositor-transform` | 装标签的列表转 −1.5° / 0° / +1.5° | compositor-only：同上，且每三帧进出一次恒等变换 |
+| `gpu-scene-text-compositor-slide` | 装标签的列表每帧用 CSS translate 横移 0.37 px，模拟触控板横向滚动（#223） | 同 paint-color，instance 上传也为 0：画笔把纯平移吸附到设备像素，标签的亚像素相位不变。走 Runtime 真实滚动的数字见 text-paint 基准的 `table-scroll-x` |
 | `gpu-scene-text-constraint-resize` | 每个标签在两档宽度间交替（#99） | constraint-only：不塑形、新 layout 不重新塑形、画笔不自排、不栅格化、不传 atlas；`text_layout_lookups ≥ 900` 防空转 |
 
 它们都**不在** `harness_ids` 里，理由和 motion 那组一样——判据是这一帧让文本路径重做了
@@ -57,7 +58,7 @@ DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——
 `paint_shape_cache_misses` 是画笔拿不到 Runtime layout 时自己排的。
 
 场景必须真的在动：`params.text_ticker`（换文本）或 `params.text_animation`
-（`color` / `opacity` / `transform` / `resize`）二选一。不动的话 painter 直接复用上一帧的批次，那一帧
+（`color` / `opacity` / `transform` / `slide` / `resize`）二选一。不动的话 painter 直接复用上一帧的批次，那一帧
 什么都没做，counter 全是 0，门禁永远不会红。extractor 核对报告里回显的这两个参数，跑了
 不动的场景会被拒绝。ticker 的文字是定宽的（`tick 0007`）：`tick 9 → tick 10` 会把同一行
 后面的标签挪一个数字宽，那是重排的成本，不是保留期的，不该由采样窗口碰没碰上它来决定门禁红绿。
@@ -65,14 +66,14 @@ DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——
 ```bash
 for id in gpu-scene-text-retained gpu-scene-text-paint-color \
           gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform \
-          gpu-scene-text-constraint-resize; do
+          gpu-scene-text-compositor-slide gpu-scene-text-constraint-resize; do
   python3 perf/runners/nana/run.py --scenario "$id" --output "target/performance/issue98/$id.json"
 done
 # 标签数 × 动画频率的完整报告（不是门禁，是可复现数字）
 cargo run --release --locked -p nana-ui --features gpu --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 ```
 
-`--evaluate-invariants` 判定这五个 id（缺 `text_counters` 是 skipped，不是 ok）。PR CI 用
+`--evaluate-invariants` 判定这六个 id（缺 `text_counters` 是 skipped，不是 ok）。PR CI 用
 `perf/fixtures/nana-gpu-scene-text-*.json`（真机 `nana-gpu-scene-benchmark` 原样输出）判定，
 每周的 macOS 任务现跑；重录 fixture 就是对每个 id 跑一次
 `cargo run --release --locked -p nana-ui --features gpu --bin nana-gpu-scene-benchmark -- --scenario perf/scenarios/<id>.json --output perf/fixtures/nana-<id>.json`。

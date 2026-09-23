@@ -849,9 +849,10 @@ impl GpuTexturePrimitive {
         // `layer.clip` is pre-affine (same space as dest / the sibling Quad).
         // The pass scissor is paint-space; scrolling would otherwise place
         // this rect below the target and the draw would scissor to nothing.
-        let clip = self.layer.clip.map(|clip| {
-            RenderSlot::new(texture.id, affine_aabb(clip, affine, persp), scale_factor).physical
-        });
+        let clip = self
+            .layer
+            .clip
+            .map(|clip| clip_pixels(texture.id, clip, affine, persp, scale_factor));
         let mask_url = match self.layer.mask.as_ref() {
             Some(nana_ui_core::MaskImage::Url(url))
                 if pipeline.url_cache.load(device, queue, url).is_some() =>
@@ -1450,6 +1451,36 @@ fn finite_opacity(opacity: f32) -> f32 {
     }
 }
 
+/// The device pixels `clip` covers under `affine`; under a translation, cut
+/// on the painter's grid the way its own scissors are (`scene_paint::on_grid`).
+fn clip_pixels(
+    id: u64,
+    clip: LogicalRect,
+    affine: [f32; 6],
+    persp: [f32; 2],
+    scale_factor: f32,
+) -> PhysicalRect {
+    if !crate::scene_paint::is_translation_projective(affine, persp)
+        || !scale_factor.is_finite()
+        || scale_factor <= 0.0
+    {
+        return RenderSlot::new(id, affine_aabb(clip, affine, persp), scale_factor).physical;
+    }
+    let x = crate::scene_paint::on_grid(clip.x, affine[4], scale_factor);
+    let y = crate::scene_paint::on_grid(clip.y, affine[5], scale_factor);
+    let (left, right) =
+        crate::scene_paint::covered_span(x * scale_factor, (x + clip.width) * scale_factor);
+    let (top, bottom) =
+        crate::scene_paint::covered_span(y * scale_factor, (y + clip.height) * scale_factor);
+    let [left, top] = [left.max(0.0), top.max(0.0)];
+    PhysicalRect {
+        x: left as u32,
+        y: top as u32,
+        width: (right.max(left) - left) as u32,
+        height: (bottom.max(top) - top) as u32,
+    }
+}
+
 /// Axis-aligned bounds of a pre-affine rect after the paint transform.
 fn affine_aabb(rect: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalRect {
     let map = |x: f32, y: f32| {
@@ -1495,10 +1526,30 @@ mod tests {
     use super::{
         GpuTexturePipeline, HostTexture, HostTextureAlphaMode, HostTextureLayer,
         HostTextureRegistry, PresentationIdentity, TextureFingerprint, TextureKey,
-        VersionedResource, affine_aabb, make_layer_uniform, texture_needs_rebind, trim_unused,
+        VersionedResource, affine_aabb, clip_pixels, make_layer_uniform, texture_needs_rebind,
+        trim_unused,
     };
     use crate::geometry::LogicalRect;
     use crate::gpu_view::RenderSlot;
+
+    #[test]
+    fn a_texture_clip_moves_by_the_scrolls_whole_pixels() {
+        // A clip edge on a whole device pixel at 120%, forty thousand pixels
+        // down a scroll, where the snapped translation's own rounding error
+        // would push the edge across the pixel on some frames and not others.
+        let scale = 1.2;
+        let clip = LogicalRect::new(0.0, 40_000.0, 50.0, 50.0);
+        let pixels = |offset: f32| {
+            let snapped = (-offset * scale).round() / scale;
+            let rect = clip_pixels(1, clip, [1.0, 0.0, 0.0, 1.0, 0.0, snapped], [0.0; 2], scale);
+            (rect.y as f32, rect.height, (snapped * scale).round())
+        };
+        let (top, height, from) = pixels(39_800.0);
+        for step in 1..300 {
+            let (moved, moved_height, to) = pixels(39_800.0 + step as f32 * 0.37);
+            assert_eq!((moved, moved_height), (top + to - from, height));
+        }
+    }
 
     #[test]
     fn scrolled_pre_affine_clip_scissors_in_paint_space() {

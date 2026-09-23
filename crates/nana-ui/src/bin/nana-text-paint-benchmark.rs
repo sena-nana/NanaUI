@@ -16,16 +16,20 @@
 //! cargo run --release --locked -p nana-ui --features gpu \
 //!     --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 //! ```
+//!
+//! `--scale 1.25` paints the same logical viewport onto a display of that many
+//! physical px per logical px: where a scroll by a logical pixel is a fraction.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nana_ui::runtime::{
     DocumentId, FlexDirection, FlexWrap, LayoutStyle, LayoutViewport, LengthSpec, MutationQueue,
-    NodeKind, NodeStyle, RuntimeDocument, SemanticColorRole, StableNodeId, TextContent,
+    NodeKind, NodeStyle, RuntimeDocument, ScrollOffset, SemanticColorRole, StableNodeId,
+    TextContent,
 };
 use nana_ui::{NanaTextShaper, RenderTargetId, ScenePaintViewport, SceneWgpuPainter};
-use nana_ui_core::{PaintTransform, TransformOrigin};
+use nana_ui_core::{OverflowSpec, PaintTransform, TransformOrigin};
 use serde::Serialize;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -97,6 +101,10 @@ enum Workload {
     Table,
     /// The same table scrolling by whole pixels.
     TableScroll,
+    /// The same table scrolled sideways by 0.37 px a frame, the way a trackpad
+    /// scrolls: through the Runtime's own scroll offset, which keeps the
+    /// fraction, into a painter that draws it on whole device pixels (#223).
+    TableScrollX,
     /// Wrapped paragraphs, one per [`LABELS_PER_PARAGRAPH`] labels, beside a
     /// ticking label.
     Paragraphs,
@@ -131,6 +139,7 @@ impl Workload {
             Self::MutateRandom => "mutate-random-1pct",
             Self::Table => "table",
             Self::TableScroll => "table-scroll",
+            Self::TableScrollX => "table-scroll-x",
             Self::Paragraphs => "paragraphs",
             Self::AtlasPressure => "atlas-pressure",
             Self::MultiWindow => "multi-window",
@@ -138,7 +147,7 @@ impl Workload {
         }
     }
 
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Static,
         Self::StaticUnique,
         Self::Color,
@@ -149,6 +158,7 @@ impl Workload {
         Self::MutateRandom,
         Self::Table,
         Self::TableScroll,
+        Self::TableScrollX,
         Self::Paragraphs,
         Self::AtlasPressure,
         Self::MultiWindow,
@@ -165,6 +175,7 @@ impl Workload {
                 | Self::Transform
                 | Self::TransformPanel
                 | Self::TableScroll
+                | Self::TableScrollX
                 | Self::Zoom
         )
     }
@@ -183,6 +194,9 @@ struct Cell {
     labels: usize,
     /// Wrapper elements between the document and the labels.
     depth: usize,
+    /// Physical px per logical px the frame is painted at.
+    scale: f32,
+    /// In physical px.
     viewport: [u32; 2],
     frames: usize,
     /// Glyphs the visible labels resolve to, so a per-glyph reading is possible.
@@ -237,6 +251,7 @@ fn main() {
     let mut only_workload: Vec<String> = Vec::new();
     let mut frame_override: Option<usize> = None;
     let mut depth = 0usize;
+    let mut scale = 1.0f32;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -261,6 +276,17 @@ fn main() {
                     std::process::exit(2);
                 };
                 depth = value;
+            }
+            "--scale" => {
+                let Some(value) = args
+                    .next()
+                    .and_then(|raw| raw.parse::<f32>().ok())
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                else {
+                    eprintln!("--scale needs a positive factor");
+                    std::process::exit(2);
+                };
+                scale = value;
             }
             "--workload" => {
                 let Some(value) = args.next() else {
@@ -295,7 +321,7 @@ fn main() {
             };
             for frames in rates {
                 let frames = frame_override.unwrap_or(*frames);
-                cells.push(run(&device, &queue, workload, labels, frames, depth));
+                cells.push(run(&device, &queue, workload, labels, frames, depth, scale));
             }
         }
     }
@@ -326,8 +352,11 @@ fn gpu() -> Option<(wgpu::Device, wgpu::Queue, String)> {
     }))
     .ok()?;
     let info = adapter.get_info();
+    // The adapter's own limits: a ten-thousand-label viewport at `--scale 2`
+    // is past the 8192 px texture side the defaults allow.
     let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("nana-text-paint-benchmark"),
+        required_limits: adapter.limits(),
         ..Default::default()
     }))
     .ok()?;
@@ -353,13 +382,25 @@ fn run(
     labels: usize,
     frames: usize,
     depth: usize,
+    scale: f32,
 ) -> Cell {
     let (count, cell) = if workload == Workload::Paragraphs {
         ((labels / LABELS_PER_PARAGRAPH).max(1), PARAGRAPH)
     } else {
         (labels, LABEL)
     };
-    let physical = viewport_for(count, cell);
+    let logical = viewport_for(count, cell);
+    let physical = logical.map(|side| (side as f32 * scale).round() as u32);
+    let largest = device.limits().max_texture_dimension_2d;
+    if physical.iter().any(|side| *side > largest) {
+        eprintln!(
+            "{} with {labels} labels at {scale}x needs a {}x{} target; this device allows {largest}",
+            workload.id(),
+            physical[0],
+            physical[1]
+        );
+        std::process::exit(2);
+    }
     let document_id = DocumentId::new(1).expect("document");
     let mut document = RuntimeDocument::new(document_id);
     let root = StableNodeId::new(1).expect("root");
@@ -397,11 +438,25 @@ fn run(
         build.insert(column, panel, None);
         build.set_style(panel, panel_style(None));
     }
+    // What `TableScrollX` scrolls: the column, over a sheet of labels a
+    // little wider than it. The sheet holds as many columns of labels as the
+    // viewport does, so the extra width is empty and scrolling across it
+    // brings no label into view or out of it — every frame measures a scroll,
+    // not a label being built for the first time.
+    let sheet = StableNodeId::new(3_000_000).expect("sheet");
+    if workload == Workload::TableScrollX {
+        build.set_style(column, scrolling_column_style());
+        build.create(sheet, document_id, NodeKind::Element { tag: "div".into() });
+        build.insert(column, sheet, None);
+        build.set_style(sheet, sheet_style(logical[0] as f32 + SHEET_OVERHANG));
+    }
     let mut rows = Vec::with_capacity(count);
     for index in 0..count {
         let label = StableNodeId::new(4 + index as u64).expect("label");
         let parent = if workload == Workload::TransformPanel && index < PANEL_ROWS {
             panel
+        } else if workload == Workload::TableScrollX {
+            sheet
         } else {
             column
         };
@@ -421,7 +476,7 @@ fn run(
         .commit_mutations(build)
         .expect("build document");
 
-    let viewport = LayoutViewport::new(physical[0] as f32, physical[1] as f32);
+    let viewport = LayoutViewport::new(logical[0] as f32, logical[1] as f32);
     let mut shaper = NanaTextShaper::default();
     let mut painter = SceneWgpuPainter::new(device, queue, FORMAT);
     let target = color_target(device, physical);
@@ -429,9 +484,9 @@ fn run(
     // the same painter — so the same atlas and the same shaped paragraphs.
     let second = (workload == Workload::MultiWindow).then(|| color_target(device, physical));
     let paint_viewport = ScenePaintViewport {
-        logical_size: [physical[0] as f32, physical[1] as f32],
+        logical_size: [logical[0] as f32, logical[1] as f32],
         physical_size: physical,
-        scale_factor: 1.0,
+        scale_factor: scale,
         scene_origin: [0.0, 0.0],
         target_origin: [0.0, 0.0],
         clear_color: [0.08, 0.08, 0.09, 1.0],
@@ -652,6 +707,7 @@ fn run(
         workload: workload.id().to_string(),
         labels,
         depth,
+        scale,
         viewport: physical,
         frames,
         live_glyphs: warm_glyph.unwrap_or_default(),
@@ -777,6 +833,11 @@ fn mutate(
             });
             queue.set_style(column, column_style(None, offset));
         }
+        Workload::TableScrollX => {
+            // Never a whole pixel for long, at any scale.
+            let x = frame as f32 * 0.37 % SHEET_OVERHANG;
+            queue.set_scroll_offset(column, ScrollOffset { x, y: 0.0 });
+        }
         Workload::Zoom => {
             let factor = 1.0 + (frame % 60) as f32 / 60.0;
             let zoomed = Some(PaintTransform {
@@ -797,7 +858,7 @@ fn mutate(
 fn label_text(workload: Workload, index: usize) -> String {
     match workload {
         Workload::StaticUnique => format!("Row {index}"),
-        Workload::Table | Workload::TableScroll => table_cell(index),
+        Workload::Table | Workload::TableScroll | Workload::TableScrollX => table_cell(index),
         Workload::Paragraphs => PARAGRAPH_TEXT.to_string(),
         _ => format!("Row {}", index % DISTINCT_LABELS),
     }
@@ -848,6 +909,39 @@ fn panel_style(transform: Option<PaintTransform>) -> NodeStyle {
             flex_wrap: FlexWrap::Wrap,
             transform,
             transform_origin: transform.is_some().then(TransformOrigin::default),
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    }
+}
+
+/// How much wider than the viewport [`Workload::TableScrollX`]'s sheet is: the
+/// distance it scrolls. Less than a label, so the sheet holds no more columns
+/// of them than the viewport.
+const SHEET_OVERHANG: f32 = 40.0;
+
+/// The column, scrolling sideways over the sheet.
+fn scrolling_column_style() -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Fill),
+            height: Some(LengthSpec::Fill),
+            direction: Some(FlexDirection::Row),
+            flex_wrap: FlexWrap::Wrap,
+            overflow_x: OverflowSpec::Scroll,
+            ..LayoutStyle::default()
+        }),
+        ..NodeStyle::default()
+    }
+}
+
+/// The labels of [`Workload::TableScrollX`], wrapped at `width`.
+fn sheet_style(width: f32) -> NodeStyle {
+    NodeStyle {
+        layout: Arc::new(LayoutStyle {
+            width: Some(LengthSpec::Px(width)),
+            direction: Some(FlexDirection::Row),
+            flex_wrap: FlexWrap::Wrap,
             ..LayoutStyle::default()
         }),
         ..NodeStyle::default()

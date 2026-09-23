@@ -1322,7 +1322,7 @@ impl TextPipeline {
         // frames of a scroll and is re-resolved on each of them.
         let line_logical = laid_out_height;
         let top_px = if translation {
-            let [_, wy] = clip::transform_point_projective(affine, persp, aligned[0], aligned[1]);
+            let wy = clip::on_grid(aligned[1], affine[5], scale);
             let (top_px, _) =
                 clip::snap_centered_origin(wy + line_logical * 0.5, line_logical, scale);
             aligned[1] += top_px / scale - wy;
@@ -1362,16 +1362,16 @@ impl TextPipeline {
         // presentation row carries: a scroll that lands on whole pixels then
         // moves the one row every label under it shares, and not a run.
         //
-        // The phase is taken from the paragraph's own position plus only the
-        // *fraction* of the translation. Adding the whole translation first
-        // and splitting afterwards rounds differently at every scroll
-        // position, so the phase's last bit would change on a whole-pixel
-        // horizontal scroll and every label would be resolved again.
-        //
-        // Vertically there is no phase: the line box top is a whole pixel.
+        // The phase is the paragraph's own position's alone. The painter
+        // draws a translation on whole device pixels (`clip::snap_translation`,
+        // #223), so a scroll by any amount, fraction or not, keeps every
+        // label's glyphs; what the translation adds past its whole pixels is
+        // the ulp `k / scale * scale` can come back with, and that is no phase.
+        // Vertically there is no phase at all: the line box top is a whole
+        // pixel.
         let (x, y) = if translation {
-            let [tx, ty] = pipeline::whole_translation(affine, scale);
-            (aligned[0] * scale + (affine[4] * scale - tx), top_px - ty)
+            let [_, ty] = pipeline::whole_translation(affine, scale);
+            (aligned[0] * scale, top_px - ty)
         } else {
             (aligned[0] * raster, top_px)
         };
@@ -3362,7 +3362,7 @@ mod tests {
             corner_radius: 0.0,
             polygon_clip: None,
         }];
-        let origin = clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+        let origin = clip::PaintOrigin::from(clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
         let aabb = clip::intersect_clips(
             LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
             &clips,
@@ -4026,13 +4026,24 @@ mod tests {
         pipeline: &mut TextPipeline,
         labels: &[Label<'_>],
     ) {
+        text_frame_at(device, queue, pipeline, labels, 1.0);
+    }
+
+    /// [`text_frame`] on a display of `scale` physical px per logical px.
+    fn text_frame_at(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+        labels: &[Label<'_>],
+        scale: f32,
+    ) {
         pipeline.begin_frame([512, 256]);
         for label in labels {
             pipeline.prepare(
                 device,
                 LogicalRect::from_xywh(label.left, label.top, 480.0, 32.0),
                 LogicalRect::from_xywh(0.0, 0.0, 512.0, 256.0),
-                1.0,
+                scale,
                 label.content,
                 Some(label.color),
                 16.0,
@@ -4615,6 +4626,27 @@ mod tests {
     }
 
     #[test]
+    fn a_snapped_translation_reads_as_its_whole_pixels() {
+        // The CPU and the vertex stage place a translated run by these whole
+        // pixels. At 110%, 120% and 175% a snapped translation comes back
+        // through the scale an ulp low for some offsets; read as `floor`, the
+        // label would sit a pixel left of its background on those frames.
+        for scale in [1.1f32, 1.2, 1.75] {
+            for step in 0..20_000 {
+                let offset = step as f32 * -2.37;
+                let affine =
+                    clip::snap_translation([1.0, 0.0, 0.0, 1.0, offset, offset], [0.0; 2], scale);
+                let pixels = (offset * scale).round();
+                assert_eq!(
+                    pipeline::whole_translation(affine, scale),
+                    [pixels; 2],
+                    "{offset} at {scale}x"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn a_fractional_vertical_scroll_keeps_every_glyph() {
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
@@ -4640,6 +4672,58 @@ mod tests {
             warm.text_instance_rebuilds,
             "a fractional vertical scroll must not re-resolve a label"
         );
+    }
+
+    #[test]
+    fn a_fractional_horizontal_scroll_keeps_every_glyph() {
+        // What the painter hands text under a trackpad's horizontal scroll:
+        // the translation snapped to whole device pixels (#223). At 110%, 120%
+        // and 175% — not 125% or 150%, where it is exact — some of those come
+        // back through the scale an ulp off the pixel, near the start of the
+        // list and more often thousands of pixels into it.
+        for scale in [1.0, 1.1, 1.2, 1.25, 1.5, 1.75] {
+            for start in [0.0, 4096.0] {
+                let (device, queue) = test_device();
+                let mut pipeline =
+                    TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+                let labels = |offset: f32| {
+                    let affine = clip::snap_translation(
+                        [1.0, 0.0, 0.0, 1.0, -(start + offset), 0.0],
+                        [0.0; 2],
+                        scale,
+                    );
+                    (0..12)
+                        .map(|index| Label {
+                            left: start + 0.709 + index as f32 * 38.766,
+                            top: 3.3 + index as f32 * 17.6,
+                            affine,
+                            ..Label::new("Row", index + 1)
+                        })
+                        .collect::<Vec<_>>()
+                };
+                text_frame_at(&device, &queue, &mut pipeline, &labels(0.0), scale);
+                let warm = pipeline.glyph_counters();
+                for step in 1..40 {
+                    text_frame_at(
+                        &device,
+                        &queue,
+                        &mut pipeline,
+                        &labels(step as f32 * 0.37),
+                        scale,
+                    );
+                }
+                let after = pipeline.glyph_counters();
+                assert_eq!(
+                    after.text_instance_rebuilds, warm.text_instance_rebuilds,
+                    "a fractional horizontal scroll at {scale}x, {start} px in, \
+                     must not re-resolve a label"
+                );
+                assert!(
+                    after.text_presentation_upload_bytes > warm.text_presentation_upload_bytes,
+                    "while the labels do move: the shared row is rewritten"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4687,6 +4771,41 @@ mod tests {
              resolved at the same phase either side of it"
         );
         assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
+    }
+
+    #[test]
+    fn a_container_with_a_fractional_offset_keeps_its_glyphs_as_it_turns() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // A container scrolled to a fraction of a pixel, starting and stopping
+        // a turn. Upright, the painter draws its translation on whole pixels
+        // (#223) and the labels' phase is their own position's; turned, the
+        // projected path's phase is the same. The turn is presentation.
+        let labels = |affine: [f32; 6]| {
+            (0..12)
+                .map(|index| Label {
+                    top: 3.3 + index as f32 * 17.6,
+                    left: 0.709,
+                    affine,
+                    ..Label::new("Row content", index + 1)
+                })
+                .collect::<Vec<_>>()
+        };
+        let upright = clip::snap_translation([1.0, 0.0, 0.0, 1.0, 10.3, 0.0], [0.0; 2], 1.0);
+        let turned = |degrees: f32| {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            [cos, sin, -sin, cos, 10.3, 0.0]
+        };
+        text_frame(&device, &queue, &mut pipeline, &labels(upright));
+        let warm = pipeline.glyph_counters();
+        for affine in [turned(2.0), upright, turned(-2.0), upright] {
+            text_frame(&device, &queue, &mut pipeline, &labels(affine));
+        }
+        let after = pipeline.glyph_counters();
+        assert_eq!(
+            after.text_instance_rebuilds, warm.text_instance_rebuilds,
+            "a fractionally scrolled container entering or leaving a turn keeps its labels"
+        );
     }
 
     #[test]

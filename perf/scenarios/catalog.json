@@ -37,6 +37,7 @@
     "gpu-scene-text-paint-color",
     "gpu-scene-text-compositor-opacity",
     "gpu-scene-text-compositor-transform",
+    "gpu-scene-text-compositor-slide",
     "gpu-scene-text-constraint-resize"
   ],
   "nana_motion_ids": [

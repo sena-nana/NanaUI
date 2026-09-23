@@ -1179,8 +1179,15 @@ impl TextPresentationGpu {
 /// What a translated run's origin is relative to: the CPU subtracts it when it
 /// writes the run row, the vertex stage adds it back from the presentation
 /// row, and both read this one value, so the two cannot round it apart.
+///
+/// Nearest, not `floor`: the painter snaps a translation to whole device
+/// pixels in logical px, and at 110%, 120%, 175% and other scales
+/// `k / scale * scale` comes back as `k - ulp` for some `k`. Floored, the
+/// whole part would flip between `k - 1` and `k` and a label's phase between
+/// 0.9999999 and 0 — a re-resolve on every frame the float happened to land
+/// low.
 pub(super) fn whole_translation(affine: [f32; 6], scale: f32) -> [f32; 2] {
-    [(affine[4] * scale).floor(), (affine[5] * scale).floor()]
+    [(affine[4] * scale).round(), (affine[5] * scale).round()]
 }
 
 /// sRGB `a<<24 | r<<16 | g<<8 | b`, the form the instance and the retained

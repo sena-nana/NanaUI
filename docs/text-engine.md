@@ -1530,6 +1530,7 @@ instance 里**不再**有位置、颜色和变换——它只有相对 run 原�
 一个 run 行号。所以：
 
 - **移动**（整像素）：改 run row 的两个 float。亚像素移动仍要重解析，因为那真的换了位图。
+  （#223 之后，平移带来的小数由画笔吸附；只有布局位置本身的小数移动仍要重解析。）
 - **改色**：改 run row 的四个 float。纯色文本的字形不带自己的颜色，它们继承 run 行；
   只有 rich span 里与段落色不同的字形才带，改色也只动它自己那一块。
 - **淡入淡出**：run row 的 `opacity`，着色器里乘在 alpha 上。**不再**折进颜色，所以
@@ -2016,15 +2017,63 @@ text_prepare_nodes_considered / skipped / culled
 对齐，恒等时两者相位相同，切换只改 run 行的 flag。一千个标签、每三帧经过一次 0° 的
 旋转：每帧重建 90.5 → 0。
 
-成立条件是容器在恒等那一刻的平移落在整像素上（绕任意原点的旋转在 0° 时平移是 0，
-整像素滚动过的容器也满足）。平移带小数的容器开始或停止变换时，它下面的标签仍会重解析
-一次，并挪动那一点小数——投影路径的相位不能跟着平移走，否则绕中心旋转时平移每帧都变，
+过去的成立条件是容器在恒等那一刻的平移落在整像素上，平移带小数的容器开始或停止变换时，
+下面的标签仍要重解析一次。#223 之后平移路径的平移总被画笔吸附到整像素，相位只来自标签
+自己的位置，和投影路径算出的相同，这一次重解析也没有了
+（`a_container_with_a_fractional_offset_keeps_its_glyphs_as_it_turns`）；剩下的只是吸附掉
+的那不到半个设备像素的位移。投影路径的相位不能跟着平移走，否则绕中心旋转时平移每帧都变，
 就成了每帧重建。
 
 **整像素滚动只改一行。** 平移 run 的原点过去是屏幕上的整像素位置，滚一像素屏上每个
 标签的 run 行都要重写。现在平移的整像素部分放在 presentation 行（同一个滚动容器下的
 标签共用），run 行存相对它的原点，CPU 与着色器读同一个 `whole_translation`。
 一万个标签的 `table-scroll`：每帧 479 KB → 96 B。
+
+**小数平移吸附到设备像素（#223）。** 竖直方向早就零重建，因为行框顶边对齐整像素。
+水平方向没有这一步：滚动偏移不是整物理像素时（触控板平滑滚动；或者在 125%、150%
+这类非整数缩放下滚一个逻辑像素），段落的亚像素相位真的变了，被滚动的每个标签每帧都要
+重新解析。Issue 留下三个问题，决定如下：
+
+- **在哪一层吸附。** 画笔把 scene 变换带进 paint space 的那一处
+  （`clip::paint_transform`）。它是唯一知道设备像素网格的一层。吸附的是图元**最终的**
+  纯平移，不是单独的滚动项；图元的 scissor、片元裁剪和 dest 包裹的额外裁剪
+  （`clip_dests_for`）也走同一个函数。这样 quad、图标、文字、路径网格、HostTexture、
+  CustomRender 挪同样多的整像素，文字不会相对背景抖动。冻结行列用自己的平移抵消滚动，
+  净平移吸附后正好是 0；如果只吸附滚动项，两者会差一个小数，表头每帧抖一像素，还要
+  重新解析。CSS `translate` 也一样吸附：quad、图标和行框本来就各自取整，只有文字 x、
+  路径网格和纹理不取整，现在都在同一个整像素上。
+- **吸附到物理像素，还是保留小数。** 逻辑值保留小数，呈现值吸附。Runtime 的
+  `ScrollOffset`、hit test、无障碍边界和 JS `scrollLeft` 都不变：触控板慢速滚动时，一次
+  增量不到半像素，吸附逻辑值会把它吞掉。命中与画面相差不到半个设备像素，和 quad 自己的
+  边缘取整是同一量级。
+- **动画中和静止后是否不同。** 没有区别，始终吸附。Runtime 没有平滑滚动或惯性动画，惯性
+  就是 OS 连续送来的滚轮增量，也就没有能判定「停下」的时刻；始终吸附，也就不会在停下时
+  为回到精确位置重建一次。
+
+吸附在逻辑 px 里做：`round(e × scale) / scale`。它本身是个 f32，带着自己的舍入误差：
+乘回 scale 时，125%、150%、200% 下正好是整数，110%、120%、175% 等缩放下部分整数差
+一个 ulp；滚到四万像素深处，这点误差是千分之几像素。凡是在网格上取整的地方都要防它：
+
+- 文字 x：相位只取标签自己的位置，平移只贡献整像素；`whole_translation` 从 `floor`
+  改成 `round`，否则差一个 ulp 的那些帧里标签会落在背景左边一像素。
+- quad 的位置、图标与行框的居中取整、裁剪矩形、HostTexture 的两道 scissor（画框与它
+  自带的圆角裁剪）、交给 CustomRender 的 bounds：平移后的位置按 `局部 × scale + 整像素数`
+  算，再回到逻辑 px（`clip::on_grid`），误差只剩结果本身的一两个 ulp。取整时再带一点
+  松弛（`grid_slack`，不小于 quad 着色器的 0.001），平局一律向上取，与 quad 的边一致。
+  150% 下奇数 y 上的 16 px 图标、120% 下正好落在整像素上的裁剪边，都是精确的平局；没有
+  这两步，误差会逐帧替它们选边，图标相对背景跳一像素，被裁的那一列时有时无。
+
+仍然不在同一个整像素上的两处：
+
+- 自己带 GPU 求值 transform 动画的 quad（`motion.wgsl`），叠加量不吸附，而它的文字走
+  CPU 呈现、要吸附，动画进行中两者最多差半个设备像素。它的后代 quad 过去就是吸附的。
+- 原生内容区域（`native_content_regions`）按未吸附的变换定位。
+
+一万个标签，`table-scroll-x`（Runtime 的真实横向滚动，每帧 0.37 px）：每帧重建
+10 001 → 0，resolve 84 030 → 0，instance 上传 3.0 MB → 0，batch p50 8.9 → 4.8 ms（不是同一次运行，只作观察）。
+1.2×、1.75×、2× 同样为 0。presentation 行在吸附后的整像素变化的那些帧上传一次，1× 时
+平均每帧 59 B（160 B × 约 37% 的帧）。画廊 620 张基线无一变化：没有哪一张的最终平移
+带小数。数据在 [performance-data/text-scroll-snap-2026-09-23](performance-data/text-scroll-snap-2026-09-23/)。
 
 **多窗口的计数看得见了。** 重建、上传字节、entry 数这一半计数按 render target 存，
 而 `text_glyph_counters()` 过去只读正在画的那一个——`paint_target` 画完就把窗口状态
@@ -2045,10 +2094,10 @@ entry 回答、陈旧句柄 0。
 cargo run --release --locked -p nana-ui --features gpu \
     --bin nana-text-paint-benchmark -- --output target/performance/issue98/text-paint.json
 
-# #8 的文本门禁（#98 三类 + #99 constraint-only）
+# #8 的文本门禁（#98 三类 + #223 亚像素平移 + #99 constraint-only）
 for id in gpu-scene-text-retained gpu-scene-text-paint-color \
           gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform \
-          gpu-scene-text-constraint-resize; do
+          gpu-scene-text-compositor-slide gpu-scene-text-constraint-resize; do
   python3 perf/runners/nana/run.py --scenario "$id" --output "target/performance/issue98/$id.json"
 done
 python3 perf/contract.py --self-test
@@ -2060,6 +2109,7 @@ python3 perf/contract.py --self-test
 | `gpu-scene-text-paint-color` | 每个标签换前景色 | 塑形、排版（Runtime 与画笔两侧）、栅格化、atlas 上传、instance 重建与上传全为 0；`skipped ≥ 900` |
 | `gpu-scene-text-compositor-opacity` | 容器淡入淡出 | 同上 |
 | `gpu-scene-text-compositor-transform` | 容器在 −1.5° / 0° / +1.5° 间转 | 同上，instance 上传除外（每三帧经过一次恒等） |
+| `gpu-scene-text-compositor-slide`（#223） | 容器每帧用 CSS translate 横移 0.37 px，模拟触控板横向滚动 | 同 paint-color（含 instance 上传为 0，不像 transform 那样豁免） |
 | `gpu-scene-text-constraint-resize`（#99） | 每个标签在两档宽度间交替 | 塑形、需要重新塑形的 layout、画笔自排、栅格化、atlas 上传全为 0；`text_layout_lookups ≥ 900` 证明宽度确实传到了文本。instance 重建不设门 |
 
 场景必须真的在动：`text_ticker` 或 `text_animation` 二选一，extractor 核对报告里回显的
@@ -2091,7 +2141,8 @@ ticker 的文字是定宽的（`tick 0007`）。`tick 9 → tick 10` 会把同�
 
 | 项 | 状态 |
 | --- | --- |
-| 水平方向亚像素移动的零重建（#223） | 竖直方向已经零重建（行框顶边对齐整像素，见「收尾」）。水平方向移动不到整像素时字形的栅格相位真的变了，位图就是不一样的；要零重建只能量化相位或把滚动吸附到整像素，前者会改现有渲染，后者该由滚动容器决定，不该由画笔替它决定。触控板横向滚动因此每帧重解析被滚动的标签（不栅格化，raster cache 里有各个亚像素档） |
+| ~~水平方向亚像素移动的零重建（#223）~~ | 已做：画笔把最终的纯平移吸附到设备像素，逻辑滚动偏移保留小数，见「小数平移吸附到设备像素」 |
+| 编辑器横向滚动仍重解析 | 多行编辑器的横向滚动由 Runtime 直接烘焙进编辑器文本的 bounds（`EditorFrame::text_bounds`），不经过平移，画笔分不出哪一部分是滚动。长行横向小数滚动时，整段每帧重解析一次。要修，得让 Runtime 知道设备网格，或者把编辑器滚动改成平移 |
 | ~~随机长度的 churn 仍会整 arena 重排（#224）~~ | 已做：draw 走按画序的索引表，块搬家只写它自己的块，拆够预算整理的只是索引表，见「arena 与画序索引表」 |
 | 画序整理仍是 O(屏上总槽数)（#224） | instance 字节已经只剩被重建段落自己的块；索引表整理时仍重写每个区间（4 B/槽）。一万标签随机 churn 60 帧平均 65 KB/帧，一千标签 8 KB/帧，跑久了空隙生效后降到 25 KB。验收只约束 instance，索引这一半是摊销意义上成立 |
 | 空隙不回收（#230） | 进入留空隙的布局后，每个空隙槽是顶点阶段照样要跑的一个四角 quad（约多两成索引槽），要等下一次画序整理才可能去掉；文字停止变长以后界面可能很久不再整理。该在稳定若干帧后做一次不留空隙的整理，要先用 A/B 证明那两成顶点真的可测 |

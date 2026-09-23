@@ -15,9 +15,11 @@ ANIMATED_IDS = {
     "gpu-scene-text-paint-color": "color",
     "gpu-scene-text-compositor-opacity": "opacity",
     "gpu-scene-text-compositor-transform": "transform",
+    "gpu-scene-text-compositor-slide": "slide",
     "gpu-scene-text-constraint-resize": "resize",
 }
 RESIZE_ID = "gpu-scene-text-constraint-resize"
+SLIDE_ID = "gpu-scene-text-compositor-slide"
 EXPECTED_TEXT_IDS = {TICKER_ID, *ANIMATED_IDS}
 
 
@@ -265,14 +267,19 @@ def _self_test_retained_text(root: Path) -> list[str]:
                 for row in scenario.get("invariants") or []
             }
             # The #98 paint-only and compositor-only gates, by name.
-            for counter in (
+            required = [
                 "text_nodes_shaped",
                 "text_layouts_created",
                 "paint_shape_cache_misses",
                 "glyph_rasterized",
                 "glyph_upload_bytes",
                 "text_instance_rebuilds",
-            ):
+            ]
+            # #223: a slide moves the labels by whole device pixels, which is
+            # the one shared presentation row and no instance byte at all.
+            if scenario_id == SLIDE_ID:
+                required.append("text_instance_upload_bytes")
+            for counter in required:
                 if counter not in gated:
                     errors.append(f"{scenario_id} must gate {counter}")
 

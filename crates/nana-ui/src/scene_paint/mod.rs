@@ -23,6 +23,8 @@ pub use self::text::TextGlyphCounters;
 pub(crate) mod url_texture_cache;
 mod validate;
 
+pub(crate) use clip::{covered_span, is_translation_projective, on_grid};
+
 use std::{sync::Arc, time::Instant};
 
 use nana_ui_core::GpuWorkObservation;
@@ -47,7 +49,7 @@ pub use validate::{HostTextureSceneResolver, ScenePaintError};
 
 use backdrop::BackdropPipeline;
 use clip::{
-    FragmentClip, LogicalRect, extra_fragment_clips, fragment_clip, intersect_clips,
+    FragmentClip, LogicalRect, PaintOrigin, extra_fragment_clips, fragment_clip, intersect_clips,
     intersect_physical, local_rect, mesh_extra_fragment_clips, overlaps_physical, paint_origin,
     paint_transform, physical_bounds, physical_scissor, transformed_aabb,
     transformed_aabb_projective, union_physical,
@@ -530,7 +532,7 @@ impl SceneWgpuPainter {
             viewport.target_origin[0] * scale,
             viewport.target_origin[1] * scale,
         ];
-        let origin = paint_origin([0.0, 0.0], viewport.scene_origin);
+        let origin = PaintOrigin::new(paint_origin([0.0, 0.0], viewport.scene_origin), scale);
         let viewport_clip = LogicalRect::viewport([0.0, 0.0], viewport.logical_size);
         let gpu_work = GpuWorkSink::new();
         let clear = wgpu::Color {
@@ -612,7 +614,7 @@ impl SceneWgpuPainter {
             )
         } else {
             let batch_started = Instant::now();
-            self.quads.begin_frame();
+            self.quads.begin_frame(scale);
             self.host_textures.begin_frame();
             self.meshes.begin_frame();
             self.icons.begin_frame(dest_physical);
@@ -1359,7 +1361,7 @@ impl SceneWgpuPainter {
                                 custom: custom.clone(),
                                 opacity,
                             };
-                            let custom_bounds = custom_paint_bounds(bounds, affine, persp);
+                            let custom_bounds = custom_paint_bounds(bounds, affine, persp, scale);
                             renderer.prepare(
                                 &node,
                                 SceneGpuPrepareContext {
@@ -1669,9 +1671,16 @@ fn mesh_affine(affine: [f32; 6], persp: [f32; 2]) -> [f32; 6] {
 
 /// Non-HostTexture custom renderers have no projective VS. Identity dest
 /// when `(g,h)` is live; 2D affine still maps the AABB.
-fn custom_paint_bounds(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -> LogicalRect {
+fn custom_paint_bounds(
+    bounds: LogicalRect,
+    affine: [f32; 6],
+    persp: [f32; 2],
+    scale: f32,
+) -> LogicalRect {
     if persp[0].abs() > 1e-8 || persp[1].abs() > 1e-8 {
         bounds
+    } else if clip::is_translation_projective(affine, persp) {
+        clip::translated_on_grid(bounds, affine, scale)
     } else {
         transformed_aabb(bounds, affine)
     }
@@ -1680,7 +1689,7 @@ fn custom_paint_bounds(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2]) -
 fn clip_dests_for(
     kind: &ScenePrimitiveKind,
     clips: &[nana_ui_scene::ClipRegion],
-    origin: [f32; 2],
+    origin: PaintOrigin,
 ) -> Vec<FragmentClip> {
     // Custom has no vertex clip so wrap every rotated parallelogram; built-ins wrap extras only.
     let keep_innermost = matches!(
@@ -1751,7 +1760,7 @@ fn sync_opacity_groups(
     uniforms: &mut Vec<GroupSlot>,
     needed: &[nana_ui_scene::OpacityGroup],
     scene: &nana_ui_scene::UiScene,
-    origin: [f32; 2],
+    origin: PaintOrigin,
     scale: f32,
 ) -> bool {
     let common = stack
@@ -1780,7 +1789,7 @@ fn sync_opacity_groups(
 fn dest_group_slot(
     group: &nana_ui_scene::OpacityGroup,
     scene: &nana_ui_scene::UiScene,
-    origin: [f32; 2],
+    origin: PaintOrigin,
     scale: f32,
 ) -> GroupSlot {
     let filter = group.filter;
@@ -1791,8 +1800,8 @@ fn dest_group_slot(
             .map(|bounds| {
                 clip::FragmentClip {
                     rect: [
-                        bounds.x - origin[0] - pad,
-                        bounds.y - origin[1] - pad,
+                        bounds.x - origin.offset[0] - pad,
+                        bounds.y - origin.offset[1] - pad,
                         (bounds.width + pad * 2.0).max(0.0),
                         (bounds.height + pad * 2.0).max(0.0),
                     ],

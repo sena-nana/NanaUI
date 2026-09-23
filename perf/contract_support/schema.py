@@ -816,8 +816,9 @@ def _size2(value: Any) -> bool:
 
 
 # What `nana-gpu-scene-benchmark` can animate about the labels besides their
-# text: the #98 paint-only and compositor-only gates.
-_UI_ONLY_TEXT_ANIMATIONS = frozenset({"color", "opacity", "transform", "resize"})
+# text: the #98 paint-only and compositor-only gates, #223's sub-pixel slide
+# and #99's constraint-only resize.
+_UI_ONLY_TEXT_ANIMATIONS = frozenset({"color", "opacity", "transform", "slide", "resize"})
 _UI_ONLY_NODE_KINDS = {"list", "text", "gpu-texture-view", "gpu-view", "icon", "button"}
 
 _UI_ONLY_GPU_NODE_KINDS = {"gpu-texture-view", "gpu-view"}

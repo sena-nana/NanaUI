@@ -113,7 +113,11 @@ impl HostTexturePipeline {
             physical_size,
             gpu_work,
         );
-        let world = clip::transformed_aabb_projective(bounds, affine, persp);
+        let world = if clip::is_translation_projective(affine, persp) {
+            clip::translated_on_grid(bounds, affine, scale_factor)
+        } else {
+            clip::transformed_aabb_projective(bounds, affine, persp)
+        };
         let painted = [
             physical_extent(world.width, scale_factor),
             physical_extent(world.height, scale_factor),

@@ -308,7 +308,7 @@ jobs:
           for scenario in \
             gpu-scene-text-retained gpu-scene-text-paint-color \
             gpu-scene-text-compositor-opacity gpu-scene-text-compositor-transform \
-            gpu-scene-text-constraint-resize
+            gpu-scene-text-compositor-slide gpu-scene-text-constraint-resize
           do
             python3 perf/runners/nana/run.py --scenario "$scenario" \
               --from-report "perf/fixtures/nana-${scenario}.json" \

@@ -1769,7 +1769,7 @@ fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
     assert!(
         super::clip::rotated_fragment_clips(
             &child.clips,
-            super::clip::paint_origin([0.0, 0.0], [0.0, 0.0])
+            super::clip::PaintOrigin::from(super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]))
         )
         .len()
             >= 2,
@@ -1881,7 +1881,7 @@ fn rotated_clip_does_not_paint_custom_in_aabb_outside_rect() {
 
 #[test]
 fn axis_aligned_clips_do_not_dest_wrap() {
-    let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+    let origin = super::clip::PaintOrigin::from(super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
     let aligned = [ClipRegion {
         bounds: SceneRect {
             x: 10.0,
@@ -1983,7 +1983,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
 
 #[test]
 fn mesh_polygon_clip_stays_in_gpu_clip_not_dest() {
-    let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+    let origin = super::clip::PaintOrigin::from(super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
     let polygon = [ClipRegion {
         bounds: SceneRect {
             x: 0.0,
@@ -3045,7 +3045,7 @@ fn labeled_selected_button_scene() -> UiScene {
 }
 
 fn nested_rotated_overflow_probe(clips: &[ClipRegion]) -> (u32, u32) {
-    let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+    let origin = super::clip::PaintOrigin::from(super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
     let aabb = super::clip::intersect_clips(
         super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
         clips,
@@ -3096,7 +3096,7 @@ fn aabb_outside_rotated_overflow_probe() -> (u32, u32) {
         corner_radius: 0.0,
         polygon_clip: None,
     }];
-    let origin = super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]);
+    let origin = super::clip::PaintOrigin::from(super::clip::paint_origin([0.0, 0.0], [0.0, 0.0]));
     let aabb = super::clip::intersect_clips(
         super::clip::LogicalRect::viewport([0.0, 0.0], [64.0, 64.0]),
         &clips,
@@ -6935,7 +6935,7 @@ fn quad_color_batch_uploads_only_changed_instances() {
     let bounds =
         |index: usize| super::clip::LogicalRect::from_xywh(index as f32 * 8.0, 0.0, 6.0, 6.0);
     let push_batch = |pipeline: &mut super::quad::QuadPipeline, colors: &[[f32; 4]]| {
-        pipeline.begin_frame();
+        pipeline.begin_frame(1.0);
         for (index, color) in colors.iter().enumerate() {
             pipeline.push(
                 &device,
@@ -9559,4 +9559,229 @@ fn a_stroked_rectangle_drawn_as_a_quad_straddles_its_outline() {
     assert_eq!(at(7, 30), [0, 0, 0, 255], "nothing outside the stroke");
     // A miter join keeps the corner square.
     assert_eq!(at(8, 8), [255, 0, 0, 255], "square outer corner");
+}
+
+/// A 16 px label under `parent`, for the scroll tests below.
+fn scrolled_label(value: u64, parent: u64, x: f32, y: f32, content: &str) -> ExtractedNode {
+    let mut node = overflowing_text_child(value, parent, x, y, 64.0, 24.0, [1.0; 4]);
+    node.style = Arc::new(ComputedStyle {
+        color: Some([1.0; 4]),
+        font_size: 16.0,
+        ..ComputedStyle::default()
+    });
+    node.text = Some(TextContent {
+        value: content.into(),
+    });
+    node
+}
+
+fn child_of(mut node: ExtractedNode, parent: u64) -> ExtractedNode {
+    node.parent = Some(StableNodeId::new(parent).unwrap());
+    node
+}
+
+/// A viewport scrolled horizontally by `offset`, holding a quad and a label at
+/// fractional layout positions, as flex leaves them, and a nested `overflow:
+/// hidden` card whose edges come from its clip and sit on whole device pixels
+/// at every scale tested — where a snapped translation's ulps would decide
+/// which side of the edge the scissor lands on. All of it `start` px into the
+/// scrolled content, and the viewport scrolled `start + offset` to reach it.
+fn horizontally_scrolled_scene(start: f32, offset: f32) -> [ExtractedNode; 5] {
+    let mut viewport = overflow_parent(1, &[2, 3, 4], 0.0, 0.0, 160.0, 48.0, None);
+    viewport.scroll_offset = nana_ui_runtime::ScrollOffset {
+        x: start + offset,
+        y: 0.0,
+    };
+    let mut card = overflow_parent(4, &[5], start + 80.0, 6.3, 40.0, 20.2, None);
+    card.parent = Some(StableNodeId::new(1).unwrap());
+    [
+        viewport,
+        child_of(
+            colored_quad_node(2, start + 20.3, 4.6, 30.4, 12.2, [1.0, 0.0, 0.0, 1.0]),
+            1,
+        ),
+        scrolled_label(3, 1, start + 24.6, 20.3, "Scroll"),
+        card,
+        child_of(
+            colored_quad_node(5, start + 70.0, 0.0, 80.0, 40.0, [0.0, 1.0, 0.0, 1.0]),
+            4,
+        ),
+    ]
+}
+
+#[test]
+fn a_fractional_scroll_moves_quads_text_and_clips_by_the_same_whole_pixels() {
+    let (device, queue) = test_device();
+    // Whole-pixel steps at 1x; at 120% and 175% the snapped translation comes
+    // back through the scale an ulp off the pixel, which must not show — nor
+    // forty thousand pixels into the content, where the translation's own
+    // rounding error is thousandths of a pixel.
+    for (scale, start) in [1.0f32, 1.2, 1.75]
+        .into_iter()
+        .flat_map(|scale| [(scale, 0.0f32), (scale, 40_000.0)])
+    {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let logical = [160.0, 48.0];
+        let physical = [
+            (logical[0] * scale).round() as u32,
+            (logical[1] * scale).round() as u32,
+        ];
+        let mut scene = UiScene::new();
+        scene.apply_delta(horizontally_scrolled_scene(start, 0.0), []);
+        let still = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            logical,
+            physical,
+            scale,
+        );
+        let warm = painter.text_glyph_counters();
+        for step in 1..24 {
+            let offset = step as f32 * 0.37;
+            // Only the viewport changes: the scroll takes the Scene's fast
+            // path, and its descendants are rebased rather than rebuilt.
+            let [viewport, ..] = horizontally_scrolled_scene(start, offset);
+            scene.apply_delta([viewport], []);
+            let pixels = paint_scene_rgba(
+                &device,
+                &queue,
+                &mut painter,
+                &scene,
+                logical,
+                physical,
+                scale,
+            );
+            // Everything under the scroll lands `shift` device pixels left
+            // of where it stood: the same whole pixels for the quad, the
+            // label and the card's clipped edges.
+            let shift = ((start + offset) * scale).round() - (start * scale).round();
+            let shift = shift as u32;
+            for y in 0..physical[1] {
+                for x in 0..physical[0] - shift {
+                    assert_eq!(
+                        pixel(&pixels, physical[0], x, y),
+                        pixel(&still, physical[0], x + shift, y),
+                        "at {scale}x scrolled {offset}, ({x},{y}) is not ({},{y}) moved \
+                         {shift} px: something under the scroll moved by a different amount",
+                        x + shift
+                    );
+                }
+            }
+        }
+        let after = painter.text_glyph_counters();
+        assert_eq!(
+            after.text_instance_rebuilds, warm.text_instance_rebuilds,
+            "a fractional scroll at {scale}x, {start} px in, must not re-resolve the label (#223)"
+        );
+        assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
+    }
+}
+
+#[test]
+fn a_frozen_row_stays_put_under_a_fractional_scroll() {
+    let (device, queue) = test_device();
+    for scale in [1.0f32, 1.2, 1.75] {
+        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let logical = [160.0, 48.0];
+        let physical = [
+            (logical[0] * scale).round() as u32,
+            (logical[1] * scale).round() as u32,
+        ];
+        // A frozen column cancels its scroller's offset with a translation of
+        // its own, as a virtualized table's does. Snapping the scroll term on
+        // its own would leave the two a fraction apart, and the column would
+        // shimmer by a pixel and re-resolve its labels on every frame.
+        let frozen = |offset: f32| {
+            let mut viewport = overflow_parent(1, &[2], 0.0, 0.0, 160.0, 48.0, None);
+            viewport.scroll_offset = nana_ui_runtime::ScrollOffset { x: offset, y: 0.0 };
+            let mut column = overflow_parent(
+                2,
+                &[3, 4],
+                10.3,
+                2.6,
+                64.4,
+                40.2,
+                Some(PaintTransform {
+                    e: offset,
+                    ..PaintTransform::default()
+                }),
+            );
+            column.parent = Some(StableNodeId::new(1).unwrap());
+            [
+                viewport,
+                column,
+                child_of(
+                    colored_quad_node(3, 12.7, 4.6, 30.4, 12.2, [1.0, 0.0, 0.0, 1.0]),
+                    2,
+                ),
+                scrolled_label(4, 2, 14.6, 20.3, "Frozen"),
+            ]
+        };
+        let mut scene = UiScene::new();
+        scene.apply_delta(frozen(0.0), []);
+        let still = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut painter,
+            &scene,
+            logical,
+            physical,
+            scale,
+        );
+        let warm = painter.text_glyph_counters();
+        for step in 1..24 {
+            let offset = step as f32 * 0.37;
+            let [viewport, column, ..] = frozen(offset);
+            scene.apply_delta([viewport, column], []);
+            let pixels = paint_scene_rgba(
+                &device,
+                &queue,
+                &mut painter,
+                &scene,
+                logical,
+                physical,
+                scale,
+            );
+            assert!(
+                pixels == still,
+                "at {scale}x scrolled {offset}, the frozen column moved"
+            );
+        }
+        assert_eq!(
+            painter.text_glyph_counters().text_instance_rebuilds,
+            warm.text_instance_rebuilds,
+            "a frozen label under a fractional scroll keeps its glyphs at {scale}x"
+        );
+    }
+}
+
+#[test]
+fn a_custom_node_moves_by_the_scrolls_whole_pixels() {
+    // What a custom renderer is told it covers, forty thousand pixels down a
+    // scroll at 110%: the same whole pixels a quad there moves by, however the
+    // snapped translation's own rounding error falls.
+    let scale = 1.1;
+    let origin = super::clip::PaintOrigin::new([0.0, 0.0], scale);
+    let bounds = LogicalRect::from_xywh(0.0, 40_000.0, 50.0, 50.0);
+    let covered = |offset: f32| {
+        let affine = super::clip::paint_affine([1.0, 0.0, 0.0, 1.0, 0.0, -offset], origin);
+        let rect = super::clip::physical_bounds(
+            super::custom_paint_bounds(bounds, affine, [0.0; 2], scale),
+            scale,
+            PhysicalRect {
+                x: 0,
+                y: 0,
+                width: u32::MAX,
+                height: u32::MAX,
+            },
+        );
+        (rect.y as f32, rect.height, (affine[5] * scale).round())
+    };
+    let (top, height, from) = covered(39_800.0);
+    for step in 1..300 {
+        let (moved, moved_height, to) = covered(39_800.0 + step as f32 * 0.37);
+        assert_eq!((moved, moved_height), (top + to - from, height));
+    }
 }

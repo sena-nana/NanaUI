@@ -146,6 +146,9 @@ pub(super) struct QuadPipeline {
     motion_dummy: wgpu::BindGroup,
     motion_ids: (u32, u32),
     motion_origin: [f32; 2],
+    /// Physical px per logical px this frame: the grid a translated quad's
+    /// position is put on (`clip::on_grid`).
+    grid_scale: f32,
 }
 
 impl QuadPipeline {
@@ -344,10 +347,12 @@ impl QuadPipeline {
             motion_dummy,
             motion_ids: (0, 0),
             motion_origin: [0.0, 0.0],
+            grid_scale: 1.0,
         }
     }
 
-    pub(super) fn begin_frame(&mut self) {
+    pub(super) fn begin_frame(&mut self, scale: f32) {
+        self.grid_scale = scale;
         self.pending.clear();
         self.pending_paint.clear();
         self.pending_urls.clear();
@@ -449,7 +454,10 @@ impl QuadPipeline {
             super::clip::is_translation_projective(affine, persp) && self.motion_ids.0 == 0;
         let (position, instance_affine, instance_persp, pixel_snap) = if translation {
             (
-                [bounds.x + affine[4], bounds.y + affine[5]],
+                [
+                    super::clip::on_grid(bounds.x, affine[4], self.grid_scale),
+                    super::clip::on_grid(bounds.y, affine[5], self.grid_scale),
+                ],
                 super::clip::IDENTITY_AFFINE,
                 [0.0, 0.0],
                 1u32,
@@ -1524,14 +1532,14 @@ fn stable_frames_reuse_bind_groups_and_storage_growth_rebinds() {
     let mut pipeline = QuadPipeline::new(&device, wgpu::TextureFormat::Rgba8Unorm);
     let initial = pipeline.url_bind_groups.get(&None).unwrap().clone();
     for _ in 0..3 {
-        pipeline.begin_frame();
+        pipeline.begin_frame(1.0);
         pipeline.pending.push(SolidInstance::zeroed());
         pipeline.pending_paint.push(QuadPaintData::zeroed());
         pipeline.pending_urls.push(None);
         pipeline.upload(&device, &queue, [64, 64], 1.0, None);
         assert_eq!(pipeline.url_bind_groups.get(&None), Some(&initial));
     }
-    pipeline.begin_frame();
+    pipeline.begin_frame(1.0);
     let count = pipeline.paint_capacity + 1;
     pipeline.pending.resize(count, SolidInstance::zeroed());
     pipeline

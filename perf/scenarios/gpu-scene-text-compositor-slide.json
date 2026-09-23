@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "id": "gpu-scene-text-compositor-slide",
+  "kind": "GpuScene",
+  "params": {
+    "composition": "UiOnly",
+    "viewport": [
+      1280,
+      800
+    ],
+    "host_texture": {
+      "slot": "content",
+      "width": 320,
+      "height": 180
+    },
+    "ui_nodes": [
+      "list",
+      "text",
+      "gpu-texture-view"
+    ],
+    "node_repeat": {
+      "text": 1000
+    },
+    "text_animation": "slide"
+  },
+  "record": [
+    "batch",
+    "gpu_upload",
+    "encode",
+    "submit",
+    "work_counters"
+  ],
+  "invariants": [
+    {
+      "name": "text_compositor_slide_shapes_nothing",
+      "path": "text_counters.text_nodes_shaped",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The Runtime measured no text node again: nothing about what any label says changed."
+    },
+    {
+      "name": "text_compositor_slide_lays_out_nothing",
+      "path": "text_counters.text_layouts_created",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No paragraph was laid out again, by the Runtime or by the painter."
+    },
+    {
+      "name": "text_compositor_slide_paint_lays_out_nothing",
+      "path": "text_counters.paint_shape_cache_misses",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "The painter drew every label from a layout it already held."
+    },
+    {
+      "name": "text_compositor_slide_rasterizes_nothing",
+      "path": "text_counters.glyph_rasterized",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No glyph bitmap was produced: the labels move by whole device pixels, at the sub-pixel bins they were rasterized for."
+    },
+    {
+      "name": "text_compositor_slide_uploads_no_atlas_region",
+      "path": "text_counters.glyph_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No atlas region reached the GPU."
+    },
+    {
+      "name": "text_compositor_slide_rebuilds_no_entry",
+      "path": "text_counters.text_instance_rebuilds",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "Every label was answered by its retained entry: the painter snaps the slide to whole device pixels, so no label's sub-pixel phase changed and none was resolved again (#223)."
+    },
+    {
+      "name": "text_compositor_slide_uploads_no_instance",
+      "path": "text_counters.text_instance_upload_bytes",
+      "op": "lte",
+      "value": 0,
+      "status": "required",
+      "note": "No instance byte reached the GPU: a whole-pixel move rewrites the one presentation row the labels share, not their runs or glyphs."
+    },
+    {
+      "name": "text_compositor_slide_answers_nodes_from_entries",
+      "path": "text_counters.text_prepare_nodes_skipped",
+      "op": "gte",
+      "value": 900,
+      "status": "required",
+      "note": "Nodes that reached a draw without resolving a glyph. Missing stays not-evaluable and must never be read as 0."
+    }
+  ],
+  "notes": "Issue #223 sub-pixel gate. The list holding a thousand labels slides sideways by 0.37 px a frame, the way a trackpad scrolls, so its translation is almost never a whole pixel. The painter draws a pure translation on whole device pixels while the Runtime keeps the fraction; the labels keep their sub-pixel phase and every one is answered by its retained entry: no shape, no layout, no raster, no atlas upload, no instance rebuild or upload. Work counters are the gate; the timings are host observation. Not Issue #8 weekly DoD and has no Iced/GPUI analog."
+}

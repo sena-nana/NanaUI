@@ -777,8 +777,8 @@ fn icon_quad(bounds: LogicalRect, affine: [f32; 6], persp: [f32; 2], scale: f32)
     let x = bounds.x + (bounds.width - extent) * 0.5;
     let y = bounds.y + (bounds.height - extent) * 0.5;
     if clip::is_translation_projective(affine, persp) {
-        let [cx, cy] =
-            clip::transform_point_projective(affine, persp, x + extent * 0.5, y + extent * 0.5);
+        let cx = clip::on_grid(x + extent * 0.5, affine[4], scale);
+        let cy = clip::on_grid(y + extent * 0.5, affine[5], scale);
         let (x0, px) = clip::snap_centered_origin(cx, extent, scale);
         let (y0, _) = clip::snap_centered_origin(cy, extent, scale);
         [[x0, y0], [x0 + px, y0], [x0, y0 + px], [x0 + px, y0 + px]]
@@ -804,6 +804,31 @@ fn rasterize_icon(svg: &str, pixel_size: u32) -> Option<Vec<u8>> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scrolled_icon_moves_by_the_scrolls_whole_pixels() {
+        // A 16 px icon at an odd y at 150% is exactly on a tie of the grid.
+        // Forty thousand pixels down a list the snapped translation's own
+        // rounding error would pick its side frame by frame; the icon must
+        // move by the whole pixels its quad does, and no other amount.
+        let scale = 1.5;
+        let origin = clip::PaintOrigin::new([0.0, 0.0], scale);
+        let bounds = LogicalRect::from_xywh(0.0, 40_001.0, 16.0, 16.0);
+        let top = |offset: f32| {
+            let affine = clip::paint_affine([1.0, 0.0, 0.0, 1.0, 0.0, -offset], origin);
+            (icon_quad(bounds, affine, [0.0; 2], scale)[0][1], affine[5])
+        };
+        let (still, from) = top(39_900.0);
+        for step in 1..300 {
+            let (moved, to) = top(39_900.0 + step as f32 * 0.37);
+            assert_eq!(
+                moved,
+                still + ((to - from) * scale).round(),
+                "scrolled {} px",
+                step as f32 * 0.37
+            );
+        }
+    }
 
     #[test]
     fn icon_svg_rasterizes_coverage() {
