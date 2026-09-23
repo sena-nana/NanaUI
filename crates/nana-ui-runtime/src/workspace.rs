@@ -515,6 +515,11 @@ impl Default for Workspace {
 }
 
 impl ComponentView for Workspace {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "workspace".into(),
@@ -1256,7 +1261,7 @@ mod tests {
             })
             .unwrap();
         context.assemble_workspace(workspace).unwrap();
-        context.update_component(workspace, |_, _| ()).unwrap();
+        context.reproject_component(workspace).unwrap();
         assert_eq!(context.world().text(text.stable_id()), Some("after"));
         assert_eq!(
             context

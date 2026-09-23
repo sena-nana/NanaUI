@@ -4285,7 +4285,7 @@ mod completion_tests {
                 .advance_focused_text_snippet(document, false)
                 .unwrap()
         );
-        context.update_component(area, |_, _| {}).unwrap();
+        context.reproject_component(area).unwrap();
         assert!(context.focused_text_completion_active(document));
         assert!(
             context

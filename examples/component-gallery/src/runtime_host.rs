@@ -275,7 +275,7 @@ pub(super) fn runtime_pointer(phase: PointerPhase, point: LogicalPoint, button: 
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct HostStack {
     direction: FlexDirection,
     gap: f32,

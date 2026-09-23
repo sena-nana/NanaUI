@@ -348,20 +348,25 @@ impl ComponentView for SearchDropdown {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
-        if world.text(id) != Some(label.as_ref()) {
-            mutations.set_text(
-                id,
-                TextContent {
-                    value: label.to_string(),
-                },
-            );
-        }
+        // While open the query input owns the node text; `SetTextInput`
+        // rewrites it either way, so the label goes in after the input is gone.
         if self.opened && !self.inactive() {
             if world.text_input(id) != Some(&self.state) {
                 mutations.set_text_input(id, Some(self.state.clone()));
             }
-        } else if world.text_input(id).is_some() {
-            mutations.set_text_input(id, None);
+        } else {
+            let had_input = world.text_input(id).is_some();
+            if had_input {
+                mutations.set_text_input(id, None);
+            }
+            if had_input || world.text(id) != Some(label.as_ref()) {
+                mutations.set_text(
+                    id,
+                    TextContent {
+                        value: label.to_string(),
+                    },
+                );
+            }
         }
         let mut style = self.style.clone();
         style.foreground = Some(if self.inactive() || placeholder {

@@ -203,13 +203,18 @@ pub struct NativeMarkdown {
     pub style: NodeStyle,
 }
 
+/// Every field `project` reads takes part: `AppContext::update_component`
+/// skips projection when a component compares equal to what it was. The
+/// selection group is shared state, so it compares by identity.
 impl PartialEq for NativeMarkdown {
     fn eq(&self, other: &Self) -> bool {
         self.blocks == other.blocks
+            && self.source == other.source
+            && self.selection.id == other.selection.id
+            && self.fence_children == other.fence_children
+            && self.style == other.style
     }
 }
-
-impl Eq for NativeMarkdown {}
 
 impl Default for NativeMarkdown {
     fn default() -> Self {
@@ -869,6 +874,11 @@ impl ComponentView for NativeMarkdown {
         }
     }
 
+    /// The selection lives in the shared [`TextSelectionGroup`].
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let plain = self.plain_text();
         if world.text(id) != Some(plain.as_str()) {
@@ -1278,13 +1288,14 @@ pub struct SelectableRichText {
     pub style: NodeStyle,
 }
 
+/// See [`NativeMarkdown`]'s `PartialEq`: every projected field takes part.
 impl PartialEq for SelectableRichText {
     fn eq(&self, other: &Self) -> bool {
         self.spans == other.spans
+            && self.selection.id == other.selection.id
+            && self.style == other.style
     }
 }
-
-impl Eq for SelectableRichText {}
 
 impl SelectableRichText {
     pub fn new(spans: impl IntoIterator<Item = RichSpan>) -> Self {
@@ -1388,6 +1399,11 @@ impl ComponentView for SelectableRichText {
         NodeKind::Element {
             tag: "rich-text".into(),
         }
+    }
+
+    /// The selection lives in the shared [`TextSelectionGroup`].
+    fn always_reproject() -> bool {
+        true
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {

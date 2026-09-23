@@ -185,7 +185,7 @@ fn native_html_input(value: &str) -> (NanaTreeDocument, NodeHandle) {
     (doc, input)
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ProbeCard {
     title: String,
 }

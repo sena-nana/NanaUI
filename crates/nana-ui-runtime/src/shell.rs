@@ -329,6 +329,11 @@ impl AppTitleBar {
 }
 
 impl ComponentView for AppTitleBar {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "app-title-bar".into(),
@@ -698,6 +703,11 @@ impl Default for AppShell {
 }
 
 impl ComponentView for AppShell {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "app-shell".into(),
@@ -738,7 +748,7 @@ impl ComponentView for AppShell {
 ///
 /// Wires host-mounted [`AppTitleBar`], [`Workspace`], [`AppShell`] layout, and
 /// [`OverlayHost`]. Application content stays in the supplied region slots.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DesktopShell {
     pub title_bar: Option<StableNodeId>,
     pub workspace: Option<StableNodeId>,
@@ -915,6 +925,11 @@ impl Default for DesktopShell {
 }
 
 impl ComponentView for DesktopShell {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "desktop-shell".into(),
@@ -982,7 +997,7 @@ impl AppContext {
         }
         let children = app_shell_child_ids(title_bar, body, overlay);
         changed |= reconcile_ids(self, parent, &children)?;
-        self.update_component(shell, |_, _| {})?;
+        self.reproject_component(shell)?;
         if let Some(title_bar) = title_bar {
             changed |= self
                 .assemble_app_title_bar(Entity::<AppTitleBar>::from_stable_id(title_bar))
@@ -1115,7 +1130,7 @@ impl AppContext {
         changed |= reconcile_ids(self, center_slot, &center_children)?;
         changed |= reconcile_ids(self, trailing_slot, &trailing_children)?;
         changed |= reconcile_ids(self, parent, &[leading_slot, center_slot, trailing_slot])?;
-        self.update_component(bar, |_, _| {})?;
+        self.reproject_component(bar)?;
         Ok(changed)
     }
 
@@ -1235,7 +1250,7 @@ impl AppContext {
         changed |= reconcile_ids(self, overlay_id, &assembled.overlays)?;
         changed |= reconcile_ids(self, status_id, &assembled.status_overlays)?;
         if changed || chrome_changed {
-            self.update_component(shell, |_, _| {})?;
+            self.reproject_component(shell)?;
         }
         Ok(changed || chrome_changed || slots_changed)
     }
@@ -3078,8 +3093,8 @@ mod tests {
             )
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(bar, |_, _| {}).unwrap();
-        context.update_component(shell, |_, _| {}).unwrap();
+        context.reproject_component(bar).unwrap();
+        context.reproject_component(shell).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 

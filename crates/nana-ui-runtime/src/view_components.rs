@@ -219,7 +219,13 @@ fn project_text_field(
 /// A Nana-native component projects its state into the retained runtime. The
 /// backend consumes the resulting UiWorld/UiScene data; no renderer type is
 /// part of this contract.
-pub trait ComponentView: Clone + Send + 'static {
+///
+/// `PartialEq` decides whether an [`update_component`] changed anything: a
+/// component equal to what it was before the update is not projected again.
+/// Every field [`Self::project`] reads must take part in the comparison.
+///
+/// [`update_component`]: crate::AppContext::update_component
+pub trait ComponentView: Clone + PartialEq + Send + 'static {
     /// Apply declarative properties to a retained component. Stateful controls
     /// override this to preserve interaction state; explicit `update_component`
     /// remains available when the caller intends to replace that state.
@@ -294,6 +300,23 @@ pub trait ComponentView: Clone + Send + 'static {
     /// shaped, so without this its first measurement is the estimate and
     /// stays one until its data next changes. Defaults to `false`.
     fn wants_text_backend_reproject() -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
+
+    /// Whether [`Self::project`] depends on something `PartialEq` cannot see
+    /// change, so an update that leaves the component equal must still
+    /// project it:
+    ///
+    /// - state shared behind interior mutability, which a clone shares;
+    /// - styles it patches onto nodes other components own and project (a
+    ///   container making the content it hosts fill its box), which their
+    ///   own projections overwrite.
+    ///
+    /// Defaults to `false`.
+    fn always_reproject() -> bool
     where
         Self: Sized,
     {
@@ -1067,7 +1090,9 @@ impl ComponentView for Card {
     }
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
-        if world.text(id) != self.title.as_deref() {
+        // An untitled card's node text is empty, not absent: comparing the
+        // `Option` would rewrite "" on every projection.
+        if world.text(id) != Some(self.title.as_deref().unwrap_or_default()) {
             mutations.set_text(
                 id,
                 TextContent {
@@ -2386,9 +2411,12 @@ impl ComponentView for TextArea {
         // 补全候选喂入：列表未变（指针或内容相等）时不下发变更，会话的
         // 键盘选中/滚动原样保留；空列表由世界侧移除会话（弹层关闭）。
         {
-            let fed_unchanged = world.text_completion_items(id).is_some_and(|fed| {
-                Arc::ptr_eq(fed, offered_completions) || fed == offered_completions
-            });
+            // No session and nothing to offer is already the fed state: an
+            // empty list would only remove a session that is not there.
+            let fed_unchanged = match world.text_completion_items(id) {
+                Some(fed) => Arc::ptr_eq(fed, offered_completions) || fed == offered_completions,
+                None => offered_completions.is_empty(),
+            };
             if !fed_unchanged {
                 mutations.set_text_input_completions(id, Arc::clone(offered_completions));
             }

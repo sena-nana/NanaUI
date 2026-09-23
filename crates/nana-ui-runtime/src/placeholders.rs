@@ -503,8 +503,8 @@ mod tests {
             .create_component(document(), LevelMeter::new(0.3))
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(skeleton, |_, _| {}).unwrap();
-        context.update_component(meter, |_, _| {}).unwrap();
+        context.reproject_component(skeleton).unwrap();
+        context.reproject_component(meter).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 }

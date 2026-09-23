@@ -37,7 +37,7 @@ const PANE_GAP: f32 = nana_ui_core::space::SM;
 /// the shell adds none. The `tabs` row hosts chrome without a card surface, so
 /// its shell applies that inset itself — that is what keeps tab labels and
 /// selection pills on the card content line instead of the card box line.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PaneSection {
     pub header: Option<StableNodeId>,
     pub tabs: Option<StableNodeId>,
@@ -219,7 +219,7 @@ fn slot_style(kind: SlotKind, hidden: bool) -> NodeStyle {
 
 /// Slot shell owned by the section. The section writes pane geometry onto it;
 /// nothing else touches style, so the section stays the single style writer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct PaneSectionSlot;
 
 impl ComponentView for PaneSectionSlot {
@@ -386,7 +386,7 @@ impl AppContext {
                 changed |= reconcile_ids(self, slot, &[content])?;
             }
         }
-        self.update_component(section, |_, _| {})?;
+        self.reproject_component(section)?;
         Ok(changed)
     }
 }

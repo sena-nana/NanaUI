@@ -417,31 +417,25 @@ impl AppContext {
             .get(&root)
             .is_some_and(|view| view.is::<crate::ActionMenu>())
         {
-            self.update_component(Entity::<crate::ActionMenu>::from_stable_id(root), |_, _| {})?;
+            self.reproject_component(Entity::<crate::ActionMenu>::from_stable_id(root))?;
         } else if self
             .views
             .get(&root)
             .is_some_and(|view| view.is::<crate::Popover>())
         {
-            self.update_component(Entity::<crate::Popover>::from_stable_id(root), |_, _| {})?;
+            self.reproject_component(Entity::<crate::Popover>::from_stable_id(root))?;
         } else if self
             .views
             .get(&root)
             .is_some_and(|view| view.is::<crate::AnchoredActionMenu>())
         {
-            self.update_component(
-                Entity::<crate::AnchoredActionMenu>::from_stable_id(root),
-                |_, _| {},
-            )?;
+            self.reproject_component(Entity::<crate::AnchoredActionMenu>::from_stable_id(root))?;
         } else if self
             .views
             .get(&root)
             .is_some_and(|view| view.is::<crate::ContextMenu>())
         {
-            self.update_component(
-                Entity::<crate::ContextMenu>::from_stable_id(root),
-                |_, _| {},
-            )?;
+            self.reproject_component(Entity::<crate::ContextMenu>::from_stable_id(root))?;
         }
         Ok(())
     }

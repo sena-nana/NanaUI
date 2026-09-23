@@ -200,6 +200,9 @@ pub(crate) struct RegisteredComponentType {
     /// widgets with the most children. Registered per component, so the layout
     /// aliases inherit it.
     reads_child_derived_spec: bool,
+    /// Type-erased `AppContext::reproject_component`, for views a host bound
+    /// through this registry rather than created through the context.
+    pub(crate) reproject: Option<crate::framework::ReprojectFn>,
 }
 
 /// Types that builtins and plugins register through the same ABI.
@@ -387,6 +390,7 @@ pub(crate) fn registerable_entry<C: RegisterableComponent>()
             rust_type: Some(TypeId::of::<C>()),
             binder: bind_registerable::<C>(),
             reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
+            reproject: Some(crate::framework::reproject_erased::<C>),
         },
         normalized_tags(C::TAGS),
     ))
@@ -402,6 +406,7 @@ pub(crate) fn tag_entry(
             rust_type: None,
             binder: Arc::new(|_| Ok(ComponentBindKind::Layout)),
             reads_child_derived_spec: true,
+            reproject: None,
         },
         normalized_tags(tags),
     ))
@@ -418,6 +423,7 @@ pub(crate) fn alias_entry<C: RegisterableComponent>(
             rust_type: None,
             binder: bind_registerable::<C>(),
             reads_child_derived_spec: C::READS_CHILD_DERIVED_SPEC,
+            reproject: None,
         },
         normalized_tags(tags),
     ))

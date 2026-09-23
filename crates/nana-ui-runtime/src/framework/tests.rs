@@ -592,7 +592,7 @@ fn dispatch_program_all_keeps_every_message_of_one_type_in_order() {
 
 #[test]
 fn plugin_register_activation_reaches_activate_node() {
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct Ping;
     impl ComponentView for Ping {
         fn node_kind(&self) -> NodeKind {
@@ -6158,7 +6158,7 @@ fn builtin_and_plugin_components_share_one_registry() {
         Some("nana.search-dropdown")
     );
 
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct ProbeCard {
         title: String,
     }
@@ -6351,7 +6351,7 @@ fn documented_containers_and_chrome_carry_a_type_identity() {
 
 #[test]
 fn plugin_component_registration_is_atomic_on_conflict() {
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct StealButton;
     impl ComponentView for StealButton {
         fn node_kind(&self) -> NodeKind {
@@ -6979,10 +6979,10 @@ fn card_kind_defaults_yield_to_explicit_style() {
 /// Memoizes a probe of the retained subtree (own child count) into text
 /// state: exactly the stale-snapshot shape that `wants_child_reproject`
 /// exists for. Two types share this projection; only one opts in.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct ReprojectProbe;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct PlainProbe;
 
 fn project_child_count(id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
@@ -7924,5 +7924,238 @@ fn parking_a_subtree_is_pending_work() {
     assert!(
         context.world().has_pending_work(),
         "parking a subtree must leave work for the next flush"
+    );
+}
+
+thread_local! {
+    static PROJECTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn projections() -> usize {
+    PROJECTIONS.with(std::cell::Cell::get)
+}
+
+/// Counts its projections and shows `value` as its text.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CountingProbe {
+    value: String,
+}
+
+impl ComponentView for CountingProbe {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "counting-probe".into(),
+        }
+    }
+
+    fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
+        PROJECTIONS.with(|count| count.set(count.get() + 1));
+        if world.text(id) != Some(self.value.as_str()) {
+            mutations.set_text(
+                id,
+                crate::TextContent {
+                    value: self.value.clone(),
+                },
+            );
+        }
+    }
+}
+
+/// `CountingProbe` that projects on every update.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct AlwaysProbe;
+
+impl ComponentView for AlwaysProbe {
+    fn node_kind(&self) -> NodeKind {
+        NodeKind::Element {
+            tag: "always-probe".into(),
+        }
+    }
+
+    fn project(&self, _id: StableNodeId, _world: &UiWorld, _mutations: &mut MutationQueue) {
+        PROJECTIONS.with(|count| count.set(count.get() + 1));
+    }
+
+    fn always_reproject() -> bool {
+        true
+    }
+}
+
+/// Issue #228: an application refreshing a list rewrites every row with the
+/// values it already has. None of that may project, commit or dirty.
+#[test]
+fn rewriting_a_list_with_its_own_values_does_no_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let list = context.create_component(document, List::new()).unwrap();
+    let mut rows = Vec::new();
+    for index in 0..40 {
+        let item = context
+            .create_detached_component(document, ListItem::new(format!("动作 {index}")))
+            .unwrap();
+        let switch = context
+            .create_detached_component(document, Switch::new("", index % 2 == 0))
+            .unwrap();
+        let button = context
+            .create_detached_component(document, Button::new("收藏"))
+            .unwrap();
+        context.append_child(list, item).unwrap();
+        context.append_child(item, switch).unwrap();
+        context.append_child(item, button).unwrap();
+        rows.push((item, switch, button));
+    }
+    let _ = context.world_mut().take_system_work();
+    let generation = context.world().generation();
+
+    for (index, (item, switch, button)) in rows.iter().enumerate() {
+        context
+            .update_component(*item, |item, _| {
+                item.label = format!("动作 {index}");
+                item.selected = false;
+                Arc::make_mut(&mut item.style.layout).hidden = false;
+            })
+            .unwrap();
+        context
+            .update_component(*switch, |switch, _| switch.checked = index % 2 == 0)
+            .unwrap();
+        context
+            .update_component(*button, |button, _| {
+                button.label = "收藏".into();
+                Arc::make_mut(&mut button.style.layout).hidden = false;
+            })
+            .unwrap();
+    }
+
+    assert_eq!(context.world().generation(), generation);
+    assert!(!context.world().has_pending_work());
+    assert!(context.take_system_work().is_empty());
+}
+
+#[test]
+fn an_unchanged_update_skips_projection_and_reproject_component_forces_it() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let probe = context
+        .create_component(document, CountingProbe::default())
+        .unwrap();
+    let before = projections();
+
+    context
+        .update_component(probe, |probe, _| probe.value = String::new())
+        .unwrap();
+    assert_eq!(projections(), before, "an equal component is not projected");
+
+    context.reproject_component(probe).unwrap();
+    assert_eq!(projections(), before + 1);
+
+    context
+        .update_component(probe, |probe, _| probe.value = "changed".into())
+        .unwrap();
+    assert_eq!(projections(), before + 2);
+    assert_eq!(context.world().text(probe.stable_id()), Some("changed"));
+}
+
+#[test]
+fn an_update_that_only_mutates_emits_or_dispatches_keeps_its_effect() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context
+        .create_component(document, Stack::column(0.0))
+        .unwrap();
+    let probe = context
+        .create_detached_component(document, CountingProbe::default())
+        .unwrap();
+    context.append_child(root, probe).unwrap();
+
+    // A queued mutation commits even though the component is unchanged.
+    context
+        .update_component(probe, |_, cx| {
+            let id = cx.entity().stable_id();
+            cx.mutations().park_subtree(id);
+        })
+        .unwrap();
+    assert!(!context.world().is_mounted(probe.stable_id()));
+
+    // An emitted event reaches its handler.
+    let seen = Arc::new(Mutex::new(0));
+    let counter = Arc::clone(&seen);
+    context
+        .on(probe, move |_, _: &crate::Activate, _| {
+            *counter.lock().unwrap() += 1
+        })
+        .unwrap();
+    context
+        .update_component(probe, |_, cx| cx.emit(crate::Activate))
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), 1);
+
+    // A dispatched program message is delivered though nothing projects.
+    context
+        .update_component(probe, |_, cx| cx.dispatch_program(1_u32))
+        .unwrap();
+    context
+        .update_component(probe, |_, cx| cx.dispatch_program(2_u32))
+        .unwrap();
+    let messages = context.take_program_messages();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].downcast_ref::<u32>(), Some(&2));
+}
+
+#[test]
+fn a_component_that_always_reprojects_projects_on_an_unchanged_update() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let probe = context.create_component(document, AlwaysProbe).unwrap();
+    let before = projections();
+    context.update_component(probe, |_, _| {}).unwrap();
+    assert_eq!(projections(), before + 1);
+}
+
+/// Observer handlers change their view in place. Nothing else projects that
+/// state: the observer's next unchanged write takes the no-op path.
+#[test]
+fn an_observer_changed_by_its_handler_is_projected() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(document, Button::new("go"))
+        .unwrap();
+    let probe = context
+        .create_component(document, CountingProbe::default())
+        .unwrap();
+    context
+        .observe(button, probe, |probe, _: &crate::Activate, _| {
+            probe.value = "activated".into();
+        })
+        .unwrap();
+
+    assert!(context.activate_button(button).unwrap());
+
+    assert_eq!(context.world().text(probe.stable_id()), Some("activated"));
+}
+
+/// A switch flips itself on click. The application's next write of the value
+/// it holds must land, even though the application's value did not change.
+#[test]
+fn a_switch_the_user_flipped_takes_the_application_value_back() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let switch = context
+        .create_component(document, Switch::new("", false))
+        .unwrap();
+    assert!(context.toggle_switch(switch).unwrap());
+    assert!(context.read(switch, |switch| switch.checked).unwrap());
+
+    context
+        .update_component(switch, |switch, _| switch.checked = false)
+        .unwrap();
+
+    assert!(!context.read(switch, |switch| switch.checked).unwrap());
+    assert_eq!(
+        context
+            .world()
+            .accessibility(switch.stable_id())
+            .and_then(|state| state.checked),
+        Some(false)
     );
 }

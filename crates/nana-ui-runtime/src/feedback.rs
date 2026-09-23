@@ -1976,7 +1976,7 @@ mod tests {
             .create_component(document(), Progress::new(40.0, 100.0).label("Copying"))
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(progress, |_, _| {}).unwrap();
+        context.reproject_component(progress).unwrap();
         assert!(context.take_system_work().is_empty());
         let accessibility = context.world().accessibility(progress.stable_id()).unwrap();
         assert_eq!(accessibility.role, AccessibilityRole::ProgressIndicator);

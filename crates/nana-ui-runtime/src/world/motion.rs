@@ -147,7 +147,11 @@ impl UiWorld {
             return requested || self.surface_closing(id);
         }
         let motion = self.surface_motion.get(&id);
-        if motion.map(|motion| motion.open).unwrap_or(false) != requested {
+        // `set_surface_open` ignores a parked node, so asking would repeat on
+        // every projection; the remount projects the surface again. A node
+        // still being created is not in the world yet and does ask.
+        let parked = self.contains(id) && !self.is_mounted(id);
+        if !parked && motion.map(|motion| motion.open).unwrap_or(false) != requested {
             mutations.set_surface_open(id, requested, true);
         }
         requested || motion.is_some_and(|motion| motion.open || motion.running)
@@ -943,7 +947,7 @@ mod tests {
         cx.commit_mutations(queue).unwrap();
         tick(&mut cx, 100);
         assert_eq!(alpha(&cx, id), 0.0);
-        cx.update_component(button, |_, _| {}).unwrap();
+        cx.reproject_component(button).unwrap();
         tick(&mut cx, 110);
         assert_eq!(alpha(&cx, id), 0.0, "a re-projection is not a new write");
 

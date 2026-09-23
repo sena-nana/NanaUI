@@ -267,6 +267,11 @@ impl Default for PaneChrome {
 }
 
 impl ComponentView for PaneChrome {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "pane-chrome".into(),
@@ -632,6 +637,11 @@ impl PaneTree {
 }
 
 impl ComponentView for PaneTree {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "pane-tree".into(),
@@ -966,8 +976,8 @@ mod tests {
             .create_component(document(), PaneTree::new(PaneTreeNode::leaf("only")))
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(chrome, |_, _| {}).unwrap();
-        context.update_component(tree, |_, _| {}).unwrap();
+        context.reproject_component(chrome).unwrap();
+        context.reproject_component(tree).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 

@@ -3186,7 +3186,7 @@ fn assemble_tabs(
             .stable_id()
     };
     if frame != root_id && reused.is_some() {
-        context.update_component(Entity::<DockTabsFrame>::from_stable_id(frame), |_, _| {})?;
+        context.reproject_component(Entity::<DockTabsFrame>::from_stable_id(frame))?;
     }
     let active = effective_active(tabs, active);
     let options = tabs
@@ -4051,8 +4051,8 @@ mod tests {
             .create_component(document(), DockPanel::new().content(panel_child))
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(dock, |_, _| {}).unwrap();
-        context.update_component(panel, |_, _| {}).unwrap();
+        context.reproject_component(dock).unwrap();
+        context.reproject_component(panel).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 

@@ -209,9 +209,13 @@ impl AppContext {
         result
     }
 
-    /// Runs the handlers for queued events. Returns the observers whose
-    /// handlers asked, through [`ViewContext::reassemble`], for their
-    /// assembler to run once the caller commits.
+    /// Runs the handlers for queued events. Returns every other view a
+    /// handler ran on, and whether it asked, through
+    /// [`ViewContext::reassemble`], for its assembler to run once the caller
+    /// commits.
+    ///
+    /// Observer handlers change those views in place, so nothing has
+    /// projected their new state yet; the caller does that after it commits.
     pub(super) fn deliver_events(
         &mut self,
         id: StableNodeId,
@@ -219,8 +223,8 @@ impl AppContext {
         mutations: &mut MutationQueue,
         events: &mut VecDeque<BoxedEvent>,
         program_messages: &mut Vec<ProgramMessage>,
-    ) -> Result<Vec<(StableNodeId, TypeId)>, FrameworkError> {
-        let mut reassemble = Vec::new();
+    ) -> Result<Vec<super::TouchedObserver>, FrameworkError> {
+        let mut touched: Vec<super::TouchedObserver> = Vec::new();
         let mut delivered = 0;
         while let Some((emitter, event_type, event)) = events.pop_front() {
             delivered += 1;
@@ -255,17 +259,19 @@ impl AppContext {
                     self.component_lifecycle.now,
                 );
                 let observer_type = (*observer).type_id();
-                if asked
-                    && super::component_assembler(observer_type).is_some()
-                    && !reassemble.iter().any(|(id, _)| *id == handler.observer)
-                {
-                    reassemble.push((handler.observer, observer_type));
+                match touched.iter_mut().find(|seen| seen.id == handler.observer) {
+                    Some(seen) => seen.reassemble |= asked,
+                    None => touched.push(super::TouchedObserver {
+                        id: handler.observer,
+                        type_id: observer_type,
+                        reassemble: asked,
+                    }),
                 }
                 self.views.insert(handler.observer, observer);
             }
             self.event_handlers.insert(key, handlers);
         }
-        Ok(reassemble)
+        Ok(touched)
     }
 }
 

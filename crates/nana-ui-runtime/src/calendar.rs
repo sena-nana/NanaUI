@@ -225,6 +225,29 @@ impl<T> fmt::Debug for CalendarLevelStrategy<T> {
     }
 }
 
+/// Closures compare by identity: the same resolver is equal, an equivalent
+/// one built anew is not. A component comparing unequal only costs the
+/// no-op fast path in `AppContext::update_component`.
+impl<T> PartialEq for CalendarLevelStrategy<T> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Relative { levels: a }, Self::Relative { levels: b }) => a == b,
+            (Self::Thresholds(a), Self::Thresholds(b)) => a == b,
+            (
+                Self::Custom {
+                    levels: a,
+                    resolve: resolve_a,
+                },
+                Self::Custom {
+                    levels: b,
+                    resolve: resolve_b,
+                },
+            ) => a == b && Arc::ptr_eq(resolve_a, resolve_b),
+            _ => false,
+        }
+    }
+}
+
 impl<T> Default for CalendarLevelStrategy<T> {
     fn default() -> Self {
         Self::Relative { levels: 5 }
@@ -274,6 +297,21 @@ impl<T> fmt::Debug for CalendarHeatmapOptions<T> {
             .field("weekday_labels", &self.weekday_labels)
             .field("level_strategy", &self.level_strategy)
             .finish_non_exhaustive()
+    }
+}
+
+impl<T> PartialEq for CalendarHeatmapOptions<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cell_size == other.cell_size
+            && self.cell_gap == other.cell_gap
+            && self.cell_radius == other.cell_radius
+            && self.label_width == other.label_width
+            && self.month_label_height == other.month_label_height
+            && self.week_starts_on == other.week_starts_on
+            && self.weekday_labels == other.weekday_labels
+            && self.level_strategy == other.level_strategy
+            && Arc::ptr_eq(&self.month_formatter, &other.month_formatter)
+            && Arc::ptr_eq(&self.title_formatter, &other.title_formatter)
     }
 }
 
@@ -453,7 +491,7 @@ pub enum CalendarHeatmapEvent<T = ()> {
 }
 
 /// Retained heatmap leaf. Geometry and level mapping are the Runtime authority.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct CalendarHeatmap<T = ()> {
     pub data: Vec<CalendarHeatmapDatum<T>>,
     pub options: CalendarHeatmapOptions<T>,
@@ -634,7 +672,7 @@ impl<T: Clone> CalendarHeatmap<T> {
 
 impl<T> ComponentView for CalendarHeatmap<T>
 where
-    T: Clone + Send + 'static,
+    T: Clone + PartialEq + Send + 'static,
 {
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

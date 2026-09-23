@@ -259,7 +259,7 @@ impl ComponentView for TerminalView {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct TerminalRow(NodeStyle);
 impl ComponentView for TerminalRow {
     fn node_kind(&self) -> NodeKind {

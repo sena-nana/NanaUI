@@ -152,7 +152,7 @@ pub(super) fn mount_runtime_split_pane(
         });
         pane
     })?;
-    document.context_mut().update_component(pane, |_, _| {})?;
+    document.context_mut().reproject_component(pane)?;
     Ok(pane.stable_id())
 }
 

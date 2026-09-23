@@ -906,6 +906,8 @@ pub struct AppContext {
     activations: HashMap<TypeId, ActivationFn>,
     secondary_presses: HashMap<TypeId, SecondaryPressFn>,
     file_drops: HashMap<TypeId, FileDropFn>,
+    /// [`reproject_erased`] per component type created through this context.
+    reprojectors: HashMap<TypeId, ReprojectFn>,
     assembled: HashMap<StableNodeId, HashMap<String, assemble::AssembledChild>>,
     /// Components whose assembler is running, so the `update_component` calls
     /// an assembler makes do not re-enter it.
@@ -1194,6 +1196,7 @@ impl AppContext {
             activations: HashMap::new(),
             secondary_presses: HashMap::new(),
             file_drops: HashMap::new(),
+            reprojectors: HashMap::new(),
             assembled: HashMap::new(),
             assembling: HashSet::new(),
             component_lifecycle: ComponentLifecycle::default(),
@@ -1389,7 +1392,7 @@ impl AppContext {
             self.release_empty_document_layout(document);
         }
         for id in parked {
-            self.suspend_component_lifecycle(id);
+            self.suspend(id)?;
         }
         for id in inserted {
             if self.world.is_mounted(id) {
@@ -2446,14 +2449,19 @@ impl AppContext {
         let Some(parent) = self.world.node(id).and_then(|node| node.parent) else {
             return;
         };
-        let Some(control) = self
-            .views
-            .get(&parent)
+        // Tabs own their options directly, with the tab chrome.
+        let parent = self.views.get(&parent);
+        let surface = parent
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
-        else {
+            .map(|control| (control.size, control.chrome, control.fill))
+            .or_else(|| {
+                parent
+                    .and_then(|view| view.downcast_ref::<crate::Tabs>())
+                    .map(|tabs| (tabs.size, crate::SelectionChrome::Tabs, tabs.fill))
+            });
+        let Some((size, chrome, fill)) = surface else {
             return;
         };
-        let (size, chrome, fill) = (control.size, control.chrome, control.fill);
         // SAFETY: `TypeId` matched `SegmentedOption`.
         let option = unsafe { &mut *std::ptr::from_mut(staged).cast::<SegmentedOption>() };
         option.synchronize_surface(size, chrome, fill);
@@ -2488,10 +2496,42 @@ impl AppContext {
 
     /// Update component state and project the final state after all closure
     /// events emitted by the update have been delivered.
+    ///
+    /// An update that leaves the component equal to what it was, and queued no
+    /// mutation, event or program message, is a no-op: it returns without
+    /// projecting, committing, or running lifecycle and assemblers. Rewriting
+    /// every row of a list with the values it already has therefore costs a
+    /// clone and a comparison per component, so applications do not need to
+    /// fingerprint rows to skip unchanged ones. Use
+    /// [`Self::reproject_component`] to project an unchanged component again
+    /// against a world that moved under it.
     pub fn update_component<C: ComponentView, R>(
         &mut self,
         entity: Entity<C>,
         update: impl FnOnce(&mut C, &mut ViewContext<'_, C>) -> R,
+    ) -> Result<R, FrameworkError> {
+        self.update_component_inner(entity, update, Projection::IfChanged)
+    }
+
+    /// Project `entity` again and commit whatever changed, even though its own
+    /// data did not.
+    ///
+    /// For state a component derives in `project` from the world rather than
+    /// from its fields — child structure, installed metrics, recipes, the
+    /// text backend. [`Self::update_component`] with an empty closure no
+    /// longer does this.
+    pub fn reproject_component<C: ComponentView>(
+        &mut self,
+        entity: Entity<C>,
+    ) -> Result<(), FrameworkError> {
+        self.update_component_inner(entity, |_, _| {}, Projection::Always)
+    }
+
+    fn update_component_inner<C: ComponentView, R>(
+        &mut self,
+        entity: Entity<C>,
+        update: impl FnOnce(&mut C, &mut ViewContext<'_, C>) -> R,
+        projection: Projection,
     ) -> Result<R, FrameworkError> {
         if !self.world.contains(entity.id) {
             return Err(FrameworkError::MissingView(entity.id));
@@ -2520,6 +2560,16 @@ impl AppContext {
             },
         );
         self.inherit_segmented_option_surface(entity.id, &mut staged);
+        if projection == Projection::IfChanged
+            && !C::always_reproject()
+            && mutations.is_empty()
+            && events.is_empty()
+            && staged == *component
+        {
+            self.program_messages = program_messages;
+            self.views.insert(entity.id, boxed);
+            return Ok(result);
+        }
         let delivered = self.deliver_events(
             entity.id,
             &mut staged,
@@ -2539,21 +2589,32 @@ impl AppContext {
             self.views.insert(entity.id, boxed);
         }
         let observers = commit?;
-        if !self.world.is_mounted(entity.id) {
-            self.suspend_component_lifecycle(entity.id);
-        }
-        let own = self
-            .sync_component_lifecycle(entity.id)
-            .and_then(|()| self.run_component_assembler(entity.id, TypeId::of::<C>()));
+        let suspended = if self.world.is_mounted(entity.id) {
+            Ok(())
+        } else {
+            self.suspend(entity.id)
+        };
+        let own = suspended
+            .and_then(|()| self.sync_component_lifecycle(entity.id))
+            .and_then(|()| {
+                if projection == Projection::WithoutAssembler {
+                    return Ok(());
+                }
+                self.run_component_assembler(entity.id, TypeId::of::<C>())
+            });
         // Observer handlers already changed their components; their chrome
         // follows even when this component's own follow-up fails.
-        let observed = self.run_observer_assemblers(observers);
+        let observed = self.follow_up_observers(entity.id, observers);
         own.and(observed)?;
         Ok(result)
     }
 
-    /// Reconciles the children a composite derives from its own props, right
-    /// after the props changed.
+    /// Projects the components observer handlers changed in place, and
+    /// reconciles the children a composite derives from its own props.
+    ///
+    /// Observer handlers mutate their view directly rather than through a
+    /// staged `update_component`, so nothing else projects that state: a
+    /// later write that leaves the component equal takes the no-op path.
     ///
     /// Components like `Chip`, `PathField` or `DesktopShell` own child nodes
     /// that follow their fields. Requiring the application to remember a
@@ -2561,16 +2622,52 @@ impl AppContext {
     /// failure, so the write itself drives it. Assemblers are idempotent and
     /// return early when nothing changed; the guard keeps the
     /// `update_component` calls they make from re-entering.
-    fn run_observer_assemblers(
+    fn follow_up_observers(
         &mut self,
-        observers: Vec<(StableNodeId, TypeId)>,
+        source: StableNodeId,
+        observers: Vec<TouchedObserver>,
     ) -> Result<(), FrameworkError> {
         let mut outcome = Ok(());
-        for (id, type_id) in observers {
-            let assembled = self.run_component_assembler(id, type_id);
-            outcome = outcome.and(assembled);
+        for observer in observers {
+            if observer.id == source || !self.world.contains(observer.id) {
+                continue;
+            }
+            let followed = match self.reprojector(observer.type_id) {
+                Some(reproject) => reproject(self, observer.id, observer.reassemble),
+                None if observer.reassemble => {
+                    self.run_component_assembler(observer.id, observer.type_id)
+                }
+                None => Ok(()),
+            };
+            outcome = outcome.and(followed);
         }
         outcome
+    }
+
+    /// Suspends a parked component's lifecycle and projects whatever that
+    /// changed in its view.
+    fn suspend(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if !self.suspend_component_lifecycle(id) {
+            return Ok(());
+        }
+        let reproject = self
+            .views
+            .get(&id)
+            .and_then(|view| self.reprojector(view.as_ref().type_id()));
+        match reproject {
+            Some(reproject) => reproject(self, id, false),
+            None => Ok(()),
+        }
+    }
+
+    /// The type-erased [`Self::reproject_component`] for a component type,
+    /// known once any instance of it was created or its type registered.
+    fn reprojector(&self, type_id: TypeId) -> Option<ReprojectFn> {
+        self.reprojectors.get(&type_id).copied().or_else(|| {
+            self.components
+                .get_by_rust(type_id)
+                .and_then(|entry| entry.reproject)
+        })
     }
 
     fn run_component_assembler(
@@ -2640,9 +2737,9 @@ impl AppContext {
         self.views.insert(entity.id, boxed);
         let observers = commit?;
         if !self.world.is_mounted(entity.id) {
-            self.suspend_component_lifecycle(entity.id);
+            self.suspend(entity.id)?;
         }
-        self.run_observer_assemblers(observers)?;
+        self.follow_up_observers(entity.id, observers)?;
         Ok(result)
     }
 
@@ -2850,6 +2947,44 @@ mod scroll_origin_tests;
 ///
 /// One table so [`AppContext::update_component`] and the explicit
 /// `assemble_*` entry points cannot disagree about which types self-assemble.
+/// A view an event handler ran on during another view's update.
+pub(super) struct TouchedObserver {
+    pub(super) id: StableNodeId,
+    pub(super) type_id: TypeId,
+    /// The handler asked for the observer's assembler through
+    /// [`ViewContext::reassemble`].
+    pub(super) reassemble: bool,
+}
+
+/// How [`AppContext::update_component`]'s implementation treats the result.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Projection {
+    /// Skip everything when the update left the component unchanged.
+    IfChanged,
+    /// Project, commit, run lifecycle and the assembler regardless.
+    Always,
+    /// Project and commit regardless, but leave the children to whoever
+    /// asked for them: an observer whose handler changed it in place.
+    WithoutAssembler,
+}
+
+/// Projects a component of a type known only by `TypeId`; `assemble` also
+/// runs its assembler.
+pub(crate) type ReprojectFn = fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>;
+
+pub(crate) fn reproject_erased<C: ComponentView>(
+    context: &mut AppContext,
+    id: StableNodeId,
+    assemble: bool,
+) -> Result<(), FrameworkError> {
+    let projection = if assemble {
+        Projection::Always
+    } else {
+        Projection::WithoutAssembler
+    };
+    context.update_component_inner(Entity::<C>::from_stable_id(id), |_, _| {}, projection)
+}
+
 pub(super) fn component_assembler(
     type_id: TypeId,
 ) -> Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>> {

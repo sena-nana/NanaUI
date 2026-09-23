@@ -137,7 +137,7 @@ fn sidebar_tool_button(
 
 /// Boolean expansion target. Visual progress is the SIDEBAR Motion IR track,
 /// sampled onto [`SidebarSection::animation_progress`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SidebarSectionState {
     expanded: bool,
 }
@@ -309,6 +309,11 @@ impl Default for SidebarFrame {
 }
 
 impl ComponentView for SidebarFrame {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "sidebar-frame".into(),
@@ -572,6 +577,11 @@ impl SidebarRow {
 }
 
 impl ComponentView for SidebarRow {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "sidebar-row".into(),
@@ -666,7 +676,7 @@ pub struct SidebarSectionSlots {
 }
 
 /// Titled, optionally collapsible group. Expansion progress is Motion IR.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SidebarSection {
     pub title: Arc<str>,
     pub count: Option<usize>,
@@ -1200,6 +1210,11 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
 }
 
 impl ComponentView for SidebarSection {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "sidebar-section".into(),
@@ -2222,7 +2237,7 @@ mod tests {
             &["待机", "动作"],
             None,
         );
-        context.update_component(body, |_, _| {}).unwrap();
+        context.reproject_component(body).unwrap();
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
             .unwrap();
@@ -2263,7 +2278,7 @@ mod tests {
                 .unwrap();
             context.append_child(late_body, row).unwrap();
         }
-        context.update_component(late_body, |_, _| {}).unwrap();
+        context.reproject_component(late_body).unwrap();
         context
             .layout_document(document(), crate::LayoutViewport::new(220.0, 320.0))
             .unwrap();

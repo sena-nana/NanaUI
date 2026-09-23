@@ -861,6 +861,11 @@ impl GraphCanvas {
 }
 
 impl ComponentView for GraphCanvas {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "graph-canvas".into(),

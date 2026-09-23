@@ -65,10 +65,7 @@ fn live_sidebar_rows_paint_their_label_exactly_once() {
         })
         .unwrap();
 
-    runtime
-        .context_mut()
-        .update_component(list, |_, _| {})
-        .unwrap();
+    runtime.context_mut().reproject_component(list).unwrap();
     runtime
         .flush(LayoutViewport::new(240.0, 400.0), &mut TestShaper)
         .unwrap();
@@ -218,10 +215,7 @@ fn relabeled_and_reflowed_rows_never_keep_stale_label_primitives() {
             row_view.label = Arc::from("还没有对话");
         })
         .unwrap();
-    runtime
-        .context_mut()
-        .update_component(list, |_, _| {})
-        .unwrap();
+    runtime.context_mut().reproject_component(list).unwrap();
     runtime
         .flush(LayoutViewport::new(240.0, 400.0), &mut shaper)
         .unwrap();

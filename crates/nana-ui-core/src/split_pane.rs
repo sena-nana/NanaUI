@@ -35,13 +35,13 @@ struct PersistedSplitPane {
     from_end: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct ResizeState {
     start_position: Option<f32>,
     start_size: f32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SplitPaneModel {
     persisted: PersistedSplitPane,
     resize: Option<ResizeState>,

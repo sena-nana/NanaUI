@@ -204,6 +204,11 @@ impl SettingsRow {
 }
 
 impl ComponentView for SettingsRow {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "settings-row".into(),
@@ -495,6 +500,11 @@ impl SettingsCollapsibleCard {
 }
 
 impl ComponentView for SettingsCollapsibleCard {
+    /// Patches the layout of slot nodes other components own and project.
+    fn always_reproject() -> bool {
+        true
+    }
+
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
             tag: "settings-collapsible-card".into(),
@@ -904,7 +914,7 @@ const SETTINGS_PAGE_TITLE_SIZE: f32 = nana_ui_core::type_scale::TITLE;
 const SETTINGS_PAGE_TITLE_WEIGHT: u16 = nana_ui_core::type_scale::SEMIBOLD;
 
 /// Host-owned navigation snapshot. Activate emits [`SettingsBack`] / [`SettingsTabSelected`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettingsSidebar {
     pub model: SettingsModel,
     pub state: SettingsState,
@@ -971,7 +981,7 @@ impl ComponentView for SettingsSidebar {
 }
 
 /// Host-owned page snapshot. Content stays application-owned.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettingsPage {
     pub model: SettingsModel,
     pub state: SettingsState,
@@ -1676,7 +1686,7 @@ impl AppContext {
             })
             .unwrap_or(false);
         if needs_projection {
-            self.update_component(row, |_, _| {})?;
+            self.reproject_component(row)?;
         }
         Ok(())
     }
@@ -2550,7 +2560,7 @@ mod tests {
             )
             .unwrap();
         context.append_child(row, control).unwrap();
-        context.update_component(row, |_, _| {}).unwrap();
+        context.reproject_component(row).unwrap();
         let id = row.stable_id();
         assert_eq!(
             context.world().node(id).unwrap().kind,
@@ -2629,7 +2639,7 @@ mod tests {
         context.append_child(row, label).unwrap();
         context.append_child(row, hint).unwrap();
         context.append_child(row, control).unwrap();
-        context.update_component(row, |_, _| {}).unwrap();
+        context.reproject_component(row).unwrap();
 
         assert_eq!(context.world().text(row.stable_id()), Some(""));
         let row_style = context.world().node_style(row.stable_id()).unwrap();
@@ -2699,7 +2709,7 @@ mod tests {
         context.append_child(row, label).unwrap();
         context.append_child(row, leftover).unwrap();
         context.append_child(row, control).unwrap();
-        context.update_component(row, |_, _| {}).unwrap();
+        context.reproject_component(row).unwrap();
 
         assert_eq!(context.world().text(row.stable_id()), Some(""));
         assert_eq!(context.world().text(leftover.stable_id()), Some(""));

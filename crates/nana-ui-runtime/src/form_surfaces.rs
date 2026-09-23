@@ -554,8 +554,8 @@ mod tests {
             )
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(field, |_, _| {}).unwrap();
-        context.update_component(card, |_, _| {}).unwrap();
+        context.reproject_component(field).unwrap();
+        context.reproject_component(card).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 }

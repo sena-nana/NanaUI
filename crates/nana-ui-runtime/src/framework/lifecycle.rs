@@ -797,7 +797,11 @@ impl AppContext {
         subtree
     }
 
-    pub(super) fn suspend_component_lifecycle(&mut self, id: StableNodeId) {
+    /// Drops the interaction state a parked component must not keep. Returns
+    /// whether that changed the component's view in place, which leaves its
+    /// projection for the caller to refresh.
+    pub(super) fn suspend_component_lifecycle(&mut self, id: StableNodeId) -> bool {
+        let mut changed = false;
         #[cfg(feature = "rich-text")]
         {
             self.component_lifecycle
@@ -828,33 +832,54 @@ impl AppContext {
             && let Some(drag) = area.resize_drag.take()
         {
             area.resized_height = drag.previous_height;
+            changed = true;
         }
         #[cfg(feature = "image-viewer")]
         if let Some(viewer) = self
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<crate::ImageViewer>())
+            && viewer.dragging.take().is_some()
         {
-            viewer.dragging = None;
+            changed = true;
         }
         #[cfg(feature = "charts")]
         if let Some(view) = self.views.get_mut(&id) {
             if let Some(chart) = view.downcast_mut::<crate::DonutChart>() {
-                chart.active = None;
+                changed |= chart.active.take().is_some();
             } else if let Some(chart) = view.downcast_mut::<crate::TimeSeriesChart>() {
-                chart.active = None;
+                changed |= chart.active.take().is_some();
             }
         }
         if let Some(button) = self
             .views
             .get_mut(&id)
             .and_then(|view| view.downcast_mut::<IconButton>())
+            && std::mem::take(&mut button.tooltip_open)
         {
-            button.tooltip_open = false;
+            changed = true;
         }
         if let Some(tooltip) = self.component_lifecycle.tooltips.get_mut(&id) {
             tooltip.show_at = None;
             tooltip.open = false;
+        }
+        changed
+    }
+
+    /// A menu surface projected while parked asked for its open motion into
+    /// a world that ignores it for unmounted nodes; project it again once it
+    /// is mounted.
+    fn reproject_menu_surface(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
+        if let Some(popover) = self.view_entity::<crate::Popover>(id) {
+            self.reproject_component(popover)
+        } else if let Some(menu) = self.view_entity::<crate::ActionMenu>(id) {
+            self.reproject_component(menu)
+        } else if let Some(menu) = self.view_entity::<crate::AnchoredActionMenu>(id) {
+            self.reproject_component(menu)
+        } else if let Some(menu) = self.view_entity::<crate::ContextMenu>(id) {
+            self.reproject_component(menu)
+        } else {
+            Ok(())
         }
     }
 
@@ -872,12 +897,13 @@ impl AppContext {
             self.world.commit(mutations)?;
         }
         // Parking cancels a component's own timeline; remounting restarts it.
-        // Projections only start timelines for pending or mounted nodes, and a
-        // remount may never project again on its own.
+        // Projections only start timelines and surface motion for mounted
+        // nodes, and a remount may never project again on its own.
         if self.world.is_mounted(id) {
             if let Some(area) = self.view_entity::<TextArea>(id) {
-                self.update_component(area, |_, _| ())?;
+                self.reproject_component(area)?;
             }
+            self.reproject_menu_surface(id)?;
             let mut mutations = MutationQueue::new();
             if self
                 .views

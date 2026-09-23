@@ -86,7 +86,7 @@ fn borrowed_workspace_scrollport_preserves_region_surface_through_hover_and_drag
         view.label = Some("renamed project content".into())
     })
     .unwrap();
-    cx.update_component(workspace, |_, _| ()).unwrap();
+    cx.reproject_component(workspace).unwrap();
     let style = cx.world().node_style(scroll.stable_id()).unwrap().clone();
     let accessibility = cx
         .world()

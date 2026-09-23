@@ -518,7 +518,7 @@ impl fmt::Display for SettingsError {
 
 impl std::error::Error for SettingsError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SettingsModel {
     tabs: Vec<SettingsTab>,
     default_tab: SettingsTabId,

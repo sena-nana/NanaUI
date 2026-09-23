@@ -1363,12 +1363,9 @@ mod tests {
             "shaped title must add height on top of the 24px insets, got {settled}"
         );
 
-        // Projection is unconditional, so even an update that changes nothing
-        // rewrites the style carrying the shaped text block.
-        runtime
-            .context_mut()
-            .update_component(empty, |_, _| {})
-            .unwrap();
+        // A reprojection of an unchanged component rewrites the style carrying
+        // the shaped text block.
+        runtime.context_mut().reproject_component(empty).unwrap();
         runtime
             .flush(LayoutViewport::new(320.0, 180.0), &mut TestShaper)
             .unwrap();

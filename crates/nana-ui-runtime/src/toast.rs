@@ -383,7 +383,7 @@ mod tests {
             )
             .unwrap();
         let _ = context.take_system_work();
-        context.update_component(toast, |_, _| {}).unwrap();
+        context.reproject_component(toast).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 

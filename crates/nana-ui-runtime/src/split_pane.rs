@@ -29,7 +29,7 @@ pub(crate) const DEFAULT_MAX: f32 = 800.0;
 /// host-created node; its optional first child is the 2px indicator. Host paint
 /// set through [`SplitPane::surface`] survives re-projection; geometry stays
 /// model-driven.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SplitPane {
     pub first: Option<StableNodeId>,
     pub second: Option<StableNodeId>,
@@ -392,7 +392,7 @@ impl AppContext {
         if let Some(second) = second {
             changed |= reconcile_ids(self, second_slot, &[second])?;
         }
-        self.update_component(pane, |_, _| {})?;
+        self.reproject_component(pane)?;
         Ok(changed)
     }
 
@@ -624,7 +624,7 @@ impl AppContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct SplitHandle;
 
 impl ComponentView for SplitHandle {
@@ -661,7 +661,7 @@ impl ComponentView for SplitHandle {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct SplitHandleMark;
 
 impl ComponentView for SplitHandleMark {
@@ -700,7 +700,7 @@ impl ComponentView for SplitHandleMark {
 /// Split-owned shell around one host pane. [`SplitPane::project_pane`] writes
 /// all pane geometry here; this view is projected once at creation and never
 /// touches style again, so the split stays the single style writer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct SplitPaneSlot;
 
 impl ComponentView for SplitPaneSlot {
@@ -1186,7 +1186,7 @@ mod tests {
         let model = SplitPaneModel::new(SplitAxis::Horizontal, 200.0, 140.0, 260.0);
         let split = mount(&mut context, &model, first, second, handle);
         let _ = context.take_system_work();
-        context.update_component(split, |_, _| {}).unwrap();
+        context.reproject_component(split).unwrap();
         assert!(context.take_system_work().is_empty());
     }
 

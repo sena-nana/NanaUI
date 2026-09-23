@@ -183,24 +183,27 @@ impl AppContext {
         if let Some(entry) = self.components.get_by_rust(TypeId::of::<C>()) {
             queue.set_component_type(id, Some(entry.id.clone()));
         }
+        self.reprojectors
+            .entry(TypeId::of::<C>())
+            .or_insert(super::reproject_erased::<C>);
         if C::wants_child_reproject() {
             self.child_reproject_views.insert(id, |context, id| {
-                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+                context.reproject_component(Entity::<C>::from_stable_id(id))
             });
         }
         if C::wants_metrics_reproject() {
             self.metrics_reproject_views.insert(id, |context, id| {
-                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+                context.reproject_component(Entity::<C>::from_stable_id(id))
             });
         }
         if C::wants_recipe_reproject() {
             self.recipe_reproject_views.insert(id, |context, id| {
-                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+                context.reproject_component(Entity::<C>::from_stable_id(id))
             });
         }
         if C::wants_text_backend_reproject() {
             self.text_backend_reproject_views.insert(id, |context, id| {
-                context.update_component(Entity::<C>::from_stable_id(id), |_, _| {})
+                context.reproject_component(Entity::<C>::from_stable_id(id))
             });
         }
         if C::wants_hover_tracking() {
