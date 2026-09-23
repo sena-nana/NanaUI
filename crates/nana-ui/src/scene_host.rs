@@ -710,7 +710,7 @@ fn bootstrap_primary_window(
     material_mode: crate::MaterialEffect,
 ) -> Result<PrimaryBootstrap, String> {
     let bootstrap = gpu_bootstrap(policy, Some(&shared_gpu));
-    let mut attempt = primary_surface_target(settings, policy, &bootstrap)?;
+    let mut attempt = primary_surface_target(settings, policy, &bootstrap, material_mode)?;
     let mut composed_error = None;
     loop {
         match attach_primary_surface(
@@ -764,11 +764,12 @@ fn primary_surface_target(
     settings: &WindowDescriptor,
     policy: crate::GpuBackendPolicy,
     bootstrap: &crate::hosted_context::GpuBootstrap,
+    material_mode: crate::MaterialEffect,
 ) -> Result<crate::presentation::ResolvedSurfaceTarget, String> {
     use crate::presentation::{resolve_window_surface_target, window_surface_request};
     let requested = window_surface_request(
         settings.surface,
-        window_wants_transparent_surface(settings.transparent, nana_window::MaterialEffect::Solid),
+        window_wants_transparent_surface(settings.transparent, material_mode),
         policy,
     );
     let target = resolve_window_surface_target(

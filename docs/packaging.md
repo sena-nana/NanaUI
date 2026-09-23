@@ -146,7 +146,7 @@ pack 在 manifest 里记录其路径前缀；运行时按最长前缀把查找�
 - `bootstrap-ui` 如果用了 `after-bootstrap-ui` 的钥匙，报 `StartupKeyCycle`。这把钥匙只能靠这个 UI 驱动的流程取得，应用会永远卡在空白窗口。
 - `depends_on` 只能指向同类或更早的类。DFS 会报出依赖环。
 
-Early Splash 本身见 [两阶段启动](startup.md)。`SplashLogo::packaged("nana://res/…")` 从 `early-splash` pack 读 Logo（`nana_package::read_early_splash`）：只打开 manifest 为这个路径钉住的那一个 pack；它若不是 `early-splash` 类就直接拒绝，不打开；不调用 `KeyProvider`；读数据之前先按 TOC 检查 1 MiB 上限。
+Early Splash 本身见 [两阶段启动](startup.md)。`SplashLogo::packaged("nana://res/…")` 从 `early-splash` pack 读 Logo，走 `nana://res/` 挂载的同一个 reader：路由由 `PackageManifest::early_splash_pack` 决定，不是 `early-splash` 类的 pack 直接拒绝，不打开；不调用 `KeyProvider`；reader 读完 header 就检查文件大小，`early-splash` pack 超过 4 MiB（`EARLY_SPLASH_MAX_PACK_BYTES`，打包时同样检查）报 `EarlySplashTooLarge`，不读 TOC；读数据之前先按 TOC 检查 1 MiB 上限。
 
 ### 格式（v1，小端）
 

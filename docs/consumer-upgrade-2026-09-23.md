@@ -94,6 +94,6 @@
 - `NativeSplash::show` 多了一个参数：宿主解析出的 PNG 字节，`show(window, spec, png, background, reduced_motion)`。
 - `SplashFailure` 新增变体 `Package(SplashPackageError)`。对 `SplashFailure` 做穷尽 `match` 的代码要补上这个分支。
 - `StartupWork` 新增字段 `splash_logo_read: Option<Duration>`。用结构体字面量构造 `StartupWork` 的代码要补上这个字段。
-- `nana-package` 新增 `read_early_splash`、`EarlySplashError`、`PackageManifest::route` 与 `manifest::prefix_claims`（`nana://res/` 挂载也改用这条前缀规则，行为不变）。
+- `nana-package` 新增 `PackageManifest::early_splash_pack` / `EarlySplashError`、`PackageManifest::route` 与 `manifest::prefix_claims`（`nana://res/` 挂载也改用这条前缀规则，行为不变），以及 `EARLY_SPLASH_MAX_PACK_BYTES` 与 `PackError::EarlySplashTooLarge`（code 21）：`early-splash` pack 文件超过 4 MiB 时 reader 在 header 之后就拒绝，打包器也不再造出这样的 pack。
 - `nana-diagnostics` 在 `framework::host` 追加 gauge `STARTUP_SPLASH_LOGO_READ_NS`（metric id 6）和事件 `SPLASH_LOGO_FAILED`（id 7）。
 - 打包自检多了一项 `startup.early-splash-logo`，只在应用声明了 packaged Logo 时出现。`nana-packager validate --run` 会把它单独报出来。

@@ -42,24 +42,6 @@ impl StartupOptions {
     }
 }
 
-/// The PNG `logo` names: the embedded bytes, or one read of the package's
-/// `early-splash` pack.
-pub(crate) fn resolve_splash_logo(
-    logo: SplashLogo,
-) -> Result<std::borrow::Cow<'static, [u8]>, SplashFailure> {
-    match logo.source() {
-        SplashLogoSource::Embedded(png) => Ok(std::borrow::Cow::Borrowed(png)),
-        #[cfg(feature = "packaged-resources")]
-        SplashLogoSource::Packaged(url) => {
-            crate::packaged_resources::read_splash_logo(url).map(std::borrow::Cow::Owned)
-        }
-        #[cfg(not(feature = "packaged-resources"))]
-        SplashLogoSource::Packaged(_) => {
-            Err(SplashFailure::Package(SplashPackageError::Unsupported))
-        }
-    }
-}
-
 /// Where one startup is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupPhase {

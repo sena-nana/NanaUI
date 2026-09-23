@@ -18,6 +18,12 @@ pub use reader::{
     stored_bound,
 };
 
+/// Largest `early-splash` pack file: its 1 MiB of content plus the header,
+/// extent alignment, block overhead, TOC and baseline free space. It is read
+/// before the first window, so the packager refuses to build a larger one
+/// and the reader refuses to read past the header of one.
+pub const EARLY_SPLASH_MAX_PACK_BYTES: u64 = 4 * 1024 * 1024;
+
 /// Startup class of a pack (Issue #226 §7). Ordered: a pack may only depend
 /// on packs of the same or an earlier class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -126,6 +132,10 @@ pub enum PackError {
         block: u32,
     },
     PlaintextHashMismatch,
+    /// An `early-splash` pack file over [`EARLY_SPLASH_MAX_PACK_BYTES`].
+    EarlySplashTooLarge {
+        len: u64,
+    },
 }
 
 impl PackError {
@@ -152,6 +162,7 @@ impl PackError {
             Self::BlockAuthFailed { .. } => 18,
             Self::Decompress { .. } => 19,
             Self::PlaintextHashMismatch => 20,
+            Self::EarlySplashTooLarge { .. } => 21,
         }
     }
 
@@ -198,6 +209,10 @@ impl fmt::Display for PackError {
             Self::BlockAuthFailed { block } => write!(f, "block {block} failed authentication"),
             Self::Decompress { block } => write!(f, "block {block} failed to decompress"),
             Self::PlaintextHashMismatch => f.write_str("entry content hash mismatch"),
+            Self::EarlySplashTooLarge { len } => write!(
+                f,
+                "early-splash pack is {len} bytes; the limit is {EARLY_SPLASH_MAX_PACK_BYTES}"
+            ),
         }
     }
 }

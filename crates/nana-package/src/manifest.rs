@@ -417,6 +417,24 @@ impl PackageManifest {
         self.resource_packs.iter().find(|pack| pack.name == name)
     }
 
+    /// The `early-splash` pack a logical path routes to — the only kind read
+    /// before the Nana runtime and its keys exist. Routing and class only:
+    /// a path that belongs to another class is refused without opening
+    /// anything.
+    pub fn early_splash_pack(&self, path: &str) -> Result<&ManifestPack, EarlySplashError> {
+        if !crate::valid_logical_path(path) {
+            return Err(EarlySplashError::InvalidPath);
+        }
+        let pack = self.route(path).ok_or(EarlySplashError::NotFound)?;
+        if pack.class != ResourceClass::EarlySplash {
+            return Err(EarlySplashError::WrongClass {
+                pack: pack.name.clone(),
+                class: pack.class,
+            });
+        }
+        Ok(pack)
+    }
+
     /// The pack a logical path routes to: the longest prefix that
     /// [claims](prefix_claims) it. The runtime's `nana://res/` mount and
     /// the Early Splash read route the same way.
@@ -428,6 +446,17 @@ impl PackageManifest {
             .max_by_key(|(prefix, _)| prefix.len())
             .map(|(_, pack)| pack)
     }
+}
+
+/// Why a path has no `early-splash` pack to be read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EarlySplashError {
+    /// Not a logical package path.
+    InvalidPath,
+    /// No pack claims the path.
+    NotFound,
+    /// The path belongs to a pack of another class.
+    WrongClass { pack: String, class: ResourceClass },
 }
 
 /// Whether a pack prefix claims `path`: one ending in `/` claims everything

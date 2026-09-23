@@ -215,7 +215,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Option<Instant> {
         let changed = std::mem::take(&mut *self.texture_redraws.lock().expect("texture redraws"));
         for id in changed {
-            if self.can_present(id) {
+            if self.can_present(id) && !self.startup_holds(id) {
                 self.request_redraw(id);
             }
         }
@@ -228,7 +228,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             let demand = self.window_frame_demand(id);
             let drawable = drawable_surface(self.geometry_of(id).physical_size);
             let due = self.frame_schedules.entry(id).or_default().due(demand, now);
-            let tick = frame_tick(self.can_present(id), due, drawable);
+            // A primary window held under its splash gets no periodic frames:
+            // nothing it drew could be seen. Explicit redraws still flush it,
+            // and the takeover request draws the frame that ends the hold.
+            let presents = self.can_present(id) && !self.startup_holds(id);
+            let tick = frame_tick(presents, due, drawable);
             let (deadline, armed_at) = match tick {
                 FrameTick::Present => {
                     self.request_redraw(id);

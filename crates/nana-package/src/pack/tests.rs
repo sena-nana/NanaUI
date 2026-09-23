@@ -577,136 +577,21 @@ fn manifest_pack(
     }
 }
 
+/// Over the cap, an early-splash pack is refused right after its header: the
+/// TOC bounds (which padding breaks) are never reached.
 #[test]
-fn early_splash_reads_one_entry_of_the_pinned_pack_only() {
-    use crate::early_splash::{EarlySplashError, read_early_splash};
-
-    let signer = SigningKey::from_bytes(&[9; 32]);
-    let publisher = PublisherKey::from_bytes(signer.verifying_key().as_bytes()).unwrap();
-    let trust = TrustPolicy::RequirePublisher(publisher);
-    let logo = content(4, 10_000);
-    let bytes = build(&Spec {
-        entries: vec![("splash/logo.png", logo.clone())],
-        key: None,
-        signer: Some(&signer),
-        class: ResourceClass::EarlySplash,
-    });
-    let header = Header::decode(&bytes).unwrap();
-    let pack = TempPack::new("early-splash-ok", &bytes);
-    let resources = pack.path().parent().unwrap();
-    let mut manifest = crate::manifest::tests::sample();
-    manifest.resource_packs = vec![
-        manifest_pack(
-            "splash",
-            "early-splash-ok.nrpack",
-            ResourceClass::EarlySplash,
-            &["splash/"],
-            Some(&header),
-        ),
-        // Claims a longer prefix inside `splash/` and does not exist: if it
-        // were ever opened the error would be `Missing`, not `WrongClass`.
-        manifest_pack(
-            "ui",
-            "early-splash-absent-ui.nrpack",
-            ResourceClass::Protected,
-            &["splash/secret/", "ui/"],
-            None,
-        ),
-    ];
-    let read = |manifest: &crate::manifest::PackageManifest, path: &str, max: u64| {
-        let mut stats = ReadStats::default();
-        let result = read_early_splash(manifest, resources, path, &trust, max, &mut stats);
-        (result, stats.bytes_read)
-    };
-
+fn early_splash_pack_over_the_cap_is_refused_after_the_header() {
+    let mut spec = plain_spec();
+    spec.class = ResourceClass::EarlySplash;
+    let mut bytes = build(&spec);
+    let small = TempPack::new("early-splash-small", &bytes);
+    assert!(open(small.path(), &NoKeys, &TrustPolicy::AllowUnsigned).is_ok());
+    let len = EARLY_SPLASH_MAX_PACK_BYTES + 1;
+    bytes.resize(len as usize, 0);
+    let large = TempPack::new("early-splash-large", &bytes);
     assert_eq!(
-        read(&manifest, "splash/logo.png", 1 << 20),
-        (Ok(logo.clone()), 10_000)
-    );
-    assert_eq!(
-        read(&manifest, "splash/secret/logo.png", 1 << 20),
-        (
-            Err(EarlySplashError::WrongClass {
-                pack: "ui".into(),
-                class: ResourceClass::Protected
-            }),
-            0
-        )
-    );
-    assert_eq!(
-        read(&manifest, "splash/missing.png", 1 << 20).0,
-        Err(EarlySplashError::NotFound)
-    );
-    assert_eq!(
-        read(&manifest, "boot/logo.png", 1 << 20).0,
-        Err(EarlySplashError::NotFound)
-    );
-    for invalid in [
-        "",
-        "splash/../ui/a.png",
-        "nana://res/splash/logo.png",
-        "/splash/logo.png",
-    ] {
-        assert_eq!(
-            read(&manifest, invalid, 1 << 20).0,
-            Err(EarlySplashError::InvalidPath),
-            "{invalid:?}"
-        );
-    }
-    // The cap is checked against the TOC: no entry data is read.
-    assert_eq!(
-        read(&manifest, "splash/logo.png", 9_999),
-        (Err(EarlySplashError::TooLarge { bytes: 10_000 }), 0)
-    );
-
-    // A pack other than the one the manifest pins.
-    let mut stale = manifest.clone();
-    stale.resource_packs[0].toc_hash = crate::to_hex(&[0; 32]);
-    assert_eq!(
-        read(&stale, "splash/logo.png", 1 << 20).0,
-        Err(EarlySplashError::Pack {
-            pack: "splash".into(),
-            error: PackError::UnexpectedPack
-        })
-    );
-
-    // Tampered entry data: the bytes never come back.
-    let mut tampered = bytes.clone();
-    tampered[HEADER_LEN + 5] ^= 1;
-    let _tampered = TempPack::new("early-splash-tampered", &tampered);
-    let mut manifest_tampered = manifest.clone();
-    manifest_tampered.resource_packs[0].file = "early-splash-tampered.nrpack".into();
-    assert!(matches!(
-        read(&manifest_tampered, "splash/logo.png", 1 << 20).0,
-        Err(EarlySplashError::Pack {
-            error: PackError::BlockHashMismatch { block: 0 },
-            ..
-        })
-    ));
-
-    // Unsigned, while the policy pins a publisher.
-    let unsigned = build(&Spec {
-        entries: vec![("splash/logo.png", logo)],
-        key: None,
-        signer: None,
-        class: ResourceClass::EarlySplash,
-    });
-    let unsigned_header = Header::decode(&unsigned).unwrap();
-    let _unsigned = TempPack::new("early-splash-unsigned", &unsigned);
-    let mut manifest_unsigned = manifest.clone();
-    manifest_unsigned.resource_packs[0] = manifest_pack(
-        "splash",
-        "early-splash-unsigned.nrpack",
-        ResourceClass::EarlySplash,
-        &["splash/"],
-        Some(&unsigned_header),
-    );
-    assert_eq!(
-        read(&manifest_unsigned, "splash/logo.png", 1 << 20).0,
-        Err(EarlySplashError::Pack {
-            pack: "splash".into(),
-            error: PackError::SignatureRequired
-        })
+        open(large.path(), &NoKeys, &TrustPolicy::AllowUnsigned).unwrap_err(),
+        PackError::EarlySplashTooLarge { len }
     );
 }
 
@@ -736,4 +621,50 @@ fn manifest_routes_by_longest_claiming_prefix() {
     assert_eq!(route("readme.txt"), Some("readme"));
     assert_eq!(route("readme.txt.bak"), None);
     assert_eq!(route("uix/a.css"), None);
+}
+
+#[test]
+fn early_splash_paths_route_to_early_splash_packs_only() {
+    use crate::manifest::EarlySplashError;
+
+    let mut manifest = crate::manifest::tests::sample();
+    manifest.resource_packs = vec![
+        manifest_pack(
+            "splash",
+            "s.nrpack",
+            ResourceClass::EarlySplash,
+            &["splash/"],
+            None,
+        ),
+        // A longer prefix inside `splash/` wins the route, and its class
+        // refuses it.
+        manifest_pack(
+            "ui",
+            "u.nrpack",
+            ResourceClass::Protected,
+            &["splash/secret/"],
+            None,
+        ),
+    ];
+    let pack = |path| {
+        manifest
+            .early_splash_pack(path)
+            .map(|pack| pack.name.as_str())
+    };
+    assert_eq!(pack("splash/logo.png"), Ok("splash"));
+    assert_eq!(
+        pack("splash/secret/logo.png"),
+        Err(EarlySplashError::WrongClass {
+            pack: "ui".into(),
+            class: ResourceClass::Protected
+        })
+    );
+    assert_eq!(pack("boot/logo.png"), Err(EarlySplashError::NotFound));
+    for invalid in ["", "splash/../ui/a.png", "nana://res/splash/logo.png"] {
+        assert_eq!(
+            pack(invalid),
+            Err(EarlySplashError::InvalidPath),
+            "{invalid:?}"
+        );
+    }
 }

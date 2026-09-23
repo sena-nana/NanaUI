@@ -375,6 +375,16 @@ pub fn build_pack(input: PackInput<'_>, out: &Path) -> Result<BuiltPack, String>
     }
     report.toc_stored_bytes = toc_stored_len;
     report.pack_bytes = toc_offset + toc_stored_len;
+    if input.class == ResourceClass::EarlySplash
+        && report.pack_bytes > nana_package::EARLY_SPLASH_MAX_PACK_BYTES
+    {
+        return Err(format!(
+            "EarlySplash pack `{}` would be {} bytes; the runtime refuses more than {}",
+            input.name,
+            report.pack_bytes,
+            nana_package::EARLY_SPLASH_MAX_PACK_BYTES
+        ));
+    }
     drop(baseline);
 
     write_pack(out, &header, &encoded, &layout, &stored_toc)?;

@@ -71,8 +71,9 @@ impl Default for ResourcePackOptions {
 }
 
 static MANIFEST: OnceLock<PackageManifest> = OnceLock::new();
-/// The installed mount, kept for the self-check (the `nana-ui-core` hook
-/// holds a type-erased handle to the same mount).
+/// The mount the manifest describes, kept for the self-check and the Early
+/// Splash read — also when another source already holds the `nana-ui-core`
+/// hook (which otherwise holds a type-erased handle to this same mount).
 static MOUNT: OnceLock<Arc<PackMount>> = OnceLock::new();
 /// The installed development source, kept for the Early Splash logo read.
 #[cfg_attr(not(feature = "hosted"), allow(dead_code))]
@@ -107,9 +108,6 @@ struct PackMount {
     packs: Vec<LazyPack>,
     keys: Arc<dyn KeyProvider>,
     trust: TrustPolicy,
-    /// RuntimeResources, where the manifest's pack files are.
-    #[cfg_attr(not(feature = "hosted"), allow(dead_code))]
-    resources: PathBuf,
 }
 
 impl PackMount {
@@ -182,13 +180,16 @@ impl PackMount {
     }
 }
 
-impl PackagedResourceSource for PackMount {
-    fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, PackagedReadError> {
-        let Some(pack) = self.route(path) else {
-            metric!(resource_diag::MISSES);
-            return Err(PackagedReadError::NotFound);
-        };
-        let reader = self.reader(pack).map_err(|error| map_error(&error))?;
+impl PackMount {
+    /// Read `path` from `pack`, opening it on first use, with the metrics and
+    /// faults every packaged read records.
+    fn read_entry(
+        &self,
+        pack: &LazyPack,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, PackError> {
+        let reader = self.reader(pack)?;
         let started = Instant::now();
         let mut stats = ReadStats::default();
         let result = reader.read(path, max_bytes, &mut stats);
@@ -217,7 +218,18 @@ impl PackagedResourceSource for PackMount {
             }
             Err(_) => {}
         }
-        result.map_err(|error| map_error(&error))
+        result
+    }
+}
+
+impl PackagedResourceSource for PackMount {
+    fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, PackagedReadError> {
+        let Some(pack) = self.route(path) else {
+            metric!(resource_diag::MISSES);
+            return Err(PackagedReadError::NotFound);
+        };
+        self.read_entry(pack, path, max_bytes)
+            .map_err(|error| map_error(&error))
     }
 }
 
@@ -247,93 +259,103 @@ impl LooseSource {
     }
 }
 
+/// Why a loose read failed; `TooLarge` carries the length seen.
+#[cfg_attr(not(feature = "hosted"), allow(dead_code))]
+enum LooseReadError {
+    NotFound,
+    TooLarge(u64),
+    Io(String),
+}
+
+impl LooseSource {
+    /// At most `max_bytes`, however the file changes while it is read.
+    fn read_bounded(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, LooseReadError> {
+        use std::io::Read;
+        let file = self.locate(path).ok_or(LooseReadError::NotFound)?;
+        let file = std::fs::File::open(&file).map_err(|_| LooseReadError::NotFound)?;
+        let len = file.metadata().map_err(|_| LooseReadError::NotFound)?.len();
+        if len > max_bytes {
+            return Err(LooseReadError::TooLarge(len));
+        }
+        let mut bytes = Vec::new();
+        file.take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|error| LooseReadError::Io(error.to_string()))?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(LooseReadError::TooLarge(bytes.len() as u64));
+        }
+        Ok(bytes)
+    }
+}
+
 impl PackagedResourceSource for LooseSource {
     fn read(&self, path: &str, max_bytes: u64) -> Result<Vec<u8>, PackagedReadError> {
-        let file = self.locate(path).ok_or(PackagedReadError::NotFound)?;
-        let len = std::fs::metadata(&file)
-            .map_err(|_| PackagedReadError::NotFound)?
-            .len();
-        if len > max_bytes {
-            return Err(PackagedReadError::TooLarge);
-        }
-        std::fs::read(&file).map_err(|_| PackagedReadError::Io)
+        self.read_bounded(path, max_bytes)
+            .map_err(|error| match error {
+                LooseReadError::NotFound => PackagedReadError::NotFound,
+                LooseReadError::TooLarge(_) => PackagedReadError::TooLarge,
+                LooseReadError::Io(_) => PackagedReadError::Io,
+            })
     }
 }
 
 /// Read the Early Splash logo `url` names (Issue #225): one entry of the
-/// `early-splash` pack the package manifest routes it to, pinned by the
-/// manifest, never through a key provider, capped at the logo limit before
-/// any data is read. Nothing else in the package is opened or scanned. In
-/// the development layout without a manifest, the one file under the loose
-/// root; the class rule has no pack to apply to there, so the packaged build
-/// is what proves the path is in an `early-splash` pack.
+/// `early-splash` pack the manifest routes it to, through the same mount,
+/// cached reader and diagnostics as every `nana://res/` read. A path in a pack
+/// of another class is refused before anything is opened; the reader caps the
+/// pack file after its header and the entry before its data. Early-splash
+/// packs are never encrypted, so no key provider runs. In the development
+/// layout without a manifest, the one file under the loose root, where there
+/// is no class to check.
 #[cfg(feature = "hosted")]
 pub(crate) fn read_splash_logo(url: &str) -> Result<Vec<u8>, crate::startup::SplashFailure> {
     use crate::startup::{
-        MAX_LOGO_ENCODED_BYTES, SplashFailure, SplashLogoError, SplashPackageError,
+        MAX_LOGO_ENCODED_BYTES, SplashFailure, SplashLogoError, SplashPackageError as E,
     };
     use nana_package::EarlySplashError;
 
     let package = |error| SplashFailure::Package(error);
-    let path = nana_ui_core::packaged_logical_path(url, None)
-        .filter(|_| nana_ui_core::is_packaged_url(url))
-        .ok_or(package(SplashPackageError::InvalidUrl))?;
-    let max = MAX_LOGO_ENCODED_BYTES as u64;
     let too_large = |bytes: u64| {
         SplashFailure::Logo(SplashLogoError::TooLarge {
             bytes: usize::try_from(bytes).unwrap_or(usize::MAX),
         })
     };
-    if let (Some(manifest), Some(mount)) = (MANIFEST.get(), MOUNT.get()) {
-        let started = Instant::now();
-        let mut stats = ReadStats::default();
-        let result = nana_package::read_early_splash(
-            manifest,
-            &mount.resources,
-            &path,
-            &mount.trust,
-            max,
-            &mut stats,
-        );
-        metric!(resource_diag::READS);
-        metric!(resource_diag::BYTES_READ, stats.bytes_read);
-        return match result {
-            Ok(bytes) => {
-                metric!(resource_diag::ENTRY_READ_NS, started.elapsed());
-                Ok(bytes)
-            }
-            Err(EarlySplashError::InvalidPath) => Err(package(SplashPackageError::InvalidUrl)),
-            Err(EarlySplashError::NotFound) => Err(package(SplashPackageError::NotFound)),
-            Err(EarlySplashError::WrongClass { pack, class }) => {
-                Err(package(SplashPackageError::NotEarlySplash {
-                    pack,
-                    class: class.as_str(),
-                }))
-            }
-            Err(EarlySplashError::TooLarge { bytes }) => Err(too_large(bytes)),
-            Err(EarlySplashError::Pack { pack, error }) => {
-                if error.is_integrity_failure() {
-                    metric!(resource_diag::INTEGRITY_FAILURES);
-                }
-                Err(package(SplashPackageError::Pack {
-                    pack,
-                    code: error.code(),
-                    reason: error.to_string(),
-                }))
-            }
-        };
-    }
-    let loose = LOOSE.get().ok_or(package(SplashPackageError::NotMounted))?;
-    let file = loose
-        .locate(&path)
-        .ok_or(package(SplashPackageError::NotFound))?;
-    let len = std::fs::metadata(&file)
-        .map_err(|error| package(SplashPackageError::Io(error.to_string())))?
-        .len();
-    if len > max {
-        return Err(too_large(len));
-    }
-    std::fs::read(&file).map_err(|error| package(SplashPackageError::Io(error.to_string())))
+    let path = nana_ui_core::packaged_logical_path(url, None).ok_or(package(E::InvalidUrl))?;
+    let max = MAX_LOGO_ENCODED_BYTES as u64;
+    let (Some(manifest), Some(mount)) = (MANIFEST.get(), MOUNT.get()) else {
+        let loose = LOOSE.get().ok_or(package(E::NotMounted))?;
+        return loose.read_bounded(&path, max).map_err(|error| match error {
+            LooseReadError::NotFound => package(E::NotFound),
+            LooseReadError::TooLarge(len) => too_large(len),
+            LooseReadError::Io(reason) => package(E::Io(reason)),
+        });
+    };
+    let pack = manifest.early_splash_pack(&path).map_err(|error| {
+        package(match error {
+            EarlySplashError::InvalidPath => E::InvalidUrl,
+            EarlySplashError::NotFound => E::NotFound,
+            EarlySplashError::WrongClass { pack, class } => E::NotEarlySplash {
+                pack,
+                class: class.as_str(),
+            },
+        })
+    })?;
+    let lazy = mount
+        .packs
+        .iter()
+        .find(|lazy| lazy.name == pack.name)
+        .ok_or(package(E::NotFound))?;
+    mount
+        .read_entry(lazy, &path, max)
+        .map_err(|error| match error {
+            PackError::NotFound => package(E::NotFound),
+            PackError::TooLarge { len } => too_large(len),
+            error => package(E::Pack {
+                pack: lazy.name.clone(),
+                code: error.code(),
+                reason: error.to_string(),
+            }),
+        })
 }
 
 /// Which `nana://res/` source startup installed.
@@ -402,7 +424,7 @@ fn mount(
                     identity.id, identity.version
                 );
             }
-            let resources = paths.runtime_resources().to_path_buf();
+            let resources = paths.runtime_resources();
             let packs = manifest
                 .resource_packs
                 .iter()
@@ -420,12 +442,9 @@ fn mount(
                 packs,
                 keys: options.keys.clone(),
                 trust: options.trust.clone(),
-                resources,
             });
-            let installed = nana_ui_core::install_packaged_source(mount.clone());
-            if installed {
-                let _ = MOUNT.set(mount);
-            }
+            let _ = MOUNT.set(mount.clone());
+            let installed = nana_ui_core::install_packaged_source(mount);
             mounted.source = installed.then_some(Source::Packs);
         }
         Err(ManifestError::Missing) if paths.layout() == RuntimeLayout::Development => {
@@ -586,7 +605,7 @@ fn splash_logo_check(url: &str) -> (bool, String) {
 /// image would (routing included), the rest directly. Self-check only;
 /// normal startup never walks a pack.
 fn pack_readable(pack: &nana_package::manifest::ManifestPack) -> Result<(), String> {
-    let mount = MOUNT.get().ok_or("no pack mount installed")?;
+    let mount = MOUNT.get().ok_or("no pack mount")?;
     let lazy = mount
         .packs
         .iter()
@@ -634,7 +653,6 @@ mod tests {
             packs,
             keys: Arc::new(NoKeys),
             trust: TrustPolicy::AllowUnsigned,
-            resources: PathBuf::from("/nonexistent"),
         }
     }
 

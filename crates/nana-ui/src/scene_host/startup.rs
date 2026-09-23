@@ -246,7 +246,8 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         let store = prepare_primary_descriptor(&mut settings)?;
         let policy = Program::gpu_backend_policy();
         let mut bootstrap = gpu_bootstrap(policy, None);
-        let target = primary_surface_target(&settings, policy, &bootstrap)?;
+        let target =
+            primary_surface_target(&settings, policy, &bootstrap, crate::MaterialEffect::Solid)?;
         let icons = spawn_icon_render(&settings, &proxy);
         let mut pending = Self {
             channels: StartupChannels {
@@ -458,11 +459,17 @@ impl<Message: Send + 'static> PendingStartup<Message> {
         &self,
         logo: crate::SplashLogo,
     ) -> Result<std::borrow::Cow<'static, [u8]>, crate::SplashFailure> {
-        let crate::SplashLogoSource::Packaged(url) = logo.source() else {
-            return crate::startup::resolve_splash_logo(logo);
+        let url = match logo.source() {
+            crate::SplashLogoSource::Embedded(png) => return Ok(png.into()),
+            crate::SplashLogoSource::Packaged(url) => url,
         };
-        let started = std::time::Instant::now();
-        let result = crate::startup::resolve_splash_logo(logo);
+        let started = Instant::now();
+        #[cfg(feature = "packaged-resources")]
+        let result = crate::packaged_resources::read_splash_logo(url).map(Into::into);
+        #[cfg(not(feature = "packaged-resources"))]
+        let result = Err(crate::SplashFailure::Package(
+            crate::SplashPackageError::Unsupported,
+        ));
         let elapsed = started.elapsed();
         nana_diagnostics::metric!(host::STARTUP_SPLASH_LOGO_READ_NS, elapsed);
         self.handle

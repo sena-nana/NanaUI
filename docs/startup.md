@@ -88,6 +88,8 @@ include = ["splash/**"]
 - 路径按 manifest 的前缀路由到唯一一个 pack（与 `nana://res/` 同一条最长前缀规则）。这个 pack 必须是 `early-splash` 类，否则报 `NotEarlySplash`，那个 pack 根本不会被打开。
 - `early-splash` pack 不加密，所以不调用 `KeyProvider`，也就不会有取钥匙的网络请求。
 - pack 按 manifest 钉住（pack id、TOC hash、类别、代次），发布者签名按 `trust` 校验。
+- reader 读完 4 KiB header 就检查文件大小：超过 4 MiB（`EARLY_SPLASH_MAX_PACK_BYTES`，打包器也拒绝造出更大的 early-splash pack）就报 `Pack { code: 21 }`，TOC 不读。
+- 读取走 `nana://res/` 挂载的同一个缓存 reader 和诊断，之后再从这个 pack 读资源不会重开。
 - 先查 TOC 里的条目长度，超过 1 MiB 就报 `Logo(TooLarge)`，条目数据一个字节都不读。数据读出来后逐块校验 hash，全部通过才交给 PNG 头检查。
 
 读取发生在事件线程上，位置在建窗和发起设备请求之后、窗口显示之前，每次启动最多一次：只有普通呈现目标会显示 splash。跳过 splash 的情况（隐藏启动、合成路径、Linux）一个字节都不读。开发布局（从 `target/` 运行、没有 manifest）改读 `loose_root` 下的同一个逻辑路径，只读这一个文件；那里没有 pack 类别可查，路径是否真在 `early-splash` pack 里，要到打包后才能确认（见下面的自检）。

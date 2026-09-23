@@ -93,6 +93,9 @@ impl PackReader {
             return Err(PackError::UnsupportedVersion(header.version));
         }
         let class = check_header(&header, &raw_header)?;
+        if class == ResourceClass::EarlySplash && file_len > super::EARLY_SPLASH_MAX_PACK_BYTES {
+            return Err(PackError::EarlySplashTooLarge { len: file_len });
+        }
 
         match trust {
             TrustPolicy::AllowUnsigned => {}

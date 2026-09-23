@@ -8,31 +8,30 @@
 //!   ([`TrustPolicy`]).
 //! - [`identity`]: the application identity marker a binary embeds through
 //!   `nana_ui_platform::application_identity!`.
-//! - [`early_splash`]: the one read an application makes before the Nana
-//!   runtime exists, its Early Splash logo.
 //!
 //! Everything here reads. Building packs, generating keys and signing is the
 //! build-side `nana-packager`, which never ships inside an application. See
 //! `docs/packaging.md` for the byte layouts and the security model.
 
-pub mod early_splash;
 pub mod hash;
 pub mod identity;
 pub mod keys;
 pub mod manifest;
 pub mod pack;
 
-pub use early_splash::{EarlySplashError, read_early_splash};
 pub use identity::{EmbeddedIdentity, MarkerError, find_marker};
 pub use keys::{
     ContentKey, KeyError, KeyId, KeyProvider, KeyRequest, NoKeys, PublisherKey, PublisherKeyId,
     StaticKeys, TrustPolicy,
 };
 pub use manifest::{
-    MANIFEST_FILE, MANIFEST_SCHEMA, MANIFEST_SCHEMA_VERSION, MANIFEST_SIGNATURE_FILE,
-    ManifestError, PackageManifest, SignatureState,
+    EarlySplashError, MANIFEST_FILE, MANIFEST_SCHEMA, MANIFEST_SCHEMA_VERSION,
+    MANIFEST_SIGNATURE_FILE, ManifestError, PackageManifest, SignatureState,
 };
-pub use pack::{EntryInfo, ExpectedPack, PackError, PackReader, ReadStats, ResourceClass};
+pub use pack::{
+    EARLY_SPLASH_MAX_PACK_BYTES, EntryInfo, ExpectedPack, PackError, PackReader, ReadStats,
+    ResourceClass,
+};
 
 /// Version of the Nana packaging contract this crate implements, recorded in
 /// every manifest.
