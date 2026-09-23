@@ -28,6 +28,10 @@ const ROW_STACK_GAP_LOOSE: f32 = nana_ui_core::space::LG;
 const ROW_INLINE_GAP: f32 = nana_ui_core::space::MD;
 const ROW_INLINE_GAP_LOOSE: f32 = nana_ui_core::space::XXL;
 const ROW_COPY_GAP: f32 = nana_ui_core::space::XXS;
+/// Rows the framework assembles (appearance, about) put their control under
+/// the copy below this width: beside a segmented picker, a narrower row
+/// leaves the label and hint a column a few characters wide.
+const ASSEMBLED_ROW_STACK_BELOW: f32 = 280.0;
 
 /// Non-interactive chrome wrapping an application-owned control child.
 #[derive(Debug, Clone, PartialEq)]
@@ -1451,6 +1455,7 @@ fn mount_settings_row(
         row.divided = divided;
         row.first_in_group = first;
         row.last_in_group = last;
+        row.stack_below = Some(ASSEMBLED_ROW_STACK_BELOW);
         row.control = Some(control);
         row.label_slot = Some(label_text.stable_id());
         row.hint_slot = hint_id;
@@ -1463,6 +1468,7 @@ fn mount_settings_row(
     } else {
         let mut row = SettingsRow::new(label)
             .divided(divided)
+            .stack_below(ASSEMBLED_ROW_STACK_BELOW)
             .control_child(control)
             .label_slot(label_text.stable_id());
         if let Some(hint) = hint {
