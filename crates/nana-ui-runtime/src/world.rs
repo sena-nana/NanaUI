@@ -666,7 +666,8 @@ pub struct UiWorld {
     /// park). A parked root's whole subtree is `Parked`, so `is_mounted`
     /// already answers presence under it; only these need an ancestor walk.
     detached_mounted: HashSet<StableNodeId>,
-    /// Queue indices the last `commit_ref` skipped as structural no-ops.
+    /// Queue indices the last `commit_ref` skipped as structural no-ops, in
+    /// ascending order.
     skipped_noops: Vec<usize>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
     live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,

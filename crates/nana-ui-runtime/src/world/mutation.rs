@@ -2388,6 +2388,7 @@ impl UiWorld {
             reparented: 0,
             despawned: 0,
         };
+        self.skipped_noops.clear();
         if queue.is_empty() {
             return Ok(report);
         }
@@ -2400,20 +2401,24 @@ impl UiWorld {
         }
         self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
-        self.skipped_noops.clear();
-        if self.is_noop_batch(queue) {
-            self.skipped_noops.extend(0..queue.len());
-            return Ok(report);
-        }
-        self.close_prior_animation_event_frame();
-        self.generation = self.generation.wrapping_add(1);
-        report.generation = self.generation;
+        // A skipped no-op changes nothing, so the generation moves with the
+        // first mutation that does; a batch of nothing but no-ops keeps it.
+        let mut applied = false;
         for (index, mutation) in queue.as_slice().iter().enumerate() {
             if self.is_structural_noop(mutation) {
                 self.skipped_noops.push(index);
                 continue;
             }
+            if !applied {
+                applied = true;
+                self.close_prior_animation_event_frame();
+                self.generation = self.generation.wrapping_add(1);
+                report.generation = self.generation;
+            }
             self.apply(mutation, &mut report);
+        }
+        if !applied {
+            return Ok(report);
         }
         self.flush_scroll_content();
         self.remeasure_scroll_containers();
@@ -2552,7 +2557,7 @@ impl UiWorld {
         // A root put back where it already was mounts or parks nothing.
         let mut roots = structural
             .into_iter()
-            .filter(|(index, _)| !self.skipped_noops.contains(index))
+            .filter(|(index, _)| self.skipped_noops.binary_search(index).is_err())
             .map(|(_, root)| root)
             .collect::<Vec<_>>();
         let mut parked = HashSet::new();

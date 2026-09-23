@@ -204,7 +204,7 @@ impl SettingsRow {
 }
 
 impl ComponentView for SettingsRow {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Lays out the control slots the application provides.
     fn always_reproject() -> bool {
         true
     }
@@ -500,7 +500,7 @@ impl SettingsCollapsibleCard {
 }
 
 impl ComponentView for SettingsCollapsibleCard {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Lays out and hides the summary and detail slots the application provides.
     fn always_reproject() -> bool {
         true
     }

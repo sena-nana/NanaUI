@@ -8235,3 +8235,58 @@ fn rewriting_an_assembled_composite_with_its_own_values_is_no_work() {
     assert_eq!(context.world().generation(), generation);
     assert!(context.take_system_work().is_empty());
 }
+
+/// Projections that emitted a mutation the world then ignored, on every
+/// projection: each such write bumped the generation of an unchanged tree.
+#[test]
+fn reprojecting_an_unchanged_card_text_area_or_closed_search_writes_nothing() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let card = context.create_component(document, Card::new()).unwrap();
+    let area = context
+        .create_component(document, TextArea::new("draft"))
+        .unwrap();
+    let search = context
+        .create_component(
+            document,
+            crate::SearchDropdown::new(Some("a")).options([
+                crate::SearchDropdownOption::new("a", "Alpha"),
+                crate::SearchDropdownOption::new("b", "Beta"),
+            ]),
+        )
+        .unwrap();
+    let generation = context.world().generation();
+
+    context.reproject_component(card).unwrap();
+    context.reproject_component(area).unwrap();
+    context.reproject_component(search).unwrap();
+
+    assert_eq!(context.world().generation(), generation);
+}
+
+/// Closing removes the query input, which clears the node text; the label
+/// has to go in after it, not before.
+#[test]
+fn closing_a_search_dropdown_leaves_its_label_as_the_node_text() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let search = context
+        .create_component(
+            document,
+            crate::SearchDropdown::new(Some("a"))
+                .options([
+                    crate::SearchDropdownOption::new("a", "Alpha"),
+                    crate::SearchDropdownOption::new("b", "Beta"),
+                ])
+                .query("Be")
+                .opened(true),
+        )
+        .unwrap();
+    assert_eq!(context.world().text(search.stable_id()), Some("Be"));
+
+    context
+        .update_component(search, |search, _| search.opened = false)
+        .unwrap();
+
+    assert_eq!(context.world().text(search.stable_id()), Some("Alpha"));
+}

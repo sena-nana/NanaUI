@@ -329,7 +329,7 @@ impl AppTitleBar {
 }
 
 impl ComponentView for AppTitleBar {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Lays out the leading, center and trailing slot nodes the application owns.
     fn always_reproject() -> bool {
         true
     }
@@ -703,7 +703,7 @@ impl Default for AppShell {
 }
 
 impl ComponentView for AppShell {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Patches the title bar, body and overlay nodes, which other components own and project.
     fn always_reproject() -> bool {
         true
     }
@@ -925,7 +925,7 @@ impl Default for DesktopShell {
 }
 
 impl ComponentView for DesktopShell {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Patches the body and status nodes, which other components own and project.
     fn always_reproject() -> bool {
         true
     }

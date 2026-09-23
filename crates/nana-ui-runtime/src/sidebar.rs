@@ -309,7 +309,7 @@ impl Default for SidebarFrame {
 }
 
 impl ComponentView for SidebarFrame {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Lends its body node to a scrollport that another component projects too.
     fn always_reproject() -> bool {
         true
     }
@@ -577,7 +577,7 @@ impl SidebarRow {
 }
 
 impl ComponentView for SidebarRow {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Patches the layout of the tools slot, which another component owns.
     fn always_reproject() -> bool {
         true
     }
@@ -1210,7 +1210,7 @@ fn body_port_style(expansion: f32, empty_text: Option<&str>, content_height: f32
 }
 
 impl ComponentView for SidebarSection {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Writes text, visual and style onto its body port, a `List` with its own projection.
     fn always_reproject() -> bool {
         true
     }

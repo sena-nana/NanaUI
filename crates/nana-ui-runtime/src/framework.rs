@@ -1310,14 +1310,20 @@ impl AppContext {
     ) -> Result<crate::CommitReport, FrameworkError> {
         // Re-appending or re-parking what is already in place: the world
         // skips it, and there is no focus, surface or lifecycle to follow.
+        // A structural no-op only matches nodes that exist in a consistent
+        // relation, so there is nothing to validate either.
         if !mutations.is_empty() && self.world.is_noop_batch(&mutations) {
-            let (report, _, _) = self
-                .world
-                .commit_with_mount_lifecycle(mutations)
-                .map_err(FrameworkError::from)?;
             self.collect_child_reprojects();
             self.drain_child_reprojects()?;
-            return Ok(report);
+            return Ok(crate::CommitReport {
+                generation: self.world.generation(),
+                mutations: mutations.len(),
+                created: 0,
+                inserted: 0,
+                detached: 0,
+                reparented: 0,
+                despawned: 0,
+            });
         }
         self.prepare_surface_closing(&mut mutations);
         let previous_focus = mutations
@@ -1402,8 +1408,10 @@ impl AppContext {
         for document in retired_documents {
             self.release_empty_document_layout(document);
         }
+        // A failed reprojection must not leave the rest unsuspended.
+        let mut suspended = Ok(());
         for id in parked {
-            self.suspend(id)?;
+            suspended = suspended.and(self.suspend(id));
         }
         for id in inserted {
             if self.world.is_mounted(id) {
@@ -1412,6 +1420,7 @@ impl AppContext {
         }
         self.collect_child_reprojects();
         self.drain_child_reprojects()?;
+        suspended?;
         Ok(report)
     }
 
@@ -2535,9 +2544,10 @@ impl AppContext {
     /// Update component state and project the final state after all closure
     /// events emitted by the update have been delivered.
     ///
-    /// An update that leaves the component equal to what it was, and queued no
-    /// mutation, event or program message, is a no-op: it returns without
-    /// projecting, committing, or running lifecycle and assemblers. Rewriting
+    /// An update that leaves the component equal to what it was, emitted no
+    /// event and queued no mutation that changes the tree is a no-op: it
+    /// returns without projecting, committing, or running lifecycle and
+    /// assemblers. Program messages it dispatched are still delivered. Rewriting
     /// every row of a list with the values it already has therefore costs a
     /// clone and a comparison per component, so applications do not need to
     /// fingerprint rows to skip unchanged ones. Use
@@ -2632,14 +2642,13 @@ impl AppContext {
         } else {
             self.suspend(entity.id)
         };
-        let own = suspended
-            .and_then(|()| self.sync_component_lifecycle(entity.id))
-            .and_then(|()| {
-                if projection == Projection::WithoutAssembler {
-                    return Ok(());
-                }
-                self.run_component_assembler(entity.id, TypeId::of::<C>())
-            });
+        let own = suspended.and_then(|()| {
+            if projection == Projection::ProjectOnly {
+                return Ok(());
+            }
+            self.sync_component_lifecycle(entity.id)?;
+            self.run_component_assembler(entity.id, TypeId::of::<C>())
+        });
         // Observer handlers already changed their components; their chrome
         // follows even when this component's own follow-up fails.
         let observed = self.follow_up_observers(entity.id, observers);
@@ -2981,10 +2990,6 @@ mod retained_interaction_tests;
 #[cfg(test)]
 mod scroll_origin_tests;
 
-/// Assembler for a composite component type, if it has one.
-///
-/// One table so [`AppContext::update_component`] and the explicit
-/// `assemble_*` entry points cannot disagree about which types self-assemble.
 /// A view an event handler ran on during another view's update.
 pub(super) struct TouchedObserver {
     pub(super) id: StableNodeId,
@@ -3001,13 +3006,14 @@ enum Projection {
     IfChanged,
     /// Project, commit, run lifecycle and the assembler regardless.
     Always,
-    /// Project and commit regardless, but leave the children to whoever
-    /// asked for them: an observer whose handler changed it in place.
-    WithoutAssembler,
+    /// Project and commit regardless, nothing else: a view changed in place
+    /// (by an observer handler, or by suspension) whose lifecycle and
+    /// children follow only when asked for.
+    ProjectOnly,
 }
 
 /// Projects a component of a type known only by `TypeId`; `assemble` also
-/// runs its assembler.
+/// syncs its lifecycle and runs its assembler, as `reproject_component` does.
 pub(crate) type ReprojectFn = fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>;
 
 pub(crate) fn reproject_erased<C: ComponentView>(
@@ -3018,11 +3024,15 @@ pub(crate) fn reproject_erased<C: ComponentView>(
     let projection = if assemble {
         Projection::Always
     } else {
-        Projection::WithoutAssembler
+        Projection::ProjectOnly
     };
     context.update_component_inner(Entity::<C>::from_stable_id(id), |_, _| {}, projection)
 }
 
+/// Assembler for a composite component type, if it has one.
+///
+/// One table so [`AppContext::update_component`] and the explicit
+/// `assemble_*` entry points cannot disagree about which types self-assemble.
 pub(super) fn component_assembler(
     type_id: TypeId,
 ) -> Option<fn(&mut AppContext, StableNodeId) -> Result<bool, FrameworkError>> {

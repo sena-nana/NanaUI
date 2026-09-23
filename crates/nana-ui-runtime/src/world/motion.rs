@@ -531,6 +531,39 @@ mod tests {
         OverlayKey, Switch,
     };
 
+    /// A parked surface cannot hold open motion, so asking for it while
+    /// parked is skipped; mounting it must project it again.
+    #[test]
+    fn a_menu_surface_opened_while_parked_opens_once_mounted() {
+        let mut cx = AppContext::new();
+        let document = crate::DocumentId::new(1).unwrap();
+        let root = cx
+            .create_component(document, crate::Stack::column(0.0))
+            .unwrap();
+        let popover = cx
+            .create_detached_component(document, crate::Popover::new())
+            .unwrap();
+        cx.update_component(popover, |popover, _| popover.open = true)
+            .unwrap();
+        let generation = cx.world().generation();
+        cx.update_component(popover, |popover, _| popover.open = true)
+            .unwrap();
+        assert_eq!(
+            cx.world().generation(),
+            generation,
+            "a parked surface does not ask for open motion on every projection"
+        );
+
+        cx.append_child(root, popover).unwrap();
+
+        assert!(
+            cx.world()
+                .surface_motion
+                .get(&popover.stable_id())
+                .is_some_and(|motion| motion.open)
+        );
+    }
+
     fn tick(cx: &mut AppContext, ms: u64) {
         cx.advance_animations(Duration::from_millis(ms));
         let work = cx.take_system_work();

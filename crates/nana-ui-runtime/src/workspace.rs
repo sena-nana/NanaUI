@@ -515,7 +515,7 @@ impl Default for Workspace {
 }
 
 impl ComponentView for Workspace {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Writes region styles onto the content nodes the application puts in its regions.
     fn always_reproject() -> bool {
         true
     }

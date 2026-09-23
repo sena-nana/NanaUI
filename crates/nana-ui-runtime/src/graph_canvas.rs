@@ -861,7 +861,7 @@ impl GraphCanvas {
 }
 
 impl ComponentView for GraphCanvas {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Positions, hides and sets interaction on the content children the application provides.
     fn always_reproject() -> bool {
         true
     }

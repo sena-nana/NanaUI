@@ -267,7 +267,7 @@ impl Default for PaneChrome {
 }
 
 impl ComponentView for PaneChrome {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Lays out header, tab, body and action slot nodes other components own.
     fn always_reproject() -> bool {
         true
     }
@@ -637,7 +637,7 @@ impl PaneTree {
 }
 
 impl ComponentView for PaneTree {
-    /// Patches the layout of slot nodes other components own and project.
+    /// Makes the content nodes it hosts fill their slot; their own projection overwrites that.
     fn always_reproject() -> bool {
         true
     }
