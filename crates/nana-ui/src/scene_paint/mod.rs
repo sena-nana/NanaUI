@@ -71,6 +71,8 @@ pub struct ScenePaintViewport {
     pub scene_origin: [f32; 2],
     /// Logical position of scene (0, 0) on the target.
     pub target_origin: [f32; 2],
+    /// Linear RGBA, like every colour the painter blends. A theme colour is
+    /// sRGB and has to be converted first.
     pub clear_color: [f32; 4],
     /// Clear the whole target; otherwise keep existing pixels (`LoadOp::Load`).
     pub clear: bool,

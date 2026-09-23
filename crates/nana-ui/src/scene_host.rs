@@ -10,6 +10,7 @@ mod input;
 mod presence;
 mod present;
 mod schedule;
+mod startup;
 mod windows;
 
 use accessibility::PendingAccessibility;
@@ -79,9 +80,9 @@ use crate::runtime_host::{
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostTextureRegistry, HostedGpuContext, HostedGpuError, HostedGpuSurface, HostedRunError,
-    HostedSurfaceFrame, RuntimeAnimationClock, RuntimeInputAdapter, TitleBarDragTracker,
-    WindowChromeAction, WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
+    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
+    RuntimeAnimationClock, RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction,
+    WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
     title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
@@ -92,20 +93,32 @@ const TASK_QUEUE_CAPACITY: usize = 256;
 const TASK_WORKERS: usize = 4;
 
 /// Run a [`RuntimeProgram`] on the Nana Scene host.
+///
+/// Startup options set with [`crate::with_startup`] (or
+/// [`crate::run_runtime_with_startup`]) on this thread apply to this host.
 pub fn run_runtime_scene<Program: RuntimeProgram>(
     settings: WindowDescriptor,
 ) -> Result<(), HostedRunError> {
+    let entry = Instant::now();
+    let options = crate::runtime_host::take_pending_startup();
+    nana_diagnostics::event!(
+        nana_diagnostics::framework::host::STARTUP_PHASE,
+        phase = 0u64,
+        elapsed_ns = 0u64
+    );
     let event_loop = EventLoop::new().map_err(HostedRunError::EventLoop)?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let (message_tx, message_rx) = mpsc::channel();
     let startup_failure = Arc::new(Mutex::new(None));
-    let runner = SceneRunner::<Program>::Loading {
+    let runner = SceneRunner::<Program>::Loading(Box::new(startup::LoadingStartup {
         proxy: event_loop.create_proxy(),
         message_tx,
         message_rx,
-        settings: Box::new(settings),
+        settings,
         startup_failure: Arc::clone(&startup_failure),
-    };
+        options,
+        entry,
+    }));
     let run = event_loop.run_app(runner);
     nana_diagnostics::event!(nana_diagnostics::framework::host::EVENT_LOOP_EXITED);
     run.map_err(HostedRunError::EventLoop)?;
@@ -116,13 +129,10 @@ pub fn run_runtime_scene<Program: RuntimeProgram>(
 }
 
 enum SceneRunner<Program: RuntimeProgram> {
-    Loading {
-        proxy: EventLoopProxy,
-        message_tx: Sender<Program::Message>,
-        message_rx: Receiver<Program::Message>,
-        settings: Box<WindowDescriptor>,
-        startup_failure: Arc<Mutex<Option<String>>>,
-    },
+    Loading(Box<startup::LoadingStartup<Program::Message>>),
+    /// The window is up (with its splash, if any) and the device is being
+    /// requested off the event thread.
+    Starting(Box<startup::PendingStartup<Program::Message>>),
     Ready(Box<WindowManager<Program>>),
     Finished {
         startup_failure: Arc<Mutex<Option<String>>>,
@@ -153,6 +163,12 @@ pub struct CompositionWork {
 }
 
 struct PendingNativeWindow(Option<Arc<dyn winit::window::Window>>);
+impl PendingNativeWindow {
+    /// The window survived; its material stays applied.
+    fn keep(mut self) {
+        self.0 = None;
+    }
+}
 impl Drop for PendingNativeWindow {
     fn drop(&mut self) {
         if let Some(window) = self.0.as_ref() {
@@ -285,6 +301,11 @@ struct WindowManager<Program: RuntimeProgram> {
     live_frame_move: Option<(WindowId, i16, nana_window::LiveFrameMove)>,
     #[cfg(target_os = "macos")]
     present_transaction_pinned: HashSet<WindowId>,
+    /// This host's startup: the coordinator, the splash it owns until
+    /// handoff, and the record programs read.
+    startup: startup::HostStartup,
+    /// The primary window's icons, while the startup thread still renders them.
+    pending_icons: Option<Receiver<SceneIcons>>,
 }
 
 impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
@@ -484,64 +505,97 @@ impl WindowChromeSession {
 impl<Program: RuntimeProgram> SceneRunner<Program> {
     fn fail(&mut self, event_loop: &dyn ActiveEventLoop, message: impl Into<String>) {
         let slot = match self {
-            Self::Loading {
-                startup_failure, ..
-            }
-            | Self::Finished { startup_failure } => Arc::clone(startup_failure),
+            Self::Loading(loading) => Arc::clone(&loading.startup_failure),
+            Self::Starting(pending) => Arc::clone(pending.startup_failure()),
+            Self::Finished { startup_failure } => Arc::clone(startup_failure),
             Self::Ready(ready) => Arc::clone(&ready.startup_failure),
         };
+        let message = message.into();
+        nana_diagnostics::fault!(
+            nana_diagnostics::framework::host::STARTUP_FAILED;
+            "{message}"
+        );
         if let Ok(mut guard) = slot.lock() {
-            *guard = Some(message.into());
+            *guard = Some(message);
         }
+        // Dropping the pending startup releases its splash, window and
+        // surface on this thread.
         *self = Self::Finished {
             startup_failure: slot,
         };
         event_loop.exit();
     }
+
+    /// Takes the device the startup thread produced, if it has, and moves on:
+    /// to `Ready`, to the next presentation target, or to a startup failure.
+    fn poll_startup(&mut self, event_loop: &dyn ActiveEventLoop) {
+        let Self::Starting(pending) = self else {
+            return;
+        };
+        let Some(result) = pending.take_device() else {
+            return;
+        };
+        let slot = Arc::clone(pending.startup_failure());
+        let Self::Starting(pending) = std::mem::replace(
+            self,
+            Self::Finished {
+                startup_failure: Arc::clone(&slot),
+            },
+        ) else {
+            unreachable!("checked Starting");
+        };
+        match pending.finish::<Program>(event_loop, result) {
+            Ok(startup::StartupStep::Ready(ready)) => *self = Self::Ready(ready),
+            Ok(startup::StartupStep::Retry(pending)) => *self = Self::Starting(pending),
+            Err(error) => self.fail(event_loop, error),
+        }
+    }
+
+    /// Longest event-thread callback while the startup is measured.
+    fn note_block(&mut self, started: Instant) {
+        match self {
+            Self::Starting(pending) => pending.note_block(started.elapsed()),
+            Self::Ready(ready) => ready.note_startup_block(started),
+            Self::Loading(_) | Self::Finished { .. } => {}
+        }
+    }
 }
 
 impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
-        if !matches!(self, Self::Loading { .. }) {
+        if !matches!(self, Self::Loading(_)) {
             return;
         }
-        let Self::Loading {
-            proxy,
-            message_tx,
-            message_rx,
-            settings,
-            startup_failure,
-        } = std::mem::replace(
+        let started = Instant::now();
+        let Self::Loading(loading) = std::mem::replace(
             self,
             Self::Finished {
                 startup_failure: Arc::new(Mutex::new(None)),
             },
-        )
-        else {
+        ) else {
             unreachable!("checked Loading");
         };
-        match initialize::<Program>(
-            event_loop,
-            proxy,
-            message_tx,
-            message_rx,
-            *settings,
-            Arc::clone(&startup_failure),
-            None,
-        ) {
-            Ok(ready) => *self = Self::Ready(Box::new(ready)),
+        let slot = Arc::clone(&loading.startup_failure);
+        match startup::PendingStartup::begin::<Program>(event_loop, *loading) {
+            Ok(pending) => *self = Self::Starting(Box::new(pending)),
             Err(error) => {
-                *self = Self::Finished { startup_failure };
+                *self = Self::Finished {
+                    startup_failure: slot,
+                };
                 self.fail(event_loop, error);
             }
         }
+        self.note_block(started);
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        let Self::Ready(ready) = self else {
-            return;
-        };
-        ready.drain_host_work(event_loop);
+        let started = Instant::now();
+        match self {
+            Self::Starting(_) => self.poll_startup(event_loop),
+            Self::Ready(ready) => ready.drain_host_work(event_loop),
+            Self::Loading(_) | Self::Finished { .. } => {}
+        }
+        self.note_block(started);
     }
 
     fn window_event(
@@ -550,20 +604,38 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         window_id: winit::window::WindowId,
         event: WinitWindowEvent,
     ) {
-        let Self::Ready(ready) = self else {
-            return;
-        };
-        let Some(id) = ready.window_ids.get(&window_id).copied() else {
-            return;
-        };
-        ready.handle_window_event(event_loop, id, event);
+        let started = Instant::now();
+        match self {
+            Self::Starting(pending) => {
+                // The program does not exist yet; closing the window cancels
+                // the startup. Nothing was initialized, so nothing is
+                // reported as a failure.
+                if pending.owns(window_id) && matches!(event, WinitWindowEvent::CloseRequested) {
+                    *self = Self::Finished {
+                        startup_failure: Arc::clone(pending.startup_failure()),
+                    };
+                    event_loop.exit();
+                    return;
+                }
+            }
+            Self::Ready(ready) => {
+                let Some(id) = ready.window_ids.get(&window_id).copied() else {
+                    return;
+                };
+                ready.handle_window_event(event_loop, id, event);
+            }
+            Self::Loading(_) | Self::Finished { .. } => return,
+        }
+        self.note_block(started);
     }
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         let Self::Ready(ready) = self else {
             return;
         };
+        let started = Instant::now();
         ready.about_to_wait(event_loop);
+        self.note_block(started);
     }
 }
 
@@ -584,8 +656,10 @@ struct PrimaryBootstrap {
     applied_material: MaterialOutcome,
 }
 
-/// Creates the first window and binds it to a presentation target, falling
-/// back to the plain native path when the composed one cannot be completed.
+/// Creates an embedded host's first window and binds it to a presentation
+/// target on the embedder's device, falling back to the plain native path when
+/// the composed one cannot be completed. A standalone host does the same in
+/// [`startup::PendingStartup`], with the device requested off the event thread.
 ///
 /// A composed window is created with `WS_EX_NOREDIRECTIONBITMAP`, and that is a
 /// creation-time flag: winit derives it from its own `NO_BACK_BUFFER` and
@@ -610,7 +684,7 @@ struct PrimaryBootstrap {
 fn bootstrap_primary_window(
     event_loop: &dyn ActiveEventLoop,
     settings: &WindowDescriptor,
-    shared_gpu: Option<crate::HostedGpuShared>,
+    shared_gpu: crate::HostedGpuShared,
     policy: crate::GpuBackendPolicy,
     theme: crate::ThemeMode,
     material_mode: crate::MaterialEffect,
@@ -623,7 +697,7 @@ fn bootstrap_primary_window(
     // because the redirection bitmap is a creation-time flag. Second: does
     // *this* window want that path? That is per window, and every other window
     // this process opens asks it again for itself.
-    let mut bootstrap = gpu_bootstrap(policy, shared_gpu.as_ref());
+    let bootstrap = gpu_bootstrap(policy, Some(&shared_gpu));
     let availability = composition_availability(&bootstrap);
     let requested_target = window_surface_request(
         settings.surface,
@@ -652,19 +726,6 @@ fn bootstrap_primary_window(
             attempt.resolved,
             theme,
             material_mode,
-            // The probe's instance is narrowed to the composition backend, and
-            // that narrowing is the process-wide policy taking effect: a
-            // process that asked to be composition-capable keeps a device that
-            // can compose even when its *first* window does not want one, so a
-            // Settings window opening first cannot quietly cost the main
-            // window its compositor. It is dropped only once composition has
-            // been given up on, where there is no capability left to preserve
-            // and the plain retry should be free to pick another backend.
-            attempt
-                .fallback
-                .is_none()
-                .then(|| bootstrap.take_instance())
-                .flatten(),
         )
         .and_then(|bound| match composition_fault_injection() {
             // The composed path's failure branch is not reachable from a test
@@ -814,12 +875,50 @@ struct PrimaryAttachment {
 fn attach_primary_surface(
     event_loop: &dyn ActiveEventLoop,
     settings: &WindowDescriptor,
-    shared_gpu: Option<crate::HostedGpuShared>,
+    graphics: crate::HostedGpuShared,
     target: WindowSurfaceTarget,
     theme: crate::ThemeMode,
     material_mode: crate::MaterialEffect,
-    instance: Option<wgpu::Instance>,
 ) -> Result<PrimaryAttachment, String> {
+    let (window, provisional, requested_material, applied_material) =
+        create_primary_window(event_loop, settings, target, theme, material_mode)?;
+    let want_transparent = requested_material.wants_transparent_surface();
+    let surface = graphics
+        .create_surface_with_mode(
+            Arc::clone(&window),
+            want_transparent,
+            surface_mode_for(target),
+        )
+        .map_err(|error| error.to_string())?;
+    // Kept: the material applied above belongs to the window that survived.
+    provisional.keep();
+    Ok(PrimaryAttachment {
+        window,
+        graphics,
+        surface,
+        requested_material,
+        applied_material,
+    })
+}
+
+/// A hidden primary window for one presentation target, with the default
+/// material applied. The guard drops the window (and clears the material) if
+/// the caller does not [`PendingNativeWindow::keep`] it.
+fn create_primary_window(
+    event_loop: &dyn ActiveEventLoop,
+    settings: &WindowDescriptor,
+    target: WindowSurfaceTarget,
+    theme: crate::ThemeMode,
+    material_mode: crate::MaterialEffect,
+) -> Result<
+    (
+        Arc<dyn winit::window::Window>,
+        PendingNativeWindow,
+        crate::MaterialEffect,
+        MaterialOutcome,
+    ),
+    String,
+> {
     let window: Arc<dyn winit::window::Window> = Arc::from(
         event_loop
             .create_window(
@@ -836,9 +935,9 @@ fn attach_primary_surface(
     // return drops this guard and the local `window` together, so the last
     // reference goes with them and the HWND created for a target that did not
     // work out is destroyed rather than reused.
-    let mut provisional = PendingNativeWindow(Some(window.clone()));
-    // The program does not exist yet; line 951 re-applies the material with the
-    // host's own colour once it does.
+    let provisional = PendingNativeWindow(Some(window.clone()));
+    // The program does not exist yet; `complete_startup` re-applies the
+    // material with the host's own colour once it does.
     let (requested_material, applied_material) = apply_window_material(
         window.as_ref(),
         theme,
@@ -847,36 +946,24 @@ fn attach_primary_surface(
         AppearanceSettings::DEFAULT_BACKDROP_OPACITY,
         None,
     );
-    let want_transparent = requested_material.wants_transparent_surface();
-    let mode = surface_mode_for(target);
-    let bound = if let Some(graphics) = shared_gpu {
-        graphics
-            .create_surface_with_mode(Arc::clone(&window), want_transparent, mode)
-            .map(|surface| (graphics, surface))
-            .map_err(|error| error.to_string())
-    } else {
-        pollster::block_on(crate::hosted_context::HostedGpuContext::new_with_bootstrap(
-            Arc::clone(&window),
-            wgpu::Features::empty(),
-            want_transparent,
-            mode,
-            instance,
-        ))
-        .map(HostedGpuContext::into_parts)
-        .map_err(|error| error.to_string())
-    };
-    let (graphics, surface) = bound?;
-    // Kept: the material applied above belongs to the window that survived.
-    provisional.0 = None;
-    Ok(PrimaryAttachment {
-        window,
-        graphics,
-        surface,
-        requested_material,
-        applied_material,
-    })
+    Ok((window, provisional, requested_material, applied_material))
 }
 
+/// The persisted geometry applied to the primary descriptor, which is then
+/// checked; returns the host's store.
+fn prepare_primary_descriptor(settings: &mut WindowDescriptor) -> Result<SharedStore, String> {
+    let store = crate::runtime_host::take_pending_store();
+    restore_window_geometry(settings, store.as_ref());
+    crate::window_service::validate_descriptor(settings).map_err(|error| error.to_string())?;
+    if settings.parent.is_some() {
+        return Err("initial window cannot have a parent".into());
+    }
+    Ok(store)
+}
+
+/// An embedded host's startup: the embedder already owns the event loop and
+/// the device, and has put nothing of NanaUI on screen, so there is no splash
+/// and nothing to request off the event thread.
 fn initialize<Program: RuntimeProgram>(
     event_loop: &dyn ActiveEventLoop,
     proxy: EventLoopProxy,
@@ -884,17 +971,88 @@ fn initialize<Program: RuntimeProgram>(
     message_rx: Receiver<Program::Message>,
     mut settings: WindowDescriptor,
     startup_failure: Arc<Mutex<Option<String>>>,
-    shared_gpu: Option<crate::HostedGpuShared>,
+    shared_gpu: crate::HostedGpuShared,
 ) -> Result<WindowManager<Program>, String> {
-    let store = crate::runtime_host::take_pending_store();
-    restore_window_geometry(&mut settings, store.as_ref());
-    crate::window_service::validate_descriptor(&settings).map_err(|error| error.to_string())?;
-    if settings.parent.is_some() {
-        return Err("initial window cannot have a parent".into());
-    }
-    let embedded = shared_gpu.is_some();
-    let mut last_theme = crate::ThemeMode::default();
-    let mut last_material_mode = nana_window::MaterialEffect::Solid;
+    let store = prepare_primary_descriptor(&mut settings)?;
+    let bootstrap = bootstrap_primary_window(
+        event_loop,
+        &settings,
+        shared_gpu,
+        Program::gpu_backend_policy(),
+        crate::ThemeMode::default(),
+        nana_window::MaterialEffect::Solid,
+    )?;
+    let startup =
+        startup::HostStartup::settled(crate::SplashOutcome::Skipped(crate::SplashSkip::Embedded));
+    complete_startup(
+        event_loop,
+        StartupChannels {
+            proxy,
+            message_tx,
+            message_rx,
+            startup_failure,
+        },
+        settings,
+        store,
+        true,
+        PrimaryStart {
+            bootstrap,
+            #[cfg(not(target_os = "android"))]
+            accessibility: None,
+            painter: None,
+            icons: None,
+            startup,
+        },
+    )
+}
+
+/// Where the program's messages and a startup failure go.
+struct StartupChannels<Message> {
+    proxy: EventLoopProxy,
+    message_tx: Sender<Message>,
+    message_rx: Receiver<Message>,
+    startup_failure: Arc<Mutex<Option<String>>>,
+}
+
+/// A primary window bound to its device, and what the startup made for it
+/// before the program existed.
+struct PrimaryStart {
+    bootstrap: PrimaryBootstrap,
+    /// Created before the window was first shown, when it was shown early.
+    #[cfg(not(target_os = "android"))]
+    accessibility: Option<HostedAccessibility>,
+    /// Built off the event thread together with the device.
+    painter: Option<SceneWgpuPainter>,
+    /// Rendered off the event thread while the device was requested.
+    icons: Option<Receiver<SceneIcons>>,
+    startup: startup::HostStartup,
+}
+
+/// Everything after the device exists: the program (`UiReady`), its material,
+/// the host's window bookkeeping and the first show. Shared by the standalone
+/// and the embedded host, so the two cannot drift apart.
+fn complete_startup<Program: RuntimeProgram>(
+    event_loop: &dyn ActiveEventLoop,
+    channels: StartupChannels<Program::Message>,
+    settings: WindowDescriptor,
+    store: SharedStore,
+    embedded: bool,
+    start: PrimaryStart,
+) -> Result<WindowManager<Program>, String> {
+    let StartupChannels {
+        proxy,
+        message_tx,
+        message_rx,
+        startup_failure,
+    } = channels;
+    let PrimaryStart {
+        bootstrap,
+        #[cfg(not(target_os = "android"))]
+            accessibility: early_accessibility,
+        painter: early_painter,
+        icons,
+        startup: host_startup,
+    } = start;
     let non_client = nana_window::NonClientRenderingStrategy::from_env();
     let PrimaryBootstrap {
         window,
@@ -904,16 +1062,30 @@ fn initialize<Program: RuntimeProgram>(
         composition: process_composition,
         mut requested_material,
         applied_material,
-    } = bootstrap_primary_window(
-        event_loop,
-        &settings,
-        shared_gpu,
-        Program::gpu_backend_policy(),
-        last_theme,
-        last_material_mode,
-    )?;
-    let mut pending_native = PendingNativeWindow(Some(window.clone()));
-    apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
+    } = bootstrap;
+    // Declared after the window so that, on a failure below, the splash is
+    // taken off before the window goes.
+    let mut host_startup = host_startup;
+    let pending_native = PendingNativeWindow(Some(window.clone()));
+    // Icons rendered off the event thread are applied when they arrive
+    // (`drain_host_work`); nothing waits for them.
+    let pending_icons = match icons {
+        Some(icons) => match icons.try_recv() {
+            Ok(rendered) => {
+                rendered.apply(window.as_ref());
+                None
+            }
+            Err(mpsc::TryRecvError::Empty) => Some(icons),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
+                None
+            }
+        },
+        None => {
+            apply_scene_window_icon(window.as_ref(), settings.icon.as_ref(), true);
+            None
+        }
+    };
     let format = surface.format();
     let mut presentation = ResolvedWindowPresentation::resolve(
         &settings,
@@ -929,6 +1101,10 @@ fn initialize<Program: RuntimeProgram>(
     let (windows, window_requests) =
         crate::WindowService::channel(Arc::new(move || window_wake.wake()));
     windows.register(WindowId::PRIMARY);
+    let startup_wake = Arc::clone(&host_work);
+    host_startup
+        .handle
+        .set_wake(Some(Arc::new(move || startup_wake.wake())));
     let tasks = spawn_task_workers(message_tx.clone(), Arc::clone(&host_work));
     let geometry = window_geometry(window.as_ref());
     let reduced_motion = nana_window::system_reduced_motion().unwrap_or(false);
@@ -946,13 +1122,15 @@ fn initialize<Program: RuntimeProgram>(
     .with_windows(&windows)
     .with_window_tag(settings.tag.clone())
     .with_reduced_motion(reduced_motion)
-    .with_store(Arc::clone(&store));
+    .with_store(Arc::clone(&store))
+    .with_startup(host_startup.handle.clone());
+    host_startup.ui_ready_begins();
     let (program, startup) = Program::initialize(&context).map_err(|error| error.to_string())?;
     // Locals drop in reverse order: if the remaining host setup fails, close
     // the inbox before the initialized program can join request-waiting workers.
     let startup_requests = window_requests;
-    last_theme = program.theme_mode();
-    last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
+    let last_theme = program.theme_mode();
+    let last_material_mode = program.window_material_mode_for(WindowId::PRIMARY);
     let backdrop_opacity = program.appearance_backdrop_opacity_for(WindowId::PRIMARY);
     let window_background = program.window_background();
     let applied;
@@ -991,13 +1169,13 @@ fn initialize<Program: RuntimeProgram>(
         false,
     );
     #[cfg(not(target_os = "android"))]
-    let accessibility = {
+    let accessibility = early_accessibility.or_else(|| {
         Some(HostedAccessibility::new(
             Arc::clone(&window),
             true,
             window.scale_factor() as f32,
         ))
-    };
+    });
     let mut window_ids = HashMap::new();
     window_ids.insert(window.id(), WindowId::PRIMARY);
     let animation_clock = RuntimeAnimationClock::now();
@@ -1033,7 +1211,7 @@ fn initialize<Program: RuntimeProgram>(
         skip_taskbar_report,
         pointer_presence: presence::PointerPresence::default(),
     };
-    pending_native.0 = None;
+    pending_native.keep();
     let mut ready = WindowManager {
         program,
         embedded,
@@ -1086,11 +1264,18 @@ fn initialize<Program: RuntimeProgram>(
         live_frame_move: None,
         #[cfg(target_os = "macos")]
         present_transaction_pinned: HashSet::new(),
+        startup: host_startup,
+        pending_icons,
     };
     ready
         .program
         .sync_animation_clock(ready.animation_clock.epoch());
-    let _ = ready.painter_mut(format);
+    match early_painter {
+        Some(painter) => ready.adopt_painter(format, painter),
+        None => {
+            let _ = ready.painter_mut(format);
+        }
+    }
     ready.prepare_window_chrome(
         WindowId::PRIMARY,
         ready.geometry_of(WindowId::PRIMARY).maximized,
@@ -1100,6 +1285,8 @@ fn initialize<Program: RuntimeProgram>(
         WindowId::PRIMARY,
         &ready.geometry_of(WindowId::PRIMARY),
     );
+    let policy = ready.program.startup_takeover();
+    ready.startup_ui_ready(policy);
     let update = ready.program.window_event(
         WindowEvent::Ready {
             id: WindowId::PRIMARY,
@@ -1108,18 +1295,35 @@ fn initialize<Program: RuntimeProgram>(
         &ready.context(),
     );
     ready.apply_update(event_loop, update, None);
-    for message in startup {
-        if event_loop.exiting() {
-            break;
+    let shown_early = ready.startup.shown_early();
+    if shown_early {
+        // The window is already on screen behind its splash: the startup
+        // messages take the ordinary queue, in batches that let the loop turn.
+        let pending = !startup.is_empty();
+        for message in startup {
+            if ready.message_tx.send(message).is_err() {
+                break;
+            }
         }
-        ready.process_message(event_loop, message);
+        if pending {
+            ready.host_work.wake();
+        }
+    } else {
+        for message in startup {
+            if event_loop.exiting() {
+                break;
+            }
+            ready.process_message(event_loop, message);
+        }
     }
     if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
-        windows::set_native_visible(
-            window.as_ref(),
-            ready.settings.visible,
-            ready.settings.focus_on_show,
-        );
+        if !shown_early {
+            windows::set_native_visible(
+                window.as_ref(),
+                ready.settings.visible,
+                ready.settings.focus_on_show,
+            );
+        }
         ready.reconcile_native_chrome(WindowId::PRIMARY);
         window.request_redraw();
         ready.finish_ready(event_loop, WindowId::PRIMARY);
@@ -1172,6 +1376,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         )
         .with_reduced_motion(self.reduced_motion)
         .with_store(Arc::clone(&self.store))
+        .with_startup(self.startup.handle.clone())
     }
 
     fn apply_update(
@@ -1684,8 +1889,20 @@ fn scene_clear_color(
     if material.wants_transparent_surface() {
         return [0.0, 0.0, 0.0, 0.0];
     }
+    // Theme and host colours are sRGB; the painter's clear, like every quad it
+    // draws, is linear (`ScenePaintViewport::clear_color`). Passing them
+    // through unconverted encoded the palette's #181818 twice and cleared an
+    // uncovered window to #565656 — the same colour an Early Splash in the
+    // system background could not match.
     let color = window_background.unwrap_or_else(|| theme.palette().background);
-    [color.r, color.g, color.b, color.a]
+    let linear = |channel: f32| {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [linear(color.r), linear(color.g), linear(color.b), color.a]
 }
 
 fn resolved_scene_ime_request(
@@ -1858,6 +2075,10 @@ fn scene_window_attributes(
         let position = clamp_position_to_displays((x, y), size, displays);
         attributes = attributes.with_position(desktop_position(position, desktop.scale));
     }
+    // winit ignores window icons on macOS, where rasterizing the default one
+    // is the longest step before the window exists; the Dock icon is applied
+    // separately.
+    #[cfg(not(target_os = "macos"))]
     if let Some(icon) = winit_icon(&resolved_scene_icon(settings.icon.as_ref())) {
         attributes = attributes.with_window_icon(Some(icon));
     }
@@ -1918,27 +2139,57 @@ fn apply_scene_window_icon(
     per_window: Option<&WindowIcon>,
     apply_app_icon: bool,
 ) {
-    let icon = resolved_scene_icon(per_window);
-    // winit 的 Win32 后端把共享的 RGBA 缓冲原地 R/B 翻转成 BGRA;同一 Icon
-    // 转换第二次会把颜色换回去,所以每个入口都拿到独立缓冲,恰好转换一次。
-    window.set_window_icon(winit_icon(&icon));
-    #[cfg(target_os = "windows")]
-    window.set_taskbar_icon(winit_icon(&icon));
-    if apply_app_icon {
-        apply_application_icon(&icon);
+    SceneIcons::render(per_window, apply_app_icon).apply(window);
+}
+
+/// The application (Dock) icon alone, for when no window is left to carry it.
+fn apply_application_icon() {
+    #[cfg(target_os = "macos")]
+    if let Some(png) = SceneIcons::render(None, true).application_png {
+        set_application_icon_png(&png);
     }
 }
 
-fn apply_application_icon(icon: &WindowIcon) {
+/// A window's icons, rendered. Rendering the default mark — and on macOS the
+/// Dock icon's padded PNG — is the expensive part and needs no window, so a
+/// startup renders them on a thread while the device is requested; applying
+/// them is cheap.
+struct SceneIcons {
+    window: WindowIcon,
     #[cfg(target_os = "macos")]
-    {
-        let icon = nana_app_icon::with_system_grid(icon);
-        if let Ok(png) = nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba) {
-            set_application_icon_png(&png);
+    application_png: Option<Vec<u8>>,
+}
+
+impl SceneIcons {
+    fn render(per_window: Option<&WindowIcon>, application: bool) -> Self {
+        let window = resolved_scene_icon(per_window);
+        #[cfg(target_os = "macos")]
+        let application_png = application
+            .then(|| {
+                let icon = nana_app_icon::with_system_grid(&window);
+                nana_app_icon::encode_png(icon.width, icon.height, &icon.rgba).ok()
+            })
+            .flatten();
+        #[cfg(not(target_os = "macos"))]
+        let _ = application;
+        Self {
+            window,
+            #[cfg(target_os = "macos")]
+            application_png,
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = icon;
+
+    fn apply(&self, window: &dyn winit::window::Window) {
+        // winit 的 Win32 后端把共享的 RGBA 缓冲原地 R/B 翻转成 BGRA;同一 Icon
+        // 转换第二次会把颜色换回去,所以每个入口都拿到独立缓冲,恰好转换一次。
+        window.set_window_icon(winit_icon(&self.window));
+        #[cfg(target_os = "windows")]
+        window.set_taskbar_icon(winit_icon(&self.window));
+        #[cfg(target_os = "macos")]
+        if let Some(png) = self.application_png.as_deref() {
+            set_application_icon_png(png);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3048,7 +3299,7 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
             rx,
             settings,
             Arc::new(Mutex::new(None)),
-            Some(graphics),
+            graphics,
         )
         .map(|manager| Self { manager })
     }
@@ -3737,6 +3988,19 @@ mod tests {
             ),
             [0.0, 0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn the_clear_colour_is_the_palette_colour_in_linear_light() {
+        // The painter clears in linear light; #181818 must come out as
+        // #181818 rather than encoded a second time.
+        let [r, g, b, a] =
+            scene_clear_color(ThemeMode::Dark, MaterialOutcome::chosen_solid(), None);
+        let expected = ((24.0f32 / 255.0 + 0.055) / 1.055).powf(2.4);
+        for channel in [r, g, b] {
+            assert!((channel - expected).abs() < 1e-6, "{channel} != {expected}");
+        }
+        assert_eq!(a, 1.0);
     }
 
     #[test]

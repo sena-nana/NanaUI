@@ -645,26 +645,6 @@ impl HostedGpuContext {
         Self::new_with_target_on(window, required_features, want_transparent, target, None).await
     }
 
-    /// As `new_with_target`, reusing `instance` when the caller already built
-    /// one to answer a capability question. See [`GpuBootstrap`].
-    pub(crate) async fn new_with_bootstrap(
-        window: Arc<dyn winit::window::Window>,
-        required_features: wgpu::Features,
-        want_transparent: bool,
-        mode: HostedSurfaceMode,
-        instance: Option<wgpu::Instance>,
-    ) -> Result<Self, HostedGpuError> {
-        let target = HostedSurfaceTarget::new(mode, window.clone())?;
-        Self::new_with_target_on(
-            window,
-            required_features,
-            want_transparent,
-            target,
-            instance,
-        )
-        .await
-    }
-
     async fn new_with_target_on(
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
@@ -721,71 +701,15 @@ impl HostedGpuContext {
         ),
         HostedGpuError,
     > {
-        #[allow(unused_mut)]
-        let mut backends = wgpu::Backends::from_env().unwrap_or_default();
-        #[cfg(target_os = "windows")]
-        if target.mode() == HostedSurfaceMode::WindowsComposition {
-            backends &= wgpu::Backends::DX12;
-            if backends.is_empty() {
-                return Err(HostedGpuError::Adapter(
-                    "DirectComposition requires the DX12 backend".into(),
-                ));
-            }
-        }
-        let instance = instance.unwrap_or_else(|| {
-            wgpu::Instance::new(wgpu::InstanceDescriptor {
-                backends,
-                ..wgpu::InstanceDescriptor::new_without_display_handle()
-            })
-        });
-        let surface = target.create_surface(&instance, window.clone())?;
-        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
-            .await
-            .map_err(|error| HostedGpuError::Adapter(error.to_string()))?;
-        let capabilities = surface.get_capabilities(&adapter);
-        let format = preferred_surface_format(&capabilities.formats)
-            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
-        // Dual-source blending is what subpixel (ClearType) text draws with;
-        // taken whenever the adapter has it, like the caller's own features.
-        let required_features =
-            adapter.features() & (required_features | wgpu::Features::DUAL_SOURCE_BLENDING);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                label: Some("NanaUI hosted shared device"),
-                required_features,
-                required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            })
-            .await
-            .map_err(|error| HostedGpuError::Device(error.to_string()))?;
-        let device_lost = Arc::new(AtomicBool::new(false));
-        let device_lost_callback = Arc::clone(&device_lost);
-        let device_lost_report = Arc::new(Mutex::new(None));
-        let device_lost_report_callback = Arc::clone(&device_lost_report);
-        device.set_device_lost_callback(move |reason, message| {
-            device_lost_callback.store(true, Ordering::Release);
-            if let Ok(mut report) = device_lost_report_callback.lock() {
-                *report = Some(HostedDeviceLost {
-                    reason: format!("{reason:?}"),
-                    message,
-                });
-            }
-        });
-        let resources = HostedGpuResources::from_parts(
-            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
-            adapter,
-            Arc::new(device),
-            Arc::new(queue),
-        );
-        let shared = HostedGpuShared {
-            instance,
-            resources,
-            device_lost,
-            device_lost_report,
-        };
-        Ok((shared, surface, capabilities, format))
+        let acquired = DeviceRequest::new(window, required_features, target, instance)?
+            .acquire()
+            .await?;
+        Ok((
+            acquired.shared,
+            acquired.surface,
+            acquired.capabilities,
+            acquired.format,
+        ))
     }
 
     #[cfg(target_os = "windows")]
@@ -1053,6 +977,174 @@ fn configure_surface(
         alpha_recreate_attempted: false,
         live_present_mode: preferred_live_present_mode(&capabilities.present_modes),
     })
+}
+
+/// The half of creating a device that has to happen on the window's thread:
+/// the instance and the window's surface. What it hands off is `Send`, so the
+/// adapter and device request — the part that can take seconds — can run on
+/// another thread while the window's event loop keeps turning.
+pub(crate) struct DeviceRequest {
+    instance: wgpu::Instance,
+    surface: wgpu::Surface<'static>,
+    required_features: wgpu::Features,
+}
+
+/// A device and the surface it was chosen for, not yet configured.
+pub(crate) struct AcquiredDevice {
+    shared: HostedGpuShared,
+    surface: wgpu::Surface<'static>,
+    capabilities: wgpu::SurfaceCapabilities,
+    format: wgpu::TextureFormat,
+}
+
+impl AcquiredDevice {
+    pub(crate) fn resources(&self) -> &HostedGpuResources {
+        &self.shared.resources
+    }
+
+    pub(crate) const fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+}
+
+/// A primary window whose surface waits for its device; see [`DeviceRequest`].
+pub(crate) struct PendingPrimarySurface {
+    window: Arc<dyn winit::window::Window>,
+    target: HostedSurfaceTarget,
+    want_transparent: bool,
+}
+
+impl PendingPrimarySurface {
+    /// Creates the surface target and the surface on the window's thread.
+    pub(crate) fn begin(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        want_transparent: bool,
+        mode: HostedSurfaceMode,
+        instance: Option<wgpu::Instance>,
+    ) -> Result<(Self, DeviceRequest), HostedGpuError> {
+        let target = HostedSurfaceTarget::new(mode, window.clone())?;
+        let request = DeviceRequest::new(window.clone(), required_features, &target, instance)?;
+        Ok((
+            Self {
+                window,
+                target,
+                want_transparent,
+            },
+            request,
+        ))
+    }
+
+    /// Configures the surface on the device, back on the window's thread.
+    pub(crate) fn finish(self, device: AcquiredDevice) -> Result<HostedGpuContext, HostedGpuError> {
+        let primary = configure_surface(
+            self.window,
+            device.surface,
+            device.format,
+            &device.capabilities,
+            &device.shared.resources,
+            self.want_transparent,
+            self.target,
+        )?;
+        Ok(HostedGpuContext {
+            shared: device.shared,
+            primary,
+        })
+    }
+}
+
+impl DeviceRequest {
+    fn new(
+        window: Arc<dyn winit::window::Window>,
+        required_features: wgpu::Features,
+        target: &HostedSurfaceTarget,
+        instance: Option<wgpu::Instance>,
+    ) -> Result<Self, HostedGpuError> {
+        #[allow(unused_mut)]
+        let mut backends = wgpu::Backends::from_env().unwrap_or_default();
+        #[cfg(target_os = "windows")]
+        if target.mode() == HostedSurfaceMode::WindowsComposition {
+            backends &= wgpu::Backends::DX12;
+            if backends.is_empty() {
+                return Err(HostedGpuError::Adapter(
+                    "DirectComposition requires the DX12 backend".into(),
+                ));
+            }
+        }
+        let instance = instance.unwrap_or_else(|| {
+            wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends,
+                ..wgpu::InstanceDescriptor::new_without_display_handle()
+            })
+        });
+        let surface = target.create_surface(&instance, window)?;
+        Ok(Self {
+            instance,
+            surface,
+            required_features,
+        })
+    }
+
+    /// Chooses the adapter for the surface and requests the device. Runs on
+    /// any thread.
+    pub(crate) async fn acquire(self) -> Result<AcquiredDevice, HostedGpuError> {
+        let Self {
+            instance,
+            surface,
+            required_features,
+        } = self;
+        let adapter = wgpu::util::initialize_adapter_from_env_or_default(&instance, Some(&surface))
+            .await
+            .map_err(|error| HostedGpuError::Adapter(error.to_string()))?;
+        let capabilities = surface.get_capabilities(&adapter);
+        let format = preferred_surface_format(&capabilities.formats)
+            .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
+        // Dual-source blending is what subpixel (ClearType) text draws with;
+        // taken whenever the adapter has it, like the caller's own features.
+        let required_features =
+            adapter.features() & (required_features | wgpu::Features::DUAL_SOURCE_BLENDING);
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("NanaUI hosted shared device"),
+                required_features,
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            })
+            .await
+            .map_err(|error| HostedGpuError::Device(error.to_string()))?;
+        let device_lost = Arc::new(AtomicBool::new(false));
+        let device_lost_callback = Arc::clone(&device_lost);
+        let device_lost_report = Arc::new(Mutex::new(None));
+        let device_lost_report_callback = Arc::clone(&device_lost_report);
+        device.set_device_lost_callback(move |reason, message| {
+            device_lost_callback.store(true, Ordering::Release);
+            if let Ok(mut report) = device_lost_report_callback.lock() {
+                *report = Some(HostedDeviceLost {
+                    reason: format!("{reason:?}"),
+                    message,
+                });
+            }
+        });
+        let resources = HostedGpuResources::from_parts(
+            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
+            adapter,
+            Arc::new(device),
+            Arc::new(queue),
+        );
+        Ok(AcquiredDevice {
+            shared: HostedGpuShared {
+                instance,
+                resources,
+                device_lost,
+                device_lost_report,
+            },
+            surface,
+            capabilities,
+            format,
+        })
+    }
 }
 
 pub enum HostedSurfaceFrame {

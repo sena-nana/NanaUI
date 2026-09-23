@@ -124,6 +124,10 @@ name = "application-counter"
 required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
+name = "startup-splash"
+required-features = ["hosted", "bundled-fonts"]
+
+[[example]]
 name = "accessibility-hidden-probe"
 required-features = ["hosted", "bundled-fonts"]
 

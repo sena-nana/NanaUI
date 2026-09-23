@@ -144,6 +144,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         };
+        let flushed = self.note_startup_flush(id);
         // A cursor declaration can change while the pointer is stationary;
         // refresh the native cursor after the document's computed styles settle.
         // Ordinary redraws keep the pointer-event throttle and avoid a full
@@ -172,6 +173,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         };
         let format = host.surface.format();
+        // Decided before the drawable is acquired: a macOS handoff changes how
+        // this frame is presented.
+        let takes_over = self.prepare_startup_frame(id, flushed);
+        let surface_generation = self.surface_generation;
         let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
@@ -362,6 +367,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 });
             self.request_redraw(id);
             return;
+        }
+        // The frame is presented (and, on Windows, its composition published):
+        // it may now end the startup.
+        if takes_over {
+            self.startup_frame_presented(event_loop, surface_generation == self.surface_generation);
         }
         // Publish semantics for the frame just presented. Application callbacks
         // below may commit new work intended for the next frame.
@@ -609,32 +619,43 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Painters are created lazily per surface format and own their image waker
     /// from creation, so the per-frame lookup does no allocation.
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
-        let (graphics, targets, redraws, proxy) = (
-            &self.graphics,
-            &self.image_targets,
-            &self.texture_redraws,
-            &self.proxy,
+        if !self.painters.contains_key(&format) {
+            let resources = self.graphics.resources();
+            let painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
+            self.adopt_painter(format, painter);
+        }
+        self.painters
+            .get_mut(&format)
+            .expect("painter was just inserted")
+    }
+
+    /// Installs a painter built elsewhere (the startup thread builds the first
+    /// one alongside the device) with this host's image waker.
+    pub(super) fn adopt_painter(
+        &mut self,
+        format: wgpu::TextureFormat,
+        mut painter: SceneWgpuPainter,
+    ) {
+        let (targets, redraws, proxy) = (
+            Arc::clone(&self.image_targets),
+            Arc::clone(&self.texture_redraws),
+            self.proxy.clone(),
         );
-        self.painters.entry(format).or_insert_with(|| {
-            let resources = graphics.resources();
-            let mut painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
-            let (targets, redraws, proxy) =
-                (Arc::clone(targets), Arc::clone(redraws), proxy.clone());
-            painter.set_image_update_waker(Arc::new(move |key| {
-                let ids = targets
-                    .lock()
-                    .ok()
-                    .and_then(|targets| targets.get(key).cloned())
-                    .unwrap_or_default();
-                if !ids.is_empty()
-                    && let Ok(mut pending) = redraws.lock()
-                {
-                    pending.extend(ids);
-                }
-                proxy.wake_up();
-            }));
-            painter
-        })
+        painter.set_image_update_waker(Arc::new(move |key| {
+            let ids = targets
+                .lock()
+                .ok()
+                .and_then(|targets| targets.get(key).cloned())
+                .unwrap_or_default();
+            if !ids.is_empty()
+                && let Ok(mut pending) = redraws.lock()
+            {
+                pending.extend(ids);
+            }
+            proxy.wake_up();
+        }));
+        self.note_startup_painter();
+        self.painters.insert(format, painter);
     }
 }
 

@@ -208,6 +208,35 @@ pub mod host {
         EventDescriptor::new(D, 2, "host.run_failed", Severity::Fatal, &[]);
     pub static EVENT_LOOP_EXITED: EventDescriptor =
         EventDescriptor::new(D, 3, "host.event_loop_exited", Severity::Info, &[]);
+
+    /// A startup milestone (Issue #225). `phase`: 0 entry, 1 splash
+    /// committed, 2 ui ready, 3 takeover requested, 4 takeover frame
+    /// presented, 5 handoff completed, 6 splash released. `elapsed_ns` is
+    /// from the host's entry, not from process creation; phase 1 is the CPU
+    /// side of the compositor request, not a time the logo was on screen.
+    pub static STARTUP_PHASE: EventDescriptor = EventDescriptor::new(
+        D,
+        4,
+        "host.startup_phase",
+        Severity::Info,
+        &[F::u64("phase"), F::u64("elapsed_ns")],
+    );
+    /// What the platform did with the Early Splash request. `outcome`:
+    /// 0 animated, 1 static, 2 skipped, 3 failed (`SplashOutcome::code`).
+    pub static SPLASH_OUTCOME: EventDescriptor = EventDescriptor::new(
+        D,
+        5,
+        "host.splash_outcome",
+        Severity::Info,
+        &[F::u64("outcome")],
+    );
+    /// Fault: startup ended before `UiReady` (no device, no window, ...).
+    pub static STARTUP_FAILED: EventDescriptor =
+        EventDescriptor::new(D, 6, "host.startup_failed", Severity::Error, &[]);
+
+    /// Longest single event-loop callback between host entry and handoff.
+    pub static STARTUP_LONGEST_BLOCK_NS: Metric =
+        Metric::gauge(D, 5, "host.startup.longest_block", "ns");
 }
 
 pub mod diagnostics {

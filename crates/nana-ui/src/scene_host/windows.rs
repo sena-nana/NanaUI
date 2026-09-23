@@ -165,7 +165,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                         apply_scene_window_icon(window.as_ref(), None, id == WindowId::PRIMARY);
                     }
                 }
-                apply_application_icon(&nana_app_icon::resolved_application_icon(None));
+                apply_application_icon();
             }
             RoutedWindowCommand::Drag(id) => {
                 let _ = self.begin_window_move(event_loop, id);
@@ -619,7 +619,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         )
         .with_windows(&self.windows)
         .with_window_tag(settings.tag.clone())
-        .with_store(Arc::clone(&self.store));
+        .with_reduced_motion(self.reduced_motion)
+        .with_store(Arc::clone(&self.store))
+        .with_startup(self.startup.handle.clone());
         if let Err(error) = self.program.initialize_window(id, &context) {
             self.windows.unregister(id);
             self.program.discard_window(id);
@@ -684,6 +686,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         self.windows.unregister(id);
+        if id == WindowId::PRIMARY {
+            self.release_startup_splash();
+        }
         let children: Vec<_> = self
             .window_contexts
             .iter()

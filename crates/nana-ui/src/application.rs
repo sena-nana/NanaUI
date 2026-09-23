@@ -44,6 +44,9 @@ impl Default for ApplicationWindow {
 pub trait ApplicationState: Sized + 'static {
     type Message: Send + 'static;
     type Error: std::fmt::Display;
+    /// The `UiReady` point of startup (see [`crate::startup`]): the host can
+    /// draw an ordinary document now. Create the state the first screen needs
+    /// and start the rest as tasks; [`Self::build`] follows immediately.
     fn initialize(context: &RuntimeProgramContext<Self::Message>) -> Result<Self, Self::Error>;
     fn build(
         &mut self,
@@ -93,6 +96,22 @@ pub trait ApplicationState: Sized + 'static {
     }
     fn host_failure(&mut self, failure: crate::HostFailure) {
         eprintln!("NanaUI host failure: {failure:?}");
+    }
+    /// Whether the primary window's first document may replace the Early
+    /// Splash as soon as it has a frame. See
+    /// [`RuntimeProgram::startup_takeover`].
+    fn startup_takeover(&self) -> crate::StartupTakeover {
+        crate::StartupTakeover::Immediate
+    }
+    /// The startup moved to a later phase. See
+    /// [`RuntimeProgram::startup_changed`].
+    fn startup_changed(
+        &mut self,
+        _status: &crate::StartupStatus,
+        _windows: &mut HashMap<WindowId, ApplicationWindow>,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
     }
 }
 
@@ -266,5 +285,16 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
     }
     fn host_failure(&mut self, failure: crate::HostFailure) {
         self.state.host_failure(failure);
+    }
+    fn startup_takeover(&self) -> crate::StartupTakeover {
+        self.state.startup_takeover()
+    }
+    fn startup_changed(
+        &mut self,
+        status: &crate::StartupStatus,
+        context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        self.state
+            .startup_changed(status, &mut self.windows, context)
     }
 }

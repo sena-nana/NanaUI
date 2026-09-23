@@ -71,6 +71,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     system_appearance: Option<SystemAppearance>,
     reduced_motion: bool,
     store: SharedStore,
+    startup: crate::StartupHandle,
 }
 
 // Cloning host handles never clones a message. A derived implementation would
@@ -90,6 +91,7 @@ impl<Message: Send + 'static> Clone for RuntimeProgramContext<Message> {
             system_appearance: self.system_appearance,
             reduced_motion: self.reduced_motion,
             store: Arc::clone(&self.store),
+            startup: self.startup.clone(),
         }
     }
 }
@@ -122,7 +124,15 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             system_appearance,
             reduced_motion: false,
             store: memory_store(),
+            startup: crate::StartupHandle::settled(crate::SplashOutcome::Skipped(
+                crate::SplashSkip::NotConfigured,
+            )),
         }
+    }
+
+    pub(crate) fn with_startup(mut self, startup: crate::StartupHandle) -> Self {
+        self.startup = startup;
+        self
     }
 
     pub(crate) fn with_reduced_motion(mut self, reduced: bool) -> Self {
@@ -212,6 +222,13 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     /// [`WindowEvent::AppearanceChanged`]: nana_ui_platform::WindowEvent::AppearanceChanged
     pub const fn system_appearance(&self) -> Option<SystemAppearance> {
         self.system_appearance
+    }
+
+    /// This host's startup: its phase, what became of the Early Splash, the
+    /// ticket a takeover request needs, and when each milestone happened.
+    /// Readable from any thread at any time.
+    pub fn startup(&self) -> &crate::StartupHandle {
+        &self.startup
     }
 
     /// Process-level persistence. Default is memory-only; hosts inject a
@@ -531,9 +548,36 @@ pub trait RuntimeProgram: Sized + 'static {
         RuntimeProgramUpdate::default()
     }
 
+    /// Called once the host can mount, lay out, dispatch and draw an ordinary
+    /// document — the `UiReady` point of a two-phase startup (Issue #225).
+    /// Business state does not have to exist before this; build what the
+    /// first screen needs, start the rest with [`RuntimeProgramContext::run_task`]
+    /// and return. With an Early Splash up, returned messages are delivered
+    /// through the ordinary message queue after this returns, in batches that
+    /// let the event loop turn; without one they are applied before the window
+    /// is first shown, as before.
     fn initialize(
         context: &RuntimeProgramContext<Self::Message>,
     ) -> Result<(Self, Vec<Self::Message>), Self::Error>;
+
+    /// Whether the primary document built in [`Self::initialize`] may replace
+    /// the Early Splash as soon as it has a frame, or the splash stays until
+    /// [`crate::StartupHandle::take_over`]. Read once, right after
+    /// `initialize` returns. Without a splash it changes nothing.
+    fn startup_takeover(&self) -> crate::StartupTakeover {
+        crate::StartupTakeover::Immediate
+    }
+
+    /// The startup moved to a later phase (takeover requested or withdrawn,
+    /// handed off). Also readable at any time from
+    /// [`RuntimeProgramContext::startup`].
+    fn startup_changed(
+        &mut self,
+        _status: &crate::StartupStatus,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        RuntimeProgramUpdate::default()
+    }
 
     /// Borrow one document for a synchronous operation. References cannot escape
     /// the callback; release the scope before invoking application or JS code.
@@ -948,6 +992,37 @@ pub fn run_runtime<Program: RuntimeProgram>(
 
 thread_local! {
     static PENDING_HOST_STORE: RefCell<Option<SharedStore>> = const { RefCell::new(None) };
+    static PENDING_STARTUP: RefCell<Option<crate::StartupOptions>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn take_pending_startup() -> crate::StartupOptions {
+    PENDING_STARTUP
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap_or_default()
+}
+
+/// Runs `run` with `startup` as the options the next host started on this
+/// thread picks up. Front ends that wrap [`run_runtime`] (the Vue host, a
+/// builder) pass their startup through here instead of growing a parameter
+/// for every entry point.
+pub fn with_startup<R>(startup: crate::StartupOptions, run: impl FnOnce() -> R) -> R {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            PENDING_STARTUP.with(|slot| slot.borrow_mut().take());
+        }
+    }
+    PENDING_STARTUP.with(|slot| *slot.borrow_mut() = Some(startup));
+    let _clear = Clear;
+    run()
+}
+
+/// Same as [`run_runtime`], with an Early Splash or other startup options.
+pub fn run_runtime_with_startup<Program: RuntimeProgram>(
+    settings: WindowDescriptor,
+    startup: crate::StartupOptions,
+) -> Result<(), crate::HostedRunError> {
+    with_startup(startup, || crate::run_runtime_scene::<Program>(settings))
 }
 
 pub(crate) fn take_pending_store() -> SharedStore {

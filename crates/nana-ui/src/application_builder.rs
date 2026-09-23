@@ -31,6 +31,8 @@ impl NanaApplication {
             diagnostics: DiagnosticsConfig::disabled(),
             #[cfg(feature = "packaged-resources")]
             resource_packs: None,
+            #[cfg(feature = "hosted")]
+            startup: crate::StartupOptions::default(),
         }
     }
 
@@ -71,6 +73,8 @@ pub struct NanaApplicationBuilder {
     diagnostics: DiagnosticsConfig,
     #[cfg(feature = "packaged-resources")]
     resource_packs: Option<crate::packaged_resources::ResourcePackOptions>,
+    #[cfg(feature = "hosted")]
+    startup: crate::StartupOptions,
 }
 
 /// Keeps process-level services alive. Dropping it shuts diagnostics down
@@ -106,6 +110,21 @@ impl NanaApplicationBuilder {
 
     pub fn diagnostics(mut self, config: DiagnosticsConfig) -> Self {
         self.diagnostics = config;
+        self
+    }
+
+    /// Startup options for [`Self::run`]; see [`crate::startup`].
+    #[cfg(feature = "hosted")]
+    pub fn startup(mut self, startup: crate::StartupOptions) -> Self {
+        self.startup = startup;
+        self
+    }
+
+    /// Show `splash` on the primary window before the GPU device and the
+    /// program exist (Issue #225). Shorthand for [`Self::startup`].
+    #[cfg(feature = "hosted")]
+    pub fn early_splash(mut self, splash: crate::SplashSpec) -> Self {
+        self.startup.splash = Some(splash);
         self
     }
 
@@ -166,8 +185,9 @@ impl NanaApplicationBuilder {
         self,
         settings: crate::WindowDescriptor,
     ) -> Result<(), crate::HostedRunError> {
+        let startup = self.startup;
         let session = self.start();
-        let result = crate::run_runtime::<Program>(settings);
+        let result = crate::run_runtime_with_startup::<Program>(settings, startup);
         record_run_result(&result);
         drop(session);
         result
@@ -180,8 +200,11 @@ impl NanaApplicationBuilder {
         settings: crate::WindowDescriptor,
         store: crate::SharedStore,
     ) -> Result<(), crate::HostedRunError> {
+        let startup = self.startup;
         let session = self.start();
-        let result = crate::run_runtime_with_store::<Program>(settings, store);
+        let result = crate::with_startup(startup, || {
+            crate::run_runtime_with_store::<Program>(settings, store)
+        });
         record_run_result(&result);
         drop(session);
         result

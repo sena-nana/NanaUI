@@ -100,8 +100,17 @@ mod scene_gpu;
 pub use native_content::{NativeContentRegion, NativeContentWork, native_content_regions};
 #[cfg(feature = "hosted")]
 mod scene_host;
+/// Two-phase startup (Issue #225): Early Splash, `UiReady`, takeover.
+#[cfg(feature = "hosted")]
+pub mod startup;
 #[cfg(feature = "hosted")]
 pub use scene_host::CompositionWork;
+#[cfg(feature = "hosted")]
+pub use startup::{
+    SplashAnimation, SplashAnimationOutcome, SplashBackground, SplashFailure, SplashLogo,
+    SplashOutcome, SplashSkip, SplashSpec, StartupError, StartupHandle, StartupOptions,
+    StartupPhase, StartupStatus, StartupTakeover, StartupTicket, StartupTimeline, StartupWork,
+};
 #[cfg(feature = "gpu")]
 mod scene_paint;
 pub mod selection;
@@ -306,7 +315,7 @@ pub use runtime_dock::{dock_workspace_window_id, runtime_dock_window_update};
 pub use runtime_host::{
     FrameDemand, HostFailure, ReportHostFailure, RoutedInput, RuntimeProgram,
     RuntimeProgramContext, RuntimeProgramUpdate, RuntimeRedraw, RuntimeTaskError, run_runtime,
-    run_runtime_with_store,
+    run_runtime_with_startup, run_runtime_with_store, with_startup,
 };
 pub use runtime_input::RuntimeInputAdapter;
 #[cfg(feature = "gpu")]

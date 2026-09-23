@@ -60,6 +60,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.host_work.take_pending();
         self.host_work_deadline = None;
         self.drain_window_requests(event_loop);
+        self.apply_pending_icons();
+        self.process_startup_requests(event_loop);
         self.complete_file_dialogs(event_loop);
         self.drain_host_messages(event_loop);
         self.drain_browser_events(event_loop);
@@ -146,6 +148,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if surface_retry_due {
             self.retry_surfaces(now);
         }
+        let startup_latch = self.poll_startup_latch(event_loop);
         self.sample_passthrough_forward(event_loop);
         self.sync_reduced_motion(event_loop);
         if self.next_wakeup().is_some_and(|deadline| now >= deadline) {
@@ -176,6 +179,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             frame_deadline,
             self.host_work_deadline,
             self.passthrough_forward_wakeup(),
+            startup_latch,
         ]
         .into_iter()
         .flatten()
@@ -191,6 +195,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             .get(&id)
             .is_some_and(|host| host.surface_retry.is_none())
             && !self.occluded.contains(&id)
+            && !self.startup_holds(id)
             && self.window(id).is_some_and(|window| {
                 window.is_visible() != Some(false) && window.is_minimized() != Some(true)
             })
