@@ -36,6 +36,8 @@ pub(super) struct Request<'a> {
 pub(super) struct Splash {
     container: Retained<CALayer>,
     logo: Retained<CALayer>,
+    /// Kept to re-render the layer contents when the backing scale changes.
+    image: Retained<NSImage>,
 }
 
 impl Splash {
@@ -112,12 +114,7 @@ impl Splash {
         );
         // SAFETY: kCAGravityResizeAspect is a constant owned by Core Animation.
         logo.setContentsGravity(unsafe { kCAGravityResizeAspect });
-        let contents_scale = image.recommendedLayerContentsScale(scale);
-        let contents = image.layerContentsForContentsScale(contents_scale);
-        // SAFETY: `layerContentsForContentsScale:` returns an object CALayer
-        // accepts as contents.
-        unsafe { logo.setContents(Some(&contents)) };
-        logo.setContentsScale(contents_scale);
+        set_logo_contents(&logo, &image, scale);
         work.logo_uploads += 1;
 
         let animated = match animation(request.animation) {
@@ -132,11 +129,28 @@ impl Splash {
         root.addSublayer(&container);
         CATransaction::commit();
         work.commits += 1;
-        Ok((Self { container, logo }, animated))
+        Ok((
+            Self {
+                container,
+                logo,
+                image,
+            },
+            animated,
+        ))
     }
 
     pub(super) const fn live_resources(&self) -> usize {
         2
+    }
+
+    pub(super) fn set_scale_factor(&self, scale: f64, work: &mut SplashWork) {
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        self.container.setContentsScale(scale);
+        set_logo_contents(&self.logo, &self.image, scale);
+        CATransaction::commit();
+        work.logo_uploads += 1;
+        work.commits += 1;
     }
 
     /// Detaches both layers. Inside an event-loop turn this nests into the
@@ -150,6 +164,16 @@ impl Splash {
         CATransaction::commit();
         work.commits += 1;
     }
+}
+
+/// Renders `image` as `layer`'s contents for a backing `scale`.
+fn set_logo_contents(layer: &CALayer, image: &NSImage, scale: f64) {
+    let contents_scale = image.recommendedLayerContentsScale(scale);
+    let contents = image.layerContentsForContentsScale(contents_scale);
+    // SAFETY: `layerContentsForContentsScale:` returns an object CALayer
+    // accepts as contents.
+    unsafe { layer.setContents(Some(&contents)) };
+    layer.setContentsScale(contents_scale);
 }
 
 /// The preset as one `CABasicAnimation`, or `None` for a still logo.

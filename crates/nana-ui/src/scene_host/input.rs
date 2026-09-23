@@ -139,6 +139,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                             window = id.0,
                             scale = *scale_factor
                         );
+                        self.rescale_startup_splash(id, *scale_factor);
                     }
                     _ => nana_diagnostics::metric!(nana_diagnostics::framework::window::RESIZES),
                 }

@@ -457,6 +457,21 @@ impl NativeSplash {
         }
     }
 
+    /// The window moved to a display with another backing scale. macOS
+    /// re-renders the logo's layer contents for it; Windows follows
+    /// `WM_DPICHANGED` by itself.
+    pub fn set_scale_factor(&mut self, scale: f64) {
+        #[cfg(target_os = "macos")]
+        if let Some(splash) = self.inner.as_ref()
+            && scale.is_finite()
+            && scale > 0.0
+        {
+            splash.set_scale_factor(scale, &mut self.work);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = scale;
+    }
+
     pub const fn handoff(&self) -> SplashHandoff {
         if cfg!(target_os = "windows") {
             SplashHandoff::AfterCompositorFlush

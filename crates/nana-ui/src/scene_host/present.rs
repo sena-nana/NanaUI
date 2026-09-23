@@ -176,7 +176,6 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // Decided before the drawable is acquired: a macOS handoff changes how
         // this frame is presented.
         let takes_over = self.prepare_startup_frame(id, flushed);
-        let surface_generation = self.surface_generation;
         let frame = match self.acquire_frame(id) {
             Ok(HostedSurfaceFrame::Ready(frame)) => frame,
             Ok(HostedSurfaceFrame::Retry) => {
@@ -371,7 +370,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         // The frame is presented (and, on Windows, its composition published):
         // it may now end the startup.
         if takes_over {
-            self.startup_frame_presented(event_loop, surface_generation == self.surface_generation);
+            self.startup_frame_presented(event_loop);
         }
         // Publish semantics for the frame just presented. Application callbacks
         // below may commit new work intended for the next frame.

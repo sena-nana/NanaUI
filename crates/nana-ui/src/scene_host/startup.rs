@@ -40,6 +40,9 @@ pub(super) struct StartupCoordinator {
     /// The primary window's flush sequence when the takeover was asked for.
     /// Only a frame flushed after it shows the content the request named.
     requested_after: Option<u64>,
+    /// The takeover frame has been presented; only the splash's removal is
+    /// left. Nothing can be withdrawn any more.
+    committed: bool,
 }
 
 impl StartupCoordinator {
@@ -49,6 +52,7 @@ impl StartupCoordinator {
             generation: 1,
             splash,
             requested_after: None,
+            committed: false,
         }
     }
 
@@ -108,6 +112,7 @@ impl StartupCoordinator {
     fn check(&self, ticket: StartupTicket) -> Result<(), StartupError> {
         match self.phase {
             StartupPhase::HandedOff => Err(StartupError::AlreadyHandedOff),
+            _ if self.committed => Err(StartupError::AlreadyHandedOff),
             StartupPhase::Starting => Err(StartupError::StaleTicket),
             _ if ticket.generation != self.generation => Err(StartupError::StaleTicket),
             _ => Ok(()),
@@ -124,22 +129,21 @@ impl StartupCoordinator {
             && matches!(self.phase, StartupPhase::Starting | StartupPhase::UiReady)
     }
 
-    /// Whether a frame of `id` flushed at `flush` ends the startup once it is
-    /// presented. `same_surface` is false when the window's surface generation
-    /// changed between acquiring and presenting the frame.
-    pub(super) fn completes_with(&self, id: WindowId, flush: u64, same_surface: bool) -> bool {
-        if id != WindowId::PRIMARY || !same_surface {
-            return false;
-        }
-        match self.phase {
-            StartupPhase::TakeoverRequested => {
-                self.requested_after.is_some_and(|after| flush > after)
-            }
-            // With no splash to remove, the first frame of the program's own
-            // is the handoff; the timeline still records it.
-            StartupPhase::UiReady => !self.splash,
-            StartupPhase::Starting | StartupPhase::HandedOff => false,
-        }
+    /// Whether a presented frame of `id`, flushed at `flush`, ends the
+    /// startup. Only a requested takeover ends it, splash or not, so a
+    /// program that defers behaves the same on a platform without a splash:
+    /// its ticket stays valid until it asks.
+    pub(super) fn completes_with(&self, id: WindowId, flush: u64) -> bool {
+        id == WindowId::PRIMARY
+            && !self.committed
+            && self.phase == StartupPhase::TakeoverRequested
+            && self.requested_after.is_some_and(|after| flush > after)
+    }
+
+    /// The takeover frame was presented; the handoff finishes once the
+    /// compositor has it. A cancel arriving meanwhile is refused.
+    pub(super) fn frame_committed(&mut self) {
+        self.committed = true;
     }
 
     pub(super) fn handed_off(&mut self) {
@@ -316,6 +320,25 @@ impl<Message: Send + 'static> PendingStartup<Message> {
 
     pub(super) fn note_block(&mut self, elapsed: Duration) {
         self.longest_block = self.longest_block.max(elapsed);
+    }
+
+    /// The window's backing scale changed while the device is requested.
+    pub(super) fn rescale_splash(&mut self, id: winit::window::WindowId, scale: f64) {
+        if let Some(attempt) = self.attempt.as_mut()
+            && attempt.window.id() == id
+            && let Some(splash) = attempt.splash.as_mut()
+        {
+            splash.set_scale_factor(scale);
+        }
+    }
+
+    /// The startup was cancelled. The device thread may still hold the
+    /// window through its surface, so it is hidden here rather than left for
+    /// the last reference to take down; the splash comes off with the drop.
+    pub(super) fn cancel(self) {
+        if let Some(attempt) = self.attempt.as_ref() {
+            attempt.window.set_visible(false);
+        }
     }
 
     /// The startup thread's result, once it has sent one.
@@ -624,6 +647,9 @@ pub(super) struct HostStartup {
     latch: Option<Arc<AtomicBool>>,
     /// Flushes of the primary document so far.
     primary_flushes: u64,
+    /// An `Immediate` takeover waiting for the startup messages: the frame
+    /// that removes the splash has to show their effects too.
+    auto_takeover: bool,
     longest_block: Duration,
     /// When the handoff completed: a callback that started before it still
     /// belongs to the startup, and the one that performed the handoff — often
@@ -645,6 +671,7 @@ impl HostStartup {
             shown_early,
             latch: None,
             primary_flushes: 0,
+            auto_takeover: false,
             longest_block,
             handed_off_at: None,
         }
@@ -661,6 +688,7 @@ impl HostStartup {
             shown_early: false,
             latch: None,
             primary_flushes: 0,
+            auto_takeover: false,
             longest_block: Duration::ZERO,
             handed_off_at: Some(Instant::now()),
         }
@@ -703,10 +731,19 @@ impl HostStartup {
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `initialize` returned; the program's takeover policy is known.
+    ///
+    /// With startup messages still queued, an `Immediate` takeover is asked
+    /// for once they have been applied ([`Self::drain_startup_messages`]).
     pub(super) fn startup_ui_ready(&mut self, policy: StartupTakeover) {
         if self.startup.coordinator.phase() != StartupPhase::Starting {
             return;
         }
+        let policy = if policy == StartupTakeover::Immediate && !self.startup_messages.is_empty() {
+            self.startup.auto_takeover = true;
+            StartupTakeover::Deferred
+        } else {
+            policy
+        };
         let requested = self
             .startup
             .coordinator
@@ -739,8 +776,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Whether the frame about to be presented for `id` ends the startup, and
     /// if so, readies the window's presentation for the splash's handoff.
     pub(super) fn prepare_startup_frame(&mut self, id: WindowId, flush: u64) -> bool {
-        if self.startup.latch.is_some() || !self.startup.coordinator.completes_with(id, flush, true)
-        {
+        if !self.startup.coordinator.completes_with(id, flush) {
             return false;
         }
         // The drawable and the splash's removal have to land in one Core
@@ -760,15 +796,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
 
     /// The frame [`Self::prepare_startup_frame`] picked was presented.
-    pub(super) fn startup_frame_presented(
-        &mut self,
-        event_loop: &dyn ActiveEventLoop,
-        same_surface: bool,
-    ) {
-        if !same_surface {
-            // The surface was replaced under the frame; the next one decides.
-            return;
-        }
+    pub(super) fn startup_frame_presented(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.startup.coordinator.frame_committed();
         let at = self.startup.handle.elapsed();
         startup_phase_event(4, at);
         self.startup
@@ -840,6 +869,50 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.notify_startup_changed(event_loop);
     }
 
+    /// Applies the startup messages `initialize` returned, in batches that let
+    /// the loop turn, then asks for the `Immediate` takeover they held back.
+    pub(super) fn drain_startup_messages(&mut self, event_loop: &dyn ActiveEventLoop) {
+        if !self.startup_messages.is_empty() {
+            let more = schedule::drain_host_batch(
+                || {
+                    if self.shutting_down || event_loop.exiting() {
+                        return false;
+                    }
+                    let Some(message) = self.startup_messages.pop_front() else {
+                        return false;
+                    };
+                    self.process_message(event_loop, message);
+                    true
+                },
+                Instant::now,
+            );
+            if more && !self.startup_messages.is_empty() {
+                self.host_work.wake();
+                return;
+            }
+            self.startup_messages.clear();
+        }
+        if std::mem::take(&mut self.startup.auto_takeover)
+            && let Some(ticket) = self.startup.coordinator.ticket()
+            && self
+                .startup
+                .coordinator
+                .request(ticket, self.startup.primary_flushes)
+                .is_ok()
+        {
+            self.takeover_requested();
+        }
+    }
+
+    /// The coordinator accepted a takeover: record it and draw the frame.
+    fn takeover_requested(&mut self) {
+        let at = self.startup.handle.elapsed();
+        startup_phase_event(3, at);
+        self.startup
+            .publish(|status| status.timeline.takeover_requested = Some(at));
+        self.request_redraw(WindowId::PRIMARY);
+    }
+
     /// Applies takeover requests made through [`crate::StartupHandle`].
     pub(super) fn process_startup_requests(&mut self, event_loop: &dyn ActiveEventLoop) {
         for request in self.startup.handle.take_requests() {
@@ -857,17 +930,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             {
                 continue;
             }
-            let at = self.startup.handle.elapsed();
             match request {
-                StartupRequest::TakeOver(_) => {
-                    startup_phase_event(3, at);
+                StartupRequest::TakeOver(_) => self.takeover_requested(),
+                StartupRequest::Cancel(_) => {
+                    // The program withdrew; nothing is requested on its behalf.
+                    self.startup.auto_takeover = false;
                     self.startup
-                        .publish(|status| status.timeline.takeover_requested = Some(at));
-                    self.request_redraw(WindowId::PRIMARY);
+                        .publish(|status| status.timeline.takeover_requested = None);
                 }
-                StartupRequest::Cancel(_) => self
-                    .startup
-                    .publish(|status| status.timeline.takeover_requested = None),
             }
             self.notify_startup_changed(event_loop);
         }
@@ -893,6 +963,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             status.timeline.splash_released = Some(released);
             status.work.splash = work;
         });
+    }
+
+    /// The primary window's backing scale changed while its splash is up.
+    pub(super) fn rescale_startup_splash(&mut self, id: WindowId, scale: f64) {
+        if id == WindowId::PRIMARY
+            && let Some(splash) = self.startup.splash.as_mut()
+        {
+            splash.set_scale_factor(scale);
+        }
     }
 
     pub(super) fn note_startup_block(&mut self, started: Instant) {
@@ -961,7 +1040,7 @@ mod tests {
             Err(StartupError::StaleTicket)
         );
         assert!(startup.holds_presents(WindowId::PRIMARY));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 9, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 9));
     }
 
     #[test]
@@ -971,8 +1050,8 @@ mod tests {
         assert_eq!(startup.phase(), StartupPhase::TakeoverRequested);
         assert!(!startup.holds_presents(WindowId::PRIMARY));
         // A frame flushed before the request shows older content.
-        assert!(!startup.completes_with(WindowId::PRIMARY, 3, true));
-        assert!(startup.completes_with(WindowId::PRIMARY, 4, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 3));
+        assert!(startup.completes_with(WindowId::PRIMARY, 4));
     }
 
     #[test]
@@ -981,19 +1060,28 @@ mod tests {
         assert_eq!(startup.phase(), StartupPhase::UiReady);
         assert!(startup.holds_presents(WindowId::PRIMARY));
         assert!(!startup.holds_presents(SECONDARY));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 50, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 50));
         let ticket = startup.ticket().unwrap();
         startup.request(ticket, 50).unwrap();
         assert!(!startup.holds_presents(WindowId::PRIMARY));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 50, true));
-        assert!(startup.completes_with(WindowId::PRIMARY, 51, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 50));
+        assert!(startup.completes_with(WindowId::PRIMARY, 51));
     }
 
     #[test]
-    fn other_windows_and_other_surfaces_never_complete_the_takeover() {
+    fn other_windows_never_complete_the_takeover() {
         let startup = ready(StartupTakeover::Immediate);
-        assert!(!startup.completes_with(SECONDARY, 10, true));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 10, false));
+        assert!(!startup.completes_with(SECONDARY, 10));
+    }
+
+    #[test]
+    fn once_the_takeover_frame_is_committed_nothing_can_be_withdrawn() {
+        let mut startup = ready(StartupTakeover::Immediate);
+        let ticket = startup.ticket().unwrap();
+        startup.frame_committed();
+        assert_eq!(startup.cancel(ticket), Err(StartupError::AlreadyHandedOff));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 5));
+        assert_eq!(startup.phase(), StartupPhase::TakeoverRequested);
     }
 
     #[test]
@@ -1007,11 +1095,11 @@ mod tests {
         // A completion that was already in flight when the cancel happened.
         assert_eq!(startup.request(old, 9), Err(StartupError::StaleTicket));
         assert_eq!(startup.cancel(old), Err(StartupError::StaleTicket));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 9, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 9));
         let fresh = startup.ticket().unwrap();
         assert_ne!(fresh, old);
         startup.request(fresh, 9).unwrap();
-        assert!(startup.completes_with(WindowId::PRIMARY, 10, true));
+        assert!(startup.completes_with(WindowId::PRIMARY, 10));
     }
 
     #[test]
@@ -1020,7 +1108,7 @@ mod tests {
         let ticket = startup.ticket().unwrap();
         startup.request(ticket, 5).unwrap();
         startup.request(ticket, 8).unwrap();
-        assert!(startup.completes_with(WindowId::PRIMARY, 6, true));
+        assert!(startup.completes_with(WindowId::PRIMARY, 6));
     }
 
     #[test]
@@ -1035,16 +1123,21 @@ mod tests {
         );
         assert_eq!(startup.cancel(ticket), Err(StartupError::AlreadyHandedOff));
         assert!(!startup.holds_presents(WindowId::PRIMARY));
-        assert!(!startup.completes_with(WindowId::PRIMARY, 100, true));
+        assert!(!startup.completes_with(WindowId::PRIMARY, 100));
     }
 
     #[test]
-    fn without_a_splash_nothing_is_held_and_the_first_frame_hands_off() {
+    fn without_a_splash_nothing_is_held_but_a_deferral_still_waits_for_its_request() {
         let mut startup = StartupCoordinator::new(false);
         assert!(!startup.holds_presents(WindowId::PRIMARY));
         startup.ui_ready(StartupTakeover::Deferred, 0);
         assert!(!startup.holds_presents(WindowId::PRIMARY));
-        assert!(startup.completes_with(WindowId::PRIMARY, 1, true));
+        // Frames present, but the program has not asked: its ticket stays
+        // valid, exactly as on a platform with a splash.
+        assert!(!startup.completes_with(WindowId::PRIMARY, 1));
+        let ticket = startup.ticket().expect("deferred program keeps its ticket");
+        startup.request(ticket, 3).unwrap();
+        assert!(startup.completes_with(WindowId::PRIMARY, 4));
     }
 
     #[test]
@@ -1052,6 +1145,6 @@ mod tests {
         let mut startup = StartupCoordinator::new(true);
         assert!(startup.ui_ready(StartupTakeover::Immediate, 0));
         assert!(!startup.ui_ready(StartupTakeover::Immediate, 4));
-        assert!(startup.completes_with(WindowId::PRIMARY, 1, true));
+        assert!(startup.completes_with(WindowId::PRIMARY, 1));
     }
 }

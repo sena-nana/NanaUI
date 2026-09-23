@@ -35,7 +35,7 @@ NanaApplication::builder(identity)
 | --- | --- |
 | `logo` | `SplashLogo::png(&'static [u8])`，编进二进制的 PNG。不发网络请求，不扫描文件，不走资源管理器 |
 | `logo_size` | 逻辑点。Logo 按比例缩放后放进这个框，居中；窗口比框小时跟着缩小 |
-| `background` | `System`（默认主题在当前系统明暗下的背景色，首帧不会换底色）、`Color(..)`、`Transparent`（只画 Logo，给透明窗口用） |
+| `background` | `System`（默认主题调色板在当前**系统**明暗下的背景色）、`Color(..)`、`Transparent`（只画 Logo，给透明窗口用）。splash 出现时程序还不存在，读不到它的主题：主题不跟随系统明暗的应用（例如 Vue 宿主默认 `Light`）应传 `Color(..)` 为自己的背景色，否则交接时底色会变 |
 | `animation` | `None`、`FadeIn`（默认，淡入一次后保持）、`Pulse`（呼吸）、`Rotate`（旋转） |
 
 Logo 的上限：编码后 ≤ 1 MiB（与打包器 `early-splash` pack 的上限一致），最长边 ≤ 1024 像素，解码后 ≤ 4 MiB。只读 PNG 头做检查，不解码像素。
@@ -72,7 +72,7 @@ D3D11 设备只用来上传两张小图，与 wgpu 的 adapter / backend 选择�
 
 `initialize` 只做第一屏需要的事：建加载页（或主界面），把业务工作交给 `run_task` 或自己的线程，然后返回。业务状态不必在这之前存在，`initialize` 本身就是这个信号的接收者。后台工作只回传数据和进度，由 `update` 在窗口线程改文档。
 
-`initialize` 返回的 startup 消息：有 splash 时走普通消息队列，按现有 2 ms / 64 条的批次让出，不会在一轮里同步清空；没有 splash 时仍在窗口首次显示前同步处理，和以前一样。
+`initialize` 返回的 startup 消息：有 splash 时在之后几轮事件循环里按 2 ms / 64 条的批次处理，不会在一轮里同步清空；`Immediate` 接管等它们处理完才发出，所以撤下 Logo 的那一帧已经包含它们的效果。没有 splash 时仍在窗口首次显示前同步处理，和以前一样。
 
 框架不提供业务启动 DAG、服务容器或“业务完成百分比”。加载页显示什么、何时切到主界面，都是应用的普通行为。
 
@@ -81,7 +81,7 @@ D3D11 设备只用来上传两张小图，与 wgpu 的 adapter / backend 选择�
 `RuntimeProgram::startup_takeover()`（`ApplicationState` 同名）在 `initialize` 返回后读一次：
 
 - `Immediate`（默认）：`initialize` 建的主窗口文档就是接管内容；
-- `Deferred`：Logo 保持，直到应用调用 `context.startup().take_over(ticket)`。
+- `Deferred`：Logo 保持，直到应用调用 `context.startup().take_over(ticket)`。没有 splash 的平台（Linux、隐藏启动、坏 Logo）也一样等这次请求：窗口照常绘制，ticket 一直有效，同一份应用代码在各平台行为一致。
 
 ```rust
 let startup = context.startup();
@@ -90,8 +90,8 @@ startup.take_over(ticket)?;          // 任意线程都可以调用
 startup.cancel_takeover(ticket)?;    // 撤回；这张 ticket 作废
 ```
 
-- **代次**：`cancel_takeover` 让当前 ticket 作废。取消之前发出的任务稍后带着旧 ticket 回来，会被拒绝（`StartupError::StaleTicket`），不会用没人要求的内容接管。新请求要用 `status()` 里的新 ticket。
-- **目标帧**：请求记录主窗口此刻的 flush 序号。只有在这之后 flush、并在当前 surface generation 上 **present 成功** 的主窗口帧才算数。旧帧、跳过的帧（`Skipped` / `Retry`）、失败的帧，以及 flush 之后 surface 被换掉的帧都到不了这个判断。
+- **代次**：`cancel_takeover` 让当前 ticket 作废；接管帧已经 present 之后（Windows 上正在等合成器取走它）再撤回会被拒绝（`AlreadyHandedOff`）。取消之前发出的任务稍后带着旧 ticket 回来，会被拒绝（`StartupError::StaleTicket`），不会用没人要求的内容接管。新请求要用 `status()` 里的新 ticket。
+- **目标帧**：请求记录主窗口此刻的 flush 序号。只有在这之后 flush、并且 **present 成功** 的主窗口帧才算数。旧帧、跳过的帧（`Skipped` / `Retry`）和失败的帧都到不了这个判断；设备或 surface 重建期间窗口不 present，重建后的第一帧才算。
 - **接管之前**：主窗口已经在屏幕上（被 splash 盖着），宿主不 present 它，因为画了也看不见。有了请求才恢复调度。窗口最小化或被遮挡时，交接等窗口恢复再完成；窗口本身已经可见，不会出现“等 present 才显示、不显示又拿不到 present”的循环。
 - **其他窗口**：不受影响，照常创建和绘制。
 
@@ -100,7 +100,7 @@ startup.cancel_takeover(ticket)?;    // 撤回；这张 ticket 作废
 ## 失败、取消与清理
 
 - **GPU 或最小引擎初始化失败**：不发 `UiReady`，splash 撤下，窗口关闭，`run` 返回 `HostedRunError::Startup`，并记录 `host.startup_failed`。不会一直转圈。
-- **启动期间关窗**：`UiReady` 之前关闭窗口会取消启动。事件循环在设备请求期间一直在转，所以关窗随时有效。平台设备请求一旦开始就无法中途取消，结果到达后直接丢弃；设备线程持有的 surface 在宿主已退出时留到进程结束，不在窗口线程之外释放窗口。
+- **启动期间关窗**：`UiReady` 之前关闭窗口会取消启动，窗口立即隐藏。事件循环在设备请求期间一直在转，所以关窗随时有效。平台设备请求一旦开始就无法中途取消，结果到达后直接丢弃；设备线程持有的 surface 在宿主已退出时留到进程结束，不在窗口线程之外释放窗口。
 - **`UiReady` 之后、交接之前退出或关主窗**：splash 在窗口销毁前撤下并释放（不等合成器）。
 - **设备 / surface 重建**：交接前发生时，等新 surface generation 上的帧；不会重新调用 `initialize`，也不会重跑业务初始化。
 - **交接之后的业务错误**：由应用的普通界面处理，不会退回第一阶段。
@@ -156,6 +156,6 @@ Nana.startup.onChange(status => {});   // 宿主的 "startup" 事件
 
 - Windows 路径只经过交叉编译检查（`x86_64-pc-windows-gnu`），没有真机首帧交接和动画证据；Linux 没有 splash。
 - Windows 合成路径的窗口不显示 splash；`CompositionCapable` 策略下的合成能力探测在建窗之前，发生在 Logo 出现之前。
-- macOS 只读取启动时的减少动态效果设置，不跟随运行中的切换。
+- macOS 只读取启动时的减少动态效果设置，不跟随运行中的切换。窗口移到缩放不同的显示器时，macOS 重新渲染 Logo 图层，Windows 由子类跟随 `WM_DPICHANGED`。
 - Logo 只能编进二进制；从 `early-splash` 资源包读取尚未接入。
 - 同窗口实现：splash 就是应用自己的主窗口，DPI、显示器、尺寸和焦点都是这扇窗口自己的，不存在临时窗口的几何交接。

@@ -52,7 +52,8 @@ use clip::{
     paint_transform, physical_bounds, physical_scissor, transformed_aabb,
     transformed_aabb_projective, union_physical,
 };
-use color::{pack_linear, with_opacity};
+pub(crate) use color::pack_linear;
+use color::with_opacity;
 use dest::{DestPassCounts, DestTarget, GroupSlot};
 use host_texture::{HostTexturePipeline, PreparedHostTexture};
 use icon::{IconPipeline, PreparedIcon};

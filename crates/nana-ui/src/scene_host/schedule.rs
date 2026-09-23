@@ -61,6 +61,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.host_work_deadline = None;
         self.drain_window_requests(event_loop);
         self.apply_pending_icons();
+        self.drain_startup_messages(event_loop);
         self.process_startup_requests(event_loop);
         self.complete_file_dialogs(event_loop);
         self.drain_host_messages(event_loop);

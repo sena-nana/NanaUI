@@ -2,7 +2,7 @@
 
 /// Converts an sRGB Scene color to linear RGBA packed into quad/mesh
 /// instances when gamma correction is enabled.
-pub(super) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
+pub(crate) fn pack_linear([r, g, b, a]: [f32; 4]) -> [f32; 4] {
     [
         linear_component(r),
         linear_component(g),

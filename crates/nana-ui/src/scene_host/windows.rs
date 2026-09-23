@@ -127,6 +127,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 let WindowCommand::SetIcon { icon, .. } = command else {
                     return;
                 };
+                if id == WindowId::PRIMARY {
+                    // The program's icon wins over one the startup is still
+                    // rendering from the descriptor.
+                    self.pending_icons = None;
+                }
                 if let Some(window) = self.window(id) {
                     apply_scene_window_icon(
                         window.as_ref(),
@@ -160,6 +165,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     Some(icon) => register_application_icon(icon),
                     None => clear_registered_application_icon(),
                 }
+                self.pending_icons = None;
                 for id in self.known_window_ids() {
                     if let Some(window) = self.window(id) {
                         apply_scene_window_icon(window.as_ref(), None, id == WindowId::PRIMARY);

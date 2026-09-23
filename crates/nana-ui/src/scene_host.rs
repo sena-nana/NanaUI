@@ -306,6 +306,8 @@ struct WindowManager<Program: RuntimeProgram> {
     startup: startup::HostStartup,
     /// The primary window's icons, while the startup thread still renders them.
     pending_icons: Option<Receiver<SceneIcons>>,
+    /// Messages `initialize` returned, not yet applied (only with a splash).
+    startup_messages: std::collections::VecDeque<Program::Message>,
 }
 
 impl<Program: RuntimeProgram> Drop for WindowManager<Program> {
@@ -607,13 +609,22 @@ impl<Program: RuntimeProgram> ApplicationHandler for SceneRunner<Program> {
         let started = Instant::now();
         match self {
             Self::Starting(pending) => {
+                if let WinitWindowEvent::ScaleFactorChanged { scale_factor, .. } = &event {
+                    pending.rescale_splash(window_id, *scale_factor);
+                }
                 // The program does not exist yet; closing the window cancels
                 // the startup. Nothing was initialized, so nothing is
                 // reported as a failure.
                 if pending.owns(window_id) && matches!(event, WinitWindowEvent::CloseRequested) {
-                    *self = Self::Finished {
-                        startup_failure: Arc::clone(pending.startup_failure()),
-                    };
+                    let slot = Arc::clone(pending.startup_failure());
+                    if let Self::Starting(pending) = std::mem::replace(
+                        self,
+                        Self::Finished {
+                            startup_failure: slot,
+                        },
+                    ) {
+                        pending.cancel();
+                    }
                     event_loop.exit();
                     return;
                 }
@@ -1266,6 +1277,7 @@ fn complete_startup<Program: RuntimeProgram>(
         present_transaction_pinned: HashSet::new(),
         startup: host_startup,
         pending_icons,
+        startup_messages: std::collections::VecDeque::new(),
     };
     ready
         .program
@@ -1285,6 +1297,14 @@ fn complete_startup<Program: RuntimeProgram>(
         WindowId::PRIMARY,
         &ready.geometry_of(WindowId::PRIMARY),
     );
+    let shown_early = ready.startup.shown_early();
+    let mut startup = startup;
+    if shown_early {
+        // The window is already on screen behind its splash: the startup
+        // messages are applied in batches over the next turns, and an
+        // immediate takeover waits for them.
+        ready.startup_messages = std::mem::take(&mut startup).into();
+    }
     let policy = ready.program.startup_takeover();
     ready.startup_ui_ready(policy);
     let update = ready.program.window_event(
@@ -1295,26 +1315,15 @@ fn complete_startup<Program: RuntimeProgram>(
         &ready.context(),
     );
     ready.apply_update(event_loop, update, None);
-    let shown_early = ready.startup.shown_early();
-    if shown_early {
-        // The window is already on screen behind its splash: the startup
-        // messages take the ordinary queue, in batches that let the loop turn.
-        let pending = !startup.is_empty();
-        for message in startup {
-            if ready.message_tx.send(message).is_err() {
-                break;
-            }
-        }
-        if pending {
-            ready.host_work.wake();
-        }
-    } else {
+    if ready.startup_messages.is_empty() {
         for message in startup {
             if event_loop.exiting() {
                 break;
             }
             ready.process_message(event_loop, message);
         }
+    } else {
+        ready.host_work.wake();
     }
     if !event_loop.exiting() && ready.window(WindowId::PRIMARY).is_some() {
         if !shown_early {
@@ -1895,14 +1904,7 @@ fn scene_clear_color(
     // uncovered window to #565656 — the same colour an Early Splash in the
     // system background could not match.
     let color = window_background.unwrap_or_else(|| theme.palette().background);
-    let linear = |channel: f32| {
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    [linear(color.r), linear(color.g), linear(color.b), color.a]
+    crate::scene_paint::pack_linear([color.r, color.g, color.b, color.a])
 }
 
 fn resolved_scene_ime_request(

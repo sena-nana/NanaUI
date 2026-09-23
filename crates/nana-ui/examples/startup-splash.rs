@@ -280,10 +280,12 @@ impl ApplicationState for Demo {
             Message::Show => {
                 // A hidden start had no splash; the handoff is this window's
                 // first frame once it is shown.
-                assert_eq!(
-                    context.startup().status().splash,
-                    nana_ui::SplashOutcome::Skipped(nana_ui::SplashSkip::HiddenStart)
-                );
+                if with_options(|options| options.splash) {
+                    assert_eq!(
+                        context.startup().status().splash,
+                        nana_ui::SplashOutcome::Skipped(nana_ui::SplashSkip::HiddenStart)
+                    );
+                }
                 drop(context.window().set_visible(true));
                 return RuntimeProgramUpdate::default();
             }

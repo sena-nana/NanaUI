@@ -124,9 +124,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
             system_appearance,
             reduced_motion: false,
             store: memory_store(),
-            startup: crate::StartupHandle::settled(crate::SplashOutcome::Skipped(
-                crate::SplashSkip::NotConfigured,
-            )),
+            startup: crate::StartupHandle::unattached(),
         }
     }
 

@@ -214,6 +214,15 @@ impl StartupHandle {
         )
     }
 
+    /// The record a context carries until its host attaches its own: one per
+    /// process, so building a context allocates nothing for it.
+    pub(crate) fn unattached() -> Self {
+        static UNATTACHED: std::sync::OnceLock<StartupHandle> = std::sync::OnceLock::new();
+        UNATTACHED
+            .get_or_init(|| Self::settled(SplashOutcome::Skipped(SplashSkip::NotConfigured)))
+            .clone()
+    }
+
     /// A record for a host with no startup of its own to report — an embedded
     /// runtime, whose embedder already put its window on screen.
     pub(crate) fn settled(splash: SplashOutcome) -> Self {
