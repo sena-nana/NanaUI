@@ -330,7 +330,7 @@ pub use scene_gpu::{
 pub use scene_host::run_runtime_scene;
 #[cfg(feature = "gpu")]
 pub use scene_paint::{
-    HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
+    AlphaEncoding, HostTextureSceneResolver, RenderTargetId, ScenePaintError, ScenePaintViewport,
     SceneWgpuPainter, SubpixelOrder, TextGlyphCounters, resolve_background_image_url,
     set_background_image_url_base,
 };

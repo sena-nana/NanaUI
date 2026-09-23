@@ -2087,7 +2087,8 @@ alpha 用，黑字白底一个半覆盖的边缘像素显示成 sRGB 0.74——�
 | Skia / Chrome | 按文字亮度预烘焙 gamma+contrast LUT，假设背景是前景的反色 |
 | glyphon（cosmic-text 生态） | `ColorMode::Web`：在 gamma 空间混合，模仿浏览器 |
 
-我们的目标是线性的、而且全管线都依赖这一点，不能改成 gamma 空间混合。所以
+我们的目标是线性的、而且全管线都依赖这一点，不能改成 gamma 空间混合。（透明窗口最后交给系统合成器时，
+像素按 `enc(颜色) × α` 存，见 `window.md`。那只是交付格式，混合本身仍在线性光里。）所以
 `corrected_coverage`（`shader/text_atlas.wgsl`，CPU 表述在 `text/gamma.rs`）分两步：
 先照 DirectWrite 算出 gamma 空间里该用的覆盖率（enhanced contrast → alpha correction，
 移植自 Windows Terminal，见 `third-party.md`），再按 Skia 的假设（背景 = 前景反色）

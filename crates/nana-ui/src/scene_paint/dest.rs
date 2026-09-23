@@ -2,6 +2,7 @@
 
 use std::num::NonZeroU64;
 
+use super::AlphaEncoding;
 use super::clip::FragmentClip;
 
 const GROUP_UNIFORM_STRIDE: u64 = 256;
@@ -381,6 +382,9 @@ pub(super) struct DestTarget {
     color: wgpu::Texture,
     color_view: wgpu::TextureView,
     blit_pipeline: wgpu::RenderPipeline,
+    /// The blit that stores gamma-premultiplied pixels; only an sRGB target
+    /// has one (see [`AlphaEncoding::Gamma`]).
+    blit_gamma_pipeline: Option<wgpu::RenderPipeline>,
     blit_bind_group: wgpu::BindGroup,
     group_layers: Vec<GroupLayer>,
     group_pipeline: wgpu::RenderPipeline,
@@ -521,30 +525,39 @@ impl DestTarget {
             bind_group_layouts: &[Some(&bind_layout)],
             immediate_size: 0,
         });
-        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("nana-ui.scene.dest.blit.pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: pipeline_cache,
+        let make_blit = |entry_point: &str, label: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry_point),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: pipeline_cache,
+            })
+        };
+        let blit_pipeline = make_blit("fs_main", "nana-ui.scene.dest.blit.pipeline");
+        let blit_gamma_pipeline = format.is_srgb().then(|| {
+            make_blit(
+                "fs_gamma_premultiplied",
+                "nana-ui.scene.dest.blit.gamma.pipeline",
+            )
         });
         let group_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("nana-ui.scene.group.sampler"),
@@ -639,6 +652,7 @@ impl DestTarget {
             color,
             color_view,
             blit_pipeline,
+            blit_gamma_pipeline,
             blit_bind_group,
             group_layers: Vec::new(),
             group_pipeline,
@@ -982,6 +996,7 @@ impl DestTarget {
         dest_y: f32,
         window: [u32; 2],
         clear_window: Option<wgpu::Color>,
+        encoding: AlphaEncoding,
         gpu_work: Option<&crate::gpu_work::GpuWorkSink>,
         counts: &mut DestPassCounts,
     ) {
@@ -1017,7 +1032,11 @@ impl DestTarget {
             0.0,
             1.0,
         );
-        pass.set_pipeline(&self.blit_pipeline);
+        let gamma = self
+            .blit_gamma_pipeline
+            .as_ref()
+            .filter(|_| encoding == AlphaEncoding::Gamma);
+        pass.set_pipeline(gamma.unwrap_or(&self.blit_pipeline));
         pass.set_bind_group(0, &self.blit_bind_group, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);

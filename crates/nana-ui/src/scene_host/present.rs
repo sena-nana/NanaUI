@@ -319,6 +319,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 .then(crate::scene_paint::SubpixelOrder::system)
                 .flatten(),
         );
+        // Compositors blend a surface as premultiplied in its encoded space,
+        // Metal's `PostMultiplied` included.
+        painter.set_alpha_encoding(if opaque {
+            crate::scene_paint::AlphaEncoding::Linear
+        } else {
+            crate::scene_paint::AlphaEncoding::Gamma
+        });
         let paint = painter.paint_target(
             crate::RenderTargetId(id.0),
             scene.as_ref(),

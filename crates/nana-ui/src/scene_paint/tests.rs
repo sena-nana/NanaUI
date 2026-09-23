@@ -8735,6 +8735,24 @@ fn paint_one_painter_with(
     h: u32,
     configure: impl FnOnce(&mut SceneWgpuPainter),
 ) -> Vec<u8> {
+    paint_one_painter_onto(
+        painter,
+        w,
+        h,
+        wgpu::TextureFormat::Rgba8Unorm,
+        [0.0, 0.0, 0.0, 1.0],
+        configure,
+    )
+}
+
+fn paint_one_painter_onto(
+    painter: impl nana_ui_runtime::Painter,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+    clear_color: [f32; 4],
+    configure: impl FnOnce(&mut SceneWgpuPainter),
+) -> Vec<u8> {
     use nana_ui_runtime::Stack;
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -8760,7 +8778,6 @@ fn paint_one_painter_with(
     let mut scene = UiScene::new();
     scene.apply_delta(context.world().extract_document(document), []);
     let (device, queue) = test_device();
-    let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut painter = SceneWgpuPainter::new(&device, &queue, format);
     configure(&mut painter);
     let viewport = ScenePaintViewport {
@@ -8769,7 +8786,7 @@ fn paint_one_painter_with(
         scale_factor: 1.0,
         scene_origin: [0.0, 0.0],
         target_origin: [0.0, 0.0],
-        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear_color,
         clear: true,
     };
     let (texture, view) = test_copy_target(&device, format, w, h);
@@ -9039,6 +9056,33 @@ fn a_multiply_blend_darkens_what_is_under_it() {
     assert!(yellow[0] > 200 && yellow[1] > 200, "{yellow:?}");
     // Yellow × magenta = red.
     assert!(is_red_slot(multiplied), "{multiplied:?}");
+}
+
+/// The first pixel of a 2×1 transparent sRGB target holding `color`,
+/// stored with `encoding`.
+fn stored_pixel(color: [f32; 4], encoding: super::AlphaEncoding) -> [u8; 4] {
+    let pixels = paint_one_painter_onto(
+        PaintFn(move |cx: &mut nana_ui_runtime::PaintContext<'_>| {
+            cx.fill_path(&full_rect(2.0, 1.0), color);
+        }),
+        2,
+        1,
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        [0.0; 4],
+        |painter| painter.set_alpha_encoding(encoding),
+    );
+    [pixels[0], pixels[1], pixels[2], pixels[3]]
+}
+
+#[test]
+fn gamma_encoding_stores_what_a_window_compositor_blends() {
+    use super::AlphaEncoding::{Gamma, Linear};
+    let quarter_white = [1.0, 1.0, 1.0, 0.25];
+    // enc(0.25) = 137: what a compositor would show as a far brighter veil.
+    assert_eq!(stored_pixel(quarter_white, Linear), [137, 137, 137, 64]);
+    assert_eq!(stored_pixel(quarter_white, Gamma), [64, 64, 64, 64]);
+    let gray = [0.5, 0.5, 0.5, 1.0];
+    assert_eq!(stored_pixel(gray, Linear), stored_pixel(gray, Gamma));
 }
 
 /// Black text on a white ground, optionally inside a painter layer, painted

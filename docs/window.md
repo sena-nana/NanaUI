@@ -55,6 +55,8 @@ Windows 上的 chrome 由两组输入决定，读的时候要连着读：**descr
 
 DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.rs`），所以**普通路径上的窗口透明其实隐式依赖 Vulkan**。
 
+不是 `Opaque` 的表面，最后一步按合成器的读法存像素。DWM 和 Core Animation 都把 8 位表面当作预乘的 `enc(颜色) × α`，在编码空间里混合；Metal 的 `PostMultiplied` 也一样。内部仍在线性光里混合，只有把整帧拷上表面的那次 blit 改存 `enc(颜色) × α`（`AlphaEncoding::Gamma`）。否则半透明像素会被显示得过亮，羽化、阴影、抗锯齿边缘叠在桌面上会出现硬边和色阶。不透明像素两种存法字节相同；离屏快照默认 `Linear`。
+
 #### 两个维度：进程后端 vs 每窗口 target
 
 这是两个问题，别混成一个：

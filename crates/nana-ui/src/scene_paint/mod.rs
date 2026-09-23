@@ -108,6 +108,20 @@ pub struct SceneWgpuPainter {
     /// Egress the active target's URL bindings and cached dest were built
     /// with; swapped per target like `painted`.
     bound_fetch_host: Option<SharedFetchHost>,
+    alpha_encoding: AlphaEncoding,
+}
+
+/// How a paint stores its premultiplied pixels. Blending is linear either
+/// way; a window compositor, though, reads a surface as `enc(color) * alpha`
+/// and shows the linear `enc(color * alpha)` too bright wherever alpha is low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AlphaEncoding {
+    /// `enc(color * alpha)`: for offscreen readers and opaque surfaces.
+    #[default]
+    Linear,
+    /// `enc(color) * alpha`: for a surface a compositor blends. Opaque pixels
+    /// match [`Self::Linear`]; a target that is not sRGB keeps that too.
+    Gamma,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -249,6 +263,7 @@ impl SceneWgpuPainter {
             image_revision: 0,
             fetch_host: None,
             bound_fetch_host: None,
+            alpha_encoding: AlphaEncoding::Linear,
         }
     }
 
@@ -332,6 +347,13 @@ impl SceneWgpuPainter {
             // The retained batch holds instances resolved under the old mode.
             self.prepared_batch = None;
         }
+    }
+
+    /// How the next paints store alpha. Painters are shared per format, so a
+    /// host sets this per window; the hosted runtime picks
+    /// [`AlphaEncoding::Gamma`] for every surface that is not opaque.
+    pub fn set_alpha_encoding(&mut self, encoding: AlphaEncoding) {
+        self.alpha_encoding = encoding;
     }
 
     /// Text shape-cache counters from the last `paint`: (hits, misses,
@@ -530,6 +552,7 @@ impl SceneWgpuPainter {
                 blit_origin[1],
                 viewport.physical_size,
                 viewport.clear.then_some(clear),
+                self.alpha_encoding,
                 Some(&gpu_work),
                 &mut dest_passes,
             );
@@ -1568,6 +1591,7 @@ impl SceneWgpuPainter {
             blit_origin[1],
             viewport.physical_size,
             viewport.clear.then_some(clear),
+            self.alpha_encoding,
             Some(&gpu_work),
             &mut dest_passes,
         );
