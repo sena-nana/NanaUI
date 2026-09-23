@@ -327,7 +327,7 @@ window.set_size((640.0, 480.0)).wait()?;
 window.close().wait()?;
 ```
 
-创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成；失败会回滚，不发送 `Ready`。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建，在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
+创建结果仅在隐藏原生窗口、Surface、输入状态和应用文档初始化成功后完成；失败会回滚，不发送 `Ready`。主窗口配置了 Early Splash 时是例外：窗口带着 Logo 先显示，设备和程序在其后就绪，失败时撤下 Logo 并关窗，见 [两阶段启动](startup.md)。`ApplicationState::build` 为每个窗口构建独立文档。自定义 `RuntimeProgram` 在 `initialize_window` 中完成构建，在 `discard_window` 中撤销失败的应用状态。成功后才注册并按 `WindowDescriptor::visible` 显示窗口。
 
 窗口 id 由服务分配，应用用 `WindowDescriptor::tag` 声明这扇窗口是哪种文档，不要靠创建请求的顺序去对应 id。标识对宿主不透明，从 `RuntimeProgramContext::window_tag()` 读回：`initialize_window` / `ApplicationState::build` 构建文档时，以及之后该窗口的每个回调（包括 `Ready`）都能读到；窗口关闭后为 `None`，按 id 持有的状态在 `window_closed` / `discard_window` 里清理。
 
@@ -370,7 +370,8 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 `RuntimeProgramContext::reduced_motion()` 返回系统是否要求减少动态效果，窗口创建时读取；用户在运行中切换时，宿主向每扇窗口发送 `WindowEvent::ReducedMotionChanged { id, reduced }`，之后的回调上下文读到新值。应用据此选择过渡时长或关闭位移，NanaUI 不替应用改写已声明的动画。
 
 - Windows：读取「在 Windows 中显示动画」（`SPI_GETCLIENTAREAANIMATION`，关闭即减少动态效果）；宿主窗口子类收到 `WM_SETTINGCHANGE`（`SPI_SETCLIENTAREAANIMATION`）后在下一次 `about_to_wait` 重新读取，只在值变化时发送事件，不轮询。
-- macOS / Linux：暂不上报，恒为 `false`，不发送事件。
+- macOS：读取「减少动态效果」（`NSWorkspace.accessibilityDisplayShouldReduceMotion`），只在创建时读取，运行中切换不发送事件。
+- Linux：暂不上报，恒为 `false`，不发送事件。
 
 ### 显示器与全屏
 

@@ -63,7 +63,9 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 
 | 方法 | 职责 |
 | --- | --- |
-| `initialize` | 建程序实例；可返回要在第一帧 `update` 的消息 |
+| `initialize` | 建程序实例；可返回要在第一帧 `update` 的消息。被调用的时刻就是启动的 `UiReady`，只建第一屏，重活交给任务，见 [两阶段启动](startup.md) |
+| `startup_takeover` | 可选；`initialize` 建的文档是否立即接管 Early Splash（默认 `Immediate`），`Deferred` 则等 `context.startup().take_over(ticket)` |
+| `startup_changed` | 可选；启动阶段变化（请求、撤回、交接完成） |
 | `with_document` / `with_document_mut` | 按 `WindowId` 在访问闭包中交出 `RuntimeDocument` |
 | `update` | 宿主级消息；保持便宜 |
 | `theme_mode` | 深色 / 浅色 |
@@ -81,7 +83,7 @@ device/surface 丢失后宿主调用 `RuntimeDocument::set_surface_generation`�
 | `next_wakeup` / `wake` | 与重绘无关的定时工作 |
 | `host_failure` | 宿主已从该错误恢复；默认忽略 |
 
-`RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`。原生窗口句柄不穿过这条边界。
+`RuntimeProgramContext` 提供 `window_id`、`geometry`、`gpu()`、`material()`、`dispatch`、`run_task`、`startup()`（启动记录与接管请求）。原生窗口句柄不穿过这条边界。
 
 `RuntimeProgramUpdate.redraw` 支持 `None`、`Window(id)`、`Windows(ids)`、`All`。
 合并局部更新会保留实际窗口集合；`RuntimeRedraw::for_windows` 会排序去重。

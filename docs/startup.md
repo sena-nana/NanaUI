@@ -1,0 +1,161 @@
+# 两阶段启动
+
+Issue #225。启动分两个呈现阶段，但只有一套 UI 引擎：
+
+1. **Early Splash**：GPU 设备和程序都还不存在时，宿主就在主窗口上显示内嵌 Logo，可选一种由系统合成器自己推进的动画。
+2. **应用自己的界面**：宿主已经能挂载、布局、派发事件并绘制普通文档时（`UiReady`），调用 `RuntimeProgram::initialize`。应用在这里挂加载页，或直接挂主界面，然后说明“这份内容可以接管”。宿主确认这份内容的首帧已经交给合成器，才撤下 Logo。
+
+**能力交接点和画面交接点是分开的。** `UiReady` 只表示可以画普通界面，不表示业务初始化完成；Logo 在接管内容的首帧确认之后才撤。
+
+两者都是可选的。不配置 splash 时，宿主不创建任何图层、窗口、设备或 timer，窗口仍在 `initialize` 之后显示，和以前一样。
+
+## 用法
+
+```rust
+static LOGO: &[u8] = include_bytes!("../assets/logo.png");
+
+NanaApplication::builder(identity)
+    .early_splash(
+        SplashSpec::new(SplashLogo::png(LOGO))
+            .with_logo_size(128.0, 128.0)
+            .with_animation(SplashAnimation::Pulse),
+    )
+    .run::<RuntimeApplication<App>>(WindowDescriptor::new("App"))
+```
+
+不走 builder 的宿主用 `run_runtime_with_startup::<P>(settings, StartupOptions::default().with_splash(spec))`。包装 `run_runtime` 的前端（Vue）用 `nana_ui::with_startup(options, || VueRuntimeProgram::run(...))`。
+
+完整例子见 `crates/nana-ui/examples/startup-splash.rs`：加载页 → 后台线程模拟业务 → 切主界面。`--probe` 让它变成验收探针，交接后空闲一秒自行退出，打印一行 JSON 记录，记录违反合同时返回非零。
+
+## 第一阶段：Early Splash
+
+`SplashSpec` 就是全部配置：
+
+| 字段 | 含义 |
+| --- | --- |
+| `logo` | `SplashLogo::png(&'static [u8])`，编进二进制的 PNG。不发网络请求，不扫描文件，不走资源管理器 |
+| `logo_size` | 逻辑点。Logo 按比例缩放后放进这个框，居中；窗口比框小时跟着缩小 |
+| `background` | `System`（默认主题在当前系统明暗下的背景色，首帧不会换底色）、`Color(..)`、`Transparent`（只画 Logo，给透明窗口用） |
+| `animation` | `None`、`FadeIn`（默认，淡入一次后保持）、`Pulse`（呼吸）、`Rotate`（旋转） |
+
+Logo 的上限：编码后 ≤ 1 MiB（与打包器 `early-splash` pack 的上限一致），最长边 ≤ 1024 像素，解码后 ≤ 4 MiB。只读 PNG 头做检查，不解码像素。
+
+这一阶段不提供文字、进度条、布局、控件、脚本、shader 或动画回调。产品名要出现在画面里，就合进 Logo 图片。动画交给平台合成器推进，本进程没有任何逐帧回调或 timer；动画帧再多，NanaUI 的工作量也不增加（`SplashWork::animation_submissions` 恒为 1）。
+
+### 平台
+
+| 平台 | 实现 | 动画 | 交接 | 验证 |
+| --- | --- | --- | --- | --- |
+| macOS | 在内容视图根 `CALayer` 上挂一个容器层，`zPosition` 高于 wgpu 插入的 `CAMetalLayer` 子层 | `CABasicAnimation`，由 render server 推进 | 目标帧以 `presentsWithTransaction` present，同一轮里移除 splash 层；drawable 与移除落在同一个 Core Animation 提交里 | 本机真窗口，60 fps 录屏逐帧检查 |
+| Windows，普通 HWND | topmost `CreateTargetForHwnd(hwnd, TRUE)` 上的 DirectComposition 视觉树；Logo 与背景由一个短生命周期 D3D11 设备上传一次；子类跟随 `WM_SIZE` / `WM_DPICHANGED` 重新居中 | `IDCompositionAnimation`（透明度、旋转），由 DWM 推进 | 目标帧 present → 等它的 GPU 工作完成（`on_submitted_work_done`）→ `DwmFlush()` 一次 → 移除视觉并提交 → 释放 D3D11 / DComp | **只交叉编译检查过，未经 Windows 真机验证** |
+| Windows，合成路径（`WS_EX_NOREDIRECTIONBITMAP`） | 不显示，`Skipped(CompositionTarget)`：这扇窗口的 topmost 槽已经被 NanaUI 自己的合成树占用 | — | — | — |
+| Linux 及其他 | 不显示，`Skipped(PlatformUnsupported)` | — | — | — |
+
+D3D11 设备只用来上传两张小图，与 wgpu 的 adapter / backend 选择无关，交接时和合成树一起释放。
+
+平台不支持、合成路径、隐藏启动（`WindowDescriptor::visible = false`，例如托盘启动）或嵌入宿主时，splash 一律跳过，不分配任何资源，`UiReady` 与接管合同照常工作。
+
+### 降级
+
+实际结果在 `StartupStatus::splash`（`SplashOutcome`）里，不会把请求当成结果：
+
+- `Shown { animation: Applied(..) }`：动画在合成器里跑；
+- `Shown { animation: Static { requested, reason } }`：静态 Logo。`reason` 是 `ReducedMotion`（系统要求减少动态效果）或 `NativeAnimationFailed`（合成器拒绝了动画）；`requested == None` 时 `reason` 为 `None`；
+- `Skipped(..)`：没有配置，或上面的跳过条件；
+- `Failed(Logo(..) | Native(..))`：坏 Logo、超限或平台调用失败。应用照常启动，只是没有 splash。
+
+减少动态效果：Windows 读 `SPI_GETCLIENTAREAANIMATION`；macOS 读 `NSWorkspace.accessibilityDisplayShouldReduceMotion`（只读启动时的值）。
+
+## 第二阶段：UiReady
+
+`RuntimeProgram::initialize`（`ApplicationState::initialize` + `build`）被调用的时刻就是 `UiReady`：窗口、surface、设备、scene painter 和文本系统都已就绪，可以挂载、布局、派发、绘制普通文档。它不要求加载全部组件、预热全部字体或创建全部 pipeline。
+
+`initialize` 只做第一屏需要的事：建加载页（或主界面），把业务工作交给 `run_task` 或自己的线程，然后返回。业务状态不必在这之前存在，`initialize` 本身就是这个信号的接收者。后台工作只回传数据和进度，由 `update` 在窗口线程改文档。
+
+`initialize` 返回的 startup 消息：有 splash 时走普通消息队列，按现有 2 ms / 64 条的批次让出，不会在一轮里同步清空；没有 splash 时仍在窗口首次显示前同步处理，和以前一样。
+
+框架不提供业务启动 DAG、服务容器或“业务完成百分比”。加载页显示什么、何时切到主界面，都是应用的普通行为。
+
+## 接管
+
+`RuntimeProgram::startup_takeover()`（`ApplicationState` 同名）在 `initialize` 返回后读一次：
+
+- `Immediate`（默认）：`initialize` 建的主窗口文档就是接管内容；
+- `Deferred`：Logo 保持，直到应用调用 `context.startup().take_over(ticket)`。
+
+```rust
+let startup = context.startup();
+let ticket = startup.status().ticket.expect("UiReady 之后才有 ticket");
+startup.take_over(ticket)?;          // 任意线程都可以调用
+startup.cancel_takeover(ticket)?;    // 撤回；这张 ticket 作废
+```
+
+- **代次**：`cancel_takeover` 让当前 ticket 作废。取消之前发出的任务稍后带着旧 ticket 回来，会被拒绝（`StartupError::StaleTicket`），不会用没人要求的内容接管。新请求要用 `status()` 里的新 ticket。
+- **目标帧**：请求记录主窗口此刻的 flush 序号。只有在这之后 flush、并在当前 surface generation 上 **present 成功** 的主窗口帧才算数。旧帧、跳过的帧（`Skipped` / `Retry`）、失败的帧，以及 flush 之后 surface 被换掉的帧都到不了这个判断。
+- **接管之前**：主窗口已经在屏幕上（被 splash 盖着），宿主不 present 它，因为画了也看不见。有了请求才恢复调度。窗口最小化或被遮挡时，交接等窗口恢复再完成；窗口本身已经可见，不会出现“等 present 才显示、不显示又拿不到 present”的循环。
+- **其他窗口**：不受影响，照常创建和绘制。
+
+阶段变化（请求、撤回、交接完成）通过 `RuntimeProgram::startup_changed(status, ctx)` 送达，也随时可以从 `RuntimeProgramContext::startup().status()` 读到。`WindowEvent::Ready` 仍是每扇窗口一次，与启动阶段无关。
+
+## 失败、取消与清理
+
+- **GPU 或最小引擎初始化失败**：不发 `UiReady`，splash 撤下，窗口关闭，`run` 返回 `HostedRunError::Startup`，并记录 `host.startup_failed`。不会一直转圈。
+- **启动期间关窗**：`UiReady` 之前关闭窗口会取消启动。事件循环在设备请求期间一直在转，所以关窗随时有效。平台设备请求一旦开始就无法中途取消，结果到达后直接丢弃；设备线程持有的 surface 在宿主已退出时留到进程结束，不在窗口线程之外释放窗口。
+- **`UiReady` 之后、交接之前退出或关主窗**：splash 在窗口销毁前撤下并释放（不等合成器）。
+- **设备 / surface 重建**：交接前发生时，等新 surface generation 上的帧；不会重新调用 `initialize`，也不会重跑业务初始化。
+- **交接之后的业务错误**：由应用的普通界面处理，不会退回第一阶段。
+
+splash 的图层、视觉、位图、D3D11 设备、子类和动画都由同一个 `NativeSplash` 持有，成功交接和所有失败路径都经它释放；`SplashWork::live_resources` 在交接后为 0。
+
+## 启动线程
+
+独立宿主（`run_runtime`）在窗口线程上创建窗口、splash、实例和 surface，然后把 adapter 选择、设备请求和 scene painter 的 pipeline 编译放到 `nana-startup-gpu` 线程，完成后唤醒事件循环。窗口图标（及 macOS Dock 图标）在 `nana-startup-icons` 线程渲染，到达时再应用，不阻塞 `UiReady`。有 splash 时，字体系统也在后台预热。
+
+没有嵌套事件循环，也没有第二个 `run_app`。嵌入宿主（`EmbeddedRuntime`）的设备已由宿主持有，仍同步启动，不显示 splash（`Skipped(Embedded)`）。
+
+## 测量
+
+`StartupStatus::timeline` 的时间都从宿主入口（`run_runtime`）算起，**不是**进程创建时间：
+
+| 字段 | 含义 |
+| --- | --- |
+| `splash_committed` | splash 已提交给合成器、窗口已请求显示。CPU 侧的请求时刻；这里用到的平台都不报告图层真正上屏的时间，所以不写“可见时间” |
+| `ui_ready` | 调用 `initialize` |
+| `takeover_requested` | 接管请求被宿主接受 |
+| `first_frame_submitted` | 完成接管的那一帧已 present |
+| `handoff_completed` | splash 已移除（macOS 与该帧同一次提交；Windows 在合成器取走该帧之后）。没有 splash 时等于上一项 |
+| `splash_released` | splash 创建的原生对象全部释放 |
+
+`StartupStatus::work`：事件线程最长单次占用（从入口到交接，含完成交接的那次回调）、设备请求次数（恒为 1）、启动期创建的 painter 数、`SplashWork`（Logo 解码 / 上传次数、动画提交次数、合成器提交次数、存活资源数）。
+
+诊断事件（`nana_diagnostics::framework::host`）：`STARTUP_PHASE { phase, elapsed_ns }`（0 入口 … 6 splash 释放）、`SPLASH_OUTCOME { outcome }`、`STARTUP_FAILED`，以及 gauge `host.startup.longest_block`。
+
+本机（macOS，debug 构建，负载约 3）的探针记录：
+
+| 场景 | splash 提交 | UiReady | 交接完成 | 事件线程最长占用 |
+| --- | --- | --- | --- | --- |
+| 有 splash | ≈ 0.30 s | ≈ 0.50 s | ≈ 0.53 s | ≈ 42 ms |
+| 无 splash | — | ≈ 0.54 s | ≈ 0.63 s | ≈ 30 ms |
+
+入口到第一次窗口回调约 0.3 s 花在 winit / AppKit 启动上，在宿主能做任何事之前。同一构建在去掉两处同步图标工作之前，`UiReady` 在 1.3–1.4 s，事件线程单次被占用约 0.8 s：默认图标在建窗前同步栅格化（macOS 上 winit 根本不用窗口图标），Dock 图标在 `initialize` 前同步生成。数字只说明这台机器 debug 构建的量级，不是预算。
+
+## Vue / JS
+
+`Nana.startup` 是宿主记录的投影，不是另一套状态机：
+
+```js
+Nana.startup.deferTakeover();         // 只在首次求值 bundle 时有效，返回是否生效
+Nana.startup.state;                    // { phase, splash, ticket, timeline }，读的时候就是最新的
+Nana.startup.takeOver();               // 不传 ticket 就用当前的
+Nana.startup.onChange(status => {});   // 宿主的 "startup" 事件
+```
+
+晚加载的前端读 `state`，不必担心错过一次性事件。JS 未就绪不会推迟原生 Logo：bundle 在 `initialize` 里求值，那时 Logo 早已在屏幕上。
+
+## 已知边界
+
+- Windows 路径只经过交叉编译检查（`x86_64-pc-windows-gnu`），没有真机首帧交接和动画证据；Linux 没有 splash。
+- Windows 合成路径的窗口不显示 splash；`CompositionCapable` 策略下的合成能力探测在建窗之前，发生在 Logo 出现之前。
+- macOS 只读取启动时的减少动态效果设置，不跟随运行中的切换。
+- Logo 只能编进二进制；从 `early-splash` 资源包读取尚未接入。
+- 同窗口实现：splash 就是应用自己的主窗口，DPI、显示器、尺寸和焦点都是这扇窗口自己的，不存在临时窗口的几何交接。

@@ -1,6 +1,6 @@
 # 消费方升级记录（2026-09-23）
 
-本轮落地 Issue #226 的框架核心：package manifest、`.nrpack` 资源包（逐块压缩、XChaCha20-Poly1305 认证加密、Ed25519 发布者签名）、`nana-packager`（Windows / macOS / Linux 布局、Steam 输出、最终产物校验）。详见[打包与分发](packaging.md)。
+本轮落地 Issue #226 的框架核心（Issue #228 与 #225 见后两节）：package manifest、`.nrpack` 资源包（逐块压缩、XChaCha20-Poly1305 认证加密、Ed25519 发布者签名）、`nana-packager`（Windows / macOS / Linux 布局、Steam 输出、最终产物校验）。详见[打包与分发](packaging.md)。
 
 ## API 变化
 
@@ -55,3 +55,32 @@
   - 对已经 unlink 的根再 `detach`。
 - **`append_child` 的语义不变：** 对已经挂着、但不在末尾的孩子，`append_child` 仍然会把它挪到末尾。`set_list_item_slots` 自己会插入并排好槽节点，调用前不要再 `append_child` 槽节点。NanaLive 的 `bind_row_thumbnail` 每次刷新都先 `append_child(item, thumb)` 再 `set_list_item_slots`，结果是每行两次真实换位，缩略图被挪到末尾又挪回来，每次刷新都要重排整行。删掉那次 `append_child` 之后，40 行卡片重写一遍相同值：写入约 0.065 ms，flush 空闲。
 - **observer 的状态会被投影：** observer 处理器原地修改的组件，在事件投递后会重新投影。以前要等之后某次写入才顺带投影。只有 handler 调用了 `cx.reassemble()` 时才会跑 assembler，这一点没变。
+
+## Issue #225：两阶段启动
+
+合同见[两阶段启动](startup.md)。不配置 Early Splash 的应用不需要改代码。
+
+### API 变化
+
+- 新增 `nana_ui::startup` 模块，并在 crate 根再导出：`StartupOptions`、`SplashSpec` / `SplashLogo` / `SplashAnimation` / `SplashBackground`、`SplashOutcome`、`StartupHandle`、`StartupStatus`、`StartupPhase`、`StartupTicket`、`StartupTakeover`、`StartupTimeline`、`StartupWork`、`StartupError`。
+- 入口：`NanaApplicationBuilder::early_splash(spec)` / `startup(options)`、`run_runtime_with_startup`、`with_startup`（给包装 `run_runtime` 的前端用，例如 Vue）。
+- `RuntimeProgram` 新增两个有默认实现的方法：`startup_takeover()`（默认 `Immediate`）与 `startup_changed(..)`。`ApplicationState` 同名。`RuntimeProgramContext::startup()` 返回启动记录。
+- `nana-window` 新增 `NativeSplash` 及其类型；原生句柄仍只在 `nana-window` 内。
+- `nana-diagnostics` 在 `framework::host` 追加事件 `STARTUP_PHASE`（id 4）、`SPLASH_OUTCOME`（5）、`STARTUP_FAILED`（6）和 gauge `STARTUP_LONGEST_BLOCK_NS`（metric id 5）。
+- JS：`Nana.startup`（`state`、`deferTakeover`、`takeOver`、`cancelTakeover`、`onChange`）。框架占用的宿主 API 名为 `startupStatus`、`startupDeferTakeover`、`startupTakeOver`、`startupCancelTakeover`，应用自己的 `HostApiRegistry` 不能再用这几个名字。
+
+### 行为变化
+
+- **设备不再在事件线程上请求。** 独立宿主在窗口线程创建窗口与 surface，adapter、设备和第一个 scene painter 的 pipeline 在 `nana-startup-gpu` 线程上建。`initialize` 仍在窗口线程、仍在设备就绪之后调用，程序看到的顺序不变。
+- **图标异步应用。** macOS 不再为窗口属性栅格化默认图标（winit 在 macOS 上不用窗口图标）；主窗口的图标与 Dock 图标在后台渲染，到达时应用，可能比窗口首次显示晚一点。
+- **窗口清屏色改为线性。** 宿主以前把主题的 sRGB 背景直接当线性清屏色，文档没盖住的区域（加载页、live resize 的边缘）显示成 `#565656`，而不是暗色主题的 `#181818`。现在与画布上的颜色一致。依赖过旧颜色的截图需要重看。
+- **macOS 上报减少动态效果。** `RuntimeProgramContext::reduced_motion()` 在 macOS 上读取系统设置（以前恒为 `false`）；运行中切换仍不发送事件。副窗口 `build` 时的上下文现在也带着这个值（以前恒为 `false`）。
+- **macOS live resize 的事务 present 生效了。** `set_present_transaction` 以前把视图根层当作 `CAMetalLayer`，而 wgpu 30 把它插为子层，所以固定从未成功；现在能找到子层，live resize 期间的 present 真正与 Core Animation 事务同步。
+- **有 splash 时**：窗口在 `initialize` 之前带着 Logo 显示；`initialize` 返回的 startup 消息改走普通消息队列。没有 splash 时两者都和以前一样。
+
+### 各应用
+
+| 应用 | 要做的 |
+| --- | --- |
+| 所有应用 | 无需改动。自定义 `HostApiRegistry` 若注册了上面四个 `startup*` 名字，需要改名 |
+| 想要启动 Logo 的应用 | builder 加 `.early_splash(SplashSpec::new(SplashLogo::png(include_bytes!(..))))`；`initialize` 里的重活改为任务；要等数据再切界面的，实现 `startup_takeover()` 返回 `Deferred`，准备好后 `context.startup().take_over(ticket)` |

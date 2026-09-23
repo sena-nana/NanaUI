@@ -19,6 +19,7 @@
 | 着色器、预览视口、宿主纹理 | [实时画面](gpu.md) |
 | 应用内打开网页（IAB，未实现） | [应用内浏览器](gpu.md#应用内浏览器) |
 | 标题栏、图标、系统材质、多窗口 | [窗口](window.md) |
+| 启动 Logo、加载页、首帧交接 | [两阶段启动](startup.md) |
 | 颜色、尺寸、字体、主题 | [视觉](look.md) |
 | 无窗口跑起来看一眼(截图 / a11y / 点击) | [`$nanaui-agent-debug`](../.agents/skills/nanaui-agent-debug/SKILL.md) |
 | 改完代码最快看到新界面 | [开发期热重载](hot-reload.md) |
@@ -66,4 +67,4 @@ L1/L2 兼容子集还缺什么（设计延期，不是烂尾实现）：
 - [LiliaCode 组件恢复（2026-09-10）](liliacode-component-restoration-2026-09-10.md)
 - [窗口全屏与跨线程最新帧（2026-09-14）](consumer-upgrade-2026-09-14.md)
 - [窗口不出现在任务栏（2026-09-15）](consumer-upgrade-2026-09-15.md)
-- [应用打包与资源包；未变化的写入不再有成本（2026-09-23）](consumer-upgrade-2026-09-23.md)
+- [应用打包与资源包；未变化的写入不再有成本；两阶段启动（2026-09-23）](consumer-upgrade-2026-09-23.md)

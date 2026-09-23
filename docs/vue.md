@@ -57,6 +57,10 @@ JS 的 `windowSetFullscreen` / `windowSetAlwaysOnTop` 接口不变（仍是布�
 
 窗口化对照 `examples/vue-hosted-acceptance`。`examples/vue-counter` 是引擎探针（含无头点击），不是应用模板。
 
+## 启动
+
+Early Splash 在 Rust 侧配置：`nana_ui::with_startup(StartupOptions::default().with_splash(spec), || VueRuntimeProgram::run(...))`。bundle 在 `UiReady` 求值，那时 Logo 已在屏幕上。`Nana.startup` 是宿主启动记录的投影：`state` 随时读取（`{ phase, splash, ticket, timeline }`），`deferTakeover()` 只在首次求值时有效，`takeOver()` / `cancelTakeover()` 发请求，`onChange(listener)` 收宿主的 `startup` 事件。合同见 [两阶段启动](startup.md)。
+
 ## 两种写法，同一棵树
 
 **Nana 控件。** `NanaButton`、`NanaInput`、`NanaDialog` 直接表达语义，Vue 标签和 Rust `create_component` 通过同一份 `ComponentRegistry` 解析组件类型。

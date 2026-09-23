@@ -246,11 +246,14 @@ pub fn validate(options: &ValidateOptions) -> Result<ValidationReport, String> {
     for (name, reason) in [
         (
             "startup.early-splash",
-            "EarlySplash is not implemented yet (Issue #225)",
+            "the self-check exits before any window, so it cannot see a native splash; \
+             verify on a real window with `startup-splash --probe` (Issue #225); \
+             the logo is not read from the early-splash pack yet",
         ),
         (
             "startup.ui-ready-handoff",
-            "UiReady / first-frame handoff is not implemented yet (Issue #225)",
+            "the first-frame handoff needs a presented window; the self-check exits before \
+             one exists (verify with `startup-splash --probe`, Issue #225)",
         ),
         (
             "installer.round-trip",
