@@ -71,6 +71,8 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 - `Composition`：明确要合成 visual；拿不到时降级并上报，而不是开不出窗口。
 - `RequireComposition`：合成 visual 或者不开。**只有**这一档会让合成不可用变成启动/开窗失败，给那些内容在普通路径上就是错的宿主用；其它所有窗口都该用 `Composition`，降级并上报、应用继续活着。
 
+合成目标（DirectComposition visual）只有 Windows 有。macOS 与 Linux 的普通窗口 surface 本身就由系统合成（macOS 是 `CAMetalLayer`），没有第二条路可要，所以这两档在那里都直接由普通窗口满足、不算降级、也不会因此拒绝开窗；透明客户区能不能成立，照常由 surface 协商出的 alpha 模式决定（`Opaque` 时 `Transparent` 降为 `Solid` 并上报）。
+
 一个窗口要合成不代表所有窗口都要；#215 的 shadow companion 因此可以单独用 `Composition`，不动应用其它窗口。共享同一个 GPU device 混用两种 target 是正常的。
 
 #### 可用性在开窗之前判定，窗口本身是临时的
@@ -305,6 +307,8 @@ cargo run -p nana-packager -- macos-app --exe target/dist/component-gallery --na
 
 `Translucent` 只开窗口透明，不等于模糊。透明窗口和系统模糊是两件事。
 
+透明（`Transparent`）窗口在 macOS 上关掉系统阴影，切回实色时恢复。AppKit 按窗口 alpha 生成阴影，透明窗口里画了什么（角色轮廓、羽化光晕）它就沿着描一圈，还会和应用自己给卡片画的阴影叠成两层；Windows 上透明窗口本来也没有系统阴影，边缘由应用自己画。Vibrancy 铺满整窗，阴影照常保留。
+
 当前 macOS 在 GPU 窗口上申请 Vibrancy 可能拿不到系统效果（金属层会盖住系统材质）。Windows 的透明客户区和 Mica / Acrylic 以真机为准。编译通过不等于那台机器上看起来对。对照 `crates/nana-ui/examples/transparent-window.rs`。
 
 原生材质由 `nana-window` 执行：`apply_system_material` / `apply_hosted_system_material`。`run_runtime` 会给主窗口和每个工具窗口分别应用、刷新和清理。主题或材质切换会先清掉旧效果再按当前请求重试。设备恢复后按当前请求重新应用。native 成功时，侧栏/主区/标题栏的覆盖色来自 Runtime Style Model（`ThemeTokens::with_backdrop`），不是整窗清屏。
@@ -361,7 +365,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 - 宿主发起原生拖窗（标题栏拖动、`WindowHandle::begin_drag`）时，平台移动循环产生的离开被扣下，直到平台再次报告该指针；拖动被屏幕边缘挡住后指针离开窗口的情形，要等指针回到窗口再离开才会报告。
 - host 自管的窗口移动（`LiveFrameMove`）期间不报告在场变化：窗口跟着指针走，每次越过自己原来的边界都是窗口离开指针，不是指针离开窗口。
 - 指针被捕获时，客户区外的移动不会把状态改回在场。
-- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开。
+- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开；窗口被最小化或完全遮挡（平台报告 occluded）时同样报告一次离开，平台未必会发出这次离开。被遮挡期间 Forward 穿透不采样该窗口，重新露出后等平台再次报告指针才回到在场。
 - Forward 穿透由宿主采样全局指针，在场随采样结果更新；采样不可用的平台（Wayland）报告为不在场。
 - 有模态子窗口时父窗口仍报告在场，指针事件本身继续交给模态链处理。
 

@@ -165,6 +165,13 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 );
                 if *occluded {
                     self.occluded.insert(id);
+                    // Nothing of an occluded window shows — minimized or
+                    // covered — so nothing can hover it: report the leave the
+                    // platform may never send, as hiding does.
+                    self.hide_pointer_presence(event_loop, id);
+                    if event_loop.exiting() || !self.window_contexts.contains_key(&id) {
+                        return;
+                    }
                 } else {
                     self.occluded.remove(&id);
                     self.request_redraw(id);

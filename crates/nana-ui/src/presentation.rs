@@ -320,6 +320,15 @@ impl ResolvedWindowPresentation {
     }
 }
 
+/// Whether this platform has a composition surface target at all.
+///
+/// Only Windows does (a DirectComposition visual). Everywhere else the
+/// platform's own window surface is already composited by the system with
+/// per-pixel alpha — a `CAMetalLayer` on macOS — so there is no second path
+/// to ask for, and whether that surface can carry a transparent client is the
+/// negotiated alpha mode's answer (see `demote_unpresentable`).
+const PLATFORM_HAS_COMPOSITION_TARGET: bool = cfg!(target_os = "windows");
+
 /// The presentation target one window ends up asking for.
 ///
 /// `Auto` only reaches the compositor when the process asked for a
@@ -327,11 +336,18 @@ impl ResolvedWindowPresentation {
 /// the path exists for windows whose pixels need it, and an ordinary Settings
 /// window, dialog or popup in the same process stays on the platform's own
 /// window surface.
+///
+/// On a platform without a composition target every preference, including
+/// `RequireComposition`, is met by the native window: that surface is the
+/// system compositor's, so requiring one there is not a reason to refuse.
 pub(crate) fn window_surface_request(
     preference: WindowSurfacePreference,
     wants_transparent_client: bool,
     policy: GpuBackendPolicy,
 ) -> WindowSurfaceTarget {
+    if !PLATFORM_HAS_COMPOSITION_TARGET {
+        return WindowSurfaceTarget::NativeWindow;
+    }
     match preference {
         WindowSurfacePreference::NativeWindow => WindowSurfaceTarget::NativeWindow,
         WindowSurfacePreference::Composition | WindowSurfacePreference::RequireComposition => {
@@ -637,6 +653,16 @@ mod tests {
     /// the main window composed because it wants a transparent client, a
     /// Settings window and a popup on the platform's own window surface
     /// because they do not. Nothing about the main window's needs reaches them.
+    /// What a composition request resolves to on the platform running the
+    /// tests: the compositor visual on Windows, the native window elsewhere.
+    fn composed_here() -> WindowSurfaceTarget {
+        if PLATFORM_HAS_COMPOSITION_TARGET {
+            WindowSurfaceTarget::Composition
+        } else {
+            WindowSurfaceTarget::NativeWindow
+        }
+    }
+
     #[test]
     fn one_composition_capable_process_still_gives_each_window_its_own_target() {
         let policy = GpuBackendPolicy::CompositionCapable;
@@ -644,7 +670,7 @@ mod tests {
         // Main: transparent client, default preference.
         assert_eq!(
             window_surface_request(WindowSurfacePreference::Auto, true, policy),
-            WindowSurfaceTarget::Composition
+            composed_here()
         );
         // Settings and popups: opaque, default preference.
         assert_eq!(
@@ -656,7 +682,7 @@ mod tests {
         // windows changing target.
         assert_eq!(
             window_surface_request(WindowSurfacePreference::Composition, false, policy),
-            WindowSurfaceTarget::Composition
+            composed_here()
         );
         assert_eq!(
             window_surface_request(WindowSurfacePreference::NativeWindow, true, policy),
@@ -678,18 +704,26 @@ mod tests {
             );
         }
         // An explicit request is still a request; availability decides it.
-        assert_eq!(
-            resolve_window_surface_target(
-                window_surface_request(WindowSurfacePreference::Composition, false, policy),
-                false,
-                CompositionAvailability::Unavailable,
-            ),
-            ResolvedSurfaceTarget::fell_back(
-                WindowSurfaceTarget::Composition,
-                SurfaceTargetFallback::BackendUnavailable,
-                false
-            )
+        let explicit = resolve_window_surface_target(
+            window_surface_request(WindowSurfacePreference::Composition, false, policy),
+            false,
+            CompositionAvailability::Unavailable,
         );
+        if PLATFORM_HAS_COMPOSITION_TARGET {
+            assert_eq!(
+                explicit,
+                ResolvedSurfaceTarget::fell_back(
+                    WindowSurfaceTarget::Composition,
+                    SurfaceTargetFallback::BackendUnavailable,
+                    false
+                )
+            );
+        } else {
+            assert_eq!(
+                explicit,
+                ResolvedSurfaceTarget::honoured(WindowSurfaceTarget::NativeWindow, false)
+            );
+        }
     }
 
     /// A window may ask to fail rather than present another way. That is the
@@ -697,10 +731,8 @@ mod tests {
     /// every other window falls back and keeps the application alive.
     #[test]
     fn only_a_window_that_requires_the_compositor_refuses_to_open_without_it() {
-        let policy = GpuBackendPolicy::CompositionCapable;
-        let required =
-            window_surface_request(WindowSurfacePreference::RequireComposition, false, policy);
-        assert_eq!(required, WindowSurfaceTarget::Composition);
+        // The composition target itself, as Windows asks for it.
+        let required = WindowSurfaceTarget::Composition;
 
         let refused = resolve_window_surface_target(
             required,
@@ -727,6 +759,31 @@ mod tests {
                 .forbidden_fallback(),
             None
         );
+    }
+
+    /// Off Windows the native window surface is the system compositor's, so a
+    /// window that requires composition opens on it rather than refusing —
+    /// otherwise such an app could not start on macOS at all.
+    #[test]
+    fn requiring_composition_is_met_by_the_native_window_where_that_is_composited() {
+        let policy = GpuBackendPolicy::CompositionCapable;
+        let requested =
+            window_surface_request(WindowSurfacePreference::RequireComposition, true, policy);
+        let resolved = resolve_window_surface_target(
+            requested,
+            WindowSurfacePreference::RequireComposition.requires_composition(),
+            CompositionAvailability::Unavailable,
+        );
+        if PLATFORM_HAS_COMPOSITION_TARGET {
+            assert_eq!(
+                resolved.forbidden_fallback(),
+                Some(SurfaceTargetFallback::BackendUnavailable)
+            );
+        } else {
+            assert_eq!(requested, WindowSurfaceTarget::NativeWindow);
+            assert_eq!(resolved.forbidden_fallback(), None);
+            assert_eq!(resolved.resolved, WindowSurfaceTarget::NativeWindow);
+        }
     }
 
     /// A replacement device can land on another backend. Whether the process
