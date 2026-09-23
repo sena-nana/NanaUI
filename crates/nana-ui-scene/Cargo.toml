@@ -38,6 +38,11 @@ path = "src/bin/nana-dirty-frame-benchmark.rs"
 required-features = ["benchmark"]
 
 [[bin]]
+name = "nana-card-update-benchmark"
+path = "src/bin/nana-card-update-benchmark.rs"
+required-features = ["benchmark"]
+
+[[bin]]
 name = "nana-text-edit-benchmark"
 path = "src/bin/nana-text-edit-benchmark.rs"
 required-features = ["benchmark"]
