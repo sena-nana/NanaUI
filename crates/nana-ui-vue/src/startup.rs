@@ -187,4 +187,17 @@ mod tests {
         let error = call(&api, TAKE_OVER, &[]).unwrap_err();
         assert_eq!(error.code.as_deref(), Some("stale-ticket"));
     }
+
+    #[test]
+    fn an_application_api_with_a_startup_name_is_a_clash_not_a_replacement() {
+        let mut application = HostApiRegistry::new();
+        application.register(STATUS, |_| Ok(HostValue::Bool(true)));
+        let mut startup = HostApiRegistry::new();
+        StartupBridge::new(StartupHandle::detached()).register(&mut startup);
+        assert!(application.try_extend(&startup).is_err());
+        assert_eq!(
+            call(&application, STATUS, &[]).unwrap(),
+            HostValue::Bool(true)
+        );
+    }
 }

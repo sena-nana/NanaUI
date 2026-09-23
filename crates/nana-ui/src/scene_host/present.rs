@@ -533,6 +533,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             }
         }
         self.graphics = graphics;
+        self.reset_startup_latch();
         // A replacement device can be on a different backend than the one this
         // process started on. Whether a window opened from now on can reach a
         // platform compositor is that device's answer, not the old one's.

@@ -146,6 +146,12 @@ impl StartupCoordinator {
         self.committed = true;
     }
 
+    /// The committed frame will never be confirmed (its device was
+    /// replaced); the next presented frame decides instead.
+    pub(super) fn reopen(&mut self) {
+        self.committed = false;
+    }
+
     pub(super) fn handed_off(&mut self) {
         self.phase = StartupPhase::HandedOff;
         self.requested_after = None;
@@ -249,15 +255,6 @@ impl<Message: Send + 'static> PendingStartup<Message> {
                 "window requires a platform compositor surface: {}",
                 reason.label()
             ));
-        }
-        if options.splash.is_some() {
-            // Font discovery is independent of the device; with the window
-            // already up, it overlaps the device request instead of following
-            // it. Only with a splash: without one the engine is built where it
-            // always was, after `initialize`.
-            let _ = std::thread::Builder::new()
-                .name("nana-startup-fonts".into())
-                .spawn(|| drop(crate::text_engine::nana_text_engine()));
         }
         let icons = {
             let (sender, receiver) = mpsc::channel();
@@ -913,6 +910,15 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         self.request_redraw(WindowId::PRIMARY);
     }
 
+    /// The device was replaced. A Windows handoff waiting for the old queue
+    /// to confirm the takeover frame would wait forever: the next frame, on
+    /// the new device, takes over instead.
+    pub(super) fn reset_startup_latch(&mut self) {
+        if self.startup.latch.take().is_some() {
+            self.startup.coordinator.reopen();
+        }
+    }
+
     /// Applies takeover requests made through [`crate::StartupHandle`].
     pub(super) fn process_startup_requests(&mut self, event_loop: &dyn ActiveEventLoop) {
         for request in self.startup.handle.take_requests() {
@@ -931,7 +937,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 continue;
             }
             match request {
-                StartupRequest::TakeOver(_) => self.takeover_requested(),
+                StartupRequest::TakeOver(_) => {
+                    // The program asked itself; nothing is asked on its behalf.
+                    self.startup.auto_takeover = false;
+                    self.takeover_requested();
+                }
                 StartupRequest::Cancel(_) => {
                     // The program withdrew; nothing is requested on its behalf.
                     self.startup.auto_takeover = false;
@@ -1100,6 +1110,15 @@ mod tests {
         assert_ne!(fresh, old);
         startup.request(fresh, 9).unwrap();
         assert!(startup.completes_with(WindowId::PRIMARY, 10));
+    }
+
+    #[test]
+    fn a_committed_frame_whose_device_went_away_reopens_the_takeover() {
+        let mut startup = ready(StartupTakeover::Immediate);
+        startup.frame_committed();
+        assert!(!startup.completes_with(WindowId::PRIMARY, 5));
+        startup.reopen();
+        assert!(startup.completes_with(WindowId::PRIMARY, 5));
     }
 
     #[test]

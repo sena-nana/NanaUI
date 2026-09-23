@@ -945,7 +945,11 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
     ) -> Result<Self, JsEngineError> {
         let geometry = context.geometry();
         let startup = crate::startup::StartupBridge::new(context.startup().clone());
-        startup.register(&mut application_api);
+        // A clash with the application's own names fails startup, like any
+        // other framework host API.
+        let mut startup_api = HostApiRegistry::new();
+        startup.register(&mut startup_api);
+        application_api.try_extend(&startup_api)?;
         let mut program = Self::bootstrap_from_gpu(
             context.gpu().clone(),
             geometry.physical_size.0.max(1),

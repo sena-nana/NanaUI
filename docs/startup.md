@@ -109,7 +109,7 @@ splash 的图层、视觉、位图、D3D11 设备、子类和动画都由同一�
 
 ## 启动线程
 
-独立宿主（`run_runtime`）在窗口线程上创建窗口、splash、实例和 surface，然后把 adapter 选择、设备请求和 scene painter 的 pipeline 编译放到 `nana-startup-gpu` 线程，完成后唤醒事件循环。窗口图标（及 macOS Dock 图标）在 `nana-startup-icons` 线程渲染，到达时再应用，不阻塞 `UiReady`。有 splash 时，字体系统也在后台预热。
+独立宿主（`run_runtime`）在窗口线程上创建窗口、splash、实例和 surface，然后把 adapter 选择、设备请求和 scene painter 的 pipeline 编译放到 `nana-startup-gpu` 线程，完成后唤醒事件循环。窗口图标（及 macOS Dock 图标）在 `nana-startup-icons` 线程渲染，到达时再应用，不阻塞 `UiReady`；程序在此之前自己设置的图标不会被覆盖。Windows 的任务栏图标在建窗时就设好。
 
 没有嵌套事件循环，也没有第二个 `run_app`。嵌入宿主（`EmbeddedRuntime`）的设备已由宿主持有，仍同步启动，不显示 splash（`Skipped(Embedded)`）。
 
@@ -126,7 +126,7 @@ splash 的图层、视觉、位图、D3D11 设备、子类和动画都由同一�
 | `handoff_completed` | splash 已移除（macOS 与该帧同一次提交；Windows 在合成器取走该帧之后）。没有 splash 时等于上一项 |
 | `splash_released` | splash 创建的原生对象全部释放 |
 
-`StartupStatus::work`：事件线程最长单次占用（从入口到交接，含完成交接的那次回调）、设备请求次数（恒为 1）、启动期创建的 painter 数、`SplashWork`（Logo 解码 / 上传次数、动画提交次数、合成器提交次数、存活资源数）。
+`StartupStatus::work`：事件线程最长单次占用（从入口到交接，含完成交接的那次回调）、设备请求次数（每个尝试的呈现目标一次，只有合成目标失败回退时为 2）、交接前创建的 painter 数（每种 surface 格式一个）、`SplashWork`（Logo 解码 / 上传次数、动画提交次数、合成器提交次数、存活资源数）。
 
 诊断事件（`nana_diagnostics::framework::host`）：`STARTUP_PHASE { phase, elapsed_ns }`（0 入口 … 6 splash 释放）、`SPLASH_OUTCOME { outcome }`、`STARTUP_FAILED`，以及 gauge `host.startup.longest_block`。
 

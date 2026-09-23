@@ -119,9 +119,10 @@ pub struct StartupTimeline {
 pub struct StartupWork {
     /// Longest single event-loop callback between host entry and handoff.
     pub longest_event_thread_block: Duration,
-    /// GPU devices this startup requested. One, however the startup went.
+    /// GPU devices this startup requested: one per presentation target tried,
+    /// so two only when a composed target failed and the plain one followed.
     pub devices_requested: usize,
-    /// Scene painters created for the primary window's format during startup.
+    /// Scene painters created (one per surface format) before the handoff.
     pub painters_created: usize,
     pub splash: SplashWork,
 }

@@ -947,6 +947,11 @@ fn create_primary_window(
     // reference goes with them and the HWND created for a target that did not
     // work out is destroyed rather than reused.
     let provisional = PendingNativeWindow(Some(window.clone()));
+    // The taskbar button shows as soon as the window does, which with a
+    // splash is before the startup thread's icons arrive. The attributes above
+    // already rendered this icon; resolving it again is a clone.
+    #[cfg(target_os = "windows")]
+    window.set_taskbar_icon(winit_icon(&resolved_scene_icon(settings.icon.as_ref())));
     // The program does not exist yet; `complete_startup` re-applies the
     // material with the host's own colour once it does.
     let (requested_material, applied_material) = apply_window_material(
