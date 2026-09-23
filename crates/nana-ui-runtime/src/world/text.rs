@@ -3356,6 +3356,26 @@ impl UiWorld {
     }
 }
 
+/// A single line that ellipsizes against its measured box: what it paints is
+/// cut to that box, but the width it asks of layout is its whole line. Were it
+/// to report the cut width, a shrink-to-fit parent would keep the old box
+/// forever — a label changed to something longer could only ever shrink.
+fn cut_to_its_box(constraints: &crate::TextShapeConstraints) -> bool {
+    constraints.ellipsis
+        && !constraints.wrap
+        && constraints.max_lines.is_none()
+        && !constraints.preserve_lines
+        && constraints.max_width.is_some()
+}
+
+/// The same constraints without the box width: the line as long as it runs.
+fn unbounded(constraints: crate::TextShapeConstraints) -> crate::TextShapeConstraints {
+    crate::TextShapeConstraints {
+        max_width: None,
+        ..constraints
+    }
+}
+
 /// True when two authored styles give a plain text node the same
 /// constraints for the same box: everything [`UiWorld::text_shape_constraints`]
 /// reads from [`NodeStyle`]. Alignment only matters to a retained layout and is
@@ -3963,18 +3983,46 @@ impl UiWorld {
                     &crate::text_node::nana_text_constraints(&style, &constraints, alignment),
                     &mut node_work,
                 );
+                let mut metrics = crate::text_node::text_metrics_of_layout(&layout);
+                if cut_to_its_box(&constraints)
+                    && !layout.is_vertical()
+                    && layout
+                        .overflow
+                        .contains(nana_text::OverflowFlags::ELLIPSIZED)
+                {
+                    let natural = nana_text::lock_text_engine(engine).layout(
+                        kind,
+                        source,
+                        &crate::text_node::nana_text_style(&style),
+                        &crate::text_node::nana_text_constraints(
+                            &style,
+                            &unbounded(constraints),
+                            alignment,
+                        ),
+                        &mut node_work,
+                    );
+                    metrics.width = crate::text_node::text_metrics_of_layout(&natural).width;
+                }
                 if copied {
                     node_work.text_source_clones += 1;
                     self.record_string_clone(text_bytes);
                 }
-                let metrics = crate::text_node::text_metrics_of_layout(&layout);
                 // An empty Text node still has a line box to measure, but
                 // nothing to draw: it retains no layout.
                 (metrics, (text_bytes > 0).then_some(layout))
             }
             None => {
                 let runs = shaper.runs;
-                let metrics = shaper.shape(id, &self.record(id).text, &style, constraints);
+                let mut metrics = shaper.shape(id, &self.record(id).text, &style, constraints);
+                if cut_to_its_box(&constraints)
+                    && constraints
+                        .max_width
+                        .is_some_and(|max| metrics.width >= max - 0.5)
+                {
+                    let natural =
+                        shaper.shape(id, &self.record(id).text, &style, unbounded(constraints));
+                    metrics.width = metrics.width.max(natural.width);
+                }
                 node_work.record_text_pass(1, usize::from(shaper.runs > runs));
                 // No layout: one from an engine this host no longer offers is
                 // not what the host measures now.

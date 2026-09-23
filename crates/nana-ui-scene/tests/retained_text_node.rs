@@ -369,6 +369,126 @@ fn a_width_change_relayouts_from_the_runs_it_already_shaped() {
     assert!(world.text_revisions(paragraph).unwrap().constraint > 0);
 }
 
+/// A shrink-to-fit tag around a single ellipsizing label, in a header row
+/// `header` wide that lets it shrink: the title-tag shape a card header uses.
+fn shrink_row_around_an_ellipsizing_label(header: f32, label: &str) -> RuntimeDocument {
+    let (mut runtime, _) = document([label.to_string()]);
+    commit(&mut runtime, |queue| {
+        queue.set_style(
+            id(COLUMN),
+            label_style(LayoutStyle {
+                width: Some(LengthSpec::Px(header)),
+                height: Some(LengthSpec::Px(20.0)),
+                direction: Some(FlexDirection::Row),
+                ..LayoutStyle::default()
+            }),
+        );
+        queue.set_style(
+            row_id(0),
+            label_style(LayoutStyle {
+                width: Some(LengthSpec::Shrink),
+                height: Some(LengthSpec::Px(20.0)),
+                direction: Some(FlexDirection::Row),
+                flex_shrink: Some(1.0),
+                min_width: Some(LengthSpec::Px(0.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+        queue.set_style(
+            label_id(0),
+            label_style(LayoutStyle {
+                white_space_nowrap: true,
+                text_overflow_ellipsis: true,
+                flex_shrink: Some(1.0),
+                min_width: Some(LengthSpec::Px(0.0)),
+                ..LayoutStyle::default()
+            }),
+        );
+    });
+    runtime
+}
+
+fn relabel(runtime: &mut RuntimeDocument, label: &str) {
+    commit(runtime, |queue| {
+        queue.set_text(
+            label_id(0),
+            TextContent {
+                value: label.into(),
+            },
+        )
+    });
+}
+
+fn ellipsized(runtime: &RuntimeDocument) -> bool {
+    runtime
+        .context()
+        .world()
+        .text_layout(label_id(0))
+        .unwrap()
+        .1
+        .overflow
+        .contains(nana_text::OverflowFlags::ELLIPSIZED)
+}
+
+#[test]
+fn a_shrink_to_fit_label_grows_when_its_text_gets_longer() {
+    let mut runtime = shrink_row_around_an_ellipsizing_label(300.0, "ab");
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    let short = runtime
+        .context()
+        .world()
+        .layout_box(row_id(0))
+        .unwrap()
+        .width;
+
+    relabel(&mut runtime, "a label far longer than the last one");
+    settle(&mut runtime, &mut shaper);
+    let long = runtime
+        .context()
+        .world()
+        .layout_box(row_id(0))
+        .unwrap()
+        .width;
+    assert!(
+        long > short * 4.0,
+        "the row must widen to the new text, not keep the old box: {short} -> {long}"
+    );
+    assert!(!ellipsized(&runtime), "a label with room is not cut");
+
+    relabel(&mut runtime, "ab");
+    settle(&mut runtime, &mut shaper);
+    let back = runtime
+        .context()
+        .world()
+        .layout_box(row_id(0))
+        .unwrap()
+        .width;
+    assert!(
+        (back - short).abs() < 0.5,
+        "and narrows again: {short} vs {back}"
+    );
+}
+
+#[test]
+fn a_label_that_cannot_fit_still_ellipsizes_inside_its_header() {
+    let mut runtime = shrink_row_around_an_ellipsizing_label(60.0, "ab");
+    let mut shaper = NanaTextEngineShaper::new(engine());
+    settle(&mut runtime, &mut shaper);
+    relabel(&mut runtime, "a label far longer than the header");
+    settle(&mut runtime, &mut shaper);
+    let world = runtime.context().world();
+    let label = world.layout_box(label_id(0)).unwrap();
+    assert!(
+        label.width <= 60.0 + 0.01,
+        "the label keeps to its header: {label:?}"
+    );
+    assert!(ellipsized(&runtime), "and cuts its line with an ellipsis");
+    let before = text_work(&runtime);
+    runtime.flush(viewport(), &mut shaper).unwrap();
+    assert_no_new_text_work(before, &runtime, "a settled cut label");
+}
+
 #[test]
 fn a_content_change_shapes_only_the_node_that_changed() {
     let (mut runtime, _) = document(numbered(32));
