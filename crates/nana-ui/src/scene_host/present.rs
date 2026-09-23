@@ -87,8 +87,24 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         );
     }
 
+    /// Why a redraw returned without drawing, once per window until it draws
+    /// again: a window that stopped presenting is otherwise indistinguishable
+    /// from one nothing ever asked to draw, and this path may not spend a
+    /// per-frame event to say so.
+    fn note_present_blocked(&mut self, id: WindowId) {
+        let reason: u64 = if self.render_suspended { 1 } else { 2 };
+        if self.present_blocked.insert(id) {
+            nana_diagnostics::event!(
+                nana_diagnostics::framework::gpu::PRESENT_BLOCKED,
+                window = id.0,
+                reason = reason
+            );
+        }
+    }
+
     pub(super) fn redraw(&mut self, event_loop: &dyn ActiveEventLoop, id: WindowId) {
         if self.render_suspended || !self.can_present(id) {
+            self.note_present_blocked(id);
             self.rearm_frame_demand(id);
             return;
         }
@@ -111,9 +127,11 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let queued = self.drain_program_messages(id);
         self.apply_update(event_loop, queued, Some(id));
         if event_loop.exiting() || self.render_suspended || !self.can_present(id) {
+            self.note_present_blocked(id);
             self.rearm_frame_demand(id);
             return;
         }
+        self.present_blocked.remove(&id);
         self.resize_window(id);
         self.program.prepare_window_frame(id, &self.context_for(id));
         self.sync_compositor_clock(id);

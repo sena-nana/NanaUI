@@ -710,6 +710,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.image_window_keys.remove(&id);
         }
         self.occluded.remove(&id);
+        self.present_blocked.remove(&id);
         for painter in self.painters.values_mut() {
             painter.remove_target(crate::RenderTargetId(id.0));
         }

@@ -86,6 +86,18 @@ impl ApplicationHandler for Host {
     }
 }
 fn main() {
+    let _diagnostics = window_lifecycle::diagnostics_dir().and_then(|dir| {
+        nana_ui::diagnostics::install(
+            nana_ui::DiagnosticsConfig::default(),
+            nana_ui::diagnostics::SessionMetadata::new(
+                "dev.nana.lifecycle",
+                "Embedded lifecycle",
+                env!("CARGO_PKG_VERSION"),
+            ),
+            nana_ui::diagnostics::DiagnosticsPaths::new(dir.join("logs"), dir.join("crash")),
+        )
+        .ok()
+    });
     let event_loop = EventLoop::new().unwrap();
     let proxy = event_loop.create_proxy();
     event_loop

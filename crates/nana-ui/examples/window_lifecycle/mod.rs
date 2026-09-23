@@ -19,6 +19,35 @@ static TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub fn trace(entry: String) {
     TRACE.lock().unwrap().push(entry);
 }
+/// Where this run writes its session log, when the host asked for one. Unset
+/// outside the CI step that reads it back, so an ordinary run stays silent.
+pub fn diagnostics_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("NANA_LIFECYCLE_DIAGNOSTICS").map(std::path::PathBuf::from)
+}
+/// The framework's own account of the failure: `gpu.present_blocked` says a
+/// redraw returned without drawing, and its absence says none ever ran.
+fn diagnostics_dump() -> String {
+    let Some(dir) = diagnostics_dir() else {
+        return String::new();
+    };
+    if let Some(diagnostics) = nana_ui::diagnostics::global() {
+        diagnostics.flush(true, Duration::from_secs(10));
+    }
+    let Ok(entries) = std::fs::read_dir(dir.join("logs")) else {
+        return String::new();
+    };
+    let mut out = String::from("\ndiagnostics:\n");
+    for entry in entries.flatten() {
+        match nana_ui::diagnostics::nlog::read_file(entry.path()) {
+            Ok(file) => out.push_str(&nana_ui::diagnostics::to_text(
+                &file,
+                &nana_ui::diagnostics::ExportOptions { redact_home: true },
+            )),
+            Err(error) => out.push_str(&format!("  {}: {error}\n", entry.path().display())),
+        }
+    }
+    out
+}
 pub enum Message {
     Pump,
     Completed(Result<(), String>),
@@ -490,9 +519,10 @@ pub fn verify() {
         .take()
         .expect("lifecycle did not complete");
     if let Err(error) = result {
+        let observed = TRACE.lock().unwrap().join("\n  ");
         panic!(
-            "lifecycle failed: {error}\nobserved:\n  {}",
-            TRACE.lock().unwrap().join("\n  ")
+            "lifecycle failed: {error}\nobserved:\n  {observed}{}",
+            diagnostics_dump()
         );
     }
     println!(
