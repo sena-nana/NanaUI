@@ -1464,6 +1464,20 @@ fn apply_scene_material(
 
 fn apply_window_transparency(window: &dyn winit::window::Window, requested: crate::MaterialEffect) {
     window.set_transparent(requested.wants_transparent_surface());
+    #[cfg(target_os = "macos")]
+    WindowExtMacOS::set_has_shadow(window, wants_system_shadow(requested));
+}
+
+/// Whether the platform should draw its own shadow around the window.
+///
+/// AppKit derives a window's shadow from its alpha, so on a transparent window
+/// it outlines whatever the client paints — a character's silhouette, a
+/// feathered glow — and doubles the shadow an app draws around its own cards.
+/// A transparent window draws its own edge instead, as it must on Windows,
+/// where such a window gets no system shadow either. A material backdrop
+/// (vibrancy) fills the whole window, so its shadow stays the window's own.
+const fn wants_system_shadow(effect: crate::MaterialEffect) -> bool {
+    !matches!(effect, crate::MaterialEffect::Transparent)
 }
 
 /// Asks the platform for the window's requested material.
@@ -3146,6 +3160,7 @@ mod tests {
     use super::desktop_scale;
     #[cfg(not(target_os = "android"))]
     use super::next_accessibility_update;
+    use super::wants_system_shadow;
     use super::{
         Desktop, DisplayBounds, ForwardPointerAction, FrameMoveStep, ImeApply, InputTracker,
         PRIMARY_MOUSE_BUTTON, RoutedWindowCommand, desktop_position, frame_move_step,
@@ -3187,6 +3202,15 @@ mod tests {
             scale_factor: 2.0,
             ..WindowGeometry::default()
         }
+    }
+
+    /// Only a clear window loses the platform's shadow; it would get an
+    /// outline traced around whatever its client paints.
+    #[test]
+    fn only_an_opaque_window_keeps_the_system_shadow() {
+        assert!(wants_system_shadow(crate::MaterialEffect::Solid));
+        assert!(wants_system_shadow(crate::MaterialEffect::Vibrancy));
+        assert!(!wants_system_shadow(crate::MaterialEffect::Transparent));
     }
 
     #[test]
