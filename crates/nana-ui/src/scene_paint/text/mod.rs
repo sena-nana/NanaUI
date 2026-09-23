@@ -640,6 +640,11 @@ pub(super) struct TextPipelineTarget {
     /// Drawn entries whose block outgrew their range, found by the first walk
     /// so growing them in place does not walk every entry a second time.
     outgrown: Vec<u32>,
+    /// Entries this frame leaves undrawn, sorted, because with them the
+    /// frame's glyphs would not fit the device's storage binding; and the
+    /// slots they would have taken.
+    skipped: Vec<u32>,
+    skipped_slots: u32,
     /// Whether the last order repack left gaps, and what has moved in the
     /// order since: ranges placed, and how many of those because their
     /// paragraph grew. What decides whether the next repack leaves gaps.
@@ -738,6 +743,8 @@ impl TextPipelineTarget {
             fresh_ranges: Vec::new(),
             order_owners: OrderOwners::default(),
             outgrown: Vec::new(),
+            skipped: Vec::new(),
+            skipped_slots: 0,
             order_gapped: false,
             order_moves: 0,
             growth_moves: 0,
@@ -1902,7 +1909,9 @@ impl TextPipeline {
         if self.target.flushed >= self.target.live_runs {
             return;
         }
-        let Self { atlas, target, .. } = self;
+        let Self {
+            atlas, target, gpu, ..
+        } = self;
         // The table persists, and a row is only written when it actually
         // changed, so an unchanged frame neither copies it nor compares it.
         target.run_dirty = None;
@@ -1920,34 +1929,35 @@ impl TextPipeline {
         target.index_staging.clear();
         // What the frame needs, and what of it the arena and the order do not
         // already hold, so a repack happens instead of running out of room.
-        let mut total = 0u32;
         let mut outgrown = std::mem::take(&mut target.outgrown);
-        outgrown.clear();
         let mut fresh = std::mem::take(&mut target.fresh_blocks);
         let mut fresh_order = std::mem::take(&mut target.fresh_ranges);
-        fresh.clear();
-        fresh_order.clear();
-        Self::walk_runs(target, |target, _, entry_id| {
-            let Some(entry) = target.entries.get(entry_id) else {
-                return;
-            };
-            let capacity = entry.capacity;
-            total += capacity;
-            if entry.arena_generation != Some(target.arena.generation())
-                || entry.arena_capacity != capacity
+        target.skipped.clear();
+        let limit = gpu.instance_slots();
+        target.arena.set_limit(limit);
+        let mut total = Self::measure_runs(target, &mut fresh, &mut fresh_order, &mut outgrown);
+        if total > limit {
+            // More glyphs than this device can bind as one storage buffer —
+            // a whole log file set as one paragraph. The largest paragraphs
+            // are left out until the rest fits with room to spare:
+            // everything else on screen still draws, and a frame that would
+            // have failed validation says so instead.
+            Self::skip_largest(target, total, limit);
+            total = Self::measure_runs(target, &mut fresh, &mut fresh_order, &mut outgrown);
+            use nana_diagnostics::framework::text;
+            static EXCEEDED: nana_diagnostics::Throttle = nana_diagnostics::Throttle::new();
+            nana_diagnostics::metric!(text::INSTANCE_LIMIT_FRAMES);
+            if nana_diagnostics::enabled(text::INSTANCE_LIMIT_EXCEEDED.severity)
+                && EXCEEDED.allow(std::time::Duration::from_secs(10))
             {
-                fresh.push(capacity);
+                nana_diagnostics::event!(
+                    text::INSTANCE_LIMIT_EXCEEDED,
+                    slots = u64::from(target.skipped_slots) + u64::from(total),
+                    limit = u64::from(limit),
+                    skipped = target.skipped.len() as u64
+                );
             }
-            let keeps = range_keeps(entry.order_capacity, capacity);
-            if entry.order_generation != Some(target.order.generation()) || !keeps {
-                fresh_order.push(capacity);
-                if entry.order_generation == Some(target.order.generation())
-                    && capacity > entry.order_capacity
-                {
-                    outgrown.push(entry_id);
-                }
-            }
-        });
+        }
         // Independent: the arena repacks only to make room or close holes,
         // and then rewrites instances; the order repacks when fragmentation
         // costs too many draws, and then rewrites only indices.
@@ -2025,6 +2035,14 @@ impl TextPipeline {
                 let Some(entry) = target.entries.get(entry_id) else {
                     break;
                 };
+                if target.skipped.binary_search(&entry_id).is_ok() {
+                    let next = target.runs[member as usize].next;
+                    if next == NO_RUN {
+                        break;
+                    }
+                    member = next;
+                    continue;
+                }
                 let capacity = entry.capacity;
                 let mut dirty = entry.atlas_epoch != epoch;
                 let placed =
@@ -2154,6 +2172,79 @@ impl TextPipeline {
         self.audit_placements();
     }
 
+    /// What the frame's drawn entries need: their slots in total, the blocks
+    /// and ranges the arena and the order do not already hold, and the ranges
+    /// whose block outgrew them. Entries in `target.skipped` are not drawn.
+    fn measure_runs(
+        target: &mut TextPipelineTarget,
+        fresh: &mut Vec<u32>,
+        fresh_order: &mut Vec<u32>,
+        outgrown: &mut Vec<u32>,
+    ) -> u32 {
+        fresh.clear();
+        fresh_order.clear();
+        outgrown.clear();
+        let mut total = 0u32;
+        Self::walk_runs(target, |target, _, entry_id| {
+            let Some(entry) = target.entries.get(entry_id) else {
+                return;
+            };
+            if target.skipped.binary_search(&entry_id).is_ok() {
+                return;
+            }
+            let capacity = entry.capacity;
+            total = total.saturating_add(capacity);
+            if entry.arena_generation != Some(target.arena.generation())
+                || entry.arena_capacity != capacity
+            {
+                fresh.push(capacity);
+            }
+            let keeps = range_keeps(entry.order_capacity, capacity);
+            if entry.order_generation != Some(target.order.generation()) || !keeps {
+                fresh_order.push(capacity);
+                if entry.order_generation == Some(target.order.generation())
+                    && capacity > entry.order_capacity
+                {
+                    outgrown.push(entry_id);
+                }
+            }
+        });
+        total
+    }
+
+    /// Leave out the largest drawn entries until the rest need at most two
+    /// thirds of `limit` slots. Fills `target.skipped`, sorted, and
+    /// `skipped_slots`.
+    ///
+    /// Not just until they fit: an arena pinned at the limit has no room for
+    /// the next block that moves, and would repack — rewrite every instance —
+    /// on every frame. With a third free it repacks as rarely as any other.
+    fn skip_largest(target: &mut TextPipelineTarget, total: u32, limit: u32) {
+        // Slots per entry, counting an entry two commands draw twice, as the
+        // total did.
+        let mut drawn: HashMap<u32, u32> = HashMap::new();
+        Self::walk_runs(target, |target, _, entry_id| {
+            if let Some(entry) = target.entries.get(entry_id) {
+                let slots = drawn.entry(entry_id).or_default();
+                *slots = slots.saturating_add(entry.capacity);
+            }
+        });
+        let mut largest = drawn.into_iter().collect::<Vec<_>>();
+        largest.sort_unstable_by_key(|&(entry, slots)| (std::cmp::Reverse(slots), entry));
+        let room = limit - limit / 3;
+        let mut left = total;
+        target.skipped_slots = 0;
+        for (entry, slots) in largest {
+            if left <= room {
+                break;
+            }
+            left = left.saturating_sub(slots);
+            target.skipped_slots = target.skipped_slots.saturating_add(slots);
+            target.skipped.push(entry);
+        }
+        target.skipped.sort_unstable();
+    }
+
     /// Let every drawn range whose block outgrew it grow where it is: into
     /// the clean gap right after it, or by shifting the ranges between it and
     /// the next gap along by as much. A range that cannot is left to the walk,
@@ -2222,6 +2313,9 @@ impl TextPipeline {
             let Some(entry) = target.entries.get(run.entry) else {
                 continue;
             };
+            if target.skipped.binary_search(&run.entry).is_ok() {
+                continue;
+            }
             for (index, (instance, handle)) in target.entries.live_glyphs(entry).enumerate() {
                 let Some(drawn) = instance.placement() else {
                     continue;
@@ -2325,6 +2419,16 @@ impl TextPipeline {
             },
             work,
         );
+        if bytes.lost {
+            // Nothing this frame placed reached the GPU. Forget every
+            // placement, so the next frame places and writes everything it
+            // draws again instead of trusting buffers that never got it.
+            target.arena.reset();
+            target.order.reset();
+            target.entries.invalidate_arena();
+            target.entries.invalidate_order();
+            target.order_owners.clear(None);
+        }
         target.counters.instance_upload_bytes += bytes.instances as u64;
         target.counters.index_upload_bytes += bytes.indices as u64;
         target.counters.presentation_upload_bytes += bytes.presentation as u64;
@@ -2374,7 +2478,11 @@ impl TextPipeline {
             let mut member = head as u32;
             loop {
                 let run = &target.runs[member as usize];
-                if let Some(entry) = target.entries.get(run.entry) {
+                if let Some(entry) = target
+                    .entries
+                    .get(run.entry)
+                    .filter(|_| target.skipped.binary_search(&run.entry).is_err())
+                {
                     let block = target.entries.instances(entry);
                     assert!(
                         entry.order_capacity >= entry.capacity,
@@ -5722,40 +5830,7 @@ mod tests {
         pipeline.begin_frame(size);
         let mut command: Option<PreparedText> = None;
         for (content, key, top) in labels {
-            let prepared = pipeline.prepare(
-                device,
-                LogicalRect::from_xywh(0.0, *top, 240.0, 32.0),
-                LogicalRect::from_xywh(0.0, 0.0, size[0] as f32, size[1] as f32),
-                1.0,
-                content,
-                Some([1.0, 1.0, 1.0, 1.0]),
-                16.0,
-                None,
-                None,
-                None,
-                false,
-                nana_ui_core::TextWrapBreak::Word,
-                false,
-                false,
-                None,
-                TextShaping::Auto,
-                TextHorizontalAlignment::Start,
-                TextVerticalAlignment::Top,
-                &[],
-                0.0,
-                &[],
-                &SceneTextOpenType::default(),
-                clip::IDENTITY_AFFINE,
-                [0.0; 2],
-                clip::FragmentClip::PASS,
-                1.0,
-                [0.0; 2],
-                *key,
-                UNTRACKED_REVISION,
-                None,
-                true,
-            );
-            let Some(prepared) = prepared else {
+            let Some(prepared) = prepare_row(device, pipeline, content, *key, *top, size) else {
                 continue;
             };
             match command.as_ref() {
@@ -5766,6 +5841,50 @@ mod tests {
             }
         }
         command
+    }
+
+    /// One label 240 px wide at `top`, prepared into the frame `size` opened.
+    fn prepare_row(
+        device: &wgpu::Device,
+        pipeline: &mut TextPipeline,
+        content: &str,
+        key: EntryKey,
+        top: f32,
+        size: [u32; 2],
+    ) -> Option<PreparedText> {
+        pipeline.prepare(
+            device,
+            LogicalRect::from_xywh(0.0, top, 240.0, 32.0),
+            LogicalRect::from_xywh(0.0, 0.0, size[0] as f32, size[1] as f32),
+            1.0,
+            content,
+            Some([1.0, 1.0, 1.0, 1.0]),
+            16.0,
+            None,
+            None,
+            None,
+            false,
+            nana_ui_core::TextWrapBreak::Word,
+            false,
+            false,
+            None,
+            TextShaping::Auto,
+            TextHorizontalAlignment::Start,
+            TextVerticalAlignment::Top,
+            &[],
+            0.0,
+            &[],
+            &SceneTextOpenType::default(),
+            clip::IDENTITY_AFFINE,
+            [0.0; 2],
+            clip::FragmentClip::PASS,
+            1.0,
+            [0.0; 2],
+            key,
+            UNTRACKED_REVISION,
+            None,
+            true,
+        )
     }
 
     fn paint_labels(
@@ -6154,6 +6273,298 @@ mod tests {
             pixels.extend_from_slice(&row[..unpadded]);
         }
         pixels
+    }
+
+    #[test]
+    fn glyphs_past_the_devices_storage_binding_leave_out_the_largest_paragraph() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        // A device whose storage binding holds 400 glyphs.
+        pipeline.gpu.set_instance_slots(400);
+        let log = "overflowing labels ".repeat(60);
+        let mut labels = (0..12)
+            .map(|row| ("Row content", row_key(row + 1), row as f32 * 14.0))
+            .collect::<Vec<_>>();
+        labels.insert(5, (log.as_str(), row_key(100), 70.0));
+        let frame = |pipeline: &mut TextPipeline, labels: &[(&str, EntryKey, f32)]| {
+            prepare_merged(&device, pipeline, labels, [512, 512]).expect("the rows draw");
+            pipeline.flush_runs();
+            // Binds the instance buffer whole: past the limit, validation
+            // would fail here.
+            pipeline.upload(&device, &queue, None);
+        };
+        frame(&mut pipeline, &labels);
+        let log_entry = pipeline
+            .target
+            .entries
+            .lookup(row_key(100))
+            .expect("resolved");
+        assert!(
+            pipeline
+                .target
+                .entries
+                .get(log_entry)
+                .expect("live")
+                .capacity
+                > 400,
+            "the case that matters: one paragraph larger than the device binds"
+        );
+        assert_eq!(pipeline.target.skipped, vec![log_entry]);
+        assert!(
+            pipeline.target.arena.capacity() <= 400,
+            "the instance buffer stays inside the binding: {}",
+            pipeline.target.arena.capacity()
+        );
+        // The audit has already checked that every other row is drawn from
+        // its own glyphs. The one left out never took a range, so the rows
+        // around it are still adjacent and still one draw.
+        assert_eq!(pipeline.target.segments.len(), 1);
+        labels.remove(5);
+        frame(&mut pipeline, &labels);
+        assert!(pipeline.target.skipped.is_empty());
+        assert_eq!(pipeline.target.segments.len(), 1);
+    }
+
+    /// The instance and index buffers on the GPU hold, slot for slot, what
+    /// the writes this target sent say they do — the shadow
+    /// `audit_draw_order` checks every draw against. What that audit cannot
+    /// see is whether the copies out of the staging ring, or out of a frame's
+    /// one-off buffers, landed where they were meant to; this reads them back.
+    fn assert_gpu_holds_the_shadow(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &TextPipeline,
+        when: &str,
+    ) {
+        let (instances, indices) = pipeline.target.gpu.read_back(device, queue);
+        let shadow = &pipeline.target.shadow;
+        assert_eq!(
+            instances.len(),
+            shadow.instances.len(),
+            "{when}: instance slots"
+        );
+        assert_eq!(indices.len(), shadow.indices.len(), "{when}: index slots");
+        if let Some(slot) =
+            (0..instances.len()).find(|&slot| instances[slot] != shadow.instances[slot])
+        {
+            panic!(
+                "{when}: instance slot {slot} holds {:?}, the writes put {:?} there",
+                instances[slot], shadow.instances[slot]
+            );
+        }
+        if let Some(slot) = (0..indices.len()).find(|&slot| indices[slot] != shadow.indices[slot]) {
+            panic!(
+                "{when}: index slot {slot} holds {}, the writes put {} there",
+                indices[slot], shadow.indices[slot]
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_too_large_for_the_staging_ring_lands_whole() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let long = "a paragraph of several hundred glyphs ".repeat(16);
+        let mut rows = (0..24).map(|_| long.clone()).collect::<Vec<_>>();
+        let frame = |pipeline: &mut TextPipeline, rows: &[String]| {
+            let labels = rows
+                .iter()
+                .enumerate()
+                .map(|(row, content)| {
+                    (content.as_str(), row_key(row as u64 + 1), row as f32 * 14.0)
+                })
+                .collect::<Vec<_>>();
+            let before = pipeline.glyph_counters().text_instance_upload_bytes;
+            prepare_merged(&device, pipeline, &labels, [512, 512]).expect("the rows draw");
+            pipeline.flush_runs();
+            pipeline.upload(&device, &queue, None);
+            pipeline.glyph_counters().text_instance_upload_bytes - before
+        };
+        let written = frame(&mut pipeline, &rows);
+        assert!(
+            written > 256 * 1024,
+            "the case that matters: more than a quarter of the largest ring ({written} B), \
+             so the frame is staged in buffers of its own"
+        );
+        assert_gpu_holds_the_shadow(&device, &queue, &pipeline, "one-off staging");
+        // And the frames after it, through the ring, on top of those bytes.
+        for row in [3, 11, 17] {
+            rows[row] = format!("{row} changed");
+            frame(&mut pipeline, &rows);
+            assert_gpu_holds_the_shadow(&device, &queue, &pipeline, "the ring");
+        }
+    }
+
+    /// xorshift32, so a churn test replays the same frames on every run.
+    struct Churn(u32);
+
+    impl Churn {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            self.0 as usize % bound.max(1)
+        }
+
+        /// A label of anywhere from nothing to a few lines.
+        fn text(&mut self) -> String {
+            const WORDS: [&str; 10] = [
+                "a",
+                "Row",
+                "cell",
+                "12",
+                "content",
+                "ticked",
+                "0.25",
+                "overflowing",
+                "x y",
+                "labels",
+            ];
+            (0..self.below(12))
+                .map(|_| WORDS[self.below(WORDS.len())])
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+
+    /// Hundreds of frames of labels changing length, coming and going,
+    /// swapping places, splitting across commands, drawn twice and dropped
+    /// all at once, with both order layouts
+    /// (packed, and gapped for text that keeps growing) in play.
+    ///
+    /// Every frame goes through `audit_placements` and `audit_draw_order`, so
+    /// a range left naming a block that moved, a gap a draw ran across that
+    /// was not vacant, or a buffer replaced under blocks the frame had already
+    /// placed fails here. And #224's promise is checked on every frame the
+    /// arena did not repack: the instance bytes written are the blocks of the
+    /// paragraphs that were rebuilt, never their neighbours'.
+    #[test]
+    fn seeded_churn_keeps_every_draw_naming_its_own_glyphs() {
+        let (layouts, checked) = churn_frames(0x2545_f491, 600, 240);
+        assert!(
+            layouts.iter().all(|frames| *frames > 0),
+            "both order layouts must have been exercised: packed / gapped {layouts:?}"
+        );
+        assert!(checked > 300, "only {checked} frames kept their arena");
+    }
+
+    /// Returns the frames drawn under a packed and a gapped order, and the
+    /// frames whose instance bytes were checked.
+    fn churn_frames(seed: u32, frames: u32, initial: usize) -> ([u32; 2], u32) {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut churn = Churn(seed);
+        let mut next_node = 1u64;
+        let mut new_row = |churn: &mut Churn| {
+            next_node += 1;
+            (next_node, churn.text())
+        };
+        let mut rows = (0..initial)
+            .map(|_| new_row(&mut churn))
+            .collect::<Vec<_>>();
+        let mut drawn_as: HashMap<u64, String> = HashMap::new();
+        let mut layouts = [0u32; 2];
+        let mut checked = 0;
+        for frame in 0..frames {
+            // A font registration: every entry dropped at once.
+            if churn.below(97) == 0 {
+                pipeline.drop_every_entry();
+                drawn_as.clear();
+            }
+            let scrolling = (frame / 75) % 2 == 1;
+            if scrolling {
+                for _ in 0..churn.below(6) {
+                    if rows.len() > initial / 2 {
+                        rows.remove(churn.below(rows.len()));
+                    }
+                }
+                for _ in 0..churn.below(6) {
+                    let at = churn.below(rows.len() + 1);
+                    rows.insert(at, new_row(&mut churn));
+                }
+                if churn.below(4) == 0 {
+                    let (a, b) = (churn.below(rows.len()), churn.below(rows.len()));
+                    rows.swap(a, b);
+                }
+            } else {
+                for _ in 0..1 + churn.below(8) {
+                    let at = churn.below(rows.len());
+                    rows[at].1 = churn.text();
+                }
+            }
+            let (start, len) = if scrolling {
+                let len = rows.len() * 3 / 4;
+                (churn.below(rows.len() - len + 1), len)
+            } else {
+                (0, rows.len())
+            };
+            let size = [512, len as u32 * 14 + 32];
+            pipeline.begin_frame(size);
+            let epoch = pipeline.placement_epoch();
+            let arena_generation = pipeline.target.arena.generation();
+            let mut rebuilt = Vec::new();
+            let mut command: Option<PreparedText> = None;
+            for (index, (node, content)) in rows[start..start + len].iter().enumerate() {
+                let key = row_key(*node);
+                // What may be written: a paragraph that changed, and one an
+                // arena repack placed nowhere because it was off screen then.
+                let placed = pipeline
+                    .target
+                    .entries
+                    .lookup(key)
+                    .and_then(|id| pipeline.target.entries.get(id))
+                    .is_some_and(|entry| entry.arena_generation == Some(arena_generation));
+                if !placed || drawn_as.get(node) != Some(content) {
+                    rebuilt.push(key);
+                }
+                let top = index as f32 * 14.0;
+                let Some(prepared) = prepare_row(&device, &mut pipeline, content, key, top, size)
+                else {
+                    continue;
+                };
+                drawn_as.insert(*node, content.clone());
+                match command.as_ref() {
+                    Some(previous)
+                        if churn.below(24) != 0 && pipeline.can_merge_runs(previous, &prepared) =>
+                    {
+                        pipeline.merge_runs(previous, &prepared);
+                    }
+                    _ => command = Some(prepared),
+                }
+            }
+            if churn.below(6) == 0 && len > 0 {
+                // One row drawn a second time, by a command of its own.
+                let at = start + churn.below(len);
+                let (node, content) = &rows[at];
+                let _ = prepare_row(&device, &mut pipeline, content, row_key(*node), 0.0, size);
+            }
+            let before = pipeline.glyph_counters().text_instance_upload_bytes;
+            pipeline.flush_runs();
+            pipeline.upload(&device, &queue, None);
+            let written = pipeline.glyph_counters().text_instance_upload_bytes - before;
+            if frame % 20 == 0 {
+                assert_gpu_holds_the_shadow(&device, &queue, &pipeline, &format!("frame {frame}"));
+            }
+            layouts[usize::from(pipeline.target.order_gapped)] += 1;
+            if pipeline.target.arena.generation() == arena_generation
+                && pipeline.placement_epoch() == epoch
+            {
+                let own: u64 = rebuilt
+                    .iter()
+                    .filter_map(|key| pipeline.target.entries.lookup(*key))
+                    .map(|id| u64::from(pipeline.target.entries.get(id).expect("live").capacity))
+                    .sum::<u64>()
+                    * INSTANCE;
+                assert!(
+                    written <= own,
+                    "frame {frame}: {written} B of instances written, but the {} paragraphs \
+                     rebuilt or placed hold {own}",
+                    rebuilt.len()
+                );
+                checked += 1;
+            }
+        }
+        (layouts, checked)
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {

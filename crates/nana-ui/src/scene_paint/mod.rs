@@ -412,6 +412,10 @@ impl SceneWgpuPainter {
     }
 
     /// Paint with isolated target state while sharing device pipelines/caches.
+    ///
+    /// The same `encoder` contract as [`Self::paint`]. A host that has to
+    /// throw away an encoder this painted into calls [`Self::remove_target`]
+    /// for the target, which starts its retained state again.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_target(
         &mut self,
@@ -456,6 +460,18 @@ impl SceneWgpuPainter {
         self.host_textures.swap_target(&mut state.host_textures);
     }
 
+    /// Encode `scene` into `encoder`, drawing into `target`.
+    ///
+    /// **`encoder` must be submitted** once this returns `Ok`. The painter
+    /// keeps geometry on the GPU between frames and records part of this
+    /// frame's writes to it as copies in `encoder` — text blocks and the text
+    /// draw order (#224) — then treats them as done. An encoder that is
+    /// dropped instead leaves the retained buffers behind what the painter
+    /// believes they hold, and later frames draw from them until the
+    /// paragraphs affected are placed again. On `Err` nothing was recorded
+    /// and the encoder may be dropped. A host that must drop an encoder it
+    /// was painted into drops this painter with it (or, for
+    /// [`Self::paint_target`], removes that target).
     pub fn paint(
         &mut self,
         scene: &UiScene,

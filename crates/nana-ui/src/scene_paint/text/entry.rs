@@ -735,6 +735,8 @@ pub(super) struct SlotArena {
     /// were not adjacent, last frame. Only the order counts them.
     breaks: u32,
     generation: u64,
+    /// The most slots the GPU buffer may hold; see [`Self::set_limit`].
+    limit: Option<u32>,
 }
 
 /// Extra draws fragmentation may cost before the order is repacked.
@@ -781,6 +783,13 @@ impl SlotArena {
     #[cfg(test)]
     pub(super) fn len(&self) -> u32 {
         self.len
+    }
+
+    /// Never size the buffer past `slots`. The caller keeps what a frame
+    /// places within it; this only stops the room a repack adds on top from
+    /// crossing it.
+    pub(super) fn set_limit(&mut self, slots: u32) {
+        self.limit = Some(slots);
     }
 
     pub(super) fn note_breaks(&mut self, breaks: u32) {
@@ -915,6 +924,9 @@ impl SlotArena {
             // costs nothing extra. A quarter, not a half, so a set that
             // hovers near a size does not replace the buffer on every repack.
             self.capacity = size_class(roomy).max(MIN_ARENA);
+        }
+        if let Some(limit) = self.limit {
+            self.capacity = self.capacity.min(limit.max(total));
         }
     }
 
@@ -1333,6 +1345,21 @@ mod tests {
                  the GPU buffer mid-frame and loses every block written before"
             );
         }
+    }
+
+    #[test]
+    fn a_repack_never_sizes_the_buffer_past_the_device_limit() {
+        let mut arena = SlotArena::default();
+        arena.set_limit(600);
+        arena.repack(500);
+        assert_eq!(
+            arena.capacity(),
+            600,
+            "the third of room a repack adds stops at what the device binds"
+        );
+        arena.repack(100);
+        assert!(arena.capacity() <= 600);
+        assert!(arena.capacity() >= 100);
     }
 
     #[test]

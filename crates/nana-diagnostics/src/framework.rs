@@ -71,6 +71,10 @@ pub mod text {
     /// Page requests the byte budget refused (the event is throttled).
     pub static ATLAS_BUDGET_REFUSALS: Metric =
         Metric::counter(D, 7, "text.atlas.budget_refusals", "count");
+    /// Frames that left paragraphs undrawn because a target's glyphs did not
+    /// fit the device's storage binding (the event is throttled).
+    pub static INSTANCE_LIMIT_FRAMES: Metric =
+        Metric::counter(D, 8, "text.instances.limit_frames", "count");
 
     pub static ATLAS_PAGE_OPENED: EventDescriptor = EventDescriptor::new(
         D,
@@ -92,6 +96,15 @@ pub mod text {
         "text.atlas.compacted",
         Severity::Debug,
         &[F::u64("pages")],
+    );
+    /// `slots` the frame's paragraphs asked for, `limit` the device allows,
+    /// `skipped` the paragraphs left undrawn — the largest first.
+    pub static INSTANCE_LIMIT_EXCEEDED: EventDescriptor = EventDescriptor::new(
+        D,
+        4,
+        "text.instances.limit_exceeded",
+        Severity::Warn,
+        &[F::u64("slots"), F::u64("limit"), F::u64("skipped")],
     );
 }
 

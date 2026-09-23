@@ -349,7 +349,9 @@ pub(super) struct TextTargetGpu {
     index_capacity: usize,
     /// Where a frame's blocks and ranges wait to be copied into place: a ring,
     /// so a target painted twice before one submit gives each paint its own
-    /// stretch of it.
+    /// stretch of it. Only the glyphs: the run and presentation tables are
+    /// still written in place, so such a pair of paints shares the second
+    /// one's positions and colours.
     staging: wgpu::Buffer,
     staging_capacity: u64,
     staging_cursor: u64,
@@ -373,6 +375,11 @@ pub(super) struct TextGpu {
     globals_layout: wgpu::BindGroupLayout,
     /// The platform's text parameters, read once when the painter is made.
     contrast: TextContrast,
+    /// The most glyph slots one target's instance buffer may hold on this
+    /// device. It is bound whole as a storage buffer, so the binding limit
+    /// applies as well as the buffer one — 128 MiB, about 5.6 million slots,
+    /// under WebGPU's defaults.
+    instance_slots: u32,
 }
 
 impl TextGpu {
@@ -423,6 +430,10 @@ impl TextGpu {
             TEXT_SHADER,
             wgpu::BlendState::ALPHA_BLENDING,
         );
+        let limits = device.limits();
+        let instance_bytes = limits
+            .max_storage_buffer_binding_size
+            .min(limits.max_buffer_size);
         Self {
             pipeline,
             dual_source: None,
@@ -430,7 +441,18 @@ impl TextGpu {
             format,
             globals_layout,
             contrast: TextContrast::system(),
+            instance_slots: u32::try_from(instance_bytes / INSTANCE_BYTES).unwrap_or(u32::MAX),
         }
+    }
+
+    pub(super) fn instance_slots(&self) -> u32 {
+        self.instance_slots
+    }
+
+    /// Stand in for a device with a smaller binding limit.
+    #[cfg(test)]
+    pub(super) fn set_instance_slots(&mut self, slots: u32) {
+        self.instance_slots = slots;
     }
 
     /// Whether subpixel glyphs can be drawn: the device blends two sources.
@@ -535,64 +557,82 @@ impl TextGpu {
         let index_bytes: &[u8] = bytemuck::cast_slice(frame.index_staging);
         let staged = (instance_bytes.len() + index_bytes.len()) as u64;
         if staged != 0 {
-            // A frame too large for the ring — the first one of a long list,
-            // an arena repack — gets a buffer of its own, freed once its
-            // copies have run, so the ring never grows to hold it.
-            let one_off;
-            let (source, at) = match target.stage(device, staged) {
-                Some(at) => {
+            // `None` from wgpu is a staging allocation it could not make — a
+            // lost device, or out of memory — already reported through the
+            // device's error sink. The frame then tries buffers of its own.
+            let ring = target.stage(device, staged).and_then(|at| {
+                let view = queue.write_buffer_with(
+                    &target.staging,
+                    at,
+                    wgpu::BufferSize::new(staged).expect("nonzero"),
+                )?;
+                Some((at, view))
+            });
+            match ring {
+                Some((at, mut view)) => {
                     // One call: each has the fixed cost, however few bytes.
-                    let mut view = queue
-                        .write_buffer_with(
-                            &target.staging,
-                            at,
-                            wgpu::BufferSize::new(staged).expect("nonzero"),
-                        )
-                        .expect("the ring holds what it staged");
-                    fill_staged(
-                        |range, bytes| view.slice(range).copy_from_slice(bytes),
-                        frame,
+                    view.slice(..instance_bytes.len())
+                        .copy_from_slice(instance_bytes);
+                    view.slice(instance_bytes.len()..)
+                        .copy_from_slice(index_bytes);
+                    drop(view);
+                    bytes.instances += copy_writes(
+                        encoder,
+                        &target.staging,
+                        at,
+                        frame.writes,
+                        INSTANCE_BYTES,
+                        &target.instances,
                     );
-                    (&target.staging, at)
+                    bytes.indices += copy_writes(
+                        encoder,
+                        &target.staging,
+                        at + instance_bytes.len() as u64,
+                        frame.index_writes,
+                        INDEX_BYTES,
+                        &target.indices,
+                    );
                 }
                 None => {
-                    one_off = device.create_buffer(&wgpu::BufferDescriptor {
-                        label: Some("nana-ui.scene.text.staging.frame"),
-                        size: staged,
-                        usage: wgpu::BufferUsages::COPY_SRC,
-                        mapped_at_creation: true,
-                    });
-                    {
-                        let mut view = one_off
-                            .slice(..)
-                            .get_mapped_range_mut()
-                            .expect("a buffer mapped at creation maps its whole range");
-                        fill_staged(
-                            |range, bytes| view.slice(range).copy_from_slice(bytes),
-                            frame,
-                        );
+                    // A frame too large for the ring — the first one of a
+                    // long list, an arena repack — gets buffers of its own,
+                    // freed once their copies have run, so the ring never
+                    // grows to hold it. One per destination: a frame writes
+                    // each slot at most once, so neither is larger than the
+                    // buffer it fills, which the device already allowed —
+                    // the two together can be past `max_buffer_size`.
+                    match one_off_staging(device, instance_bytes) {
+                        Staged::Buffer(source) => {
+                            target.allocations += 1;
+                            bytes.instances += copy_writes(
+                                encoder,
+                                &source,
+                                0,
+                                frame.writes,
+                                INSTANCE_BYTES,
+                                &target.instances,
+                            );
+                        }
+                        Staged::Empty => {}
+                        Staged::Failed => bytes.lost = true,
                     }
-                    one_off.unmap();
-                    target.allocations += 1;
-                    (&one_off, 0)
+                    match one_off_staging(device, index_bytes) {
+                        Staged::Buffer(source) => {
+                            target.allocations += 1;
+                            bytes.indices += copy_writes(
+                                encoder,
+                                &source,
+                                0,
+                                frame.index_writes,
+                                INDEX_BYTES,
+                                &target.indices,
+                            );
+                        }
+                        Staged::Empty => {}
+                        Staged::Failed => bytes.lost = true,
+                    }
                 }
-            };
-            bytes.instances += copy_writes(
-                encoder,
-                source,
-                at,
-                frame.writes,
-                INSTANCE_BYTES,
-                &target.instances,
-            );
-            bytes.indices += copy_writes(
-                encoder,
-                source,
-                at + instance_bytes.len() as u64,
-                frame.index_writes,
-                INDEX_BYTES,
-                &target.indices,
-            );
+            }
         }
         if !frame.runs.is_empty() {
             let mut dirty = frame.run_dirty.clone();
@@ -713,6 +753,9 @@ pub(super) struct TextUploadBytes {
     pub instances: usize,
     pub indices: usize,
     pub presentation: usize,
+    /// The frame's blocks and ranges could not be staged, so the instance and
+    /// index buffers do not hold what the arena and the order say they do.
+    pub lost: bool,
 }
 
 fn build_pipeline(
@@ -767,18 +810,44 @@ fn instance_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("nana-ui.scene.text.instances"),
         size,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | READ_BACK,
         mapped_at_creation: false,
     })
 }
 
-/// Lay a frame's staged instances and then its staged indices out in one
-/// view, through `write(range, bytes)`.
-fn fill_staged(mut write: impl FnMut(Range<usize>, &[u8]), frame: &FrameUpload<'_>) {
-    let instances: &[u8] = bytemuck::cast_slice(frame.staging);
-    let indices: &[u8] = bytemuck::cast_slice(frame.index_staging);
-    write(0..instances.len(), instances);
-    write(instances.len()..instances.len() + indices.len(), indices);
+/// Tests read the instance and index buffers back to check the copies that
+/// fill them; nothing else ever reads them on the CPU.
+const READ_BACK: wgpu::BufferUsages = if cfg!(test) {
+    wgpu::BufferUsages::COPY_SRC
+} else {
+    wgpu::BufferUsages::empty()
+};
+
+enum Staged {
+    Buffer(wgpu::Buffer),
+    Empty,
+    /// The device would not map it: lost, or out of memory.
+    Failed,
+}
+
+/// A buffer holding `bytes` to copy from.
+fn one_off_staging(device: &wgpu::Device, bytes: &[u8]) -> Staged {
+    if bytes.is_empty() {
+        return Staged::Empty;
+    }
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("nana-ui.scene.text.staging.frame"),
+        size: bytes.len() as u64,
+        usage: wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    });
+    let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() else {
+        return Staged::Failed;
+    };
+    view.copy_from_slice(bytes);
+    drop(view);
+    buffer.unmap();
+    Staged::Buffer(buffer)
 }
 
 /// Copy each staged run from `source`, whose staging starts at `base`, to its
@@ -823,7 +892,7 @@ fn index_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("nana-ui.scene.text.indices"),
         size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST | READ_BACK,
         mapped_at_creation: false,
     })
 }
@@ -868,6 +937,44 @@ impl TextTargetGpu {
         let at = self.staging_cursor;
         self.staging_cursor = at + len;
         Some(at)
+    }
+
+    /// What the instance and index buffers hold, once the queue is idle.
+    #[cfg(test)]
+    pub(super) fn read_back(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (Vec<GlyphInstance>, Vec<u32>) {
+        let read = |source: &wgpu::Buffer| {
+            let size = source.size();
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("nana-ui.scene.text.read_back"),
+                size,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("nana-ui.scene.text.read_back"),
+            });
+            encoder.copy_buffer_to_buffer(source, 0, &buffer, 0, size);
+            queue.submit([encoder.finish()]);
+            buffer.slice(..).map_async(wgpu::MapMode::Read, |result| {
+                result.expect("read back");
+            });
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("the copy completes");
+            buffer
+                .slice(..)
+                .get_mapped_range()
+                .expect("mapped for reading")
+                .to_vec()
+        };
+        (
+            bytemuck::pod_collect_to_vec(&read(&self.instances)),
+            bytemuck::pod_collect_to_vec(&read(&self.indices)),
+        )
     }
 
     pub(super) fn take_allocations(&mut self) -> usize {

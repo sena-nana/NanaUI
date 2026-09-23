@@ -1594,7 +1594,13 @@ instance 放在 storage buffer 里，draw 不直接走它。draw 走的是一张
   wgpu `downlevel_defaults` 允许四张。顶点阶段读 storage 本来就是 run 表的前提
   （`DownlevelFlags::VERTEX_STORAGE`），没有新增被排除的设备。
 - 单个 target 的 instance 上限从 `max_buffer_size`（256 MiB）变成
-  `max_storage_buffer_binding_size`（WebGPU 默认 128 MiB，约 560 万个字形槽）。
+  `max_storage_buffer_binding_size`（WebGPU 默认 128 MiB，约 560 万个字形槽）。entry
+  装的是整段的字形、不按行裁，所以一个超长的段落（整份日志放进一个文本节点）真的能碰到
+  它。碰到时不再让 bind group 校验失败：arena 整理留的余量停在上限，一帧的字形放不下就从
+  最大的段落开始不画，直到剩下的只占上限的三分之二，其余文字照常画——只是刚好放下的话，
+  arena 顶在上限上，下一个挪动的块就放不下，每帧都要整 arena 重写；计数
+  `text.instances.limit_frames`，事件 `text.instances.limit_exceeded`（十秒限流）。索引表每槽
+  4 B、上限是 `max_buffer_size`，比 instance 宽裕六倍以上，不需要单独限。
 - 显存：索引表每槽 4 B；arena 与索引表整理后都留三分之一空位。一万个标签
   （约 10 万个块槽）是 3.9 MB instance + 0.7 MB 索引，#98 时是 3.1 MB instance。
 
@@ -1613,8 +1619,24 @@ run 行号同理是**每个 entry 一个固定槽**，不是画序下标。一�
 顺序由提交保证：挂起的写落在下一次提交、它的命令缓冲之前，而上一次提交里从 ring 拷走的
 命令这时已经执行过。ring 至少是一帧所需的四倍，同一个 target 在一次提交前画两次，两次
 拿到 ring 的不同段，各自画自己的字——过去逐块直接写时，第一次画出的会是第二次写进去的
-字形（`two_paints_of_one_target_before_one_submit_each_draw_their_own_text`）。代价是只写
-一小块的帧也多一条拷贝命令：`static` 指令数多约 1%。
+字形（`two_paints_of_one_target_before_one_submit_each_draw_their_own_text`）。这只管字形：
+run 表、presentation 表和投影仍然直接 `write_buffer`，两次画之间位置、颜色或尺寸变了的话，
+第一次画用的是第二次的值。现有宿主都是一次画一次提交（多窗口是不同 target），所以没有把
+这两张表也挪进 ring。代价是只写一小块的帧也多一条拷贝命令：`static` 指令数多约 1%。
+
+一帧要写的超过 256 KiB（长列表的第一帧、整 arena 整理）不进 ring，而是临时建缓冲、拷完即弃，
+ring 不跟着长大。instance 与索引**各用一块**：一帧里每个槽最多写一次，所以每块都不大于它要
+填的那个缓冲，而那个缓冲设备已经允许过；合成一块的话，instance 接近 storage 上限时再加上
+索引字节，就可能超过 `max_buffer_size`。`a_frame_too_large_for_the_staging_ring_lands_whole`
+把 GPU 上的两个缓冲读回来，与按写入重建的影子逐槽比对，ring 与一次性两条路都覆盖。
+
+staging 拿不到（设备已丢失而宿主还没察觉，或显存不足）时，wgpu 报错并返回 `None`。这时退到
+一次性缓冲，再不行就不拷——这一帧不 panic，宿主的设备恢复（#97）照常接手；同时 arena 与
+画序的位置全部作废，下一帧把要画的块和区间整体重新放置、重写，而不是相信没收到字节的缓冲
+（`tests/text_lost_device.rs`）。
+
+因为块和区间是在宿主的 encoder 里拷进去的，**这个 encoder 必须提交**；丢掉它，GPU 上的
+缓冲就落后于 arena 与画序的账本（契约写在 `SceneWgpuPainter::paint` 和 [GPU](gpu.md)）。
 
 缓冲区换掉时，wgpu 自己保证旧的活到引用它的命令完成为止；这一侧要保证的是**没有句柄还
 指着旧布局**，那是 arena 代际和 `GlyphAtlasEntryId` 的代际两道闸。
@@ -2067,6 +2089,9 @@ ticker 的文字是定宽的（`tick 0007`）。`tick 9 → tick 10` 会把同�
 | --- | --- |
 | 水平方向亚像素移动的零重建（#223） | 竖直方向已经零重建（行框顶边对齐整像素，见「收尾」）。水平方向移动不到整像素时字形的栅格相位真的变了，位图就是不一样的；要零重建只能量化相位或把滚动吸附到整像素，前者会改现有渲染，后者该由滚动容器决定，不该由画笔替它决定。触控板横向滚动因此每帧重解析被滚动的标签（不栅格化，raster cache 里有各个亚像素档） |
 | ~~随机长度的 churn 仍会整 arena 重排（#224）~~ | 已做：draw 走按画序的索引表，块搬家只写它自己的块，拆够预算整理的只是索引表，见「arena 与画序索引表」 |
+| 画序整理仍是 O(屏上总槽数)（#224） | instance 字节已经只剩被重建段落自己的块；索引表整理时仍重写每个区间（4 B/槽）。一万标签随机 churn 60 帧平均 65 KB/帧，一千标签 8 KB/帧，跑久了空隙生效后降到 25 KB。验收只约束 instance，索引这一半是摊销意义上成立 |
+| 空隙不回收 | 进入留空隙的布局后，每个空隙槽是顶点阶段照样要跑的一个四角 quad（约多两成索引槽），要等下一次画序整理才可能去掉；文字停止变长以后界面可能很久不再整理。该在稳定若干帧后做一次不留空隙的整理，要先用 A/B 证明那两成顶点真的可测 |
+| arena 整理时不在屏上的段落 | 整理只放当帧画的块，不在屏上的失去位置，滚回来时整块重写。这是 #98 起的设计，`seeded_churn_keeps_every_draw_naming_its_own_glyphs` 把它算进「允许写的字节」 |
 | run 表不缩 | 每个 entry 一个固定 run 行（48 B），槽号只增不减，一万个标签的峰值是 480 KB。缩它要改写 instance 里的行号，收益不值 |
 | 行级裁剪 | entry 与视口无关，所以一段超长不换行的文字现在把整段 instance 都交给 scissor 去裁。段落级的裁剪在 `prepare` 里按 ink 做 |
 | 每节点的固定开销 | 一万个文本节点的帧里 painter 自己的逐节点循环与文本无关，quad / icon 同样付，见上文各条 |

@@ -198,6 +198,12 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 准备好的绘制批次、投影、可写 GPU 缓冲、文字 atlas/renderers 和纹理绑定。着色器、
 管线、字体系统及文字整形缓存仍在同一 Device 上共享。目标关闭时调用 `remove_target`；
 普通 `paint` 对应单独的缺省目标状态，不能借它复用多个窗口的目标缓存。
+`paint` / `paint_target` 返回 `Ok` 之后，**传入的 encoder 必须提交**：文字的 instance
+块与画序索引表（#224）是在这个 encoder 里用 `copy_buffer_to_buffer` 写进 GPU 的，painter
+记录完就当它们已经在 GPU 上。丢掉 encoder 会让保留的缓冲落后于 painter 的账本，之后的帧
+一直从旧内容画，直到相关段落重新放置。返回 `Err` 时什么都没录，encoder 可以丢。确实要丢
+一个画过的 encoder 时，对那个目标调用 `remove_target`（缺省目标就连 painter 一起丢掉）。
+标准宿主只在 paint 之前（生产者编码失败）或 paint 返回 `Err` 时丢 encoder。
 `HostedGpuResources::generation()` 标识宿主 Device 代次：克隆上下文不改变代次，
 重建设备会改变代次。生产者应随新上下文重建资源，并通过宿主 encoder 编码；
 提交成功后的通知才确认该帧生产完成。
