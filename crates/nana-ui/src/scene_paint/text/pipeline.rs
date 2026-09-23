@@ -568,70 +568,50 @@ impl TextGpu {
                 )?;
                 Some((at, view))
             });
-            match ring {
+            let [instances, indices] = match ring {
                 Some((at, mut view)) => {
                     // One call: each has the fixed cost, however few bytes.
                     view.slice(..instance_bytes.len())
                         .copy_from_slice(instance_bytes);
                     view.slice(instance_bytes.len()..)
                         .copy_from_slice(index_bytes);
-                    drop(view);
-                    bytes.instances += copy_writes(
-                        encoder,
-                        &target.staging,
-                        at,
-                        frame.writes,
-                        INSTANCE_BYTES,
-                        &target.instances,
-                    );
-                    bytes.indices += copy_writes(
-                        encoder,
-                        &target.staging,
-                        at + instance_bytes.len() as u64,
-                        frame.index_writes,
-                        INDEX_BYTES,
-                        &target.indices,
-                    );
+                    [
+                        Some((target.staging.clone(), at)),
+                        Some((target.staging.clone(), at + instance_bytes.len() as u64)),
+                    ]
                 }
-                None => {
-                    // A frame too large for the ring — the first one of a
-                    // long list, an arena repack — gets buffers of its own,
-                    // freed once their copies have run, so the ring never
-                    // grows to hold it. One per destination: a frame writes
-                    // each slot at most once, so neither is larger than the
-                    // buffer it fills, which the device already allowed —
-                    // the two together can be past `max_buffer_size`.
-                    match one_off_staging(device, instance_bytes) {
-                        Staged::Buffer(source) => {
-                            target.allocations += 1;
-                            bytes.instances += copy_writes(
-                                encoder,
-                                &source,
-                                0,
-                                frame.writes,
-                                INSTANCE_BYTES,
-                                &target.instances,
-                            );
-                        }
-                        Staged::Empty => {}
-                        Staged::Failed => bytes.lost = true,
-                    }
-                    match one_off_staging(device, index_bytes) {
-                        Staged::Buffer(source) => {
-                            target.allocations += 1;
-                            bytes.indices += copy_writes(
-                                encoder,
-                                &source,
-                                0,
-                                frame.index_writes,
-                                INDEX_BYTES,
-                                &target.indices,
-                            );
-                        }
-                        Staged::Empty => {}
-                        Staged::Failed => bytes.lost = true,
-                    }
-                }
+                // A frame too large for the ring — the first one of a long
+                // list, an arena repack — gets buffers of its own, freed once
+                // their copies have run, so the ring never grows to hold it.
+                // One per destination: a frame writes each slot at most once,
+                // so neither is larger than the buffer it fills, which the
+                // device already allowed — the two together can be past
+                // `max_buffer_size`.
+                None => [instance_bytes, index_bytes].map(|part| {
+                    let source = one_off_staging(device, part, &mut bytes.lost)?;
+                    target.allocations += 1;
+                    Some((source, 0))
+                }),
+            };
+            if let Some((source, at)) = instances {
+                bytes.instances += copy_writes(
+                    encoder,
+                    &source,
+                    at,
+                    frame.writes,
+                    INSTANCE_BYTES,
+                    &target.instances,
+                );
+            }
+            if let Some((source, at)) = indices {
+                bytes.indices += copy_writes(
+                    encoder,
+                    &source,
+                    at,
+                    frame.index_writes,
+                    INDEX_BYTES,
+                    &target.indices,
+                );
             }
         }
         if !frame.runs.is_empty() {
@@ -823,17 +803,12 @@ const READ_BACK: wgpu::BufferUsages = if cfg!(test) {
     wgpu::BufferUsages::empty()
 };
 
-enum Staged {
-    Buffer(wgpu::Buffer),
-    Empty,
-    /// The device would not map it: lost, or out of memory.
-    Failed,
-}
-
-/// A buffer holding `bytes` to copy from.
-fn one_off_staging(device: &wgpu::Device, bytes: &[u8]) -> Staged {
+/// A buffer holding `bytes` to copy from; `None` when there are none, or
+/// when the device would not map one (lost, or out of memory), which also
+/// sets `lost`.
+fn one_off_staging(device: &wgpu::Device, bytes: &[u8], lost: &mut bool) -> Option<wgpu::Buffer> {
     if bytes.is_empty() {
-        return Staged::Empty;
+        return None;
     }
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("nana-ui.scene.text.staging.frame"),
@@ -842,12 +817,13 @@ fn one_off_staging(device: &wgpu::Device, bytes: &[u8]) -> Staged {
         mapped_at_creation: true,
     });
     let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() else {
-        return Staged::Failed;
+        *lost = true;
+        return None;
     };
     view.copy_from_slice(bytes);
     drop(view);
     buffer.unmap();
-    Staged::Buffer(buffer)
+    Some(buffer)
 }
 
 /// Copy each staged run from `source`, whose staging starts at `base`, to its

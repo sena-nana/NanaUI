@@ -641,10 +641,8 @@ pub(super) struct TextPipelineTarget {
     /// so growing them in place does not walk every entry a second time.
     outgrown: Vec<u32>,
     /// Entries this frame leaves undrawn, sorted, because with them the
-    /// frame's glyphs would not fit the device's storage binding; and the
-    /// slots they would have taken.
+    /// frame's glyphs would not fit the device's storage binding.
     skipped: Vec<u32>,
-    skipped_slots: u32,
     /// Whether the last order repack left gaps, and what has moved in the
     /// order since: ranges placed, and how many of those because their
     /// paragraph grew. What decides whether the next repack leaves gaps.
@@ -744,7 +742,6 @@ impl TextPipelineTarget {
             order_owners: OrderOwners::default(),
             outgrown: Vec::new(),
             skipped: Vec::new(),
-            skipped_slots: 0,
             order_gapped: false,
             order_moves: 0,
             growth_moves: 0,
@@ -1942,6 +1939,7 @@ impl TextPipeline {
             // are left out until the rest fits with room to spare:
             // everything else on screen still draws, and a frame that would
             // have failed validation says so instead.
+            let asked = total;
             Self::skip_largest(target, total, limit);
             total = Self::measure_runs(target, &mut fresh, &mut fresh_order, &mut outgrown);
             use nana_diagnostics::framework::text;
@@ -1952,7 +1950,7 @@ impl TextPipeline {
             {
                 nana_diagnostics::event!(
                     text::INSTANCE_LIMIT_EXCEEDED,
-                    slots = u64::from(target.skipped_slots) + u64::from(total),
+                    slots = u64::from(asked),
                     limit = u64::from(limit),
                     skipped = target.skipped.len() as u64
                 );
@@ -2213,8 +2211,7 @@ impl TextPipeline {
     }
 
     /// Leave out the largest drawn entries until the rest need at most two
-    /// thirds of `limit` slots. Fills `target.skipped`, sorted, and
-    /// `skipped_slots`.
+    /// thirds of `limit` slots. Fills `target.skipped`, sorted.
     ///
     /// Not just until they fit: an arena pinned at the limit has no room for
     /// the next block that moves, and would repack — rewrite every instance —
@@ -2233,13 +2230,11 @@ impl TextPipeline {
         largest.sort_unstable_by_key(|&(entry, slots)| (std::cmp::Reverse(slots), entry));
         let room = limit - limit / 3;
         let mut left = total;
-        target.skipped_slots = 0;
         for (entry, slots) in largest {
             if left <= room {
                 break;
             }
             left = left.saturating_sub(slots);
-            target.skipped_slots = target.skipped_slots.saturating_add(slots);
             target.skipped.push(entry);
         }
         target.skipped.sort_unstable();
@@ -6440,32 +6435,22 @@ mod tests {
     /// paragraphs that were rebuilt, never their neighbours'.
     #[test]
     fn seeded_churn_keeps_every_draw_naming_its_own_glyphs() {
-        let (layouts, checked) = churn_frames(0x2545_f491, 600, 240);
-        assert!(
-            layouts.iter().all(|frames| *frames > 0),
-            "both order layouts must have been exercised: packed / gapped {layouts:?}"
-        );
-        assert!(checked > 300, "only {checked} frames kept their arena");
-    }
-
-    /// Returns the frames drawn under a packed and a gapped order, and the
-    /// frames whose instance bytes were checked.
-    fn churn_frames(seed: u32, frames: u32, initial: usize) -> ([u32; 2], u32) {
+        const INITIAL: usize = 240;
         let (device, queue) = test_device();
         let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let mut churn = Churn(seed);
+        let mut churn = Churn(0x2545_f491);
         let mut next_node = 1u64;
         let mut new_row = |churn: &mut Churn| {
             next_node += 1;
             (next_node, churn.text())
         };
-        let mut rows = (0..initial)
+        let mut rows = (0..INITIAL)
             .map(|_| new_row(&mut churn))
             .collect::<Vec<_>>();
         let mut drawn_as: HashMap<u64, String> = HashMap::new();
         let mut layouts = [0u32; 2];
         let mut checked = 0;
-        for frame in 0..frames {
+        for frame in 0..600u32 {
             // A font registration: every entry dropped at once.
             if churn.below(97) == 0 {
                 pipeline.drop_every_entry();
@@ -6474,7 +6459,7 @@ mod tests {
             let scrolling = (frame / 75) % 2 == 1;
             if scrolling {
                 for _ in 0..churn.below(6) {
-                    if rows.len() > initial / 2 {
+                    if rows.len() > INITIAL / 2 {
                         rows.remove(churn.below(rows.len()));
                     }
                 }
@@ -6564,7 +6549,11 @@ mod tests {
                 checked += 1;
             }
         }
-        (layouts, checked)
+        assert!(
+            layouts.iter().all(|frames| *frames > 0),
+            "both order layouts must have been exercised: packed / gapped {layouts:?}"
+        );
+        assert!(checked > 300, "only {checked} frames kept their arena");
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {
