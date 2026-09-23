@@ -340,11 +340,11 @@ impl AppContext {
             field.hue_slider = Some(hue.stable_id());
         })?;
 
-        self.append_child(picker, pad)?;
-        self.append_child(picker, hue)?;
-        self.append_child(field, swatch)?;
-        self.append_child(field, hex)?;
-        self.append_child(field, picker)?;
+        self.append_children(picker.stable_id(), &[pad.stable_id(), hue.stable_id()])?;
+        self.append_children(
+            field.stable_id(),
+            &[swatch.stable_id(), hex.stable_id(), picker.stable_id()],
+        )?;
         Ok(created)
     }
 

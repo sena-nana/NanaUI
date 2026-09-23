@@ -662,6 +662,8 @@ pub struct UiWorld {
     /// Subtree roots detached by Remove or Park. Mounted document/scene roots
     /// are created with no parent and are not in this set.
     detached: HashSet<StableNodeId>,
+    /// Queue indices the last `commit_ref` skipped as structural no-ops.
+    skipped_noops: Vec<usize>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
     live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,
     /// Nodes carrying an `OverlayHostState` component. Overlay bookkeeping walks
@@ -784,6 +786,7 @@ impl UiWorld {
             document_text_selections: HashMap::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
+            skipped_noops: Vec::new(),
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
             overlay_hosts_by_document: HashMap::new(),

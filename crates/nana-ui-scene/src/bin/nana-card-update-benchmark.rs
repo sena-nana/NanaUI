@@ -20,6 +20,11 @@
 //! change owes depends on neither; anything that grows with `--filler` is
 //! whole-document work. `--parked off` gives every row a picture, so nothing
 //! in the world is parked — the shape the older benchmark measured.
+//!
+//! `--append off` drops NanaLive's `append_child(item, thumb)` before
+//! `set_list_item_slots`. The slots call inserts and orders the slot nodes
+//! itself, so that append only moves the thumbnail to the end for the slots
+//! call to move it back: two real moves per row per refresh.
 
 use std::fs;
 use std::sync::Arc;
@@ -79,13 +84,14 @@ struct Card {
     labels: Vec<String>,
     selected: usize,
     parked: bool,
+    append: bool,
 }
 
 fn has_picture(parked: bool, row: usize) -> bool {
     !parked || row.is_multiple_of(2)
 }
 
-fn build(rows: usize, filler: usize, parked: bool) -> Card {
+fn build(rows: usize, filler: usize, parked: bool, append: bool) -> Card {
     let document = DocumentId::new(DOCUMENT).unwrap();
     let mut runtime = RuntimeDocument::new(document);
     let built = runtime
@@ -149,6 +155,7 @@ fn build(rows: usize, filler: usize, parked: bool) -> Card {
         labels: (0..rows).map(|index| format!("Motion {index}")).collect(),
         selected: 0,
         parked,
+        append,
     };
     paint(&mut card);
     card
@@ -181,7 +188,9 @@ fn paint(card: &mut Card) {
                     *thumb = Thumbnail::new(slot.as_str()).label(label.as_str());
                 })
                 .unwrap();
-            context.append_child(row.item, row.thumb).unwrap();
+            if card.append {
+                context.append_child(row.item, row.thumb).unwrap();
+            }
         } else {
             context
                 .update_component(row.thumb, |_, cx| {
@@ -235,6 +244,7 @@ struct Cell {
     rows: usize,
     filler: usize,
     parked: bool,
+    append: bool,
     nodes: usize,
     write_ms: Stat,
     flush_ms: Stat,
@@ -278,10 +288,11 @@ fn measure(
     rows: usize,
     filler: usize,
     parked: bool,
+    append: bool,
     samples: usize,
     warmup: usize,
 ) -> Cell {
-    let mut card = build(rows, filler, parked);
+    let mut card = build(rows, filler, parked, append);
     let viewport = LayoutViewport::new(480.0, 100_000.0);
     let shaper = &mut MeasureTextShaper;
     for _ in 0..4 {
@@ -378,6 +389,7 @@ fn measure(
         rows,
         filler,
         parked,
+        append,
         nodes,
         write_ms: Stat::from_durations(writes),
         flush_ms: Stat::from_durations(flushes),
@@ -423,6 +435,11 @@ fn main() {
         Some("off") => vec![false],
         Some(other) => panic!("--parked on|off, not {other}"),
     };
+    let append = match text("--append").as_deref() {
+        None | Some("on") => true,
+        Some("off") => false,
+        Some(other) => panic!("--append on|off, not {other}"),
+    };
     let rows = list("--rows", &[40, 400]);
     let fillers = list("--filler", &[0, 2000, 8000]);
 
@@ -431,7 +448,7 @@ fn main() {
         for parked in parked.iter().copied() {
             for rows in rows.iter().copied() {
                 for filler in fillers.iter().copied() {
-                    let cell = measure(operation, rows, filler, parked, samples, warmup);
+                    let cell = measure(operation, rows, filler, parked, append, samples, warmup);
                     eprintln!(
                         "{:<6} parked={:<5} rows={:<4} filler={:<5} nodes={:<6} write min={:.4} p50={:.4}  flush min={:.4} p50={:.4}  gen={:.1} idle={} measured={:.1} reused={:.1} layout={} hit={:?} a11y={} render={}",
                         cell.operation,

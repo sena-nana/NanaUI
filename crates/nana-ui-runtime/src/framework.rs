@@ -1308,6 +1308,17 @@ impl AppContext {
         &mut self,
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        // Re-appending or re-parking what is already in place: the world
+        // skips it, and there is no focus, surface or lifecycle to follow.
+        if !mutations.is_empty() && self.world.is_noop_batch(&mutations) {
+            let (report, _, _) = self
+                .world
+                .commit_with_mount_lifecycle(mutations)
+                .map_err(FrameworkError::from)?;
+            self.collect_child_reprojects();
+            self.drain_child_reprojects()?;
+            return Ok(report);
+        }
         self.prepare_surface_closing(&mut mutations);
         let previous_focus = mutations
             .as_slice()
@@ -1661,6 +1672,33 @@ impl AppContext {
         self.views.insert(id, Box::new(component));
         self.sync_component_lifecycle(id)?;
         Ok(Entity::from_stable_id(id))
+    }
+
+    /// Appends `children` to `parent` in order, like one [`Self::append_child`]
+    /// each, unless they already end `parent`'s children in that order.
+    ///
+    /// Assemblers run on every write. Appending an ordered set again moves
+    /// each child to the end in turn: it ends where it started, but every
+    /// move invalidates layout up the ancestor chain.
+    pub(crate) fn append_children(
+        &mut self,
+        parent: StableNodeId,
+        children: &[StableNodeId],
+    ) -> Result<(), FrameworkError> {
+        let current = &self
+            .world
+            .node(parent)
+            .ok_or(FrameworkError::MissingView(parent))?
+            .children;
+        if current.ends_with(children) {
+            return Ok(());
+        }
+        let mut queue = MutationQueue::new();
+        for child in children {
+            queue.insert(parent, *child, None);
+        }
+        self.commit_mutations(queue)?;
+        Ok(())
     }
 
     pub fn append_child<P: View, C: View>(
@@ -2562,8 +2600,8 @@ impl AppContext {
         self.inherit_segmented_option_surface(entity.id, &mut staged);
         if projection == Projection::IfChanged
             && !C::always_reproject()
-            && mutations.is_empty()
             && events.is_empty()
+            && self.world.is_noop_batch(&mutations)
             && staged == *component
         {
             self.program_messages = program_messages;

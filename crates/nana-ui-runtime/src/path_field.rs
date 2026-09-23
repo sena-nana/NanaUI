@@ -207,8 +207,7 @@ impl AppContext {
             field.input = Some(input.stable_id());
             field.browse = Some(browse.stable_id());
         })?;
-        self.append_child(field, input)?;
-        self.append_child(field, browse)?;
+        self.append_children(field.stable_id(), &[input.stable_id(), browse.stable_id()])?;
         Ok(created)
     }
 

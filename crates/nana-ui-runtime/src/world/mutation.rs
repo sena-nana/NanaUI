@@ -2249,6 +2249,63 @@ impl UiWorld {
 }
 
 impl UiWorld {
+    /// A structural mutation that leaves the tree exactly as it is: an
+    /// `Insert` that puts a child back where it already sits, or parking or
+    /// detaching a root nothing holds any more.
+    ///
+    /// Applying one would still invalidate layout up the ancestor chain and
+    /// retire the subtree from its document again. Refreshing a list by
+    /// re-appending and re-parking what is already in place is the common
+    /// case; skipping these is what makes it free.
+    fn is_structural_noop(&self, mutation: &UiMutation) -> bool {
+        match mutation {
+            UiMutation::Insert {
+                parent,
+                child,
+                before,
+            } => {
+                if self.nodes.get(*child).map(|node| node.hierarchy.parent) != Some(Some(*parent)) {
+                    return false;
+                }
+                let Some(siblings) = self.nodes.get(*parent).map(|node| &node.hierarchy.children)
+                else {
+                    return false;
+                };
+                let Some(index) = siblings.iter().position(|id| id == child) else {
+                    return false;
+                };
+                match before {
+                    None => index + 1 == siblings.len(),
+                    Some(before) => before == child || siblings.get(index + 1) == Some(before),
+                }
+            }
+            UiMutation::ParkSubtree { root } => {
+                self.unlinked_root(*root) && self.mount_state(*root) == Some(MountState::Parked)
+            }
+            UiMutation::Detach { id } => self.unlinked_root(*id),
+            _ => false,
+        }
+    }
+
+    /// Whether committing `queue` would change nothing: every mutation in it
+    /// is a structural no-op. A no-op changes nothing, so judging each one
+    /// against the state the batch starts from is exact.
+    pub(crate) fn is_noop_batch(&self, queue: &MutationQueue) -> bool {
+        queue
+            .as_slice()
+            .iter()
+            .all(|mutation| self.is_structural_noop(mutation))
+    }
+
+    /// Detached or parked, with no parent: nothing left to unlink.
+    fn unlinked_root(&self, id: StableNodeId) -> bool {
+        self.detached.contains(&id)
+            && self
+                .nodes
+                .get(id)
+                .is_some_and(|node| node.hierarchy.parent.is_none())
+    }
+
     pub(super) fn identity_and_parent(
         &self,
         id: StableNodeId,
@@ -2341,10 +2398,19 @@ impl UiWorld {
         }
         self.validation_nodes_scanned = self.validation_nodes_scanned.saturating_add(scanned);
         validated?;
+        self.skipped_noops.clear();
+        if self.is_noop_batch(queue) {
+            self.skipped_noops.extend(0..queue.len());
+            return Ok(report);
+        }
         self.close_prior_animation_event_frame();
         self.generation = self.generation.wrapping_add(1);
         report.generation = self.generation;
-        for mutation in queue.as_slice() {
+        for (index, mutation) in queue.as_slice().iter().enumerate() {
+            if self.is_structural_noop(mutation) {
+                self.skipped_noops.push(index);
+                continue;
+            }
             self.apply(mutation, &mut report);
         }
         self.flush_scroll_content();
@@ -2470,15 +2536,23 @@ impl UiWorld {
         &mut self,
         queue: MutationQueue,
     ) -> Result<(CommitReport, HashSet<StableNodeId>, HashSet<StableNodeId>), UiWorldError> {
-        let mut roots = Vec::new();
-        for mutation in queue.as_slice() {
-            match mutation {
-                UiMutation::ParkSubtree { root } => roots.push(*root),
-                UiMutation::Insert { child, .. } => roots.push(*child),
-                _ => {}
-            }
-        }
+        let structural = queue
+            .as_slice()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mutation)| match mutation {
+                UiMutation::ParkSubtree { root } => Some((index, *root)),
+                UiMutation::Insert { child, .. } => Some((index, *child)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut report = self.commit(queue)?;
+        // A root put back where it already was mounts or parks nothing.
+        let mut roots = structural
+            .into_iter()
+            .filter(|(index, _)| !self.skipped_noops.contains(index))
+            .map(|(_, root)| root)
+            .collect::<Vec<_>>();
         let mut parked = HashSet::new();
         let mut inserted = HashSet::new();
         let mut visited = HashSet::new();

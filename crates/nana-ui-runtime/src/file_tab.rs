@@ -210,11 +210,11 @@ impl AppContext {
             tab.dot = Some(dot.stable_id());
             tab.close = Some(close.stable_id());
         })?;
-        self.append_child(name_row, name)?;
-        self.append_child(name_row, dot)?;
-        self.append_child(tab, leading)?;
-        self.append_child(tab, name_row)?;
-        self.append_child(tab, close)?;
+        self.append_children(name_row.stable_id(), &[name.stable_id(), dot.stable_id()])?;
+        self.append_children(
+            tab.stable_id(),
+            &[leading.stable_id(), name_row.stable_id(), close.stable_id()],
+        )?;
         Ok(created)
     }
 

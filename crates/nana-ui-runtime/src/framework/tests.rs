@@ -8159,3 +8159,79 @@ fn a_switch_the_user_flipped_takes_the_application_value_back() {
         Some(false)
     );
 }
+
+/// Refreshing a row re-appends and re-parks what is already in place. Those
+/// writes must not reach the world as moves.
+#[test]
+fn putting_a_child_back_where_it_is_or_reparking_it_is_no_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let root = context.create_component(document, Stack::row(0.0)).unwrap();
+    let first = context
+        .create_detached_component(document, Text::new("first"))
+        .unwrap();
+    let last = context
+        .create_detached_component(document, Text::new("last"))
+        .unwrap();
+    let parked = context
+        .create_detached_component(document, Text::new("parked"))
+        .unwrap();
+    context.append_child(root, first).unwrap();
+    context.append_child(root, last).unwrap();
+    let _ = context.take_system_work();
+    let generation = context.world().generation();
+
+    context.append_child(root, last).unwrap();
+    let mut queue = MutationQueue::new();
+    queue.insert(root.stable_id(), first.stable_id(), Some(last.stable_id()));
+    queue.park_subtree(parked.stable_id());
+    context.commit_mutations(queue).unwrap();
+    context
+        .update_component(parked, |_, cx| {
+            let id = cx.entity().stable_id();
+            cx.mutations().park_subtree(id);
+        })
+        .unwrap();
+
+    assert_eq!(context.world().generation(), generation);
+    assert!(!context.world().has_pending_work());
+    assert!(context.take_system_work().is_empty());
+
+    // Appending a child that is not last is a real move.
+    context.append_child(root, first).unwrap();
+    assert_eq!(
+        context.world().node(root.stable_id()).unwrap().children,
+        vec![last.stable_id(), first.stable_id()]
+    );
+    assert!(context.world().has_pending_work());
+}
+
+/// Assemblers run on every write and re-append their parts in order.
+#[test]
+fn rewriting_an_assembled_composite_with_its_own_values_is_no_work() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let tab = context
+        .create_component(document, crate::FileTab::new("main.rs"))
+        .unwrap();
+    let path = context
+        .create_component(document, crate::PathField::new("/tmp"))
+        .unwrap();
+    // Creation does not assemble; the first write does.
+    context.reproject_component(tab).unwrap();
+    context.reproject_component(path).unwrap();
+    let _ = context.take_system_work();
+    let generation = context.world().generation();
+
+    context
+        .update_component(tab, |tab, _| tab.label = "main.rs".into())
+        .unwrap();
+    context
+        .update_component(path, |path, _| path.value = "/tmp".into())
+        .unwrap();
+    context.reproject_component(tab).unwrap();
+    context.reproject_component(path).unwrap();
+
+    assert_eq!(context.world().generation(), generation);
+    assert!(context.take_system_work().is_empty());
+}
