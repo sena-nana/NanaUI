@@ -2273,12 +2273,14 @@ impl UiWorld {
                 else {
                     return false;
                 };
-                let Some(index) = siblings.iter().position(|id| id == child) else {
-                    return false;
-                };
+                // `child`'s parent is `parent`, so it is in the list.
                 match before {
-                    None => index + 1 == siblings.len(),
-                    Some(before) => before == child || siblings.get(index + 1) == Some(before),
+                    None => siblings.last() == Some(child),
+                    Some(before) if before == child => true,
+                    Some(before) => siblings
+                        .iter()
+                        .position(|id| id == child)
+                        .is_some_and(|index| siblings.get(index + 1) == Some(before)),
                 }
             }
             UiMutation::ParkSubtree { root } => {
@@ -2379,16 +2381,17 @@ impl UiWorld {
     /// the caller still owns. Validation runs fully before the apply loop, so
     /// a rejected batch never lands partially and the caller may replay it.
     pub fn commit_ref(&mut self, queue: &MutationQueue) -> Result<CommitReport, UiWorldError> {
-        let mut report = CommitReport {
-            generation: self.generation,
-            mutations: queue.len(),
-            created: 0,
-            inserted: 0,
-            detached: 0,
-            reparented: 0,
-            despawned: 0,
-        };
-        self.skipped_noops.clear();
+        self.commit_applying(queue, None)
+    }
+
+    /// `commit_ref` that also collects the root of every `Insert` and
+    /// `ParkSubtree` it actually applied into `roots`.
+    fn commit_applying(
+        &mut self,
+        queue: &MutationQueue,
+        mut roots: Option<&mut Vec<StableNodeId>>,
+    ) -> Result<CommitReport, UiWorldError> {
+        let mut report = CommitReport::unchanged(self.generation, queue.len());
         if queue.is_empty() {
             return Ok(report);
         }
@@ -2404,9 +2407,8 @@ impl UiWorld {
         // A skipped no-op changes nothing, so the generation moves with the
         // first mutation that does; a batch of nothing but no-ops keeps it.
         let mut applied = false;
-        for (index, mutation) in queue.as_slice().iter().enumerate() {
+        for mutation in queue.as_slice() {
             if self.is_structural_noop(mutation) {
-                self.skipped_noops.push(index);
                 continue;
             }
             if !applied {
@@ -2416,6 +2418,13 @@ impl UiWorld {
                 report.generation = self.generation;
             }
             self.apply(mutation, &mut report);
+            if let Some(roots) = roots.as_deref_mut() {
+                match mutation {
+                    UiMutation::ParkSubtree { root } => roots.push(*root),
+                    UiMutation::Insert { child, .. } => roots.push(*child),
+                    _ => {}
+                }
+            }
         }
         if !applied {
             return Ok(report);
@@ -2543,23 +2552,10 @@ impl UiWorld {
         &mut self,
         queue: MutationQueue,
     ) -> Result<(CommitReport, HashSet<StableNodeId>, HashSet<StableNodeId>), UiWorldError> {
-        let structural = queue
-            .as_slice()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, mutation)| match mutation {
-                UiMutation::ParkSubtree { root } => Some((index, *root)),
-                UiMutation::Insert { child, .. } => Some((index, *child)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut report = self.commit(queue)?;
-        // A root put back where it already was mounts or parks nothing.
-        let mut roots = structural
-            .into_iter()
-            .filter(|(index, _)| self.skipped_noops.binary_search(index).is_err())
-            .map(|(_, root)| root)
-            .collect::<Vec<_>>();
+        // A root put back where it already was mounts or parks nothing, so
+        // only the ones actually applied count.
+        let mut roots = Vec::new();
+        let mut report = self.commit_applying(&queue, Some(&mut roots))?;
         let mut parked = HashSet::new();
         let mut inserted = HashSet::new();
         let mut visited = HashSet::new();

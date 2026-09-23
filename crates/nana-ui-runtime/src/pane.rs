@@ -268,9 +268,7 @@ impl Default for PaneChrome {
 
 impl ComponentView for PaneChrome {
     /// Lays out header, tab, body and action slot nodes other components own.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -638,9 +636,7 @@ impl PaneTree {
 
 impl ComponentView for PaneTree {
     /// Makes the content nodes it hosts fill their slot; their own projection overwrites that.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

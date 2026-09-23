@@ -1315,15 +1315,10 @@ impl AppContext {
         if !mutations.is_empty() && self.world.is_noop_batch(&mutations) {
             self.collect_child_reprojects();
             self.drain_child_reprojects()?;
-            return Ok(crate::CommitReport {
-                generation: self.world.generation(),
-                mutations: mutations.len(),
-                created: 0,
-                inserted: 0,
-                detached: 0,
-                reparented: 0,
-                despawned: 0,
-            });
+            return Ok(crate::CommitReport::unchanged(
+                self.world.generation(),
+                mutations.len(),
+            ));
         }
         self.prepare_surface_closing(&mut mutations);
         let previous_focus = mutations
@@ -2500,11 +2495,11 @@ impl AppContext {
         let parent = self.views.get(&parent);
         let surface = parent
             .and_then(|view| view.downcast_ref::<SegmentedControl>())
-            .map(|control| (control.size, control.chrome, control.fill))
+            .map(SegmentedControl::option_surface)
             .or_else(|| {
                 parent
                     .and_then(|view| view.downcast_ref::<crate::Tabs>())
-                    .map(|tabs| (tabs.size, crate::SelectionChrome::Tabs, tabs.fill))
+                    .map(crate::Tabs::option_surface)
             });
         let Some((size, chrome, fill)) = surface else {
             return;
@@ -2608,15 +2603,22 @@ impl AppContext {
             },
         );
         self.inherit_segmented_option_surface(entity.id, &mut staged);
+        let mut projected = false;
         if projection == Projection::IfChanged
-            && !C::always_reproject()
             && events.is_empty()
             && self.world.is_noop_batch(&mutations)
             && staged == *component
         {
-            self.program_messages = program_messages;
-            self.views.insert(entity.id, boxed);
-            return Ok(result);
+            // `PartialEq` cannot see what these read, so project and look.
+            if C::ALWAYS_REPROJECT {
+                staged.project(entity.id, &self.world, &mut mutations);
+                projected = true;
+            }
+            if !projected || self.world.is_noop_batch(&mutations) {
+                self.program_messages = program_messages;
+                self.views.insert(entity.id, boxed);
+                return Ok(result);
+            }
         }
         let delivered = self.deliver_events(
             entity.id,
@@ -2626,7 +2628,7 @@ impl AppContext {
             &mut program_messages,
         );
         self.program_messages = program_messages;
-        if delivered.is_ok() {
+        if delivered.is_ok() && !projected {
             staged.project(entity.id, &self.world, &mut mutations);
         }
         let commit =
@@ -2680,7 +2682,15 @@ impl AppContext {
                 continue;
             }
             let followed = match self.reprojector(observer.type_id) {
-                Some(reproject) => reproject(self, observer.id, observer.reassemble),
+                Some(reproject) => reproject(
+                    self,
+                    observer.id,
+                    if observer.reassemble {
+                        Projection::Always
+                    } else {
+                        Projection::ProjectOnly
+                    },
+                ),
                 None if observer.reassemble => {
                     self.run_component_assembler(observer.id, observer.type_id)
                 }
@@ -2697,12 +2707,21 @@ impl AppContext {
         if !self.suspend_component_lifecycle(id) {
             return Ok(());
         }
+        self.reproject_view(id, Projection::ProjectOnly)
+    }
+
+    /// Projects the view at `id`, whatever its type.
+    pub(super) fn reproject_view(
+        &mut self,
+        id: StableNodeId,
+        projection: Projection,
+    ) -> Result<(), FrameworkError> {
         let reproject = self
             .views
             .get(&id)
             .and_then(|view| self.reprojector(view.as_ref().type_id()));
         match reproject {
-            Some(reproject) => reproject(self, id, false),
+            Some(reproject) => reproject(self, id, projection),
             None => Ok(()),
         }
     }
@@ -3001,7 +3020,7 @@ pub(super) struct TouchedObserver {
 
 /// How [`AppContext::update_component`]'s implementation treats the result.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Projection {
+pub(super) enum Projection {
     /// Skip everything when the update left the component unchanged.
     IfChanged,
     /// Project, commit, run lifecycle and the assembler regardless.
@@ -3012,21 +3031,41 @@ enum Projection {
     ProjectOnly,
 }
 
-/// Projects a component of a type known only by `TypeId`; `assemble` also
-/// syncs its lifecycle and runs its assembler, as `reproject_component` does.
-pub(crate) type ReprojectFn = fn(&mut AppContext, StableNodeId, bool) -> Result<(), FrameworkError>;
+/// Projects a component of a type known only by `TypeId`.
+pub(crate) type ReprojectFn =
+    fn(&mut AppContext, StableNodeId, Projection) -> Result<(), FrameworkError>;
 
 pub(crate) fn reproject_erased<C: ComponentView>(
     context: &mut AppContext,
     id: StableNodeId,
-    assemble: bool,
+    projection: Projection,
 ) -> Result<(), FrameworkError> {
-    let projection = if assemble {
-        Projection::Always
-    } else {
-        Projection::ProjectOnly
-    };
     context.update_component_inner(Entity::<C>::from_stable_id(id), |_, _| {}, projection)
+}
+
+/// [`AppContext::reproject_component`] for the per-node reproject hooks.
+fn reproject_typed<C: ComponentView>(
+    context: &mut AppContext,
+    id: StableNodeId,
+) -> Result<(), FrameworkError> {
+    context.reproject_component(Entity::<C>::from_stable_id(id))
+}
+
+/// Menu surfaces: their open motion is only started for a mounted node.
+pub(super) fn is_menu_surface(type_id: TypeId) -> bool {
+    [
+        TypeId::of::<crate::Popover>(),
+        TypeId::of::<crate::ActionMenu>(),
+        TypeId::of::<crate::AnchoredActionMenu>(),
+        TypeId::of::<crate::ContextMenu>(),
+    ]
+    .contains(&type_id)
+}
+
+/// Types whose projection only starts timelines or surface motion for a
+/// mounted node, so a remount has to project them again.
+pub(super) fn reprojects_on_mount(type_id: TypeId) -> bool {
+    type_id == TypeId::of::<TextArea>() || is_menu_surface(type_id)
 }
 
 /// Assembler for a composite component type, if it has one.

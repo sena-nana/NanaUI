@@ -7976,9 +7976,7 @@ impl ComponentView for AlwaysProbe {
         PROJECTIONS.with(|count| count.set(count.get() + 1));
     }
 
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 }
 
 /// Issue #228: an application refreshing a list rewrites every row with the

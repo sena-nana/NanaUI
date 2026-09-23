@@ -330,9 +330,7 @@ impl AppTitleBar {
 
 impl ComponentView for AppTitleBar {
     /// Lays out the leading, center and trailing slot nodes the application owns.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -704,9 +702,7 @@ impl Default for AppShell {
 
 impl ComponentView for AppShell {
     /// Patches the title bar, body and overlay nodes, which other components own and project.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -926,9 +922,7 @@ impl Default for DesktopShell {
 
 impl ComponentView for DesktopShell {
     /// Patches the body and status nodes, which other components own and project.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

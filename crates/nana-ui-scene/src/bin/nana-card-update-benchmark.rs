@@ -51,21 +51,23 @@ enum Operation {
 }
 
 impl Operation {
+    const ALL: [(Self, &'static str); 3] = [
+        (Self::Noop, "noop"),
+        (Self::Select, "select"),
+        (Self::Label, "label"),
+    ];
+
     fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "noop" => Some(Self::Noop),
-            "select" => Some(Self::Select),
-            "label" => Some(Self::Label),
-            _ => None,
-        }
+        Self::ALL
+            .into_iter()
+            .find_map(|(operation, name)| (name == raw).then_some(operation))
     }
 
     fn name(self) -> &'static str {
-        match self {
-            Self::Noop => "noop",
-            Self::Select => "select",
-            Self::Label => "label",
-        }
+        Self::ALL
+            .into_iter()
+            .find_map(|(operation, name)| (operation == self).then_some(name))
+            .expect("every operation is named")
     }
 }
 
@@ -303,7 +305,7 @@ fn measure(
     let mut flushes = Vec::with_capacity(samples);
     let mut stage_samples: Vec<Vec<Duration>> =
         FrameStage::ALL.iter().map(|_| Vec::new()).collect();
-    let mut stage_ran = [false; 13];
+    let mut stage_ran = [false; FrameStage::ALL.len()];
     let mut generations = 0u64;
     let mut idle = 0usize;
     let mut measured = 0usize;
@@ -371,17 +373,9 @@ fn measure(
     let stages_p50_ms = FrameStage::ALL
         .into_iter()
         .enumerate()
-        .filter(|(index, _)| stage_ran[*index] && !stage_samples[*index].is_empty())
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|(index, stage)| {
-            let sorted = &mut stage_samples[index];
-            sorted.sort_unstable();
-            (
-                format!("{stage:?}"),
-                sorted[(sorted.len() - 1) / 2].as_secs_f64() * 1000.0,
-            )
-        })
+        .zip(stage_samples)
+        .filter(|((index, _), samples)| stage_ran[*index] && !samples.is_empty())
+        .map(|((_, stage), samples)| (format!("{stage:?}"), Stat::from_durations(samples).p50))
         .collect();
     let (counters, accessibility_projected) = last.unwrap_or_default();
     Cell {
@@ -426,20 +420,18 @@ fn main() {
     let samples = text("--samples").map_or(100, |raw| raw.parse().expect("--samples"));
     let warmup = text("--warmup").map_or(20, |raw| raw.parse().expect("--warmup"));
     let operations = text("--op").map_or_else(
-        || vec![Operation::Noop, Operation::Select, Operation::Label],
+        || Operation::ALL.map(|(operation, _)| operation).to_vec(),
         |raw| vec![Operation::parse(&raw).expect("--op noop|select|label")],
     );
-    let parked = match text("--parked").as_deref() {
-        None => vec![true, false],
-        Some("on") => vec![true],
-        Some("off") => vec![false],
-        Some(other) => panic!("--parked on|off, not {other}"),
+    let switch = |flag: &str| {
+        text(flag).map(|raw| match raw.as_str() {
+            "on" => true,
+            "off" => false,
+            other => panic!("{flag} on|off, not {other}"),
+        })
     };
-    let append = match text("--append").as_deref() {
-        None | Some("on") => true,
-        Some("off") => false,
-        Some(other) => panic!("--append on|off, not {other}"),
-    };
+    let parked = switch("--parked").map_or_else(|| vec![true, false], |parked| vec![parked]);
+    let append = switch("--append").unwrap_or(true);
     let rows = list("--rows", &[40, 400]);
     let fillers = list("--filler", &[0, 2000, 8000]);
 

@@ -205,9 +205,7 @@ impl SettingsRow {
 
 impl ComponentView for SettingsRow {
     /// Lays out the control slots the application provides.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {
@@ -501,9 +499,7 @@ impl SettingsCollapsibleCard {
 
 impl ComponentView for SettingsCollapsibleCard {
     /// Lays out and hides the summary and detail slots the application provides.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

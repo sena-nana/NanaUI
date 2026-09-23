@@ -516,9 +516,7 @@ impl Default for Workspace {
 
 impl ComponentView for Workspace {
     /// Writes region styles onto the content nodes the application puts in its regions.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

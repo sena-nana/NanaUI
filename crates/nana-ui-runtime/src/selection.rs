@@ -121,6 +121,11 @@ pub struct SegmentedControl {
 }
 
 impl SegmentedControl {
+    /// The surface its options take: size, chrome and fill.
+    pub(crate) fn option_surface(&self) -> (ControlSize, SelectionChrome, bool) {
+        (self.size, self.chrome, self.fill)
+    }
+
     pub fn new() -> Self {
         Self {
             label: None,

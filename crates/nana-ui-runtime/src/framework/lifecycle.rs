@@ -866,23 +866,6 @@ impl AppContext {
         changed
     }
 
-    /// A menu surface projected while parked asked for its open motion into
-    /// a world that ignores it for unmounted nodes; project it again once it
-    /// is mounted.
-    fn reproject_menu_surface(&mut self, id: StableNodeId) -> Result<(), FrameworkError> {
-        if let Some(popover) = self.view_entity::<crate::Popover>(id) {
-            self.reproject_component(popover)
-        } else if let Some(menu) = self.view_entity::<crate::ActionMenu>(id) {
-            self.reproject_component(menu)
-        } else if let Some(menu) = self.view_entity::<crate::AnchoredActionMenu>(id) {
-            self.reproject_component(menu)
-        } else if let Some(menu) = self.view_entity::<crate::ContextMenu>(id) {
-            self.reproject_component(menu)
-        } else {
-            Ok(())
-        }
-    }
-
     pub(super) fn resume_component_lifecycle(
         &mut self,
         id: StableNodeId,
@@ -900,10 +883,13 @@ impl AppContext {
         // Projections only start timelines and surface motion for mounted
         // nodes, and a remount may never project again on its own.
         if self.world.is_mounted(id) {
-            if let Some(area) = self.view_entity::<TextArea>(id) {
-                self.reproject_component(area)?;
+            if self
+                .views
+                .get(&id)
+                .is_some_and(|view| super::reprojects_on_mount(view.as_ref().type_id()))
+            {
+                self.reproject_view(id, super::Projection::Always)?;
             }
-            self.reproject_menu_surface(id)?;
             let mut mutations = MutationQueue::new();
             if self
                 .views

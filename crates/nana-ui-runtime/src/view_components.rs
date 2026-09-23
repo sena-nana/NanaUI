@@ -315,13 +315,8 @@ pub trait ComponentView: Clone + PartialEq + Send + 'static {
     ///   container making the content it hosts fill its box), which their
     ///   own projections overwrite.
     ///
-    /// Defaults to `false`.
-    fn always_reproject() -> bool
-    where
-        Self: Sized,
-    {
-        false
-    }
+    /// The update still returns early when that projection writes nothing.
+    const ALWAYS_REPROJECT: bool = false;
 }
 
 #[derive(Debug, Clone, PartialEq)]

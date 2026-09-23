@@ -107,6 +107,11 @@ pub struct Tabs {
 }
 
 impl Tabs {
+    /// The surface its options take: size, the tab chrome and fill.
+    pub(crate) fn option_surface(&self) -> (ControlSize, SelectionChrome, bool) {
+        (self.size, SelectionChrome::Tabs, self.fill)
+    }
+
     /// Replaces the node style wholesale.
     ///
     /// Builders that derive layout from other props (such as `size`) overwrite
@@ -343,10 +348,11 @@ impl Tabs {
 }
 
 pub(crate) fn tab_selection_option(option: &TabOption, tabs: &Tabs) -> SegmentedOption {
+    let (size, chrome, fill) = tabs.option_surface();
     let mut child = SegmentedOption::new(Arc::clone(&option.label))
         .disabled(option.disabled)
         .with_selected(tabs.selected.as_ref() == Some(&option.value))
-        .surface(tabs.size, SelectionChrome::Tabs, tabs.fill);
+        .surface(size, chrome, fill);
     if let Some(icon) = option.icon {
         child = child.icon(icon);
     }

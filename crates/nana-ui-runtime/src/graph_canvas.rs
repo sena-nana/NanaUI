@@ -862,9 +862,7 @@ impl GraphCanvas {
 
 impl ComponentView for GraphCanvas {
     /// Positions, hides and sets interaction on the content children the application provides.
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn node_kind(&self) -> NodeKind {
         NodeKind::Element {

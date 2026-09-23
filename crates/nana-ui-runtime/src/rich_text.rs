@@ -875,9 +875,7 @@ impl ComponentView for NativeMarkdown {
     }
 
     /// The selection lives in the shared [`TextSelectionGroup`].
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let plain = self.plain_text();
@@ -1402,9 +1400,7 @@ impl ComponentView for SelectableRichText {
     }
 
     /// The selection lives in the shared [`TextSelectionGroup`].
-    fn always_reproject() -> bool {
-        true
-    }
+    const ALWAYS_REPROJECT: bool = true;
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let plain = self.plain_text();

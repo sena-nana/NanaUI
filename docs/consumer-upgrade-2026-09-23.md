@@ -39,7 +39,7 @@
 
 - `ComponentView` 新增超 trait `PartialEq`：`ComponentView: Clone + PartialEq + Send + 'static`。自定义组件需要派生或实现 `PartialEq`，`project` 读到的每个字段都要参与比较。字段里有闭包的，按 `Arc::ptr_eq` 比较（参考 `CalendarHeatmap`）。泛型组件 `CalendarHeatmap<T>` 相应要求 `T: PartialEq`。
 - 新增 `AppContext::reproject_component(entity)`：组件自身字段没变、但它在 `project` 里读的 world 状态变了，用它重新投影。
-- `ComponentView` 新增可选方法 `always_reproject() -> bool`（默认 `false`）。满足下面任一条件的组件返回 `true`，每次写入都照常投影：
+- `ComponentView` 新增关联常量 `ALWAYS_REPROJECT: bool`（默认 `false`）。满足下面任一条件的组件设为 `true`，相等的写入也会投影一次，投影不产生写入时照样提前返回：
   - `project` 读取共享的内部可变状态（clone 之后仍指向同一份）；
   - `project` 会往别的组件拥有、也会自己投影的节点上打补丁（容器让托管的内容撑满）。
   框架内置的 `Workspace`、`PaneTree`、`PaneChrome`、`AppShell`、`DesktopShell`、`AppTitleBar`、`SidebarFrame`、`SidebarRow`、`SidebarSection`、`SettingsRow`、`SettingsCollapsibleCard`、`GraphCanvas`、`NativeMarkdown`、`SelectableRichText` 已经声明。

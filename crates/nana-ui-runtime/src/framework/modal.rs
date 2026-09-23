@@ -415,27 +415,9 @@ impl AppContext {
         } else if self
             .views
             .get(&root)
-            .is_some_and(|view| view.is::<crate::ActionMenu>())
+            .is_some_and(|view| super::is_menu_surface(view.as_ref().type_id()))
         {
-            self.reproject_component(Entity::<crate::ActionMenu>::from_stable_id(root))?;
-        } else if self
-            .views
-            .get(&root)
-            .is_some_and(|view| view.is::<crate::Popover>())
-        {
-            self.reproject_component(Entity::<crate::Popover>::from_stable_id(root))?;
-        } else if self
-            .views
-            .get(&root)
-            .is_some_and(|view| view.is::<crate::AnchoredActionMenu>())
-        {
-            self.reproject_component(Entity::<crate::AnchoredActionMenu>::from_stable_id(root))?;
-        } else if self
-            .views
-            .get(&root)
-            .is_some_and(|view| view.is::<crate::ContextMenu>())
-        {
-            self.reproject_component(Entity::<crate::ContextMenu>::from_stable_id(root))?;
+            self.reproject_view(root, super::Projection::Always)?;
         }
         Ok(())
     }

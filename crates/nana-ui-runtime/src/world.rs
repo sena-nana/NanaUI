@@ -315,6 +315,21 @@ pub struct CommitReport {
     pub despawned: usize,
 }
 
+impl CommitReport {
+    /// A commit of `mutations` that changed nothing.
+    pub(crate) const fn unchanged(generation: u64, mutations: usize) -> Self {
+        Self {
+            generation,
+            mutations,
+            created: 0,
+            inserted: 0,
+            detached: 0,
+            reparented: 0,
+            despawned: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiWorldError {
     DuplicateNode(StableNodeId),
@@ -666,9 +681,6 @@ pub struct UiWorld {
     /// park). A parked root's whole subtree is `Parked`, so `is_mounted`
     /// already answers presence under it; only these need an ancestor walk.
     detached_mounted: HashSet<StableNodeId>,
-    /// Queue indices the last `commit_ref` skipped as structural no-ops, in
-    /// ascending order.
-    skipped_noops: Vec<usize>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
     live_document_roots: HashMap<DocumentId, BTreeSet<StableNodeId>>,
     /// Nodes carrying an `OverlayHostState` component. Overlay bookkeeping walks
@@ -792,7 +804,6 @@ impl UiWorld {
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
             detached_mounted: HashSet::new(),
-            skipped_noops: Vec::new(),
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
             overlay_hosts_by_document: HashMap::new(),
@@ -1968,16 +1979,6 @@ impl UiWorld {
     }
 
     pub(crate) fn presence_live(&self, id: StableNodeId) -> bool {
-        if !self.is_mounted(id) {
-            return false;
-        }
-        if self.detached_mounted.is_empty() {
-            debug_assert!(
-                self.presence_live_walk(id),
-                "{id:?} sits under a detached root"
-            );
-            return true;
-        }
         self.presence_live_memo(id, &mut AncestorMemo::default())
     }
 

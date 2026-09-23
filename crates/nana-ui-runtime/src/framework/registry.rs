@@ -187,24 +187,20 @@ impl AppContext {
             .entry(TypeId::of::<C>())
             .or_insert(super::reproject_erased::<C>);
         if C::wants_child_reproject() {
-            self.child_reproject_views.insert(id, |context, id| {
-                context.reproject_component(Entity::<C>::from_stable_id(id))
-            });
+            self.child_reproject_views
+                .insert(id, super::reproject_typed::<C>);
         }
         if C::wants_metrics_reproject() {
-            self.metrics_reproject_views.insert(id, |context, id| {
-                context.reproject_component(Entity::<C>::from_stable_id(id))
-            });
+            self.metrics_reproject_views
+                .insert(id, super::reproject_typed::<C>);
         }
         if C::wants_recipe_reproject() {
-            self.recipe_reproject_views.insert(id, |context, id| {
-                context.reproject_component(Entity::<C>::from_stable_id(id))
-            });
+            self.recipe_reproject_views
+                .insert(id, super::reproject_typed::<C>);
         }
         if C::wants_text_backend_reproject() {
-            self.text_backend_reproject_views.insert(id, |context, id| {
-                context.reproject_component(Entity::<C>::from_stable_id(id))
-            });
+            self.text_backend_reproject_views
+                .insert(id, super::reproject_typed::<C>);
         }
         if C::wants_hover_tracking() {
             self.component_lifecycle.hover_cards.entry(id).or_default();
