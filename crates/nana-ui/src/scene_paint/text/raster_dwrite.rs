@@ -25,10 +25,10 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_OUTLINE_THRESHOLD_ANTIALIASED, DWRITE_PIXEL_GEOMETRY_BGR, DWRITE_PIXEL_GEOMETRY_RGB,
     DWRITE_RENDERING_MODE1, DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
     DWRITE_RENDERING_MODE1_OUTLINE, DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
-    DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, DWRITE_TEXTURE_CLEARTYPE_3x1, DWriteCreateFactory,
-    IDWriteFactory, IDWriteFactory5, IDWriteFactory6, IDWriteFontFace, IDWriteFontFace2,
-    IDWriteFontFace3, IDWriteFontFile, IDWriteInMemoryFontFileLoader, IDWriteRenderingParams,
-    IDWriteRenderingParams1,
+    DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, DWRITE_TEXTURE_ALIASED_1x1, DWRITE_TEXTURE_CLEARTYPE_3x1,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFactory5, IDWriteFactory6, IDWriteFontFace,
+    IDWriteFontFace2, IDWriteFontFace3, IDWriteFontFile, IDWriteInMemoryFontFileLoader,
+    IDWriteRenderingParams, IDWriteRenderingParams1,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FE_FONTSMOOTHINGCLEARTYPE, SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGTYPE,
@@ -187,11 +187,17 @@ impl DWrite {
             );
             ManuallyDrop::drop(&mut run.fontFace);
             let analysis = analysis.ok()?;
-            // Both antialias modes answer in three bytes a pixel; grayscale
-            // gives the three the same value.
-            let bounds = analysis
-                .GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1)
-                .ok()?;
+            // ClearType answers in three coverages a pixel, grayscale in one.
+            // The single-coverage texture is `ALIASED_1x1`, whose name only
+            // ever fitted the bi-level mode it was introduced for: asking a
+            // grayscale analysis for the 3x1 texture bounds gets an empty
+            // rectangle back, and with it a glyph with no ink at all.
+            let texture = if subpixel {
+                DWRITE_TEXTURE_CLEARTYPE_3x1
+            } else {
+                DWRITE_TEXTURE_ALIASED_1x1
+            };
+            let bounds = analysis.GetAlphaTextureBounds(texture).ok()?;
             let width = u32::try_from(bounds.right - bounds.left).unwrap_or(0);
             let height = u32::try_from(bounds.bottom - bounds.top).unwrap_or(0);
             if width == 0 || height == 0 {
@@ -205,9 +211,9 @@ impl DWrite {
                 });
             }
             let pixels = width as usize * height as usize;
-            let mut rgb = vec![0u8; pixels * 3];
+            let mut coverage = vec![0u8; pixels * if subpixel { 3 } else { 1 }];
             analysis
-                .CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds, &mut rgb)
+                .CreateAlphaTexture(texture, &bounds, &mut coverage)
                 .ok()?;
             let (format, data) = if subpixel {
                 let mut data = vec![0u8; pixels * 4];
@@ -215,22 +221,13 @@ impl DWrite {
                     .as_chunks_mut::<4>()
                     .0
                     .iter_mut()
-                    .zip(rgb.as_chunks::<3>().0)
+                    .zip(coverage.as_chunks::<3>().0)
                 {
                     encode_subpixel(out, [texel[0], texel[1], texel[2]], key.mode);
                 }
                 (GlyphImageFormat::SubpixelRgb, data)
             } else {
-                let data = rgb
-                    .as_chunks::<3>()
-                    .0
-                    .iter()
-                    .map(|texel| {
-                        ((u16::from(texel[0]) + u16::from(texel[1]) + u16::from(texel[2])) / 3)
-                            as u8
-                    })
-                    .collect();
-                (GlyphImageFormat::Mask, data)
+                (GlyphImageFormat::Mask, coverage)
             };
             Some(GlyphImage {
                 format,
