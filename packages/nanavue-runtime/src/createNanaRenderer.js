@@ -1108,6 +1108,45 @@ globalThis.Nana.windows = {
   },
 };
 
+// Two-phase startup (Issue #225). The host owns the state machine; this is a
+// read of its one record plus two requests. A bundle that loads late reads
+// `state` instead of waiting for an event it may already have missed.
+const nanaStartupListeners = new Set();
+function nanaStartupCall(name, args) {
+  const host = globalThis.__nanaHost;
+  if (!host || typeof host.call !== "function") throw new Error("__nanaHost.call is not registered");
+  // Host-global: never routed through a window.
+  return host.call(name, args);
+}
+globalThis.Nana.startup = {
+  /** `{ phase, splash, ticket, timeline }`, current at the time of the read. */
+  get state() {
+    return nanaStartupCall("startupStatus", []);
+  },
+  /**
+   * Keep the Early Splash after this bundle has been evaluated. Only takes
+   * effect while the host is still starting (during the first evaluation);
+   * returns whether it did.
+   */
+  deferTakeover() {
+    return nanaStartupCall("startupDeferTakeover", []) === true;
+  },
+  /** Let the current primary document replace the splash once it has a frame. */
+  takeOver(ticket) {
+    return nanaStartupCall("startupTakeOver", ticket == null ? [] : [ticket]);
+  },
+  /** Withdraw a takeover that has not completed; its ticket is retired. */
+  cancelTakeover(ticket) {
+    return nanaStartupCall("startupCancelTakeover", ticket == null ? [] : [ticket]);
+  },
+  /** Called with the whole record each time the startup moves on. */
+  onChange(listener) {
+    if (typeof listener !== "function") throw new TypeError("Nana.startup.onChange expects a function");
+    nanaStartupListeners.add(listener);
+    return () => nanaStartupListeners.delete(listener);
+  },
+};
+
 if (globalThis.Nana.host && typeof globalThis.Nana.host.on === "function") {
   globalThis.Nana.host.on("native-component-error", (payload) => {
     const raw = payload && payload.error && typeof payload.error === "object" ? payload.error : {};
@@ -1126,6 +1165,9 @@ if (globalThis.Nana.host && typeof globalThis.Nana.host.on === "function") {
       });
     }
     for (const listener of [...nanaNativeComponentErrorListeners]) listener(error);
+  });
+  globalThis.Nana.host.on("startup", (status) => {
+    for (const listener of [...nanaStartupListeners]) listener(status);
   });
   globalThis.Nana.host.on("window-ready", (payload) => {
     const handle = nanaWindowHandles.get(Number(payload && payload.id));

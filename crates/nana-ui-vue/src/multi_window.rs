@@ -1693,6 +1693,21 @@ impl VueRuntime {
         Ok(())
     }
 
+    /// Tells every realm the host's startup moved on (`Nana.startup`,
+    /// Issue #225). The payload is the whole record, so a listener never has
+    /// to combine events to know where the startup is.
+    pub fn notify_startup(&self, status: HostValue) -> Result<(), JsEngineError> {
+        let senders: Vec<_> = self
+            .state
+            .lock()
+            .map_err(|_| JsEngineError::new("Vue runtime state poisoned"))?
+            .realms
+            .values()
+            .filter_map(|realm| realm.events.clone())
+            .collect();
+        send_reliable(&senders, "startup", status)
+    }
+
     /// Releases the document only after the native host confirms close.
     pub fn notify_window_closed(&self, id: VueWindowId) -> Result<(), JsEngineError> {
         let mut state = self

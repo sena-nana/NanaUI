@@ -877,6 +877,8 @@ pub struct VueRuntimeProgram<E: JsEngine> {
     runtime: VueHostedRuntime<E>,
     documents: HashMap<WindowId, Arc<SharedRuntimeDocument>>,
     theme: ThemeMode,
+    /// `Nana.startup`, when this program was bootstrapped by the host.
+    startup: Option<crate::startup::StartupBridge>,
     #[cfg(feature = "dev-reload")]
     dev: Option<DevState<E>>,
 }
@@ -939,10 +941,12 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
         context: &RuntimeProgramContext<VueMessage>,
         engine: E,
         artifact: RuntimeArtifact,
-        application_api: HostApiRegistry,
+        mut application_api: HostApiRegistry,
     ) -> Result<Self, JsEngineError> {
         let geometry = context.geometry();
-        Self::bootstrap_from_gpu(
+        let startup = crate::startup::StartupBridge::new(context.startup().clone());
+        startup.register(&mut application_api);
+        let mut program = Self::bootstrap_from_gpu(
             context.gpu().clone(),
             geometry.physical_size.0.max(1),
             geometry.physical_size.1.max(1),
@@ -953,7 +957,9 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             artifact,
             application_api,
             Arc::clone(context.store()),
-        )
+        )?;
+        program.startup = Some(startup);
+        Ok(program)
     }
 
     fn bootstrap_from_gpu(
@@ -982,6 +988,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             runtime,
             documents: HashMap::new(),
             theme: ThemeMode::Light,
+            startup: None,
             #[cfg(feature = "dev-reload")]
             dev: None,
         };
@@ -994,6 +1001,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
             runtime,
             documents: HashMap::new(),
             theme: ThemeMode::Light,
+            startup: None,
             #[cfg(feature = "dev-reload")]
             dev: None,
         };
@@ -1368,6 +1376,30 @@ impl<E: JsEngine + 'static> RuntimeProgram for VueRuntimeProgram<E> {
                 error: "window initialization failed".into(),
             });
         self.sync_documents();
+    }
+
+    fn startup_takeover(&self) -> nana_ui::StartupTakeover {
+        if self
+            .startup
+            .as_ref()
+            .is_some_and(crate::startup::StartupBridge::deferred)
+        {
+            nana_ui::StartupTakeover::Deferred
+        } else {
+            nana_ui::StartupTakeover::Immediate
+        }
+    }
+
+    fn startup_changed(
+        &mut self,
+        status: &nana_ui::StartupStatus,
+        _context: &RuntimeProgramContext<Self::Message>,
+    ) -> RuntimeProgramUpdate {
+        let _ = self
+            .runtime
+            .vue
+            .notify_startup(crate::startup::status_value(status));
+        RuntimeProgramUpdate::default()
     }
 
     fn window_event(

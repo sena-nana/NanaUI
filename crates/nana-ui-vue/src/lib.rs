@@ -226,6 +226,8 @@ mod renderer;
 mod scroll;
 mod shared_document;
 mod shell_contract;
+#[cfg(feature = "hosted")]
+mod startup;
 mod style;
 #[cfg(feature = "hosted")]
 mod svg_gpu;
