@@ -264,7 +264,7 @@ impl SettingsRow {
         }
         if let Some(label) = self.label_slot {
             let mut text = Text::new(self.label.as_ref());
-            text.style = label_slot_style();
+            text.style = label_slot_style(self.label.is_empty());
             text.project(label, world, mutations);
         }
         if let Some(hint) = self.hint_slot {
@@ -275,7 +275,9 @@ impl SettingsRow {
     }
 }
 
-fn label_slot_style() -> NodeStyle {
+/// A row without a label (a control that names itself, such as a segmented
+/// picker) keeps no empty line above or beside its control.
+fn label_slot_style(hidden: bool) -> NodeStyle {
     let mut style = NodeStyle::default();
     style.foreground = Some(SemanticColorRole::Text);
     style.text_vertical_alignment = crate::TextVerticalAlignment::Center;
@@ -289,6 +291,7 @@ fn label_slot_style() -> NodeStyle {
     layout.min_width = Some(LengthSpec::Px(0.0));
     layout.white_space_nowrap = true;
     layout.text_overflow_ellipsis = true;
+    layout.hidden = hidden;
     style
 }
 
@@ -298,11 +301,14 @@ fn hint_slot_style(hidden: bool) -> NodeStyle {
     let layout = Arc::make_mut(&mut style.layout);
     layout.font_size = Some(nana_ui_core::type_scale::META);
     layout.font_weight = Some(nana_ui_core::type_scale::REGULAR);
+    // Its own line box: the row's is the label's, too tight for the lines of
+    // a hint that wraps.
+    layout.line_height = Some(LineHeightSpec::Absolute(nana_ui_core::type_scale::LINE));
     layout.width = Some(LengthSpec::Fill);
     layout.flex_shrink = Some(1.0);
     layout.min_width = Some(LengthSpec::Px(0.0));
-    layout.white_space_nowrap = true;
-    layout.text_overflow_ellipsis = true;
+    // The hint says what the setting does; cut to one line it stops saying
+    // it. It wraps under the label, while the label stays a single line.
     layout.hidden = hidden;
     style
 }
@@ -1355,7 +1361,7 @@ fn styled_text(value: impl Into<String>, color: SemanticColorRole, size: f32, we
 }
 
 fn row_label_text(label: &str) -> Text {
-    Text::new(label).style(label_slot_style())
+    Text::new(label).style(label_slot_style(label.is_empty()))
 }
 
 fn row_hint_text(hint: &str, hidden: bool) -> Text {
@@ -2672,8 +2678,10 @@ mod tests {
             Some(nana_ui_core::type_scale::META)
         );
         assert_eq!(hint_style.foreground, Some(SemanticColorRole::Muted));
-        assert!(hint_style.layout.white_space_nowrap);
-        assert!(hint_style.layout.text_overflow_ellipsis);
+        assert!(
+            hint_style.layout.text_wraps() && !hint_style.layout.text_overflow_ellipsis,
+            "a hint wraps under the label instead of being cut"
+        );
         assert!(!hint_style.layout.hidden);
         assert_eq!(
             visible_hint_text(&context, row.stable_id()).as_deref(),
