@@ -662,6 +662,10 @@ pub struct UiWorld {
     /// Subtree roots detached by Remove or Park. Mounted document/scene roots
     /// are created with no parent and are not in this set.
     detached: HashSet<StableNodeId>,
+    /// The `detached` roots that are still `Mounted` (a `Detach`, not a
+    /// park). A parked root's whole subtree is `Parked`, so `is_mounted`
+    /// already answers presence under it; only these need an ancestor walk.
+    detached_mounted: HashSet<StableNodeId>,
     /// Queue indices the last `commit_ref` skipped as structural no-ops.
     skipped_noops: Vec<usize>,
     /// Live roots per document: `parent.is_none()` and [`Self::presence_live`].
@@ -786,6 +790,7 @@ impl UiWorld {
             document_text_selections: HashMap::new(),
             presence_flags: HashMap::new(),
             detached: HashSet::new(),
+            detached_mounted: HashSet::new(),
             skipped_noops: Vec::new(),
             live_document_roots: HashMap::new(),
             overlay_host_nodes: HashSet::new(),
@@ -1836,14 +1841,19 @@ impl UiWorld {
     /// when nothing in the change closure altered it. That is only sound if a
     /// child's layout style cannot change without the child itself being
     /// marked LAYOUT-dirty -- and `set_style` guarantees exactly that (it
-    /// marks the subtree when layout semantics change). The three escapes are
-    /// the adjustments below, every one of which is derived from an ancestor
-    /// and can therefore move without touching the child:
+    /// marks the subtree when layout semantics change). The two escapes are
+    /// the adjustments below, each derived from an ancestor and so able to
+    /// move without touching the child:
     ///
-    /// - `presence_live`, once anything is detached;
     /// - `overlay_branch_active`, when the parent is an overlay host;
     /// - `menu_branch_open` / `parent_triggered_overlay`, when the parent is a
     ///   menu surface.
+    ///
+    /// `presence_live` is ancestor-derived as well, but it never differs
+    /// between a parent and its children: only an unlinked root is ever
+    /// `detached`, a child in `parent`'s list shares its mount state, and a
+    /// subtree that comes back is inserted with all of it marked dirty. A
+    /// parked node elsewhere in the world does not disable the plans.
     ///
     /// Logical edges landed in an inherited writing context are derived from
     /// an ancestor too, but they do not escape: changing an ancestor's
@@ -1851,8 +1861,7 @@ impl UiWorld {
     ///
     /// Reporting false is always safe: it only costs the caller its fast path.
     pub(crate) fn children_layout_style_is_local(&self, parent: StableNodeId) -> bool {
-        self.detached.is_empty()
-            && (self.overlay_host_nodes.is_empty() || self.overlay_host(parent).is_none())
+        (self.overlay_host_nodes.is_empty() || self.overlay_host(parent).is_none())
             && !matches!(
                 self.nodes.visual(parent),
                 Some(StandardVisual::MenuSurface { .. })
@@ -1961,7 +1970,11 @@ impl UiWorld {
         if !self.is_mounted(id) {
             return false;
         }
-        if self.detached.is_empty() {
+        if self.detached_mounted.is_empty() {
+            debug_assert!(
+                self.presence_live_walk(id),
+                "{id:?} sits under a detached root"
+            );
             return true;
         }
         self.presence_live_memo(id, &mut AncestorMemo::default())
@@ -1971,7 +1984,13 @@ impl UiWorld {
         if !self.is_mounted(id) {
             return false;
         }
-        if self.detached.is_empty() {
+        // Every detached root is parked, and a mounted node cannot sit under
+        // a parked one: nothing to walk.
+        if self.detached_mounted.is_empty() {
+            debug_assert!(
+                self.presence_live_walk(id),
+                "{id:?} sits under a detached root"
+            );
             return true;
         }
         memo.chain.clear();
@@ -1993,6 +2012,19 @@ impl UiWorld {
             memo.live.insert(node, live);
         }
         live
+    }
+
+    /// `presence_live` by the ancestor walk alone, to check the shortcut.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    fn presence_live_walk(&self, id: StableNodeId) -> bool {
+        let mut current = Some(id);
+        while let Some(node) = current {
+            if self.detached.contains(&node) {
+                return false;
+            }
+            current = self.parent_id(node);
+        }
+        true
     }
 
     fn presence_flags_of(&self, id: StableNodeId) -> PresenceFlags {
@@ -2559,6 +2591,11 @@ impl UiWorld {
         let subtree = self.subtree_ids(root);
         self.retire_subtree_from_document(&subtree);
         self.detached.insert(root);
+        if self.mount_state(root) == Some(MountState::Parked) {
+            self.detached_mounted.remove(&root);
+        } else {
+            self.detached_mounted.insert(root);
+        }
         self.sync_subtree_presence(root);
     }
 

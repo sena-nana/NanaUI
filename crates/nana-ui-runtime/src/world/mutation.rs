@@ -1201,6 +1201,7 @@ impl UiWorld {
                     report.inserted += 1;
                 }
                 self.detached.remove(child);
+                self.detached_mounted.remove(child);
                 self.sync_subtree_presence(*child);
                 self.refresh_root_membership(*child);
                 self.note_structural_change(*parent);
@@ -1299,6 +1300,7 @@ impl UiWorld {
                         self.drop_hover = None;
                     }
                     self.detached.remove(&id);
+                    self.detached_mounted.remove(&id);
                     self.retired.insert(id);
                     self.pending_render_removals.push(id);
                     self.pending_accessibility_removals.push(id);

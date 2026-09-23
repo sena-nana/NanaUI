@@ -4275,6 +4275,7 @@ struct ScopedStep {
     emitted: usize,
     children_measured: usize,
     measure_plans_reused: usize,
+    plans_reused: usize,
 }
 
 fn scoped_step_matches_full(
@@ -4296,6 +4297,7 @@ fn scoped_step_matches_full(
         emitted: emitted.len(),
         children_measured: super::plan_stats::children_measured(),
         measure_plans_reused: super::plan_stats::measure_plans_reused(),
+        plans_reused: super::plan_stats::plans_reused(),
     };
     write_changed_boxes(world, &emitted);
     let _ = world.take_system_work();
@@ -4597,11 +4599,8 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
         )
         .measure_plans_reused;
 
-        // Structural edits. Append FIRST: a detach leaves a detached node in
-        // the world, which turns `children_layout_style_is_local` off for the
-        // rest of the run and retires both plans. An append after it would
-        // exercise nothing -- the plans it is meant to invalidate are already
-        // gone.
+        // Structural edits: append, then detach and park rows, then edit and
+        // put a row back while detached and parked subtrees sit in the world.
         let fresh = id(3 + ROWS as u64 * 2 + 100);
         let mut queue = MutationQueue::new();
         queue.create(fresh, document, NodeKind::Element { tag: "div".into() });
@@ -4634,6 +4633,81 @@ fn scoped_layout_matches_full_recompute_across_container_shapes_and_edits() {
             &format!("{} detach row 5", shape.name),
         )
         .measure_plans_reused;
+
+        // Issue #228: a parked or detached node anywhere in the world used to
+        // turn every container's plans off. Real documents always have one.
+        let mut queue = MutationQueue::new();
+        queue.park_subtree(id(3 + 9 * 2));
+        world.commit(queue).unwrap();
+        scoped_step_matches_full(
+            &mut world,
+            document,
+            viewport,
+            &mut retained,
+            &format!("{} park row 9", shape.name),
+        );
+        let mut reused_with_detached = 0;
+        for &row in &[ROWS - 1, ROWS / 2 + 1, 1] {
+            for &height in &[27.0f32, 20.0] {
+                let mut style = (shape.row)(row);
+                style.height = Some(LengthSpec::Px(height));
+                let mut queue = MutationQueue::new();
+                queue.set_style(
+                    id(3 + row as u64 * 2),
+                    NodeStyle {
+                        layout: Arc::new(style),
+                        ..NodeStyle::default()
+                    },
+                );
+                world.commit(queue).unwrap();
+                let step = scoped_step_matches_full(
+                    &mut world,
+                    document,
+                    viewport,
+                    &mut retained,
+                    &format!(
+                        "{} row {row} height {height} beside detached rows",
+                        shape.name
+                    ),
+                );
+                reused_with_detached += step.plans_reused + step.measure_plans_reused;
+            }
+        }
+        assert!(
+            reused_with_detached > 0,
+            "{}: no plan was reused while detached rows sat in the world",
+            shape.name
+        );
+        for (label, parked) in [("detached row 5", 5u64), ("parked row 9", 9)] {
+            let mut queue = MutationQueue::new();
+            queue.insert(id(2), id(3 + parked * 2), Some(id(3 + (parked + 1) * 2)));
+            world.commit(queue).unwrap();
+            scoped_step_matches_full(
+                &mut world,
+                document,
+                viewport,
+                &mut retained,
+                &format!("{} reinsert {label}", shape.name),
+            );
+            let mut style = (shape.row)(parked as usize);
+            style.height = Some(LengthSpec::Px(31.0));
+            let mut queue = MutationQueue::new();
+            queue.set_style(
+                id(3 + parked * 2),
+                NodeStyle {
+                    layout: Arc::new(style),
+                    ..NodeStyle::default()
+                },
+            );
+            world.commit(queue).unwrap();
+            scoped_step_matches_full(
+                &mut world,
+                document,
+                viewport,
+                &mut retained,
+                &format!("{} resize reinserted {label}", shape.name),
+            );
+        }
 
         assert!(
             measure_plans_reused > 0,
@@ -4823,11 +4897,20 @@ fn scoped_layout_contained_edit_does_not_scan_siblings_as_the_document_grows() {
     // tell whether the MEASURE side is incremental. A hugging container has no
     // short circuit: it reaches `MeasurePlan` for every frame, and a regression
     // there shows up as a sibling scan that grows with the document.
-    contained_edit_stays_flat(Some(LengthSpec::Px(40000.0)));
-    contained_edit_stays_flat(None);
+    contained_edit_stays_flat(Some(LengthSpec::Px(40000.0)), false);
+    contained_edit_stays_flat(None, false);
 }
 
-fn contained_edit_stays_flat(container_height: Option<LengthSpec>) {
+/// Issue #228: the same gate with a parked row in the world. Any parked or
+/// detached node used to switch every container's plans off, and a real
+/// document always has one.
+#[test]
+fn scoped_layout_contained_edit_stays_flat_beside_a_parked_row() {
+    contained_edit_stays_flat(Some(LengthSpec::Px(40000.0)), true);
+    contained_edit_stays_flat(None, true);
+}
+
+fn contained_edit_stays_flat(container_height: Option<LengthSpec>, parked_row: bool) {
     let hugging = container_height.is_none();
     let viewport = LayoutViewport::new(320.0, 4000.0);
     let shape = DiffShape {
@@ -4847,6 +4930,11 @@ fn contained_edit_stays_flat(container_height: Option<LengthSpec>) {
     let mut emitted_by_rows = Vec::new();
     for rows in [64usize, 512] {
         let (mut world, document) = diff_tree(&shape, rows);
+        if parked_row {
+            let mut queue = MutationQueue::new();
+            queue.park_subtree(id(3 + 2));
+            world.commit(queue).unwrap();
+        }
         let mut retained = RetainedLayoutCache::default();
         let _ = world.take_system_work();
         let emitted = RuntimeLayoutEngine
