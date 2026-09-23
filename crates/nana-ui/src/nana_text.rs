@@ -141,6 +141,19 @@ pub fn set_sans_serif_family(name: impl AsRef<str>) {
     crate::text_engine::set_sans_serif_family(name.as_ref());
 }
 
+/// Measure and draw with the bundled faces only, never the platform's.
+///
+/// For baselines that must agree across machines. Call before any text is
+/// shaped; returns `false` when the engine was already built with system
+/// fonts, in which case nothing changed.
+///
+/// Only with `bundled-fonts`: those faces are the whole font set a hermetic
+/// engine has, so without them there would be nothing left to measure with.
+#[cfg(feature = "bundled-fonts")]
+pub fn use_hermetic_fonts() -> bool {
+    crate::text_engine::use_hermetic_fonts()
+}
+
 /// Family names of the faces the engine actually used to shape `text` when
 /// asked for `family`.
 ///

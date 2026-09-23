@@ -315,6 +315,15 @@ pub(super) fn generate_semantic(
     theme: ThemeMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_fixture_registry().map_err(std::io::Error::other)?;
+    // The semantic baseline is checked on every OS, so text is measured with
+    // the bundled faces alone: a glyph they lack (⌫, ⌘, emoji) would otherwise
+    // take the width of whichever system font the host falls back to.
+    if !nana_ui::use_hermetic_fonts() {
+        return Err(std::io::Error::other(
+            "the text engine was built with system fonts before the semantic pass",
+        )
+        .into());
+    }
 
     let theme_name = match theme {
         ThemeMode::Dark => "dark",

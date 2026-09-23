@@ -9,6 +9,7 @@
 //! [`crate::nana_text`] is the public host API over it (`@font-face`, CSS
 //! aliases, the product [`NanaTextShaper`](crate::nana_text::NanaTextShaper)).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nana_text::font::{FaceDescriptor, FontError, FontStyle, FontSystem, GenericFamily, font_blob};
@@ -19,6 +20,10 @@ use nana_text::{NativeTextEngine, SharedTextEngine};
 const BUNDLED_UI_FAMILY: &str = "Noto Sans SC";
 
 static ENGINE: OnceLock<SharedTextEngine> = OnceLock::new();
+/// Read once, by whichever call builds [`ENGINE`].
+static HERMETIC_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// What [`ENGINE`] was actually built with.
+static BUILT_HERMETIC: AtomicBool = AtomicBool::new(false);
 
 /// The process-wide `nana-text` engine.
 ///
@@ -27,6 +32,25 @@ static ENGINE: OnceLock<SharedTextEngine> = OnceLock::new();
 /// a glyph cache keyed by face id cannot survive.
 pub(crate) fn nana_text_engine() -> SharedTextEngine {
     Arc::clone(ENGINE.get_or_init(|| Arc::new(Mutex::new(NativeTextEngine::new(build_fonts())))))
+}
+
+/// Build the engine without platform fonts: only the bundled faces, under an
+/// empty fallback policy, so every machine measures the same widths. For
+/// cross-platform baselines — a glyph the bundled faces lack would otherwise
+/// be measured in whatever system font the host happens to fall back to.
+///
+/// Must run before anything first touches the engine. Returns whether the
+/// engine is hermetic; `false` means it was already built with system fonts.
+///
+/// Needs `bundled-fonts`: without it a hermetic engine holds no face at all,
+/// and every measurement would come back empty.
+#[cfg(feature = "bundled-fonts")]
+pub(crate) fn use_hermetic_fonts() -> bool {
+    HERMETIC_REQUESTED.store(true, Ordering::SeqCst);
+    // Forcing the build settles a race with a concurrent first caller: once
+    // it returns, `BUILT_HERMETIC` records what the engine really holds.
+    let _ = nana_text_engine();
+    BUILT_HERMETIC.load(Ordering::SeqCst)
 }
 
 /// Borrow the shared engine. Poisoning is recovered from: a panic elsewhere
@@ -47,13 +71,19 @@ pub(crate) fn engine_font_generation() -> u64 {
 }
 
 fn build_fonts() -> FontSystem {
+    let hermetic = HERMETIC_REQUESTED.load(Ordering::SeqCst);
+    BUILT_HERMETIC.store(hermetic, Ordering::SeqCst);
     #[allow(unused_mut)]
-    let mut fonts = FontSystem::with_system_fonts();
+    let mut fonts = if hermetic {
+        FontSystem::hermetic()
+    } else {
+        FontSystem::with_system_fonts()
+    };
     #[cfg(target_os = "android")]
     {
         // The platform scan covers no directory on Android. Registered file
         // by file so a single unreadable face does not lose the directory.
-        if let Ok(entries) = std::fs::read_dir("/system/fonts") {
+        if !hermetic && let Ok(entries) = std::fs::read_dir("/system/fonts") {
             for entry in entries.flatten() {
                 let _ = fonts.register_file(entry.path(), &FaceDescriptor::default());
             }

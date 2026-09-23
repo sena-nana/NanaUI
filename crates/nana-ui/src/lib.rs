@@ -222,6 +222,8 @@ pub use nana_frame_exchange::{
 /// [`IconData`]. The linker drops every constant the product never names.
 #[cfg(feature = "icons-tabler")]
 pub use nana_icons_tabler as icons_tabler;
+#[cfg(feature = "bundled-fonts")]
+pub use nana_text::use_hermetic_fonts;
 pub use nana_text::{
     HostFontError, HostFontStyle, NanaTextShaper, alias_host_font_face_local,
     register_host_font_bytes, register_host_font_face, register_host_font_face_styled,
