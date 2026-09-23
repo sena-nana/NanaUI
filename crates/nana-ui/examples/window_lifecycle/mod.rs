@@ -16,7 +16,7 @@ static RESULT: Mutex<Option<Result<(), String>>> = Mutex::new(None);
 /// What the application actually observed, printed when the lifecycle fails.
 /// A timeout says which wait gave up; this says what had arrived before it.
 static TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-fn trace(entry: String) {
+pub fn trace(entry: String) {
     TRACE.lock().unwrap().push(entry);
 }
 pub enum Message {

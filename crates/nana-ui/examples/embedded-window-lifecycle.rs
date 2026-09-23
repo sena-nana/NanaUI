@@ -12,6 +12,16 @@ struct Host {
     runtime: Option<EmbeddedRuntime<RuntimeApplication<window_lifecycle::App>>>,
     proxy: EventLoopProxy,
 }
+/// Record the host's GPU-replacement flag only when it flips: a window that
+/// stopped presenting because rendering was suspended again looks exactly like
+/// one that was never asked to draw, and the trace has to tell them apart.
+fn trace_gpu_suspended(suspended: bool) {
+    static LAST: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    if last.replace(suspended) != Some(suspended) {
+        window_lifecycle::trace(format!("NeedsGpuReplacement {{ {suspended} }}"));
+    }
+}
 impl ApplicationHandler for Host {
     fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
         if self.runtime.is_some() {
@@ -63,6 +73,7 @@ impl ApplicationHandler for Host {
     }
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         if let Some(runtime) = self.runtime.as_mut() {
+            trace_gpu_suspended(runtime.needs_gpu_replacement());
             let deadline = runtime.about_to_wait(event_loop);
             event_loop.set_control_flow(deadline.map_or(
                 winit::event_loop::ControlFlow::Wait,
