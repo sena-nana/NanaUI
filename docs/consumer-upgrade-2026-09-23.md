@@ -72,7 +72,7 @@
 ### 行为变化
 
 - **设备不再在事件线程上请求。** 独立宿主在窗口线程创建窗口与 surface，adapter、设备和第一个 scene painter 的 pipeline 在 `nana-startup-gpu` 线程上建。`initialize` 仍在窗口线程、仍在设备就绪之后调用，程序看到的顺序不变。
-- **图标异步应用。** macOS 不再为窗口属性栅格化默认图标（winit 在 macOS 上不用窗口图标）；主窗口的图标与 Dock 图标在后台渲染，到达时应用，可能比窗口首次显示晚一点。
+- **图标异步应用。** macOS 不再为窗口属性栅格化默认图标（winit 在 macOS 上不用窗口图标）；Dock 图标在后台渲染，到达时应用，可能比窗口首次显示晚一点。Windows 的窗口图标与任务栏图标仍在建窗时设好。程序在此之前通过 `SetIcon` / `SetApplicationIcon` 设置的图标不会被迟到的渲染覆盖。
 - **窗口清屏色改为线性。** 宿主以前把主题的 sRGB 背景直接当线性清屏色，文档没盖住的区域（加载页、live resize 的边缘）显示成 `#565656`，而不是暗色主题的 `#181818`。现在与画布上的颜色一致。依赖过旧颜色的截图需要重看。
 - **macOS 上报减少动态效果。** `RuntimeProgramContext::reduced_motion()` 在 macOS 上读取系统设置（以前恒为 `false`）；运行中切换仍不发送事件。副窗口 `build` 时的上下文现在也带着这个值（以前恒为 `false`）。
 - **macOS live resize 的事务 present 生效了。** `set_present_transaction` 以前把视图根层当作 `CAMetalLayer`，而 wgpu 30 把它插为子层，所以固定从未成功；现在能找到子层，live resize 期间的 present 真正与 Core Animation 事务同步。
