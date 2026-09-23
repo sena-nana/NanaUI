@@ -427,8 +427,13 @@ impl ApplicationPaths {
                 PathPlatform::Linux => {
                     let home = env.var("HOME");
                     let xdg = |var: &'static str, fallback: &str| {
+                        // XDG ignores a relative value. Absolute means POSIX
+                        // absolute, not whatever the host this runs on calls
+                        // absolute: `Path::is_absolute` wants a drive letter
+                        // on Windows and would drop every well-formed value
+                        // when this platform is resolved from there.
                         env.var(var)
-                            .filter(|p| p.is_absolute())
+                            .filter(|p| p.starts_with("/"))
                             .or_else(|| home.as_ref().map(|h| h.join(fallback)))
                             .ok_or(PathsError::MissingEnvironment("HOME"))
                     };
