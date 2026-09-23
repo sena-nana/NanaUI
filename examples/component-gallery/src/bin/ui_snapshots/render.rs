@@ -1310,10 +1310,8 @@ fn paint_gallery(
     }
 }
 
-/// The theme background as sRGB, deliberately not linear. `OffscreenSnapshots`
-/// converts it for the painter's linear `ScenePaintViewport::clear_color`, and
-/// `Recorder::record` compares it against sRGB pixels; converting here as well
-/// would clear dark frames to #020202 instead of #181818.
+/// sRGB on purpose: `OffscreenSnapshots` converts it to linear itself, and
+/// `Recorder::record` compares it against sRGB pixels.
 fn clear_color(theme: ThemeMode) -> [f32; 4] {
     let color = theme.palette().background;
     [color.r, color.g, color.b, 1.0]

@@ -416,13 +416,7 @@ fn render_fixture(
     } else {
         (None, None)
     };
-    let colors = theme.palette();
-    let clear = [
-        colors.background.r,
-        colors.background.g,
-        colors.background.b,
-        colors.background.a,
-    ];
+    let clear = super::clear_color(theme);
     let pixels = snapshots.paint(
         runtime.document.scene(),
         size,
