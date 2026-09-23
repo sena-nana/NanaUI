@@ -58,6 +58,9 @@ pub struct App {
     worker: Option<std::thread::JoinHandle<()>>,
     exiting: bool,
     cleaned: std::collections::HashSet<WindowId>,
+    /// Taken by the first `Pump`, which the host only delivers from its
+    /// running event loop.
+    looping: Option<mpsc::Sender<()>>,
     focused: mpsc::Sender<WindowId>,
     presented: mpsc::Sender<(WindowId, u64)>,
     resized: mpsc::Sender<(WindowId, (f32, f32))>,
@@ -124,6 +127,7 @@ impl ApplicationState for App {
         let (focused_tx, focused_rx) = mpsc::channel();
         let (modes_tx, modes_rx) = mpsc::channel();
         let (tags_tx, tags_rx) = mpsc::channel();
+        let (looping_tx, looping_rx) = mpsc::channel();
         if std::env::args().any(|arg| arg == "--probe-host-stop") {
             let service = context.windows().clone();
             let worker_service = service.clone();
@@ -154,6 +158,7 @@ impl ApplicationState for App {
                 worker: Some(worker),
                 exiting: false,
                 cleaned: Default::default(),
+                looping: None,
                 focused: focused_tx,
                 presented: tx,
                 resized: resized_tx,
@@ -169,6 +174,14 @@ impl ApplicationState for App {
                 let service = context.windows();
                 let primary = context.window();
                 let mut generation = None;
+                // The host builds the scene painter once per device on its
+                // window thread before it enters the loop; with FXC on a CPU
+                // adapter in a debug build that is ~10 s, and the device-loss
+                // probe pays it twice. That setup is the host's, so the first
+                // frame is timed from the loop, not from this thread's start.
+                looping_rx
+                    .recv_timeout(Duration::from_secs(120))
+                    .map_err(|error| format!("the host never entered its event loop: {error}"))?;
                 presented(&rx, &primary, &mut generation)?;
                 if !matches!(
                     service
@@ -399,6 +412,7 @@ impl ApplicationState for App {
             worker: None,
             exiting: false,
             cleaned: Default::default(),
+            looping: Some(looping_tx),
             focused: focused_tx,
             presented: tx,
             resized: resized_tx,
@@ -502,6 +516,9 @@ impl ApplicationState for App {
     ) -> RuntimeProgramUpdate {
         let result = match result {
             Message::Pump => {
+                if let Some(looping) = self.looping.take() {
+                    let _ = looping.send(());
+                }
                 context.dispatch(Message::Pump);
                 return RuntimeProgramUpdate::default();
             }
