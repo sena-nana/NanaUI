@@ -78,6 +78,71 @@ fn button_leading_icon_measures_real_text_and_centers_the_group() {
 }
 
 #[test]
+fn button_trailing_icon_follows_the_label_inside_one_centred_group() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let root = cx
+        .create_component(
+            doc,
+            Stack::column(8.0).align(nana_ui_core::AlignSpec::Start),
+        )
+        .unwrap();
+    let leading = cx
+        .create_detached_component(
+            doc,
+            Button::new("舞台 1")
+                .icon(Icon::File)
+                .icon_size(15.0)
+                .icon_gap(6.0),
+        )
+        .unwrap();
+    let both = cx
+        .create_detached_component(
+            doc,
+            Button::new("舞台 1")
+                .icon(Icon::File)
+                .trailing_icon(Icon::ChevronDown)
+                .icon_size(15.0)
+                .icon_gap(6.0),
+        )
+        .unwrap();
+    cx.append_child(root, leading).unwrap();
+    cx.append_child(root, both).unwrap();
+    let ids = [root.stable_id(), leading.stable_id(), both.stable_id()];
+    layout(&mut cx, doc, &ids);
+    let a = cx.world().layout_box(leading.stable_id()).unwrap();
+    let b = cx.world().layout_box(both.stable_id()).unwrap();
+    assert!((b.width - a.width - 21.0).abs() < 0.1, "{a:?} {b:?}");
+
+    for width in [240.0, 70.0] {
+        cx.update_component(both, |view, _| {
+            Arc::make_mut(&mut view.style.layout).width = Some(LengthSpec::Px(width));
+        })
+        .unwrap();
+        layout(&mut cx, doc, &ids);
+        let outer = cx.world().layout_box(both.stable_id()).unwrap();
+        let ComponentGeometry::Button {
+            icon: Some((_, lead)),
+            trailing_icon: Some((glyph, trail)),
+            label,
+            ..
+        } = cx.world().component_geometry(both.stable_id()).unwrap()
+        else {
+            panic!("both glyphs")
+        };
+        assert_eq!(glyph, Icon::ChevronDown);
+        assert_eq!(trail.width, 15.0, "the label gives up width first");
+        assert!((label.bounds.x - lead.x - lead.width - 6.0).abs() < 0.1);
+        assert!((trail.x - label.bounds.x - label.bounds.width - 6.0).abs() < 0.1);
+        assert!(
+            ((lead.x + trail.x + trail.width) / 2.0 - (outer.x + outer.width / 2.0)).abs() < 0.1,
+            "the group is centred"
+        );
+        assert!(trail.x + trail.width <= outer.x + outer.width + 0.01);
+    }
+}
+
+#[test]
 fn button_loading_replaces_icon_and_preserves_normal_activation_gates() {
     let mut cx = AppContext::new();
     let doc = DocumentId::new(1).unwrap();

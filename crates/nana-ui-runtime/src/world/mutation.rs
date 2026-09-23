@@ -1605,6 +1605,7 @@ impl UiWorld {
                     (
                         Some(StandardVisual::Button {
                             icon: a,
+                            trailing_icon: ta,
                             icon_size: sa,
                             icon_gap: ga,
                             loading: la,
@@ -1612,12 +1613,16 @@ impl UiWorld {
                         }),
                         Some(StandardVisual::Button {
                             icon: b,
+                            trailing_icon: tb,
                             icon_size: sb,
                             icon_gap: gb,
                             loading: lb,
                             ..
                         }),
-                    ) => (a.is_some(), sa, ga, la) != (b.is_some(), sb, gb, lb),
+                    ) => {
+                        (a.is_some(), ta.is_some(), sa, ga, la)
+                            != (b.is_some(), tb.is_some(), sb, gb, lb)
+                    }
                     (_, Some(StandardVisual::Button { .. }))
                     | (Some(StandardVisual::Button { .. }), _) => true,
                     _ => false,

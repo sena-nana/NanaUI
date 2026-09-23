@@ -5112,6 +5112,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     };
     action.standard_visual = Some(StandardVisual::Button {
         icon: None,
+        trailing_icon: None,
         icon_size: 14.0,
         icon_gap: 6.0,
         label: Arc::from("Delete"),
@@ -5123,6 +5124,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
+        trailing_icon: None,
         label: label.clone(),
         spinner: Some(LayoutBox {
             x: 42.0,
@@ -5150,6 +5152,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
 
     action.standard_visual = Some(StandardVisual::Button {
         icon: None,
+        trailing_icon: None,
         icon_size: 14.0,
         icon_gap: 6.0,
         label: Arc::from("Delete"),
@@ -5161,6 +5164,7 @@ fn confirm_action_scene_restores_label_after_busy_spinner_clears() {
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
+        trailing_icon: None,
         label,
         spinner: None,
         background: Some([0.2, 0.4, 0.8, 1.0]),
@@ -5259,6 +5263,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
     action.focused = true;
     action.standard_visual = Some(StandardVisual::Button {
         icon: None,
+        trailing_icon: None,
         icon_size: 14.0,
         icon_gap: 6.0,
         label: Arc::from("Action"),
@@ -5270,6 +5275,7 @@ fn empty_state_separates_intrinsic_clip_from_focused_action_root_clip() {
     });
     action.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
+        trailing_icon: None,
         label: ComponentTextRegion {
             bounds: LayoutBox {
                 x: 20.0,
@@ -6600,6 +6606,7 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
     };
     button.standard_visual = Some(StandardVisual::Button {
         icon: None,
+        trailing_icon: None,
         icon_size: 14.0,
         icon_gap: 6.0,
         label: Arc::from("Open"),
@@ -6611,6 +6618,7 @@ fn host_and_child_text_extract_one_visible_text_primitive() {
     });
     button.component_geometry = Some(Box::new(ComponentGeometry::Button {
         icon: None,
+        trailing_icon: None,
         label,
         spinner: None,
         background: None,

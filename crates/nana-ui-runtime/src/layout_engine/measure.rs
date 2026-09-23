@@ -467,15 +467,23 @@ pub(super) fn intrinsic_size_scoped(
     if let Some(crate::StandardVisual::Button {
         label,
         icon,
+        trailing_icon,
         icon_size,
         icon_gap,
         loading,
         ..
     }) = nodes.world.standard_visual(id)
-        && (loading || icon.is_some())
     {
-        content.width += icon_size + if label.is_empty() { 0.0 } else { icon_gap };
-        content.height = content.height.max(icon_size);
+        let leading = loading || icon.is_some();
+        let trailing = trailing_icon.is_some();
+        // Each glyph brings its own size, and a gap to whatever it stands
+        // beside: the label, or the other glyph when there is no label.
+        let glyphs = usize::from(leading) + usize::from(trailing);
+        let parts = glyphs + usize::from(!label.is_empty());
+        if glyphs > 0 {
+            content.width += glyphs as f32 * icon_size + (parts - 1) as f32 * icon_gap;
+            content.height = content.height.max(icon_size);
+        }
     }
     if let Some(crate::StandardVisual::Checkbox { size, .. }) = nodes.world.standard_visual(id) {
         content.width += size.indicator_size()

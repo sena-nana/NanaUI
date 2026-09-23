@@ -297,45 +297,59 @@ impl UiWorld {
                 label,
                 loading,
                 icon,
+                trailing_icon,
                 icon_size,
                 icon_gap,
                 ..
             } => {
+                // One centred group: [leading glyph] label [trailing glyph].
+                // The label gives up width first; the glyphs keep theirs.
+                let glyph = icon_size.min(content.height).min(content.width).max(0.0);
                 let has_leading = *loading || icon.is_some();
-                let extent = if has_leading {
-                    icon_size.min(content.height).min(content.width).max(0.0)
-                } else {
-                    0.0
-                };
-                let gap = if has_leading && !label.is_empty() {
+                let extent = if has_leading { glyph } else { 0.0 };
+                let trailing_extent = if trailing_icon.is_some() { glyph } else { 0.0 };
+                let gap = if has_leading && (!label.is_empty() || trailing_icon.is_some()) {
                     icon_gap.min((content.width - extent).max(0.0))
                 } else {
                     0.0
                 };
-                let label_width = self.text_metrics(id).map_or(0.0, |metrics| {
-                    metrics.width.min((content.width - extent - gap).max(0.0))
-                });
-                let group_width = label_width + extent + gap;
-                let group_x = content.x + (content.width - group_width) / 2.0;
-                let leading = LayoutBox {
-                    x: group_x,
-                    y: content.y + (content.height - extent) / 2.0,
-                    width: extent,
-                    height: extent,
+                let trailing_gap = if trailing_icon.is_some() && !label.is_empty() {
+                    *icon_gap
+                } else {
+                    0.0
                 };
+                let reserved = extent + gap + trailing_gap + trailing_extent;
+                let label_width = self.text_metrics(id).map_or(0.0, |metrics| {
+                    metrics.width.min((content.width - reserved).max(0.0))
+                });
+                let group_width = (label_width + reserved).min(content.width);
+                let group_x = content.x + (content.width - group_width) / 2.0;
+                let glyph_box = |x: f32, size: f32| LayoutBox {
+                    x,
+                    y: content.y + (content.height - size) / 2.0,
+                    width: size,
+                    height: size,
+                };
+                let leading = glyph_box(group_x, extent);
                 let spinner = (*loading).then_some(leading);
                 let label_x = group_x + extent + gap;
+                let trailing = glyph_box(group_x + group_width - trailing_extent, trailing_extent);
                 Some(crate::ComponentGeometry::Button {
                     icon: if *loading {
                         None
                     } else {
                         icon.map(|icon| (icon, leading))
                     },
+                    trailing_icon: trailing_icon.map(|icon| (icon, trailing)),
                     label: text_region(
                         LayoutBox {
                             x: label_x,
                             y: content.y,
-                            width: (group_x + group_width - label_x).max(0.0),
+                            width: (group_x + group_width
+                                - trailing_extent
+                                - trailing_gap
+                                - label_x)
+                                .max(0.0),
                             height: content.height,
                         },
                         Arc::clone(label),

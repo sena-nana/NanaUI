@@ -11,10 +11,19 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     let style = context.node.source_style.layout.as_ref();
     let id = context.node.id;
     match context.node.component_geometry.as_deref() {
-        Some(ComponentGeometry::Button { label, icon, .. }) => {
-            if let Some((icon, bounds)) = icon {
+        Some(ComponentGeometry::Button {
+            label,
+            icon,
+            trailing_icon,
+            ..
+        }) => {
+            // Slot 4 leads, slot 5 trails; both take the label's colour.
+            for (slot, (icon, bounds)) in [(4, icon), (5, trailing_icon)]
+                .into_iter()
+                .filter_map(|(slot, glyph)| glyph.as_ref().map(|glyph| (slot, glyph)))
+            {
                 emit(ScenePrimitive {
-                    id: PrimitiveId { node: id, slot: 4 },
+                    id: PrimitiveId { node: id, slot },
                     node: id,
                     bounds: scene_rect(*bounds),
                     transform,

@@ -728,6 +728,9 @@ pub enum StandardVisual {
     Button {
         label: Arc<str>,
         icon: Option<nana_ui_core::Icon>,
+        /// A glyph after the label, such as the chevron of a picker. Same
+        /// size and gap as the leading one.
+        trailing_icon: Option<nana_ui_core::Icon>,
         icon_size: f32,
         icon_gap: f32,
         kind: nana_ui_core::ButtonKind,
@@ -1268,6 +1271,7 @@ pub enum ComponentGeometry {
     },
     Button {
         icon: Option<(nana_ui_core::Icon, LayoutBox)>,
+        trailing_icon: Option<(nana_ui_core::Icon, LayoutBox)>,
         label: ComponentTextRegion,
         spinner: Option<LayoutBox>,
         background: Option<[f32; 4]>,

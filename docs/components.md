@@ -239,7 +239,9 @@ Vue 使用 `NanaDonutChart` 的 `slices` / `labels` / `cutout`，以及
 
 `Button::icon(icon).icon_size(px).icon_gap(px)` 把图标与文字作为同一内容组量测、
 居中和裁剪，保持一个按钮的 Activate、焦点与禁用语义。loading 用 spinner 替换
-图标而不叠加第二个槽位；仅 spinner 相位变化不触发布局。
+图标而不叠加第二个槽位；仅 spinner 相位变化不触发布局。`trailing_icon(icon)` 在
+文字之后放第二个图标（选择器、菜单按钮的下拉箭头），尺寸与间距沿用前置图标；
+宽度不够时先裁文字，两个图标保持原尺寸。
 
 ### HoverCard 编辑器焦点
 

@@ -138,6 +138,7 @@ impl ComponentView for Chip {
         }
         let visual = StandardVisual::Button {
             icon: None,
+            trailing_icon: None,
             icon_size: self.size.icon_size(),
             icon_gap: nana_ui_core::space::SM,
             label: Arc::clone(&self.label),
@@ -269,6 +270,7 @@ mod tests {
             visual,
             StandardVisual::Button {
                 icon: None,
+                trailing_icon: None,
                 icon_size: ControlSize::Small.icon_size(),
                 icon_gap: 6.0,
                 label: Arc::from("Beta"),

@@ -432,6 +432,7 @@ impl ComponentView for Text {
 pub struct Button {
     pub label: String,
     pub icon: Option<nana_ui_core::Icon>,
+    pub trailing_icon: Option<nana_ui_core::Icon>,
     pub icon_size: Option<f32>,
     pub icon_gap: f32,
     pub kind: nana_ui_core::ButtonKind,
@@ -469,6 +470,7 @@ impl Button {
         Self {
             label: label.into(),
             icon: None,
+            trailing_icon: None,
             icon_size: None,
             icon_gap: nana_ui_core::space::SM,
             kind: nana_ui_core::ButtonKind::Ghost,
@@ -519,6 +521,12 @@ impl Button {
 
     pub fn icon(mut self, icon: nana_ui_core::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+    /// A glyph after the label — the chevron that says a button opens a
+    /// menu or picker. It takes the leading icon's size and gap.
+    pub fn trailing_icon(mut self, icon: nana_ui_core::Icon) -> Self {
+        self.trailing_icon = Some(icon);
         self
     }
     pub fn icon_size(mut self, size: f32) -> Self {
@@ -612,6 +620,7 @@ impl ComponentView for Button {
         let visual = StandardVisual::Button {
             label: Arc::from(self.label.as_str()),
             icon: self.icon,
+            trailing_icon: self.trailing_icon,
             icon_size: self
                 .icon_size
                 .filter(|size| size.is_finite() && *size >= 0.0)
