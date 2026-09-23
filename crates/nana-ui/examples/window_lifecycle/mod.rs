@@ -65,9 +65,9 @@ fn presented(
     generation: &mut Option<u64>,
 ) -> Result<(), String> {
     loop {
-        let (id, gpu) = rx
-            .recv_timeout(Duration::from_secs(20))
-            .map_err(|error| error.to_string())?;
+        let (id, gpu) = rx.recv_timeout(Duration::from_secs(20)).map_err(|error| {
+            format!("window {} never presented a frame: {error}", handle.id().0)
+        })?;
         if let Some(expected) = *generation {
             if expected != gpu {
                 return Err("windows did not share GPU resources".into());
@@ -111,7 +111,9 @@ impl ApplicationState for App {
             });
             queued_rx
                 .recv_timeout(Duration::from_secs(20))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    format!("the queued window request never reached the host: {error}")
+                })?;
             return Ok(Self {
                 service,
                 worker: Some(worker),
@@ -194,9 +196,15 @@ impl ApplicationState for App {
                     .wait()
                     .map_err(|e| e.to_string())?;
                 loop {
-                    let (id, size) = resized_rx
-                        .recv_timeout(Duration::from_secs(20))
-                        .map_err(|error| error.to_string())?;
+                    let (id, size) =
+                        resized_rx
+                            .recv_timeout(Duration::from_secs(20))
+                            .map_err(|error| {
+                                format!(
+                                    "window {} never reported its new size: {error}",
+                                    second.id().0
+                                )
+                            })?;
                     if id == second.id() && size == (520.0, 360.0) {
                         break;
                     }
@@ -504,7 +512,7 @@ fn wait_for_focus(rx: &mpsc::Receiver<WindowId>, expected: WindowId) -> Result<(
     loop {
         let id = rx
             .recv_timeout(Duration::from_secs(20))
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("window {} never took focus: {error}", expected.0))?;
         if id == expected {
             return Ok(());
         }
