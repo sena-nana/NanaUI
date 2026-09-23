@@ -36,8 +36,12 @@ pub use nana_ui_core::{
 };
 /// Style-model names a host needs to name a node's paint rather than spend a
 /// number: the two-role mix behind `NodeStyle::surface_mix` / `outline_mix`,
-/// and the CSS-grade paint block reachable through `LayoutStyle::paint`.
-pub use nana_ui_core::{BoxShadowSpec, PaintStyle, SemanticColorMix};
+/// and the CSS-grade paint block reachable through `LayoutStyle::paint`,
+/// down to the gradients its `mask` takes.
+pub use nana_ui_core::{
+    BoxShadowSpec, CssGradient, GradientStop, LinearGradient, MaskImage, PaintStyle,
+    RadialGradient, SemanticColorMix,
+};
 
 /// Linear RGBA color used by L3 token adapters. Same layout as [`SemanticColor`].
 pub type Color = SemanticColor;
