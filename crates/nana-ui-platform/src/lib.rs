@@ -29,6 +29,8 @@ pub use fetch::{
 };
 pub use ime::ImeEvent;
 pub use input::{InputDisposition, InputEvent, InputModifiers, PointerPhase, PointerType};
+#[doc(hidden)]
+pub use paths::__identity_marker_bytes;
 pub use paths::{
     ApplicationIdentity, ApplicationLocation, ApplicationPaths, PathEnvironment, PathPlatform,
     PathsError, RuntimeLayout,

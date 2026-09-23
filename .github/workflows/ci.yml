@@ -38,6 +38,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check engine and text-stack dependency boundary
         run: python3 scripts/check-engine-boundary.py
+      - name: Check packaging dependency boundary
+        run: python3 scripts/check-package-boundary.py
       - name: Self-test repository gate scripts
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Rebuild Vue SFC compatibility fixture
@@ -120,6 +122,8 @@ jobs:
         shell: bash
         run: |
           cargo check -p nana-ui --all-targets --all-features --locked
+          # Issue #226: the pack mount without the hosted window stack.
+          cargo check -p nana-ui --all-targets --features packaged-resources --locked
           cargo check -p component-gallery --all-targets --all-features --locked
           cargo check -p vue-counter --all-targets --features windowed --locked
           cargo check -p vue-counter --all-targets --all-features --locked
@@ -306,3 +310,73 @@ jobs:
               --output "target/performance/issue8/text/nana-${scenario}.json"
           done
           python3 perf/contract.py --evaluate-invariants target/performance/issue8/text
+
+  # Issue #226 final-artifact validation: package the headless fixture with
+  # freshly generated keys, launch the delivered artifact from a foreign
+  # working directory, tamper with copies, and repackage against the
+  # previous output (no-op rebuilds must be byte-identical). The Steam delta
+  # fixture's numbers are uploaded for inspection.
+  packaging:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable Git symlinks for V8
+        if: runner.os == 'Windows'
+        run: git config --global core.symlinks true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux window dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libx11-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+      - name: Test the pack format and the packager
+        run: cargo test -p nana-package -p nana-packager --locked -- --nocapture
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue226-delta-${{ matrix.os }}
+          path: target/performance/issue226
+      - name: Package, launch and tamper with the fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/nana-package"
+          rm -rf "$work" && mkdir -p "$work"
+          cargo build -p nana-packager --locked
+          packager=target/debug/nana-packager
+          "$packager" keygen content --out "$work/content.key"
+          "$packager" keygen publisher --out "$work/publisher.key" | tee "$work/publisher.txt"
+          publisher=$(sed -n 's/.*: \(ed25519:.*\)/\1/p' "$work/publisher.txt")
+          content=$(tr -d '\r\n' < "$work/content.key")
+          echo "::add-mask::$content"
+          echo "::add-mask::$(tr -d '\r\n' < "$work/publisher.key")"
+          NANA_FIXTURE_PUBLISHER_KEY="$publisher" cargo build -p package-fixture --release --locked
+          exe=target/release/package-fixture
+          case "$RUNNER_OS" in
+            Windows) exe="$exe.exe"; root="app/NanaPackageFixture" ;;
+            macOS) root="app/Nana Package Fixture.app" ;;
+            *) root="app/NanaPackageFixture" ;;
+          esac
+          package() {
+            NANA_CONTENT_KEY_CONTENT_MAIN="$content" \
+            NANA_PUBLISHER_SIGNING_KEY="$(tr -d '\r\n' < "$work/publisher.key")" \
+              "$packager" package --config examples/package-fixture/nana-package.toml \
+                --exe "$exe" --profile release --build-id "$GITHUB_RUN_NUMBER" \
+                --cache "$work/cache" "$@"
+          }
+          package --out "$work/v1"
+          NANA_CONTENT_KEY_CONTENT_MAIN="$content" "$packager" validate "$work/v1/$root" \
+            --trust-key "$publisher" --run --tamper-suite --env "NANA_FIXTURE_CONTENT_KEY=$content" \
+            --tamper-drop-env NANA_FIXTURE_CONTENT_KEY
+          package --out "$work/v2" --baseline "$work/v1"
+          packs=0
+          while IFS= read -r -d '' pack; do
+            cmp "$pack" "$work/v2/${pack#"$work/v1/"}"
+            packs=$((packs + 1))
+          done < <(find "$work/v1/app" -name '*.nrpack' -print0)
+          [ "$packs" -eq 3 ]

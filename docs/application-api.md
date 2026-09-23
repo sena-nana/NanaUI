@@ -41,6 +41,8 @@ Cargo 不会因你写了 `CalendarHeatmap` 就自动打开 `calendar`。
 
 进程级设置走 `NanaApplication::builder(ApplicationIdentity)`：解析并发布 `ApplicationPaths`（`NanaApplication::paths()` 随处可取），可选 `.diagnostics(DiagnosticsConfig::default())` 打开结构化诊断，然后 `.run::<P>(WindowDescriptor)`。`run_runtime` 仍可直接用，只是不设路径、不开诊断。业务不要自己拼 `./runtime/...` 或平台目录，从 `ApplicationPaths` 取逻辑位置（`runtime_resources`、`data`、`config`、`cache`、`logs`、`crash` 等）。`app_data_dir` 保留，在桌面平台的安装布局下与 `ApplicationPaths::data` 相同（便携版的 data 在 `<root>/data`）。详见 [诊断与应用路径](diagnostics.md)。
 
+打包后的应用用 `nana_ui_platform::application_identity!` 声明身份：它会在二进制里留下身份标记，packager 与 validator 都拿它比对。开启 `packaged-resources` feature 后，调用 `.resource_packs(ResourcePackOptions)` 会读取 package manifest，并把 `.nrpack` 资源包挂载到 `nana://res/<逻辑路径>`；样式、`@font-face`、`url()` 都能直接引用。安装版和便携版里，没有显式 base 的相对 `url()` 以 `runtime_resources` 为基准，不再以 CWD 为基准。详见 [打包与分发](packaging.md)。
+
 ## RuntimeProgram
 
 普通 Rust 应用优先实现 `ApplicationState`，由 `RuntimeApplication<State>` 管理

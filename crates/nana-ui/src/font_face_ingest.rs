@@ -1,8 +1,8 @@
 //! Load `@font-face` `url(...)` srcs into the process FontSystem.
 //!
 //! Called from stylesheet **inject**, not parse. Reuses
-//! [`resolve_background_image_url`] / document URL base. Local and `data:` only:
-//! remote srcs never reach the network.
+//! [`resolve_background_image_url`] / document URL base. Local, packaged
+//! (`nana://res/`) and `data:` only: remote srcs never reach the network.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -74,7 +74,7 @@ fn ingest_one(spec: &HostFontFaceSpec) -> bool {
         let Some(resolved) = resolve_background_image_url(url) else {
             continue;
         };
-        if !resolved_resource_is_allowed(&resolved) {
+        if !resolved_resource_is_allowed(url, &resolved) {
             continue;
         }
         let key = cache_key(&resolved);
@@ -103,6 +103,9 @@ fn load_font_src_bytes(resolved: &str) -> Option<Vec<u8>> {
             return None;
         }
         return Some(bytes);
+    }
+    if nana_ui_core::is_packaged_url(resolved) {
+        return nana_ui_core::read_packaged(resolved, None, FONT_FACE_MAX_BYTES as u64);
     }
     let meta = std::fs::metadata(resolved).ok()?;
     if meta.len() > FONT_FACE_MAX_BYTES as u64 {

@@ -1200,10 +1200,16 @@ impl MessageBridge {
         let base = self.resources.stylesheet_base.clone();
         let attach_loader = stylesheet_base_is_set(&base);
         let loader = FsStylesheetLoader { base: &base };
+        // Without a filesystem base only packaged (`nana://res/`) imports load.
+        let packaged_only = PackagedStylesheetLoader;
         let mut cache = std::mem::take(&mut self.resources.import_cache);
         let mut options = ParseStylesheetOptions {
             media: self.media_environment(),
-            loader: if attach_loader { Some(&loader) } else { None },
+            loader: if attach_loader {
+                Some(&loader)
+            } else {
+                Some(&packaged_only)
+            },
             base_href: None,
             import_cache: Some(&mut cache),
         };

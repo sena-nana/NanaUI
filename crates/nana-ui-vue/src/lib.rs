@@ -297,9 +297,10 @@ pub use bridge::{
 pub use css_at_rule::{
     FontFaceRule, FontFaceSrc, ImportPrelude, LayerPrelude, MAX_FONT_FACE_BYTES, MAX_IMPORT_DEPTH,
     MAX_REGISTERED_FONT_BYTES, MAX_STYLESHEET_BYTES, MediaEnvironment, MediaFeature, MediaQuery,
-    MediaQueryList, MediaType, MemoryStylesheetLoader, ParseStylesheetOptions, StylesheetLoader,
-    evaluate_media_query, evaluate_media_query_list, evaluate_supports_condition, is_blocked_href,
-    parse_import_prelude, parse_layer_prelude, parse_media_query_list,
+    MediaQueryList, MediaType, MemoryStylesheetLoader, PackagedStylesheetLoader,
+    ParseStylesheetOptions, StylesheetLoader, evaluate_media_query, evaluate_media_query_list,
+    evaluate_supports_condition, is_blocked_href, parse_import_prelude, parse_layer_prelude,
+    parse_media_query_list,
 };
 pub use css_cascade::{
     AnPlusB, AttrCase, AttrOperator, AttrSelector, Combinator, CompoundSelector, DeclarationEntry,

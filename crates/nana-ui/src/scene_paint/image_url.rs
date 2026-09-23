@@ -6,8 +6,9 @@ use std::sync::OnceLock;
 #[cfg(test)]
 use nana_ui_core::path_to_file_url;
 use nana_ui_core::{
-    MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, path_looks_network,
-    percent_decode_bytes, read_bytes_within_jail, resolve_filesystem_href,
+    MAX_LOCAL_URL_BYTES, file_url_to_path, href_is_protocol_relative_or_unc, is_packaged_url,
+    packaged_logical_path, packaged_url, path_looks_network, percent_decode_bytes,
+    read_bytes_within_jail, read_packaged, resolve_filesystem_href,
 };
 use nana_ui_platform::{FetchCancellation, FetchRequest, SharedFetchHost};
 
@@ -24,7 +25,10 @@ thread_local! {
 /// Document or workspace base for relative `url(...)` paths.
 ///
 /// First call wins for hosts. When unset, relative URLs resolve against the
-/// process current working directory.
+/// application's runtime resources location in an installed or portable
+/// package (so the working directory the user launched from never matters),
+/// and against the current working directory in development and embedded
+/// hosts without application paths.
 pub fn set_background_image_url_base(base: PathBuf) {
     #[cfg(test)]
     {
@@ -64,28 +68,66 @@ fn fallback_cwd() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn url_base() -> PathBuf {
+/// The base the host set with [`set_background_image_url_base`], if any.
+fn host_base() -> Option<PathBuf> {
     #[cfg(test)]
     {
-        TEST_URL_BASE.with(|slot| slot.borrow().clone().unwrap_or_else(fallback_cwd))
+        TEST_URL_BASE.with(|slot| slot.borrow().clone())
     }
     #[cfg(not(test))]
     {
-        BACKGROUND_IMAGE_URL_BASE
-            .get()
-            .cloned()
-            .unwrap_or_else(fallback_cwd)
+        BACKGROUND_IMAGE_URL_BASE.get().cloned()
     }
+}
+
+/// Base for relative URLs: the host's base, else the package's runtime
+/// resources (installed / portable), else the working directory.
+fn url_base() -> PathBuf {
+    host_base()
+        .or_else(crate::application_builder::packaged_resources_base)
+        .unwrap_or_else(fallback_cwd)
+}
+
+/// The jail absolute and `file:` URLs were always checked against: the
+/// host's base, else the working directory. Resolving relative URLs against
+/// the package does not narrow what absolute ones may reach.
+fn legacy_jail() -> PathBuf {
+    host_base().unwrap_or_else(fallback_cwd)
+}
+
+/// `path` exists and canonicalizes inside `base`. A textual prefix check
+/// would let `base/../x` through when either side cannot be resolved.
+fn under(path: &std::path::Path, base: &std::path::Path) -> bool {
+    match (path.canonicalize(), base.canonicalize()) {
+        (Ok(path), Ok(base)) => path.starts_with(base),
+        _ => false,
+    }
+}
+
+/// Whether `url` names an absolute location (`file:` or an absolute path).
+/// Only those may use the legacy jail; relative URLs resolve and are
+/// checked against [`url_base`] alone, so an installed package never falls
+/// back to the working directory.
+fn is_absolute_local_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.to_ascii_lowercase().starts_with("file:") {
+        // `file:a.png` (no drive on Windows) is relative in disguise.
+        return file_url_to_path(url).is_some_and(|path| path.is_absolute());
+    }
+    std::path::Path::new(url).is_absolute()
 }
 
 /// Whether a resolved fetch key may be loaded for `@font-face` (and similar).
 ///
-/// `data:` passes. `http(s):` does not: `@font-face` has no remote transport,
-/// matching the Vue stylesheet path. Filesystem paths must stay under the
-/// document URL base (cwd when unset) so `file:` / `..` cannot escape.
-pub fn resolved_resource_is_allowed(resolved: &str) -> bool {
+/// `url` is the reference as written, `resolved` what
+/// [`resolve_background_image_url`] made of it. `data:` and packaged
+/// (`nana://res/`) pass. `http(s):` does not: `@font-face` has no remote
+/// transport, matching the Vue stylesheet path. Filesystem paths must stay
+/// under the URL base (relative references) or the host base / working
+/// directory (absolute ones), so `file:` / `..` cannot escape.
+pub fn resolved_resource_is_allowed(url: &str, resolved: &str) -> bool {
     let resolved = resolved.trim();
-    if resolved.starts_with("data:") {
+    if resolved.starts_with("data:") || is_packaged_url(resolved) {
         return true;
     }
     if resolved.starts_with("http://") || resolved.starts_with("https://") {
@@ -95,11 +137,7 @@ pub fn resolved_resource_is_allowed(resolved: &str) -> bool {
         return false;
     }
     let path = std::path::Path::new(resolved);
-    let base = url_base();
-    match (path.canonicalize(), base.canonicalize()) {
-        (Ok(path), Ok(base)) => path.starts_with(base),
-        _ => path.starts_with(&base),
-    }
+    under(path, &url_base()) || (is_absolute_local_url(url) && under(path, &legacy_jail()))
 }
 
 /// Resolve a parsed CSS URL to a fetch/load key (absolute URL or filesystem path).
@@ -112,6 +150,9 @@ pub fn resolve_background_image_url(url: &str) -> Option<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() || href_is_protocol_relative_or_unc(trimmed) {
         return None;
+    }
+    if is_packaged_url(trimmed) {
+        return packaged_logical_path(trimmed, None).map(|path| packaged_url(&path));
     }
     if trimmed.starts_with("data:")
         || trimmed.starts_with("http://")
@@ -162,8 +203,18 @@ pub(super) fn decode_url_rgba_with(
     if resolved.starts_with("http://") || resolved.starts_with("https://") {
         return decode_http_rgba(&resolved, host, cancellation);
     }
-    let jail = url_base();
-    let bytes = read_bytes_within_jail(url, &jail, MAX_LOCAL_URL_BYTES)?;
+    if is_packaged_url(&resolved) {
+        let bytes = read_packaged(&resolved, None, MAX_LOCAL_URL_BYTES)?;
+        return decode_image_bytes_with_hint(&bytes, looks_like_svg_url(&resolved));
+    }
+    // Relative URLs resolve against `url_base` only (never the working
+    // directory of an installed package); absolute ones keep the old jail.
+    let absolute = is_absolute_local_url(url);
+    let bytes = read_bytes_within_jail(url, &url_base(), MAX_LOCAL_URL_BYTES).or_else(|| {
+        absolute
+            .then(|| read_bytes_within_jail(url, &legacy_jail(), MAX_LOCAL_URL_BYTES))
+            .flatten()
+    })?;
     decode_image_bytes_with_hint(&bytes, looks_like_svg_url(&resolved))
 }
 
@@ -340,6 +391,45 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn only_absolute_references_may_use_the_legacy_jail() {
+        #[cfg(not(windows))]
+        {
+            assert!(is_absolute_local_url("file:///tmp/a.ttf"));
+            assert!(is_absolute_local_url("/tmp/a.ttf"));
+        }
+        #[cfg(windows)]
+        {
+            assert!(is_absolute_local_url("file:///C:/a.ttf"));
+            assert!(is_absolute_local_url("C:\\a.ttf"));
+            // No drive: relative in disguise.
+            assert!(!is_absolute_local_url("file:///tmp/a.ttf"));
+        }
+        assert!(!is_absolute_local_url("../a.ttf"));
+        assert!(!is_absolute_local_url("fonts/a.ttf"));
+        assert!(!is_absolute_local_url("nana://res/a.ttf"));
+    }
+
+    #[test]
+    fn relative_font_urls_cannot_climb_out_of_the_base() {
+        let root = std::env::temp_dir().join(format!("nana-font-jail-{}", std::process::id()));
+        let base = root.join("resources");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(root.join("outside.ttf"), b"x").unwrap();
+        std::fs::write(base.join("inside.ttf"), b"x").unwrap();
+        set_background_image_url_base(base.clone());
+        let resolved = resolve_background_image_url("../outside.ttf").unwrap();
+        assert!(!resolved_resource_is_allowed("../outside.ttf", &resolved));
+        let resolved = resolve_background_image_url("inside.ttf").unwrap();
+        assert!(resolved_resource_is_allowed("inside.ttf", &resolved));
+        assert!(resolved_resource_is_allowed(
+            "nana://res/a.ttf",
+            "nana://res/a.ttf"
+        ));
+        reset_test_url_base();
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     fn png_1x1() -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());

@@ -19,6 +19,10 @@ impl Domain {
     pub const HOST: Self = Self(0x0006);
     /// The diagnostics runtime's own bookkeeping.
     pub const DIAGNOSTICS: Self = Self(0x0007);
+    /// Packaged resource reads (`.nrpack` mounts, Issue #226).
+    pub const RESOURCE: Self = Self(0x0008);
+    /// The package manifest and the packaged-application self-check.
+    pub const PACKAGE: Self = Self(0x0009);
     pub const FRAMEWORK_MAX: u16 = 0x00FF;
     pub const APPLICATION_MIN: u16 = 0x0100;
 

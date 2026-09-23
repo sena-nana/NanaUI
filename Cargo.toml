@@ -18,6 +18,8 @@ members = [
     "crates/nana-frame-exchange",
     "crates/nana-diagnostics",
     "crates/nana-ui-dev",
+    "crates/nana-package",
+    "crates/nana-packager",
     "platform/android",
     "examples/component-gallery",
     "examples/vue-v8",
@@ -25,6 +27,7 @@ members = [
     "examples/vue-hosted-acceptance",
     "examples/native-rhi-probe",
     "examples/runtime-host-fixture",
+    "examples/package-fixture",
 ]
 resolver = "2"
 exclude = ["tools/css-parity-webview", "crates/nana-icons-tabler"]
@@ -48,6 +51,8 @@ nana-ui-dev = { path = "crates/nana-ui-dev" }
 nana-ui = { path = "crates/nana-ui" }
 nana-window = { path = "crates/nana-window" }
 nana-app-icon = { path = "crates/nana-app-icon", default-features = false }
+nana-package = { path = "crates/nana-package" }
+nana-packager = { path = "crates/nana-packager" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-core = "0.3.31"
@@ -85,6 +90,19 @@ accesskit_android = "0.8.0"
 accesskit_macos = "0.27.0"
 accesskit_windows = "0.35.0"
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["async-io"] }
+# Issue #226 packaging. The runtime reader (`nana-package`) stays pure Rust:
+# `blake3` without its C/asm backends, the RustCrypto AEAD and signature
+# crates without their RNG features, and the pure-Rust zstd decoder. Only the
+# build-side `nana-packager` links the C zstd encoder.
+blake3 = { version = "1.8.7", default-features = false, features = ["std", "pure"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["zeroize"] }
+ruzstd = { version = "0.9.0", default-features = false, features = ["std"] }
+zeroize = "1.9.0"
+zstd = { version = "0.14.0", default-features = false }
+getrandom = "0.4.3"
+toml = "1.1.4"
+object = { version = "0.40.0", default-features = false, features = ["read_core", "std", "pe", "macho", "elf"] }
 
 # Release/dist split. `release` stays stock so CI and the benchmarks keep their
 # fast turnaround; `dist` is what packaging scripts build and is the only
@@ -100,3 +118,17 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Pack sealing, hashing and decoding run 20-50x slower unoptimized; the
+# packager tests (a 20 MiB Steam delta corpus) and any debug build reading
+# encrypted packs would crawl. Only these leaf crates are optimized.
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.ruzstd]
+opt-level = 3
+[profile.dev.package.zstd-sys]
+opt-level = 3

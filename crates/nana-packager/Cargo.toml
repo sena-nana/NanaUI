@@ -1,0 +1,38 @@
+[package]
+name = "nana-packager"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Build-side Nana packager: pack plans, .nrpack building, platform layouts, Steam output and final-artifact validation"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Build tool only. Nothing that ships in an application may depend on this
+# crate (`scripts/check-package-boundary.py`). It never runs cargo: it takes
+# an already built executable, so the dist pipeline (Issue #158) stays the
+# single build authority and calls this as one step.
+
+[lib]
+name = "nana_packager"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nana-packager"
+path = "src/main.rs"
+
+[dependencies]
+nana-package.workspace = true
+nana-app-icon = { workspace = true, default-features = false }
+serde.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+object.workspace = true
+toml.workspace = true
+zstd.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+nana-ui-platform = { workspace = true, default-features = false }

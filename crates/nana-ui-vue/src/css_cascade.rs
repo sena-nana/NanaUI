@@ -822,11 +822,30 @@ fn apply_import(
         return;
     };
     let from = ctx.stack.last().map(String::as_str);
-    let Some((css, canonical)) = loader.load(&href, from) else {
-        report.skipped_at_rules += 1;
-        return;
+    // A packaged sheet's canonical key is known without reading it: an
+    // already parsed import is not read, authenticated and decoded again.
+    let cached = crate::css_at_rule::packaged_canonical(&href, from)
+        .filter(|key| ctx.cache.contains_key(key));
+    let (css, canonical) = match cached {
+        Some(key) => (String::new(), key),
+        None => match loader.load(&href, from) {
+            Some(loaded) => loaded,
+            None => {
+                report.skipped_at_rules += 1;
+                return;
+            }
+        },
     };
-    if ctx.stack.iter().any(|h| h.eq_ignore_ascii_case(&canonical)) {
+    // Filesystem hrefs compare case-insensitively (case-insensitive disks);
+    // packaged entries are case-sensitive keys.
+    let packaged = nana_ui_core::is_packaged_url(&canonical);
+    if ctx.stack.iter().any(|h| {
+        if packaged {
+            *h == canonical
+        } else {
+            h.eq_ignore_ascii_case(&canonical)
+        }
+    }) {
         report.skipped_at_rules += 1;
         return;
     }

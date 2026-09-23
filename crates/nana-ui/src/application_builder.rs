@@ -29,6 +29,8 @@ impl NanaApplication {
             identity,
             paths: None,
             diagnostics: DiagnosticsConfig::disabled(),
+            #[cfg(feature = "packaged-resources")]
+            resource_packs: None,
         }
     }
 
@@ -41,6 +43,25 @@ impl NanaApplication {
     pub fn diagnostics() -> Option<Diagnostics> {
         nana_diagnostics::global()
     }
+
+    /// The package manifest this application was started with (packaged
+    /// builds that enabled [`NanaApplicationBuilder::resource_packs`]).
+    #[cfg(feature = "packaged-resources")]
+    pub fn package_manifest() -> Option<&'static nana_package::manifest::PackageManifest> {
+        crate::packaged_resources::package_manifest()
+    }
+}
+
+/// Base for relative resource URLs when no host set one: the runtime
+/// resources location of an installed or portable package. `None` in
+/// development and for embedded hosts without application paths, which
+/// keep resolving against the working directory.
+#[allow(dead_code)] // Read by the GPU image loader only.
+pub(crate) fn packaged_resources_base() -> Option<std::path::PathBuf> {
+    PATHS
+        .get()
+        .filter(|paths| paths.layout() != nana_ui_platform::RuntimeLayout::Development)
+        .map(|paths| paths.runtime_resources().to_path_buf())
 }
 
 #[must_use]
@@ -48,6 +69,8 @@ pub struct NanaApplicationBuilder {
     identity: ApplicationIdentity,
     paths: Option<ApplicationPaths>,
     diagnostics: DiagnosticsConfig,
+    #[cfg(feature = "packaged-resources")]
+    resource_packs: Option<crate::packaged_resources::ResourcePackOptions>,
 }
 
 /// Keeps process-level services alive. Dropping it shuts diagnostics down
@@ -86,6 +109,20 @@ impl NanaApplicationBuilder {
         self
     }
 
+    /// Mount the package's resource packs behind `nana://res/` at
+    /// [`Self::start`]: the package manifest is read (and its signature
+    /// checked as `options` demands) and each pack opens on its first
+    /// lookup. Starting with `NANA_PACKAGE_VALIDATE=1` turns startup into
+    /// the packager's self-check (`docs/packaging.md`).
+    #[cfg(feature = "packaged-resources")]
+    pub fn resource_packs(
+        mut self,
+        options: crate::packaged_resources::ResourcePackOptions,
+    ) -> Self {
+        self.resource_packs = Some(options);
+        self
+    }
+
     /// Resolve and publish the paths and start diagnostics. For hosts that
     /// run their own loop (Vue, embedded); [`Self::run`] calls this.
     ///
@@ -111,6 +148,15 @@ impl NanaApplicationBuilder {
         } else {
             None
         };
+        #[cfg(feature = "packaged-resources")]
+        if let Some(code) =
+            crate::packaged_resources::start(&self.identity, paths, self.resource_packs.as_ref())
+        {
+            // Self-check: flush diagnostics (faults recorded while mounting)
+            // and exit before any window, device or program exists.
+            drop(diagnostics);
+            std::process::exit(code);
+        }
         ApplicationSession { paths, diagnostics }
     }
 

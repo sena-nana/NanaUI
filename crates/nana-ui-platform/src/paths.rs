@@ -63,6 +63,105 @@ impl ApplicationIdentity {
     }
 }
 
+/// Declare the application identity and embed it in the binary.
+///
+/// Expands to an [`ApplicationIdentity`] expression and, as a side effect,
+/// keeps a `NANA-IDENTITY-V1` marker in the executable's read-only data. The
+/// packager reads that marker to refuse packaging a binary whose identity
+/// disagrees with `nana-package.toml`, and the final-artifact validator
+/// compares it with the package manifest (Issue #226). Arguments must be
+/// string literals or literal-producing macros such as
+/// `env!("CARGO_PKG_VERSION")`.
+///
+/// ```
+/// let identity = nana_ui_platform::application_identity!(
+///     id: "dev.nana.example",
+///     name: "Nana Example",
+///     version: env!("CARGO_PKG_VERSION"),
+///     vendor: "Nana",
+/// );
+/// assert_eq!(identity.id, "dev.nana.example");
+/// ```
+#[macro_export]
+macro_rules! application_identity {
+    (id: $id:expr, name: $name:expr, version: $version:expr, vendor: $vendor:expr $(,)?) => {
+        $crate::__application_identity!($id, $name, $version, $vendor).vendor($vendor)
+    };
+    (id: $id:expr, name: $name:expr, version: $version:expr $(,)?) => {
+        $crate::__application_identity!($id, $name, $version, "")
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __application_identity {
+    ($id:expr, $name:expr, $version:expr, $vendor:expr) => {{
+        const TEXT: &str = concat!(
+            "NANA-IDENTITY-V1\0",
+            $id,
+            "\0",
+            $name,
+            "\0",
+            $version,
+            "\0",
+            $vendor,
+            "\0END\0"
+        );
+        #[used]
+        static MARKER: [u8; TEXT.len()] = $crate::__identity_marker_bytes::<{ TEXT.len() }>(TEXT);
+        // Keep the marker alive through fat LTO and `--gc-sections`.
+        ::core::hint::black_box(&MARKER);
+        $crate::ApplicationIdentity::new($id, $name, $version)
+    }};
+}
+
+/// Copy the marker text into an array, rejecting at compile time what the
+/// packager's parser (`nana_package::identity`) would not accept: a NUL or
+/// control character inside a field, a field over 256 bytes, an empty id or
+/// version.
+#[doc(hidden)]
+pub const fn __identity_marker_bytes<const N: usize>(text: &str) -> [u8; N] {
+    const MAGIC_LEN: usize = "NANA-IDENTITY-V1\0".len();
+    const MAX_FIELD: usize = 256;
+    let bytes = text.as_bytes();
+    let mut out = [0u8; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = bytes[i];
+        i += 1;
+    }
+    // Fields: id, name, version, vendor; then "END\0".
+    let mut field = 0;
+    let mut field_len = 0;
+    let mut at = MAGIC_LEN;
+    while field < 4 {
+        let b = bytes[at];
+        if b == 0 {
+            if field_len == 0 && (field == 0 || field == 2) {
+                panic!("application_identity!: id and version must not be empty");
+            }
+            field += 1;
+            field_len = 0;
+        } else {
+            // C0, DEL, and C1 (U+0080..=U+009F, UTF-8 `C2 80..=9F`): what
+            // `char::is_control` rejects in the parser.
+            let c1 = b == 0xc2 && at + 1 < N && bytes[at + 1] >= 0x80 && bytes[at + 1] <= 0x9f;
+            if b < 0x20 || b == 0x7f || c1 {
+                panic!("application_identity!: fields must not contain control characters or NUL");
+            }
+            field_len += 1;
+            if field_len > MAX_FIELD {
+                panic!("application_identity!: a field is longer than 256 bytes");
+            }
+        }
+        at += 1;
+    }
+    if N - at != 4 {
+        panic!("application_identity!: fields must not contain NUL");
+    }
+    out
+}
+
 /// How the application is laid out on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeLayout {
@@ -550,6 +649,26 @@ mod tests {
             android_cache_dir: None,
             portable_marker: false,
         }
+    }
+
+    #[test]
+    fn identity_macro_embeds_a_marker() {
+        let identity = crate::application_identity!(
+            id: "dev.nana.marker",
+            name: "Marker",
+            version: "2.0.0",
+            vendor: "Nana",
+        );
+        assert_eq!(
+            identity,
+            ApplicationIdentity::new("dev.nana.marker", "Marker", "2.0.0").vendor("Nana")
+        );
+        let bare = crate::application_identity!(id: "a.b", name: "A", version: "1");
+        assert_eq!(bare.vendor, None);
+        // The marker is in this test binary's data.
+        let binary = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let marker = b"NANA-IDENTITY-V1\x00dev.nana.marker\x00Marker\x002.0.0\x00Nana\x00END\x00";
+        assert!(binary.windows(marker.len()).any(|w| w == marker));
     }
 
     fn id() -> ApplicationIdentity {

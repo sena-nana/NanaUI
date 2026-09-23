@@ -27,6 +27,7 @@ pub mod menu_bar;
 pub mod motion;
 pub mod number_field;
 pub mod overlay;
+pub mod packaged;
 pub mod persist;
 pub mod scrollbar;
 pub mod selection;
@@ -111,6 +112,10 @@ pub use motion::{
 };
 pub use number_field::NumberFieldSpec;
 pub use overlay::ExclusiveOverlay;
+pub use packaged::{
+    PACKAGED_URL_PREFIX, PackagedReadError, PackagedResourceSource, install_packaged_source,
+    is_packaged_url, packaged_logical_path, packaged_source_installed, packaged_url, read_packaged,
+};
 pub use persist::{
     KEY_APPEARANCE_PREFIX, KEY_DOCK_PREFIX, KEY_WINDOW_PREFIX, MemoryStore, PersistentStore,
     SharedStore, StoreError, appearance_storage_key, dock_storage_key, is_framework_storage_key,

@@ -274,7 +274,7 @@ Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback �
 - Rust：`register_application_icon`，或 `WindowDescriptor::icon` / `WindowHandle::set_icon`
 - 未设置时用默认几何标记，不要把它当品牌
 - Windows exe 可在 `build.rs` 里 `nana_app_icon::embed_windows()`
-- macOS Dock：`nana_window::set_application_icon_png`；`.app` 用 `nana-package-app`
+- macOS Dock：`nana_window::set_application_icon_png`；`.app` 由 `nana-packager` 生成（见[打包与分发](packaging.md)）
 
 ## 打包
 
@@ -282,18 +282,15 @@ Linux portal 返回 URI 数组，可保留路径中的换行。zenity fallback �
 
 ```bash
 cargo build -p component-gallery --bin component-gallery --profile dist
-cargo run -p nana-app-icon --bin nana-package-app --   --exe target/dist/component-gallery --name NanaUI   --identifier dev.nanaui.gallery --out target/dist
+cargo run -p nana-packager -- macos-app --exe target/dist/component-gallery --name NanaUI --identifier dev.nanaui.gallery --out target/dist
 ```
 
 `dist` = `release` + `lto = "fat"` + `codegen-units = 1` + `strip = "symbols"` +
 `panic = "abort"`。`release` 保持原样，CI 和 benchmark 继续快速迭代。
 
-`nana-package-app` 默认再跑一次 `strip -x`（`--no-strip` 关掉），并在可执行文件里
-探到 debug-assertions 字符串时警告——曾经有一个 108 MB 的 `.app` 就是误打了 debug
-构建，其中 55 MB 是符号表。
+`macos-app` 只生成一个裸 `.app`，用来取代原来的 `nana-package-app`。完整的产品包（资源包、manifest、Steam/安装包布局、最终产物校验）用 `nana-packager package`，见[打包与分发](packaging.md)。两者默认都会再跑一次 `strip -x`（`--no-strip` 可关掉）。可执行文件里有溢出检查的 panic 文本时会警告（debug 构建一定有，个别目标的 release 构建也可能有），并记入 manifest 的 `debug_assertions_suspected`——曾经有一个 108 MB 的 `.app` 就是误打了 debug 构建，其中 55 MB 是符号表。
 
-用 `scripts/report-artifact-size.py <artifact>` 逐段核对体积，它同时数出二进制里内嵌
-了几份字体，并在发现 debug 构建时报警。
+用 `scripts/report-artifact-size.py <artifact>` 逐段核对体积：它会数出二进制里内嵌了几份字体，发现 debug 构建时也会报警。
 
 ## 材质
 

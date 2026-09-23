@@ -1,4 +1,4 @@
-//! NanaUI's own events and metrics (domains `0x0001..=0x0007`). IDs are part
+//! NanaUI's own events and metrics (domains `0x0001..=0x0009`). IDs are part
 //! of the `.nlog` contract: never renumber, only append.
 //!
 //! Framework crates record these; applications define their own descriptors
@@ -218,4 +218,86 @@ pub mod diagnostics {
     /// location, and payload.
     pub static PANIC: EventDescriptor =
         EventDescriptor::new(D, 1, "diagnostics.panic", Severity::Fatal, &[]);
+}
+
+pub mod resource {
+    use super::*;
+    const D: Domain = Domain::RESOURCE;
+
+    histogram!(
+        /// Opening one pack: header, signature, TOC hash and authentication.
+        pub PACK_MOUNT_NS, D, 1, "resource.pack.mount", "ns");
+    histogram!(pub PACK_TOC_BYTES, D, 2, "resource.pack.toc_bytes", "bytes");
+    histogram!(
+        /// One packaged entry read end to end (I/O, authentication,
+        /// decompression, hash). Reads happen on cache misses of the image,
+        /// font and stylesheet loaders, never per frame.
+        pub ENTRY_READ_NS, D, 3, "resource.entry.read", "ns");
+    histogram!(pub ENTRY_AUTH_NS, D, 4, "resource.entry.auth", "ns");
+    histogram!(pub ENTRY_DECOMPRESS_NS, D, 5, "resource.entry.decompress", "ns");
+    pub static BYTES_READ: Metric = Metric::counter(D, 6, "resource.bytes_read", "bytes");
+    pub static READS: Metric = Metric::counter(D, 7, "resource.reads", "count");
+    pub static MISSES: Metric = Metric::counter(D, 8, "resource.misses", "count");
+    /// Signature, hash or authentication failures: tampering or corruption.
+    pub static INTEGRITY_FAILURES: Metric =
+        Metric::counter(D, 9, "resource.integrity_failures", "count");
+
+    pub static PACK_MOUNTED: EventDescriptor = EventDescriptor::new(
+        D,
+        1,
+        "resource.pack_mounted",
+        Severity::Info,
+        &[
+            F::u64("entries"),
+            F::u64("toc_bytes"),
+            F::bool("encrypted"),
+            F::bool("signed"),
+        ],
+    );
+    /// Fault: a pack the manifest lists could not be opened. `code` is
+    /// `nana_package::PackError::code`; the message names the pack.
+    pub static PACK_OPEN_FAILED: EventDescriptor = EventDescriptor::new(
+        D,
+        2,
+        "resource.pack_open_failed",
+        Severity::Error,
+        &[F::u64("code")],
+    );
+    /// Fault: an entry failed verification (at most once per pack).
+    pub static INTEGRITY_FAILED: EventDescriptor = EventDescriptor::new(
+        D,
+        3,
+        "resource.integrity_failed",
+        Severity::Error,
+        &[F::u64("code")],
+    );
+}
+
+pub mod package {
+    use super::*;
+    const D: Domain = Domain::PACKAGE;
+
+    histogram!(pub MANIFEST_READ_NS, D, 1, "package.manifest.read", "ns");
+
+    pub static MANIFEST_LOADED: EventDescriptor = EventDescriptor::new(
+        D,
+        1,
+        "package.manifest_loaded",
+        Severity::Info,
+        &[F::u64("bytes"), F::u64("packs"), F::bool("signed")],
+    );
+    /// An installed or portable application without a package manifest.
+    pub static MANIFEST_MISSING: EventDescriptor =
+        EventDescriptor::new(D, 2, "package.manifest_missing", Severity::Warn, &[]);
+    /// Fault: `code` is `nana_package::ManifestError::code`.
+    pub static MANIFEST_INVALID: EventDescriptor = EventDescriptor::new(
+        D,
+        3,
+        "package.manifest_invalid",
+        Severity::Error,
+        &[F::u64("code")],
+    );
+    /// Fault: the running binary's identity differs from the manifest's.
+    pub static IDENTITY_MISMATCH: EventDescriptor =
+        EventDescriptor::new(D, 4, "package.identity_mismatch", Severity::Error, &[]);
 }

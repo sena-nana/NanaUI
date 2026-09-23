@@ -1,0 +1,12 @@
+[package]
+name = "package-fixture"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Headless subject of the Issue #226 final-artifact validation: packaged, launched from a foreign directory, and tampered with"
+publish = false
+
+[dependencies]
+nana-ui = { workspace = true, features = ["packaged-resources"] }
+nana-ui-core.workspace = true
+nana-ui-platform = { workspace = true, default-features = false }

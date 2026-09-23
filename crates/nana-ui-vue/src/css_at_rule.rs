@@ -364,12 +364,171 @@ pub fn font_face_url_srcs(face: &FontFaceRule) -> impl Iterator<Item = &str> {
     })
 }
 
+/// `nana://res/` target of `href`: absolute, or relative to a packaged
+/// importing sheet. Such references never touch the filesystem jail.
+fn packaged_target(href: &str, from: Option<&str>) -> Option<Option<String>> {
+    let packaged =
+        nana_ui_core::is_packaged_url(href) || from.is_some_and(nana_ui_core::is_packaged_url);
+    packaged.then(|| {
+        nana_ui_core::packaged_logical_path(href, from)
+            .map(|path| nana_ui_core::packaged_url(&path))
+    })
+}
+
+/// Rewrite every relative `url(...)` of a packaged sheet to an absolute
+/// `nana://res/` URL resolved against `sheet_url`, so declarations resolve
+/// inside the package no matter where the rule is applied. References that
+/// would leave the package, or that are not relative, are left untouched
+/// (and are then refused or resolved exactly as before).
+pub(crate) fn absolutize_packaged_urls(css: &str, sheet_url: &str) -> String {
+    let has_url = css
+        .as_bytes()
+        .windows(4)
+        .any(|window| window.eq_ignore_ascii_case(b"url("));
+    if !has_url {
+        return css.to_owned();
+    }
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while !rest.is_empty() {
+        // Comments and quoted strings are copied through untouched: a
+        // `url(` inside them is not a reference.
+        if let Some(body) = rest.strip_prefix("/*") {
+            let end = body.find("*/").map_or(rest.len(), |at| at + 4);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        let first = rest.as_bytes()[0];
+        if first == b'"' || first == b'\'' {
+            let end = quoted_end(rest, first).unwrap_or(rest.len());
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
+        if rest.len() >= 4 && rest.as_bytes()[..4].eq_ignore_ascii_case(b"url(") {
+            out.push_str(&rest[..4]);
+            let consumed = absolutize_one(&rest[4..], sheet_url, &mut out);
+            rest = &rest[4 + consumed..];
+            continue;
+        }
+        // Copy up to the next byte that can start a comment, string or
+        // `url(` (all ASCII, so the cut is a char boundary).
+        let skip = rest.chars().next().map_or(1, char::len_utf8);
+        let next = rest[skip..]
+            .find(['/', '"', '\'', 'u', 'U'])
+            .map_or(rest.len(), |at| at + skip);
+        out.push_str(&rest[..next]);
+        rest = &rest[next..];
+    }
+    out
+}
+
+/// Byte length of the quoted string at the start of `text` (quotes
+/// included), honouring backslash escapes.
+fn quoted_end(text: &str, quote: u8) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            // An unescaped newline ends a CSS string (a bad-string), so a
+            // stray quote cannot swallow later rules.
+            b'\n' | b'\r' | 0x0c => return Some(i),
+            b if b == quote => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Rewrite one `url(` body (`tail` starts after `url(`), appending to `out`.
+/// Returns how many bytes of `tail` were consumed.
+fn absolutize_one(tail: &str, sheet_url: &str, out: &mut String) -> usize {
+    let lead = tail.len() - tail.trim_start().len();
+    let body = &tail[lead..];
+    let quote = body
+        .as_bytes()
+        .first()
+        .copied()
+        .filter(|b| *b == b'"' || *b == b'\'');
+    // `after_value`: bytes of `body` consumed, closing quote included.
+    let (value, value_start, after_value) = match quote {
+        // A closed string is at least the two quotes; a bad-string (ended
+        // by a newline) is left as written.
+        Some(q) => {
+            match quoted_end(body, q).filter(|&end| end >= 2 && body.as_bytes()[end - 1] == q) {
+                Some(end) => (&body[1..end - 1], 1, end),
+                None => {
+                    out.push_str(&tail[..lead]);
+                    return lead;
+                }
+            }
+        }
+        None => match body
+            .find([')', '\n', '\r', '\x0c'])
+            .filter(|&end| body.as_bytes()[end] == b')')
+        {
+            Some(end) => {
+                let value = body[..end].trim_end();
+                (value, 0, value.len())
+            }
+            None => {
+                out.push_str(&tail[..lead]);
+                return lead;
+            }
+        },
+    };
+    let relative =
+        !value.is_empty() && !value.contains(['\\', ':']) && !value.starts_with(['/', '#']);
+    let rewritten = relative
+        .then(|| nana_ui_core::packaged_logical_path(value, Some(sheet_url)))
+        .flatten()
+        .map(|path| nana_ui_core::packaged_url(&path));
+    out.push_str(&tail[..lead + value_start]);
+    out.push_str(rewritten.as_deref().unwrap_or(value));
+    if let Some(q) = quote {
+        out.push(q as char);
+    }
+    lead + after_value
+}
+
+/// Canonical `nana://res/` key of a packaged reference, without reading it.
+pub(crate) fn packaged_canonical(href: &str, from: Option<&str>) -> Option<String> {
+    packaged_target(href, from).flatten()
+}
+
+/// Loads only packaged (`nana://res/`) sheets: used when the document has
+/// no filesystem stylesheet base, so packaged `@import` still works while
+/// filesystem imports stay refused.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PackagedStylesheetLoader;
+
+impl StylesheetLoader for PackagedStylesheetLoader {
+    fn load(&self, href: &str, from: Option<&str>) -> Option<(String, String)> {
+        load_packaged_sheet(packaged_target(href, from)??)
+    }
+}
+
+/// Read a packaged sheet and rewrite its relative `url()` into the package.
+fn load_packaged_sheet(url: String) -> Option<(String, String)> {
+    let bytes = nana_ui_core::read_packaged(&url, None, stylesheet_byte_cap())?;
+    let css = String::from_utf8(bytes).ok()?;
+    Some((absolutize_packaged_urls(&css, &url), url))
+}
+
 /// Load a CSS file: jail + size cap + remote / protocol-relative / UNC refuse.
+/// Packaged sheets (`nana://res/…`) come from the installed pack source and
+/// keep their URL as the canonical href, so their own relative `@import` and
+/// `url()` stay inside the package.
 pub fn load_stylesheet_file(
     href: &str,
     from: Option<&str>,
     jail: &Path,
 ) -> Option<(String, String)> {
+    if let Some(target) = packaged_target(href, from) {
+        return load_packaged_sheet(target?);
+    }
     let (bytes, canonical) =
         nana_ui_core::read_file_within_jail(href, from, jail, stylesheet_byte_cap())?;
     let css = String::from_utf8(bytes).ok()?;
@@ -384,6 +543,11 @@ pub fn load_font_face_bytes(
     from: Option<&str>,
     jail: &Path,
 ) -> Option<(Vec<u8>, PathBuf)> {
+    if let Some(target) = packaged_target(href, from) {
+        let url = target?;
+        let bytes = nana_ui_core::read_packaged(&url, None, font_face_byte_cap())?;
+        return Some((bytes, PathBuf::from(url)));
+    }
     nana_ui_core::read_file_within_jail(href, from, jail, font_face_byte_cap())
 }
 
@@ -405,6 +569,80 @@ fn font_face_byte_cap() -> u64 {
         }
     }
     MAX_FONT_FACE_BYTES
+}
+
+#[cfg(test)]
+mod packaged_url_tests {
+    use super::absolutize_packaged_urls;
+
+    #[test]
+    fn relative_urls_in_packaged_sheets_become_absolute() {
+        let css = r#".a { background: url("../img/a.png") } .b { background: URL( 'b.svg' ) }
+            .c { background: url(c.png) } .d { background: url(nana://res/x.png) }
+            .e { background: url(data:image/png;base64,AAAA) } .f { background: url(/abs.png) }
+            .g { background: url(../../../escape.png) }"#;
+        let out = absolutize_packaged_urls(css, "nana://res/ui/css/app.css");
+        assert!(out.contains(r#"url("nana://res/ui/img/a.png")"#), "{out}");
+        assert!(out.contains("URL( 'nana://res/ui/css/b.svg' )"), "{out}");
+        assert!(out.contains("url(nana://res/ui/css/c.png)"), "{out}");
+        assert!(out.contains("url(nana://res/x.png)"), "{out}");
+        assert!(out.contains("url(data:image/png;base64,AAAA)"), "{out}");
+        assert!(out.contains("url(/abs.png)"), "{out}");
+        assert!(out.contains("url(../../../escape.png)"), "{out}");
+    }
+
+    #[test]
+    fn a_stray_quote_ends_at_the_newline() {
+        let css = ".a{content:\"x\n.b{background:url(b.png)} .c{background:url(c.png}\n.d{x:y)}";
+        let out = absolutize_packaged_urls(css, "nana://res/ui/app.css");
+        assert!(out.contains("url(nana://res/ui/b.png)"), "{out}");
+        // An unquoted url that meets a newline before `)` is left alone.
+        assert!(out.contains("url(c.png}"), "{out}");
+    }
+
+    #[test]
+    fn random_css_never_panics_and_keeps_unrelated_text() {
+        const PIECES: [&str; 17] = [
+            "url(", ")", "\"", "'", "/*", "*/", "\\", "a.png", " ", "ü", "字", "(", ";", "url( '",
+            "\n", "\r", "url(\"",
+        ];
+        let mut state = 0x5eed_u64;
+        for _ in 0..3000 {
+            let mut css = String::new();
+            for _ in 0..(state % 12) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                css.push_str(PIECES[(state % PIECES.len() as u64) as usize]);
+            }
+            state = state.wrapping_add(0x9e37_79b9);
+            // A non-packaged base resolves nothing: output equals input.
+            assert_eq!(
+                absolutize_packaged_urls(&css, "file:///x.css"),
+                css,
+                "{css:?}"
+            );
+            let _ = absolutize_packaged_urls(&css, "nana://res/ui/app.css");
+        }
+    }
+
+    #[test]
+    fn comments_strings_and_special_characters_are_handled() {
+        let css = r#"/* url('old */ .a{background:url(b.png)} /* ' */
+            .c::before{content:"url(x.png)"} .d{background:url(icon%20%281%29.png)}
+            .e{background:url("q\".png")} .f{background:url(unterminated"#;
+        let out = absolutize_packaged_urls(css, "nana://res/ui/app.css");
+        assert!(out.contains("url(nana://res/ui/b.png)"), "{out}");
+        assert!(out.contains("/* url('old */"), "{out}");
+        assert!(out.contains(r#"content:"url(x.png)""#), "{out}");
+        assert!(
+            out.contains("url(nana://res/ui/icon%20%281%29.png)"),
+            "{out}"
+        );
+        // Escaped quotes are left as written; the unterminated tail survives.
+        assert!(out.contains(r#"url("q\".png")"#), "{out}");
+        assert!(out.ends_with("url(unterminated"), "{out}");
+    }
 }
 
 #[cfg(test)]

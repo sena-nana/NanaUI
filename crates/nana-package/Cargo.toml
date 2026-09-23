@@ -1,0 +1,26 @@
+[package]
+name = "nana-package"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Runtime side of the Nana packaging contract: package manifest, .nrpack resource packs, content keys and publisher signatures"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Linked into shipped applications (behind `nana-ui/packaged-resources`), so
+# every dependency here is pure Rust: no zstd C library, no ring, no system
+# RNG. Randomness and compression live in `nana-packager`, which never ships.
+# `scripts/check-package-boundary.py` enforces this.
+
+[lib]
+name = "nana_package"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+ruzstd.workspace = true
+zeroize.workspace = true

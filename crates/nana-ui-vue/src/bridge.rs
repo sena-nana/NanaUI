@@ -36,9 +36,9 @@ use nana_ui_core::{
 pub use crate::widget_map::resolve_kind_from_hints;
 use crate::{
     css_at_rule::{
-        FontFaceRule, FontFaceSrc, FsStylesheetLoader, MediaEnvironment, ParseStylesheetOptions,
-        evaluate_media_query_list, font_registration_would_exceed_cap, load_font_face_bytes,
-        parse_media_query_list,
+        FontFaceRule, FontFaceSrc, FsStylesheetLoader, MediaEnvironment, PackagedStylesheetLoader,
+        ParseStylesheetOptions, evaluate_media_query_list, font_registration_would_exceed_cap,
+        load_font_face_bytes, parse_media_query_list,
     },
     css_cascade::{
         MatchContext, MatchNode, RelativeMatchForest, RelativeMatchNode, SimpleCompound, StyleRule,

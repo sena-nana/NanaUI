@@ -16,10 +16,6 @@ embed = ["dep:embed-resource"]
 name = "nana_app_icon"
 path = "src/lib.rs"
 
-[[bin]]
-name = "nana-package-app"
-path = "src/bin/nana-package-app.rs"
-
 [dependencies]
 nana-ui-platform = { workspace = true, optional = true, default-features = false }
 image = { workspace = true }

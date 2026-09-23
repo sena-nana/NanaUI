@@ -1,4 +1,6 @@
-//! Default application mark, Windows PE embed, and macOS `.app` packaging.
+//! Default application mark, PNG/ICO/ICNS encoding, and Windows PE embed.
+//!
+//! Packaging (the macOS `.app`, Windows and Linux layouts) is `nana-packager`'s.
 //!
 //! The Nana silhouette is the fallback identity. Applications register their own
 //! [`nana_ui_platform::WindowIcon`] at runtime, or embed a custom `.ico` from `build.rs`.
@@ -8,13 +10,12 @@
 
 mod encode;
 mod mark;
-mod package;
 
 #[cfg(feature = "embed")]
 mod embed;
 
+pub use encode::icns as encode_icns;
 pub use encode::png as encode_png;
-pub use package::{MacAppPackage, package_macos_app};
 
 #[cfg(feature = "embed")]
 pub use embed::{embed_windows, embed_windows_from};

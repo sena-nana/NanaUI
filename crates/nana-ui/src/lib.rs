@@ -52,6 +52,8 @@ pub use windows_composition::{
 #[cfg(feature = "hosted")]
 mod application;
 mod application_builder;
+#[cfg(feature = "packaged-resources")]
+mod packaged_resources;
 #[cfg(feature = "hosted")]
 pub use application::{ApplicationState, ApplicationWindow, RuntimeApplication};
 pub use application_builder::{ApplicationSession, NanaApplication, NanaApplicationBuilder};
@@ -59,6 +61,10 @@ pub use application_builder::{ApplicationSession, NanaApplication, NanaApplicati
 /// metrics with these types and record them with its macros.
 pub use nana_diagnostics as diagnostics;
 pub use nana_diagnostics::{DiagnosticsConfig, PersistMode};
+#[cfg(feature = "packaged-resources")]
+pub use nana_package;
+#[cfg(feature = "packaged-resources")]
+pub use packaged_resources::{ResourcePackOptions, SELF_CHECK_ENV};
 pub mod icons;
 pub mod layout;
 pub mod menu;

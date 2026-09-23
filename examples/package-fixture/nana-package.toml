@@ -1,0 +1,51 @@
+# Packaging config of the Issue #226 fixture. Keys and signing seeds never
+# appear here: CI generates them with `nana-packager keygen` and passes them
+# through NANA_CONTENT_KEY_CONTENT_MAIN and NANA_PUBLISHER_SIGNING_KEY.
+schema_version = 1
+
+[application]
+id = "dev.nana.package-fixture"
+name = "Nana Package Fixture"
+version = "0.1.0"
+vendor = "Nana"
+
+[executable]
+file_name = "NanaPackageFixture"
+
+[distribution]
+backend = "steam"
+
+[distribution.steam]
+app_id = 480
+depots = { windows = 481, macos = 482, linux = 483 }
+
+[resources]
+root = "assets"
+compression = { codec = "zstd", level = 19 }
+
+[[resources.packs]]
+name = "splash"
+class = "early-splash"
+include = ["splash/**"]
+
+[[resources.packs]]
+name = "bootstrap"
+class = "bootstrap-ui"
+include = ["boot/**"]
+depends_on = ["splash"]
+
+[[resources.packs]]
+name = "ui"
+class = "protected"
+include = ["ui/**"]
+key = "content-main"
+depends_on = ["bootstrap"]
+
+[keys.content-main]
+generation = 1
+availability = "process-start"
+
+# Signed when NANA_PUBLISHER_SIGNING_KEY is set (CI). A product pins its key
+# with `public_key = "ed25519:…"` and `required = true`.
+[signing.publisher]
+required = false

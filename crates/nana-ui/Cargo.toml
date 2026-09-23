@@ -43,6 +43,10 @@ rich-text = ["nana-ui-runtime/rich-text", "nana-ui-scene/rich-text", "nana-ui-co
 # product glyphs (user, keyboard, message, play …) should not have to
 # hand-author `IconData`. Unreferenced constants are dropped by the linker.
 icons-tabler = ["dep:nana-icons-tabler"]
+# Issue #226: mount the package's `.nrpack` resource packs, read its package
+# manifest, and answer `NANA_PACKAGE_VALIDATE` self-checks. Opt-in: embedded
+# hosts that do their own packaging never link `nana-package`.
+packaged-resources = ["dep:nana-package"]
 gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:swash", "nana-ui-platform/fetch", "dep:wgpu", "dep:windows"]
 hosted = [
     "gpu",
@@ -76,6 +80,7 @@ nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts
 nana-frame-exchange = { workspace = true, optional = true }
 nana-ui-core.workspace = true
 nana-diagnostics.workspace = true
+nana-package = { workspace = true, optional = true }
 nana-icons-tabler = { workspace = true, optional = true }
 nana-ui-runtime.workspace = true
 # Issue #96: IME surrounding-text rules come from the editable text path.
