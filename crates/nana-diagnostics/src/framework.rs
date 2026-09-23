@@ -142,17 +142,6 @@ pub mod gpu {
         Severity::Warn,
         &[F::u64("window")],
     );
-    /// A redraw returned without drawing. `reason`: 1 = rendering suspended,
-    /// 2 = the window cannot present (surface retry, occluded, hidden or
-    /// minimised). Edge-triggered — one event per window until it draws
-    /// again, because this sits on the frame path.
-    pub static PRESENT_BLOCKED: EventDescriptor = EventDescriptor::new(
-        D,
-        6,
-        "gpu.present_blocked",
-        Severity::Warn,
-        &[F::u64("window"), F::u64("reason")],
-    );
 }
 
 pub mod window {

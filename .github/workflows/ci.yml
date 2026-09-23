@@ -75,11 +75,7 @@ jobs:
           lifecycle() { cargo run -p nana-ui --example "$1" --features hosted,bundled-fonts --locked -- "${@:2}"; }
           lifecycle window-service-lifecycle
           lifecycle embedded-window-lifecycle
-          # The probe writes a session log its failure path reads back: this is
-          # the only place `gpu.present_blocked` can be observed.
-          export NANA_LIFECYCLE_DIAGNOSTICS="$PWD/target/lifecycle-diagnostics"
           lifecycle embedded-window-lifecycle --probe-device-loss
-          unset NANA_LIFECYCLE_DIAGNOSTICS
           lifecycle embedded-window-lifecycle --probe-host-stop
       # The Gallery *pixel* gate cannot run here: it compares exactly against a
       # baseline recorded by one GPU adapter, and no hosted runner matches a

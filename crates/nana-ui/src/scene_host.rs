@@ -253,9 +253,6 @@ struct WindowManager<Program: RuntimeProgram> {
     image_targets: Arc<Mutex<HashMap<String, HashSet<WindowId>>>>,
     image_window_keys: HashMap<WindowId, HashSet<String>>,
     occluded: HashSet<WindowId>,
-    /// Windows that have already reported `gpu.present_blocked`, so the frame
-    /// path reports the edge and not every frame behind it.
-    present_blocked: HashSet<WindowId>,
     /// Per-window mirror of the scene's native-content regions into the
     /// platform compositor. This is what makes the mirror retained: a frame
     /// whose scene projections did not move rebuilds nothing and stages
@@ -1068,7 +1065,6 @@ fn initialize<Program: RuntimeProgram>(
         image_targets: Arc::new(Mutex::new(HashMap::new())),
         image_window_keys: HashMap::new(),
         occluded: HashSet::new(),
-        present_blocked: HashSet::new(),
         native_content: HashMap::new(),
         native_chrome_writes: std::cell::Cell::new(0),
         window_contexts: HashMap::from([(WindowId::PRIMARY, primary)]),

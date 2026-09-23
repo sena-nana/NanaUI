@@ -13,41 +13,6 @@ use std::{
 };
 
 static RESULT: Mutex<Option<Result<(), String>>> = Mutex::new(None);
-/// What the application actually observed, printed when the lifecycle fails.
-/// A timeout says which wait gave up; this says what had arrived before it.
-static TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
-pub fn trace(entry: String) {
-    TRACE.lock().unwrap().push(entry);
-}
-/// Where this run writes its session log, when the host asked for one. Unset
-/// outside the CI step that reads it back, so an ordinary run stays silent.
-pub fn diagnostics_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("NANA_LIFECYCLE_DIAGNOSTICS").map(std::path::PathBuf::from)
-}
-/// The framework's own account of the failure: `gpu.present_blocked` says a
-/// redraw returned without drawing, and its absence says none ever ran.
-fn diagnostics_dump() -> String {
-    let Some(dir) = diagnostics_dir() else {
-        return String::new();
-    };
-    if let Some(diagnostics) = nana_ui::diagnostics::global() {
-        diagnostics.flush(true, Duration::from_secs(10));
-    }
-    let Ok(entries) = std::fs::read_dir(dir.join("logs")) else {
-        return String::new();
-    };
-    let mut out = String::from("\ndiagnostics:\n");
-    for entry in entries.flatten() {
-        match nana_ui::diagnostics::nlog::read_file(entry.path()) {
-            Ok(file) => out.push_str(&nana_ui::diagnostics::to_text(
-                &file,
-                &nana_ui::diagnostics::ExportOptions { redact_home: true },
-            )),
-            Err(error) => out.push_str(&format!("  {}: {error}\n", entry.path().display())),
-        }
-    }
-    out
-}
 pub enum Message {
     Pump,
     Completed(Result<(), String>),
@@ -103,9 +68,9 @@ fn presented(
     generation: &mut Option<u64>,
 ) -> Result<(), String> {
     loop {
-        let (id, gpu) = rx.recv_timeout(Duration::from_secs(20)).map_err(|error| {
-            format!("window {} never presented a frame: {error}", handle.id().0)
-        })?;
+        let (id, gpu) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|error| error.to_string())?;
         if let Some(expected) = *generation {
             if expected != gpu {
                 return Err("windows did not share GPU resources".into());
@@ -150,9 +115,7 @@ impl ApplicationState for App {
             });
             queued_rx
                 .recv_timeout(Duration::from_secs(20))
-                .map_err(|error| {
-                    format!("the queued window request never reached the host: {error}")
-                })?;
+                .map_err(|error| error.to_string())?;
             return Ok(Self {
                 service,
                 worker: Some(worker),
@@ -244,15 +207,9 @@ impl ApplicationState for App {
                     .wait()
                     .map_err(|e| e.to_string())?;
                 loop {
-                    let (id, size) =
-                        resized_rx
-                            .recv_timeout(Duration::from_secs(20))
-                            .map_err(|error| {
-                                format!(
-                                    "window {} never reported its new size: {error}",
-                                    second.id().0
-                                )
-                            })?;
+                    let (id, size) = resized_rx
+                        .recv_timeout(Duration::from_secs(20))
+                        .map_err(|error| error.to_string())?;
                     if id == second.id() && size == (520.0, 360.0) {
                         break;
                     }
@@ -463,7 +420,6 @@ impl ApplicationState for App {
         event: &nana_ui_platform::WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        trace(format!("{event:?}"));
         if let nana_ui_platform::WindowEvent::Ready { id, .. } = event {
             let _ = self
                 .tags
@@ -491,9 +447,9 @@ impl ApplicationState for App {
         _window: &mut ApplicationWindow,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
-        let (id, gpu) = (context.window_id(), context.gpu().generation());
-        trace(format!("Presented {{ id: {}, gpu: {gpu} }}", id.0));
-        let _ = self.presented.send((id, gpu));
+        let _ = self
+            .presented
+            .send((context.window_id(), context.gpu().generation()));
         RuntimeProgramUpdate::default()
     }
     fn window_closed(&mut self, id: WindowId) {
@@ -530,18 +486,12 @@ impl ApplicationState for App {
     }
 }
 pub fn verify() {
-    let result = RESULT
+    RESULT
         .lock()
         .unwrap()
         .take()
-        .expect("lifecycle did not complete");
-    if let Err(error) = result {
-        let observed = TRACE.lock().unwrap().join("\n  ");
-        panic!(
-            "lifecycle failed: {error}\nobserved:\n  {observed}{}",
-            diagnostics_dump()
-        );
-    }
+        .expect("lifecycle did not complete")
+        .expect("lifecycle failed");
     println!(
         "Window lifecycle passed: three windows, tagged character and tracking documents, shared GPU, worker controls, display-targeted fullscreen and level reported by ModeChanged, primary close, stale handle, recreate and present."
     );
@@ -571,7 +521,7 @@ fn wait_for_focus(rx: &mpsc::Receiver<WindowId>, expected: WindowId) -> Result<(
     loop {
         let id = rx
             .recv_timeout(Duration::from_secs(20))
-            .map_err(|error| format!("window {} never took focus: {error}", expected.0))?;
+            .map_err(|error| error.to_string())?;
         if id == expected {
             return Ok(());
         }
