@@ -71,6 +71,8 @@ DX12 的 HWND swapchain 硬编码只上报 `Opaque`（`wgpu-hal` `dx12/adapter.r
 - `Composition`：明确要合成 visual；拿不到时降级并上报，而不是开不出窗口。
 - `RequireComposition`：合成 visual 或者不开。**只有**这一档会让合成不可用变成启动/开窗失败，给那些内容在普通路径上就是错的宿主用；其它所有窗口都该用 `Composition`，降级并上报、应用继续活着。
 
+合成目标（DirectComposition visual）只有 Windows 有。macOS 与 Linux 的普通窗口 surface 本身就由系统合成（macOS 是 `CAMetalLayer`），没有第二条路可要，所以这两档在那里都直接由普通窗口满足、不算降级、也不会因此拒绝开窗；透明客户区能不能成立，照常由 surface 协商出的 alpha 模式决定（`Opaque` 时 `Transparent` 降为 `Solid` 并上报）。
+
 一个窗口要合成不代表所有窗口都要；#215 的 shadow companion 因此可以单独用 `Composition`，不动应用其它窗口。共享同一个 GPU device 混用两种 target 是正常的。
 
 #### 可用性在开窗之前判定，窗口本身是临时的
