@@ -13,6 +13,15 @@ use std::{
 };
 
 static RESULT: Mutex<Option<Result<(), String>>> = Mutex::new(None);
+/// What the application actually observed, printed when the lifecycle fails.
+/// A timeout says which wait gave up; this says what had arrived before it.
+static TRACE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+fn trace(entry: String) {
+    let mut seen = TRACE.lock().unwrap();
+    if seen.len() < 300 {
+        seen.push(entry);
+    }
+}
 pub enum Message {
     Pump,
     Completed(Result<(), String>),
@@ -414,6 +423,7 @@ impl ApplicationState for App {
         event: &nana_ui_platform::WindowEvent,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        trace(format!("{event:?}"));
         if let nana_ui_platform::WindowEvent::Ready { id, .. } = event {
             let _ = self
                 .tags
@@ -441,6 +451,11 @@ impl ApplicationState for App {
         _window: &mut ApplicationWindow,
         context: &RuntimeProgramContext<Self::Message>,
     ) -> RuntimeProgramUpdate {
+        trace(format!(
+            "Presented {{ id: {}, gpu: {} }}",
+            context.window_id().0,
+            context.gpu().generation()
+        ));
         let _ = self
             .presented
             .send((context.window_id(), context.gpu().generation()));
@@ -477,12 +492,15 @@ impl ApplicationState for App {
     }
 }
 pub fn verify() {
-    RESULT
+    let result = RESULT
         .lock()
         .unwrap()
         .take()
-        .expect("lifecycle did not complete")
-        .expect("lifecycle failed");
+        .expect("lifecycle did not complete");
+    if let Err(error) = result {
+        let observed = TRACE.lock().unwrap().join("\n  ");
+        panic!("lifecycle failed: {error}\nobserved:\n  {observed}");
+    }
     println!(
         "Window lifecycle passed: three windows, tagged character and tracking documents, shared GPU, worker controls, display-targeted fullscreen and level reported by ModeChanged, primary close, stale handle, recreate and present."
     );
