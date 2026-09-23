@@ -361,7 +361,7 @@ fn build(&mut self, window: &mut ApplicationWindow, context: &RuntimeProgramCont
 - 宿主发起原生拖窗（标题栏拖动、`WindowHandle::begin_drag`）时，平台移动循环产生的离开被扣下，直到平台再次报告该指针；拖动被屏幕边缘挡住后指针离开窗口的情形，要等指针回到窗口再离开才会报告。
 - host 自管的窗口移动（`LiveFrameMove`）期间不报告在场变化：窗口跟着指针走，每次越过自己原来的边界都是窗口离开指针，不是指针离开窗口。
 - 指针被捕获时，客户区外的移动不会把状态改回在场。
-- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开。
+- `WindowHandle::set_visible(false)` 隐藏窗口时报告一次离开；窗口被最小化或完全遮挡（平台报告 occluded）时同样报告一次离开，平台未必会发出这次离开。被遮挡期间 Forward 穿透不采样该窗口，重新露出后等平台再次报告指针才回到在场。
 - Forward 穿透由宿主采样全局指针，在场随采样结果更新；采样不可用的平台（Wayland）报告为不在场。
 - 有模态子窗口时父窗口仍报告在场，指针事件本身继续交给模态链处理。
 

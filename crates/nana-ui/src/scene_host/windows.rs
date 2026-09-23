@@ -325,8 +325,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let ids: Vec<_> = self
             .window_contexts
             .iter()
-            .filter(|(_, host)| {
-                host.passthrough_mode == MousePassthroughMode::Forward && host.os_mouse_passthrough
+            .filter(|(id, host)| {
+                host.passthrough_mode == MousePassthroughMode::Forward
+                    && host.os_mouse_passthrough
+                    // The sample only asks where the cursor is, not what is
+                    // on top there; it would bring an occluded window back.
+                    && !self.occluded.contains(*id)
             })
             .map(|(id, _)| *id)
             .collect();
