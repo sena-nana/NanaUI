@@ -130,12 +130,14 @@ splash 的图层、视觉、位图、D3D11 设备、子类和动画都由同一�
 
 诊断事件（`nana_diagnostics::framework::host`）：`STARTUP_PHASE { phase, elapsed_ns }`（0 入口 … 6 splash 释放）、`SPLASH_OUTCOME { outcome }`、`STARTUP_FAILED`，以及 gauge `host.startup.longest_block`。
 
-本机（macOS，debug 构建，负载约 3）的探针记录：
+本机（macOS，debug 构建，`startup-splash --probe --app-ms=200`，有 / 无 splash 交替各 8 轮，负载 4–7，取最小值，括号内为中位数）：
 
-| 场景 | splash 提交 | UiReady | 交接完成 | 事件线程最长占用 |
+| 场景 | 最早可见 | UiReady | 交接完成 | 事件线程最长占用 |
 | --- | --- | --- | --- | --- |
-| 有 splash | ≈ 0.30 s | ≈ 0.50 s | ≈ 0.53 s | ≈ 42 ms |
-| 无 splash | — | ≈ 0.54 s | ≈ 0.63 s | ≈ 30 ms |
+| 有 splash | 0.40 s（0.40）：splash 提交 | 0.65 s（0.66） | 0.68 s（0.69） | 42 ms（44） |
+| 无 splash | 0.70 s（0.71）：首帧，窗口此前隐藏 | 0.61 s（0.61） | 0.70 s（0.71） | 29 ms（32） |
+
+有 splash 时 Logo 比首帧早约 0.3 s 出现，实际就绪（交接）也没有变晚；`UiReady` 晚约 45 ms，是提前显示窗口与建 splash 在事件线程上的代价（上表的最长占用即这一次回调）。
 
 入口到第一次窗口回调约 0.3 s 花在 winit / AppKit 启动上，在宿主能做任何事之前。同一构建在去掉两处同步图标工作之前，`UiReady` 在 1.3–1.4 s，事件线程单次被占用约 0.8 s：默认图标在建窗前同步栅格化（macOS 上 winit 根本不用窗口图标），Dock 图标在 `initialize` 前同步生成。数字只说明这台机器 debug 构建的量级，不是预算。
 
