@@ -5,7 +5,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use nana_ui::runtime::{
-    AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument, StableNodeId,
+    AccessibilityAction, AccessibilityActionRequest, LayoutViewport, RuntimeDocument,
+    RuntimeFrameUpdate, StableNodeId,
 };
 use nana_ui::{HostTextureRegistry, NanaTextShaper, RuntimeInputAdapter, ThemeMode};
 use nana_ui_core::SemanticColorRole;
@@ -112,14 +113,17 @@ impl RuntimeAgentSession {
         self.clock
     }
 
-    pub fn flush(&mut self) -> Result<(), AgentError> {
+    /// Drains one frame. [`RuntimeFrameUpdate::is_idle`] tells a frame that
+    /// did no work: `last_work_counters` keeps the last non-empty drain's
+    /// counters through idle frames, so summing it per flush counts that
+    /// drain again on every idle one.
+    pub fn flush(&mut self) -> Result<RuntimeFrameUpdate, AgentError> {
         self.document
             .flush(
                 LayoutViewport::new(self.width as f32, self.height as f32),
                 &mut self.shaper,
             )
-            .map_err(|error| AgentError(error.to_string()))?;
-        Ok(())
+            .map_err(|error| AgentError(error.to_string()))
     }
 
     pub fn accessibility_dump(&self) -> Vec<AccessibilityDumpNode> {
@@ -342,7 +346,7 @@ impl AgentSession for RuntimeAgentSession {
     }
 
     fn flush(&mut self) -> Result<(), AgentError> {
-        Self::flush(self)
+        Self::flush(self).map(drop)
     }
 
     fn accessibility_nodes(&self) -> Vec<AccessibilityDumpNode> {
@@ -359,7 +363,7 @@ impl AgentSession for RuntimeAgentSession {
         self.width = width;
         self.height = height;
         self.scale_factor = scale;
-        Self::flush(self)
+        Self::flush(self).map(drop)
     }
 
     fn set_theme(&mut self, mode: ThemeName) -> Result<(), AgentError> {
@@ -371,7 +375,7 @@ impl AgentSession for RuntimeAgentSession {
             .context_mut()
             .set_theme(mode)
             .map_err(|error| AgentError(error.to_string()))?;
-        Self::flush(self)
+        Self::flush(self).map(drop)
     }
 
     fn set_clear(&mut self, clear: Option<[f32; 4]>) {
@@ -555,6 +559,54 @@ mod tests {
             let (size, pixels) = session.screenshot_rgba().expect("preview");
             assert_eq!(pixels.len(), (size.width * size.height * 4) as usize);
             assert!(pixels.iter().any(|channel| *channel != 0));
+        }
+    }
+
+    /// A subtree taken out of paint and input settles in one frame; the frames
+    /// after it are idle, which only the flush result says: the world's work
+    /// counters keep reporting the settling drain.
+    #[test]
+    fn hidden_subtree_settles_to_idle_flushes() {
+        use nana_ui::runtime::{PointerEventsSpec, Stack, VisibilitySpec};
+
+        let document_id = DocumentId::new(1).expect("document");
+        let mut document = RuntimeDocument::new(document_id);
+        let stack = document
+            .context_mut()
+            .build(document_id, |ui| {
+                let stack = ui.child("chrome", Stack::column(8.0));
+                ui.nest(stack, |ui| {
+                    ui.child("label", Text::new("Output"));
+                    ui.child("go", Button::new("Go"));
+                });
+                stack
+            })
+            .expect("root");
+        let mut session = RuntimeAgentSession::new(document, 240, 160).expect("session");
+        assert!(session.flush().expect("flush").is_idle());
+
+        session
+            .document_mut()
+            .context_mut()
+            .update_component(stack, |view, _| {
+                *view = view.clone().with_layout(|layout| {
+                    layout.pointer_events = Some(PointerEventsSpec::None);
+                    layout.paint.visibility = Some(VisibilitySpec::Hidden);
+                });
+            })
+            .expect("hide");
+        assert!(!session.flush().expect("settle").is_idle());
+        let settled = session.document().context().last_work_counters();
+        assert!(settled.style_processed > 0);
+
+        for _ in 0..3 {
+            assert!(session.flush().expect("steady").is_idle());
+            let counters = session.document().context().last_work_counters();
+            assert_eq!(counters.style_processed, settled.style_processed);
+            assert_eq!(
+                counters.accessibility_nodes_updated,
+                settled.accessibility_nodes_updated
+            );
         }
     }
 

@@ -72,6 +72,8 @@ O(总节点数) 在那里是**应付的账**，量出来什么也不说明。改
 
 `last_frame_profile()` 和 `last_work_counters()` **保留最后一次非空闲的值**。在空闲帧上读
 它们会拿到挂载帧的数据。基准因此在每个采样上断言 `!update.is_idle()`。
+无头的 `RuntimeAgentSession::flush` 同样返回这份 `RuntimeFrameUpdate`：按帧累加计数的
+验收只累加非空闲帧，否则一个已经静止的界面会被算成每帧都在重做最后那次改动。
 
 ## 结果一：纯绘制的改动早就是 O(改动量)
 
