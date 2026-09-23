@@ -46,7 +46,8 @@ def metadata() -> dict:
         cwd=ROOT,
         check=True,
         capture_output=True,
-        text=True,
+        # cargo metadata is UTF-8; Windows' locale default (cp1252) is not.
+        encoding="utf-8",
     ).stdout
     return json.loads(output)
 
