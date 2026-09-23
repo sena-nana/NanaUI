@@ -21,9 +21,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_FACE_TYPE_BITMAP, DWRITE_FONT_FACE_TYPE_UNKNOWN, DWRITE_FONT_FILE_TYPE,
     DWRITE_FONT_SIMULATIONS_BOLD, DWRITE_FONT_SIMULATIONS_NONE, DWRITE_FONT_SIMULATIONS_OBLIQUE,
     DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GRID_FIT_MODE, DWRITE_GRID_FIT_MODE_DEFAULT,
-    DWRITE_GRID_FIT_MODE_DISABLED, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_OUTLINE_THRESHOLD_ANTIALIASED, DWRITE_PIXEL_GEOMETRY_BGR, DWRITE_PIXEL_GEOMETRY_RGB,
-    DWRITE_RENDERING_MODE1, DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+    DWRITE_MEASURING_MODE_NATURAL, DWRITE_OUTLINE_THRESHOLD_ANTIALIASED, DWRITE_PIXEL_GEOMETRY_BGR,
+    DWRITE_PIXEL_GEOMETRY_RGB, DWRITE_RENDERING_MODE1, DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
     DWRITE_RENDERING_MODE1_OUTLINE, DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
     DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE, DWRITE_TEXTURE_ALIASED_1x1, DWRITE_TEXTURE_CLEARTYPE_3x1,
     DWriteCreateFactory, IDWriteFactory, IDWriteFactory5, IDWriteFactory6, IDWriteFontFace,
@@ -158,7 +157,7 @@ impl DWrite {
         // the duration of `CreateGlyphRunAnalysis`, which copies what it
         // needs; the face reference it holds is released right after.
         unsafe {
-            let (mode, grid_fit) = self.rendering_mode(&face, size);
+            let (mode, grid_fit) = self.rendering_mode(&face, size)?;
             let advance = 0.0f32;
             let offset = DWRITE_GLYPH_OFFSET::default();
             let mut run = DWRITE_GLYPH_RUN {
@@ -242,15 +241,21 @@ impl DWrite {
         }
     }
 
-    /// What DirectWrite recommends for this face at this size, kept to the
-    /// two modes that position glyphs at fractional pixels and smooth both
-    /// axes. The GDI-compatible and aliased modes snap to whole pixels, which
-    /// the quarter-pixel bins this glyph was keyed by cannot follow.
+    /// What DirectWrite recommends for this face at this size, kept to the one
+    /// mode that positions glyphs at fractional pixels and smooths both axes.
+    /// The GDI-compatible and aliased modes snap to whole pixels, which the
+    /// quarter-pixel bins this glyph was keyed by cannot follow.
+    ///
+    /// `None` past the outline threshold, where DirectWrite recommends
+    /// bypassing its rasterizer for the outlines themselves: an analysis in
+    /// that mode has no alpha texture to ask for, and asking anyway gets an
+    /// empty rectangle back that is indistinguishable from a blank glyph. Such
+    /// a size belongs to swash, which scales an outline however large it is.
     unsafe fn rendering_mode(
         &self,
         face: &IDWriteFontFace,
         size: f32,
-    ) -> (DWRITE_RENDERING_MODE1, DWRITE_GRID_FIT_MODE) {
+    ) -> Option<(DWRITE_RENDERING_MODE1, DWRITE_GRID_FIT_MODE)> {
         let mut mode = DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC;
         let mut grid_fit = DWRITE_GRID_FIT_MODE_DEFAULT;
         if let Ok(face) = face.cast::<IDWriteFontFace3>() {
@@ -270,10 +275,9 @@ impl DWrite {
             };
         }
         if mode == DWRITE_RENDERING_MODE1_OUTLINE {
-            (mode, DWRITE_GRID_FIT_MODE_DISABLED)
-        } else {
-            (DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, grid_fit)
+            return None;
         }
+        Some((DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC, grid_fit))
     }
 
     fn face(
@@ -573,6 +577,28 @@ mod tests {
         assert_ne!(
             whole.data, shifted.data,
             "the pen offset reaches DirectWrite"
+        );
+    }
+
+    #[test]
+    fn a_glyph_past_the_outline_threshold_still_comes_back_with_ink() {
+        let Some((mut rasterizer, key)) = rasterizer_and_key(GLYPH, GlyphRenderMode::Mask) else {
+            return;
+        };
+        // Above its outline threshold DirectWrite recommends bypassing the
+        // rasterizer, and an analysis built that way has no alpha texture at
+        // all. The glyph has to reach swash rather than come back blank.
+        let image = rasterizer
+            .rasterize(&GlyphRasterRequest {
+                key: GlyphRasterKey {
+                    size_bits: size_bits(400.0),
+                    ..key
+                },
+            })
+            .expect("a glyph this large still rasterizes");
+        assert!(
+            image.data.iter().any(|&c| c > 200),
+            "the glyph has solid ink"
         );
     }
 
