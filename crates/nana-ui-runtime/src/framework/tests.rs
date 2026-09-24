@@ -7320,6 +7320,38 @@ fn word_right_past_an_inlay_crosses_a_fold_rather_than_entering_it() {
     );
 }
 
+/// WordRight from before an inlay's anchor, stopping inside the label: the
+/// label's words are not the text's, so it goes where the bare text would.
+#[test]
+fn word_right_into_an_inlay_from_before_its_anchor_moves_over_the_bare_text() {
+    for (value, inlay, start) in [
+        ("ab cd", TextInlay::new(3, "i32 "), 2),
+        ("ab x", TextInlay::new(2, "cd "), 0),
+    ] {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let area = context
+            .create_component(document, TextArea::new(value).inlays(Arc::from([inlay])))
+            .unwrap();
+        let node = area.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        let expected = crate::text_editing::caret_focus(
+            value,
+            TextSelection::caret(start),
+            TextCaretIntent::WordRight,
+        )
+        .unwrap();
+        let moved = move_caret_from(
+            &mut context,
+            document,
+            node,
+            start,
+            TextCaretIntent::WordRight,
+        );
+        assert_eq!(moved, expected, "{value:?} from {start}");
+    }
+}
+
 /// WordRight that stops on a label's word boundary goes on to the end of the
 /// word after the anchor, as over the bare text, not one grapheme.
 #[test]

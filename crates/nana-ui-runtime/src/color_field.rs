@@ -311,12 +311,13 @@ impl AppContext {
             button.disabled = snapshot.disabled;
         })?;
         self.update_component(hex, |input, _| {
-            // The canonical text in another letter case stays as the user
-            // typed it: rewriting it only to lower the case would replace the
-            // field's value and, with it, its undo. Anything else is
-            // normalized.
+            // The text is the user's until the color changes: text that
+            // already names this color (in any spelling parse_hex takes)
+            // stays as typed, so reassembling for the picker does not replace
+            // the field's value and, with it, its undo. A different color, or
+            // text that names none, shows the canonical hex.
             let next = format_hex(snapshot.value);
-            if !input.state.value.eq_ignore_ascii_case(&next) {
+            if parse_hex(&input.state.value).map(format_hex).as_ref() != Some(&next) {
                 input.state.replace_value(next);
             }
             input.disabled = snapshot.disabled;
@@ -598,9 +599,14 @@ mod tests {
         };
         assert_eq!(text(&context), "#00FF88", "not rewritten to change case");
         assert!(context.can_undo_text(hex), "so the typing stays undoable");
-        // Other spellings of the same color are still normalized.
+        // Any spelling of the same color is the user's; a draft that names
+        // no color is not.
         context.select_all_focused_text(document).unwrap();
         context.replace_focused_text(document, " 00ff88 ").unwrap();
+        assert!(context.activate_button(swatch).unwrap());
+        assert_eq!(text(&context), " 00ff88 ");
+        context.select_all_focused_text(document).unwrap();
+        context.replace_focused_text(document, "#00ff8").unwrap();
         assert!(context.activate_button(swatch).unwrap());
         assert_eq!(text(&context), "#00ff88");
         // A different color does rewrite it.

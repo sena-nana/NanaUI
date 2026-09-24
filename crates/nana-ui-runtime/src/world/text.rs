@@ -829,15 +829,22 @@ impl TextDisplayView {
         })
     }
 
+    /// 显示偏移是否落在某个 inlay 插入文本内部或末端（见 [`TextDisplaySpan::crossed_at`]）。
+    pub fn crosses_inlay(&self, display: usize) -> bool {
+        self.spans
+            .iter()
+            .any(|span| matches!(span.kind, TextDisplaySpanKind::Inlay) && span.crossed_at(display))
+    }
+
     /// 右向移动语义的显示→值映射：目标落在覆盖区间内部时不钳回区间
     /// 起点（那样逐字符右移会被钳成空操作），而是跨过整个覆盖区间：
-    /// 折叠摘要 → 折叠后首字符；inlay → 从锚点按 `step`（调用方的移动
-    /// 意图在值文本上的一步：Right 一个字素簇、WordRight 到词尾）前进，
+    /// 折叠摘要 → 折叠后首字符；inlay → `bare`（调用方的移动意图在值
+    /// 文本上从原光标走出的一步：Right 一个字素簇、WordRight 到词尾），
     /// 与裸文本移动一致（按显示文本步进会把标签文字算进词里）；这一步
-    /// 跨行落进折叠隐藏区间时（行尾锚点上的 WordRight）再跨到折叠末端。非内部
-    /// 目标与 [`Self::value_of`] 一致。点击命中与垂直移动保持钳制语义，
-    /// 不走本映射。
-    pub fn value_of_forward(&self, display: usize, step: impl FnOnce(usize) -> usize) -> usize {
+    /// 跨行落进折叠隐藏区间时（行尾锚点上的 WordRight）再跨到折叠末端。
+    /// 非内部目标与 [`Self::value_of`] 一致。点击命中与垂直移动保持钳制
+    /// 语义，不走本映射。
+    pub fn value_of_forward(&self, display: usize, bare: impl FnOnce() -> usize) -> usize {
         let Some(span) = self.spans.iter().find(|span| span.crossed_at(display)) else {
             return self.value_of(display);
         };
@@ -848,7 +855,7 @@ impl TextDisplayView {
             }
             // 同锚点的插入（多条标签背靠背）映射到同一锚点，一步一并跨过。
             TextDisplaySpanKind::Inlay => {
-                let next = step(span.value_start);
+                let next = bare();
                 self.spans
                     .iter()
                     .find(|fold| fold.fold().is_some() && self.span_hides(fold, next))

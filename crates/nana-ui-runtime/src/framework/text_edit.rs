@@ -690,17 +690,22 @@ impl AppContext {
         let to_value_moved = |previous_focus: usize, moved: TextSelection| -> TextSelection {
             match &fold_view {
                 Some(view) => {
+                    // A word move that stops in a label, from the anchor or
+                    // before it, counted the label's words as the text's.
+                    let word_into_label = matches!(intent, TextCaretIntent::WordRight)
+                        && view.crosses_inlay(moved.focus);
                     let focus = if view.crosses_cover(moved.focus, stepping)
-                        && view.value_of(moved.focus) == previous_focus
+                        && (view.value_of(moved.focus) == previous_focus || word_into_label)
                     {
-                        // The step the intent takes over the bare text.
-                        view.value_of_forward(moved.focus, |anchor| {
+                        // The step the intent takes over the bare text, from
+                        // where the caret was.
+                        view.value_of_forward(moved.focus, || {
                             crate::text_editing::caret_focus(
                                 &state.value,
-                                TextSelection::caret(anchor),
+                                TextSelection::caret(previous_focus),
                                 intent,
                             )
-                            .unwrap_or(anchor)
+                            .unwrap_or(previous_focus)
                         })
                     } else {
                         view.value_of(moved.focus)

@@ -225,6 +225,35 @@ impl TextHistory {
     }
 }
 
+/// Whether turning `before` into `after` cuts into an atom: an atom is
+/// replaced whole or not at all, so an edit that starts or ends strictly
+/// inside one (or inserts into it) would leave half a chip.
+fn splits_an_atom(before: &str, after: &str, atoms: &[crate::TextAtomSpan]) -> bool {
+    let atoms = crate::text_editing::atoms_in(before, atoms);
+    if atoms.is_empty() {
+        return false;
+    }
+    let prefix = before
+        .bytes()
+        .zip(after.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    let suffix = before
+        .bytes()
+        .rev()
+        .zip(after.bytes().rev())
+        .take_while(|(left, right)| left == right)
+        .count()
+        .min(before.len() - prefix)
+        .min(after.len() - prefix);
+    let changed = prefix..before.len() - suffix;
+    let touches_inside = atoms
+        .iter()
+        .any(|atom| atom.start < changed.start && changed.start < atom.end);
+    touches_inside
+        || crate::text_editing::expand_range_over_atoms(changed.clone(), &atoms) != changed
+}
+
 /// Per-editor journals.
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
@@ -380,14 +409,32 @@ impl crate::AppContext {
         }
         // Decided before anything is sealed: an edit that does not happen
         // leaves the user's typing run as it was.
-        let Some(next) = self.read(entity, |editable: &C| {
-            let mut next = editable.state().clone();
+        let snippet = self.world.text_snippet_session(node);
+        let Some((next, linked)) = self.read(entity, |editable: &C| {
+            let current = editable.state();
+            let mut next = current.clone();
             if !apply(&mut next) {
                 return None;
             }
             next.normalize_selections();
             // Judged against the value it replaces, which is still in place.
-            (next != *editable.state() && accepts(editable, &next.value)).then_some(next)
+            if next == *current
+                || !accepts(editable, &next.value)
+                || splits_an_atom(&current.value, &next.value, editable.text_atoms())
+            {
+                return None;
+            }
+            // Linked snippet placeholders follow the edit, as they follow
+            // the user's own.
+            let linked = snippet.as_ref().and_then(|session| {
+                session.linked_edit(&current.value, &next.value, next.selection)
+            });
+            let linked = linked.map(|(value, selection, session)| {
+                next.value = value.into();
+                next.selection = selection;
+                session
+            });
+            Some((next, linked))
         })?
         else {
             return Ok(false);
@@ -398,6 +445,11 @@ impl crate::AppContext {
             true
         })?;
         self.seal_editor_history(node);
+        if changed && let Some(session) = linked {
+            let mut mutations = crate::MutationQueue::new();
+            mutations.set_text_input_snippet(node, Some(session));
+            self.world.commit(mutations)?;
+        }
         Ok(changed)
     }
 
@@ -415,16 +467,19 @@ impl crate::AppContext {
         &self,
         mutations: &crate::MutationQueue,
     ) -> Vec<StableNodeId> {
-        // One pass matching each mutation's kind, as the commit's other
-        // pre-scans do; none at all until some editor keeps a journal.
-        if self.text_histories.entries.is_empty() {
+        // Nothing to look at unless the batch writes editor text and some
+        // editor keeps a journal: layout, style and animation batches pass
+        // in O(1).
+        if !mutations.writes_text() || self.text_histories.entries.is_empty() {
             return Vec::new();
         }
         mutations
             .as_slice()
             .iter()
             .filter_map(|mutation| match mutation {
-                crate::UiMutation::SetTextInput { id, state: Some(_) }
+                // Removing an editor's text (`state: None`) frees its journal
+                // too: nothing would use it again to notice.
+                crate::UiMutation::SetTextInput { id, .. }
                 | crate::UiMutation::ReplaceTextSelection { id, .. }
                     if self.text_histories.verifies(*id) =>
                 {
@@ -459,28 +514,42 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        let update = |cx: &mut Self| {
+        // The text the edit itself produced, before observers of its change
+        // event run: a handler given the editor may rewrite it.
+        let mut edited = None;
+        let update = |cx: &mut Self, edited: &mut Option<crate::TextValue>| {
             cx.update_component(entity, |editable: &mut C, view| {
                 if !apply(editable, view) {
                     return false;
+                }
+                if C::JOURNALED {
+                    *edited = Some(editable.state().value.clone());
                 }
                 view.emit(editable.change());
                 true
             })
         };
         if !C::JOURNALED {
-            return update(self);
+            return update(self, &mut edited);
         }
         let node = entity.stable_id();
         self.follow_text_history(node);
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
         self.text_histories.writing.push(node);
-        let written = update(self);
+        let written = update(self, &mut edited);
         self.text_histories.finish_writing(node);
         if matches!(written, Ok(false)) {
             return written;
         }
         let after = self.read(entity, |editable: &C| editable.state().clone())?;
+        // An observer that rewrote the text in the change event's own
+        // delivery (a clear after send, a formatter) replaced the value the
+        // user produced: an application write, which clears the journal
+        // like any other rather than folding into the user's step.
+        if edited.is_some_and(|edited| edited != after.value) {
+            self.text_histories.forget(node);
+            return written;
+        }
         // A failed write still counts if the component took the new text:
         // the world may hold it already, and a journal that never saw it
         // would take it for an outside write and drop every step. A write
@@ -564,11 +633,27 @@ impl crate::AppContext {
         }) else {
             return Ok(false);
         };
+        let shown = self.read(entity, |editable: &C| editable.state().value.clone())?;
         // `History` keeps the restore from becoming a step of its own.
-        self.commit_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
-            *editable.state_mut() = target;
-            true
-        })
+        let restored =
+            self.commit_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
+                *editable.state_mut() = target;
+                true
+            });
+        // A restore that did not land leaves the text where it was; so goes
+        // the cursor, or the next undo would skip the step this one missed.
+        let landed = restored.as_ref().is_ok_and(|restored| *restored)
+            || self
+                .read(entity, |editable: &C| editable.state().value != shown)
+                .unwrap_or(false);
+        if !landed {
+            if undo {
+                self.text_histories.redo(node);
+            } else {
+                self.text_histories.undo(node);
+            }
+        }
+        restored
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -1266,6 +1351,70 @@ mod editor_tests {
         queue.replace_text_selection(node, "X");
         cx.commit_mutations(queue).unwrap();
         assert!(!cx.text_histories.entries.contains_key(&node));
+    }
+
+    #[test]
+    fn a_change_handler_rewriting_its_editor_is_an_application_write() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "hello").unwrap();
+        // Clear after send: the handler is given the editor itself.
+        cx.on(area, |area, event: &crate::TextChanged, _| {
+            if event.value.ends_with('\n') {
+                area.state = crate::TextInputState::new("");
+            }
+        })
+        .unwrap();
+        cx.insert_focused_text_newline(document()).unwrap();
+        assert_eq!(value_of(&cx, area), "");
+        assert!(
+            !cx.can_undo_text(area.stable_id()),
+            "the sent draft is not undone back into"
+        );
+        assert!(!cx.undo_focused_text(document()).unwrap());
+    }
+
+    #[test]
+    fn removing_an_editors_text_frees_its_journal_at_commit() {
+        let mut cx = AppContext::new();
+        let field = cx.create_component(document(), TextInput::new("")).unwrap();
+        let node = field.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.replace_focused_text(document(), "draft").unwrap();
+        let mut queue = crate::MutationQueue::new();
+        queue.set_text_input(node, None);
+        cx.commit_mutations(queue).unwrap();
+        assert!(!cx.text_histories.entries.contains_key(&node));
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_does_not_split_an_atom() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "Hi [bob]!");
+        cx.update_component(area, |area, _| {
+            area.atom_spans = std::sync::Arc::from([crate::TextAtomSpan::new(3, 8)]);
+        })
+        .unwrap();
+        // Replacing 5..9 would leave "Hi [b" of the chip behind.
+        let half = |state: &mut crate::TextInputState| {
+            state.replace_value("Hi [bx");
+            true
+        };
+        assert!(
+            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, half)
+                .unwrap()
+        );
+        assert_eq!(value_of(&cx, area), "Hi [bob]!");
+        // The whole chip goes, or text lands beside it.
+        let whole = |state: &mut crate::TextInputState| {
+            state.replace_value("Hi x!");
+            true
+        };
+        assert!(
+            cx.edit_text_area(area, crate::TextEditOrigin::Structural, whole)
+                .unwrap()
+        );
+        assert_eq!(value_of(&cx, area), "Hi x!");
     }
 
     #[test]
