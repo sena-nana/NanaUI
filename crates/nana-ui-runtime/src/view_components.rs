@@ -1723,8 +1723,9 @@ impl ComponentView for TextInput {
 /// `value` is the committed authority; `state` carries the in-progress draft
 /// while the user types. Typing never rewrites `value` — the draft is parsed on
 /// commit (Enter or blur), and an unparseable draft restores the last committed
-/// value instead of inventing one. Stepping and arrow keys work on `value`
-/// directly, so a half-typed draft cannot leak into a stepped result.
+/// value instead of inventing one. Stepping and arrow keys start from the
+/// draft when it parses, so a typed number is stepped rather than discarded;
+/// a half-typed draft that does not parse steps from `value` instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumberInput {
     pub state: TextInputState,
@@ -1874,12 +1875,14 @@ impl NumberInput {
         true
     }
 
-    /// Move by grid positions from the committed value.
+    /// Move by grid positions from the typed draft when it parses, from the
+    /// committed value otherwise.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
+        let base = self.parse_text(&self.state.value).unwrap_or(self.value);
         let next = if self.continuous {
-            self.value + f64::from(steps) * self.spec.effective_step()
+            base + f64::from(steps) * self.spec.effective_step()
         } else {
-            self.spec.step_by(self.value, steps)
+            self.spec.step_by(base, steps)
         };
         self.assign(next)
     }

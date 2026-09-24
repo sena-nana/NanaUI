@@ -33,6 +33,9 @@ pub enum TextEditOrigin {
     /// A transform over lines or selections: move, sort, case, comment,
     /// snippet. Always its own step.
     Structural,
+    /// A numeric field stepped (arrow key or spinner). A run of steps, such
+    /// as a held key, collapses into one undo step.
+    Step,
     /// The application wrote the value. Not the user's edit, so it clears the
     /// journal rather than becoming a step the user can undo into.
     Program,
@@ -46,7 +49,7 @@ impl TextEditOrigin {
     fn merges_with(self, previous: Self) -> bool {
         matches!(
             (previous, self),
-            (Self::Typing, Self::Typing) | (Self::Delete, Self::Delete)
+            (Self::Typing, Self::Typing) | (Self::Delete, Self::Delete) | (Self::Step, Self::Step)
         )
     }
 }
@@ -66,7 +69,10 @@ struct TextEditStep {
 impl TextEditStep {
     /// Keeps a later edit of the same origin from merging into this step.
     fn seal(&mut self) {
-        if matches!(self.origin, TextEditOrigin::Typing | TextEditOrigin::Delete) {
+        if matches!(
+            self.origin,
+            TextEditOrigin::Typing | TextEditOrigin::Delete | TextEditOrigin::Step
+        ) {
             self.origin = TextEditOrigin::Structural;
         }
     }
@@ -290,7 +296,10 @@ impl crate::AppContext {
             return Ok(false);
         }
         let after = self.read(entity, |editable: &C| editable.state().clone())?;
-        if after.value != before.value {
+        // A program write clears the history whatever it changed: a
+        // `NumberInput` can take a new number over a draft that already reads
+        // the same, and undo must not bring an older draft back over it.
+        if after.value != before.value || origin == TextEditOrigin::Program {
             self.text_histories
                 .record(entity.stable_id(), before, after, origin);
         }
@@ -507,21 +516,40 @@ mod editor_tests {
         let mut cx = AppContext::new();
         let input = focused_number(&mut cx, crate::NumberInput::new(2.0));
         cx.replace_focused_text(document(), "1").unwrap();
+        // The step starts from the typed draft, not the committed 2.
         assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!(draft_of(&cx, input), "22");
+        assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 22.0);
         cx.replace_focused_text(document(), "4").unwrap();
-        assert_eq!(draft_of(&cx, input), "34");
+        assert_eq!(draft_of(&cx, input), "224");
 
         // Typing after the step does not merge into the typing before it.
         assert!(cx.undo_focused_text(document()).unwrap());
-        assert_eq!(draft_of(&cx, input), "3");
+        assert_eq!(draft_of(&cx, input), "22");
         assert!(cx.undo_focused_text(document()).unwrap());
         assert_eq!(draft_of(&cx, input), "21");
         assert!(cx.undo_focused_text(document()).unwrap());
         assert_eq!(draft_of(&cx, input), "2");
-        for draft in ["21", "3", "34"] {
+        for draft in ["21", "22", "224"] {
             assert!(cx.redo_focused_text(document()).unwrap());
             assert_eq!(draft_of(&cx, input), draft);
         }
+    }
+
+    #[test]
+    fn a_run_of_number_steps_is_one_undo_step() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(2.0));
+        cx.replace_focused_text(document(), "1").unwrap();
+        // A held arrow key: many steps, one entry.
+        for _ in 0..50 {
+            assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        }
+        assert_eq!(draft_of(&cx, input), "71");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "21", "the whole run undoes at once");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "2", "then the typing before it");
     }
 
     #[test]
@@ -552,6 +580,20 @@ mod editor_tests {
             "7.59",
             "undo takes back the revert alone"
         );
+    }
+
+    #[test]
+    fn an_application_number_write_over_a_matching_draft_clears_the_history() {
+        // The draft already reads the number the application writes, so the
+        // text does not change, but the committed number does.
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "5").unwrap();
+        assert!(cx.set_number_value(input, 5.0).unwrap());
+        assert_eq!(draft_of(&cx, input), "5");
+        assert!(!cx.can_undo_text(input.stable_id()));
+        assert!(!cx.undo_focused_text(document()).unwrap());
     }
 
     #[test]

@@ -1826,6 +1826,14 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
     );
     assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
 
+    // A value the field already holds is in place: the action succeeds,
+    // and nothing is emitted.
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetValue("10".into())
+    ));
+    assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+
     // Text that is not a number changes nothing, draft included.
     assert!(!act(
         &mut context,

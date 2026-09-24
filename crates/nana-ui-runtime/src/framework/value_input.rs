@@ -24,6 +24,9 @@ impl AppContext {
     /// written as the committed value rather than as a draft. Unparseable
     /// text and fields that refuse input change nothing. Like
     /// [`Self::set_number_value`], it starts the undo history afresh.
+    ///
+    /// Reports whether the requested value is in place, so a value the field
+    /// already holds succeeds rather than reading as a failed action.
     pub(super) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
@@ -40,13 +43,15 @@ impl AppContext {
         };
         self.write_number(entity, TextEditOrigin::Program, |input| {
             input.assign(parsed)
-        })
+        })?;
+        Ok(true)
     }
 
-    /// Move a numeric field by step increments. Disabled and read-only fields
-    /// refuse, so a stepper press cannot bypass either flag. The rewritten
-    /// draft is its own undo step, so typing after a step does not merge
-    /// into the typing before it.
+    /// Move a numeric field by step increments, from the typed draft when it
+    /// parses and from the committed value otherwise. Disabled and read-only
+    /// fields refuse, so a stepper press cannot bypass either flag. A run of
+    /// steps is one undo step of its own: typing after it does not merge into
+    /// the typing before it, and a held arrow key does not flood the history.
     pub fn step_number_input(
         &mut self,
         entity: Entity<NumberInput>,
@@ -55,7 +60,7 @@ impl AppContext {
         if !self.read(entity, NumberInput::accepts_input)? {
             return Ok(false);
         }
-        self.write_number(entity, TextEditOrigin::Structural, |input| {
+        self.write_number(entity, TextEditOrigin::Step, |input| {
             input.step_value(steps)
         })
     }

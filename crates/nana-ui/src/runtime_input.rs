@@ -1117,25 +1117,9 @@ impl RuntimeInputAdapter {
                     });
                 }
                 if !primary {
-                    let number_steps = match key.as_str() {
-                        "ArrowUp" => Some(1),
-                        "ArrowDown" => Some(-1),
-                        _ => None,
-                    };
-                    if let Some(steps) = number_steps
-                        && context.step_focused_number_input(document, steps)?
-                    {
-                        return Ok(InputDisposition {
-                            prevent_default: true,
-                        });
-                    }
-                    if matches!(key.as_str(), "Enter")
-                        && context.commit_focused_number_input(document)?
-                    {
-                        return Ok(InputDisposition {
-                            prevent_default: true,
-                        });
-                    }
+                    // A numeric field's step and commit keys are routed with
+                    // its other editing keys in `text_editor_key`; Escape is
+                    // not an editing key and reverts the draft here.
                     if matches!(key.as_str(), "Escape")
                         && context.revert_focused_number_input(document)?
                     {
@@ -1402,14 +1386,20 @@ impl RuntimeInputAdapter {
         };
         // A numeric field steps on plain ArrowUp/ArrowDown and commits its
         // draft on Enter. Shift+ArrowUp/Down select like any single-line
-        // field; a step that cannot move (a bound, read-only) moves no caret.
+        // field. The keys are the field's even when nothing moves (a bound,
+        // read-only, an unchanged draft), so they never fall through to an
+        // enclosing table or tree and carry focus out of the field.
         if focused.is_numeric() && !modifiers.control && !modifiers.meta && !modifiers.alt {
             match key {
                 "ArrowUp" | "ArrowDown" if !modifiers.shift => {
                     let steps = if key == "ArrowUp" { 1 } else { -1 };
-                    return context.step_focused_number_input(document, steps);
+                    context.step_focused_number_input(document, steps)?;
+                    return Ok(true);
                 }
-                "Enter" => return context.commit_focused_number_input(document),
+                "Enter" => {
+                    context.commit_focused_number_input(document)?;
+                    return Ok(true);
+                }
                 _ => {}
             }
         }
@@ -4566,6 +4556,22 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(value(&context), 12.0);
+
+        // At its bound, and with nothing left to commit, the field still owns
+        // ArrowUp and Enter: they do not fall through to routing that could
+        // carry focus out of it.
+        context.set_number_value(input, 100.0).unwrap();
+        for key in ["ArrowUp", "Enter"] {
+            assert!(
+                adapter
+                    .dispatch(&mut context, document, &plain_key(key))
+                    .unwrap()
+                    .prevent_default,
+                "{key}"
+            );
+            assert_eq!(value(&context), 100.0);
+            assert_eq!(context.world().focused(document), Some(node));
+        }
     }
 
     #[test]
