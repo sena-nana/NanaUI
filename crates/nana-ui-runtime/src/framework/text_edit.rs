@@ -1856,7 +1856,7 @@ impl AppContext {
         }
         // A press on a numeric field's spinner steps the value
         // ([`Self::press_number_stepper`]); it places no caret.
-        if focused.is_numeric() && self.number_stepper_at(node, x, y).is_some() {
+        if focused.is_numeric() && self.on_number_stepper(node, x, y) {
             self.text_edit.text_pointer_drag = None;
             return Ok(false);
         }

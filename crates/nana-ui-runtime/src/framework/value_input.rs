@@ -6,8 +6,9 @@ impl AppContext {
     /// Publish a numeric value using the field's bounds and discrete or
     /// continuous policy; hosts do not reimplement numeric normalization.
     ///
-    /// An application write, not the user's edit: the field's undo history
-    /// starts afresh, so undo cannot bring back a draft over this value.
+    /// An application write, not the user's edit: whenever it changes the
+    /// field, including a new number under a draft that already reads it, the
+    /// undo history starts afresh, so undo cannot bring back a draft over it.
     pub fn set_number_value(
         &mut self,
         entity: Entity<NumberInput>,
@@ -16,17 +17,24 @@ impl AppContext {
         if !value.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
-        self.write_number(entity, TextEditOrigin::Program, |input| input.assign(value))
+        let changed = self.update_component(entity, |input, cx| {
+            write_number_field(input, cx, |input| input.assign(value))
+        })?;
+        if changed {
+            self.text_histories.forget(entity.stable_id());
+        }
+        Ok(changed)
     }
 
     /// Commit a complete value given as text, as assistive technology sets
-    /// one: parsed, clamped and snapped by the field's own policy, and
-    /// written as the committed value rather than as a draft. Unparseable
-    /// text and fields that refuse input change nothing. Like
-    /// [`Self::set_number_value`], it starts the undo history afresh.
+    /// one: parsed by the field's own policy and published through
+    /// [`Self::set_number_value`]. Unparseable text and fields that refuse
+    /// input change nothing.
     ///
-    /// Reports whether the requested value is in place, so a value the field
-    /// already holds succeeds rather than reading as a failed action.
+    /// Reports whether the field took the value: it moved (clamped or snapped
+    /// as its policy requires), or it already held exactly that number. A
+    /// request the bounds refuse outright (150 on a field already at its
+    /// maximum of 10) reports failure.
     pub(super) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
@@ -41,10 +49,11 @@ impl AppContext {
         let Some(parsed) = parsed else {
             return Ok(false);
         };
-        self.write_number(entity, TextEditOrigin::Program, |input| {
-            input.assign(parsed)
-        })?;
-        Ok(true)
+        if self.set_number_value(entity, parsed)? {
+            return Ok(true);
+        }
+        let requested = text.trim().parse::<f64>().ok();
+        Ok(requested == Some(self.read(entity, NumberInput::value)?))
     }
 
     /// Move a numeric field by step increments, from the typed draft when it
@@ -72,11 +81,15 @@ impl AppContext {
         &mut self,
         entity: Entity<NumberInput>,
     ) -> Result<bool, FrameworkError> {
-        self.write_number(
+        let changed = self.write_number(
             entity,
             TextEditOrigin::Structural,
             NumberInput::commit_draft,
-        )
+        )?;
+        // A commit ends a run of steps even when the draft already read the
+        // number: steps before and after it are two undo steps.
+        self.seal_editor_history(entity.stable_id());
+        Ok(changed)
     }
 
     /// Rewrite a numeric field's draft through the undo journal, emitting
@@ -89,16 +102,7 @@ impl AppContext {
         write: impl FnOnce(&mut NumberInput) -> bool,
     ) -> Result<bool, FrameworkError> {
         self.journal_editor_edit(entity, origin, |input, cx| {
-            let before = input.value();
-            if !write(input) {
-                return false;
-            }
-            if input.value() != before {
-                cx.emit(NumberChanged {
-                    value: input.value(),
-                });
-            }
-            true
+            write_number_field(input, cx, write)
         })
     }
 
@@ -134,19 +138,34 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
-        self.write_number(entity, TextEditOrigin::Structural, |input| {
-            let committed = input.formatted_value();
-            if input.state.value == committed {
-                return false;
-            }
-            input.state.replace_value(committed);
-            true
-        })
+        self.write_number(
+            entity,
+            TextEditOrigin::Structural,
+            NumberInput::revert_draft,
+        )
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
         let target = self.world.focused(document)?;
         self.view_entity(target)
+    }
+
+    /// Whether a point is on a numeric field's spinner, whichever halves are
+    /// enabled. Coordinates are viewport-local, matching hit testing.
+    pub(super) fn on_number_stepper(&self, id: StableNodeId, x: f32, y: f32) -> bool {
+        matches!(
+            self.world.component_geometry(id),
+            Some(crate::ComponentGeometry::TextInput {
+                steppers: Some(steppers),
+                ..
+            }) if steppers.contains(x, y)
+        )
+    }
+
+    /// Whether the focused element is a numeric field, whether or not an IME
+    /// composition currently hides it from [`Self::focused_text_editor`].
+    pub fn is_number_input_focused(&self, document: DocumentId) -> bool {
+        self.focused_number_input(document).is_some()
     }
 
     /// Resolve a stepper press inside a numeric field to a signed step count.
@@ -445,4 +464,24 @@ impl AppContext {
         })?;
         Ok(initial.is_some())
     }
+}
+
+/// Apply a write to a numeric field and emit [`NumberChanged`] when the
+/// committed number moved. Returns whether the field changed at all (a
+/// reformatted draft counts).
+fn write_number_field(
+    input: &mut NumberInput,
+    cx: &mut ViewContext<'_, NumberInput>,
+    write: impl FnOnce(&mut NumberInput) -> bool,
+) -> bool {
+    let before = input.value();
+    if !write(input) {
+        return false;
+    }
+    if input.value() != before {
+        cx.emit(NumberChanged {
+            value: input.value(),
+        });
+    }
+    true
 }

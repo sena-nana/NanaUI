@@ -208,10 +208,16 @@ impl TextHistories {
         after: TextInputState,
         origin: TextEditOrigin,
     ) {
-        self.entries
-            .entry(node)
-            .or_default()
-            .record(before, after, origin);
+        match origin {
+            TextEditOrigin::History => {}
+            // Clearing needs no journal: an editor never edited keeps none.
+            TextEditOrigin::Program => self.forget(node),
+            _ => self
+                .entries
+                .entry(node)
+                .or_default()
+                .record(before, after, origin),
+        }
     }
 
     pub(super) fn seal(&mut self, node: StableNodeId) {
@@ -296,10 +302,7 @@ impl crate::AppContext {
             return Ok(false);
         }
         let after = self.read(entity, |editable: &C| editable.state().clone())?;
-        // A program write clears the history whatever it changed: a
-        // `NumberInput` can take a new number over a draft that already reads
-        // the same, and undo must not bring an older draft back over it.
-        if after.value != before.value || origin == TextEditOrigin::Program {
+        if after.value != before.value {
             self.text_histories
                 .record(entity.stable_id(), before, after, origin);
         }
@@ -550,6 +553,25 @@ mod editor_tests {
         assert_eq!(draft_of(&cx, input), "21", "the whole run undoes at once");
         assert!(cx.undo_focused_text(document()).unwrap());
         assert_eq!(draft_of(&cx, input), "2", "then the typing before it");
+    }
+
+    #[test]
+    fn a_commit_splits_the_step_runs_around_it() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        for _ in 0..3 {
+            cx.step_focused_number_input(document(), 1).unwrap();
+        }
+        // The draft already reads 4: the commit rewrites nothing.
+        assert!(!cx.commit_focused_number_input(document()).unwrap());
+        for _ in 0..2 {
+            cx.step_focused_number_input(document(), 1).unwrap();
+        }
+        assert_eq!(draft_of(&cx, input), "6");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "4", "undo stops at the commit");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "1");
     }
 
     #[test]

@@ -1878,13 +1878,20 @@ impl NumberInput {
     /// Move by grid positions from the typed draft when it parses, from the
     /// committed value otherwise.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
-        let base = self.parse_text(&self.state.value).unwrap_or(self.value);
+        let base = self.step_base();
         let next = if self.continuous {
             base + f64::from(steps) * self.spec.effective_step()
         } else {
             self.spec.step_by(base, steps)
         };
         self.assign(next)
+    }
+
+    /// The number a step starts from: the typed draft when it parses, the
+    /// committed value otherwise. It is also the number the field publishes,
+    /// so the spinner's enabled halves agree with what a step would do.
+    pub(crate) fn step_base(&self) -> f64 {
+        self.parse_text(&self.state.value).unwrap_or(self.value)
     }
 
     /// Parse `text` under this field's discrete or continuous policy, before
@@ -1904,15 +1911,19 @@ impl NumberInput {
     pub(crate) fn commit_draft(&mut self) -> bool {
         match self.parse_text(&self.state.value) {
             Some(parsed) => self.assign(parsed),
-            None => {
-                let restored = self.formatted_value();
-                if self.state.value == restored {
-                    return false;
-                }
-                self.state.replace_value(restored);
-                true
-            }
+            None => self.revert_draft(),
         }
+    }
+
+    /// Show the committed value again, discarding the draft. Returns whether
+    /// the draft differed.
+    pub(crate) fn revert_draft(&mut self) -> bool {
+        let restored = self.formatted_value();
+        if self.state.value == restored {
+            return false;
+        }
+        self.state.replace_value(restored);
+        true
     }
 
     fn resync(&mut self) {
@@ -1977,7 +1988,7 @@ impl ComponentView for NumberInput {
                 multiline: false,
                 style: &effective_style,
                 highlight: None,
-                numeric: Some((self.value, self.spec)),
+                numeric: Some((self.step_base(), self.spec)),
             },
         );
     }

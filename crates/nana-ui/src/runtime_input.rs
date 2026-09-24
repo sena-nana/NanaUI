@@ -1381,25 +1381,29 @@ impl RuntimeInputAdapter {
         modifiers: nana_ui_platform::InputModifiers,
         mut shaper: Option<&mut dyn TextShaper>,
     ) -> Result<bool, FrameworkError> {
+        let plain = !modifiers.control && !modifiers.meta && !modifiers.alt;
         let Some(focused) = context.focused_text_editor(document) else {
-            return Ok(false);
+            // An IME composition hides the editor, but a numeric field's
+            // arrows still belong to it: the composition owns them, and they
+            // must not reach an enclosing table or tree and carry focus out.
+            return Ok(plain
+                && matches!(key, "ArrowUp" | "ArrowDown")
+                && context.is_number_input_focused(document));
         };
         // A numeric field steps on plain ArrowUp/ArrowDown and commits its
         // draft on Enter. Shift+ArrowUp/Down select like any single-line
-        // field. The keys are the field's even when nothing moves (a bound,
-        // read-only, an unchanged draft), so they never fall through to an
-        // enclosing table or tree and carry focus out of the field.
-        if focused.is_numeric() && !modifiers.control && !modifiers.meta && !modifiers.alt {
+        // field. The arrows are the field's even when nothing moves (a bound,
+        // read-only), so they never fall through to an enclosing table or
+        // tree and carry focus out of the field. An Enter that commits
+        // nothing falls through, so a dialog or form can still confirm.
+        if focused.is_numeric() && plain {
             match key {
                 "ArrowUp" | "ArrowDown" if !modifiers.shift => {
                     let steps = if key == "ArrowUp" { 1 } else { -1 };
                     context.step_focused_number_input(document, steps)?;
                     return Ok(true);
                 }
-                "Enter" => {
-                    context.commit_focused_number_input(document)?;
-                    return Ok(true);
-                }
+                "Enter" => return context.commit_focused_number_input(document),
                 _ => {}
             }
         }
@@ -4557,21 +4561,36 @@ mod tests {
         );
         assert_eq!(value(&context), 12.0);
 
-        // At its bound, and with nothing left to commit, the field still owns
-        // ArrowUp and Enter: they do not fall through to routing that could
-        // carry focus out of it.
+        // At its bound the field still owns ArrowUp: it does not fall through
+        // to routing that could carry focus out of it. The same holds while
+        // an IME composition hides the editor.
         context.set_number_value(input, 100.0).unwrap();
-        for key in ["ArrowUp", "Enter"] {
+        for composing in [false, true] {
+            if composing {
+                context
+                    .set_ime_preedit(document, "ｘ".into(), None)
+                    .unwrap();
+            }
             assert!(
                 adapter
-                    .dispatch(&mut context, document, &plain_key(key))
+                    .dispatch(&mut context, document, &plain_key("ArrowUp"))
                     .unwrap()
                     .prevent_default,
-                "{key}"
+                "composing: {composing}"
             );
             assert_eq!(value(&context), 100.0);
             assert_eq!(context.world().focused(document), Some(node));
         }
+        context.clear_ime(document).unwrap();
+
+        // An Enter with nothing to commit is not swallowed: a dialog or form
+        // around the field can still confirm on it.
+        assert!(
+            !adapter
+                .dispatch(&mut context, document, &plain_key("Enter"))
+                .unwrap()
+                .prevent_default
+        );
     }
 
     #[test]

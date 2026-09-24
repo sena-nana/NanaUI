@@ -1131,6 +1131,12 @@ impl NumberSteppers {
         }
         None
     }
+
+    /// Whether a point is on either half, enabled or not: a press there
+    /// belongs to the spinner even when the value cannot move that way.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        contains(self.increment, x, y) || contains(self.decrement, x, y)
+    }
 }
 
 fn contains(bounds: LayoutBox, x: f32, y: f32) -> bool {
