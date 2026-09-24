@@ -2378,9 +2378,8 @@ impl UiWorld {
         // Overlays opened from inside it, hosted elsewhere (a dropdown's
         // listbox hosted outside the popover it opened from), and those
         // opened from inside them in turn: focus in any of them belongs to
-        // the closing overlay too. An opener is inside the overlay it was
-        // opened from, though not yet in `removed` when a despawn takes the
-        // root first.
+        // the closing overlay too. The openers are still in the tree here: a
+        // despawn takes the root first, and parking keeps the nodes.
         let mut opened_from_closing = Vec::new();
         if let Some(closing) = closing {
             let open = self
@@ -2399,9 +2398,9 @@ impl UiWorld {
                     if opened_from_closing.contains(&active) {
                         continue;
                     }
-                    if removed.contains(&opener)
-                        || (self.contains(opener) && self.is_descendant_or_self(opener, parent))
-                    {
+                    // Inside the overlay it was opened from; one elsewhere in
+                    // the removal (a parked subtree) is unrelated.
+                    if self.contains(opener) && self.is_descendant_or_self(opener, parent) {
                         opened_from_closing.push(active);
                         frontier.push(active);
                     }

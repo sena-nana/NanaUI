@@ -744,19 +744,21 @@ fn atom_expanded_selections<C: EditableText>(
         }
     };
     let primary = widen(state.selection);
-    let additional: Vec<_> = state
-        .additional_selections
-        .iter()
-        .map(|selection| widen(*selection))
-        .collect();
-    // Cloned only when a selection grows: most edits in an editor with atoms
-    // touch none.
-    if primary == state.selection && additional == state.additional_selections {
+    // Cloned, and the further cursors collected, only when a selection
+    // grows: most edits in an editor with atoms touch none.
+    let grows = primary != state.selection
+        || state
+            .additional_selections
+            .iter()
+            .any(|selection| widen(*selection) != *selection);
+    if !grows {
         return None;
     }
     let mut next = state.clone();
     next.selection = primary;
-    next.additional_selections = additional;
+    for selection in &mut next.additional_selections {
+        *selection = widen(*selection);
+    }
     next.normalize_selections();
     Some(next)
 }
