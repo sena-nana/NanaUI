@@ -64,6 +64,22 @@ fn texture_creation_refuses_extents_the_device_cannot_hold() {
             .expect_err("invalid extent");
         assert_eq!(error, GpuError::InvalidExtent { width, height, max });
     }
+    let compressed = __framework::format_from_wgpu(wgpu::TextureFormat::Bc1RgbaUnorm);
+    assert_eq!(
+        gpu.create_texture(&GpuTextureDescriptor {
+            label: None,
+            width: 6,
+            height: 4,
+            format: compressed,
+            usage: GpuTextureUsages::SAMPLED,
+        })
+        .expect_err("not whole 4x4 blocks"),
+        GpuError::InvalidExtent {
+            width: 6,
+            height: 4,
+            max
+        }
+    );
     assert_eq!(
         gpu.create_texture(&GpuTextureDescriptor {
             label: None,

@@ -17,10 +17,10 @@ use std::{
     },
 };
 
-use nana_gpu::{
-    __framework, DeviceGeneration, GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat,
-    GpuTextureUsages,
-};
+use nana_gpu::{__framework, GpuTextureDescriptor, GpuTextureUsages};
+/// The contract types an exchange is built from, so a producer crate needs no
+/// other GPU dependency.
+pub use nana_gpu::{DeviceGeneration, GpuContext, GpuTexture, GpuTextureFormat};
 
 /// One in-flight copy, the frame a consumer samples, and the frame it retired
 /// but has not presented yet. Add two slots for every additional consumer.

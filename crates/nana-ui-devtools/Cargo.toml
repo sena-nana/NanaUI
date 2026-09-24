@@ -35,9 +35,10 @@ offscreen = [
     "dep:nana-ui",
     "dep:nana-ui-scene",
     "nana-ui/gpu",
-    # Snapshot readback records its own copies on the snapshot device.
-    "nana-ui/wgpu-interop",
     "nana-ui/bundled-fonts",
+    # Snapshot readback records its own copies on the snapshot device, through
+    # nana_gpu::__framework like the framework's own painter.
+    "dep:nana-gpu",
     "dep:image",
     "dep:pollster",
     "dep:wgpu",
@@ -77,6 +78,7 @@ pollster = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wgpu = { workspace = true, optional = true }
+nana-gpu = { workspace = true, optional = true }
 
 
 [[example]]

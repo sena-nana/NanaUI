@@ -39,7 +39,9 @@ impl<'a> WgpuInterop<'a> {
     /// Hold across every raw `queue.submit` / `write_texture` / `write_buffer`,
     /// from any thread, including the window thread. Never hold it across
     /// `device.poll(Wait)`, a sleep, or surface work: reconfiguration waits
-    /// for it.
+    /// for it. It is not reentrant: do not call [`FrameContext::submit`],
+    /// [`GpuContext::write_texture`] or anything else that submits for you
+    /// while holding it.
     pub fn lock_submission(self) -> RwLockReadGuard<'a, ()> {
         self.gpu.lock_submission()
     }

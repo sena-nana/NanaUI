@@ -2666,6 +2666,7 @@ name = "nana-ui-devtools"
 version = "0.1.0"
 dependencies = [
  "image",
+ "nana-gpu",
  "nana-js-engine",
  "nana-js-v8",
  "nana-ui",
@@ -2738,6 +2739,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "nana-app-icon",
+ "nana-gpu",
  "nana-js-engine",
  "nana-svg-raster",
  "nana-ui",

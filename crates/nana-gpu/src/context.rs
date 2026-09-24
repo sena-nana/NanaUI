@@ -333,6 +333,17 @@ impl GpuContext {
         }
         let usage = descriptor.usage.to_wgpu();
         let format = descriptor.format.to_wgpu();
+        // Compressed formats come in whole blocks.
+        let (block_width, block_height) = format.block_dimensions();
+        if !descriptor.width.is_multiple_of(block_width)
+            || !descriptor.height.is_multiple_of(block_height)
+        {
+            return Err(GpuError::InvalidExtent {
+                width: descriptor.width,
+                height: descriptor.height,
+                max,
+            });
+        }
         if format.is_depth_stencil_format()
             || !self
                 .format_features(format)

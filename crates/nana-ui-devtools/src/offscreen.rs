@@ -1,14 +1,17 @@
 //! Snapshot-only offscreen Scene paint + CPU readback.
 //!
-//! Product windows never use this path. The host owns one Device/Queue.
+//! Product windows never use this path. The snapshot owns one `GpuContext`;
+//! readback reaches WGPU through `nana_gpu::__framework`, as framework tooling.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use nana_gpu::__framework;
 use nana_ui::runtime::UiScene;
 use nana_ui::{
-    GpuContext, GpuRenderTarget, GpuTextureFormat, HostTextureRegistry, SceneGpuRendererRegistry,
-    ScenePaintError, ScenePaintViewport, SceneWgpuPainter,
+    GpuContext, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages,
+    HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError, ScenePaintViewport,
+    SceneWgpuPainter,
 };
 
 /// Physical pixel size for snapshot PNG encode and GPU readback.
@@ -24,7 +27,7 @@ impl<T> Size<T> {
     }
 }
 
-pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
+pub const FORMAT: GpuTextureFormat = GpuTextureFormat::BGRA8_UNORM_SRGB;
 
 pub struct OffscreenSnapshots {
     /// The snapshot device. Upload host textures with
@@ -46,8 +49,8 @@ impl OffscreenSnapshots {
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             }))?;
-        let gpu = GpuContext::from_wgpu(adapter, raw_device, raw_queue);
-        let mut painter = SceneWgpuPainter::new(&gpu, GpuTextureFormat::from_wgpu(FORMAT));
+        let gpu = __framework::adopt(adapter, raw_device, raw_queue);
+        let mut painter = SceneWgpuPainter::new(&gpu, FORMAT);
         let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
         painter.set_image_waker(std::sync::Arc::new(move || {
             let _ = wake.try_send(());
@@ -126,27 +129,14 @@ impl OffscreenSnapshots {
         if size.width == 0 || size.height == 0 {
             return Err("snapshot size must be non-zero".into());
         }
-        let texture = self
-            .gpu
-            .wgpu()
-            .device()
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("nana-ui snapshot offscreen"),
-                size: wgpu::Extent3d {
-                    width: size.width,
-                    height: size.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let target =
-            GpuRenderTarget::from_wgpu(&self.gpu, view.clone(), FORMAT, [size.width, size.height]);
+        let texture = self.gpu.create_texture(&GpuTextureDescriptor {
+            label: Some("nana-ui snapshot offscreen"),
+            width: size.width,
+            height: size.height,
+            format: FORMAT,
+            usage: GpuTextureUsages::RENDER_TARGET | GpuTextureUsages::COPY_SRC,
+        })?;
+        let target = texture.render_target()?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
         loop {
             if std::time::Instant::now() >= deadline {
@@ -154,15 +144,11 @@ impl OffscreenSnapshots {
             }
             // Every attempt starts from the same owned target contents.
             if layers.first().is_none_or(|(_, clears)| !clears) {
-                let mut encoder = self.gpu.wgpu().device().create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor {
-                        label: Some("nana-ui snapshot clear"),
-                    },
-                );
-                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                let mut frame = self.gpu.begin_frame("nana-ui snapshot clear");
+                __framework::encoder(&mut frame).begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("nana-ui snapshot clear"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
+                        view: __framework::texture_view(&texture),
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -175,12 +161,12 @@ impl OffscreenSnapshots {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                let clear_submit = self.gpu.wgpu().queue().submit([encoder.finish()]);
-                self.gpu
-                    .wgpu()
-                    .device()
+                let clear_submit = frame.submit();
+                __framework::device(&self.gpu)
                     .poll(wgpu::PollType::Wait {
-                        submission_index: Some(clear_submit),
+                        submission_index: Some(
+                            __framework::submission_index(&clear_submit).clone(),
+                        ),
                         timeout: None,
                     })
                     .map_err(|error| format!("snapshot clear poll failed: {error:?}"))?;
@@ -215,11 +201,9 @@ impl OffscreenSnapshots {
                     )
                     .map_err(paint_error)?;
                 let paint = frame.submit();
-                self.gpu
-                    .wgpu()
-                    .device()
+                __framework::device(&self.gpu)
                     .poll(wgpu::PollType::Wait {
-                        submission_index: Some(paint.wgpu_index().clone()),
+                        submission_index: Some(__framework::submission_index(&paint).clone()),
                         timeout: None,
                     })
                     .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;
@@ -237,20 +221,7 @@ impl OffscreenSnapshots {
                 .recv_timeout(remaining)
                 .map_err(|_| "snapshot timed out waiting for URL images")?;
         }
-        let copy =
-            self.gpu
-                .wgpu()
-                .device()
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("nana-ui snapshot copy"),
-                });
-        readback(
-            self.gpu.wgpu().device(),
-            self.gpu.wgpu().queue(),
-            copy,
-            &texture,
-            size,
-        )
+        readback(&self.gpu, &texture, size)
     }
 }
 
@@ -332,13 +303,15 @@ pub fn optional() -> Option<OffscreenSnapshots> {
     }
 }
 
+/// Copy `texture` (created with `COPY_SRC`) back to the CPU as RGBA8 rows.
+/// Snapshot tooling only: the product path never reads pixels back.
 pub fn readback(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    mut encoder: wgpu::CommandEncoder,
-    texture: &wgpu::Texture,
+    gpu: &GpuContext,
+    texture: &GpuTexture,
     size: Size<u32>,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let device = __framework::device(gpu);
+    let mut frame = gpu.begin_frame("nana-ui snapshot copy");
     let unpadded = size.width as usize * 4;
     let padded = unpadded.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -347,8 +320,8 @@ pub fn readback(
         usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
+    __framework::encoder(&mut frame).copy_texture_to_buffer(
+        __framework::texture(texture).as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
             layout: wgpu::TexelCopyBufferLayout {
@@ -363,12 +336,12 @@ pub fn readback(
             depth_or_array_layers: 1,
         },
     );
-    let submission = queue.submit([encoder.finish()]);
+    let submission = frame.submit();
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |_| {});
     device
         .poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
+            submission_index: Some(__framework::submission_index(&submission).clone()),
             timeout: None,
         })
         .map_err(|error| format!("snapshot readback poll failed: {error:?}"))?;

@@ -673,6 +673,11 @@ impl HostedGpuShared {
     pub fn take_device_lost(&self) -> bool {
         self.gpu.is_lost() && !self.loss_handled.swap(true, Ordering::AcqRel)
     }
+    /// Loss handling found nothing to recover with (no window to seed the
+    /// replacement device); the next check starts it again.
+    pub(crate) fn rearm_device_loss(&self) {
+        self.loss_handled.store(false, Ordering::Release);
+    }
     pub(crate) fn is_device_lost(&self) -> bool {
         self.gpu.is_lost()
     }

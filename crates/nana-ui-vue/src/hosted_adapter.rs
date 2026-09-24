@@ -1819,14 +1819,14 @@ mod tests {
     #[test]
     fn input_redraw_tracks_consumed_canvas_and_live_texture_handles() {
         use nana_ui::{
-            GpuContext, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages, HostTexture,
+            GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages, HostTexture,
             HostTextureAlphaMode,
         };
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
         let (device, queue) =
             pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let gpu = GpuContext::from_wgpu(adapter, device, queue);
+        let gpu = nana_gpu::__framework::adopt(adapter, device, queue);
         let gpu_texture = || {
             gpu.create_texture(&GpuTextureDescriptor {
                 label: Some("input redraw regression"),

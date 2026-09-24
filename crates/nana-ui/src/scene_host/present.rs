@@ -487,6 +487,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         }
         let mut recovery_windows = self.known_window_ids();
         if recovery_windows.is_empty() {
+            // Nothing can seed a replacement device yet. The next window's
+            // first frame finds the loss again and recovers with its surface.
+            self.graphics.rearm_device_loss();
             return;
         }
         recovery_windows.sort_unstable();

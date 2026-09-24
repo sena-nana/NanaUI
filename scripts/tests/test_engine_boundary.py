@@ -122,6 +122,51 @@ class EngineBoundaryTests(unittest.TestCase):
             "bin/bench.rs": "pub fn device() -> wgpu::Device { todo!() }\n",
         })
         self.assertEqual(failures, [])
+    def test_gpu_contract_sees_aliases_headers_impls_and_associated_types(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "use wgpu::{Device as D, Texture};\n"
+                "pub fn device() -> &'static D { todo!() }\n"
+                "pub struct Holder<T = Texture> { value: T }\n"
+                "pub struct Ptr(u8);\n"
+                "impl From<wgpu::Texture> for Ptr { fn from(_: wgpu::Texture) -> Self { todo!() } }\n"
+                "impl std::ops::Deref for Ptr { type Target = wgpu::Device; fn deref(&self) -> &Self::Target { todo!() } }\n"
+                "pub trait Raw { type Backend: Into<wgpu::Texture>; }\n"
+                "struct Private(u8);\n"
+                "impl From<wgpu::Texture> for Private { fn from(_: wgpu::Texture) -> Self { todo!() } }\n"
+            ),
+        })
+        # The alias, the default, the `From` impl, `Deref::Target` and the
+        # associated type; nothing about the private type.
+        self.assertEqual(len(failures), 5, failures)
+    def test_only_a_positive_interop_cfg_counts_as_gated(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "#[cfg(not(feature = \"wgpu-interop\"))]\n"
+                "pub fn a() -> wgpu::Device { todo!() }\n"
+                "#[cfg(any(feature = \"wgpu-interop\", test))]\n"
+                "pub fn b() -> wgpu::Device { todo!() }\n"
+                "#[cfg(all(feature = \"hosted\", feature = \"wgpu-interop\"))]\n"
+                "pub fn c() -> wgpu::Device { todo!() }\n"
+            ),
+        })
+        self.assertEqual(len(failures), 2, failures)
+    def test_a_gated_field_hides_only_itself(self):
+        failures = self.gpu_failures({
+            "lib.rs": (
+                "pub struct S {\n"
+                "    #[cfg(feature = \"wgpu-interop\")]\n"
+                "    pub raw: wgpu::Texture,\n"
+                "    pub leak: wgpu::Texture,\n"
+                "}\n"
+                "#[cfg(feature = \"wgpu-interop\")]\n"
+                "pub fn gated() -> Result<wgpu::Device, wgpu::Queue> { todo!() }\n"
+                "pub fn open() -> wgpu::Queue { todo!() }\n"
+            ),
+        })
+        self.assertEqual(len(failures), 2, failures)
+        self.assertTrue(any("leak" in failure for failure in failures), failures)
+        self.assertTrue(any("open" in failure for failure in failures), failures)
     def test_an_ungated_interop_module_is_rejected(self):
         failures = self.gpu_failures({"lib.rs": "mod wgpu_interop;\n"})
         self.assertTrue(any("declares mod wgpu_interop" in failure for failure in failures), failures)

@@ -233,31 +233,62 @@ def check_text_engine_sources(crate_root: Path) -> list[str]:
     return failures
 
 
-# Issue #183. Crates whose public API is the GPU contract.
-GPU_CONTRACT_PACKAGES = {"nana-gpu", "nana-frame-exchange", "nana-ui"}
+# Issue #183. Crates whose public API is the GPU contract, or builds on it.
+GPU_CONTRACT_PACKAGES = {
+    "nana-gpu",
+    "nana-frame-exchange",
+    "nana-ui",
+    "nana-ui-vue",
+    "nana-ui-devtools",
+}
 # Files that are the escape hatch or the framework's own backend access.
 GPU_CONTRACT_EXEMPT_FILES = {"wgpu_interop.rs", "__framework.rs", "test_gpu.rs", "tests.rs"}
 # The only crates whose `src/` may call `nana_gpu::__framework`: it is how the
-# framework reaches WGPU without turning `wgpu-interop` on for every consumer.
-# Their examples and tests are consumers like any other. nana-gpu owns it.
-GPU_FRAMEWORK_PACKAGES = {"nana-frame-exchange", "nana-ui"}
+# framework reaches WGPU without turning `wgpu-interop` on for every consumer
+# (the Vue JS WebGPU facade and devtools snapshot readback included). Their
+# examples and tests are consumers like any other. nana-gpu owns it.
+GPU_FRAMEWORK_PACKAGES = {"nana-frame-exchange", "nana-ui", "nana-ui-vue", "nana-ui-devtools"}
 GPU_FRAMEWORK_OWNER = "nana-gpu"
 
 
-def _item_end(text: str, start: int) -> int:
-    """End of the item starting at `start`: its matching `}` or its `;`."""
+_ITEM_KEYWORD = re.compile(
+    r"\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?"
+    r"(?:fn|impl|struct|enum|union|mod|trait|type|const|static|use|unsafe|async|extern|macro_rules)\b"
+)
+
+
+def _item_end(text: str, start: int, field: bool | None = None) -> int:
+    """End of the item starting at `start`: its matching `}`, its `;`, or, for
+    a field or variant, the `,` or enclosing `}` that ends it."""
+    if field is None:
+        field = _ITEM_KEYWORD.match(text, start) is None
     depth = 0
     for index in range(start, len(text)):
         char = text[index]
-        if char == "{":
+        if char in "{([":
             depth += 1
-        elif char == "}":
+        elif char in "})]":
+            if depth == 0:
+                return index  # the enclosing item's `}`: not ours to remove
             depth -= 1
-            if depth <= 0:
+            if depth == 0 and char == "}":
                 return index + 1
-        elif char == ";" and depth == 0:
+        elif depth == 0 and (char == ";" or (char == "," and field)):
             return index + 1
     return len(text)
+
+
+def _interop_or_test(condition: str) -> bool:
+    """Whether a `cfg` hides its item from ordinary consumers: `test`,
+    `feature = "wgpu-interop"`, or an `all(..)` that requires it. `not(..)`
+    and `any(..)` do not."""
+    compact = re.sub(r"\s+", "", condition)
+    feature = 'feature="wgpu-interop"'
+    if compact in ("test", feature):
+        return True
+    if compact.startswith("all(") and "not(" not in compact and "any(" not in compact:
+        return feature in compact[4:-1].split(",") or "test" in compact[4:-1].split(",")
+    return False
 
 
 def strip_cfg_items(text: str, gated) -> str:
@@ -278,10 +309,27 @@ def strip_cfg_items(text: str, gated) -> str:
         condition = text[match.end() : index - 1]
         if gated(condition):
             out.append(text[position : match.start()])
-            position = _item_end(text, index)
+            position = _item_end(text, index + 1)
         else:
             out.append(text[position:index])
             position = index
+
+
+def _backend_names(text: str) -> set[str]:
+    """`wgpu`, plus every name a `use wgpu::..` brings into scope."""
+    names = {"wgpu"}
+    for match in re.finditer(r"\buse\s+wgpu::([^;]*);", text):
+        path = match.group(1)
+        items = re.split(r"[{},]", path)
+        for item in items:
+            item = item.strip()
+            if not item or item == "self":
+                continue
+            alias = re.search(r"\bas\s+(\w+)$", item)
+            name = alias.group(1) if alias else item.split("::")[-1].strip()
+            if name and name != "*":
+                names.add(name)
+    return names
 
 
 def _public_signatures(text: str):
@@ -291,6 +339,11 @@ def _public_signatures(text: str):
         while end < len(text) and text[end] not in "{;":
             end += 1
         yield match.start(), text[match.start() : end]
+    public_types = set()
+    for match in re.finditer(r"\bpub\s+(?:struct|enum|union)\s+(\w+)([^{;(]*)", text):
+        public_types.add(match.group(1))
+        # Generic defaults and `where` clauses are public too.
+        yield match.start(), match.group(2)
     for match in re.finditer(r"\bpub\s+struct\s+\w+[^{;(]*\{", text):
         body = text[match.end() : _item_end(text, match.end() - 1)]
         for field in re.finditer(r"\bpub\s+\w+\s*:\s*[^,}]*", body):
@@ -306,15 +359,24 @@ def _public_signatures(text: str):
         for field in match.group(1).split(","):
             if re.match(r"\s*pub\s", field):
                 yield match.start(), field
-    # A public enum's payloads and a public trait's methods are public
-    # without a `pub` of their own.
+    # A public enum's payloads and a public trait's methods and associated
+    # types are public without a `pub` of their own.
     for match in re.finditer(r"\bpub\s+(enum|trait)\s+\w+[^{;]*\{", text):
         body = text[match.end() : _item_end(text, match.end() - 1)]
         if match.group(1) == "enum":
             yield match.start(), body
         else:
-            for method in re.finditer(r"\bfn\s+\w+[^{;]*", body):
-                yield match.start(), method.group(0)
+            for member in re.finditer(r"\b(?:fn|type)\s+\w+[^{;]*", body):
+                yield match.start(), member.group(0)
+    # Trait impls on a public type: the trait, its generics and associated
+    # types are part of what the type offers.
+    for match in re.finditer(r"\bimpl\b([^{;]*)\bfor\s+(\w+)[^{;]*\{", text):
+        if match.group(2) not in public_types:
+            continue
+        yield match.start(), match.group(1)
+        body = text[match.end() : _item_end(text, match.end() - 1)]
+        for member in re.finditer(r"\btype\s+\w+\s*=[^;]*", body):
+            yield match.start(), member.group(0)
 
 
 def check_gpu_contract_sources(crate_root: Path) -> list[str]:
@@ -333,12 +395,12 @@ def check_gpu_contract_sources(crate_root: Path) -> list[str]:
         ):
             continue
         text = strip_rust_comments(source.read_text(encoding="utf-8"))
-        text = strip_cfg_items(
-            text, lambda condition: condition.strip() == "test" or "wgpu-interop" in condition
-        )
+        text = strip_cfg_items(text, _interop_or_test)
+        backend = _backend_names(text)
+        mentions = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, backend))) + r")\b")
         where = source.relative_to(ROOT) if source.is_relative_to(ROOT) else source
         for offset, signature in _public_signatures(text):
-            if re.search(r"\bwgpu\b", signature):
+            if mentions.search(signature):
                 line = text.count("\n", 0, offset) + 1
                 shown = " ".join(signature.split())[:90]
                 failures.append(

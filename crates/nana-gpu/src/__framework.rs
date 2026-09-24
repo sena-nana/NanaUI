@@ -45,7 +45,8 @@ pub fn queue(gpu: &GpuContext) -> &wgpu::Queue {
 }
 
 /// Hold across a raw `submit` / `write_*` from any thread. Never across
-/// `poll(Wait)` or surface work.
+/// `poll(Wait)` or surface work, and never around a contract call that submits
+/// itself: the guard is not reentrant.
 pub fn lock_submission(gpu: &GpuContext) -> RwLockReadGuard<'_, ()> {
     gpu.lock_submission()
 }

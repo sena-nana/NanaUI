@@ -11,7 +11,8 @@ pub enum GpuError {
         expected: DeviceGeneration,
         found: DeviceGeneration,
     },
-    /// Zero, or larger than the device's `max_texture_dimension_2d`.
+    /// Zero, larger than the device's `max_texture_dimension_2d`, or not a
+    /// whole number of blocks of a compressed format.
     InvalidExtent { width: u32, height: u32, max: u32 },
     /// The texture was not created with these usages.
     MissingUsage(GpuTextureUsages),
