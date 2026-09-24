@@ -286,6 +286,14 @@ impl EditorGeometry {
         sync
     }
 
+    /// Whether the text is laid out in columns (#59): lines stack across, so
+    /// x and y do not mean "along the line" and "across lines".
+    pub fn is_vertical(&self) -> bool {
+        self.constraints
+            .as_ref()
+            .is_some_and(|constraints| constraints.wants_vertical_writing())
+    }
+
     /// The stamp the layouts were last synced to, while they still lay those
     /// bytes out.
     pub fn stamp(&self) -> Option<TextStamp> {

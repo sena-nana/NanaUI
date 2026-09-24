@@ -138,7 +138,7 @@ trait EditableText: ComponentView {
 
 fn text_changed(state: &TextInputState) -> TextChanged {
     TextChanged {
-        value: state.value.clone().into(),
+        value: state.value.clone(),
         selection: state.selection,
     }
 }

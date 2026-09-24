@@ -526,7 +526,7 @@ impl<'a> ValidationPlan<'a> {
                     self.text_inputs.insert(
                         *id,
                         Some(StagedText {
-                            value: state.value.into(),
+                            value: state.value,
                             selection: state.selection,
                             additional: state.additional_selections,
                         }),
@@ -2019,10 +2019,21 @@ impl UiWorld {
                     .editor(*id)
                     .map(|editor| editor.session.snapshot())
                     .unwrap_or_default();
-                self.record_mut(*id).text = TextContent {
-                    value: next.clone(),
-                };
-                self.invalidate_text_content(*id);
+                // The same text (a selection-only write, or a component's copy
+                // of these bytes) leaves the content alone: only what the
+                // edit state draws changed.
+                if previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.same_identity(&next))
+                {
+                    self.nodes
+                        .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
+                } else {
+                    self.record_mut(*id).text = TextContent {
+                        value: next.clone(),
+                    };
+                    self.invalidate_text_content(*id);
+                }
                 // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
                 // 展开，跳位失效即结束会话。
                 if let Some(previous) = previous

@@ -79,8 +79,8 @@ impl TextHistory {
     /// Text bytes the journal of one editor may hold, across every step.
     ///
     /// [`Self::CAPACITY`] alone bounds the journal only for documents of a
-    /// hand-written size: a step stores the value before AND after, so 200
-    /// steps of a 300 KB document would be 120 MB per editor. Deep undo is
+    /// hand-written size: a step keeps the value before AND after it, so 200
+    /// steps of a 300 KB document would be 60–120 MB per editor. Deep undo is
     /// worth memory, but not that much of it -- past this the oldest steps go,
     /// which is what a step-count overflow does too.
     const CAPACITY_BYTES: usize = 8 * 1024 * 1024;
@@ -119,10 +119,17 @@ impl TextHistory {
 
     /// Text bytes the steps hold. Both ends of every step: undo restores the
     /// `before`, redo the `after`.
+    ///
+    /// Counted per buffer, not per snapshot: a step's `after` and the next
+    /// step's `before` are usually one shared buffer (Issue #182), and it
+    /// is memory once.
     fn bytes(&self) -> usize {
+        let mut seen = std::collections::HashSet::with_capacity(self.steps.len() * 2);
         self.steps
             .iter()
-            .map(|step| step.before.value.len() + step.after.value.len())
+            .flat_map(|step| [&step.before.value, &step.after.value])
+            .filter(|value| seen.insert((value.as_ptr() as usize, value.len())))
+            .map(|value| value.len())
             .sum()
     }
 

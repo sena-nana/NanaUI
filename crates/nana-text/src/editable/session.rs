@@ -597,8 +597,10 @@ impl EditSession {
     ) -> Option<EditSelection> {
         if !extend && !selection.is_collapsed() {
             let range = selection.range();
+            // Columns: x and y say nothing about which end reads first.
+            let horizontal = geometry.filter(|geometry| !geometry.is_vertical());
             let caret = |offset: usize, affinity| {
-                geometry.and_then(|geometry| geometry.caret_rect(offset, affinity))
+                horizontal.and_then(|geometry| geometry.caret_rect(offset, affinity))
             };
             let visual = |rightwards: bool| {
                 collapse_edge(
@@ -621,7 +623,13 @@ impl EditSession {
                 _ => None,
             };
             if let Some(offset) = collapsed {
-                return Some(EditSelection::caret(offset));
+                // On the focus, the caret keeps the side it was drawn on.
+                let caret = EditSelection::caret(offset);
+                return Some(if offset == selection.focus {
+                    caret.with_affinity(selection.affinity)
+                } else {
+                    caret
+                });
             }
         }
         let from = (selection.focus, selection.affinity);
@@ -954,10 +962,16 @@ impl EditSession {
         text: &SharedText,
         selections: Option<(EditSelection, Vec<EditSelection>)>,
     ) -> EditChange {
-        let changed = if text.stamp() == Some(self.text.stamp()) {
+        let changed = if self.text.snapshot().same_identity(text) {
             None
         } else {
-            super::diff::changed_range(self.text.as_str(), text)
+            let changed = super::diff::changed_range(self.text.as_str(), text);
+            if changed.is_none() {
+                // The same bytes in another buffer (a component's copy):
+                // share it, so the next comparison is a pointer check.
+                self.text.adopt_equal(text);
+            }
+            changed
         };
         let Some((start, old_end, new_end)) = changed else {
             return match selections {
@@ -974,9 +988,7 @@ impl EditSession {
             self.state.composition = None;
             self.bump_composition();
         }
-        let Some(edit) = self.text.assign_shared(text) else {
-            return EditChange::None;
-        };
+        let edit = self.text.adopt(text, start, old_end, new_end);
         self.record_edit(&edit);
         self.shift_composition(&edits);
         self.state.goal_x_px = None;

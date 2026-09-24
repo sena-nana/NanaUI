@@ -152,7 +152,7 @@ impl Fixture {
         );
         let state = self.cx.world().text_input(self.editor.stable_id()).unwrap();
         assert_eq!(
-            (&*state.value, state.selection.anchor, state.selection.focus),
+            (state.value, state.selection.anchor, state.selection.focus),
             ("abcdef", 6, 5)
         );
     }

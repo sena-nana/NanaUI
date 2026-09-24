@@ -235,11 +235,17 @@ impl EditorGeometry<'_> {
             self.constraints,
         );
         let rtl = matches!(self.style.direction, nana_ui_core::DirSpec::Rtl);
+        // Across columns x says nothing about the reading order, and one
+        // column's y is not "the same line": vertical text goes by order.
+        let horizontal = matches!(
+            self.style.writing_mode,
+            nana_ui_core::WritingModeSpec::HorizontalTb
+        );
         nana_text::editable::collapse_edge(
             range,
             rightwards,
-            Some((start_x, start_y)),
-            Some((end_x, end_y)),
+            horizontal.then_some((start_x, start_y)),
+            horizontal.then_some((end_x, end_y)),
             rtl,
         )
     }
@@ -305,6 +311,26 @@ fn horizontal_rightwards(intent: TextCaretIntent) -> Option<bool> {
         TextCaretIntent::Left => Some(false),
         TextCaretIntent::Right => Some(true),
         _ => None,
+    }
+}
+
+/// Whether this move collapses a non-empty selection onto its edge: Left or
+/// Right without extending. The landing is an edge of what was selected,
+/// not a step from anywhere, so the atom rules for a caret leaving a chip do
+/// not apply to it.
+fn collapses_selection(selection: TextSelection, intent: TextCaretIntent, extend: bool) -> bool {
+    !extend && selection.anchor != selection.focus && horizontal_rightwards(intent).is_some()
+}
+
+/// A caret at `edge` of `selection`. On the focus it keeps the side the focus
+/// was drawn on (the end of a soft-wrapped line stays on that line); the
+/// other end has no side of its own.
+fn caret_at_edge(selection: TextSelection, edge: usize) -> TextSelection {
+    let caret = TextSelection::caret(edge);
+    if edge == selection.focus {
+        caret.with_affinity(selection.affinity)
+    } else {
+        caret
     }
 }
 
@@ -587,7 +613,7 @@ impl AppContext {
                     false,
                 ),
             };
-            return Some((TextSelection::caret(edge), None));
+            return Some((caret_at_edge(selection, edge), None));
         }
         if let Some(geometry) = geometry
             && let Some(rightwards) = horizontal_rightwards(intent)
@@ -758,7 +784,12 @@ impl AppContext {
             );
             if !atoms.is_empty() {
                 for (index, next) in next_selections.iter_mut().enumerate() {
-                    *next = snap_selection_over_atoms(selections[index], *next, extend, &atoms);
+                    let previous = if collapses_selection(selections[index], intent, extend) {
+                        *next
+                    } else {
+                        selections[index]
+                    };
+                    *next = snap_selection_over_atoms(previous, *next, extend, &atoms);
                 }
             }
             let primary = next_selections[primary_index];
@@ -889,7 +920,7 @@ impl AppContext {
                         false,
                     ),
                 };
-                Some(TextSelection::caret(edge))
+                Some(caret_at_edge(selection, edge))
             } else {
                 // Left/Right follow visual order wherever the backend's
                 // layout can say what "left" is; without geometry they are
@@ -933,7 +964,12 @@ impl AppContext {
             &state.value,
             &self.editor_text_atoms(focused.node, focused.kind),
         );
-        let moved = snap_selection_over_atoms(state.selection, moved, extend, &atoms);
+        let previous = if collapses_selection(state.selection, intent, extend) {
+            moved
+        } else {
+            state.selection
+        };
+        let moved = snap_selection_over_atoms(previous, moved, extend, &atoms);
         self.write_editor_selection(focused.node, focused.kind, moved)
     }
 
@@ -3355,8 +3391,10 @@ impl AppContext {
         // 选区落在 $0（缺省为插入文本末尾）。
         next.selection = TextSelection::caret(final_caret);
         // 走与其它编辑同一个入口：一次插入是一个撤销步，只读与长度上限
-        // 照常把关。旧会话先结束——新插入不是旧占位的联动编辑。
-        if self.world.text_snippet_session(node).is_some() {
+        // 照常把关。旧会话先结束——新插入不是旧占位的联动编辑；插入被拒
+        // 时原样恢复。
+        let previous = self.world.text_snippet_session(node);
+        if previous.is_some() {
             let mut mutations = crate::MutationQueue::new();
             mutations.set_text_input_snippet(node, None);
             self.world.commit(mutations)?;
@@ -3369,6 +3407,11 @@ impl AppContext {
             next.additional_selections,
             crate::TextEditOrigin::Structural,
         )? {
+            if previous.is_some() {
+                let mut mutations = crate::MutationQueue::new();
+                mutations.set_text_input_snippet(node, previous);
+                self.world.commit(mutations)?;
+            }
             return Ok(false);
         }
         let mut mutations = crate::MutationQueue::new();
@@ -5101,6 +5144,36 @@ mod atom_tests {
             .unwrap();
         assert!(context.replace_focused_text(document, "x").unwrap());
         assert_eq!(context.world().text_input(node).unwrap().value, "abxcd");
+    }
+
+    #[test]
+    fn left_and_right_collapse_onto_a_selection_edge_that_touches_an_atom() {
+        // A selection ending on a chip: collapsing lands on the selection's
+        // edge, not where a caret stepping off the chip would.
+        let value = "Hi [bob]";
+        let atom = TextAtomSpan::new(3, 8);
+        for (anchor, focus, intent, landing) in [
+            (0, 8, TextCaretIntent::Left, 0),
+            (8, 0, TextCaretIntent::Right, 8),
+        ] {
+            let (mut context, document, area, node) = focused_editor(value);
+            context
+                .update_component(area, |area, _| {
+                    area.atom_spans = Arc::from([atom.clone()]);
+                    area.state.selection = TextSelection::new(anchor, focus);
+                })
+                .unwrap();
+            assert!(
+                context
+                    .move_focused_text_caret(document, intent, false, None)
+                    .unwrap()
+            );
+            assert_eq!(
+                selection_of(&context, node),
+                (landing, landing),
+                "{intent:?}"
+            );
+        }
     }
 
     #[test]

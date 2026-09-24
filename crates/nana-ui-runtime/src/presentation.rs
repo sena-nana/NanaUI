@@ -68,13 +68,26 @@ pub trait TextPresenter: Send + 'static {
     fn present(&self, text: &str, request: &HighlightRequest) -> Vec<TextSpan>;
 }
 
-pub(crate) fn presentation_source(text: &str, request: &HighlightRequest) -> u64 {
+pub(crate) fn presentation_source(text: &crate::TextValue, request: &HighlightRequest) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     request.presenter.hash(&mut hasher);
     request.language.hash(&mut hasher);
     // overlay 内容参与缓存键：宿主换喂语义段（含撤除）即失效重算。
     request.overlay.hash(&mut hasher);
-    text.hash(&mut hasher);
+    // An editor's text names its bytes by stamp: a caret move keys the same
+    // source without hashing the document (Issue #182). Unstamped text —
+    // a label — is hashed as before. Equal bytes under a new stamp only miss
+    // the cache; they never hit a wrong entry.
+    match text.stamp() {
+        Some(stamp) => {
+            0u8.hash(&mut hasher);
+            stamp.hash(&mut hasher);
+        }
+        None => {
+            1u8.hash(&mut hasher);
+            text.as_str().hash(&mut hasher);
+        }
+    }
     hasher.finish()
 }
 
@@ -756,7 +769,7 @@ mod tests {
     /// 内容相同（不同 Arc 分配）保持同键。
     #[test]
     fn presentation_source_hash_includes_overlay_content() {
-        let text = "fn main";
+        let text = &crate::TextValue::from("fn main");
         let plain = presentation_source(text, &HighlightRequest::highlight("rs"));
         let with_overlay = presentation_source(
             text,
@@ -776,6 +789,24 @@ mod tests {
             )])),
         );
         assert_eq!(with_overlay, same_content, "同内容 overlay 不无谓失效");
+    }
+
+    /// An editor's text keys the source by stamp: the same text under its
+    /// stamp keys the same, and other bytes under another stamp do not.
+    #[test]
+    fn presentation_source_keys_stamped_text_by_its_stamp() {
+        let request = HighlightRequest::highlight("rs");
+        let text = crate::TextValue::stamped("fn main");
+        assert_eq!(
+            presentation_source(&text, &request),
+            presentation_source(&text.clone(), &request)
+        );
+        let mut edited = text.clone();
+        edited.replace_range(0..2, "pub fn");
+        assert_ne!(
+            presentation_source(&text, &request),
+            presentation_source(&edited, &request)
+        );
     }
 
     /// overlay 全覆盖时基础层整段丢弃；撤 overlay（重建不带 overlay 的

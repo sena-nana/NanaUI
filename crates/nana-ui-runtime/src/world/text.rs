@@ -1369,7 +1369,7 @@ pub(super) fn build_text_input_presentation_source(
             None => offset,
         }
     };
-    let selection = if state.selection.is_valid_for(&state.value) {
+    let selection = if state.selection.is_valid_for(state.value) {
         state.selection
     } else {
         crate::TextSelection::caret(state.value.len())
@@ -1437,12 +1437,7 @@ pub(super) fn build_text_input_presentation_source(
             line_numbers: false,
             indent_guides: None,
             // 组合期标记按原值行号继续锚定（与诊断一致，宿主拥有生命周期）。
-            git_marks: map_git_marks(
-                &state.value,
-                &composed,
-                extras.git_marks,
-                fold_view.as_ref(),
-            ),
+            git_marks: map_git_marks(state.value, &composed, extras.git_marks, fold_view.as_ref()),
             editor: TextEditorRenderOptions::default(),
             focused,
             fold: fold_view,
@@ -1453,16 +1448,16 @@ pub(super) fn build_text_input_presentation_source(
         };
     }
 
-    let anchor = map_offset(display_offset(&state.value, selection.anchor));
-    let focus = map_offset(display_offset(&state.value, selection.focus));
+    let anchor = map_offset(display_offset(state.value, selection.anchor));
+    let focus = map_offset(display_offset(state.value, selection.focus));
     // 附加光标：校验 + 显示空间映射；单光标快速路径下向量为空、零分配。
     let additional = state
         .additional_selections
         .iter()
-        .filter(|selection| selection.is_valid_for(&state.value))
+        .filter(|selection| selection.is_valid_for(state.value))
         .map(|selection| {
-            let start = map_offset(display_offset(&state.value, selection.anchor));
-            let end = map_offset(display_offset(&state.value, selection.focus));
+            let start = map_offset(display_offset(state.value, selection.anchor));
+            let end = map_offset(display_offset(state.value, selection.focus));
             (start.min(end), start.max(end), selection.affinity)
         })
         .collect();

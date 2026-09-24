@@ -938,7 +938,7 @@ pub(crate) fn runtime_ime_surrounding(
         return None;
     }
     let (_, state) = document.context().focused_text_input(document.document())?;
-    clip_ime_surrounding(&state.value, state.selection.focus, state.selection.anchor)
+    clip_ime_surrounding(state.value, state.selection.focus, state.selection.anchor)
 }
 
 /// At most [`IME_SURROUNDING_MAX_BYTES`] of the value around the selection.

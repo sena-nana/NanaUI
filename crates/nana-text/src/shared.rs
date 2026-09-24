@@ -96,6 +96,13 @@ impl SharedText {
         self.ptr_eq(other) || (self.stamp.is_some() && self.stamp == other.stamp)
     }
 
+    /// This buffer under `stamp`. The caller knows `stamp` names exactly
+    /// these bytes.
+    pub(crate) fn with_stamp(mut self, stamp: TextStamp) -> Self {
+        self.stamp = Some(stamp);
+        self
+    }
+
     /// This value with a stamp, drawing one when it has none.
     #[must_use]
     pub fn into_stamped(mut self) -> Self {

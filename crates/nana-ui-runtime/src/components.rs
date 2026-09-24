@@ -3102,8 +3102,11 @@ fn snapped_selection(value: &str, selection: TextSelection) -> TextSelection {
     }
 }
 
-/// Committed editable text and its selection. IME preedit remains separate in
-/// [`ImeComposition`], so cancelling composition never corrupts committed text.
+/// Committed editable text and its selection, as components hold it and the
+/// world is handed it. The world's editor session is where the text lives
+/// (Issue #182) and `value` shares its buffer. IME preedit is not here: it
+/// lives in the session only ([`crate::UiWorld::ime`]), so cancelling a
+/// composition never touches committed text.
 ///
 /// Beyond the primary [`TextSelection`], a multiline editor can hold
 /// `additional_selections` (Zed-style multiple cursors). The invariant set:
@@ -3134,10 +3137,10 @@ impl TextInputState {
     }
 
     /// A session holding this state: what the world stores for an editor.
-    /// Copies the value.
+    /// Shares the value's buffer.
     pub fn to_session(&self) -> nana_text::EditSession {
         nana_text::EditSession::with_selections(
-            self.value.clone().into(),
+            self.value.clone(),
             self.selection,
             self.additional_selections.iter().copied(),
         )

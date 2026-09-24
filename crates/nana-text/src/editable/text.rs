@@ -251,7 +251,24 @@ impl EditableText {
         if self.storage.same_identity(text) {
             return None;
         }
-        let (start, old_end, new_end) = super::diff::changed_range(self.as_str(), text)?;
+        match super::diff::changed_range(self.as_str(), text) {
+            Some((start, old_end, new_end)) => Some(self.adopt(text, start, old_end, new_end)),
+            None => {
+                self.adopt_equal(text);
+                None
+            }
+        }
+    }
+
+    /// Takes `text` as the new bytes, the caller having found them to differ
+    /// from these in `start..old_end`, which became `start..new_end`.
+    pub(crate) fn adopt(
+        &mut self,
+        text: &SharedText,
+        start: usize,
+        old_end: usize,
+        new_end: usize,
+    ) -> TextEdit {
         let edit = TextEdit {
             range: start..old_end,
             inserted_len: new_end - start,
@@ -259,7 +276,16 @@ impl EditableText {
         };
         self.storage = text.clone().into_stamped();
         self.revision = edit.revision;
-        Some(edit)
+        edit
+    }
+
+    /// Shares `text`'s buffer, the caller having found it holds these very
+    /// bytes: nothing changes — not the revision, not the stamp — but from
+    /// now on both holders point at one buffer, and comparing them is a
+    /// pointer check.
+    pub(crate) fn adopt_equal(&mut self, text: &SharedText) {
+        let stamp = self.stamp();
+        self.storage = text.clone().with_stamp(stamp);
     }
 
     pub fn is_char_boundary(&self, offset: usize) -> bool {

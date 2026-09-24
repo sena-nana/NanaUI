@@ -1597,11 +1597,11 @@ impl UiWorld {
         Ok(())
     }
 
-    fn committed_presentation_text(&self, id: StableNodeId) -> String {
+    fn committed_presentation_text(&self, id: StableNodeId) -> crate::TextValue {
         self.nodes
             .text_input(id)
-            .map(|state| state.value.to_owned())
-            .unwrap_or_else(|| self.record(id).text.value.to_string())
+            .map(|state| state.value_shared())
+            .unwrap_or_else(|| self.record(id).text.value.clone())
     }
 
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {

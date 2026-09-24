@@ -444,7 +444,7 @@ impl AppContext {
             // Select-all is a wholesale replacement of the selection set.
             state.additional_selections.clear();
             cx.emit(TextChanged {
-                value: editable.state().value.clone().into(),
+                value: editable.state().value.clone(),
                 selection,
             });
             true
@@ -567,7 +567,7 @@ impl AppContext {
             editable.state_mut().selection = selection;
             editable.state_mut().normalize_selections();
             cx.emit(TextChanged {
-                value: editable.state().value.clone().into(),
+                value: editable.state().value.clone(),
                 selection,
             });
             true
