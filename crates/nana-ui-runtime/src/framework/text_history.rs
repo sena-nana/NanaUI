@@ -807,6 +807,34 @@ mod editor_tests {
     }
 
     #[test]
+    fn a_draft_past_an_off_grid_maximum_commits_what_it_shows() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(5.0).range(0.0, 10.3));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "11").unwrap();
+        assert!(cx.commit_focused_number_input(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
+        // Settled: a second commit and a controlled echo move nothing.
+        assert!(!cx.commit_focused_number_input(document()).unwrap());
+        assert!(!cx.set_number_value(input, 10.0).unwrap());
+        assert!(cx.can_undo_text(input.stable_id()));
+        // Up from a draft past the reachable maximum does not go down.
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "10.6").unwrap();
+        assert!(!cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!(value(&cx), 10.0);
+    }
+
+    #[test]
+    fn an_ime_commit_into_a_number_draft_drops_control_characters() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(5.0));
+        assert!(cx.commit_ime(document(), "1\n").unwrap());
+        assert_eq!(draft_of(&cx, input), "51");
+    }
+
+    #[test]
     fn a_composition_owns_a_number_draft_until_it_ends() {
         let mut cx = AppContext::new();
         let input = focused_number(&mut cx, crate::NumberInput::new(1.0));

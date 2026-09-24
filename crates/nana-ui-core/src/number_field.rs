@@ -59,14 +59,42 @@ impl NumberFieldSpec {
         value
     }
 
-    /// Snap onto the step grid, then clamp.
+    /// Snap onto the step grid, then clamp onto the grid's reachable range.
+    ///
+    /// A maximum off the grid (10.3 on a whole-number grid) holds at the last
+    /// grid point inside it (10), so snapping a snapped value never moves it
+    /// again and a field never stores a number it cannot display.
     pub fn snap(self, value: f64) -> f64 {
         let step = self.effective_step();
-        let origin = self.minimum.filter(|minimum| minimum.is_finite());
-        let base = origin.unwrap_or(0.0);
+        let base = self.grid_origin();
         let value = if value.is_finite() { value } else { base };
-        let snapped = base + ((value - base) / step).round() * step;
-        self.clamp(round_to(snapped, self.precision))
+        let snapped = round_to(
+            base + ((value - base) / step).round() * step,
+            self.precision,
+        );
+        let snapped = self.clamp(snapped);
+        match self.grid_maximum() {
+            Some(maximum) if snapped > maximum => maximum,
+            _ => snapped,
+        }
+    }
+
+    /// Where the step grid starts: the minimum when there is one.
+    fn grid_origin(self) -> f64 {
+        self.minimum
+            .filter(|minimum| minimum.is_finite())
+            .unwrap_or(0.0)
+    }
+
+    /// The last grid point inside the maximum, or `None` when unbounded
+    /// above. A hair of tolerance keeps a maximum that is on the grid (0.3 on
+    /// a grid of 0.1) from losing its last point to floating-point division.
+    fn grid_maximum(self) -> Option<f64> {
+        let maximum = self.maximum.filter(|maximum| maximum.is_finite())?;
+        let step = self.effective_step();
+        let base = self.grid_origin();
+        let points = ((maximum - base) / step + 1e-9).floor();
+        Some(round_to(base + points * step, self.precision).min(maximum))
     }
 
     /// Move `value` by `steps` grid positions. Zero steps still snaps, so an
@@ -83,16 +111,12 @@ impl NumberFieldSpec {
 
     /// Whether stepping up can still change the value.
     pub fn can_increment(self, value: f64) -> bool {
-        self.maximum
-            .filter(|maximum| maximum.is_finite())
-            .is_none_or(|maximum| self.clamp(value) < maximum)
+        self.step_by(value, 1) > self.snap(value)
     }
 
     /// Whether stepping down can still change the value.
     pub fn can_decrement(self, value: f64) -> bool {
-        self.minimum
-            .filter(|minimum| minimum.is_finite())
-            .is_none_or(|minimum| self.clamp(value) > minimum)
+        self.step_by(value, -1) < self.snap(value)
     }
 
     /// Render a value at this field's precision.
@@ -168,6 +192,34 @@ mod tests {
         assert_eq!(spec().step_by(0.0, -1), 0.0);
         assert_eq!(spec().step_by(0.5, -1), 0.0);
         assert_eq!(spec().step_by(4.0, 4), 6.0);
+    }
+
+    #[test]
+    fn an_off_grid_maximum_holds_at_the_last_grid_point() {
+        let off_grid = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(10.3),
+            step: 1.0,
+            precision: 0,
+        };
+        assert_eq!(off_grid.snap(11.0), 10.0);
+        assert_eq!(off_grid.snap(10.3), 10.0);
+        for value in [-3.0, 0.4, 9.6, 10.2, 10.3, 11.0, 400.0] {
+            let once = off_grid.snap(value);
+            assert_eq!(off_grid.snap(once), once, "{value}");
+        }
+        assert_eq!(off_grid.step_by(10.0, 1), 10.0);
+        assert!(!off_grid.can_increment(10.0));
+        assert!(off_grid.can_increment(9.0));
+        // A maximum on the grid keeps its last point despite float division.
+        let tenths = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(0.3),
+            step: 0.1,
+            precision: 1,
+        };
+        assert_eq!(tenths.snap(0.3), 0.3);
+        assert_eq!(tenths.snap(0.9), 0.3);
     }
 
     #[test]

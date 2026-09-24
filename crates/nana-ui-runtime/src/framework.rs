@@ -226,18 +226,12 @@ impl EditableText for NumberInput {
         }
     }
 
-    /// A number never holds control characters: the newline or tab a host
-    /// reports with Enter or Tab, or one pasted after a copied cell, is
-    /// dropped and the rest inserted.
     fn replace_selection(&mut self, text: &str) -> bool {
-        if !text.chars().any(char::is_control) {
-            return self.state.replace_selection(text);
-        }
-        let kept: String = text
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect();
-        !kept.is_empty() && self.state.replace_selection(&kept)
+        number_text(text).is_some_and(|text| self.state.replace_selection(&text))
+    }
+
+    fn commit_ime_text(&mut self, text: &str) -> bool {
+        number_text(text).is_some_and(|text| self.state.replace_primary_selection(&text))
     }
 
     fn state(&self) -> &TextInputState {
@@ -251,6 +245,21 @@ impl EditableText for NumberInput {
     fn change(&self) -> TextChanged {
         text_changed(&self.state)
     }
+}
+
+/// What of `text` a number draft takes. A number never holds control
+/// characters: the newline or tab a host reports with Enter or Tab, an IME
+/// commit ending in one, or a pasted cell's line break is dropped and the
+/// rest kept. `None` when nothing but control characters was offered.
+fn number_text(text: &str) -> Option<std::borrow::Cow<'_, str>> {
+    if !text.chars().any(char::is_control) {
+        return Some(std::borrow::Cow::Borrowed(text));
+    }
+    let kept: String = text
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    (!kept.is_empty()).then_some(std::borrow::Cow::Owned(kept))
 }
 
 impl EditableText for TextArea {
