@@ -17,10 +17,10 @@
     "motion": 16,
     "elevation": 0
   },
-  "token_reads": 707,
+  "token_reads": 711,
   "local_values": 23,
   "shared_local_values": 94,
-  "module_constants": 82,
+  "module_constants": 83,
   "components": [
     {
       "component": "AboutSection",
@@ -2260,7 +2260,7 @@
         "elevation": 0
       },
       "local_values": 6,
-      "token_reads": 29,
+      "token_reads": 32,
       "roles": [
         "Danger",
         "Muted"
@@ -2634,7 +2634,7 @@
         "elevation": 0
       },
       "local_values": 0,
-      "token_reads": 34,
+      "token_reads": 35,
       "roles": [
         "Background",
         "Muted",
@@ -3483,6 +3483,17 @@
           "name": "MENU_GAP",
           "type": "f32",
           "value": 0.0
+        }
+      ],
+      "count": 1
+    },
+    {
+      "file": "crates/nana-ui-runtime/src/settings.rs",
+      "constants": [
+        {
+          "name": "ASSEMBLED_ROW_STACK_BELOW",
+          "type": "f32",
+          "value": 280.0
         }
       ],
       "count": 1
