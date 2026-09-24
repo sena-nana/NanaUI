@@ -691,33 +691,15 @@ impl AppContext {
                 return false;
             }
             // Every selection, the user's own caret included, moves through
-            // the edit rather than to it: before the range it stays, after it
-            // it shifts, inside it it lands after the inserted text. A caret
-            // right where text is inserted goes past it, as typing leaves it
-            // (a completion at the caret); one at the start of replaced text
-            // stays in front.
-            let (start, end, inserted_end) = (range.start, range.end, range.start + text.len());
-            let remap = |offset: usize| {
-                if offset < start || (offset == start && start < end) {
-                    offset
-                } else if offset >= end {
-                    offset - end + inserted_end
-                } else {
-                    inserted_end
-                }
-            };
+            // the edit rather than to it (the rule the edit session applies).
+            // One exception: a caret right where text is inserted goes past
+            // it, as typing leaves it (a completion at the caret).
+            let (start, removed, inserted) = (range.start, range.len(), text.len());
             let remap_selection = |selection: TextSelection| {
-                let focus = remap(selection.focus);
-                TextSelection {
-                    anchor: remap(selection.anchor),
-                    focus,
-                    // A moved focus no longer knows which side of a soft wrap
-                    // it was resolved on.
-                    affinity: if focus == selection.focus {
-                        selection.affinity
-                    } else {
-                        crate::TextAffinity::Downstream
-                    },
+                if removed == 0 && selection.is_collapsed() && selection.focus == start {
+                    TextSelection::caret(start + inserted)
+                } else {
+                    nana_text::editable::remap_selection(selection, start, removed, inserted)
                 }
             };
             let state = editable.state_mut();

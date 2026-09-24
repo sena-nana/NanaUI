@@ -1324,17 +1324,7 @@ impl AppContext {
     /// for layout writeback and platform state projection.
     pub fn commit_mutations(
         &mut self,
-        mutations: MutationQueue,
-    ) -> Result<crate::CommitReport, FrameworkError> {
-        self.commit_mutations_of(mutations, None)
-    }
-
-    /// [`Self::commit_mutations`] for the batch of `own_update`'s own update,
-    /// which an undo journal tells apart from other writes to that editor.
-    fn commit_mutations_of(
-        &mut self,
         mut mutations: MutationQueue,
-        own_update: Option<StableNodeId>,
     ) -> Result<crate::CommitReport, FrameworkError> {
         // Re-appending or re-parking what is already in place: the world
         // skips it, and there is no focus, surface or lifecycle to follow.
@@ -1391,7 +1381,7 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
-        let written_editors = self.text_histories_written_by(&mutations, own_update);
+        let written_editors = self.text_histories_written_by(&mutations);
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations)
@@ -2661,10 +2651,8 @@ impl AppContext {
         if delivered.is_ok() && !projected {
             staged.project(entity.id, &self.world, &mut mutations);
         }
-        let commit = delivered.and_then(|observers| {
-            self.commit_mutations_of(mutations, Some(entity.id))
-                .map(|_| observers)
-        });
+        let commit =
+            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
         if commit.is_ok() {
             self.views.insert(entity.id, Box::new(staged));
         } else {

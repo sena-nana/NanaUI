@@ -245,31 +245,15 @@ impl TextHistory {
     }
 }
 
-/// What [`crate::AppContext::text_histories_written_by`] found in a batch.
-#[derive(Debug, Default)]
-pub(super) struct WrittenEditors {
-    verify: Vec<StableNodeId>,
-    foreign: Vec<(StableNodeId, Option<TextStamp>)>,
-}
-
 /// Per-editor journals.
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
-    /// Editors a journaled write is in flight for. The editor's own commit
-    /// lands before the write can witness it, so the commit leaves it to the
-    /// write; any other text write to it during the edit (a follow-up
-    /// committing to it) is foreign, and the write drops the journal rather
-    /// than adopt it.
-    writing: Vec<Writing>,
-}
-
-/// A journaled write in flight (see [`TextHistories::writing`]).
-#[derive(Debug, Clone, Copy)]
-struct Writing {
-    node: StableNodeId,
-    /// Another batch changed the editor's text meanwhile.
-    foreign: bool,
+    /// Editors a journaled write is in flight for. The edit's own commit
+    /// lands before the write can witness it, so a commit leaves these to
+    /// the write, which settles them when it finishes (see
+    /// [`crate::AppContext::commit_editor_edit`]).
+    writing: Vec<StableNodeId>,
 }
 
 impl TextHistories {
@@ -336,19 +320,10 @@ impl TextHistories {
     /// Ends the journaled write of `node` [`crate::AppContext::commit_editor_edit`]
     /// began. By position rather than by popping the top, so a write that
     /// never finished (a caught unwind) cannot leave another node marked.
-    fn finish_writing(&mut self, node: StableNodeId) -> Option<Writing> {
-        let index = self
-            .writing
-            .iter()
-            .rposition(|writing| writing.node == node)?;
-        Some(self.writing.remove(index))
-    }
-
-    /// The write in flight for `node`, if one is.
-    fn writing_mut(&mut self, node: StableNodeId) -> Option<&mut Writing> {
-        self.writing
-            .iter_mut()
-            .rfind(|writing| writing.node == node)
+    fn finish_writing(&mut self, node: StableNodeId) {
+        if let Some(index) = self.writing.iter().rposition(|writing| *writing == node) {
+            self.writing.remove(index);
+        }
     }
 
     /// Releases the journal of a node that no longer exists.
@@ -414,66 +389,44 @@ impl crate::AppContext {
             .map(|input| input.session().text().stamp())
     }
 
-    /// Editors a batch writes the text of, read before it commits: those
-    /// whose journals the commit checks once it lands, and those with an edit
-    /// in flight that this batch is not the own commit of (`own`), with the
-    /// stamp their text had. Both are settled by
-    /// [`Self::verify_text_histories`].
+    /// Editors a batch writes the text of, whose journals the commit checks
+    /// once it lands ([`Self::verify_text_histories`]). An editor with an edit
+    /// in flight is left to that edit.
     pub(super) fn text_histories_written_by(
         &self,
         mutations: &crate::MutationQueue,
-        own: Option<StableNodeId>,
-    ) -> WrittenEditors {
-        let mut written = WrittenEditors::default();
+    ) -> Vec<StableNodeId> {
         // Nothing to look at unless the batch writes editor text and some
-        // editor keeps a journal or is being edited (its first edit has no
-        // journal yet): layout, style and animation batches pass in O(1).
-        if !mutations.writes_text()
-            || (self.text_histories.entries.is_empty() && self.text_histories.writing.is_empty())
-        {
-            return written;
+        // editor keeps a journal: layout, style, animation and selection
+        // batches pass in O(1).
+        if !mutations.writes_text() || self.text_histories.entries.is_empty() {
+            return Vec::new();
         }
-        for mutation in mutations.as_slice() {
-            // Removing an editor's text (`state: None`) frees its journal
-            // too: nothing would use it again to notice.
-            let (crate::UiMutation::SetTextInput { id, .. }
-            | crate::UiMutation::ReplaceTextSelection { id, .. }) = mutation
-            else {
-                continue;
-            };
-            let editing = self
-                .text_histories
-                .writing
-                .iter()
-                .any(|writing| writing.node == *id);
-            if editing {
-                if own != Some(*id) {
-                    written.foreign.push((*id, self.editor_text_stamp(*id)));
+        mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                // Removing an editor's text (`state: None`) frees its journal
+                // too: nothing would use it again to notice.
+                crate::UiMutation::SetTextInput { id, .. }
+                | crate::UiMutation::ReplaceTextSelection { id, .. }
+                    if self.text_histories.entries.contains_key(id)
+                        && !self.text_histories.writing.contains(id) =>
+                {
+                    Some(*id)
                 }
-            } else if self.text_histories.entries.contains_key(id) {
-                written.verify.push(*id);
-            }
-        }
-        written
+                _ => None,
+            })
+            .collect()
     }
 
     /// Drops, as soon as the write lands, the journals an outside write left
     /// stale, rather than holding their snapshots until the editor is next
     /// edited -- which a document loaded for reading never is.
-    pub(super) fn verify_text_histories(&mut self, written: WrittenEditors) {
-        for node in written.verify {
+    pub(super) fn verify_text_histories(&mut self, written: Vec<StableNodeId>) {
+        for node in written {
             self.text_histories
                 .follow(node, self.editor_text_stamp(node));
-        }
-        // An edit in flight whose text another batch changed: the edit drops
-        // its journal when it finishes, rather than adopt text it did not
-        // produce.
-        for (node, stamp) in written.foreign {
-            if self.editor_text_stamp(node) != stamp
-                && let Some(writing) = self.text_histories.writing_mut(node)
-            {
-                writing.foreign = true;
-            }
         }
     }
 
@@ -519,15 +472,9 @@ impl crate::AppContext {
             self.follow_text_history(node);
         }
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
-        self.text_histories.writing.push(Writing {
-            node,
-            foreign: false,
-        });
+        self.text_histories.writing.push(node);
         let written = update(self, &mut edited);
-        let foreign = self
-            .text_histories
-            .finish_writing(node)
-            .is_some_and(|writing| writing.foreign);
+        self.text_histories.finish_writing(node);
         if matches!(written, Ok(false)) {
             return written;
         }
@@ -540,6 +487,14 @@ impl crate::AppContext {
         // failed and rolled the component back (text as before) is neither.
         let rewritten =
             after.value != before.value && edited.is_some_and(|edited| edited != after.value);
+        // The world takes the component's own buffer as the edit lands, so
+        // text it still holds from this edit compares by identity; a
+        // mismatch means another batch wrote it meanwhile.
+        let foreign = written.is_ok()
+            && self
+                .world
+                .text_input(node)
+                .is_some_and(|input| input.value_shared() != after.value);
         if foreign || rewritten {
             self.text_histories.forget(node);
             return written;
@@ -625,17 +580,23 @@ impl crate::AppContext {
         let Some(target) = self.text_histories.peek(node, undo) else {
             return Ok(false);
         };
-        let shown = self.read(entity, |editable: &C| editable.state().value.clone())?;
+        let target_value = target.value.clone();
         // `History` keeps the restore from becoming a step of its own.
         let restored =
             self.commit_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
                 *editable.state_mut() = target;
                 true
             });
-        let landed = restored.as_ref().is_ok_and(|restored| *restored)
-            || self
-                .read(entity, |editable: &C| editable.state().value != shown)
-                .unwrap_or(false);
+        // A restore that failed may still have landed (the component took
+        // the text before a follow-up failed): then the cursor moves too.
+        let landed = match &restored {
+            Ok(restored) => *restored,
+            Err(_) => self
+                .read(entity, |editable: &C| {
+                    editable.state().value == target_value
+                })
+                .unwrap_or(false),
+        };
         if landed {
             self.text_histories.step(node, undo);
         }
@@ -1256,43 +1217,30 @@ mod editor_tests {
     }
 
     #[test]
-    fn another_batch_changing_an_editors_text_mid_edit_drops_its_journal() {
-        let write = |cx: &mut AppContext, node, own: bool, text: &str| {
-            cx.text_histories.writing.push(super::Writing {
-                node,
-                foreign: false,
-            });
-            let mut queue = crate::MutationQueue::new();
-            queue.set_text_input(node, Some(crate::TextInputState::new(text)));
-            cx.commit_mutations_of(queue, own.then_some(node)).unwrap();
-            cx.text_histories
-                .finish_writing(node)
-                .is_some_and(|writing| writing.foreign)
-        };
+    fn the_world_holds_the_editors_own_buffer_once_an_edit_lands() {
+        // What tells an edit's own text from another batch's write during it:
+        // the world adopts the component's buffer, so the two compare by
+        // pointer, and another write would not.
         let mut cx = AppContext::new();
-        let node = focused_area(&mut cx, "").stable_id();
-        cx.replace_focused_text(document(), "draft").unwrap();
-        assert!(
-            !write(&mut cx, node, true, "own"),
-            "the edit's own commit is not foreign"
-        );
-        assert!(
-            !write(&mut cx, node, false, "own"),
-            "a write that changes nothing is not"
-        );
-        assert!(
-            write(&mut cx, node, false, "someone else's"),
-            "another batch's write is"
-        );
-
-        // An editor's first edit, before any editor keeps a journal.
-        let mut cx = AppContext::new();
-        let node = focused_area(&mut cx, "").stable_id();
-        assert!(cx.text_histories.entries.is_empty());
-        assert!(
-            write(&mut cx, node, false, "someone else's"),
-            "noticed without a journal"
-        );
+        let area = focused_area(&mut cx, "");
+        for text in ["a", "b"] {
+            cx.replace_focused_text(document(), text).unwrap();
+            let component = cx.read(area, |area| area.state.value.clone()).unwrap();
+            let world = cx
+                .world()
+                .text_input(area.stable_id())
+                .unwrap()
+                .value_shared();
+            assert!(world.same_identity(&component), "after typing {text:?}");
+        }
+        assert!(cx.undo_focused_text(document()).unwrap());
+        let component = cx.read(area, |area| area.state.value.clone()).unwrap();
+        let world = cx
+            .world()
+            .text_input(area.stable_id())
+            .unwrap()
+            .value_shared();
+        assert!(world.same_identity(&component), "after undo");
     }
 
     #[test]
