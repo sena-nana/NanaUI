@@ -4,8 +4,10 @@ use super::*;
 
 impl AppContext {
     /// Native composition owns its pending text and committed insertion range.
-    /// Ordinary key edits must wait for the IME commit/cancel event.
-    pub(super) fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
+    /// Ordinary key edits must wait for the IME commit/cancel event, and a
+    /// host keeps the editor's navigation keys from reaching enclosing
+    /// navigation (tables, trees) meanwhile.
+    pub fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
         self.world
             .focused_text_input(document)
             .and_then(|(target, _)| self.world.ime(target))

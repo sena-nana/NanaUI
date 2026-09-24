@@ -1381,14 +1381,23 @@ impl RuntimeInputAdapter {
         modifiers: nana_ui_platform::InputModifiers,
         mut shaper: Option<&mut dyn TextShaper>,
     ) -> Result<bool, FrameworkError> {
-        let plain = !modifiers.control && !modifiers.meta && !modifiers.alt;
         let Some(focused) = context.focused_text_editor(document) else {
-            // An IME composition hides the editor, but a numeric field's
-            // arrows still belong to it: the composition owns them, and they
-            // must not reach an enclosing table or tree and carry focus out.
-            return Ok(plain
-                && matches!(key, "ArrowUp" | "ArrowDown")
-                && context.is_number_input_focused(document));
+            // An IME composition hides the editor, but its navigation keys
+            // still belong to it: the composition owns them, and they must
+            // not reach an enclosing table, tree or select and carry focus
+            // out of the field.
+            return Ok(context.has_focused_ime_composition(document)
+                && matches!(
+                    key,
+                    "ArrowUp"
+                        | "ArrowDown"
+                        | "ArrowLeft"
+                        | "ArrowRight"
+                        | "Home"
+                        | "End"
+                        | "PageUp"
+                        | "PageDown"
+                ));
         };
         // A numeric field steps on plain ArrowUp/ArrowDown and commits its
         // draft on Enter. Shift+ArrowUp/Down select like any single-line
@@ -1396,9 +1405,11 @@ impl RuntimeInputAdapter {
         // read-only), so they never fall through to an enclosing table or
         // tree and carry focus out of the field. An Enter that commits
         // nothing falls through, so a dialog or form can still confirm.
-        if focused.is_numeric() && plain {
+        // Alt+ArrowUp/Down move the caret like any single-line field's; Enter
+        // commits whatever Shift or Alt accompany it.
+        if focused.is_numeric() && !modifiers.control && !modifiers.meta {
             match key {
-                "ArrowUp" | "ArrowDown" if !modifiers.shift => {
+                "ArrowUp" | "ArrowDown" if !modifiers.shift && !modifiers.alt => {
                     let steps = if key == "ArrowUp" { 1 } else { -1 };
                     context.step_focused_number_input(document, steps)?;
                     return Ok(true);
@@ -4583,6 +4594,32 @@ mod tests {
         }
         context.clear_ime(document).unwrap();
 
+        // Alt+Enter commits like Enter; it is not swallowed as a text
+        // field's submit.
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &edit_key("0", Some("0"), InputModifiers::default()),
+            )
+            .unwrap();
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &edit_key(
+                    "Enter",
+                    None,
+                    InputModifiers {
+                        alt: true,
+                        ..InputModifiers::default()
+                    },
+                ),
+            )
+            .unwrap();
+        assert_eq!(value(&context), 100.0, "1000 clamps to the maximum");
+        assert_eq!(textarea_selection(&context, node).0, "100");
+
         // An Enter with nothing to commit is not swallowed: a dialog or form
         // around the field can still confirm on it.
         assert!(
@@ -4591,6 +4628,32 @@ mod tests {
                 .unwrap()
                 .prevent_default
         );
+    }
+
+    #[test]
+    fn a_composing_text_input_keeps_its_navigation_keys() {
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let input = context
+            .create_component(document, TextInput::new("abc"))
+            .unwrap();
+        let node = input.stable_id();
+        assert!(context.focus_node(document, node).unwrap());
+        context
+            .set_ime_preedit(document, "に".into(), None)
+            .unwrap();
+        let mut adapter = RuntimeInputAdapter::default();
+        for key in ["ArrowUp", "ArrowDown", "ArrowLeft", "Home"] {
+            assert!(
+                adapter
+                    .dispatch(&mut context, document, &plain_key(key))
+                    .unwrap()
+                    .prevent_default,
+                "{key}"
+            );
+            assert_eq!(context.world().focused(document), Some(node));
+            assert_eq!(textarea_selection(&context, node), ("abc".into(), 3, 3));
+        }
     }
 
     #[test]

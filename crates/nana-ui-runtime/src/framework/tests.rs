@@ -1786,6 +1786,61 @@ fn the_spinner_follows_the_draft_and_owns_presses_on_its_inert_half() {
 }
 
 #[test]
+fn a_continuous_draft_publishes_its_clamped_step_base() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::continuous(3.0).range(0.0, 100.0),
+        )
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "500").unwrap();
+    // The spinner and the accessible value read what a step would start
+    // from: the draft clamped as a commit would clamp it.
+    assert_eq!(
+        context
+            .world()
+            .accessibility(input.stable_id())
+            .unwrap()
+            .numeric_value,
+        Some(100.0)
+    );
+    assert!(!context.step_number_input(input, 1).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+    assert!(context.step_number_input(input, -1).unwrap());
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        99.0
+    );
+}
+
+#[test]
+fn a_hover_card_keeps_a_focused_number_input_editing() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let card = context
+        .create_component(
+            document,
+            crate::HoverCard::new()
+                .trigger("account")
+                .preserve_editor_focus(true),
+        )
+        .unwrap();
+    let action = context
+        .create_component(document, crate::Button::new("refresh"))
+        .unwrap();
+    context.append_child(card, action).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(1.0))
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    assert!(context.preserves_hover_card_editor_focus(action.stable_id()));
+}
+
+#[test]
 fn moving_focus_away_settles_a_pending_numeric_draft() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

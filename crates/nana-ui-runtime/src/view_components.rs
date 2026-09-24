@@ -1877,21 +1877,30 @@ impl NumberInput {
 
     /// Move by grid positions from the typed draft when it parses, from the
     /// committed value otherwise.
+    /// A step that cannot move away from its base (a bound) changes nothing,
+    /// matching the spinner half drawn inert there.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
         let base = self.step_base();
         let next = if self.continuous {
-            base + f64::from(steps) * self.spec.effective_step()
+            self.spec
+                .clamp(base + f64::from(steps) * self.spec.effective_step())
         } else {
             self.spec.step_by(base, steps)
         };
+        if next == base {
+            return false;
+        }
         self.assign(next)
     }
 
     /// The number a step starts from: the typed draft when it parses, the
     /// committed value otherwise. It is also the number the field publishes,
     /// so the spinner's enabled halves agree with what a step would do.
+    /// Clamped to the bounds as a commit would clamp it; a continuous draft
+    /// such as `500` over a maximum of 100 is 100 here, not 500.
     pub(crate) fn step_base(&self) -> f64 {
-        self.parse_text(&self.state.value).unwrap_or(self.value)
+        self.parse_text(&self.state.value)
+            .map_or(self.value, |parsed| self.spec.clamp(parsed))
     }
 
     /// Parse `text` under this field's discrete or continuous policy, before

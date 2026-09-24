@@ -17,13 +17,7 @@ impl AppContext {
         if !value.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
-        let changed = self.update_component(entity, |input, cx| {
-            write_number_field(input, cx, |input| input.assign(value))
-        })?;
-        if changed {
-            self.text_histories.forget(entity.stable_id());
-        }
-        Ok(changed)
+        self.write_number(entity, TextEditOrigin::Program, |input| input.assign(value))
     }
 
     /// Commit a complete value given as text, as assistive technology sets
@@ -138,11 +132,15 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
-        self.write_number(
+        let changed = self.write_number(
             entity,
             TextEditOrigin::Structural,
             NumberInput::revert_draft,
-        )
+        )?;
+        // Like a commit, Escape ends a run of steps even when the draft
+        // already showed the committed value.
+        self.seal_editor_history(entity.stable_id());
+        Ok(changed)
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
@@ -153,19 +151,18 @@ impl AppContext {
     /// Whether a point is on a numeric field's spinner, whichever halves are
     /// enabled. Coordinates are viewport-local, matching hit testing.
     pub(super) fn on_number_stepper(&self, id: StableNodeId, x: f32, y: f32) -> bool {
-        matches!(
-            self.world.component_geometry(id),
+        self.number_steppers(id)
+            .is_some_and(|steppers| steppers.contains(x, y))
+    }
+
+    fn number_steppers(&self, id: StableNodeId) -> Option<crate::NumberSteppers> {
+        match self.world.component_geometry(id) {
             Some(crate::ComponentGeometry::TextInput {
                 steppers: Some(steppers),
                 ..
-            }) if steppers.contains(x, y)
-        )
-    }
-
-    /// Whether the focused element is a numeric field, whether or not an IME
-    /// composition currently hides it from [`Self::focused_text_editor`].
-    pub fn is_number_input_focused(&self, document: DocumentId) -> bool {
-        self.focused_number_input(document).is_some()
+            }) => Some(steppers),
+            _ => None,
+        }
     }
 
     /// Resolve a stepper press inside a numeric field to a signed step count.
@@ -174,14 +171,7 @@ impl AppContext {
     /// when the point is on the editable text instead of the spinner, so the
     /// caller can fall through to caret placement.
     pub fn number_stepper_at(&self, id: StableNodeId, x: f32, y: f32) -> Option<i32> {
-        let Some(crate::ComponentGeometry::TextInput {
-            steppers: Some(steppers),
-            ..
-        }) = self.world.component_geometry(id)
-        else {
-            return None;
-        };
-        steppers.step_at(x, y)
+        self.number_steppers(id)?.step_at(x, y)
     }
 
     /// Route a pointer press on a numeric field's spinner. Returns whether the

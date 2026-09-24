@@ -208,16 +208,10 @@ impl TextHistories {
         after: TextInputState,
         origin: TextEditOrigin,
     ) {
-        match origin {
-            TextEditOrigin::History => {}
-            // Clearing needs no journal: an editor never edited keeps none.
-            TextEditOrigin::Program => self.forget(node),
-            _ => self
-                .entries
-                .entry(node)
-                .or_default()
-                .record(before, after, origin),
-        }
+        self.entries
+            .entry(node)
+            .or_default()
+            .record(before, after, origin);
     }
 
     pub(super) fn seal(&mut self, node: StableNodeId) {
@@ -296,6 +290,16 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
+        // A program write is not the user's edit: whatever it changed (a
+        // `NumberInput` can take a new number under a draft that already reads
+        // it), the history starts afresh. Nothing to snapshot for that.
+        if origin == TextEditOrigin::Program {
+            let changed = self.update_component(entity, apply)?;
+            if changed {
+                self.text_histories.forget(entity.stable_id());
+            }
+            return Ok(changed);
+        }
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
         let changed = self.update_component(entity, apply)?;
         if !changed {
@@ -572,6 +576,21 @@ mod editor_tests {
         assert_eq!(draft_of(&cx, input), "4", "undo stops at the commit");
         assert!(cx.undo_focused_text(document()).unwrap());
         assert_eq!(draft_of(&cx, input), "1");
+    }
+
+    #[test]
+    fn an_escape_that_reverts_nothing_still_splits_step_runs() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        for _ in 0..3 {
+            cx.step_focused_number_input(document(), 1).unwrap();
+        }
+        assert!(!cx.revert_focused_number_input(document()).unwrap());
+        for _ in 0..2 {
+            cx.step_focused_number_input(document(), 1).unwrap();
+        }
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "4", "undo stops at the Escape");
     }
 
     #[test]

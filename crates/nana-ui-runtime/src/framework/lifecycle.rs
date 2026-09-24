@@ -1012,6 +1012,10 @@ impl AppContext {
                     self.focused_editor::<crate::TextInput>(document)
                         .map(|editor| editor.stable_id())
                 })
+                .or_else(|| {
+                    self.focused_editor::<crate::NumberInput>(document)
+                        .map(|editor| editor.stable_id())
+                })
                 .is_some_and(|editor| !self.overlay_descendant(root, editor))
     }
 
