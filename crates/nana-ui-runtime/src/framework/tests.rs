@@ -870,6 +870,25 @@ fn text_input_owns_editability_privacy_size_and_busy_semantics() {
     assert!(!node.editable);
     assert!(node.invalid);
     assert_eq!(node.value, None);
+    // Nor does an unlabelled one fall back to its text for a name.
+    let unlabelled = context
+        .create_component(document, TextInput::new("hunter2").secure(true))
+        .unwrap();
+    let projected = context.world().project_accessibility(document);
+    let unlabelled = projected
+        .iter()
+        .find(|node| node.id == unlabelled.stable_id())
+        .unwrap();
+    assert_eq!(
+        (unlabelled.label.as_deref(), unlabelled.value.as_deref()),
+        (None, None)
+    );
+    assert!(
+        projected
+            .iter()
+            .all(|node| node.label.as_deref() != Some("hunter2")),
+        "no node names the field by its secret"
+    );
     // The authored style names the step; the number is produced against the
     // installed metrics (Issue #101 F1).
     assert_eq!(
@@ -7189,6 +7208,61 @@ fn caret_movement_steps_across_inlays_without_sticking() {
         focus = move_caret_from(&mut context, document, node, focus, TextCaretIntent::Right);
         assert_eq!(focus, expected, "连按 Right 不得卡死在锚点");
     }
+}
+
+/// An inlay anchored on a character of several code points (CRLF, a skin
+/// toned emoji), or one whose label is a single grapheme: Right still steps
+/// one grapheme at a time, as over the bare text.
+#[test]
+fn caret_right_steps_past_inlays_on_multi_code_point_anchors() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let value = "a\r\nb\u{1F44D}\u{1F3FD}c";
+    let area = context
+        .create_component(
+            document,
+            TextArea::new(value).inlays(Arc::from([
+                TextInlay::new(1, "p:"),
+                TextInlay::new(4, "q"),
+                TextInlay::new(12, "r"),
+            ])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    assert!(context.focus_node(document, node).unwrap());
+    let mut focus = 0;
+    for expected in [1, 3, 4, 12, 13] {
+        focus = move_caret_from(&mut context, document, node, focus, TextCaretIntent::Right);
+        assert_eq!(focus, expected, "Right from each boundary to the next");
+    }
+}
+
+/// End on a line whose end carries an inlay (a type hint) stays on that
+/// line: landing after the label maps back to the anchor, which is the end.
+#[test]
+fn line_end_stops_before_a_trailing_inlay_anchor() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let area = context
+        .create_component(
+            document,
+            TextArea::new("ab\ncd").inlays(Arc::from([TextInlay::new(2, ": i32")])),
+        )
+        .unwrap();
+    let node = area.stable_id();
+    assert!(context.focus_node(document, node).unwrap());
+    assert_eq!(
+        move_caret_from(&mut context, document, node, 0, TextCaretIntent::LineEnd),
+        2
+    );
+    context
+        .move_focused_text_caret(document, TextCaretIntent::LineEnd, false, None)
+        .unwrap();
+    assert_eq!(
+        context.world().text_input(node).unwrap().selection.focus,
+        2,
+        "a second End does not step onto the next line"
+    );
 }
 
 /// 折叠摘要上的 Right 同源卡死(既有隐患的回归锚):摘要文本内部没有

@@ -63,6 +63,15 @@ struct TextEditStep {
     origin: TextEditOrigin,
 }
 
+impl TextEditStep {
+    /// Keeps a later edit of the same origin from merging into this step.
+    fn seal(&mut self) {
+        if matches!(self.origin, TextEditOrigin::Typing | TextEditOrigin::Delete) {
+            self.origin = TextEditOrigin::Structural;
+        }
+    }
+}
+
 /// Undo journal for one editor.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct TextHistory {
@@ -137,16 +146,17 @@ impl TextHistory {
     /// it is the same origin. Moving the caret or changing focus does this:
     /// typing, arrowing away, then typing again is two steps.
     fn seal(&mut self) {
-        if let Some(last) = self.steps.last_mut()
-            && matches!(last.origin, TextEditOrigin::Typing | TextEditOrigin::Delete)
-        {
-            last.origin = TextEditOrigin::Structural;
+        if let Some(last) = self.steps.last_mut() {
+            last.seal();
         }
     }
 
+    /// Undo and redo end a merge run too: typing after an undo is a new
+    /// step, not more of the one the undo stepped back onto.
     fn undo(&mut self) -> Option<TextInputState> {
         let index = self.cursor.checked_sub(1)?;
         self.cursor = index;
+        self.seal_before_cursor();
         Some(self.steps[index].before.clone())
     }
 
@@ -154,7 +164,19 @@ impl TextHistory {
         let step = self.steps.get(self.cursor)?;
         let after = step.after.clone();
         self.cursor += 1;
+        self.seal_before_cursor();
         Some(after)
+    }
+
+    /// Seals the step the next edit would merge into.
+    fn seal_before_cursor(&mut self) {
+        if let Some(step) = self
+            .cursor
+            .checked_sub(1)
+            .and_then(|index| self.steps.get_mut(index))
+        {
+            step.seal();
+        }
     }
 
     fn can_undo(&self) -> bool {
@@ -430,9 +452,14 @@ mod editor_tests {
 
     #[test]
     fn left_and_right_collapse_a_selection_onto_its_edge() {
+        // Right lands on the anchor, the selection's end: on the side of the
+        // text it selected, as the collapse probed it.
         for (intent, landing) in [
-            (crate::TextCaretIntent::Left, 1),
-            (crate::TextCaretIntent::Right, 4),
+            (crate::TextCaretIntent::Left, crate::TextSelection::caret(1)),
+            (
+                crate::TextCaretIntent::Right,
+                crate::TextSelection::caret(4).with_affinity(crate::TextAffinity::Upstream),
+            ),
         ] {
             let mut cx = AppContext::new();
             let input = cx
@@ -448,7 +475,7 @@ mod editor_tests {
             );
             assert_eq!(
                 cx.world().text_input(input.stable_id()).unwrap().selection,
-                crate::TextSelection::caret(landing),
+                landing,
                 "{intent:?}"
             );
         }
@@ -907,6 +934,31 @@ mod tests {
         assert_eq!(
             history.undo().map(|s| s.value.to_string()),
             Some(String::new())
+        );
+    }
+
+    #[test]
+    fn typing_after_an_undo_is_a_step_of_its_own() {
+        let mut history = TextHistory::default();
+        record(&mut history, "", "abc", TextEditOrigin::Typing);
+        record(&mut history, "abc", "ab", TextEditOrigin::Delete);
+        history.undo();
+        record(&mut history, "abc", "abcd", TextEditOrigin::Typing);
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("abc".to_owned()),
+            "not back through the typing before the undo"
+        );
+
+        // After a redo, likewise.
+        let mut history = TextHistory::default();
+        record(&mut history, "", "ab", TextEditOrigin::Typing);
+        history.undo();
+        history.redo();
+        record(&mut history, "ab", "abc", TextEditOrigin::Typing);
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("ab".to_owned())
         );
     }
 

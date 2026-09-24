@@ -323,12 +323,16 @@ fn collapses_selection(selection: TextSelection, intent: TextCaretIntent, extend
 }
 
 /// A caret at `edge` of `selection`. On the focus it keeps the side the focus
-/// was drawn on (the end of a soft-wrapped line stays on that line); the
-/// other end has no side of its own.
+/// was drawn on (the end of a soft-wrapped line stays on that line); on the
+/// anchor, the side of the selection it bounds -- the end of a selection
+/// that stops at a soft wrap is on the line it covers, as
+/// [`EditorGeometry::collapse_edge`] probed it. `nana-text` lands the same.
 fn caret_at_edge(selection: TextSelection, edge: usize) -> TextSelection {
     let caret = TextSelection::caret(edge);
     if edge == selection.focus {
         caret.with_affinity(selection.affinity)
+    } else if edge == selection.ordered().end {
+        caret.with_affinity(crate::TextAffinity::Upstream)
     } else {
         caret
     }
@@ -682,10 +686,11 @@ impl AppContext {
         // 前进到区间末端再重映射：一次按键跨过整个覆盖区间，值偏移步进
         // 为一。折叠摘要上的同源既有卡死一并修复；点击命中与垂直移动
         // 保持钳制语义（to_value）。
+        let stepping = matches!(intent, TextCaretIntent::Right | TextCaretIntent::WordRight);
         let to_value_moved = |previous_focus: usize, moved: TextSelection| -> TextSelection {
             match &fold_view {
                 Some(view) => {
-                    let focus = if view.covers_display(moved.focus)
+                    let focus = if view.crosses_cover(moved.focus, stepping)
                         && view.value_of(moved.focus) == previous_focus
                     {
                         view.value_of_forward(moved.focus)
@@ -5144,6 +5149,25 @@ mod atom_tests {
             .unwrap();
         assert!(context.replace_focused_text(document, "x").unwrap());
         assert_eq!(context.world().text_input(node).unwrap().value, "abxcd");
+    }
+
+    #[test]
+    fn cutting_into_an_atom_puts_on_the_pasteboard_what_it_deletes() {
+        let value = "Hi [bob]!";
+        let (mut context, document, area, node) = focused_editor(value);
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                area.state.selection = TextSelection::new(0, 6);
+            })
+            .unwrap();
+        let cut = context.cut_focused_text(document).unwrap();
+        assert_eq!(context.world().text_input(node).unwrap().value, "!");
+        assert_eq!(
+            cut.as_deref(),
+            Some("Hi [bob]"),
+            "the whole chip, as deleted"
+        );
     }
 
     #[test]

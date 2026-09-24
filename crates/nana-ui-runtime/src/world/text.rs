@@ -816,12 +816,16 @@ impl TextDisplayView {
         offset > span.value_start && offset < span.value_end
     }
 
-    /// 显示偏移是否严格落在某个覆盖区间（折叠摘要 / inlay 插入文本）
-    /// 内部。区间内部没有 caret 边界：按 [`Self::value_of`] 会被钳回
-    /// 区间起点的值偏移。
-    pub fn covers_display(&self, display: usize) -> bool {
+    /// 右移落在这里时是否跨进了覆盖区间：严格落在折叠摘要 / inlay 插入
+    /// 文本内部（区间内部没有 caret 边界，按 [`Self::value_of`] 会被钳回
+    /// 区间起点的值偏移），或 `stepping` 时恰在 inlay 插入文本末端——
+    /// 单字素的标签一步就走到末端，同样映射回锚点，和起点相同。只有逐步
+    /// 向右的意图（Right / WordRight）算这一种：End 停在行尾 inlay 之后
+    /// 映射回锚点，本来就该停在那里。
+    pub fn crosses_cover(&self, display: usize, stepping: bool) -> bool {
         self.spans.iter().any(|span| {
-            display > span.display_start && display < span.display_start + span.display_len
+            span.crossed_at(display)
+                && (stepping || display < span.display_start + span.display_len)
         })
     }
 
@@ -832,9 +836,7 @@ impl TextDisplayView {
     /// 插入一并跨过）。非内部目标与 [`Self::value_of`] 一致。点击命中
     /// 与垂直移动保持钳制语义，不走本映射。
     pub fn value_of_forward(&self, display: usize) -> usize {
-        let Some(span) = self.spans.iter().find(|span| {
-            display > span.display_start && display < span.display_start + span.display_len
-        }) else {
+        let Some(span) = self.spans.iter().find(|span| span.crossed_at(display)) else {
             return self.value_of(display);
         };
         let mut end = span.display_start + span.display_len;
@@ -850,14 +852,25 @@ impl TextDisplayView {
                     }
                 }
                 // end 处是锚点字符（值偏移 = 锚点）：右移一步 = 锚点 +
-                // 该字符长度；锚点在文档末尾时无后续字符，回到锚点。
-                self.value_of(end) + self.value[end..].chars().next().map_or(0, char::len_utf8)
+                // 该字素簇长度（CRLF、带肤色的 emoji 不止一个 char）；
+                // 锚点在文档末尾时无后续字符，回到锚点。
+                let step = crate::text_editing::next_grapheme(&self.value, end)
+                    .map_or(0, |next| next - end);
+                self.value_of(end) + step
             }
         }
     }
 }
 
 impl TextDisplaySpan {
+    /// 显示偏移严格在区间内部，或（仅 inlay）恰在插入文本末端。
+    fn crossed_at(&self, display: usize) -> bool {
+        let end = self.display_start + self.display_len;
+        display > self.display_start
+            && (display < end
+                || (display == end && matches!(self.kind, TextDisplaySpanKind::Inlay)))
+    }
+
     /// 折叠形态的区间数据；插入型（inlay）片段返回 `None`。
     pub(crate) fn fold(&self) -> Option<crate::TextCodeFold> {
         match &self.kind {

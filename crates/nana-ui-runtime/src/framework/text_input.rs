@@ -405,7 +405,19 @@ impl AppContext {
         entity: Entity<C>,
     ) -> Option<String> {
         self.read(entity, |editable| {
-            let state = editable.state();
+            // What an edit of the selection would remove: a primary cutting
+            // into an atom takes the atom whole, so a cut puts on the
+            // pasteboard exactly what it deletes. A bare caret selects
+            // nothing to copy, wherever it sits.
+            let expanded = (!editable.state().selection.is_collapsed())
+                .then(|| atom_expanded_primary(editable))
+                .flatten()
+                .map(|primary| {
+                    let mut state = editable.state().clone();
+                    state.selection = primary;
+                    state
+                });
+            let state = expanded.as_ref().unwrap_or_else(|| editable.state());
             // Zed copy semantics: every selection's text, in document order,
             // joined with newlines. An empty set (bare carets only) reports
             // None so a copy never blanks the pasteboard.
@@ -566,9 +578,11 @@ impl AppContext {
             }
             editable.state_mut().selection = selection;
             editable.state_mut().normalize_selections();
+            // What the editor now holds: fusing with another cursor can
+            // have widened or turned it.
             cx.emit(TextChanged {
                 value: editable.state().value.clone(),
-                selection,
+                selection: editable.state().selection,
             });
             true
         })?;
@@ -609,15 +623,8 @@ impl AppContext {
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
         let changed = self.commit_editor_edit(entity, origin, |editable, _| {
-            let atoms =
-                crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
-            if !atoms.is_empty() {
-                let range = editable.state().selection.ordered();
-                let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
-                if expanded != range {
-                    editable.state_mut().selection =
-                        crate::TextSelection::new(expanded.start, expanded.end);
-                }
+            if let Some(expanded) = atom_expanded_primary(editable) {
+                editable.state_mut().selection = expanded;
             }
             if !editable.replace_selection(text) {
                 return false;
@@ -639,6 +646,18 @@ impl AppContext {
         }
         Ok(changed)
     }
+}
+
+/// The primary selection widened over every atom it cuts into, when it cuts
+/// into one: an edit replaces atoms whole ([`crate::TextAtomSpan`]).
+fn atom_expanded_primary<C: EditableText>(editable: &C) -> Option<crate::TextSelection> {
+    let atoms = crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
+    if atoms.is_empty() {
+        return None;
+    }
+    let range = editable.state().selection.ordered();
+    let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
+    (expanded != range).then(|| crate::TextSelection::new(expanded.start, expanded.end))
 }
 
 #[cfg(test)]

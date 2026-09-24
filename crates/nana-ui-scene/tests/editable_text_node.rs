@@ -867,3 +867,50 @@ fn left_and_right_collapse_a_selection_onto_its_visual_edge() {
         assert_eq!(fixture.selection().anchor, landing, "{intent:?} collapses");
     }
 }
+
+/// A selection that stops where a line soft-wraps ends on the line it
+/// covers: collapsing onto that end leaves the caret there, not at the start
+/// of the next line.
+#[test]
+fn collapsing_onto_a_selection_end_at_a_soft_wrap_stays_on_its_line() {
+    let text = "wrap ".repeat(200);
+    let mut fixture = Fixture::new(&text);
+    let document = fixture.document;
+    let step = |fixture: &mut Fixture, intent: TextCaretIntent| {
+        let Fixture {
+            runtime, shaper, ..
+        } = fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, false, Some(shaper))
+                .unwrap()
+        );
+        fixture.flush();
+    };
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .select_focused_text_range(document, 0, 0)
+            .unwrap()
+    );
+    fixture.settle();
+    // Runtime's LineEnd is logical; Down from the start lands on the wrap.
+    step(&mut fixture, TextCaretIntent::Down);
+    let wrap = fixture.selection().focus;
+    assert!(wrap > 0 && wrap < text.len(), "the first line wraps");
+    assert!(
+        fixture
+            .runtime
+            .context_mut()
+            .select_focused_text_range(document, wrap, wrap - 4)
+            .unwrap()
+    );
+    fixture.settle();
+    step(&mut fixture, TextCaretIntent::Right);
+    assert_eq!(
+        fixture.selection(),
+        TextSelection::caret(wrap).with_affinity(nana_ui_runtime::TextAffinity::Upstream)
+    );
+}

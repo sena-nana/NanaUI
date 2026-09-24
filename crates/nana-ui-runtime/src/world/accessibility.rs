@@ -244,10 +244,14 @@ impl UiWorld {
                 (role, _) => role,
             }
         };
-        let label = state
-            .label
-            .clone()
-            .or_else(|| (!text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str())));
+        let secure = matches!(
+            self.nodes.visual(id),
+            Some(StandardVisual::TextInput { secure: true, .. })
+        );
+        // A password field's text is its secret, not a name for it.
+        let label = state.label.clone().or_else(|| {
+            (!secure && !text_value.is_empty()).then(|| Arc::<str>::from(text_value.as_str()))
+        });
         let bounds = self.visible_accessibility_bounds(id, memo)?;
         Some(AccessibilityNode {
             id,
@@ -267,11 +271,7 @@ impl UiWorld {
             role,
             label,
             description: state.description.clone(),
-            value: if !visible
-                || matches!(
-                    self.nodes.visual(id),
-                    Some(StandardVisual::TextInput { secure: true, .. })
-                ) {
+            value: if !visible || secure {
                 None
             } else {
                 self.nodes
