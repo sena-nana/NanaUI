@@ -1400,15 +1400,18 @@ impl RuntimeInputAdapter {
         let Some(focused) = context.focused_text_editor(document) else {
             return Ok(false);
         };
-        // A numeric field steps on ArrowUp/ArrowDown and commits its draft on
-        // Enter; those keys fall through to its own routing.
-        if focused.is_numeric()
-            && !modifiers.control
-            && !modifiers.meta
-            && !modifiers.alt
-            && matches!(key, "ArrowUp" | "ArrowDown" | "Enter")
-        {
-            return Ok(false);
+        // A numeric field steps on plain ArrowUp/ArrowDown and commits its
+        // draft on Enter. Shift+ArrowUp/Down select like any single-line
+        // field; a step that cannot move (a bound, read-only) moves no caret.
+        if focused.is_numeric() && !modifiers.control && !modifiers.meta && !modifiers.alt {
+            match key {
+                "ArrowUp" | "ArrowDown" if !modifiers.shift => {
+                    let steps = if key == "ArrowUp" { 1 } else { -1 };
+                    return context.step_focused_number_input(document, steps);
+                }
+                "Enter" => return context.commit_focused_number_input(document),
+                _ => {}
+            }
         }
         // Arrow keys in the editor's line space (#59): a vertical editor's
         // Up/Down walk its column and Left/Right cross columns, with every
@@ -4531,6 +4534,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(textarea_selection(&context, node), ("12".into(), 1, 1));
+
+        // Shift+ArrowUp selects to the start like any single-line field.
+        assert!(
+            adapter
+                .dispatch(&mut context, document, &shift_key("ArrowUp"))
+                .unwrap()
+                .prevent_default
+        );
+        assert_eq!(textarea_selection(&context, node), ("12".into(), 1, 0));
+        assert_eq!(value(&context), 2.0, "a selecting key does not step");
+        adapter
+            .dispatch(&mut context, document, &plain_key("ArrowRight"))
+            .unwrap();
 
         // Ctrl+Z / Ctrl+Shift+Z walk the draft's history.
         adapter

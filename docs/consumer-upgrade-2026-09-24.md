@@ -44,6 +44,7 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
 - `TextSelection` is now an alias of `nana_text::EditSelection`. Fields, constructors and `ordered` / `is_valid_for` are unchanged; `EditSelection` also adds `range` / `is_collapsed`.
 - `ExtractedNode.ime` / `ExtractedNode.text_input` are removed and replaced by `editable: bool`. The scene only ever checked whether they were present.
 - `TextEditOrigin` gains `Cut`.
+- `AppContext::focused_text_editor` also reports a focused `NumberInput` (its draft). `FocusedTextEditor::is_numeric()` identifies it. A host that routes editor keys itself steps the field on plain ArrowUp/ArrowDown (`step_focused_number_input`) and commits it on Enter (`commit_focused_number_input`) instead of moving the caret or submitting. `RuntimeInputAdapter` already does this.
 
 ### nana-text
 
@@ -69,6 +70,12 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
   - A cut is its own step, and typing right after it no longer merges into it.
   - Inserting a snippet is one step, and the single-line length limit now applies to it.
 - **NumberInput IME:** committed and surrounding-deleted text goes through the component. Before, the next keystroke overwrote it.
+- **NumberInput editing:** the draft is a full editor.
+  - Undo and redo reach it. Stepping, committing (Enter or blur) and reverting (Escape) are each their own undo step. `set_number_value` and accessibility `SetValue` clear the history. Undo restores the draft only; the number is parsed again on the next commit.
+  - Left/Right, word deletes, Shift+ArrowUp/Down selection and pointer caret placement work in it. A press on the spinner places no caret.
+  - A read-only field's text can be selected and copied.
+  - Accessibility `Click` focuses it, `SetSelection` selects in the draft, and `SetValue` parses, snaps and clamps the text by the field's policy and commits it (emitting `NumberChanged`). Text that is not a number is refused. Before, all three returned `false`.
+  - `NumberChanged` is emitted only when the number moves. Before, `set_number_value` and a step emitted it whenever the draft was rewritten, even with the same number.
 - **Android:** the IME buffer is the session's committed text with the preedit in place of the selection it stands for (`display_text()`, not the masked or folded text the editor draws); before, the preedit was inserted next to the focus.
   - The selection and composing region cross to GameTextInput in UTF-16 code units, the Java side's indices. Before, UTF-8 byte offsets were passed through as they were, which put the IME's composing region and cursor in the wrong place in any non-ASCII text.
 - **Folding:** pressing Right across a collapsed fold leaves a caret, not a selection covering the hidden lines.

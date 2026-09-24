@@ -5,6 +5,9 @@ use super::*;
 impl AppContext {
     /// Publish a numeric value using the field's bounds and discrete or
     /// continuous policy; hosts do not reimplement numeric normalization.
+    ///
+    /// An application write, not the user's edit: the field's undo history
+    /// starts afresh, so undo cannot bring back a draft over this value.
     pub fn set_number_value(
         &mut self,
         entity: Entity<NumberInput>,
@@ -13,36 +16,76 @@ impl AppContext {
         if !value.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
-        self.update_component(entity, |input, cx| {
-            if !input.assign(value) {
-                return false;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
-        })
+        self.write_number(entity, TextEditOrigin::Program, |input| input.assign(value))
     }
 
     /// Commit a complete value given as text, as assistive technology sets
     /// one: parsed, clamped and snapped by the field's own policy, and
     /// written as the committed value rather than as a draft. Unparseable
-    /// text changes nothing. Like any program write of an editor's value, it
-    /// starts the field's undo history afresh.
+    /// text and fields that refuse input change nothing. Like
+    /// [`Self::set_number_value`], it starts the undo history afresh.
     pub(super) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
+        let parsed = self.read(entity, |input| {
+            input
+                .accepts_input()
+                .then(|| input.parse_text(text))
+                .flatten()
+        })?;
+        let Some(parsed) = parsed else {
+            return Ok(false);
+        };
+        self.write_number(entity, TextEditOrigin::Program, |input| {
+            input.assign(parsed)
+        })
+    }
+
+    /// Move a numeric field by step increments. Disabled and read-only fields
+    /// refuse, so a stepper press cannot bypass either flag. The rewritten
+    /// draft is its own undo step, so typing after a step does not merge
+    /// into the typing before it.
+    pub fn step_number_input(
+        &mut self,
+        entity: Entity<NumberInput>,
+        steps: i32,
+    ) -> Result<bool, FrameworkError> {
         if !self.read(entity, NumberInput::accepts_input)? {
             return Ok(false);
         }
-        let Some(parsed) = self.read(entity, |input| input.parse_text(text))? else {
-            return Ok(false);
-        };
-        let before = self.read(entity, NumberInput::value)?;
-        self.commit_editor_edit(entity, TextEditOrigin::Program, |input, cx| {
-            if !input.assign(parsed) {
+        self.write_number(entity, TextEditOrigin::Structural, |input| {
+            input.step_value(steps)
+        })
+    }
+
+    /// Parse the in-progress draft into the committed value. An unparseable
+    /// draft restores the last committed value and reports no change. The
+    /// normalized draft is its own undo step.
+    pub fn commit_number_input(
+        &mut self,
+        entity: Entity<NumberInput>,
+    ) -> Result<bool, FrameworkError> {
+        self.write_number(
+            entity,
+            TextEditOrigin::Structural,
+            NumberInput::commit_draft,
+        )
+    }
+
+    /// Rewrite a numeric field's draft through the undo journal, emitting
+    /// [`NumberChanged`] when the committed number moved. Returns whether the
+    /// field changed at all (a reformatted draft counts).
+    fn write_number(
+        &mut self,
+        entity: Entity<NumberInput>,
+        origin: TextEditOrigin,
+        write: impl FnOnce(&mut NumberInput) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        self.journal_editor_edit(entity, origin, |input, cx| {
+            let before = input.value();
+            if !write(input) {
                 return false;
             }
             if input.value() != before {
@@ -52,49 +95,6 @@ impl AppContext {
             }
             true
         })
-    }
-
-    /// Move a numeric field by step increments. Disabled and read-only fields
-    /// refuse, so a stepper press cannot bypass either flag.
-    pub fn step_number_input(
-        &mut self,
-        entity: Entity<NumberInput>,
-        steps: i32,
-    ) -> Result<bool, FrameworkError> {
-        if !self.read(entity, NumberInput::accepts_input)? {
-            return Ok(false);
-        }
-        self.update_component(entity, |input, cx| {
-            if !input.step_value(steps) {
-                return false;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
-        })
-    }
-
-    /// Parse the in-progress draft into the committed value. An unparseable
-    /// draft restores the last committed value and reports no change.
-    pub fn commit_number_input(
-        &mut self,
-        entity: Entity<NumberInput>,
-    ) -> Result<bool, FrameworkError> {
-        let before = self.read(entity, NumberInput::value)?;
-        let touched = self.update_component(entity, |input, cx| {
-            if !input.commit_draft() {
-                return false;
-            }
-            if input.value() == before {
-                return true;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
-        })?;
-        Ok(touched)
     }
 
     /// Step the focused numeric field, if any. Returns whether it moved.
@@ -129,7 +129,7 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
-        self.update_component(entity, |input, _| {
+        self.write_number(entity, TextEditOrigin::Structural, |input| {
             let committed = input.formatted_value();
             if input.state.value == committed {
                 return false;

@@ -1637,6 +1637,53 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
         None
     );
 
+    // Focused, a press on the spinner places no caret; one on the text does.
+    assert!(context.focus_node(document, input.stable_id()).unwrap());
+    let caret = |context: &AppContext| {
+        context
+            .world()
+            .text_input(input.stable_id())
+            .unwrap()
+            .selection
+    };
+    let before = caret(&context);
+    for (x, y) in [(up_x, up_y), (down_x, down_y)] {
+        assert!(
+            !context
+                .text_editor_pointer_press(
+                    document,
+                    input.stable_id(),
+                    1,
+                    x,
+                    y,
+                    false,
+                    false,
+                    std::time::Duration::ZERO,
+                    &mut crate::MeasureTextShaper,
+                )
+                .unwrap()
+        );
+        assert_eq!(caret(&context), before);
+    }
+    context.text_editor_pointer_release(1);
+    assert!(
+        context
+            .text_editor_pointer_press(
+                document,
+                input.stable_id(),
+                1,
+                0.0,
+                16.0,
+                false,
+                false,
+                std::time::Duration::from_secs(1),
+                &mut crate::MeasureTextShaper,
+            )
+            .unwrap()
+    );
+    assert_eq!(caret(&context), TextSelection::caret(0));
+    context.text_editor_pointer_release(1);
+
     assert!(
         context
             .press_number_stepper(input.stable_id(), up_x, up_y)
@@ -1799,7 +1846,8 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
         AccessibilityAction::SetSelection(TextSelection::new(0, 99))
     ));
 
-    // A read-only field refuses SetValue.
+    // A read-only field refuses SetValue but still selects, so its text can
+    // be copied.
     context
         .update_component(input, |input, _| input.read_only = true)
         .unwrap();
@@ -1811,6 +1859,10 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
         context.read(input, crate::NumberInput::value).unwrap(),
         10.0
     );
+    assert!(act(
+        &mut context,
+        AccessibilityAction::SetSelection(TextSelection::new(0, 4))
+    ));
 }
 
 #[test]

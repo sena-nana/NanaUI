@@ -2508,25 +2508,89 @@ impl AppContext {
         kind: TextEditorKind,
     ) -> Result<TextInputState, FrameworkError> {
         match kind {
-            TextEditorKind::Area => self
-                .view_entity::<TextArea>(node)
-                .and_then(|entity| self.read(entity, |area: &TextArea| area.state.clone()).ok())
-                .ok_or(FrameworkError::MissingView(node)),
-            TextEditorKind::Field => self
-                .view_entity::<TextInput>(node)
-                .and_then(|entity| {
-                    self.read(entity, |field: &TextInput| field.state.clone())
-                        .ok()
-                })
-                .ok_or(FrameworkError::MissingView(node)),
-            TextEditorKind::Number => self
-                .view_entity::<NumberInput>(node)
-                .and_then(|entity| {
-                    self.read(entity, |field: &NumberInput| field.state.clone())
-                        .ok()
-                })
-                .ok_or(FrameworkError::MissingView(node)),
+            TextEditorKind::Area => self.editor_state_of::<TextArea>(node),
+            TextEditorKind::Field => self.editor_state_of::<TextInput>(node),
+            TextEditorKind::Number => self.editor_state_of::<NumberInput>(node),
         }
+    }
+
+    fn editor_state_of<C: EditableText>(
+        &self,
+        node: StableNodeId,
+    ) -> Result<TextInputState, FrameworkError> {
+        self.view_entity::<C>(node)
+            .and_then(|entity| {
+                self.read(entity, |editable: &C| editable.state().clone())
+                    .ok()
+            })
+            .ok_or(FrameworkError::MissingView(node))
+    }
+
+    /// Change an editor's state in place without an edit: selection moves.
+    /// `update` reports whether anything changed.
+    fn update_editor_state(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        update: impl FnOnce(&mut TextInputState) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        match kind {
+            TextEditorKind::Area => self.update_editor_state_of::<TextArea>(node, update),
+            TextEditorKind::Field => self.update_editor_state_of::<TextInput>(node, update),
+            TextEditorKind::Number => self.update_editor_state_of::<NumberInput>(node, update),
+        }
+    }
+
+    fn update_editor_state_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        update: impl FnOnce(&mut TextInputState) -> bool,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(Entity::<C>::from_stable_id(node), |editable: &mut C, _| {
+            update(editable.state_mut())
+        })
+    }
+
+    /// Replace an editor's whole state as one journaled edit. Editors that
+    /// refuse input, or the value (a length limit), decline it. Undo and
+    /// redo skip the value check: they restore states the journal already
+    /// took.
+    pub(super) fn replace_editor_state(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        origin: crate::TextEditOrigin,
+        next: TextInputState,
+    ) -> Result<bool, FrameworkError> {
+        match kind {
+            TextEditorKind::Area => self.replace_editor_state_of::<TextArea>(node, origin, next),
+            TextEditorKind::Field => self.replace_editor_state_of::<TextInput>(node, origin, next),
+            TextEditorKind::Number => {
+                self.replace_editor_state_of::<NumberInput>(node, origin, next)
+            }
+        }
+    }
+
+    fn replace_editor_state_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        origin: crate::TextEditOrigin,
+        next: TextInputState,
+    ) -> Result<bool, FrameworkError> {
+        self.commit_editor_edit(
+            Entity::<C>::from_stable_id(node),
+            origin,
+            move |editable: &mut C, _| {
+                if !editable.accepts_input()
+                    || (origin != crate::TextEditOrigin::History
+                        && !editable.accepts_edit_value(&next.value))
+                {
+                    return false;
+                }
+                *editable.state_mut() = next;
+                true
+            },
+        )
     }
 
     fn write_editor_selection(
@@ -2538,43 +2602,16 @@ impl AppContext {
         // 光标落在折叠隐藏区间内 → 该折叠自动展开（reveal 语义；查找导航
         // 跳转也经由此路径展开）。
         self.unfold_text_folds_containing(node, &[selection.focus])?;
-        let changed = match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, _| {
-                    if area.state.selection == selection {
-                        return false;
-                    }
-                    area.state.selection = selection;
-                    // The session fuses a primary that lands on another
-                    // cursor; so does the component, or the two disagree.
-                    area.state.normalize_selections();
-                    true
-                })
+        let changed = self.update_editor_state(node, kind, |state| {
+            if state.selection == selection {
+                return false;
             }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, _| {
-                    if field.state.selection == selection {
-                        return false;
-                    }
-                    field.state.selection = selection;
-                    field.state.normalize_selections();
-                    true
-                })
-            }
-            TextEditorKind::Number => {
-                let entity = Entity::<NumberInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut NumberInput, _| {
-                    if field.state.selection == selection {
-                        return false;
-                    }
-                    field.state.selection = selection;
-                    field.state.normalize_selections();
-                    true
-                })
-            }
-        }?;
+            state.selection = selection;
+            // The session fuses a primary that lands on another cursor; so
+            // does the component, or the two disagree.
+            state.normalize_selections();
+            true
+        })?;
         if changed {
             self.seal_editor_history(node);
         }
@@ -2597,65 +2634,16 @@ impl AppContext {
             .chain(additional.iter().map(|selection| selection.focus))
             .collect();
         self.unfold_text_folds_containing(node, &focuses)?;
-        let changed = match kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, _| {
-                    if area.state.selection == selection
-                        && area.state.additional_selections == additional
-                    {
-                        return false;
-                    }
-                    let previous = (
-                        area.state.selection,
-                        area.state.additional_selections.clone(),
-                    );
-                    area.state.selection = selection;
-                    area.state.additional_selections = additional;
-                    area.state.normalize_selections();
-                    previous.0 != area.state.selection
-                        || previous.1 != area.state.additional_selections
-                })
+        let changed = self.update_editor_state(node, kind, |state| {
+            if state.selection == selection && state.additional_selections == additional {
+                return false;
             }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, _| {
-                    if field.state.selection == selection
-                        && field.state.additional_selections == additional
-                    {
-                        return false;
-                    }
-                    let previous = (
-                        field.state.selection,
-                        field.state.additional_selections.clone(),
-                    );
-                    field.state.selection = selection;
-                    field.state.additional_selections = additional;
-                    field.state.normalize_selections();
-                    previous.0 != field.state.selection
-                        || previous.1 != field.state.additional_selections
-                })
-            }
-            TextEditorKind::Number => {
-                let entity = Entity::<NumberInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut NumberInput, _| {
-                    if field.state.selection == selection
-                        && field.state.additional_selections == additional
-                    {
-                        return false;
-                    }
-                    let previous = (
-                        field.state.selection,
-                        field.state.additional_selections.clone(),
-                    );
-                    field.state.selection = selection;
-                    field.state.additional_selections = additional;
-                    field.state.normalize_selections();
-                    previous.0 != field.state.selection
-                        || previous.1 != field.state.additional_selections
-                })
-            }
-        }?;
+            let previous = (state.selection, state.additional_selections.clone());
+            state.selection = selection;
+            state.additional_selections = additional;
+            state.normalize_selections();
+            previous.0 != state.selection || previous.1 != state.additional_selections
+        })?;
         if changed {
             self.seal_editor_history(node);
         }
@@ -2780,63 +2768,13 @@ impl AppContext {
         } else {
             (value, selection, None)
         };
-        if matches!(kind, TextEditorKind::Field)
-            && !self.read(Entity::<TextInput>::from_stable_id(node), |field| {
-                field.accepts_edit_value(&value)
-            })?
-        {
-            return Ok(false);
-        }
         let mut next = TextInputState {
             value,
             selection,
             additional_selections: additional,
         };
         next.normalize_selections();
-        let (value, selection, additional) =
-            (next.value, next.selection, next.additional_selections);
-        let write = move |state: &mut crate::TextInputState| {
-            state.value = value;
-            state.selection = selection;
-            state.additional_selections = additional;
-        };
-        let changed = match kind {
-            TextEditorKind::Area => self.commit_editor_edit(
-                Entity::<TextArea>::from_stable_id(node),
-                origin,
-                move |area: &mut TextArea, _| {
-                    if !area.accepts_input() {
-                        return false;
-                    }
-                    write(&mut area.state);
-                    true
-                },
-            ),
-            TextEditorKind::Field => self.commit_editor_edit(
-                Entity::<TextInput>::from_stable_id(node),
-                origin,
-                move |field: &mut TextInput, _| {
-                    if !field.accepts_input() {
-                        return false;
-                    }
-                    write(&mut field.state);
-                    true
-                },
-            ),
-            // The draft is free text: the number is parsed from it on commit,
-            // not filtered keystroke by keystroke.
-            TextEditorKind::Number => self.commit_editor_edit(
-                Entity::<NumberInput>::from_stable_id(node),
-                origin,
-                move |field: &mut NumberInput, _| {
-                    if !field.accepts_input() {
-                        return false;
-                    }
-                    write(&mut field.state);
-                    true
-                },
-            ),
-        }?;
+        let changed = self.replace_editor_state(node, kind, origin, next)?;
         if changed && let Some(session) = linked_session {
             let mut mutations = MutationQueue::new();
             mutations.set_text_input_snippet(node, Some(session));

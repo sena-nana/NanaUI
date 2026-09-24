@@ -264,14 +264,28 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        let before = self.read(entity, |editable: &C| editable.state().clone())?;
-        let changed = self.update_component(entity, |editable: &mut C, cx| {
+        self.journal_editor_edit(entity, origin, |editable, cx| {
             if !apply(editable, cx) {
                 return false;
             }
             cx.emit(editable.change());
             true
-        })?;
+        })
+    }
+
+    /// [`Self::commit_editor_edit`] without the text change event, for a
+    /// write whose component reports it in its own terms: a `NumberInput`
+    /// step, commit or revert rewrites the draft and emits `NumberChanged`
+    /// when the number moves. The journal still records it, so undo and the
+    /// typing runs around it stay in step with the text.
+    pub(super) fn journal_editor_edit<C: super::EditableText>(
+        &mut self,
+        entity: crate::Entity<C>,
+        origin: TextEditOrigin,
+        apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        let before = self.read(entity, |editable: &C| editable.state().clone())?;
+        let changed = self.update_component(entity, apply)?;
         if !changed {
             return Ok(false);
         }
@@ -323,36 +337,10 @@ impl crate::AppContext {
         }) else {
             return Ok(false);
         };
-        // `History` keeps the restore from becoming a step of its own.
-        let restore = move |state: &mut crate::TextInputState| *state = target;
-        match focused.kind {
-            super::text_edit::TextEditorKind::Area => self.commit_editor_edit(
-                crate::Entity::<crate::TextArea>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |area: &mut crate::TextArea, _| {
-                    restore(&mut area.state);
-                    true
-                },
-            ),
-            super::text_edit::TextEditorKind::Field => self.commit_editor_edit(
-                crate::Entity::<crate::TextInput>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |field: &mut crate::TextInput, _| {
-                    restore(&mut field.state);
-                    true
-                },
-            ),
-            // Restores the draft; the committed number follows on Enter or
-            // blur, as it does after typing.
-            super::text_edit::TextEditorKind::Number => self.commit_editor_edit(
-                crate::Entity::<crate::NumberInput>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |field: &mut crate::NumberInput, _| {
-                    restore(&mut field.state);
-                    true
-                },
-            ),
-        }
+        // `History` keeps the restore from becoming a step of its own. A
+        // `NumberInput` gets its draft back; the committed number follows on
+        // Enter or blur, as it does after typing.
+        self.replace_editor_state(node, focused.kind, TextEditOrigin::History, target)
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -498,6 +486,87 @@ mod editor_tests {
             assert!(cx.commit_focused_number_input(document()).unwrap());
             assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 42.0);
         }
+    }
+
+    fn focused_number(
+        cx: &mut AppContext,
+        input: crate::NumberInput,
+    ) -> crate::Entity<crate::NumberInput> {
+        let input = cx.create_component(document(), input).unwrap();
+        cx.focus_node(document(), input.stable_id()).unwrap();
+        input
+    }
+
+    fn draft_of(cx: &AppContext, input: crate::Entity<crate::NumberInput>) -> String {
+        cx.read(input, |input| input.state.value.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_number_step_is_its_own_undo_step_between_typing_runs() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(2.0));
+        cx.replace_focused_text(document(), "1").unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        cx.replace_focused_text(document(), "4").unwrap();
+        assert_eq!(draft_of(&cx, input), "34");
+
+        // Typing after the step does not merge into the typing before it.
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "3");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "21");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "2");
+        for draft in ["21", "3", "34"] {
+            assert!(cx.redo_focused_text(document()).unwrap());
+            assert_eq!(draft_of(&cx, input), draft);
+        }
+    }
+
+    #[test]
+    fn committing_and_reverting_a_number_draft_are_undo_steps() {
+        let mut cx = AppContext::new();
+        let input = focused_number(
+            &mut cx,
+            crate::NumberInput::new(1.0)
+                .range(0.0, 10.0)
+                .step(0.5)
+                .precision(1),
+        );
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "7.3").unwrap();
+        assert!(cx.commit_focused_number_input(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.5");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.3", "undo takes back the snap");
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.5", "redo brings the snapped draft");
+
+        cx.replace_focused_text(document(), "9").unwrap();
+        assert!(cx.revert_focused_number_input(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.5");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            draft_of(&cx, input),
+            "7.59",
+            "undo takes back the revert alone"
+        );
+    }
+
+    #[test]
+    fn an_application_number_write_clears_the_draft_history() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        cx.replace_focused_text(document(), "5").unwrap();
+        assert!(cx.can_undo_text(input.stable_id()));
+        assert!(cx.set_number_value(input, 50.0).unwrap());
+        assert!(
+            !cx.can_undo_text(input.stable_id()),
+            "undo must not bring a draft back over the application's value"
+        );
+        assert!(!cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "50");
     }
 
     #[test]

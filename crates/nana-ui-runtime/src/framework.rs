@@ -99,6 +99,11 @@ trait EditableText: ComponentView {
     fn text_atoms(&self) -> &[crate::TextAtomSpan] {
         &[]
     }
+    /// Whether a whole-value edit may land. `TextInput` enforces its length
+    /// limit here; editors without a limit accept every value.
+    fn accepts_edit_value(&self, _value: &str) -> bool {
+        true
+    }
     /// IME commit path: replace only the primary selection's text. This is
     /// the documented multi-cursor IME restriction — composition commits to
     /// the primary cursor alone and other cursors survive via offset
@@ -169,6 +174,10 @@ impl EditableText for TextInput {
         self.commit_limited_ime(text)
     }
 
+    fn accepts_edit_value(&self, value: &str) -> bool {
+        TextInput::accepts_edit_value(self, value)
+    }
+
     fn state(&self) -> &TextInputState {
         &self.state
     }
@@ -187,6 +196,10 @@ impl EditableText for NumberInput {
 
     fn accepts_input(&self) -> bool {
         self.accepts_input()
+    }
+    /// A read-only field's draft still selects, so its text can be copied.
+    fn accepts_selection(&self) -> bool {
+        !self.disabled
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {
