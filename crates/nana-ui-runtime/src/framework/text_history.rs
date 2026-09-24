@@ -7,6 +7,17 @@
 //! *all* edits live there once instead of in each caller: emitting the change
 //! event, refusing a read-only editor, and recording undo.
 //!
+//! An application can also replace an editor's value without that path, by
+//! writing the component: `update_component`, `set_component`, or a keyed
+//! reconcile. When the value such a write commits differs from the text the
+//! editor holds, the commit treats it as a [`TextEditOrigin::Program`] edit
+//! and clears that editor's journal, so undo after loading another document
+//! does not walk back into the previous one. A write that hands back the
+//! value the editor itself produced — the buffer from its change event, or
+//! the same text rebuilt — is not a replacement and leaves the journal alone.
+//! Rebinding an editor to another object whose text happens to be identical
+//! changes no value; call [`crate::AppContext::clear_text_history`] for that.
+//!
 //! Composition is deliberately invisible here. IME preedit lives in the
 //! world's `ime` slot, not in the editor's value, so the journal never sees
 //! the half-typed states of a composition — only the commit, as one step.
@@ -192,6 +203,10 @@ impl TextHistory {
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
+    /// The editor [`crate::AppContext::commit_editor_edit`] is writing. Its
+    /// value reaches the world through the same commit an application write
+    /// does; this is how the commit tells the two apart.
+    editing: Option<StableNodeId>,
 }
 
 impl TextHistories {
@@ -230,6 +245,16 @@ impl TextHistories {
         self.entries.get(&node).is_some_and(TextHistory::can_redo)
     }
 
+    /// Whether `node` has a journal an outside write would invalidate: one
+    /// with a step in it, and not the editor an edit is writing right now.
+    fn replaceable(&self, node: StableNodeId) -> bool {
+        self.editing != Some(node)
+            && self
+                .entries
+                .get(&node)
+                .is_some_and(|history| !history.steps.is_empty())
+    }
+
     /// Releases the journal of a node that no longer exists.
     pub(super) fn forget(&mut self, node: StableNodeId) {
         self.entries.remove(&node);
@@ -250,6 +275,45 @@ impl crate::AppContext {
         Ok(())
     }
 
+    /// Editors whose value `mutations` replaces with different text from
+    /// outside [`Self::commit_editor_edit`]: the application writing the
+    /// component through `update_component`, `set_component` or a keyed
+    /// reconcile. Read before the commit, while the world still holds the
+    /// value being replaced.
+    ///
+    /// A component that hands back the value the editor produced carries the
+    /// session's own buffer, so the comparison settles on identity without
+    /// reading the text.
+    pub(super) fn replaced_editor_values(
+        &self,
+        mutations: &crate::MutationQueue,
+    ) -> Vec<StableNodeId> {
+        mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetTextInput {
+                    id,
+                    state: Some(state),
+                } if self.text_histories.replaceable(*id) => self
+                    .world
+                    .text_input(*id)
+                    .filter(|current| current.value_shared() != state.value)
+                    .map(|_| *id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Clears the journals of editors an application write replaced, as a
+    /// [`TextEditOrigin::Program`] edit does: the new value is not a step the
+    /// user took, and the old one is not something to undo back into.
+    pub(super) fn clear_replaced_editor_histories(&mut self, replaced: Vec<StableNodeId>) {
+        for node in replaced {
+            self.text_histories.forget(node);
+        }
+    }
+
     /// The single place an editor's text state changes.
     ///
     /// `apply` mutates the component; everything that must happen for *every*
@@ -265,14 +329,18 @@ impl crate::AppContext {
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
+        // An observer of this change may edit another editor: restore, not
+        // clear, the marker it set.
+        let outer = self.text_histories.editing.replace(entity.stable_id());
         let changed = self.update_component(entity, |editable: &mut C, cx| {
             if !apply(editable, cx) {
                 return false;
             }
             cx.emit(editable.change());
             true
-        })?;
-        if !changed {
+        });
+        self.text_histories.editing = outer;
+        if !changed? {
             return Ok(false);
         }
         let after = self.read(entity, |editable: &C| editable.state().clone())?;
@@ -790,6 +858,59 @@ mod editor_tests {
             "undo must not walk back into the previous document"
         );
         assert_eq!(value_of(&cx, area), "loaded from disk");
+    }
+
+    #[test]
+    fn an_application_writing_a_new_value_into_the_component_clears_the_journal() {
+        for write in ["set_component", "update_component"] {
+            let mut cx = AppContext::new();
+            let area = focused_area(&mut cx, "");
+            cx.replace_focused_text(document(), "draft").unwrap();
+            cx.move_focused_text_caret(document(), crate::TextCaretIntent::Left, false, None)
+                .unwrap();
+            cx.replace_focused_text(document(), "!").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap());
+            assert!(cx.can_undo_text(area.stable_id()));
+            assert!(cx.can_redo_text(area.stable_id()));
+
+            // Loading another document by rebuilding the component.
+            if write == "set_component" {
+                cx.set_component(area, TextArea::new("loaded from disk"))
+                    .unwrap();
+            } else {
+                cx.update_component(area, |area, _| {
+                    area.state = crate::TextInputState::new("loaded from disk");
+                })
+                .unwrap();
+            }
+            assert!(!cx.can_undo_text(area.stable_id()), "{write}");
+            assert!(!cx.can_redo_text(area.stable_id()), "{write}");
+            assert!(!cx.undo_focused_text(document()).unwrap(), "{write}");
+            assert_eq!(value_of(&cx, area), "loaded from disk", "{write}");
+
+            // The new document's own edits undo as usual.
+            cx.replace_focused_text(document(), "x").unwrap();
+            assert!(cx.undo_focused_text(document()).unwrap(), "{write}");
+            assert_eq!(value_of(&cx, area), "loaded from disk", "{write}");
+        }
+    }
+
+    #[test]
+    fn an_application_writing_back_the_editors_own_value_keeps_the_journal() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "draft").unwrap();
+        // The component rebuilt from what the editor reported: its own buffer,
+        // then the same text in a fresh one.
+        let reported = cx.read(area, |area| area.state.value.clone()).unwrap();
+        cx.update_component(area, |area, _| {
+            area.state.value = reported;
+            area.placeholder = "Notes".into();
+        })
+        .unwrap();
+        cx.set_component(area, TextArea::new("draft")).unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
     }
 
     #[test]
