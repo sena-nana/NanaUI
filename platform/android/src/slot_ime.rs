@@ -117,6 +117,33 @@ pub fn ime_events_from_buffer_delta(
 }
 
 impl SlotImeBuffer {
+    /// A buffer as GameTextInput reports it: the selection and composing
+    /// region are Java `String` indices, UTF-16 code units, which this
+    /// buffer keeps as UTF-8 byte offsets of `text`.
+    pub fn from_utf16(
+        text: String,
+        selection: (usize, usize),
+        compose: Option<(usize, usize)>,
+    ) -> Self {
+        let byte = |index| utf16_index_to_byte(&text, index);
+        Self {
+            selection_start: byte(selection.0),
+            selection_end: byte(selection.1),
+            compose: compose.map(|(start, end)| (byte(start), byte(end))),
+            text,
+        }
+    }
+
+    /// The selection and composing region as GameTextInput takes them back:
+    /// UTF-16 code units ([`Self::from_utf16`]).
+    pub fn utf16_spans(&self) -> ((usize, usize), Option<(usize, usize)>) {
+        let unit = |offset| byte_to_utf16_index(&self.text, offset);
+        (
+            (unit(self.selection_start), unit(self.selection_end)),
+            self.compose.map(|(start, end)| (unit(start), unit(end))),
+        )
+    }
+
     fn clamped(&self) -> Self {
         let selection_start = floor_boundary(&self.text, self.selection_start.min(self.text.len()));
         let selection_end = floor_boundary(&self.text, self.selection_end.min(self.text.len()));
@@ -217,6 +244,28 @@ fn committed_edit_events(previous: &SlotImeBuffer, next: &SlotImeBuffer) -> Vec<
     events
 }
 
+/// The byte offset of the `index`-th UTF-16 code unit of `text`. An index
+/// inside a surrogate pair floors to that character; past the end, the end.
+fn utf16_index_to_byte(text: &str, index: usize) -> usize {
+    let mut units = 0;
+    for (byte, character) in text.char_indices() {
+        units += character.len_utf16();
+        if units > index {
+            return byte;
+        }
+    }
+    text.len()
+}
+
+/// UTF-16 code units before byte `offset` of `text`, floored onto a
+/// character boundary.
+fn byte_to_utf16_index(text: &str, offset: usize) -> usize {
+    text[..floor_boundary(text, offset)]
+        .chars()
+        .map(char::len_utf16)
+        .sum()
+}
+
 fn floor_boundary(text: &str, index: usize) -> usize {
     let index = index.min(text.len());
     if text.is_char_boundary(index) {
@@ -273,6 +322,24 @@ mod tests {
             selection_end: caret,
             compose,
         }
+    }
+
+    #[test]
+    fn java_indices_are_utf16_code_units_and_the_buffer_counts_bytes() {
+        // "a你😀d": a = 1 unit / 1 byte, 你 = 1 / 3, 😀 = 2 / 4.
+        let text = "a\u{4F60}\u{1F600}d";
+        let buffer = SlotImeBuffer::from_utf16(text.to_owned(), (4, 4), Some((1, 4)));
+        assert_eq!((buffer.selection_start, buffer.selection_end), (8, 8));
+        assert_eq!(buffer.compose, Some((1, 8)));
+        assert_eq!(buffer.compose_text().as_deref(), Some("\u{4F60}\u{1F600}"));
+        assert_eq!(buffer.utf16_spans(), ((4, 4), Some((1, 4))));
+        // An index inside the surrogate pair floors onto the emoji; one past
+        // the end clamps to it.
+        let inside = SlotImeBuffer::from_utf16(text.to_owned(), (3, 9), None);
+        assert_eq!(
+            (inside.selection_start, inside.selection_end),
+            (4, text.len())
+        );
     }
 
     #[test]

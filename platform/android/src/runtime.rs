@@ -548,23 +548,22 @@ pub fn run(app: AndroidApp) -> Result<(), String> {
     Ok(())
 }
 
+/// GameTextInput hands the Java side's spans through unconverted: UTF-16
+/// code units, not the byte offsets the buffer keeps.
 fn slot_ime_buffer_from_android(state: &TextInputState) -> SlotImeBuffer {
-    SlotImeBuffer {
-        text: state.text.clone(),
-        selection_start: state.selection.start,
-        selection_end: state.selection.end,
-        compose: state.compose_region.map(|span| (span.start, span.end)),
-    }
+    SlotImeBuffer::from_utf16(
+        state.text.clone(),
+        (state.selection.start, state.selection.end),
+        state.compose_region.map(|span| (span.start, span.end)),
+    )
 }
 
 fn set_text_input_state(app: &AndroidApp, buffer: &SlotImeBuffer) {
+    let ((start, end), compose) = buffer.utf16_spans();
     app.set_text_input_state(TextInputState {
         text: buffer.text.clone(),
-        selection: TextSpan {
-            start: buffer.selection_start,
-            end: buffer.selection_end,
-        },
-        compose_region: buffer.compose.map(|(start, end)| TextSpan { start, end }),
+        selection: TextSpan { start, end },
+        compose_region: compose.map(|(start, end)| TextSpan { start, end }),
     });
 }
 

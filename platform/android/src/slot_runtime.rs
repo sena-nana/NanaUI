@@ -344,7 +344,8 @@ impl SlotRuntime {
         self.dispatch_ime_event(&ImeEvent::Disabled)
     }
 
-    /// GameTextInput mirror of the focused editor (committed text + preedit).
+    /// GameTextInput mirror of the focused editor (committed text + preedit),
+    /// in byte offsets; [`SlotImeBuffer::utf16_spans`] is what goes to Java.
     pub fn ime_buffer(&self) -> Option<SlotImeBuffer> {
         let document = self.document.document();
         let (target, state) = self.document.context().focused_text_input(document)?;
@@ -959,6 +960,11 @@ mod tests {
         assert_eq!(
             (buffer.selection_start, buffer.selection_end),
             (1 + "你".len(), 1 + "你".len())
+        );
+        assert_eq!(
+            buffer.utf16_spans(),
+            ((2, 2), Some((1, 2))),
+            "and in the Java side's UTF-16 units"
         );
         assert_eq!(slot.input_value(), "abcd", "nothing committed");
     }
