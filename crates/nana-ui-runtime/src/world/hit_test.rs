@@ -566,7 +566,8 @@ pub(super) fn then_hit(
     let ng = lg * ra + lh * rb + rg;
     let nh = lg * rc + lh * rd + rh;
     let ni = lg * re + lh * rf + 1.0;
-    if !ni.is_finite() || ni.abs() < 1e-8 {
+    // Match scene composition and WGSL f32/FMA rounding at the singular edge.
+    if !ni.is_finite() || ni.abs() < 1e-6 {
         return (IDENTITY_AFFINE, [0.0, 0.0]);
     }
     let inv = 1.0 / ni;

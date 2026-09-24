@@ -486,7 +486,7 @@ mod tests {
     use std::time::Duration;
 
     use nana_ui_core::{
-        LayoutStyle, PaintTransform,
+        LayoutStyle, PaintMat4, PaintTransform,
         motion::{
             AnimatableProperty, DecayParams, Easing, Keyframe, MotionCurve, MotionHandle,
             MotionSample, MotionTo, MotionTrack, MotionValue, SpringParams, StepJump,
@@ -497,7 +497,7 @@ mod tests {
         AnimationId, AnimationSpec, ComputedStyle, DocumentId, ExtractedNode, LayoutBox,
         MutationQueue, NodeKind, NodeStyle, StableNodeId, UiWorld,
     };
-    use nana_ui_scene::UiScene;
+    use nana_ui_scene::{AffineTransform, UiScene};
 
     use super::super::{
         ScenePaintViewport, SceneWgpuPainter,
@@ -511,6 +511,164 @@ mod tests {
 
     fn id(value: u64) -> StableNodeId {
         StableNodeId::new(value).unwrap()
+    }
+
+    fn projective_motion_fixture_with_target(
+        now: Duration,
+        target: PaintTransform,
+    ) -> (UiWorld, UiScene, UiScene, MotionHandle, MotionValue) {
+        let projective = PaintMat4::perspective(800.0)
+            .expect("perspective")
+            .then(PaintMat4::rotate_y(30_f32.to_radians()));
+        projective_motion_fixture_with_target_and_base(now, target, projective)
+    }
+
+    fn projective_motion_fixture_with_target_and_base(
+        now: Duration,
+        target: PaintTransform,
+        projective: PaintMat4,
+    ) -> (UiWorld, UiScene, UiScene, MotionHandle, MotionValue) {
+        projective_motion_fixture_with_range_and_base(
+            now,
+            PaintTransform::default(),
+            target,
+            projective,
+        )
+    }
+
+    fn projective_motion_fixture_with_range_and_base(
+        now: Duration,
+        from: PaintTransform,
+        target: PaintTransform,
+        projective: PaintMat4,
+    ) -> (UiWorld, UiScene, UiScene, MotionHandle, MotionValue) {
+        let parent = id(1);
+        let node = id(2);
+        let spec = AnimationSpec::new(
+            AnimationId::new(1).unwrap(),
+            node,
+            Duration::ZERO,
+            Duration::from_millis(400),
+            Duration::from_millis(16),
+            Easing::Linear,
+        )
+        .with_property(AnimatableProperty::Transform)
+        .with_range(
+            MotionValue::Transform(from),
+            MotionTo::Value(MotionValue::Transform(target)),
+        );
+        let mut world = UiWorld::new();
+        let mut queue = MutationQueue::new();
+        queue.create(parent, DocumentId::new(1).unwrap(), NodeKind::Document);
+        queue.create(
+            node,
+            DocumentId::new(1).unwrap(),
+            NodeKind::Element { tag: "div".into() },
+        );
+        queue.insert(parent, node, None);
+        queue.write_layout(
+            parent,
+            LayoutBox {
+                x: 0.0,
+                y: 0.0,
+                width: 128.0,
+                height: 96.0,
+            },
+        );
+        queue.write_layout(
+            node,
+            LayoutBox {
+                x: 20.0,
+                y: 20.0,
+                width: 48.0,
+                height: 32.0,
+            },
+        );
+        queue.set_style(
+            parent,
+            NodeStyle {
+                layout: std::sync::Arc::new(LayoutStyle {
+                    transform_3d: Some(projective),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.set_style(
+            node,
+            NodeStyle {
+                layout: std::sync::Arc::new(LayoutStyle {
+                    background: Some([1.0, 0.0, 0.0, 1.0]),
+                    transform_origin: Some(nana_ui_core::TransformOrigin {
+                        x: nana_ui_core::LengthSpec::Percent(25.0),
+                        y: nana_ui_core::LengthSpec::Percent(75.0),
+                    }),
+                    ..LayoutStyle::default()
+                }),
+                ..NodeStyle::default()
+            },
+        );
+        queue.start_animation(spec);
+        world.commit(queue).unwrap();
+        world.advance_animations(Duration::ZERO);
+        let mut extracted = world.extract_nodes(&[parent, node]);
+        for extracted_node in &mut extracted {
+            extracted_node.style = std::sync::Arc::new(ComputedStyle {
+                background: (extracted_node.id == node).then_some([1.0, 0.0, 0.0, 1.0]),
+                ..ComputedStyle::default()
+            });
+        }
+        let mut scene = UiScene::new();
+        scene.apply_delta(extracted.clone(), []);
+        scene.apply_presentation(
+            world.presentation_store(),
+            now,
+            Some(world.motion_descriptors()),
+        );
+        let handle = world
+            .motion_descriptors()
+            .handle_for(nana_ui_core::motion::MotionTrackId::new(1).unwrap())
+            .expect("transform descriptor");
+        let value = world
+            .motion_descriptors()
+            .evaluate(handle, now)
+            .expect("transform sample")
+            .value;
+        let MotionValue::Transform(value) = value else {
+            panic!("expected transform sample")
+        };
+
+        let mut reference_nodes = extracted;
+        let reference = reference_nodes
+            .iter_mut()
+            .find(|extracted_node| extracted_node.id == node)
+            .expect("animated node");
+        std::sync::Arc::make_mut(&mut reference.source_style.layout).transform = Some(value);
+        let mut reference_scene = UiScene::new();
+        reference_scene.apply_delta(reference_nodes, []);
+        (
+            world,
+            scene,
+            reference_scene,
+            handle,
+            MotionValue::Transform(value),
+        )
+    }
+
+    fn projective_motion_fixture(
+        now: Duration,
+    ) -> (UiWorld, UiScene, UiScene, MotionHandle, MotionValue) {
+        projective_motion_fixture_with_target(
+            now,
+            PaintTransform {
+                a: 1.4,
+                b: 0.08,
+                c: -0.12,
+                d: 0.82,
+                e: 12.0,
+                f: 5.0,
+            },
+        )
     }
 
     fn opacity_spec(curve: MotionCurve, to: MotionTo) -> AnimationSpec {
@@ -1074,6 +1232,175 @@ mod tests {
             !red_at(24),
             "the overlay must not pivot on the scene origin"
         );
+    }
+
+    #[test]
+    fn gpu_projective_motion_matches_cpu_homography() {
+        let now = Duration::from_millis(200);
+        let (world, scene, reference_scene, _handle, MotionValue::Transform(motion)) =
+            projective_motion_fixture(now)
+        else {
+            panic!("expected transform fixture")
+        };
+        let node = id(2);
+        let actual_draw = scene
+            .primitives()
+            .find(|primitive| {
+                primitive.node == node
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Quad { .. }
+                    )
+            })
+            .and_then(|primitive| scene.draw_primitive(primitive.id))
+            .expect("animated quad");
+        let reference_draw = reference_scene
+            .primitives()
+            .find(|primitive| {
+                primitive.node == node
+                    && matches!(
+                        primitive.kind,
+                        nana_ui_scene::ScenePrimitiveKind::Quad { .. }
+                    )
+            })
+            .and_then(|primitive| reference_scene.draw_primitive(primitive.id))
+            .expect("reference quad");
+        let encode = scene.compositor_paint_encode(
+            actual_draw.node,
+            &actual_draw.kind,
+            actual_draw.transform,
+            actual_draw.paint_opacity,
+        );
+        assert_ne!(
+            encode.motion_ids.0, 0,
+            "the animated quad must use GPU motion"
+        );
+        assert!(encode.transform.is_projective(), "base must be projective");
+        let origin = encode.transform_origin;
+        let local_motion = AffineTransform::from_matrix(motion.around_origin(
+            20.0,
+            20.0,
+            origin[0] - 20.0,
+            origin[1] - 20.0,
+        ));
+        let expected = encode.transform.then(local_motion);
+        assert_eq!(expected, reference_draw.transform);
+        assert_eq!(expected.1, reference_draw.transform.1);
+
+        let (device, queue) = test_device();
+        let actual_pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm),
+            &scene,
+            [128.0, 96.0],
+            [128, 96],
+            1.0,
+        );
+        let reference_pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm),
+            &reference_scene,
+            [128.0, 96.0],
+            [128, 96],
+            1.0,
+        );
+        let differing = actual_pixels
+            .iter()
+            .zip(reference_pixels.iter())
+            .filter(|(actual, reference)| actual.abs_diff(**reference) > 3)
+            .count();
+        assert!(
+            differing < 512,
+            "GPU projective motion diverged from CPU reference at {differing} bytes"
+        );
+        assert_eq!(world.presentation_values_cpu_sampled(), 0);
+    }
+
+    #[test]
+    fn projective_motion_singular_denominator_fails_closed_in_cpu_contract() {
+        let base = AffineTransform([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], [0.01, 0.0]);
+        let translation = AffineTransform::from_matrix([1.0, 0.0, 0.0, 1.0, -100.0, 0.0]);
+        assert_eq!(base.then(translation), AffineTransform::IDENTITY);
+    }
+
+    #[test]
+    fn gpu_projective_motion_singular_denominator_matches_fail_closed_reference() {
+        let mut projective = PaintMat4::IDENTITY;
+        projective.m[3] = 0.0052083335;
+        let (_, persp) = LayoutStyle {
+            transform_3d: Some(projective),
+            ..LayoutStyle::default()
+        }
+        .world_scene_transform(0.0, 0.0, 128.0, 96.0)
+        .expect("projective base");
+        assert_eq!(persp, [0.007812501, 0.0]);
+        let now = Duration::from_millis(200);
+        // Both keyframes are singular, so the midpoint keeps k exactly zero
+        // in both CPU and WGSL f32 math instead of depending on interpolation
+        // rounding at a large translation.
+        let singular = PaintTransform {
+            e: -128.0,
+            ..PaintTransform::default()
+        };
+        let (_world, scene, reference_scene, _handle, MotionValue::Transform(motion)) =
+            projective_motion_fixture_with_range_and_base(now, singular, singular, projective)
+        else {
+            panic!("expected transform fixture")
+        };
+        let node = id(2);
+        let actual_draw = scene
+            .primitives()
+            .find(|primitive| primitive.node == node)
+            .and_then(|primitive| scene.draw_primitive(primitive.id))
+            .expect("animated quad");
+        let reference_draw = reference_scene
+            .primitives()
+            .find(|primitive| primitive.node == node)
+            .and_then(|primitive| reference_scene.draw_primitive(primitive.id))
+            .expect("reference quad");
+        let encode = scene.compositor_paint_encode(
+            actual_draw.node,
+            &actual_draw.kind,
+            actual_draw.transform,
+            actual_draw.paint_opacity,
+        );
+        let origin = encode.transform_origin;
+        let local_motion = AffineTransform::from_matrix(motion.around_origin(
+            20.0,
+            20.0,
+            origin[0] - 20.0,
+            origin[1] - 20.0,
+        ));
+        assert_eq!(
+            encode.transform.then(local_motion),
+            AffineTransform::IDENTITY
+        );
+        assert_eq!(reference_draw.transform, AffineTransform::IDENTITY);
+
+        // The singular branch intentionally returns the fail-closed identity
+        // instead of attempting to rasterize an undefined projective map.
+        let (device, queue) = test_device();
+        let actual_pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm),
+            &scene,
+            [128.0, 96.0],
+            [128, 96],
+            1.0,
+        );
+        let reference_pixels = paint_scene_rgba(
+            &device,
+            &queue,
+            &mut SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm),
+            &reference_scene,
+            [128.0, 96.0],
+            [128, 96],
+            1.0,
+        );
+        assert_eq!(actual_pixels, reference_pixels);
     }
 
     #[test]

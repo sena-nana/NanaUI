@@ -3,7 +3,7 @@ use crate::{
     AccessibilityRole, AccessibilityState, AnimatableProperty, AnimationId, AnimationSpec, Easing,
     MotionTo, MotionValue,
 };
-use nana_ui_core::PaintTransform;
+use nana_ui_core::{PaintMat4, PaintTransform};
 use std::{sync::Arc, time::Duration};
 
 fn node(value: u64) -> StableNodeId {
@@ -251,6 +251,118 @@ fn descendant_hit_test_follows_ancestor_presentation_transform() {
 
     assert_eq!(world.hit_test(document(1), 30.0, 10.0), Some(node(2)));
     assert_eq!(world.hit_test(document(1), 70.0, 10.0), None);
+}
+
+#[test]
+fn hit_test_follows_projective_parent_and_motion_overlay() {
+    let parent = node(1);
+    let child = node(2);
+    let mat = PaintMat4::perspective(800.0)
+        .expect("perspective")
+        .then(PaintMat4::rotate_y(30_f32.to_radians()));
+    let target = PaintTransform {
+        e: 60.0,
+        ..PaintTransform::default()
+    };
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        parent,
+        document(1),
+        NodeKind::Element {
+            tag: "panel".into(),
+        },
+    );
+    queue.create(
+        child,
+        document(1),
+        NodeKind::Element {
+            tag: "button".into(),
+        },
+    );
+    queue.insert(parent, child, None);
+    queue.write_layout(parent, box_at(0.0, 0.0, 128.0, 96.0));
+    queue.write_layout(child, box_at(20.0, 20.0, 24.0, 24.0));
+    queue.set_style(
+        parent,
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                transform_3d: Some(mat),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_style(
+        child,
+        NodeStyle {
+            layout: Arc::new(LayoutStyle {
+                transform_origin: Some(nana_ui_core::TransformOrigin {
+                    x: nana_ui_core::LengthSpec::Percent(25.0),
+                    y: nana_ui_core::LengthSpec::Percent(75.0),
+                }),
+                ..LayoutStyle::default()
+            }),
+            ..NodeStyle::default()
+        },
+    );
+    queue.set_interaction(
+        parent,
+        InteractionState {
+            pointer_events: false,
+            focusable: false,
+        },
+    );
+    queue.set_interaction(
+        child,
+        InteractionState {
+            pointer_events: true,
+            focusable: true,
+        },
+    );
+    queue.start_animation(transform_overlay(
+        1,
+        child,
+        PaintTransform::default(),
+        target,
+    ));
+    world.commit(queue).unwrap();
+    world.advance_animations(Duration::from_millis(50));
+    world.rebuild_hit_test(document(1));
+
+    let forward = |([a, b, c, d, e, f], [g, h]): ([f32; 6], [f32; 2]), x: f32, y: f32| {
+        let w = g * x + h * y + 1.0;
+        [(a * x + c * y + e) / w, (b * x + d * y + f) / w]
+    };
+    let current = world
+        .layout_projection_transform(child)
+        .expect("presented projective transform");
+    let current_center = forward(current, 32.0, 32.0);
+    assert_eq!(
+        world.hit_test(document(1), current_center[0], current_center[1]),
+        Some(child),
+        "hit-test must follow the normalized projective presentation"
+    );
+
+    let parent_transform = LayoutStyle {
+        transform_3d: Some(mat),
+        ..LayoutStyle::default()
+    }
+    .world_scene_transform(0.0, 0.0, 128.0, 96.0)
+    .expect("parent projective transform");
+    let old_center = forward(
+        super::then_hit(
+            parent_transform,
+            ([1.0, 0.0, 0.0, 1.0, 0.0, 0.0], [0.0, 0.0]),
+        ),
+        32.0,
+        32.0,
+    );
+    assert_ne!(
+        world.hit_test(document(1), old_center[0], old_center[1]),
+        Some(child),
+        "old logical geometry must not remain hittable during motion"
+    );
 }
 
 #[test]

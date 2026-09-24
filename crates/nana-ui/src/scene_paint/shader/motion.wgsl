@@ -703,8 +703,9 @@ struct MotionAffine {
 }
 
 // `base · T(origin) · M · T(-origin)`: the overlay pivots on the node's
-// transform-origin, matching `LayoutStyle::world_scene_transform`.
-fn motion_compose_affine(base_abcd: vec4<f32>, base_ef: vec4<f32>, origin: vec2<f32>, sample: MotionGpuSample) -> MotionAffine {
+// transform-origin, matching `LayoutStyle::world_scene_transform`. The base
+// may already be projective, so compose and normalize the complete 3×3.
+fn motion_compose_projective(base_abcd: vec4<f32>, base_ef: vec4<f32>, origin: vec2<f32>, sample: MotionGpuSample) -> MotionAffine {
     if (sample.applies == 0u || sample.value.kind != MOTION_KIND_TRANSFORM) {
         return MotionAffine(base_abcd, base_ef);
     }
@@ -720,7 +721,24 @@ fn motion_compose_affine(base_abcd: vec4<f32>, base_ef: vec4<f32>, origin: vec2<
     let nd = base_abcd.y * c + base_abcd.w * d;
     let ne = base_abcd.x * e + base_abcd.z * f + base_ef.x;
     let nf = base_abcd.y * e + base_abcd.w * f + base_ef.y;
-    return MotionAffine(vec4(na, nb, nc, nd), vec4(ne, nf, base_ef.z, base_ef.w));
+    let ng = base_ef.z * a + base_ef.w * b;
+    let nh = base_ef.z * c + base_ef.w * d;
+    let k = base_ef.z * e + base_ef.w * f + 1.0;
+    let abs_k = abs(k);
+    if (!(abs_k <= 3.4028235e+38) || abs_k < 1.0e-6) {
+        // Match AffineTransform::then()/then_hit(): a singular composition
+        // fails closed instead of handing NaNs or an unnormalized matrix to
+        // the perspective divide.
+        return MotionAffine(
+            vec4(1.0, 0.0, 0.0, 1.0),
+            vec4(0.0, 0.0, 0.0, 0.0),
+        );
+    }
+    let inv_k = 1.0 / k;
+    return MotionAffine(
+        vec4(na, nb, nc, nd) * inv_k,
+        vec4(ne, nf, ng, nh) * inv_k,
+    );
 }
 
 @vertex

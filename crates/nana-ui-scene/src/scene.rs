@@ -86,7 +86,8 @@ impl AffineTransform {
         let ng = g * ra + h * rb + rg;
         let nh = g * rc + h * rd + rh;
         let ni = g * re + h * rf + 1.0;
-        if !ni.is_finite() || ni.abs() < 1e-8 {
+        // Keep the CPU contract wide enough to match WGSL f32/FMA rounding.
+        if !ni.is_finite() || ni.abs() < 1e-6 {
             return Self::IDENTITY;
         }
         let inv = 1.0 / ni;
