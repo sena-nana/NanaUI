@@ -1907,6 +1907,50 @@ fn find_and_replace_cannot_put_a_control_character_in_a_number_draft() {
 }
 
 #[test]
+fn a_read_only_number_input_draws_an_inert_spinner() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(5.0)
+                .range(0.0, 10.0)
+                .read_only(true),
+        )
+        .unwrap();
+    let mut mutations = MutationQueue::new();
+    mutations.write_layout(
+        input.stable_id(),
+        crate::LayoutBox {
+            x: 0.0,
+            y: 0.0,
+            width: 160.0,
+            height: 32.0,
+        },
+    );
+    context.commit_mutations(mutations).unwrap();
+    let work = context.world_mut().take_system_work();
+    context.world_mut().resolve_styles(&work.style).unwrap();
+    context
+        .world_mut()
+        .shape_text(&work.text, &mut crate::MeasureTextShaper)
+        .unwrap();
+    let Some(crate::ComponentGeometry::TextInput {
+        steppers: Some(steppers),
+        ..
+    }) = context.world().component_geometry(input.stable_id())
+    else {
+        panic!("expected spinner geometry");
+    };
+    assert!(!steppers.increment_enabled && !steppers.decrement_enabled);
+    let (x, y) = (
+        steppers.increment.x + steppers.increment.width / 2.0,
+        steppers.increment.y + steppers.increment.height / 2.0,
+    );
+    assert_eq!(context.number_stepper_at(input.stable_id(), x, y), None);
+}
+
+#[test]
 fn a_hover_card_keeps_a_focused_number_input_editing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

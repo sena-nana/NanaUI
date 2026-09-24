@@ -390,6 +390,9 @@ impl UiWorld {
                     |offset: usize| display_newlines.partition_point(|newline| *newline < offset);
                 let accessibility = self.nodes.get(id).map(|n| &n.accessibility);
                 let disabled = accessibility.is_some_and(|state| state.disabled);
+                // A read-only field refuses every step too, so its spinner
+                // halves are inert: drawn and hit as they behave.
+                let inert = disabled || accessibility.is_some_and(|state| !state.editable);
                 let steppers = steppers
                     .then(|| {
                         let band = (size.height_in(self.style_model.metrics) / 2.0)
@@ -406,11 +409,11 @@ impl UiWorld {
                                 state.numeric_maximum,
                             )
                         });
-                        let can_increment = !disabled
+                        let can_increment = !inert
                             && numeric.is_none_or(|(value, _, maximum)| {
                                 maximum.is_none_or(|maximum| value < maximum)
                             });
-                        let can_decrement = !disabled
+                        let can_decrement = !inert
                             && numeric.is_none_or(|(value, minimum, _)| {
                                 minimum.is_none_or(|minimum| value > minimum)
                             });
