@@ -15,8 +15,8 @@ use wgpu::{
 use crate::chrome_fill::{
     FILL_COLOR_SIZE, band_draw_list, fill_color_offset, fill_color_stride, pack_fill_colors,
 };
-use nana_ui::{FrameContext, GpuContext, GpuRenderTarget};
 use crate::shell::ShellChromeBand;
+use nana_ui::{FrameContext, GpuContext, GpuRenderTarget};
 
 const FILL_SHADER: &str = r#"
 struct Uniforms {
