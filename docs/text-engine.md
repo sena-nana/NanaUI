@@ -1261,14 +1261,18 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
    `TextInputView` / `ImeView`；`TextInputState` / `ImeComposition` 是写入合同（Vue / JS、应用、
    `SetTextInput` / `SetIme`）与拥有型快照。
 
-组件（`TextInput` / `TextArea` / …）的 `state` 是会话文本的**共享句柄**：组件编辑写出新值（被共享
-的缓冲这时才复制一次），投影时会话直接收养这份缓冲（`EditSession::assign`，差分只算改动区间），
-之后两边指向同一份字节，投影按身份比较。组字只在会话里；「IME 挂着但 preedit 为空」是 Runtime
-的标记（不是组字，不挡光标与显示，只让提交等 IME 的 commit / cancel）。撤销日志仍按整份状态快照，
-但快照共享缓冲：每步的前后状态不再各复制一次文档。
+组件（`TextInput` / `TextArea` / …）的 `state` 是会话文本的**共享句柄**：组件编辑写出新值，投影时
+会话直接收养这份缓冲（`EditSession::assign` 从两端扫到改动处为止，只报告改动区间；字节相同的
+另一份缓冲也收养下来，之后按指针比较），两边指向同一份字节，投影按身份比较。组字只在会话里；
+「IME 挂着但 preedit 为空」是 Runtime 的标记（不是组字，不挡光标与显示，只让提交等 IME 的
+commit / cancel）。撤销日志仍按整份状态快照，但快照共享缓冲：每步的前后状态不再各复制一次文档，
+字节预算按缓冲而不是按快照计。
 
-一次按键（310 KB 文档）从约 8 次整值复制（历史前后、`editor_state`、组件暂存、投影、校验、world
-镜像、`TextChanged`、presentation 三处）降为一次写时复制 + 一次差分；光标移动不复制文本。
+一次按键（310 KB 文档）原来要做约 8 次整值复制（历史前后、`editor_state`、组件暂存、投影、校验、
+world 镜像、`TextChanged`、presentation 三处），现在剩下编辑本身需要的几遍：组件写出新值（一次
+构建）、会话收养时的一次差分、段落几何的前后缀比较；开着高亮、括号着色或 minimap 的编辑器各自
+再算一遍（高亮按印记做键，不再为了键去哈希全文）。光标移动、点击与上下移动不复制、不比较文本；
+辅助技术在场时，AccessKit 节点仍要一份自己的 `String`。
 
 ### 本阶段没做的
 
@@ -1279,7 +1283,7 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |
 | ~~IME 语义后端换 `EditSession`~~ **已接**（#182） | 存储与语义都在会话里，见「编辑器的存储：EditSession」 |
-| 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
+| 大文档存储 | `SharedText`（`Arc<String>` + 印记，#182）；**不换 rope**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
 ## 性能与许可证收口（#99）
 
@@ -2464,6 +2468,25 @@ profile（`/usr/bin/sample`，8,000 行）定位到的按帧 O(文档) 项，按
 310 KB 文档上一次按键从 0.93 ms 降到 0.22 ms。`caret input` 变大是这一轮同时接入的**视觉序
 左右移动**：方向键现在要问一次几何探针（见「视觉序的左右箭头」），换来的是 BiDi 与换行处
 caret 不再跳位。
+
+#182 之后同机复测（Apple M4，macOS 27，2026-09-24，release；before = `79df8b8d1`，after = #182
+全部提交；两个二进制**交替**跑 8 轮、每轮换先后，每格取 8 次 p50 的最小值；60 samples / 15 warmup；
+负载 4–6）：
+
+| 格子 | 行 | input 前 → 后 | flush 前 → 后 |
+| --- | ---: | ---: | ---: |
+| caret head | 1,000 | 0.0132 → 0.0067 ms | 0.0198 → 0.0041 ms |
+| caret head | 8,000 | 0.0566 → 0.0073 ms | 0.1192 → 0.0081 ms |
+| caret tail | 8,000 | 0.0538 → 0.0047 ms | 0.1180 → 0.0080 ms |
+| click head | 8,000 | 0.0713 → 0.0031 ms | 0.1177 → 0.0079 ms |
+| vertical head | 8,000 | 0.1198 → 0.0054 ms | 0.1248 → 0.0083 ms |
+| type head | 1,000 | 0.0083 → 0.0034 ms | 0.0283 → 0.0138 ms |
+| type head | 8,000 | 0.0528 → 0.0166 ms | 0.1626 → 0.0760 ms |
+| type tail | 8,000 | 0.0490 → 0.0155 ms | 0.1514 → 0.0644 ms |
+
+光标移动、点击、上下移动不再随文档变长：1,000 行与 8,000 行同一量级（几何凭印记判定、显示文本
+按身份复用、a11y / 提取不复制）。打字仍随文档增长的部分是组件写出新值、会话收养时的差分与段落
+几何的前后缀比较——都是编辑本身需要的一遍。
 
 当时剩下的按帧 O(文档) 项，#182 之后：
 
