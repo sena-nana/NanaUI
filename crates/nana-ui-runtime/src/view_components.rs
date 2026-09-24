@@ -1898,7 +1898,30 @@ impl NumberInput {
     /// Normalized as a commit would normalize it: a continuous draft such as
     /// `500` over a maximum of 100 is 100 here, not 500.
     pub(crate) fn step_base(&self) -> f64 {
-        parse_number(&self.state.value).map_or(self.value, |parsed| self.normalize(parsed))
+        nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value)
+            .map_or(self.value, |parsed| self.normalize(parsed))
+    }
+
+    /// Whether `value` lies within the field's bounds, so the field can take
+    /// it without clamping (snapping to the grid aside).
+    pub(crate) fn within_bounds(&self, value: f64) -> bool {
+        self.spec.clamp(value) == value
+    }
+
+    /// Make the committed value follow the draft, leaving the draft text as
+    /// it is. Undo and redo restore a draft; the number goes with it, so the
+    /// field never shows one number and holds another. Returns whether the
+    /// number moved. A draft that does not parse leaves the number alone.
+    pub(crate) fn adopt_draft(&mut self) -> bool {
+        let Some(parsed) = nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value) else {
+            return false;
+        };
+        let next = self.normalize(parsed);
+        if next == self.value {
+            return false;
+        }
+        self.value = next;
+        true
     }
 
     /// Where the field puts `value`: clamped to its bounds, and on a
@@ -1913,7 +1936,7 @@ impl NumberInput {
 
     /// Parse the draft. An unparseable draft restores the committed value.
     pub(crate) fn commit_draft(&mut self) -> bool {
-        match parse_number(&self.state.value) {
+        match nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value) {
             Some(parsed) => self.assign(parsed),
             None => self.revert_draft(),
         }
@@ -1941,15 +1964,6 @@ impl NumberInput {
             self.spec.format(self.value)
         }
     }
-}
-
-/// The number a draft or a requested value spells, before the field's
-/// bounds, precision or step grid apply. Blank or non-finite text is none.
-pub(crate) fn parse_number(text: &str) -> Option<f64> {
-    text.trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite())
 }
 
 impl ComponentView for NumberInput {

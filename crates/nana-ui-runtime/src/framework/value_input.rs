@@ -21,31 +21,28 @@ impl AppContext {
     }
 
     /// Commit a complete value given as text, as assistive technology sets
-    /// one: published through [`Self::set_number_value`], so the field's own
-    /// bounds and grid apply. Unparseable text and fields that refuse input
-    /// change nothing.
+    /// one: published through [`Self::set_number_value`], so the field's grid
+    /// applies. Returns whether the field took it.
     ///
-    /// Reports whether the field took the value: its committed number moved
-    /// (clamped or snapped as its policy requires), or it already held
-    /// exactly that number. A pending draft does not count: a request the
-    /// bounds refuse outright (150 on a field already at its maximum of 10)
-    /// reports failure even though it rewrites the draft.
+    /// Unparseable text, a number outside the field's bounds, and a field
+    /// that refuses input are refused outright: nothing changes, the pending
+    /// draft and its undo history included. A number within bounds is taken,
+    /// snapped to the grid, even when the field already holds it.
     pub(super) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        let Some(requested) = crate::view_components::parse_number(text) else {
+        let Some(requested) = nana_ui_core::NumberFieldSpec::parse_unsnapped(text) else {
             return Ok(false);
         };
-        let Some(before) =
-            self.read(entity, |input| input.accepts_input().then(|| input.value()))?
-        else {
+        if !self.read(entity, |input| {
+            input.accepts_input() && input.within_bounds(requested)
+        })? {
             return Ok(false);
-        };
+        }
         self.set_number_value(entity, requested)?;
-        let after = self.read(entity, NumberInput::value)?;
-        Ok(after != before || after == requested)
+        Ok(true)
     }
 
     /// Move a numeric field by step increments, from the typed draft when it
@@ -58,7 +55,8 @@ impl AppContext {
         entity: Entity<NumberInput>,
         steps: i32,
     ) -> Result<bool, FrameworkError> {
-        if !self.read(entity, NumberInput::accepts_input)? {
+        // A composition owns the draft until it commits or cancels.
+        if !self.read(entity, NumberInput::accepts_input)? || self.number_composing(entity) {
             return Ok(false);
         }
         self.write_number(entity, TextEditOrigin::Step, |input| {
@@ -130,6 +128,10 @@ impl AppContext {
         let Some(entity) = self.focused_number_input(document) else {
             return Ok(false);
         };
+        // Escape during a composition belongs to the IME, not the draft.
+        if self.number_composing(entity) {
+            return Ok(false);
+        }
         let changed = self.write_number(
             entity,
             TextEditOrigin::Structural,
@@ -139,6 +141,29 @@ impl AppContext {
         // already showed the committed value.
         self.seal_editor_history(entity.stable_id());
         Ok(changed)
+    }
+
+    fn number_composing(&self, entity: Entity<NumberInput>) -> bool {
+        self.world
+            .ime(entity.stable_id())
+            .is_some_and(|composition| !composition.text.is_empty())
+    }
+
+    /// After undo or redo restored a numeric field's draft, bring its
+    /// committed number to the draft and report the move.
+    pub(super) fn adopt_number_draft(
+        &mut self,
+        entity: Entity<NumberInput>,
+    ) -> Result<bool, FrameworkError> {
+        self.update_component(entity, |input, cx| {
+            if !input.adopt_draft() {
+                return false;
+            }
+            cx.emit(NumberChanged {
+                value: input.value(),
+            });
+            true
+        })
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {

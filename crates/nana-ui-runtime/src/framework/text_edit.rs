@@ -554,7 +554,23 @@ impl AppContext {
     /// from reaching enclosing navigation (tables, trees). Composite search
     /// surfaces are not plain editors and keep their own list navigation.
     pub fn focused_text_editor_composing(&self, document: DocumentId) -> bool {
-        self.has_focused_ime_composition(document) && self.focused_plain_editor(document).is_some()
+        self.has_focused_ime_composition(document)
+            && self.focused_plain_editor_node(document).is_some()
+    }
+
+    /// The focused plain editor's node, composition or not: a presence check
+    /// that reads no component state.
+    pub(super) fn focused_plain_editor_node(&self, document: DocumentId) -> Option<StableNodeId> {
+        self.focused_editor::<TextArea>(document)
+            .map(|editor| editor.stable_id())
+            .or_else(|| {
+                self.focused_editor::<TextInput>(document)
+                    .map(|editor| editor.stable_id())
+            })
+            .or_else(|| {
+                self.focused_editor::<NumberInput>(document)
+                    .map(|editor| editor.stable_id())
+            })
     }
 
     fn focused_plain_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {

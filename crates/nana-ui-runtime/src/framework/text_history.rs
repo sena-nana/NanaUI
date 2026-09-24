@@ -353,10 +353,15 @@ impl crate::AppContext {
         }) else {
             return Ok(false);
         };
-        // `History` keeps the restore from becoming a step of its own. A
-        // `NumberInput` gets its draft back; the committed number follows on
-        // Enter or blur, as it does after typing.
-        self.replace_editor_state(node, focused.kind, TextEditOrigin::History, target)
+        // `History` keeps the restore from becoming a step of its own.
+        let restored =
+            self.replace_editor_state(node, focused.kind, TextEditOrigin::History, target)?;
+        // A `NumberInput`'s committed number follows the restored draft, so
+        // undoing a step takes the number back too.
+        if restored && focused.is_numeric() {
+            self.adopt_number_draft(crate::Entity::from_stable_id(node))?;
+        }
+        Ok(restored)
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -497,10 +502,9 @@ mod editor_tests {
             assert!(cx.redo_focused_text(document()).unwrap());
             assert_eq!(draft(&cx), "42");
 
-            // Undo walks the draft; the number is still parsed on commit.
-            assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
-            assert!(cx.commit_focused_number_input(document()).unwrap());
+            // The number follows the restored draft: nothing left to commit.
             assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 42.0);
+            assert!(!cx.commit_focused_number_input(document()).unwrap());
         }
     }
 
@@ -541,6 +545,36 @@ mod editor_tests {
             assert!(cx.redo_focused_text(document()).unwrap());
             assert_eq!(draft_of(&cx, input), draft);
         }
+    }
+
+    #[test]
+    fn undoing_a_step_takes_the_number_back_with_the_draft() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        for _ in 0..3 {
+            cx.step_focused_number_input(document(), 1).unwrap();
+        }
+        assert_eq!(value(&cx), 4.0);
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("1", 1.0));
+        // Escape has nothing to revert: it does not redo the step.
+        assert!(!cx.revert_focused_number_input(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("1", 1.0));
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("4", 4.0));
+    }
+
+    #[test]
+    fn a_composition_owns_a_number_draft_until_it_ends() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        cx.replace_focused_text(document(), "5").unwrap();
+        cx.set_ime_preedit(document(), "ｘ".into(), None).unwrap();
+        assert!(!cx.step_focused_number_input(document(), 1).unwrap());
+        assert!(!cx.revert_focused_number_input(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "15");
+        assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
     }
 
     #[test]

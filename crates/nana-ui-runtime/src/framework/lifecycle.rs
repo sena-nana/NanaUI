@@ -1006,16 +1006,7 @@ impl AppContext {
             // Editor identity still holds while IME owns the edit commands.
             // Do not use focused_text_editor, which intentionally excludes IME.
             && self
-                .focused_editor::<crate::TextArea>(document)
-                .map(|editor| editor.stable_id())
-                .or_else(|| {
-                    self.focused_editor::<crate::TextInput>(document)
-                        .map(|editor| editor.stable_id())
-                })
-                .or_else(|| {
-                    self.focused_editor::<crate::NumberInput>(document)
-                        .map(|editor| editor.stable_id())
-                })
+                .focused_plain_editor_node(document)
                 .is_some_and(|editor| !self.overlay_descendant(root, editor))
     }
 

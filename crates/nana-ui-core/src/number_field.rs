@@ -107,15 +107,16 @@ impl NumberFieldSpec {
     /// Read a draft string. Returns `None` when the text is not a number, so
     /// the caller can keep the last committed value instead of guessing.
     pub fn parse(self, text: &str) -> Option<f64> {
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        trimmed
+        Self::parse_unsnapped(text).map(|value| self.snap(value))
+    }
+
+    /// The number a draft spells, before bounds, precision or the step grid
+    /// apply. Blank or non-finite text is `None`.
+    pub fn parse_unsnapped(text: &str) -> Option<f64> {
+        text.trim()
             .parse::<f64>()
             .ok()
             .filter(|value| value.is_finite())
-            .map(|value| self.snap(value))
     }
 }
 

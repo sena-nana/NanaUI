@@ -1232,16 +1232,11 @@ impl RuntimeInputAdapter {
                 text,
                 modifiers,
                 ..
-            } if *pressed
-                && !modifiers.alt
-                && !modifiers.control
-                && !modifiers.meta
-                && typed_text(text.as_deref()).is_some() =>
-            {
-                context.replace_focused_text(
-                    document,
-                    typed_text(text.as_deref()).unwrap_or_default(),
-                )?
+            } if *pressed && !modifiers.alt && !modifiers.control && !modifiers.meta => {
+                match typed_text(text.as_deref()) {
+                    Some(text) => context.replace_focused_text(document, text)?,
+                    None => false,
+                }
             }
             _ => false,
         };
@@ -4571,15 +4566,24 @@ mod tests {
             .dispatch(&mut context, document, &control("z", true))
             .unwrap();
         assert_eq!(textarea_selection(&context, node).0, "12");
+        assert_eq!(value(&context), 12.0, "the number follows the draft");
 
-        // Enter commits the draft instead of submitting a text field.
+        // Enter commits a pending draft instead of submitting a text field.
+        adapter
+            .dispatch(
+                &mut context,
+                document,
+                &edit_key("Delete", None, InputModifiers::default()),
+            )
+            .unwrap();
+        assert_eq!(textarea_selection(&context, node).0, "1");
         assert!(
             adapter
                 .dispatch(&mut context, document, &plain_key("Enter"))
                 .unwrap()
                 .prevent_default
         );
-        assert_eq!(value(&context), 12.0);
+        assert_eq!(value(&context), 1.0);
 
         // At its bound the field still owns ArrowUp: it does not fall through
         // to routing that could carry focus out of it. The same holds while

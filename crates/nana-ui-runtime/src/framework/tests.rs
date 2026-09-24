@@ -1946,7 +1946,7 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
     assert!(act(&mut context, AccessibilityAction::Click));
     assert_eq!(context.world().focused(document), Some(node));
 
-    // SetValue commits a number: snapped to the step grid, then clamped.
+    // SetValue commits a number within bounds, snapped to the step grid.
     assert!(act(
         &mut context,
         AccessibilityAction::SetValue("7.3".into())
@@ -1955,43 +1955,36 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
     assert_eq!(draft(&context), "7.5");
     assert!(act(
         &mut context,
-        AccessibilityAction::SetValue("12".into())
+        AccessibilityAction::SetValue("10".into())
     ));
-    assert_eq!(
-        context.read(input, crate::NumberInput::value).unwrap(),
-        10.0
-    );
     assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
 
-    // A value the field already holds is in place: the action succeeds,
-    // and nothing is emitted.
+    // A number the field already holds is taken: success, nothing emitted.
     assert!(act(
         &mut context,
         AccessibilityAction::SetValue("10".into())
     ));
     assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
-    // A request the bounds refuse outright is not reported as set.
-    assert!(!act(
-        &mut context,
-        AccessibilityAction::SetValue("150".into())
-    ));
-    // Nor when a pending draft makes the write rewrite the text.
+
+    // Out of bounds is refused and changes nothing, a pending draft included.
     context
         .update_component(input, |input, _| input.state.replace_value("7"))
         .unwrap();
-    assert!(!act(
-        &mut context,
-        AccessibilityAction::SetValue("150".into())
-    ));
-    assert_eq!(draft(&context), "10.0");
-
-    // Text that is not a number changes nothing, draft included.
-    assert!(!act(
-        &mut context,
-        AccessibilityAction::SetValue("abc".into())
-    ));
-    assert_eq!(draft(&context), "10.0");
+    for request in ["150", "-1", "abc"] {
+        assert!(
+            !act(&mut context, AccessibilityAction::SetValue(request.into())),
+            "{request}"
+        );
+        assert_eq!(draft(&context), "7", "{request}");
+    }
+    assert_eq!(
+        context.read(input, crate::NumberInput::value).unwrap(),
+        10.0
+    );
     assert_eq!(*values.lock().unwrap(), vec![7.5, 10.0]);
+    context
+        .update_component(input, |input, _| input.state.replace_value("10.0"))
+        .unwrap();
 
     // SetSelection selects inside the draft; out-of-range selections refuse.
     assert!(act(
