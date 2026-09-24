@@ -8,7 +8,14 @@ impl AppContext {
     pub(super) fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
         self.world
             .focused_text_input(document)
-            .and_then(|(target, _)| self.world.ime(target))
+            .is_some_and(|(target, _)| self.is_composing(target))
+    }
+
+    /// Whether the user is composing in `node`: an IME attached with no
+    /// preedit (an empty one between keystrokes) is not a composition.
+    pub(super) fn is_composing(&self, node: StableNodeId) -> bool {
+        self.world
+            .ime(node)
             .is_some_and(|composition| !composition.text.is_empty())
     }
 
@@ -169,10 +176,7 @@ impl AppContext {
         {
             return Ok(false);
         }
-        let composing = self
-            .world
-            .ime(target)
-            .is_some_and(|composition| !composition.text.is_empty());
+        let composing = self.is_composing(target);
         let mut next = state.to_state();
         if !next.delete_ime_surrounding(before_bytes, after_bytes, composing) {
             return Ok(false);
@@ -192,10 +196,7 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let composing = self
-            .world
-            .ime(entity.stable_id())
-            .is_some_and(|composition| !composition.text.is_empty());
+        let composing = self.is_composing(entity.stable_id());
         let snippet = self.world.text_snippet_session(entity.stable_id());
         // Only a snippet session diffs the pre-edit value (to follow its
         // linked placeholders). Cloning the whole value for every keystroke of

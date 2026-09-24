@@ -311,11 +311,12 @@ impl AppContext {
             button.disabled = snapshot.disabled;
         })?;
         self.update_component(hex, |input, _| {
-            // Text that already names this color stays as the user spelled
-            // it: rewriting it only to normalize case would replace the
-            // field's value and, with it, its undo.
+            // The canonical text in another letter case stays as the user
+            // typed it: rewriting it only to lower the case would replace the
+            // field's value and, with it, its undo. Anything else is
+            // normalized.
             let next = format_hex(snapshot.value);
-            if parse_hex(&input.state.value).map(format_hex).as_ref() != Some(&next) {
+            if !input.state.value.eq_ignore_ascii_case(&next) {
                 input.state.replace_value(next);
             }
             input.disabled = snapshot.disabled;
@@ -597,6 +598,11 @@ mod tests {
         };
         assert_eq!(text(&context), "#00FF88", "not rewritten to change case");
         assert!(context.can_undo_text(hex), "so the typing stays undoable");
+        // Other spellings of the same color are still normalized.
+        context.select_all_focused_text(document).unwrap();
+        context.replace_focused_text(document, " 00ff88 ").unwrap();
+        assert!(context.activate_button(swatch).unwrap());
+        assert_eq!(text(&context), "#00ff88");
         // A different color does rewrite it.
         let hue = Entity::<RangeField>::from_stable_id(snapshot.hue_slider.unwrap());
         context.set_range_value(hue, 200.0).unwrap();

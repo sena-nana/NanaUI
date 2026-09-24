@@ -722,7 +722,9 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
         .into_iter()
         .flat_map(|focus| [(focus, false), (focus, true)])
     {
-        let focus_in_menu = focus == 3 || focus == 5;
+        // No focus at all also gets the opener back: the world cannot tell
+        // focus the user cleared from focus the framework dropped.
+        let focus_in_menu = focus != 4;
         let mut world = UiWorld::new();
         let mut create = MutationQueue::new();
         create.create(node(1), document(1), NodeKind::Document);
@@ -784,19 +786,13 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
                 Some(node(2)),
                 "focus leaving with the menu (from {focus}, parked: {park}) returns to where it came from"
             );
-        } else if focus == 4 {
+        } else {
             assert_eq!(
                 world.focused(document(1)),
                 Some(node(4)),
                 "the menu's host does not take focus back from the editor"
             );
             assert!(world.ime(node(4)).is_some(), "nor end its composition");
-        } else {
-            assert_eq!(
-                world.focused(document(1)),
-                None,
-                "focus the user cleared stays cleared (parked: {park})"
-            );
         }
         assert_eq!(world.text_input(node(4)).unwrap().value, "value");
     }

@@ -293,6 +293,15 @@ impl TextHistories {
         }
     }
 
+    /// Ends the journaled write of `node` [`crate::AppContext::commit_editor_edit`]
+    /// began. By position rather than by popping the top, so a write that
+    /// never finished (a caught unwind) cannot leave another node marked.
+    fn finish_writing(&mut self, node: StableNodeId) {
+        if let Some(index) = self.writing.iter().rposition(|writing| *writing == node) {
+            self.writing.remove(index);
+        }
+    }
+
     /// Whether a commit writing `node`'s text should check its journal: one
     /// exists, and no journaled write of `node` will witness the result.
     fn verifies(&self, node: StableNodeId) -> bool {
@@ -366,11 +375,7 @@ impl crate::AppContext {
             return Err(crate::FrameworkError::InvalidInput);
         }
         let node = entity.stable_id();
-        let composing = self
-            .world
-            .ime(node)
-            .is_some_and(|composition| !composition.text.is_empty());
-        if composing || !self.read(entity, super::EditableText::accepts_input)? {
+        if self.is_composing(node) || !self.read(entity, super::EditableText::accepts_input)? {
             return Ok(false);
         }
         // Decided before anything is sealed: an edit that does not happen
@@ -410,8 +415,8 @@ impl crate::AppContext {
         &self,
         mutations: &crate::MutationQueue,
     ) -> Vec<StableNodeId> {
-        // Most batches (layout, scroll, style) run while no editor has a
-        // journal, or touch no editor text at all.
+        // One pass matching each mutation's kind, as the commit's other
+        // pre-scans do; none at all until some editor keeps a journal.
         if self.text_histories.entries.is_empty() {
             return Vec::new();
         }
@@ -454,19 +459,7 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        self.follow_text_history(entity.stable_id());
-        self.commit_followed_editor_edit(entity, origin, apply)
-    }
-
-    /// [`Self::commit_editor_edit`] for a caller that already brought the
-    /// journal up to date with [`Self::follow_text_history`].
-    fn commit_followed_editor_edit<C: super::EditableText>(
-        &mut self,
-        entity: crate::Entity<C>,
-        origin: TextEditOrigin,
-        apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
-    ) -> Result<bool, crate::FrameworkError> {
-        self.journaled_write(entity, origin, |cx| {
+        let update = |cx: &mut Self| {
             cx.update_component(entity, |editable: &mut C, view| {
                 if !apply(editable, view) {
                     return false;
@@ -474,36 +467,26 @@ impl crate::AppContext {
                 view.emit(editable.change());
                 true
             })
-        })
-    }
-
-    /// Drops `node`'s journal if its text changed since the journal saw it.
-    fn follow_text_history(&mut self, node: StableNodeId) {
-        self.text_histories
-            .follow(node, self.editor_text_stamp(node));
-    }
-
-    /// Runs `write` and records what it changed in the editor's journal, then
-    /// witnesses the text it left.
-    fn journaled_write<C: super::EditableText, R>(
-        &mut self,
-        entity: crate::Entity<C>,
-        origin: TextEditOrigin,
-        write: impl FnOnce(&mut Self) -> Result<R, crate::FrameworkError>,
-    ) -> Result<R, crate::FrameworkError> {
+        };
         if !C::JOURNALED {
-            return write(self);
+            return update(self);
         }
         let node = entity.stable_id();
+        self.follow_text_history(node);
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
         self.text_histories.writing.push(node);
-        let written = write(self);
-        let popped = self.text_histories.writing.pop();
-        debug_assert_eq!(popped, Some(node), "journaled writes nest");
-        // Recorded even when the write reports an error: the text may have
-        // landed before a follow-up failed, and a journal that never saw it
-        // would take it for an outside write and drop every step.
-        if let Ok(after) = self.read(entity, |editable: &C| editable.state().clone()) {
+        let written = update(self);
+        self.text_histories.finish_writing(node);
+        if matches!(written, Ok(false)) {
+            return written;
+        }
+        let after = self.read(entity, |editable: &C| editable.state().clone())?;
+        // A failed write still counts if the component took the new text:
+        // the world may hold it already, and a journal that never saw it
+        // would take it for an outside write and drop every step. A write
+        // the component rolled back is left unwitnessed, so a world that
+        // moved anyway reads as the outside write it now is.
+        if written.is_ok() || after.value != before.value {
             if after.value != before.value {
                 self.text_histories.record(node, before, after, origin);
             }
@@ -511,6 +494,12 @@ impl crate::AppContext {
                 .witness(node, self.editor_text_stamp(node));
         }
         written
+    }
+
+    /// Drops `node`'s journal if its text changed since the journal saw it.
+    fn follow_text_history(&mut self, node: StableNodeId) {
+        self.text_histories
+            .follow(node, self.editor_text_stamp(node));
     }
 
     /// Undoes the focused editor's last edit. Returns whether anything moved.
@@ -565,6 +554,8 @@ impl crate::AppContext {
             return Ok(false);
         }
         let node = entity.stable_id();
+        // Before reading the journal: one an outside write left stale has
+        // nothing to undo.
         self.follow_text_history(node);
         let Some(target) = (if undo {
             self.text_histories.undo(node)
@@ -574,7 +565,7 @@ impl crate::AppContext {
             return Ok(false);
         };
         // `History` keeps the restore from becoming a step of its own.
-        self.commit_followed_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
+        self.commit_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
             *editable.state_mut() = target;
             true
         })
