@@ -1,0 +1,167 @@
+{
+  "labels": 10000,
+  "frames": 120,
+  "before": "git archive HEAD (5f4cc03bc)",
+  "runs": {
+    "static": [
+      {
+        "round": 1,
+        "binary": "before",
+        "instructions_retired": 5780293817
+      },
+      {
+        "round": 1,
+        "binary": "after",
+        "instructions_retired": 5766622238
+      },
+      {
+        "round": 2,
+        "binary": "after",
+        "instructions_retired": 5771936136
+      },
+      {
+        "round": 2,
+        "binary": "before",
+        "instructions_retired": 5776055701
+      },
+      {
+        "round": 3,
+        "binary": "before",
+        "instructions_retired": 5768997116
+      },
+      {
+        "round": 3,
+        "binary": "after",
+        "instructions_retired": 5768553707
+      }
+    ],
+    "mutate-random-1pct": [
+      {
+        "round": 1,
+        "binary": "before",
+        "instructions_retired": 6751395437
+      },
+      {
+        "round": 1,
+        "binary": "after",
+        "instructions_retired": 6751816731
+      },
+      {
+        "round": 2,
+        "binary": "after",
+        "instructions_retired": 6722855424
+      },
+      {
+        "round": 2,
+        "binary": "before",
+        "instructions_retired": 6754199310
+      },
+      {
+        "round": 3,
+        "binary": "before",
+        "instructions_retired": 6758890862
+      },
+      {
+        "round": 3,
+        "binary": "after",
+        "instructions_retired": 6750091356
+      }
+    ],
+    "mutate-1pct": [
+      {
+        "round": 1,
+        "binary": "before",
+        "instructions_retired": 6359076828
+      },
+      {
+        "round": 1,
+        "binary": "after",
+        "instructions_retired": 6350032803
+      },
+      {
+        "round": 2,
+        "binary": "after",
+        "instructions_retired": 6344668131
+      },
+      {
+        "round": 2,
+        "binary": "before",
+        "instructions_retired": 6356735839
+      },
+      {
+        "round": 3,
+        "binary": "before",
+        "instructions_retired": 6355951357
+      },
+      {
+        "round": 3,
+        "binary": "after",
+        "instructions_retired": 6351481228
+      }
+    ],
+    "transform": [
+      {
+        "round": 1,
+        "binary": "before",
+        "instructions_retired": 55052368555
+      },
+      {
+        "round": 1,
+        "binary": "after",
+        "instructions_retired": 55086749587
+      },
+      {
+        "round": 2,
+        "binary": "after",
+        "instructions_retired": 55026516344
+      },
+      {
+        "round": 2,
+        "binary": "before",
+        "instructions_retired": 55047431623
+      },
+      {
+        "round": 3,
+        "binary": "before",
+        "instructions_retired": 55157551330
+      },
+      {
+        "round": 3,
+        "binary": "after",
+        "instructions_retired": 55058498365
+      }
+    ],
+    "table": [
+      {
+        "round": 1,
+        "binary": "before",
+        "instructions_retired": 7026275017
+      },
+      {
+        "round": 1,
+        "binary": "after",
+        "instructions_retired": 7010071641
+      },
+      {
+        "round": 2,
+        "binary": "after",
+        "instructions_retired": 7008115057
+      },
+      {
+        "round": 2,
+        "binary": "before",
+        "instructions_retired": 7024790834
+      },
+      {
+        "round": 3,
+        "binary": "before",
+        "instructions_retired": 7017918749
+      },
+      {
+        "round": 3,
+        "binary": "after",
+        "instructions_retired": 7011225327
+      }
+    ]
+  }
+}

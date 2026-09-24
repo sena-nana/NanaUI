@@ -592,8 +592,14 @@ impl SceneWgpuPainter {
                 && batch.renderers == resolved.renderers
                 && batch.image_revision == self.image_revision
                 && batch.text_placement_epoch == self.text.placement_epoch()
+                // The order is about to give back the gaps text that stopped
+                // growing left (#230); only a flush does that.
+                && !self.text.order_settle_due()
         });
         let reused = cached.is_some();
+        if reused {
+            self.text.note_reused_frame();
+        }
         let (
             commands,
             max_group_depth,

@@ -168,6 +168,10 @@ pub struct TextGlyphCounters {
     pub atlas_relocations: u64,
     pub atlas_stale_handle_rejects: u64,
     pub text_pipeline_draws: u64,
+    /// Index slots those draws span: the quads the vertex stage runs, gap and
+    /// slack slots included, which cull without reading an instance but are
+    /// still run.
+    pub text_index_slots_drawn: u64,
     /// Retained `TextGpuEntry` count and its lifecycle.
     pub text_gpu_entries_active: u64,
     pub text_gpu_entries_created: u64,
@@ -649,6 +653,10 @@ pub(super) struct TextPipelineTarget {
     order_gapped: bool,
     order_moves: u32,
     growth_moves: u32,
+    /// Frames this target drew in a row without a range outgrowing its
+    /// place. Past [`SETTLE_FRAMES`] the text has stopped growing, and a
+    /// layout with gaps is repacked without them.
+    quiet_frames: u32,
     physical_size: [u32; 2],
     frame: u64,
     frame_gpu_allocations: usize,
@@ -716,6 +724,18 @@ impl TextPipelineTarget {
         }
     }
 
+    /// Forget every range of the draw order, and with them the gaps and what
+    /// moved since the last repack: the next layout has not left anything
+    /// room, and nothing placed before it says whether text is growing.
+    fn forget_order(&mut self) {
+        self.order.reset();
+        self.entries.invalidate_order();
+        self.order_owners.clear(None);
+        self.order_gapped = false;
+        self.order_moves = 0;
+        self.growth_moves = 0;
+    }
+
     fn new(gpu: TextTargetGpu) -> Self {
         Self {
             gpu,
@@ -745,6 +765,7 @@ impl TextPipelineTarget {
             order_gapped: false,
             order_moves: 0,
             growth_moves: 0,
+            quiet_frames: 0,
             physical_size: [0; 2],
             frame: 0,
             frame_gpu_allocations: 0,
@@ -810,6 +831,7 @@ pub(super) struct TextPipeline {
     /// claim in a comment.
     retained_layouts_drawn: u64,
     draws: Cell<u64>,
+    slots_drawn: Cell<u64>,
     /// What closed render targets did before they closed.
     closed: TargetCounters,
     /// What upright text on an opaque backdrop is resolved as: `Mask`
@@ -849,6 +871,7 @@ impl TextPipeline {
             resolve_requests: 0,
             retained_layouts_drawn: 0,
             draws: Cell::new(0),
+            slots_drawn: Cell::new(0),
             closed: TargetCounters::default(),
             subpixel: GlyphRenderMode::Mask,
         }
@@ -957,8 +980,7 @@ impl TextPipeline {
         let atlas = &mut self.atlas;
         self.target.entries.clear(|handle| atlas.release(handle));
         self.target.arena.reset();
-        self.target.order.reset();
-        self.target.order_owners.clear(None);
+        self.target.forget_order();
         self.target.run_slots.reset();
         self.target.run_table.clear();
         self.target.run_dirty = None;
@@ -1026,6 +1048,7 @@ impl TextPipeline {
             atlas_relocations: atlas.relocations,
             atlas_stale_handle_rejects: atlas.stale_handle_rejects,
             text_pipeline_draws: self.draws.get(),
+            text_index_slots_drawn: self.slots_drawn.get(),
             text_gpu_entries_active: active,
             text_gpu_entries_created: targets.entries_created,
             text_gpu_entries_destroyed: targets.entries_destroyed,
@@ -1041,6 +1064,42 @@ impl TextPipeline {
             text_prepare_nodes_culled: targets.nodes_culled,
             text_retained_layouts_drawn: self.retained_layouts_drawn,
         }
+    }
+
+    /// This target is drawn from last frame's batch: nothing was prepared,
+    /// so nothing grew. Counted only when that batch draws text, as a flush
+    /// is: a frame without any draws no gap.
+    pub(super) fn note_reused_frame(&mut self) {
+        if self.target.live_runs > 0 {
+            self.target.quiet_frames = self.target.quiet_frames.saturating_add(1);
+        }
+    }
+
+    /// Whether a flush this frame would give back the order's gaps. A frame
+    /// that would reuse last frame's batch rebuilds it instead: an animation
+    /// beside a table that stopped changing repaints every frame without
+    /// flushing, and would otherwise draw the gaps for as long as it runs.
+    ///
+    /// Never while the batch draws no text: its flush would return before
+    /// repacking anything, and every frame after would rebuild for nothing.
+    pub(super) fn order_settle_due(&self) -> bool {
+        let target = &self.target;
+        target.order_gapped
+            && target.live_runs > 0
+            && target.quiet_frames.saturating_add(1) >= SETTLE_FRAMES
+    }
+
+    /// Mark the order as holding gaps, the way a repack around growing text
+    /// leaves it, so a painter test can watch them be given back.
+    #[cfg(test)]
+    pub(super) fn assume_gapped_order(&mut self) {
+        self.target.order_gapped = true;
+        self.target.quiet_frames = 0;
+    }
+
+    #[cfg(test)]
+    pub(super) fn order_gapped(&self) -> bool {
+        self.target.order_gapped
     }
 
     /// GPU allocations this frame's text could not reuse.
@@ -1956,11 +2015,22 @@ impl TextPipeline {
                 );
             }
         }
+        // A range outgrowing its place is text still growing. Once it has
+        // stopped for long enough, gaps left for it are quads every frame
+        // runs for nothing, and the order is repacked without them.
+        target.quiet_frames = if outgrown.is_empty() {
+            target.quiet_frames.saturating_add(1)
+        } else {
+            0
+        };
+        let settled = target.quiet_frames >= SETTLE_FRAMES;
         // Independent: the arena repacks only to make room or close holes,
         // and then rewrites instances; the order repacks when fragmentation
-        // costs too many draws, and then rewrites only indices.
+        // costs too many draws, or to give back gaps, and then rewrites only
+        // indices. Never twice in a frame: one decision covers both reasons.
         let arena_repack = target.arena.should_repack(total, &fresh);
-        let order_repack = target.order.should_repack(total, &fresh_order);
+        let order_repack =
+            target.order.should_repack(total, &fresh_order) || (target.order_gapped && settled);
         target.fresh_blocks = fresh;
         target.fresh_ranges = fresh_order;
         if arena_repack {
@@ -1975,8 +2045,9 @@ impl TextPipeline {
             // layout leaves room for it to grow where it is. Text that only
             // comes and goes gets none — a gap would not keep it from
             // splitting the draws, and every gap slot is a quad the vertex
-            // stage still runs.
-            target.order_gapped = target.growth_moves * 2 > target.order_moves;
+            // stage still runs. Nor does text that grew once but has since
+            // stood still.
+            target.order_gapped = !settled && target.growth_moves * 2 > target.order_moves;
             // Only a layout with gaps grows ranges in place, which is the
             // one thing that asks who owns an offset.
             target
@@ -2419,10 +2490,8 @@ impl TextPipeline {
             // placement, so the next frame places and writes everything it
             // draws again instead of trusting buffers that never got it.
             target.arena.reset();
-            target.order.reset();
             target.entries.invalidate_arena();
-            target.entries.invalidate_order();
-            target.order_owners.clear(None);
+            target.forget_order();
         }
         target.counters.instance_upload_bytes += bytes.instances as u64;
         target.counters.index_upload_bytes += bytes.indices as u64;
@@ -2565,6 +2634,7 @@ impl TextPipeline {
         let start = run.segments.start as usize;
         let end = (run.segments.end as usize).min(self.target.segments.len());
         let mut drawn = 0u64;
+        let mut slots = 0u64;
         for segment in &self.target.segments[start.min(end)..end] {
             let Some(bind_group) = self
                 .atlas
@@ -2575,8 +2645,10 @@ impl TextPipeline {
             self.gpu
                 .draw_segment(pass, &self.target.gpu, segment, bind_group);
             drawn += 1;
+            slots += u64::from(segment.count);
         }
         self.draws.set(self.draws.get() + drawn);
+        self.slots_drawn.set(self.slots_drawn.get() + slots);
         if let Some(work) = gpu_work {
             work.record_draw_batch();
             for _ in 0..drawn {
@@ -2613,6 +2685,19 @@ impl TextPipeline {
 /// eighth, or a group half the size, left two to three times the draws.
 const GAP_EVERY: u32 = 512;
 const GAP_SLOTS: u32 = 128;
+
+/// Frames a target draws without a range outgrowing its place before a
+/// layout with gaps is repacked without them (#230).
+///
+/// Counted in frames drawn, not in time, because that is what the gaps cost
+/// by: ten thousand labels whose churn stopped drew 152 085 quads a frame
+/// across their gaps and 136 045 without, and their GPU time went from 2.86
+/// to 2.72 ms. The repack that gives the gaps back rewrites 544 KB of
+/// indices, which did not stand out of the frame-to-frame noise, so a few
+/// frames of gaps already pay for it — and for the repack that leaves gaps
+/// again should the text resume growing. A second of frames at 60 Hz is
+/// several times that, so text that pauses between bursts keeps its room.
+pub(super) const SETTLE_FRAMES: u32 = 60;
 
 /// Which entry's index range starts at each offset of the order. Flat, so
 /// placing a whole frame's worth of ranges after a repack costs a store per
@@ -5351,6 +5436,164 @@ mod tests {
         );
     }
 
+    /// Sixty-four rows folded into one command, four of them grown far enough
+    /// apart that the order repacked with gaps. Returns the rows as drawn.
+    fn rows_in_a_gapped_order(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut TextPipeline,
+    ) -> Vec<&'static str> {
+        let mut rows = vec!["Row content"; 64];
+        merged_rows(device, queue, pipeline, &rows);
+        for row in [5, 20, 35, 50] {
+            rows[row] = "Row content, longer";
+        }
+        merged_rows(device, queue, pipeline, &rows);
+        merged_rows(device, queue, pipeline, &rows);
+        assert!(pipeline.target.order_gapped, "the order repacked with gaps");
+        rows
+    }
+
+    /// Index slots this frame's draws span: the quads the vertex stage runs.
+    fn spanned_slots(pipeline: &TextPipeline) -> u32 {
+        pipeline
+            .target
+            .segments
+            .iter()
+            .map(|segment| segment.count)
+            .sum()
+    }
+
+    #[test]
+    fn text_that_stopped_growing_gives_its_gaps_back() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
+        let gapped = spanned_slots(&pipeline);
+        let generation = pipeline.target.order.generation();
+        while pipeline.target.quiet_frames + 1 < SETTLE_FRAMES {
+            assert_eq!(
+                merged_rows(&device, &queue, &mut pipeline, &rows),
+                (0, 0, 1),
+                "a still frame before the text has stood still long enough \
+                 writes nothing"
+            );
+        }
+        assert_eq!(pipeline.target.order.generation(), generation);
+        assert!(pipeline.target.order_gapped, "and keeps the gaps");
+        let (instances, indices, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        let held: u32 = (1..=64u64)
+            .map(|node| row_entry(&pipeline, node).order_capacity)
+            .sum();
+        let blocks: u32 = (1..=64u64)
+            .map(|node| row_entry(&pipeline, node).capacity)
+            .sum();
+        assert_eq!(
+            pipeline.target.order.generation(),
+            generation + 1,
+            "the frame the text has stood still for long enough repacks once"
+        );
+        assert!(!pipeline.target.order_gapped, "without gaps");
+        assert_eq!(instances, 0, "moving no instance");
+        assert_eq!(
+            indices,
+            u64::from(held) * 4,
+            "and rewriting the index table, ranges only"
+        );
+        assert_eq!(held, blocks, "every range is its block again");
+        assert_eq!(draws, 1, "still one draw");
+        let packed = spanned_slots(&pipeline);
+        assert!(packed <= held, "which spans no slot outside a range");
+        assert!(
+            packed < gapped,
+            "and fewer quads than across the gaps: {packed} of {gapped}"
+        );
+        assert_eq!(
+            merged_rows(&device, &queue, &mut pipeline, &rows),
+            (0, 0, 1),
+            "after which a still frame writes nothing again"
+        );
+    }
+
+    #[test]
+    fn text_that_grows_again_after_giving_its_gaps_back_gets_them_again() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
+        while pipeline.target.order_gapped {
+            merged_rows(&device, &queue, &mut pipeline, &rows);
+        }
+        // Grows again, somewhere else: the rows split the draws and the next
+        // repack is, as before, down to text growing.
+        for row in [10, 25, 40, 55] {
+            rows[row] = "Row content, longer";
+        }
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        let (_, _, draws) = merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert!(
+            pipeline.target.order_gapped,
+            "growing text gets its room back"
+        );
+        assert_eq!(draws, 1);
+        // And keeps it for as long as it keeps growing: one row a frame,
+        // each a little longer than the last time it grew.
+        let texts = (0..24)
+            .map(|len| format!("Row content {}", "x".repeat(4 + len * 3)))
+            .collect::<Vec<_>>();
+        let mut grown = vec![0usize; 64];
+        let generation = pipeline.target.order.generation();
+        let mut repacks = 0;
+        for frame in 0..SETTLE_FRAMES as usize * 2 {
+            let row = frame * 13 % 64;
+            grown[row] += 1;
+            rows[row] = texts[grown[row].min(texts.len() - 1)].as_str();
+            let before = pipeline.target.order.generation();
+            merged_rows(&device, &queue, &mut pipeline, &rows);
+            if pipeline.target.order.generation() != before {
+                repacks += 1;
+            }
+            assert!(
+                pipeline.target.order_gapped,
+                "frame {frame}: text that keeps growing keeps its gaps"
+            );
+        }
+        assert!(
+            repacks <= 4,
+            "and repacks when its breaks are over budget, not every frame: \
+             {repacks} repacks, generation {generation} -> {}",
+            pipeline.target.order.generation()
+        );
+    }
+
+    #[test]
+    fn gaps_given_back_in_a_frame_already_repacking_repack_once() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let rows = rows_in_a_gapped_order(&device, &queue, &mut pipeline);
+        pipeline.target.quiet_frames = SETTLE_FRAMES - 1;
+        pipeline.target.order.note_breaks(u32::MAX);
+        let generation = pipeline.target.order.generation();
+        merged_rows(&device, &queue, &mut pipeline, &rows);
+        assert_eq!(pipeline.target.order.generation(), generation + 1);
+        assert!(
+            !pipeline.target.order_gapped,
+            "a repack over budget in text that has stopped growing leaves no gaps"
+        );
+    }
+
+    #[test]
+    fn dropping_every_entry_forgets_the_gaps() {
+        let (device, queue) = test_device();
+        let mut pipeline = TextPipeline::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        rows_in_a_gapped_order(&device, &queue, &mut pipeline);
+        pipeline.drop_every_entry();
+        assert!(
+            !pipeline.target.order_gapped,
+            "an order reset holds no gaps, so there are none to give back"
+        );
+        assert!(!pipeline.order_settle_due());
+    }
+
     #[test]
     fn a_draw_does_not_run_across_the_space_a_paragraph_left() {
         let (device, queue) = test_device();
@@ -6569,13 +6812,18 @@ mod tests {
         let mut drawn_as: HashMap<u64, String> = HashMap::new();
         let mut layouts = [0u32; 2];
         let mut checked = 0;
+        let mut settles = 0;
         for frame in 0..600u32 {
+            // Text changing length, then standing still for long enough to
+            // give its gaps back (#230), then scrolling.
+            let phase = frame % 300;
+            let still = (75..75 + SETTLE_FRAMES + 30).contains(&phase);
+            let scrolling = phase >= 75 + SETTLE_FRAMES + 30;
             // A font registration: every entry dropped at once.
-            if churn.below(97) == 0 {
+            if !still && churn.below(97) == 0 {
                 pipeline.drop_every_entry();
                 drawn_as.clear();
             }
-            let scrolling = (frame / 75) % 2 == 1;
             if scrolling {
                 for _ in 0..churn.below(6) {
                     if rows.len() > INITIAL / 2 {
@@ -6590,7 +6838,7 @@ mod tests {
                     let (a, b) = (churn.below(rows.len()), churn.below(rows.len()));
                     rows.swap(a, b);
                 }
-            } else {
+            } else if !still {
                 for _ in 0..1 + churn.below(8) {
                     let at = churn.below(rows.len());
                     rows[at].1 = churn.text();
@@ -6643,6 +6891,7 @@ mod tests {
                 let _ = prepare_row(&device, &mut pipeline, content, row_key(*node), 0.0, size);
             }
             let before = pipeline.glyph_counters().text_instance_upload_bytes;
+            let gapped = pipeline.target.order_gapped;
             pipeline.flush_runs();
             pipeline.upload(&device, &queue, None);
             let written = pipeline.glyph_counters().text_instance_upload_bytes - before;
@@ -6650,6 +6899,9 @@ mod tests {
                 assert_gpu_holds_the_shadow(&device, &queue, &pipeline, &format!("frame {frame}"));
             }
             layouts[usize::from(pipeline.target.order_gapped)] += 1;
+            if still && gapped && !pipeline.target.order_gapped {
+                settles += 1;
+            }
             if pipeline.target.arena.generation() == arena_generation
                 && pipeline.placement_epoch() == epoch
             {
@@ -6673,6 +6925,10 @@ mod tests {
             "both order layouts must have been exercised: packed / gapped {layouts:?}"
         );
         assert!(checked > 300, "only {checked} frames kept their arena");
+        assert!(
+            settles > 0,
+            "text that stood still never gave its gaps back"
+        );
     }
 
     fn test_device() -> (wgpu::Device, wgpu::Queue) {

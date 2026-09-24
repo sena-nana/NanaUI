@@ -2826,6 +2826,122 @@ fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry)
     (scene, registry)
 }
 
+/// A GPU view, with a label beside it when `labelled`: the scene cannot be
+/// reblitted, so every frame draws, and an unchanged one reuses last frame's
+/// batch without flushing the text (#230). Each call of the returned frame
+/// paints once and says whether it rebuilt the batch and how many index
+/// bytes it wrote.
+fn beside_a_gpu_view(
+    labelled: bool,
+) -> (
+    SceneWgpuPainter,
+    impl FnMut(&mut SceneWgpuPainter) -> (bool, u64),
+) {
+    use crate::{DefaultGpuViewRenderer, GpuView};
+
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut registry = SceneGpuRendererRegistry::new();
+    registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
+    let mut view = host_texture_child(2, 1, 0.0, 0.0, 32.0, 32.0, "0");
+    view.custom_render = Some(GpuView::new(0).custom_render());
+    let mut root = colored_quad_node(1, 0.0, 0.0, 128.0, 96.0, [0.0, 0.0, 1.0, 1.0]);
+    let mut nodes = vec![view];
+    if labelled {
+        nodes.push(overflowing_text_child(
+            3, 1, 0.0, 32.0, 128.0, 64.0, [1.0; 4],
+        ));
+    }
+    root.children = Arc::new(nodes.iter().map(|node| node.id).collect());
+    nodes.push(root);
+    let mut scene = UiScene::new();
+    scene.apply_delta(nodes, []);
+    let (_, target) = test_copy_target(&device, format, 128, 96);
+    let viewport = ScenePaintViewport {
+        logical_size: [128.0, 96.0],
+        physical_size: [128, 96],
+        scale_factor: 1.0,
+        scene_origin: [0.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let frame = move |painter: &mut SceneWgpuPainter| {
+        let before = painter.text_glyph_counters();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        painter
+            .paint(
+                &scene,
+                &mut encoder,
+                &target,
+                viewport,
+                None,
+                Some(&registry),
+            )
+            .unwrap();
+        queue.submit([encoder.finish()]);
+        let after = painter.text_glyph_counters();
+        assert_eq!(
+            after.text_pipeline_draws > before.text_pipeline_draws,
+            labelled,
+            "the label is drawn every frame, and nothing else is text"
+        );
+        (
+            painter.last_gpu_work().expect("painted").batch_rebuilds > 0,
+            after.text_index_upload_bytes - before.text_index_upload_bytes,
+        )
+    };
+    (painter, frame)
+}
+
+#[test]
+fn a_reused_batch_gives_back_the_gaps_of_text_that_stopped_growing() {
+    let (mut painter, mut paint) = beside_a_gpu_view(true);
+    paint(&mut painter);
+    assert_eq!(
+        paint(&mut painter),
+        (false, 0),
+        "an unchanged frame reuses its batch"
+    );
+    painter.text.assume_gapped_order();
+    let mut reused = 0;
+    let settled = loop {
+        let frame = paint(&mut painter);
+        if frame != (false, 0) {
+            break frame;
+        }
+        reused += 1;
+        assert!(reused < 1_000, "the gaps were never given back");
+    };
+    assert!(
+        reused + 2 >= text::SETTLE_FRAMES,
+        "only once the text has stood still: {reused} frames"
+    );
+    assert!(
+        settled.0,
+        "the frame that gives them back rebuilds its batch"
+    );
+    assert!(settled.1 > 0, "and rewrites the index table");
+    assert!(!painter.text.order_gapped());
+    assert_eq!(
+        paint(&mut painter),
+        (false, 0),
+        "after which the batch is reused again"
+    );
+}
+
+#[test]
+fn a_reused_batch_without_text_is_not_rebuilt_for_gaps() {
+    // The order held gaps when the text went away. Nothing draws them, so
+    // there is nothing to give back, and the batch must keep being reused
+    // rather than rebuilt every frame for a flush with no text to repack.
+    let (mut painter, mut paint) = beside_a_gpu_view(false);
+    painter.text.assume_gapped_order();
+    let rebuilds = (0..300).filter(|_| paint(&mut painter).0).count();
+    assert_eq!(rebuilds, 1, "only the first frame builds a batch");
+}
+
 fn runtime_button_over_host_texture_scene(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

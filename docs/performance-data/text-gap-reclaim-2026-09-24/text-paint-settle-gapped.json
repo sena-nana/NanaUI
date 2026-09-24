@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "adapter": "Apple M4 (Metal)",
+  "cells": [
+    {
+      "workload": "mutate-random-settle",
+      "labels": 10000,
+      "depth": 0,
+      "scale": 1.0,
+      "viewport": [
+        4576,
+        4560
+      ],
+      "frames": 240,
+      "live_glyphs": 81246,
+      "counters": {
+        "atlas_relocations": 0.0,
+        "atlas_stale_handle_rejects": 0.0,
+        "glyph_atlas_bytes": 1048581.0,
+        "glyph_atlas_evict": 0.0,
+        "glyph_atlas_pages": 3.0,
+        "glyph_raster_cache_hit": 0.0,
+        "glyph_rasterized": 0.008333333333333333,
+        "glyph_resolve_requests": 2.0,
+        "glyph_upload_bytes": 0.1125,
+        "shape_cache_evictions": 0.0,
+        "shape_cache_misses": 0.0,
+        "text_gpu_entries_active": 10001.0,
+        "text_gpu_entries_created": 0.0,
+        "text_index_slots_drawn": 152085.0,
+        "text_index_upload_bytes": 0.0,
+        "text_instance_patches": 1.0,
+        "text_instance_rebuilds": 1.0,
+        "text_instance_upload_bytes": 192.0,
+        "text_pipeline_draws": 15.0,
+        "text_prepare_nodes_considered": 10001.0,
+        "text_prepare_nodes_culled": 0.0,
+        "text_prepare_nodes_skipped": 10000.0,
+        "text_presentation_upload_bytes": 0.0,
+        "text_retained_layouts_drawn": 115.0
+      },
+      "flush_ms": {
+        "p50": 0.029084000000000002,
+        "p95": 0.036666,
+        "max": 0.07966699999999999
+      },
+      "batch_ms": {
+        "p50": 1.504292,
+        "p95": 1.700292,
+        "max": 2.186458
+      },
+      "gpu_upload_ms": {
+        "p50": 0.021291,
+        "p95": 0.030040999999999998,
+        "max": 0.063125
+      },
+      "gpu_ms": {
+        "p50": 2.916334,
+        "p95": 3.130792,
+        "max": 3.2858750000000003
+      },
+      "encode_ms": {
+        "p50": 0.0022500000000000003,
+        "p95": 0.0029170000000000003,
+        "max": 0.0053750000000000004
+      }
+    }
+  ]
+}

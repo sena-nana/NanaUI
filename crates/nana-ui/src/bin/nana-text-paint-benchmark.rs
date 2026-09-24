@@ -34,6 +34,9 @@ use serde::Serialize;
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const WARMUP_FRAMES: usize = 8;
+/// Frames of [`Workload::MutateRandom`] churn [`Workload::MutateRandomSettle`]
+/// runs before it stops: enough for the draw order to repack with gaps.
+const SETTLE_CHURN_FRAMES: usize = 60;
 /// One label's box. The viewport is sized from these so every label a cell
 /// asks for is actually painted — a column taller than the screen would have
 /// the scene cull the rest and every cell would measure the same forty rows.
@@ -96,6 +99,11 @@ enum Workload {
     /// random length: the churn a live table or a log view produces, where
     /// paragraphs grow and shrink rather than being swapped like for like.
     MutateRandom,
+    /// [`Self::MutateRandom`] for [`SETTLE_CHURN_FRAMES`] warm-up frames, then
+    /// [`Self::Static`]: the table that stopped changing, whose draw order
+    /// still holds the gaps the churn asked for until it gives them back
+    /// (#230).
+    MutateRandomSettle,
     /// A text-heavy table: every cell its own string of digits, dates and
     /// names, beside a ticking label.
     Table,
@@ -137,6 +145,7 @@ impl Workload {
             Self::TransformPanel => "transform-panel",
             Self::Mutate => "mutate-1pct",
             Self::MutateRandom => "mutate-random-1pct",
+            Self::MutateRandomSettle => "mutate-random-settle",
             Self::Table => "table",
             Self::TableScroll => "table-scroll",
             Self::TableScrollX => "table-scroll-x",
@@ -147,7 +156,7 @@ impl Workload {
         }
     }
 
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Static,
         Self::StaticUnique,
         Self::Color,
@@ -156,6 +165,7 @@ impl Workload {
         Self::TransformPanel,
         Self::Mutate,
         Self::MutateRandom,
+        Self::MutateRandomSettle,
         Self::Table,
         Self::TableScroll,
         Self::TableScrollX,
@@ -164,6 +174,15 @@ impl Workload {
         Self::MultiWindow,
         Self::Zoom,
     ];
+
+    /// Frames before the sampled ones. The churn a settling workload stops
+    /// is warm-up, so what it samples is only the frames after it.
+    fn warmup(self) -> usize {
+        match self {
+            Self::MutateRandomSettle => WARMUP_FRAMES + SETTLE_CHURN_FRAMES,
+            _ => WARMUP_FRAMES,
+        }
+    }
 
     /// Whether the workload is an animation, and therefore worth running at
     /// each of [`RATE_GRID`].
@@ -316,6 +335,11 @@ fn main() {
             }
             let rates: &[usize] = if workload.animated() {
                 &RATE_GRID
+            } else if workload == Workload::MutateRandomSettle {
+                // Long enough that the frame the order gives its gaps back
+                // falls well inside the window, and most of what it samples
+                // is after it.
+                &[RATE_GRID[2]]
             } else {
                 &[RATE_GRID[0]]
             };
@@ -501,7 +525,8 @@ fn run(
     let mut warm = None;
     let mut warm_glyph = None;
     let mut warm_shape = None;
-    for frame in 0..WARMUP_FRAMES + frames {
+    let warmup = workload.warmup();
+    for frame in 0..warmup + frames {
         mutate(
             &mut document,
             workload,
@@ -562,12 +587,12 @@ fn run(
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the frame completes");
         let gpu_elapsed = submitted.elapsed();
-        if frame + 1 == WARMUP_FRAMES {
+        if frame + 1 == warmup {
             warm = Some(painter.text_glyph_counters());
             warm_glyph = Some(painter.text_glyph_counters().text_gpu_entry_glyphs);
             warm_shape = Some(painter.text_shape_cache_stats());
         }
-        if frame >= WARMUP_FRAMES {
+        if frame >= warmup {
             flush.push(flush_elapsed.as_secs_f64() * 1000.0);
             batch.push(frame_batch.as_secs_f64() * 1000.0);
             upload.push(frame_upload.as_secs_f64() * 1000.0);
@@ -627,6 +652,12 @@ fn run(
         "text_pipeline_draws",
         end.text_pipeline_draws,
         warm.text_pipeline_draws,
+    );
+    // #230: the quads the vertex stage runs, gap and slack slots included.
+    delta(
+        "text_index_slots_drawn",
+        end.text_index_slots_drawn,
+        warm.text_index_slots_drawn,
     );
     delta(
         "text_presentation_upload_bytes",
@@ -730,12 +761,18 @@ fn mutate(
     frame: usize,
 ) {
     let mut queue = MutationQueue::new();
+    let workload = match workload {
+        Workload::MutateRandomSettle if frame < workload.warmup() => Workload::MutateRandom,
+        Workload::MutateRandomSettle => Workload::Static,
+        other => other,
+    };
     match workload {
         Workload::Static
         | Workload::StaticUnique
         | Workload::Table
         | Workload::Paragraphs
-        | Workload::MultiWindow => {
+        | Workload::MultiWindow
+        | Workload::MutateRandomSettle => {
             // Not a text change *to the labels*: the label beside an animation
             // is what a shell spends its frames on.
             queue.set_text(
