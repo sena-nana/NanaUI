@@ -2043,9 +2043,8 @@ impl UiWorld {
                     .nodes
                     .editor_mut(*id)
                     .expect("entity must have runtime component");
-                let additional = editor.session.additional_selections().to_vec();
                 let work = edit_keeping_preedit(editor, |session| {
-                    session.set_selections(*selection, additional);
+                    session.set_primary_selection(*selection);
                 });
                 self.pending_edit_work.accumulate(work);
                 self.nodes

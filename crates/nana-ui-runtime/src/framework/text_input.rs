@@ -555,6 +555,7 @@ impl AppContext {
                 return false;
             }
             editable.state_mut().selection = selection;
+            editable.state_mut().normalize_selections();
             cx.emit(TextChanged {
                 value: editable.state().value.clone().into(),
                 selection,

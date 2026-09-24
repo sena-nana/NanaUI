@@ -3079,41 +3079,25 @@ fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
     nana_text::editable::navigation::is_grapheme_boundary(value, offset)
 }
 
-/// Sort key for a selection: span start, then span end.
-fn selection_order(selection: TextSelection) -> (usize, usize) {
-    let range = selection.ordered();
-    (range.start, range.end)
-}
-
-/// Merge in-place: sort by span, fuse overlapping/touching spans, and carry a
-/// `primary` flag through fusions so callers can keep the primary cursor's
-/// identity. Returns the primary span plus the remaining sorted spans.
-fn merge_selection_set(
-    selections: &mut [(TextSelection, bool)],
-) -> (TextSelection, Vec<TextSelection>) {
-    selections.sort_by_key(|(selection, _)| selection_order(*selection));
-    let mut merged: Vec<(TextSelection, bool)> = Vec::with_capacity(selections.len());
-    for &(next, is_primary) in selections.iter() {
-        match merged.last_mut() {
-            Some((last, last_is_primary)) if last.ordered().end >= next.ordered().start => {
-                let start = last.ordered().start;
-                let end = last.ordered().end.max(next.ordered().end);
-                *last = TextSelection::new(start, end);
-                *last_is_primary |= is_primary;
-            }
-            _ => merged.push((next, is_primary)),
-        }
+/// `selection` with both ends snapped back onto grapheme boundaries of
+/// `value`, the way the editor session snaps what it is handed: a focus the
+/// snap moved loses its affinity.
+fn snapped_selection(value: &str, selection: TextSelection) -> TextSelection {
+    if selection.is_valid_for(value) {
+        return selection;
     }
-    let mut primary = None;
-    let mut additional = Vec::new();
-    for (selection, is_primary) in merged {
-        if is_primary && primary.is_none() {
-            primary = Some(selection);
+    let snap =
+        |offset: usize| nana_text::editable::navigation::snap_to_grapheme(value, offset, false);
+    let focus = snap(selection.focus);
+    TextSelection {
+        anchor: snap(selection.anchor),
+        focus,
+        affinity: if focus == selection.focus {
+            selection.affinity
         } else {
-            additional.push(selection);
-        }
+            TextAffinity::Downstream
+        },
     }
-    (primary.unwrap_or_default(), additional)
 }
 
 /// Committed editable text and its selection. IME preedit remains separate in
@@ -3168,46 +3152,39 @@ impl TextInputState {
         if self.additional_selections.is_empty() {
             std::borrow::Cow::Borrowed(std::slice::from_ref(&self.selection))
         } else {
-            let mut flagged: Vec<(TextSelection, bool)> =
-                Vec::with_capacity(self.additional_selections.len() + 1);
-            flagged.push((self.selection, true));
-            flagged.extend(self.additional_selections.iter().map(|&s| (s, false)));
-            let (primary, additional) = merge_selection_set(&mut flagged);
+            let (primary, additional) = nana_text::editable::normalize_selections(
+                self.selection,
+                self.additional_selections.iter().copied(),
+            );
             let mut all = Vec::with_capacity(additional.len() + 1);
             all.push(primary);
             all.extend(additional);
-            all.sort_by_key(|selection| selection_order(*selection));
+            all.sort_by_key(|selection| {
+                let range = selection.ordered();
+                (range.start, range.end)
+            });
             std::borrow::Cow::Owned(all)
         }
     }
 
-    /// Restore the multi-selection invariants: invalid spans clamp onto the
-    /// nearest char boundary, overlapping/touching spans fuse, and a span that
-    /// fuses with the primary becomes the primary (the primary cursor's
-    /// identity never moves onto another span). No-op with one cursor.
+    /// Restore the multi-selection invariants — the same ones the editor
+    /// session keeps, by the same rule ([`nana_text::editable::normalize_selections`]):
+    /// ends off a grapheme boundary snap back onto one, overlapping/touching
+    /// spans fuse, and a span that fuses with the primary becomes the primary
+    /// (the primary cursor's identity never moves onto another span).
     pub fn normalize_selections(&mut self) {
-        if !self.selection.is_valid_for(&self.value) {
-            let fallback = crate::text_editing::clamp_boundary(&self.value, self.selection.focus);
-            self.selection = TextSelection::caret(fallback);
-        }
+        self.selection = snapped_selection(&self.value, self.selection);
         if self.additional_selections.is_empty() {
             return;
         }
-        let mut flagged: Vec<(TextSelection, bool)> =
-            Vec::with_capacity(self.additional_selections.len() + 1);
-        flagged.push((self.selection, true));
-        for selection in self.additional_selections.drain(..) {
-            let normalized = if selection.is_valid_for(&self.value) {
-                selection
-            } else {
-                TextSelection::caret(crate::text_editing::clamp_boundary(
-                    &self.value,
-                    selection.focus,
-                ))
-            };
-            flagged.push((normalized, false));
-        }
-        let (primary, additional) = merge_selection_set(&mut flagged);
+        let value = &self.value;
+        let additional: Vec<TextSelection> = self
+            .additional_selections
+            .drain(..)
+            .map(|selection| snapped_selection(value, selection))
+            .collect();
+        let (primary, additional) =
+            nana_text::editable::normalize_selections(self.selection, additional);
         self.selection = primary;
         self.additional_selections = additional;
     }
@@ -3219,34 +3196,22 @@ impl TextInputState {
             return false;
         }
         let existing = self.selections();
-        let mut added = false;
-        let mut flagged: Vec<(TextSelection, bool)> =
-            Vec::with_capacity(self.additional_selections.len() + candidates.len() + 1);
-        flagged.push((self.selection, true));
-        flagged.extend(
-            self.additional_selections
-                .iter()
-                .map(|&selection| (selection, false)),
-        );
+        let mut added = Vec::with_capacity(candidates.len());
         for &candidate in candidates {
-            let candidate = if candidate.is_valid_for(&self.value) {
-                candidate
-            } else {
-                TextSelection::caret(crate::text_editing::clamp_boundary(
-                    &self.value,
-                    candidate.focus,
-                ))
-            };
-            if existing.contains(&candidate) || flagged.iter().any(|(s, _)| *s == candidate) {
+            let candidate = snapped_selection(&self.value, candidate);
+            if existing.contains(&candidate) || added.contains(&candidate) {
                 continue;
             }
-            flagged.push((candidate, false));
-            added = true;
+            added.push(candidate);
         }
-        if !added {
+        if added.is_empty() {
             return false;
         }
-        let (primary, additional) = merge_selection_set(&mut flagged);
+        drop(existing);
+        let (primary, additional) = nana_text::editable::normalize_selections(
+            self.selection,
+            self.additional_selections.iter().copied().chain(added),
+        );
         self.selection = primary;
         self.additional_selections = additional;
         true

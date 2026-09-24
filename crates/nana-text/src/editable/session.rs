@@ -413,6 +413,20 @@ impl EditSession {
         self.set_selections_state(primary, additional)
     }
 
+    /// Moves the primary selection, keeping the other cursors (fusing any the
+    /// primary now overlaps or touches). Only the primary is snapped: the
+    /// others already are, so a caret move with many cursors on long lines
+    /// does not rescan every cursor's line. Refused while composing.
+    pub fn set_primary_selection(&mut self, selection: EditSelection) -> EditChange {
+        if self.is_composing() {
+            return EditChange::None;
+        }
+        self.state.goal_x_px = None;
+        let primary = self.snapped(selection);
+        let additional = self.state.additional.clone();
+        self.set_selections_state(primary, additional)
+    }
+
     /// Adds cursors or selections to the set, fusing any that overlap or
     /// touch. Refused while composing.
     pub fn add_selections(

@@ -1293,12 +1293,13 @@ pub(super) fn build_text_input_presentation_source(
     use unicode_segmentation::UnicodeSegmentation;
 
     // 浮层是打字态的编辑辅助：占位符与 IME 组合期间一律不弹出。
-    let (completions, hover) =
-        if (state.value.is_empty() && !placeholder.is_empty()) || ime.is_some() {
-            (None, None)
-        } else {
-            (completions, hover)
-        };
+    let (completions, hover) = if (state.value.is_empty() && !placeholder.is_empty())
+        || ime.is_some_and(|ime| !ime.text.is_empty())
+    {
+        (None, None)
+    } else {
+        (completions, hover)
+    };
 
     // minimap 行长收集不在源构造内进行：占位符与 IME 组合态的编辑器选项
     // 归默认（不显示 minimap），收集结果只会被丢弃；仅多行且开启选项时
@@ -5025,12 +5026,14 @@ impl UiWorld {
             return None;
         }
         // IME 组合期 inlay 整体退场（同 swatch 先例：组合拼接改变显示
-        // 字节布局，值空间锚点漂移）；折叠照常参与组合拼接。
-        let composing = editor.ime().is_some();
-        let inlays: &[crate::TextInlay] = match (composing, inlays) {
-            (false, Some(fed)) => fed,
-            _ => &[],
+        // 字节布局，值空间锚点漂移）；折叠照常参与组合拼接。一个挂着
+        // 却没有组字的 IME（空 preedit）不算组合期。
+        let composing = editor.session.is_composing();
+        let fed = match (composing, inlays) {
+            (false, Some(fed)) => Some(Arc::clone(fed)),
+            _ => None,
         };
+        let inlays: &[crate::TextInlay] = fed.as_deref().unwrap_or(&[]);
         let collapsed = entry
             .as_ref()
             .map(|entry| entry.collapsed.as_slice())
@@ -5038,7 +5041,7 @@ impl UiWorld {
         let key = crate::store::DisplayViewKey {
             text: editor.session.text().stamp(),
             collapsed: collapsed.to_vec(),
-            inlays: (!inlays.is_empty()).then(|| (inlays.as_ptr() as usize, inlays.len())),
+            inlays: fed.clone(),
             composing,
         };
         if let Some((cached, view)) = &editor.display.borrow().view

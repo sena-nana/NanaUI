@@ -3236,6 +3236,99 @@ fn inlays_inside_folded_regions_are_dropped() {
 /// 显示视图；IME 组合期整体退场（同 swatch 先例），组合结束恢复；空表
 /// 撤除条目。
 #[test]
+fn a_component_selection_set_normalizes_the_way_the_session_does() {
+    // What a component holds and what the world's session holds are
+    // compared on every projection; if they normalize differently, every
+    // projection resends the whole state.
+    let value = "a👨‍👩‍👧b cd";
+    let family = "a".len().."a👨‍👩‍👧".len();
+    let mut component = TextInputState {
+        value: value.into(),
+        selection: crate::TextSelection::caret(0),
+        additional_selections: vec![
+            crate::TextSelection::caret(value.len()),
+            // Inside the family emoji: off a grapheme boundary.
+            crate::TextSelection::caret(family.start + 4),
+        ],
+    };
+    // The primary jumps onto another cursor, as bracket matching can.
+    component.selection = crate::TextSelection::caret(value.len());
+    component.normalize_selections();
+
+    let mut session = TextInputState {
+        value: value.into(),
+        selection: crate::TextSelection::caret(0),
+        additional_selections: vec![
+            crate::TextSelection::caret(value.len()),
+            crate::TextSelection::caret(family.start + 4),
+        ],
+    }
+    .to_session();
+    session.set_primary_selection(crate::TextSelection::caret(value.len()));
+
+    let view = crate::TextInputView::of(&session);
+    assert!(view == component, "{view:?} vs {component:?}");
+    assert_eq!(
+        component.selection,
+        crate::TextSelection::caret(value.len())
+    );
+    assert_eq!(
+        component.additional_selections,
+        vec![crate::TextSelection::caret(family.start)],
+        "the cursor inside the cluster snapped to its start; the one under the primary fused"
+    );
+}
+
+#[test]
+fn a_new_inlay_feed_is_never_answered_from_the_memoized_view() {
+    let mut world = UiWorld::default();
+    fold_editor_world(&mut world, Arc::from([]), false, None);
+    // Feeds of one size, fed and dropped in turn: a freed feed's address is
+    // the likeliest one for the next, and the memoized view must not take
+    // the new feed for the old.
+    for (round, label) in ["a:", "b:", "c:", "d:"].into_iter().enumerate() {
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_inlays(node(1), Arc::from([crate::TextInlay::new(4, label)]));
+        world.commit(queue).unwrap();
+        let view = world.text_display_view(node(1)).expect("inlay view");
+        assert!(
+            view.value.contains(label),
+            "round {round}: the view shows the feed it was asked about"
+        );
+        let mut queue = MutationQueue::new();
+        queue.set_text_input_inlays(node(1), Arc::from([]));
+        world.commit(queue).unwrap();
+        assert!(world.text_display_view(node(1)).is_none());
+    }
+}
+
+#[test]
+fn an_empty_preedit_is_not_a_composition_for_the_display() {
+    let mut world = UiWorld::default();
+    fold_editor_world(&mut world, Arc::from([]), false, None);
+    let mut queue = MutationQueue::new();
+    queue.set_text_input_inlays(node(1), Arc::from([crate::TextInlay::new(4, "p:")]));
+    queue.request_focus(document(1), Some(node(1)));
+    // A platform reporting "nothing composed" between keystrokes.
+    queue.set_ime(
+        node(1),
+        Some(ImeComposition {
+            text: String::new(),
+            selection: None,
+        }),
+    );
+    world.commit(queue).unwrap();
+    assert!(
+        world.ime(node(1)).is_some(),
+        "the IME is still attached: a submit waits for it"
+    );
+    let view = world
+        .text_display_view(node(1))
+        .expect("inlays stay while nothing is composed");
+    assert!(view.value.contains("p:"));
+}
+
+#[test]
 fn inlay_feeds_validate_in_world_and_retire_during_ime() {
     let mut world = UiWorld::default();
     fold_editor_world(&mut world, Arc::from([]), false, None);

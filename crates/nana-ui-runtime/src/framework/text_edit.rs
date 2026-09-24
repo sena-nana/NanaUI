@@ -2378,6 +2378,9 @@ impl AppContext {
                         return false;
                     }
                     area.state.selection = selection;
+                    // The session fuses a primary that lands on another
+                    // cursor; so does the component, or the two disagree.
+                    area.state.normalize_selections();
                     true
                 })
             }
@@ -2388,6 +2391,7 @@ impl AppContext {
                         return false;
                     }
                     field.state.selection = selection;
+                    field.state.normalize_selections();
                     true
                 })
             }

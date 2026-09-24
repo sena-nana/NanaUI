@@ -219,13 +219,28 @@ pub(crate) struct EditorDisplayMemo {
 }
 
 /// What a fold / inlay view is a function of.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct DisplayViewKey {
     pub text: nana_text::TextStamp,
     pub collapsed: Vec<crate::TextCodeFold>,
-    /// The inlay set, by identity: a new feed is a new `Arc`.
-    pub inlays: Option<(usize, usize)>,
+    /// The inlay set, by identity: a new feed is a new `Arc`. Held, not
+    /// just its address: a freed feed's address can come back for the next
+    /// one, and a key that did not keep it alive would then match it.
+    pub inlays: Option<Arc<[crate::TextInlay]>>,
     pub composing: bool,
+}
+
+impl PartialEq for DisplayViewKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+            && self.composing == other.composing
+            && self.collapsed == other.collapsed
+            && match (&self.inlays, &other.inlays) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
 }
 
 impl EditorRecord {
