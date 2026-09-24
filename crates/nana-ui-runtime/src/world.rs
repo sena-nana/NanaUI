@@ -2369,19 +2369,20 @@ impl UiWorld {
             .flatten()
             .copied()
             .collect::<HashSet<_>>();
-        // The overlay closing here, if one is: at most one (see below).
+        // The overlays closing here: usually the removed root alone.
         let closing = hosts
             .iter()
             .filter(|host| !removed.contains(host))
             .filter_map(|host| self.nodes.overlay_host(*host)?.active)
-            .find(|active| removed.contains(active));
+            .filter(|active| removed.contains(active))
+            .collect::<Vec<_>>();
         // Overlays opened from inside it, hosted elsewhere (a dropdown's
         // listbox hosted outside the popover it opened from), and those
         // opened from inside them in turn: focus in any of them belongs to
         // the closing overlay too. The openers are still in the tree here: a
         // despawn takes the root first, and parking keeps the nodes.
         let mut opened_from_closing = Vec::new();
-        if let Some(closing) = closing {
+        if !closing.is_empty() {
             let open = self
                 .overlay_host_nodes
                 .iter()
@@ -2392,7 +2393,7 @@ impl UiWorld {
                     Some((active, state.restore_focus?))
                 })
                 .collect::<Vec<_>>();
-            let mut frontier = vec![closing];
+            let mut frontier = closing;
             while let Some(parent) = frontier.pop() {
                 for &(active, opener) in &open {
                     if opened_from_closing.contains(&active) {
@@ -2407,8 +2408,7 @@ impl UiWorld {
                 }
             }
         }
-        // An active overlay is its host's child, and a host inside `removed`
-        // is skipped: at most one overlay closes here, the removed root.
+        // A host inside `removed` goes with it and is skipped.
         let updates = hosts
             .into_iter()
             .filter_map(|host| {

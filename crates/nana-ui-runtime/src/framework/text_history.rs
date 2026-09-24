@@ -159,6 +159,10 @@ impl TextHistory {
             // to undo (typing a character a change handler then removed).
             if last.after.value == last.before.value {
                 self.steps.pop();
+                // The step before it does not reach across the run it lost.
+                if let Some(previous) = self.steps.last_mut() {
+                    previous.seal();
+                }
             }
             self.cursor = self.steps.len();
             return;
@@ -221,8 +225,8 @@ impl TextHistory {
         self.seal_before_cursor();
     }
 
-    /// The state [`Self::undo`] or [`Self::redo`] would restore, without
-    /// moving the cursor or sealing anything.
+    /// The state an undo (`undo`) or a redo would restore, without moving
+    /// the cursor or sealing anything.
     fn peek(&self, undo: bool) -> Option<&TextInputState> {
         if undo {
             Some(&self.steps.get(self.cursor.checked_sub(1)?)?.before)
@@ -483,7 +487,12 @@ impl crate::AppContext {
         // What the editor holds after the edit, a change handler's rewrite
         // included: a field that uppercases or filters what is typed is part
         // of how that editor takes input, so the step records its result.
-        let after = self.read(entity, |editable: &C| editable.state().clone())?;
+        // A view a failed follow-up took away reports that failure, not the
+        // missing view.
+        let after = match self.read(entity, |editable: &C| editable.state().clone()) {
+            Ok(after) => after,
+            Err(missing) => return written.and(Err(missing)),
+        };
         // Someone else wrote the text during the edit, or the world holds no
         // text for the editor: the journal cannot vouch for what is shown,
         // so it goes rather than adopt it. The world takes the component's
@@ -492,18 +501,17 @@ impl crate::AppContext {
         // in O(1); bytes are compared only when the buffers differ, which
         // only another batch's write causes, and one that wrote the same
         // bytes leaves the journal true.
-        let held = self.editor_text_stamp(node);
         // Whether or not the write reported an error: a follow-up that
         // failed after writing the editor still left text the journal did
         // not produce.
-        let foreign = self
+        let world = self
             .world
             .text_input(node)
-            .is_none_or(|input| input.value_shared() != after.value);
-        if foreign {
+            .map(|input| (input.value_shared(), input.session().text().stamp()));
+        let Some((_, held)) = world.filter(|(shown, _)| *shown == after.value) else {
             self.text_histories.forget(node);
             return written;
-        }
+        };
         // A failed write still counts if the component took the new text:
         // the world may hold it already, and a journal that never saw it
         // would take it for an outside write and drop every step. A write
@@ -512,8 +520,12 @@ impl crate::AppContext {
         if written.is_ok() || after.value != before.value {
             if after.value != before.value {
                 self.text_histories.record(node, before, after, origin);
+            } else {
+                // An edit that landed and changed nothing (a change handler
+                // took back what was typed) still ends the run before it.
+                self.text_histories.seal(node);
             }
-            self.text_histories.witness(node, held);
+            self.text_histories.witness(node, Some(held));
         }
         written
     }
@@ -598,17 +610,15 @@ impl crate::AppContext {
                 editable.state().value == target_value
             })
             .unwrap_or(false);
-        match &restored {
-            // Restored as the journal kept it: the cursor moves with it.
-            Ok(true) if holds_target => self.text_histories.step(node, undo),
+        if holds_target {
+            // Restored as the journal kept it, even by a restore that then
+            // failed in a follow-up: the cursor moves with it.
+            self.text_histories.step(node, undo);
+        } else if matches!(restored, Ok(true)) {
             // Restored, then rewritten by the editor's change handler: the
             // editor holds a state the journal never had, and no cursor
             // position matches it.
-            Ok(true) => self.text_histories.forget(node),
-            // A failed restore that landed anyway (the component took the
-            // text before a follow-up failed) moves the cursor too.
-            Err(_) if holds_target => self.text_histories.step(node, undo),
-            _ => {}
+            self.text_histories.forget(node);
         }
         restored
     }
@@ -1197,6 +1207,62 @@ mod editor_tests {
         assert!(cx.can_undo_text(area.stable_id()));
         cx.clear_text_history(area.stable_id()).unwrap();
         assert!(!cx.undo_focused_text(document()).unwrap());
+    }
+
+    #[test]
+    fn a_run_that_changed_nothing_does_not_let_the_step_before_it_reach_across() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        // The field refuses "x": its handler takes it straight back out.
+        cx.on(area, |area, _: &crate::TextChanged, _| {
+            if area.state.value.contains('x') {
+                let caret = area.state.value.replace('x', "").len();
+                area.state = crate::TextInputState::new(area.state.value.replace('x', ""));
+                area.state.selection = crate::TextSelection::caret(caret);
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "abc").unwrap();
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        // A typing run that ends where it began: dropped, not a step.
+        cx.replace_focused_text(document(), "x").unwrap();
+        assert_eq!(value_of(&cx, area), "ab");
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            value_of(&cx, area),
+            "ab",
+            "the second deletion is its own step, not more of the first"
+        );
+
+        // A recorded run the handler then brings back to where it began.
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.on(area, |area, _: &crate::TextChanged, _| {
+            if area.state.value.contains('x') {
+                let kept = area.state.value.replace(['q', 'x'], "");
+                let caret = kept.len();
+                area.state = crate::TextInputState::new(kept);
+                area.state.selection = crate::TextSelection::caret(caret);
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "abc").unwrap();
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        cx.replace_focused_text(document(), "q").unwrap();
+        cx.replace_focused_text(document(), "x").unwrap();
+        assert_eq!(value_of(&cx, area), "ab");
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(
+            value_of(&cx, area),
+            "ab",
+            "after a run that was dropped too"
+        );
     }
 
     #[test]
