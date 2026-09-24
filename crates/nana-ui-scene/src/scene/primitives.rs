@@ -665,6 +665,7 @@ impl UiScene {
                 }
                 Some(StandardVisual::TextInput { .. }) => {
                     if let Some(ComponentGeometry::TextInput {
+                        scroll,
                         caret,
                         additional_carets,
                         additional_caret_color,
@@ -699,6 +700,13 @@ impl UiScene {
                         ..
                     }) = node.component_geometry.as_deref()
                     {
+                        // Gutter, current-line band, minimap and sticky line
+                        // stay on `visual_context`: they don't scroll along x.
+                        let scroll = EditorScroll(*scroll);
+                        let scrolled_context = VisualPrimitiveContext {
+                            transform: scroll.transform(transform),
+                            ..visual_context
+                        };
                         // git gutter 标记：gutter 最左侧 2px 竖条按种类各一个
                         // quad 批次（slot 18 新增 / 19 修改 / 8 删除），与折叠
                         // 箭头同用外层裁剪；空种类不产生批次。位置与颜色由
@@ -815,14 +823,14 @@ impl UiScene {
                         }
                         for (marker_index, (rect, color)) in diagnostic_markers.iter().enumerate() {
                             self.insert_primitive(visual_quad(
-                                &visual_context,
+                                &scrolled_context,
                                 collection_slot(TEXT_DIAGNOSTIC_MARKERS, marker_index),
-                                scene_rect(*rect),
+                                scroll.rect(*rect),
                                 VisualQuadStyle::solid(*color),
                             ));
                         }
                         for (label_index, region) in diagnostic_labels.iter().enumerate() {
-                            self.insert_primitive(component_text_primitive(
+                            self.insert_primitive(scroll.text(component_text_primitive(
                                 id,
                                 collection_slot(TEXT_DIAGNOSTIC_LABELS, label_index),
                                 region,
@@ -833,7 +841,7 @@ impl UiScene {
                                 std::sync::Arc::clone(&clips),
                                 opacity,
                                 node_order,
-                            ));
+                            )));
                         }
                         // 查找匹配高亮：普通匹配（slot 3，文本之上、光标之
                         // 下）与当前匹配（slot 6，更强）各一个 quad 批次，
@@ -842,17 +850,19 @@ impl UiScene {
                             match_markers.iter().partition(|marker| !marker.current);
                         if !normal_matches.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 3,
-                                normal_matches.iter().map(|marker| scene_rect(marker.rect)),
+                                normal_matches.iter().map(|marker| scroll.rect(marker.rect)),
                                 VisualQuadStyle::solid(normal_matches[0].color),
                             ));
                         }
                         if !current_matches.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 6,
-                                current_matches.iter().map(|marker| scene_rect(marker.rect)),
+                                current_matches
+                                    .iter()
+                                    .map(|marker| scroll.rect(marker.rect)),
                                 VisualQuadStyle::solid(current_matches[0].color),
                             ));
                         }
@@ -862,11 +872,11 @@ impl UiScene {
                         // 细描边，位置与颜色由世界按 span 末行几何解析。
                         if !swatch_markers.is_empty() {
                             self.insert_primitive(visual_quad_color_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 23,
                                 swatch_markers
                                     .iter()
-                                    .map(|(rect, color)| (scene_rect(*rect), *color)),
+                                    .map(|(rect, color)| (scroll.rect(*rect), *color)),
                                 VisualQuadStyle {
                                     background: None,
                                     border_color: Some(*swatch_border_color),
@@ -881,9 +891,9 @@ impl UiScene {
                                 .find_map(|chip| chip.label.color)
                                 .unwrap_or([0.12, 0.12, 0.14, 1.0]);
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 22,
-                                atom_chips.iter().map(|chip| scene_rect(chip.bounds)),
+                                atom_chips.iter().map(|chip| scroll.rect(chip.bounds)),
                                 VisualQuadStyle {
                                     background: Some(atom_chips[0].background),
                                     border_color: Some(atom_chips[0].border),
@@ -892,11 +902,11 @@ impl UiScene {
                                 },
                             ));
                             self.insert_primitive(batch_primitive(
-                                &visual_context,
+                                &scrolled_context,
                                 25,
                                 atom_chips
                                     .iter()
-                                    .map(|chip| scene_rect(chip.close))
+                                    .map(|chip| scroll.rect(chip.close))
                                     .collect(),
                                 |bounds| ScenePrimitiveKind::IconBatch {
                                     bounds,
@@ -906,16 +916,16 @@ impl UiScene {
                             ));
                             for (index, chip) in atom_chips.iter().enumerate() {
                                 self.insert_primitive(batch_primitive(
-                                    &visual_context,
+                                    &scrolled_context,
                                     collection_slot(TEXT_ATOM_ICONS, index),
-                                    vec![scene_rect(chip.icon_bounds)],
+                                    vec![scroll.rect(chip.icon_bounds)],
                                     |bounds| ScenePrimitiveKind::IconBatch {
                                         bounds,
                                         icon: chip.icon,
                                         color: Some(chip_fg),
                                     },
                                 ));
-                                self.insert_primitive(component_text_primitive(
+                                self.insert_primitive(scroll.text(component_text_primitive(
                                     id,
                                     collection_slot(TEXT_ATOM_LABELS, index),
                                     &chip.label,
@@ -926,7 +936,7 @@ impl UiScene {
                                     std::sync::Arc::clone(&clips),
                                     opacity,
                                     node_order,
-                                ));
+                                )));
                             }
                         }
                         // 当前行条：slot 1 与选区同一层级（互斥：选区收起时
@@ -942,9 +952,9 @@ impl UiScene {
                         // 缩进参考线：1px 竖线批次，低对比结构标记。
                         if !indent_guides.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 10,
-                                indent_guides.iter().map(|(rect, _)| scene_rect(*rect)),
+                                indent_guides.iter().map(|(rect, _)| scroll.rect(*rect)),
                                 VisualQuadStyle::solid(indent_guides[0].1),
                             ));
                         }
@@ -952,9 +962,11 @@ impl UiScene {
                         // 上、括号描边之下），弱于查找匹配的两级强调。
                         if !occurrence_markers.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 11,
-                                occurrence_markers.iter().map(|(rect, _)| scene_rect(*rect)),
+                                occurrence_markers
+                                    .iter()
+                                    .map(|(rect, _)| scroll.rect(*rect)),
                                 VisualQuadStyle::solid(occurrence_markers[0].1),
                             ));
                         }
@@ -973,15 +985,16 @@ impl UiScene {
                                 // 保持"标点"观感而不遮挡字形。
                                 let extent = (*line_labels_font_size * 0.2).clamp(2.0, 3.0);
                                 self.insert_primitive(visual_quad_batch(
-                                    &visual_context,
+                                    &scrolled_context,
                                     16,
                                     dots.iter().map(|rect| {
-                                        let mut bounds = scene_rect(**rect);
-                                        bounds.width = extent;
-                                        bounds.height = extent;
-                                        bounds.x += (scene_rect(**rect).width - extent) / 2.0;
-                                        bounds.y += (scene_rect(**rect).height - extent) / 2.0;
-                                        bounds
+                                        let cell = scroll.rect(**rect);
+                                        SceneRect {
+                                            x: cell.x + (cell.width - extent) / 2.0,
+                                            y: cell.y + (cell.height - extent) / 2.0,
+                                            width: extent,
+                                            height: extent,
+                                        }
                                     }),
                                     VisualQuadStyle {
                                         background: Some(*whitespace_color),
@@ -995,7 +1008,7 @@ impl UiScene {
                                 .iter()
                                 .filter(|(_, kind)| *kind == TextWhitespaceKind::Tab)
                                 .map(|(rect, _)| {
-                                    let cell = scene_rect(*rect);
+                                    let cell = scroll.rect(*rect);
                                     // 箭头尺寸按字符单元高度缩放，居中放置。
                                     let extent = (cell.height * 0.55).clamp(6.0, 14.0);
                                     SceneRect {
@@ -1008,7 +1021,7 @@ impl UiScene {
                                 .collect();
                             if !arrows.is_empty() {
                                 self.insert_primitive(batch_primitive(
-                                    &visual_context,
+                                    &scrolled_context,
                                     60,
                                     arrows,
                                     |bounds| ScenePrimitiveKind::IconBatch {
@@ -1024,9 +1037,9 @@ impl UiScene {
                         // 竖线，但贯穿整个内容区高度。
                         if !wrap_guides.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 17,
-                                wrap_guides.iter().map(|(rect, _)| scene_rect(*rect)),
+                                wrap_guides.iter().map(|(rect, _)| scroll.rect(*rect)),
                                 VisualQuadStyle::solid(wrap_guides[0].1),
                             ));
                         }
@@ -1092,9 +1105,9 @@ impl UiScene {
                         // 之上（描边不遮挡字形）。
                         if !bracket_markers.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 12,
-                                bracket_markers.iter().map(|(rect, _)| scene_rect(*rect)),
+                                bracket_markers.iter().map(|(rect, _)| scroll.rect(*rect)),
                                 VisualQuadStyle {
                                     background: None,
                                     border_color: Some(bracket_markers[0].1),
@@ -1107,17 +1120,17 @@ impl UiScene {
                         // （slot 6，与选区/当前行条同层、正文之上）。
                         if let Some((rect, color)) = drop_indicator {
                             self.insert_primitive(visual_quad(
-                                &visual_context,
+                                &scrolled_context,
                                 6,
-                                scene_rect(*rect),
+                                scroll.rect(*rect),
                                 VisualQuadStyle::solid(*color),
                             ));
                         }
                         if let Some(caret) = caret {
                             self.insert_primitive(visual_quad(
-                                &visual_context,
+                                &scrolled_context,
                                 4,
-                                scene_rect(*caret),
+                                scroll.rect(*caret),
                                 VisualQuadStyle::solid(*caret_color),
                             ));
                         }
@@ -1125,17 +1138,17 @@ impl UiScene {
                         // （slot 13，与主光标同层）。
                         if !additional_carets.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 13,
-                                additional_carets.iter().map(|rect| scene_rect(*rect)),
+                                additional_carets.iter().map(|rect| scroll.rect(*rect)),
                                 VisualQuadStyle::solid(*additional_caret_color),
                             ));
                         }
                         if !preedit.is_empty() {
                             self.insert_primitive(visual_quad_batch(
-                                &visual_context,
+                                &scrolled_context,
                                 5,
-                                preedit.iter().map(|preedit| scene_rect(*preedit)),
+                                preedit.iter().map(|preedit| scroll.rect(*preedit)),
                                 VisualQuadStyle::solid(*preedit_color),
                             ));
                         }

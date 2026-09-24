@@ -1069,6 +1069,13 @@ impl UiWorld {
                         font_weight: style.font_weight,
                     },
                     multiline,
+                    scroll: multiline.then(|| {
+                        frame.scroll_x(
+                            presentation.content_size.width,
+                            presentation.content_size.height,
+                            multiline,
+                        )
+                    }),
                     selection,
                     caret,
                     additional_carets,
@@ -2659,11 +2666,11 @@ fn vertical_text_input_geometry(
     let line = presentation.line_height.max(1.0);
     let caret_at = |(inline, block): (f32, f32)| frame.field_rect(caret_rule(inline, block, line));
     // Along the columns is the page's height, across them its width.
-    text.bounds = frame.text_bounds(
+    let (inline_extent, block_extent) = (
         presentation.content_size.height,
         presentation.content_size.width,
-        multiline,
     );
+    text.bounds = frame.text_bounds(inline_extent, block_extent, multiline);
     // The preedit underline runs beside the column, on its block-start side:
     // the right of a `vertical-rl` column.
     let preedit = presentation
@@ -2675,6 +2682,7 @@ fn vertical_text_input_geometry(
         resize_grip,
         text,
         multiline,
+        scroll: multiline.then(|| frame.scroll_x(inline_extent, block_extent, multiline)),
         selection: presentation
             .selection_lines
             .iter()

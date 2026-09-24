@@ -541,6 +541,7 @@ fn text_input_clip_em_padding_uses_computed_font_size() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 32.0,
@@ -2273,6 +2274,7 @@ fn editor_input_with_markers_and_line_labels() -> ExtractedNode {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 40.0,
@@ -2567,6 +2569,7 @@ fn text_input_match_markers_paint_as_batches_and_current_match_emphasizes() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
@@ -2708,6 +2711,7 @@ fn text_input_color_swatches_paint_as_one_per_item_color_batch_and_clear_with_fe
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
@@ -2835,6 +2839,7 @@ fn text_input_minimap_paints_panel_bars_and_indicator_batches() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -3008,6 +3013,7 @@ fn occurrence_whitespace_and_wrap_guides_paint_in_dedicated_slots() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -3197,6 +3203,7 @@ fn text_input_without_editor_extras_paints_no_occurrence_whitespace_or_wrap_slot
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 0.0,
@@ -3288,6 +3295,7 @@ fn git_gutter_input(node_id: u64, git: nana_ui_runtime::TextGitGutterGeometry) -
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 46.0,
@@ -3618,6 +3626,7 @@ fn fold_gutter_marks_paint_as_two_batches_and_survive_beyond_the_slot_cap() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 18.0,
@@ -3766,6 +3775,7 @@ fn tab_arrows_paint_as_one_batch_and_survive_beyond_the_slot_cap() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 18.0,
@@ -3884,6 +3894,7 @@ fn text_input_paints_additional_cursors_as_a_batch_beside_the_primary_caret() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 40.0,
@@ -4004,6 +4015,7 @@ fn text_input_editor_chrome_paints_caret_line_brackets_and_indent_guides() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
@@ -4185,6 +4197,7 @@ fn text_input_geometry_paints_selection_text_caret_preedit_and_focus_in_order() 
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
@@ -4328,6 +4341,7 @@ fn input_component_geometry(multiline: bool) -> Option<Box<ComponentGeometry>> {
     Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline,
+        scroll: None,
         text: nana_ui_runtime::ComponentTextRegion {
             bounds: LayoutBox {
                 x: 8.0,
@@ -7782,6 +7796,7 @@ fn completion_and_hover_overlays_paint_above_editor_layers() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
         caret: None,
@@ -7956,6 +7971,7 @@ fn completion_doc_rows_and_hover_overlay_coexist_without_slot_clashes() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: text_region("fn", LayoutBox::default()),
         selection: Vec::new(),
         caret: None,
@@ -8116,6 +8132,7 @@ fn text_input_main_text_region_keeps_display_space_spans_but_labels_do_not() {
     input.component_geometry = Some(Box::new(ComponentGeometry::TextInput {
         resize_grip: None,
         multiline: true,
+        scroll: None,
         text: text_region(display),
         selection: Vec::new(),
         caret: None,

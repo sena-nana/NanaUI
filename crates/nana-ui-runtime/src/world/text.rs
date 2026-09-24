@@ -5404,6 +5404,29 @@ impl EditorFrame {
         })
     }
 
+    /// The scroll along the page's x axis — the inline scroll of horizontal
+    /// text, the block scroll of vertical text — and where
+    /// [`Self::text_bounds`] starts without it.
+    pub(crate) fn scroll_x(
+        &self,
+        inline_extent: f32,
+        block_extent: f32,
+        multiline: bool,
+    ) -> crate::TextInputScroll {
+        let mut unscrolled = *self;
+        if self.writing.is_vertical() {
+            unscrolled.block_scroll = 0.0;
+        } else {
+            unscrolled.inline_scroll = 0.0;
+        }
+        crate::TextInputScroll {
+            offset_x: -self.scroll_offset().x,
+            text_x: unscrolled
+                .text_bounds(inline_extent, block_extent, multiline)
+                .x,
+        }
+    }
+
     /// The content box's extent along the lines and across them.
     fn content_extents(&self) -> (f32, f32) {
         if self.writing.is_vertical() {

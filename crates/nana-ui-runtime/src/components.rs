@@ -503,6 +503,19 @@ pub struct TextFoldGeometry {
     pub markers: Vec<TextFoldMarker>,
 }
 
+/// A multiline editor's scroll along the page's x axis, which the Scene draws
+/// as a translation so the painter snaps it to whole device pixels (#223).
+/// The geometry's boxes still include it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextInputScroll {
+    /// The page-x displacement the scroll adds: `-scrollLeft` for horizontal
+    /// text.
+    pub offset_x: f32,
+    /// The value's box's x without the scroll, exactly: glyphs are keyed on
+    /// its sub-pixel phase, and `text.bounds.x - offset_x` can be an ulp off.
+    pub text_x: f32,
+}
+
 /// 节点空间内的查找匹配高亮条带，颜色由世界按当前/普通匹配解析。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TextMatchMarker {
@@ -1283,6 +1296,8 @@ pub enum ComponentGeometry {
         resize_grip: Option<LayoutBox>,
         text: ComponentTextRegion,
         multiline: bool,
+        /// `None` for a single-line field, whose scroll only follows its caret.
+        scroll: Option<TextInputScroll>,
         selection: Vec<LayoutBox>,
         caret: Option<LayoutBox>,
         /// 附加多光标（收起态）的 caret 矩形；主光标仍在 `caret`。

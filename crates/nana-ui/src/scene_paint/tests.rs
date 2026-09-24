@@ -9797,6 +9797,119 @@ fn a_fractional_scroll_moves_quads_text_and_clips_by_the_same_whole_pixels() {
     }
 }
 
+/// A focused, unwrapped TextArea whose one line runs far past its right edge,
+/// a selection and its caret in the middle of what it shows, settled.
+fn long_line_editor() -> (AppContext, DocumentId, StableNodeId) {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let mut view =
+        nana_ui_runtime::TextArea::new("let horizontally_scrolled = editor.value(); // ".repeat(6));
+    {
+        let layout = Arc::make_mut(&mut view.style.layout);
+        layout.white_space_nowrap = true;
+        layout.font_size = Some(16.0);
+        layout.margin_left = Some(LengthSpec::Px(10.3));
+        layout.margin_top = Some(LengthSpec::Px(4.6));
+        layout.min_height = Some(LengthSpec::Px(0.0));
+        layout.width = Some(LengthSpec::Px(240.0));
+        layout.height = Some(LengthSpec::Px(64.0));
+    }
+    // At a fractional position, as flex leaves an editor.
+    let root = context
+        .create_component(document, nana_ui_runtime::Stack::column(0.0))
+        .unwrap();
+    let area = context.create_component(document, view).unwrap();
+    context.append_child(root, area).unwrap();
+    let node = area.stable_id();
+    let ids = [root.stable_id(), node];
+    let viewport = nana_ui_runtime::LayoutViewport::new(260.0, 80.0);
+    let mut shaper = crate::NanaTextShaper::default();
+    let mut settle = |context: &mut AppContext| {
+        context.resolve_styles(&ids).unwrap();
+        context.shape_text(&ids, &mut shaper).unwrap();
+        context.layout_document(document, viewport).unwrap();
+        if context
+            .shape_text_for_layout(document, &mut shaper)
+            .unwrap()
+        {
+            context.layout_document(document, viewport).unwrap();
+        }
+        context.rebuild_hit_test(document);
+    };
+    settle(&mut context);
+    assert!(context.focus_node(document, node).unwrap());
+    assert!(context.select_focused_text_range(document, 8, 21).unwrap());
+    settle(&mut context);
+    (context, document, node)
+}
+
+#[test]
+fn a_fractional_horizontal_scroll_of_an_editor_keeps_every_glyph() {
+    // The editor's own scroll reaches the painter as a translation, so a
+    // trackpad's fractional deltas move the value, caret and selection by the
+    // same whole device pixels (#223) instead of re-resolving the paragraph.
+    let (device, queue) = test_device();
+    for scale in [1.0f32, 1.1, 1.2, 1.75] {
+        let (mut context, document, node) = long_line_editor();
+        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let logical = [260.0, 80.0];
+        let physical = [
+            (logical[0] * scale).round() as u32,
+            (logical[1] * scale).round() as u32,
+        ];
+        let mut scene = UiScene::new();
+        let frame = |context: &AppContext, scene: &mut UiScene, painter: &mut SceneWgpuPainter| {
+            scene.apply_delta(context.world().extract_document(document), []);
+            paint_scene_rgba(&device, &queue, painter, scene, logical, physical, scale)
+        };
+        let still = frame(&context, &mut scene, &mut painter);
+        let warm = painter.text_glyph_counters();
+        let (content, _) = context.world().text_input_pointer_context(node).unwrap();
+        let wheel = nana_ui_platform::InputEvent::Wheel {
+            x: content.x + content.width / 2.0,
+            y: content.y + content.height / 2.0,
+            delta_x: -0.37,
+            delta_y: 0.0,
+            line_delta: false,
+            modifiers: nana_ui_platform::InputModifiers::default(),
+        };
+        let mut adapter = crate::RuntimeInputAdapter::default();
+        for step in 1..24 {
+            adapter.dispatch(&mut context, document, &wheel).unwrap();
+            let offset = context.world().scroll_offset(node).unwrap_or_default().x;
+            assert!(
+                (offset - step as f32 * 0.37).abs() < 1.0e-3,
+                "every slow delta is kept: {offset} after {step} at {scale}x"
+            );
+            let pixels = frame(&context, &mut scene, &mut painter);
+            // Inside the content box everything moved `shift` device pixels
+            // left of where it stood: glyphs, caret and selection alike.
+            let shift = (offset * scale).round() as u32;
+            let left = (content.x * scale).ceil() as u32 + 1;
+            let right = ((content.x + content.width) * scale).floor() as u32 - 1;
+            let top = (content.y * scale).ceil() as u32 + 1;
+            let bottom = ((content.y + content.height) * scale).floor() as u32 - 1;
+            for y in top..bottom {
+                for x in left..right - shift {
+                    assert_eq!(
+                        pixel(&pixels, physical[0], x, y),
+                        pixel(&still, physical[0], x + shift, y),
+                        "at {scale}x scrolled {offset}, ({x},{y}) is not ({},{y}) moved \
+                         {shift} px: the value, caret and selection moved apart",
+                        x + shift
+                    );
+                }
+            }
+        }
+        let after = painter.text_glyph_counters();
+        assert_eq!(
+            after.text_instance_rebuilds, warm.text_instance_rebuilds,
+            "a fractional horizontal scroll of an editor at {scale}x must not re-resolve its value"
+        );
+        assert_eq!(after.glyph_rasterized, warm.glyph_rasterized);
+    }
+}
+
 #[test]
 fn a_frozen_row_stays_put_under_a_fractional_scroll() {
     let (device, queue) = test_device();

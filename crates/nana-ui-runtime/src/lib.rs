@@ -173,10 +173,10 @@ pub use components::{
     TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
     TextGitMarkKind, TextHit, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay,
-    TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics, TextMinimapGeometry,
-    TextSelection, TextShapeConstraints, TextShaper, TextShaping, TextSignatureHelp,
-    TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextVerticalAlignment,
-    TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
+    TextInputScroll, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
+    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
+    TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
 pub use custom_paint::{
     AFFINE_IDENTITY, Affine, BlendMode, BoxPaint, ColorStop, CornerRadii, FillRule, Gradient,

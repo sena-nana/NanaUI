@@ -12,12 +12,14 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
     match context.node.component_geometry.as_deref() {
         Some(ComponentGeometry::TextInput {
             text,
+            scroll,
             selection,
             selection_color,
             steppers,
             resize_grip,
             ..
         }) => {
+            let scroll = EditorScroll(*scroll);
             if let Some(grip) = resize_grip {
                 emit(visual_quad_batch(
                     &VisualPrimitiveContext {
@@ -83,18 +85,18 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 emit(visual_quad_batch(
                     &VisualPrimitiveContext {
                         node: id,
-                        transform,
+                        transform: scroll.transform(transform),
                         clips: text_input_clips,
                         opacity,
                         z_index: node.z_index,
                         document_order: node_order,
                     },
                     1,
-                    selection.iter().map(|selection| scene_rect(*selection)),
+                    selection.iter().map(|selection| scroll.rect(*selection)),
                     VisualQuadStyle::solid(*selection_color),
                 ));
             }
-            emit(component_text_primitive(
+            emit(scroll.value(component_text_primitive(
                 id,
                 2,
                 text,
@@ -105,7 +107,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 text_input_clips.clone(),
                 opacity,
                 node_order,
-            ));
+            )));
         }
         Some(ComponentGeometry::StatusBadge {
             indicator,

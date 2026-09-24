@@ -230,6 +230,66 @@ fn a_wheel_scrolls_a_vertical_rl_editor_towards_its_later_columns() {
     assert_eq!(cx.world().scroll_offset(node).unwrap_or_default().x, 0.0);
 }
 
+/// A vertical editor's scroll across its columns runs along the page's x
+/// axis: the geometry hands it to the painter as a translation (#223), and
+/// the value's unscrolled start stays put while the columns scroll.
+#[test]
+fn a_vertical_rl_editor_hands_its_column_scroll_to_the_painter() {
+    let mut cx = AppContext::new();
+    let doc = DocumentId::new(1).unwrap();
+    let mut view = TextArea::new("一二三四五六七八九十".repeat(8));
+    {
+        let style = Arc::make_mut(&mut view.style.layout);
+        style.writing_mode = Some(nana_ui_core::WritingModeSpec::VerticalRl);
+        style.font_size = Some(16.0);
+        style.width = Some(nana_ui_core::LengthSpec::Px(120.0));
+        style.height = Some(nana_ui_core::LengthSpec::Px(64.0));
+    }
+    let area = cx.create_component(doc, view).unwrap();
+    let node = area.stable_id();
+    settle(&mut cx, doc, &[node]);
+    let scroll = |cx: &AppContext| {
+        let Some(ComponentGeometry::TextInput {
+            text,
+            scroll: Some(scroll),
+            ..
+        }) = cx.world().component_geometry(node)
+        else {
+            panic!("a multiline editor hands its scroll over")
+        };
+        (text.bounds, scroll)
+    };
+    let (still, at_rest) = scroll(&cx);
+    assert_eq!(at_rest.offset_x, 0.0);
+    assert_eq!(at_rest.text_x, still.x);
+
+    let bounds = cx.world().layout_box(node).unwrap();
+    RuntimeInputAdapter::default()
+        .dispatch(
+            &mut cx,
+            doc,
+            &InputEvent::Wheel {
+                x: bounds.x + bounds.width / 2.0,
+                y: bounds.y + bounds.height / 2.0,
+                delta_x: 40.37,
+                delta_y: 0.0,
+                line_delta: false,
+                modifiers: InputModifiers::default(),
+            },
+        )
+        .unwrap();
+    let scrolled = cx.world().scroll_offset(node).unwrap_or_default().x;
+    assert!(scrolled < 0.0, "towards the later columns: {scrolled}");
+    let (moved, by) = scroll(&cx);
+    // The later columns are on the left: reaching them moves the text right.
+    assert_eq!(by.offset_x, -scrolled);
+    assert_eq!(by.text_x, at_rest.text_x, "the value's own start stays put");
+    assert!(
+        (by.text_x + by.offset_x - moved.x).abs() < 1.0e-3,
+        "and the page box is that start moved by the scroll: {moved:?} vs {by:?}"
+    );
+}
+
 /// A single-line vertical field centres its one column across the box, the
 /// way a horizontal field centres its line down it, and its caret follows.
 #[test]

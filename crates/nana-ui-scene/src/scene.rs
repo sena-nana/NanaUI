@@ -27,7 +27,8 @@ use nana_ui_core::{
 use nana_ui_runtime::{
     ComponentElevation, ComponentGeometry, ComponentTextRegion, CustomRenderNode, ExtractedNode,
     LayoutBox, NodeKind, NodeMap, NodeSet, StableNodeId, StandardVisual, TextFoldGutter,
-    TextHorizontalAlignment, TextShaping, TextVerticalAlignment, TextWhitespaceKind,
+    TextHorizontalAlignment, TextInputScroll, TextShaping, TextVerticalAlignment,
+    TextWhitespaceKind,
 };
 
 use crate::{
@@ -2300,6 +2301,55 @@ fn scene_rect(bounds: LayoutBox) -> SceneRect {
         y: bounds.y,
         width: bounds.width.max(0.0),
         height: bounds.height.max(0.0),
+    }
+}
+
+/// Draws what moves with an editor's text along x under its scroll's
+/// translation, each box less it: the painter snaps that translation, so the
+/// value keeps its glyphs and the caret, selection and marks stay on them.
+#[derive(Clone, Copy)]
+struct EditorScroll(Option<TextInputScroll>);
+
+impl EditorScroll {
+    fn transform(self, transform: AffineTransform) -> AffineTransform {
+        match self.0 {
+            Some(scroll) => transform.then(AffineTransform::from_matrix([
+                1.0,
+                0.0,
+                0.0,
+                1.0,
+                scroll.offset_x,
+                0.0,
+            ])),
+            None => transform,
+        }
+    }
+
+    /// A box that moves with the text, in the translated space.
+    fn rect(self, bounds: LayoutBox) -> SceneRect {
+        let mut rect = scene_rect(bounds);
+        if let Some(scroll) = self.0 {
+            rect.x -= scroll.offset_x;
+        }
+        rect
+    }
+
+    /// Text over the value: a diagnostic's message, an atom's label.
+    fn text(self, mut primitive: ScenePrimitive) -> ScenePrimitive {
+        if let Some(scroll) = self.0 {
+            primitive.bounds.x -= scroll.offset_x;
+            primitive.transform = self.transform(primitive.transform);
+        }
+        primitive
+    }
+
+    /// The value, at its exact unscrolled x.
+    fn value(self, primitive: ScenePrimitive) -> ScenePrimitive {
+        let mut primitive = self.text(primitive);
+        if let Some(scroll) = self.0 {
+            primitive.bounds.x = scroll.text_x;
+        }
+        primitive
     }
 }
 
