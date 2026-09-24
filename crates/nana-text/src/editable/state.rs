@@ -70,8 +70,9 @@ impl EditSelection {
 
 /// Restores the multi-selection invariants over a primary selection and any
 /// number of others: sorted by span, overlapping or touching spans fused into
-/// one forward selection, and the primary's identity carried through a fusion
-/// — the span a fusion with the primary produces is the primary.
+/// one ([`fuse`] keeps what direction and affinity survive), and the
+/// primary's identity carried through a fusion — the span a fusion with the
+/// primary produces is the primary.
 ///
 /// Returns the primary and the remaining spans in document order, none of
 /// which overlaps or touches another or the primary.
@@ -93,9 +94,7 @@ pub fn normalize_selections(
     for (next, is_primary) in flagged {
         match merged.last_mut() {
             Some((last, last_is_primary)) if last.range().end >= next.range().start => {
-                let start = last.range().start;
-                let end = last.range().end.max(next.range().end);
-                *last = EditSelection::new(start, end);
+                *last = fuse(*last, *last_is_primary, next, is_primary);
                 *last_is_primary |= is_primary;
             }
             _ => merged.push((next, is_primary)),
@@ -111,6 +110,42 @@ pub fn normalize_selections(
         }
     }
     (primary.unwrap_or_default(), others)
+}
+
+/// One selection for two that overlap or touch, `last` starting no later
+/// than `next`.
+///
+/// A span that covers the other keeps its own anchor, focus and affinity —
+/// the primary's when the two are the same span — so cursors that land on
+/// one spot (a wrapped line end resolved upstream) or selections extended to
+/// one edge (Shift+Home) keep their direction and side. A span grown from
+/// both points the way both did, else forward.
+fn fuse(
+    last: EditSelection,
+    last_is_primary: bool,
+    next: EditSelection,
+    next_is_primary: bool,
+) -> EditSelection {
+    let (a, b) = (last.range(), next.range());
+    if a == b {
+        return if next_is_primary && !last_is_primary {
+            next
+        } else {
+            last
+        };
+    }
+    if b.end <= a.end {
+        return last;
+    }
+    if a.start == b.start {
+        return next;
+    }
+    let backward = |selection: EditSelection| selection.focus < selection.anchor;
+    if backward(last) && backward(next) {
+        EditSelection::new(b.end, a.start)
+    } else {
+        EditSelection::new(a.start, b.end)
+    }
 }
 
 /// Where an offset lands after `removed` bytes at `start` became `inserted`

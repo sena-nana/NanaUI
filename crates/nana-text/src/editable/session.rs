@@ -623,10 +623,14 @@ impl EditSession {
                 _ => None,
             };
             if let Some(offset) = collapsed {
-                // On the focus, the caret keeps the side it was drawn on.
+                // On the focus, the caret keeps the side it was drawn on; on
+                // the anchor, the side of the selection it ends (a selection
+                // ending at a soft wrap ends on the line it covers).
                 let caret = EditSelection::caret(offset);
                 return Some(if offset == selection.focus {
                     caret.with_affinity(selection.affinity)
+                } else if offset == range.end {
+                    caret.with_affinity(Affinity::Upstream)
                 } else {
                     caret
                 });
@@ -898,8 +902,9 @@ impl EditSession {
     ///
     /// The caller computed the edit and where its cursors go; a multi-cursor
     /// transform is exactly that. While composing, edits clear of the
-    /// preedit's range keep the composition (it moves with them); one that
-    /// reaches into it cancels the composition first.
+    /// preedit's range keep the composition (it moves with them, and so does
+    /// the primary selection it stands in for, whatever `primary` says); one
+    /// that reaches into it cancels the composition first.
     pub fn splice(
         &mut self,
         edits: &[(Range<usize>, &str)],
@@ -916,6 +921,7 @@ impl EditSession {
             self.bump_composition();
         }
         let composing = self.is_composing();
+        let before = composing.then(|| self.state.clone());
         match self.text.splice(edits) {
             Ok(Some(edit)) => {
                 self.record_splice(&changing);
@@ -924,6 +930,10 @@ impl EditSession {
                 }
                 self.state.goal_x_px = None;
                 let (primary, additional) = self.normalized(primary, additional);
+                let primary = match &before {
+                    Some(before) => self.primary_on_composition(before, primary),
+                    None => primary,
+                };
                 self.place_selections(primary, additional);
                 EditChange::Text(edit)
             }
@@ -955,8 +965,12 @@ impl EditSession {
     /// snapshot of these very bytes is recognised by its stamp in O(1).
     ///
     /// The selection set becomes `selections` when given; otherwise every
-    /// cursor moves through the edit ([`remap_selection`](super::remap_selection)).
-    /// A composition clear of the change survives it, as with [`Self::splice`].
+    /// cursor moves through the edit ([`remap_selection`](super::remap_selection)),
+    /// and one left inside a cluster the edit completed goes after it.
+    /// A composition clear of the change survives it, as with [`Self::splice`]:
+    /// an ambiguous change is placed clear of it where the text allows, and
+    /// the primary selection stays the range the preedit stands in for,
+    /// given `selections` or not.
     pub fn assign(
         &mut self,
         text: &SharedText,
@@ -965,7 +979,16 @@ impl EditSession {
         let changed = if self.text.snapshot().same_identity(text) {
             None
         } else {
-            let changed = super::diff::changed_range(self.text.as_str(), text);
+            let changed = match &self.state.composition {
+                // Where the change is ambiguous, not where it ends the
+                // composition.
+                Some(composition) => super::diff::changed_range_clear_of(
+                    self.text.as_str(),
+                    text,
+                    composition.replaced.clone(),
+                ),
+                None => super::diff::changed_range(self.text.as_str(), text),
+            };
             if changed.is_none() {
                 // The same bytes in another buffer (a component's copy):
                 // share it, so the next comparison is a pointer check.
@@ -988,6 +1011,7 @@ impl EditSession {
             self.state.composition = None;
             self.bump_composition();
         }
+        let before = self.is_composing().then(|| self.state.clone());
         let edit = self.text.adopt(text, start, old_end, new_end);
         self.record_edit(&edit);
         self.shift_composition(&edits);
@@ -995,8 +1019,22 @@ impl EditSession {
         let (primary, additional) = match selections {
             Some((primary, additional)) => self.normalized(primary, additional),
             None => {
-                let remap =
-                    |selection| remap_selection(selection, start, old_end - start, new_end - start);
+                // An offset the edit left in place can now sit inside a
+                // cluster the insertion completed ("e" + U+0301): it was
+                // after that base, so it goes after the whole cluster.
+                let remap = |selection| {
+                    let moved = remap_selection(selection, start, old_end - start, new_end - start);
+                    let focus = self.text.snap_to_grapheme(moved.focus, true);
+                    EditSelection {
+                        anchor: self.text.snap_to_grapheme(moved.anchor, true),
+                        focus,
+                        affinity: if focus == moved.focus {
+                            moved.affinity
+                        } else {
+                            Affinity::Downstream
+                        },
+                    }
+                };
                 let primary = remap(self.state.selection);
                 let additional: Vec<EditSelection> = self
                     .state
@@ -1007,8 +1045,33 @@ impl EditSession {
                 self.normalized(primary, additional)
             }
         };
+        let primary = match &before {
+            Some(before) => self.primary_on_composition(before, primary),
+            None => primary,
+        };
         self.place_selections(primary, additional);
         EditChange::Text(edit)
+    }
+
+    /// While composing, the primary selection is the range the preedit
+    /// stands in for. An edit that moved the composition moves the primary
+    /// with it rather than by its own offset rule: an insertion at the
+    /// preedit's start lands before the preedit, so before its selection too.
+    fn primary_on_composition(&self, before: &EditState, primary: EditSelection) -> EditSelection {
+        let (Some(was), Some(now)) = (&before.composition, &self.state.composition) else {
+            return primary;
+        };
+        let previous = before.selection;
+        if previous.range() != was.replaced {
+            return primary;
+        }
+        let range = now.replaced.clone();
+        let selection = if previous.focus < previous.anchor {
+            EditSelection::new(range.end, range.start)
+        } else {
+            EditSelection::new(range.start, range.end)
+        };
+        selection.with_affinity(previous.affinity)
     }
 
     /// Starts or updates a composition. It stands in for the selection it

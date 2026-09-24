@@ -121,14 +121,21 @@ impl SharedText {
     }
 
     /// Replaces `range` with `text` and draws a fresh stamp. Edits the buffer
-    /// in place when nothing else holds it; otherwise builds the new text in
-    /// one pass — the one copy an edit of shared text costs.
+    /// in place when this value alone holds an owned buffer; otherwise (a
+    /// shared buffer, or one built from an `Arc<str>`) builds the new text in
+    /// one pass — the one copy such an edit costs.
     ///
     /// # Panics
     ///
-    /// As [`String::replace_range`]: when `range` is out of bounds or splits
-    /// a character.
+    /// As [`String::replace_range`]: when `range` is reversed, out of bounds
+    /// or splits a character — whichever buffer backs the value.
     pub fn replace_range(&mut self, range: Range<usize>, text: &str) {
+        assert!(
+            range.start <= range.end,
+            "replace_range: range start {} is past its end {}",
+            range.start,
+            range.end
+        );
         let unique = match &mut self.buffer {
             Buffer::Owned(buffer) => Arc::get_mut(buffer),
             Buffer::Str(_) => None,

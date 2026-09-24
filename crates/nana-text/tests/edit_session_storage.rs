@@ -93,7 +93,10 @@ fn assigning_new_text_reports_only_what_changed() {
 
 // ---- several selections ----------------------------------------------------
 
-/// The Runtime rule this replaces, kept verbatim as the reference.
+/// The Runtime rule this replaces, kept verbatim as the reference for which
+/// spans survive and which one is the primary. It rewrote every fusion as a
+/// forward selection; [`fused_selections_keep_their_direction_and_side`]
+/// covers what the session keeps instead.
 fn reference_normalize(
     primary: EditSelection,
     others: &[EditSelection],
@@ -145,12 +148,49 @@ fn normalization_matches_the_runtime_rule_it_replaces() {
         let primary = pick(&mut next);
         let count = next(6);
         let others: Vec<EditSelection> = (0..count).map(|_| pick(&mut next)).collect();
+        let spans = |(primary, others): (EditSelection, Vec<EditSelection>)| {
+            (
+                primary.range(),
+                others.iter().map(EditSelection::range).collect::<Vec<_>>(),
+            )
+        };
         assert_eq!(
-            normalize_selections(primary, others.iter().copied()),
-            reference_normalize(primary, &others),
+            spans(normalize_selections(primary, others.iter().copied())),
+            spans(reference_normalize(primary, &others)),
             "primary {primary:?}, others {others:?}"
         );
     }
+}
+
+#[test]
+fn fused_selections_keep_their_direction_and_side() {
+    // Two carets resolved onto one wrapped line end, upstream: still upstream.
+    let end = caret(5).with_affinity(Affinity::Upstream);
+    assert_eq!(normalize_selections(end, [end]), (end, vec![]));
+    // Shift+Home from 5 and 8: one selection still focused on the line start.
+    let (primary, others) = normalize_selections(span(5, 0), [span(8, 0)]);
+    assert_eq!((primary, others), (span(8, 0), vec![]));
+    // Grown from two backward selections: backward.
+    assert_eq!(normalize_selections(span(4, 0), [span(6, 2)]).0, span(6, 0));
+    // Mixed directions fuse forward, as before.
+    assert_eq!(normalize_selections(span(0, 4), [span(6, 2)]).0, span(0, 6));
+    // One span inside another keeps the outer one whole.
+    assert_eq!(normalize_selections(span(2, 3), [span(6, 0)]).0, span(6, 0));
+    // The same span twice: the primary's own.
+    assert_eq!(normalize_selections(span(3, 1), [span(1, 3)]).0, span(3, 1));
+}
+
+#[test]
+fn every_cursor_on_one_wrapped_line_end_stays_there() {
+    let mut session = session("alpha beta gamma delta", caret(1), &[caret(3)]);
+    let (_engine, geometry) = wrapped_geometry(&session, 70.0);
+    session.move_caret(Motion::LineEnd, false, Some(&geometry));
+    let first = session.selection();
+    assert!(!session.has_additional_selections(), "both land on one end");
+    assert!(first.focus < session.as_str().len(), "the text wraps");
+    assert_eq!(first.affinity, Affinity::Upstream, "the wrap end, upstream");
+    session.move_caret(Motion::LineEnd, false, Some(&geometry));
+    assert_eq!(session.selection(), first, "a second End stays put");
 }
 
 #[test]
@@ -325,6 +365,36 @@ fn an_insertion_at_the_preedit_start_goes_before_it() {
     session.assign(&SharedText::from("hello  world"), None);
     assert!(session.is_composing());
     assert_eq!(session.display_text(), "hello  x");
+    assert_eq!(
+        session.selection().range(),
+        7..12,
+        "the selection the preedit replaces moves with it"
+    );
+}
+
+#[test]
+fn an_ambiguous_value_write_is_placed_clear_of_the_preedit() {
+    let mut session = EditSession::new("abab");
+    session.set_selection(2, 3, Affinity::Downstream);
+    session.set_preedit("x", None);
+    // Either "ab" went; the first one leaves the composition standing.
+    session.assign(&SharedText::from("ab"), None);
+    assert!(session.is_composing(), "the preedit survives");
+    assert_eq!(session.display_text(), "xb");
+    assert_eq!(session.selection().range(), 0..1);
+    session.commit("X");
+    assert_eq!(session.as_str(), "Xb");
+}
+
+#[test]
+fn a_caret_a_write_completes_a_cluster_after_stays_after_it() {
+    let mut session = EditSession::new("e");
+    session.assign(&SharedText::from("e\u{301}"), None);
+    assert_eq!(session.selection(), caret(3), "after the é, not before it");
+
+    let mut session = EditSession::new("\u{1F468}");
+    session.assign(&SharedText::from("\u{1F468}\u{200D}\u{1F469}"), None);
+    assert_eq!(session.selection(), caret(11));
 }
 
 #[test]
@@ -438,6 +508,44 @@ fn style() -> TextStyle {
         font_size_px: 16.0,
         ..TextStyle::default()
     }
+}
+
+#[test]
+fn collapsing_onto_a_selection_end_at_a_wrap_stays_on_its_line() {
+    let mut session = EditSession::new("alpha beta gamma delta");
+    let (_engine, geometry) = wrapped_geometry(&session, 70.0);
+    session.set_selection(0, 0, Affinity::Downstream);
+    session.move_caret(Motion::LineEnd, false, Some(&geometry));
+    let wrap = session.selection().focus;
+    assert!(wrap < session.as_str().len(), "the text wraps");
+    // Selected leftwards from the wrap: the anchor ends the first line.
+    session.set_selection(wrap, 1, Affinity::Downstream);
+    session.move_caret(Motion::Right, false, Some(&geometry));
+    assert_eq!(
+        session.selection(),
+        caret(wrap).with_affinity(Affinity::Upstream),
+        "the caret ends the line the selection covered"
+    );
+}
+
+/// `session`'s text laid out soft-wrapped at `width_px`.
+fn wrapped_geometry(session: &EditSession, width_px: f32) -> (NativeTextEngine, EditorGeometry) {
+    let mut engine = engine();
+    let constraints = TextConstraints {
+        preserve_lines: true,
+        max_width_px: Some(width_px),
+        wrap: Some(nana_ui_core::TextWrapBreak::Word),
+        ..TextConstraints::default()
+    };
+    let mut geometry = EditorGeometry::new();
+    geometry.sync_session(
+        &mut engine,
+        session,
+        &style(),
+        &constraints,
+        &mut TextWorkCounters::default(),
+    );
+    (engine, geometry)
 }
 
 #[test]
