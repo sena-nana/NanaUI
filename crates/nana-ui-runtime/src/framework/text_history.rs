@@ -205,6 +205,16 @@ impl TextHistory {
         Some(after)
     }
 
+    /// The state [`Self::undo`] or [`Self::redo`] would restore, without
+    /// moving the cursor or sealing anything.
+    fn peek(&self, undo: bool) -> Option<&TextInputState> {
+        if undo {
+            Some(&self.steps.get(self.cursor.checked_sub(1)?)?.before)
+        } else {
+            Some(&self.steps.get(self.cursor)?.after)
+        }
+    }
+
     /// Seals the step the next edit would merge into.
     fn seal_before_cursor(&mut self) {
         if let Some(step) = self
@@ -228,30 +238,31 @@ impl TextHistory {
 /// Whether turning `before` into `after` cuts into an atom: an atom is
 /// replaced whole or not at all, so an edit that starts or ends strictly
 /// inside one (or inserts into it) would leave half a chip.
+///
+/// A change that could sit in more than one place (inserting a "[" before
+/// "[bob]") is judged where it sits clear of the atoms, as the edit session
+/// places it.
 fn splits_an_atom(before: &str, after: &str, atoms: &[crate::TextAtomSpan]) -> bool {
+    use nana_text::editable::diff;
+
     let atoms = crate::text_editing::atoms_in(before, atoms);
-    if atoms.is_empty() {
+    let splits = |(start, old_end, _): (usize, usize, usize)| {
+        let changed = start..old_end;
+        atoms
+            .iter()
+            .any(|atom| atom.start < changed.start && changed.start < atom.end)
+            || crate::text_editing::expand_range_over_atoms(changed.clone(), &atoms) != changed
+    };
+    let Some(greedy) = diff::changed_range(before, after) else {
+        return false;
+    };
+    if atoms.is_empty() || !splits(greedy) {
         return false;
     }
-    let prefix = before
-        .bytes()
-        .zip(after.bytes())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let suffix = before
-        .bytes()
-        .rev()
-        .zip(after.bytes().rev())
-        .take_while(|(left, right)| left == right)
-        .count()
-        .min(before.len() - prefix)
-        .min(after.len() - prefix);
-    let changed = prefix..before.len() - suffix;
-    let touches_inside = atoms
-        .iter()
-        .any(|atom| atom.start < changed.start && changed.start < atom.end);
-    touches_inside
-        || crate::text_editing::expand_range_over_atoms(changed.clone(), &atoms) != changed
+    !atoms.iter().any(|atom| {
+        diff::changed_range_clear_of(before, after, atom.start..atom.end)
+            .is_some_and(|placed| !splits(placed))
+    })
 }
 
 /// Per-editor journals.
@@ -260,6 +271,12 @@ pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
     /// Editors a journaled write is in flight for. Their text changes before
     /// the write can witness it, so the commit leaves them to the write.
+    /// Nothing else writes such an editor's text meanwhile: observer handlers
+    /// hold a `ViewContext`, whose mutations join the editor's own batch
+    /// (where its projection wins), and the follow-ups that commit on their
+    /// own (lifecycle, assemblers, observer reprojection) do not touch the
+    /// edited editor's text. A handler rewriting the editor itself is caught
+    /// by comparing the text the edit produced with the text it left.
     writing: Vec<StableNodeId>,
 }
 
@@ -281,6 +298,10 @@ impl TextHistories {
         if let Some(history) = self.entries.get_mut(&node) {
             history.seal();
         }
+    }
+
+    pub(super) fn peek(&self, node: StableNodeId, undo: bool) -> Option<TextInputState> {
+        self.entries.get(&node)?.peek(undo).cloned()
     }
 
     pub(super) fn undo(&mut self, node: StableNodeId) -> Option<TextInputState> {
@@ -417,15 +438,8 @@ impl crate::AppContext {
                 return None;
             }
             next.normalize_selections();
-            // Judged against the value it replaces, which is still in place.
-            if next == *current
-                || !accepts(editable, &next.value)
-                || splits_an_atom(&current.value, &next.value, editable.text_atoms())
-            {
-                return None;
-            }
             // Linked snippet placeholders follow the edit, as they follow
-            // the user's own.
+            // the user's own; what is judged below is the text they leave.
             let linked = snippet.as_ref().and_then(|session| {
                 session.linked_edit(&current.value, &next.value, next.selection)
             });
@@ -434,6 +448,13 @@ impl crate::AppContext {
                 next.selection = selection;
                 session
             });
+            // Judged against the value it replaces, which is still in place.
+            if next == *current
+                || !accepts(editable, &next.value)
+                || splits_an_atom(&current.value, &next.value, editable.text_atoms())
+            {
+                return None;
+            }
             Some((next, linked))
         })?
         else {
@@ -626,11 +647,9 @@ impl crate::AppContext {
         // Before reading the journal: one an outside write left stale has
         // nothing to undo.
         self.follow_text_history(node);
-        let Some(target) = (if undo {
-            self.text_histories.undo(node)
-        } else {
-            self.text_histories.redo(node)
-        }) else {
+        // Looked at, not taken: the cursor moves only once the restore has
+        // landed, so an undo that fails leaves the journal as it was.
+        let Some(target) = self.text_histories.peek(node, undo) else {
             return Ok(false);
         };
         let shown = self.read(entity, |editable: &C| editable.state().value.clone())?;
@@ -640,17 +659,15 @@ impl crate::AppContext {
                 *editable.state_mut() = target;
                 true
             });
-        // A restore that did not land leaves the text where it was; so goes
-        // the cursor, or the next undo would skip the step this one missed.
         let landed = restored.as_ref().is_ok_and(|restored| *restored)
             || self
                 .read(entity, |editable: &C| editable.state().value != shown)
                 .unwrap_or(false);
-        if !landed {
+        if landed {
             if undo {
-                self.text_histories.redo(node);
-            } else {
                 self.text_histories.undo(node);
+            } else {
+                self.text_histories.redo(node);
             }
         }
         restored
@@ -1415,6 +1432,32 @@ mod editor_tests {
                 .unwrap()
         );
         assert_eq!(value_of(&cx, area), "Hi x!");
+    }
+
+    #[test]
+    fn an_edit_beside_an_atom_that_repeats_its_text_is_not_taken_for_a_split() {
+        // Inserting "[" before "[bob]", or deleting an "@" before "@bob":
+        // the change could be read as inside the atom, but it sits clear of it.
+        for (value, atom, edited) in [
+            ("x[bob]", crate::TextAtomSpan::new(1, 6), "x[[bob]"),
+            ("@@bob", crate::TextAtomSpan::new(1, 5), "@bob"),
+        ] {
+            let mut cx = AppContext::new();
+            let area = focused_area(&mut cx, value);
+            cx.update_component(area, |area, _| {
+                area.atom_spans = std::sync::Arc::from([atom.clone()]);
+            })
+            .unwrap();
+            assert!(
+                cx.edit_text_area(area, crate::TextEditOrigin::Structural, |state| {
+                    state.replace_value(edited);
+                    true
+                })
+                .unwrap(),
+                "{value:?} -> {edited:?}"
+            );
+            assert_eq!(value_of(&cx, area), edited);
+        }
     }
 
     #[test]

@@ -406,18 +406,11 @@ impl AppContext {
         entity: Entity<C>,
     ) -> Option<String> {
         self.read(entity, |editable| {
-            // What an edit of the selection would remove: a primary cutting
-            // into an atom takes the atom whole, so a cut puts on the
+            // What an edit of the selections would remove: any selection
+            // cutting into an atom takes the atom whole, so a cut puts on the
             // pasteboard exactly what it deletes. A bare caret selects
             // nothing to copy, wherever it sits.
-            let expanded = (!editable.state().selection.is_collapsed())
-                .then(|| atom_expanded_primary(editable))
-                .flatten()
-                .map(|primary| {
-                    let mut state = editable.state().clone();
-                    state.selection = primary;
-                    state
-                });
+            let expanded = atom_expanded_selections(editable, true);
             let state = expanded.as_ref().unwrap_or_else(|| editable.state());
             // Zed copy semantics: every selection's text, in document order,
             // joined with newlines. An empty set (bare carets only) reports
@@ -626,10 +619,10 @@ impl AppContext {
         let changed = self.commit_editor_edit(entity, origin, |editable, _| {
             // A cut deletes what its copy took, and a bare caret took nothing,
             // even inside an atom. Other edits at such a caret replace the atom.
-            let cuts_nothing =
-                origin == TextEditOrigin::Cut && editable.state().selection.is_collapsed();
-            if !cuts_nothing && let Some(expanded) = atom_expanded_primary(editable) {
-                editable.state_mut().selection = expanded;
+            if let Some(expanded) =
+                atom_expanded_selections(editable, origin == TextEditOrigin::Cut)
+            {
+                *editable.state_mut() = expanded;
             }
             if !editable.replace_selection(text) {
                 return false;
@@ -653,16 +646,45 @@ impl AppContext {
     }
 }
 
-/// The primary selection widened over every atom it cuts into, when it cuts
-/// into one: an edit replaces atoms whole ([`crate::TextAtomSpan`]).
-fn atom_expanded_primary<C: EditableText>(editable: &C) -> Option<crate::TextSelection> {
-    let atoms = crate::text_editing::atoms_in(&editable.state().value, editable.text_atoms());
+/// Every selection, the primary and each further cursor, widened over each
+/// atom it cuts into, when one does: an edit replaces atoms whole
+/// ([`crate::TextAtomSpan`]). With `keep_carets`, a bare caret stays as it is
+/// (it copies, and so cuts, nothing). Widened selections that now overlap
+/// fuse.
+fn atom_expanded_selections<C: EditableText>(
+    editable: &C,
+    keep_carets: bool,
+) -> Option<crate::TextInputState> {
+    let state = editable.state();
+    let atoms = crate::text_editing::atoms_in(&state.value, editable.text_atoms());
     if atoms.is_empty() {
         return None;
     }
-    let range = editable.state().selection.ordered();
-    let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
-    (expanded != range).then(|| crate::TextSelection::new(expanded.start, expanded.end))
+    let widen = |selection: crate::TextSelection| {
+        if keep_carets && selection.is_collapsed() {
+            return selection;
+        }
+        let range = selection.ordered();
+        let expanded = crate::text_editing::expand_range_over_atoms(range.clone(), &atoms);
+        if expanded == range {
+            selection
+        } else {
+            crate::TextSelection::new(expanded.start, expanded.end)
+        }
+    };
+    let mut next = state.clone();
+    next.selection = widen(state.selection);
+    next.additional_selections = state
+        .additional_selections
+        .iter()
+        .copied()
+        .map(widen)
+        .collect();
+    if next == *state {
+        return None;
+    }
+    next.normalize_selections();
+    Some(next)
 }
 
 #[cfg(test)]

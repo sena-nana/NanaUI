@@ -690,25 +690,27 @@ impl AppContext {
         let to_value_moved = |previous_focus: usize, moved: TextSelection| -> TextSelection {
             match &fold_view {
                 Some(view) => {
+                    let crossed = view.crossed_cover(moved.focus, stepping);
                     // A word move that stops in a label, from the anchor or
                     // before it, counted the label's words as the text's.
                     let word_into_label = matches!(intent, TextCaretIntent::WordRight)
-                        && view.crosses_inlay(moved.focus);
-                    let focus = if view.crosses_cover(moved.focus, stepping)
-                        && (view.value_of(moved.focus) == previous_focus || word_into_label)
-                    {
-                        // The step the intent takes over the bare text, from
-                        // where the caret was.
-                        view.value_of_forward(moved.focus, || {
-                            crate::text_editing::caret_focus(
-                                &state.value,
-                                TextSelection::caret(previous_focus),
-                                intent,
-                            )
-                            .unwrap_or(previous_focus)
-                        })
-                    } else {
-                        view.value_of(moved.focus)
+                        && crossed.is_some_and(|span| span.fold().is_none());
+                    let focus = match crossed {
+                        Some(span)
+                            if view.value_of(moved.focus) == previous_focus || word_into_label =>
+                        {
+                            // The step the intent takes over the bare text,
+                            // from where the caret was.
+                            view.value_of_forward(span, || {
+                                crate::text_editing::caret_focus(
+                                    &state.value,
+                                    TextSelection::caret(previous_focus),
+                                    intent,
+                                )
+                                .unwrap_or(previous_focus)
+                            })
+                        }
+                        _ => view.value_of(moved.focus),
                     };
                     // A caret stays a caret: its anchor goes where its focus
                     // went, not back across the fold it just crossed (that
@@ -5201,6 +5203,31 @@ mod atom_tests {
             "Hi [bob]! ",
             "the chip the copy did not take stays"
         );
+    }
+
+    #[test]
+    fn a_further_cursor_cutting_into_an_atom_takes_it_whole() {
+        for cut in [false, true] {
+            let (mut context, document, area, node) = focused_editor("Hi [bob]! xy");
+            context
+                .update_component(area, |area, _| {
+                    area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                    area.state.selection = TextSelection::new(10, 11);
+                    area.state.additional_selections = vec![TextSelection::new(5, 9)];
+                })
+                .unwrap();
+            if cut {
+                assert_eq!(
+                    context.cut_focused_text(document).unwrap().as_deref(),
+                    Some("[bob]!\nx"),
+                    "the whole chip, as deleted"
+                );
+                assert_eq!(context.world().text_input(node).unwrap().value, "Hi  y");
+            } else {
+                assert!(context.replace_focused_text(document, "Z").unwrap());
+                assert_eq!(context.world().text_input(node).unwrap().value, "Hi Z Zy");
+            }
+        }
     }
 
     #[test]
