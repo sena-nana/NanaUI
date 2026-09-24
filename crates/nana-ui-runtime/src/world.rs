@@ -2322,11 +2322,21 @@ impl UiWorld {
         }
     }
 
-    /// Cancels a node's composition. The editor presentation was built with
-    /// the preedit spliced in, so it is re-derived rather than left drawing
-    /// text that is no longer there.
+    /// What a node that just lost focus needs: its composition cancelled and
+    /// its focused state and style redrawn.
+    pub(super) fn release_focus(&mut self, old: StableNodeId) {
+        self.remove_ime(old);
+        self.mark(old, DirtyMask::STATE);
+        if !self.record(old).style.interaction.focused.is_empty() {
+            self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
+        }
+        self.mark_focus_changed(old);
+    }
+
     /// Focus left the editor, or it is going away: an unfinished composition
-    /// is cancelled and an attached IME detached.
+    /// is cancelled and an attached IME detached. The editor presentation was
+    /// built with the preedit spliced in, so it is re-derived rather than left
+    /// drawing text that is no longer there.
     fn remove_ime(&mut self, id: StableNodeId) {
         let Some(editor) = self.nodes.editor_mut(id) else {
             return;
@@ -2398,7 +2408,12 @@ impl UiWorld {
                     && self.record(*id).resolved.0.visible
                     && self.active_modal_allows_focus_now(document, *id)
             }) {
-                self.input.focused.insert(document, restore_focus);
+                let old = self.input.focused.insert(document, restore_focus);
+                // Focus leaving a node this removal did not take with it
+                // leaves it as a RequestFocus would: no composition behind.
+                if let Some(old) = old.filter(|old| *old != restore_focus && self.contains(*old)) {
+                    self.release_focus(old);
+                }
                 self.mark_focus_changed(restore_focus);
             }
         }

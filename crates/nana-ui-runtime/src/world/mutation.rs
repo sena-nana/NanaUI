@@ -498,10 +498,17 @@ impl<'a> ValidationPlan<'a> {
                     {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
-                    let staged = state.as_ref().map(|state| StagedText {
-                        value: state.value.clone(),
-                        selection: state.selection,
-                        additional: state.additional_selections.clone(),
+                    // Staged as the session will hold it: further cursors
+                    // snapped and fused, so what validates after this in the
+                    // batch edits the text the apply will edit.
+                    let staged = state.as_ref().map(|state| {
+                        let mut state = state.clone();
+                        state.normalize_selections();
+                        StagedText {
+                            value: state.value,
+                            selection: state.selection,
+                            additional: state.additional_selections,
+                        }
                     });
                     self.text_inputs.insert(*id, staged);
                 }
@@ -1895,12 +1902,7 @@ impl UiWorld {
                     None => self.input.focused.remove(document),
                 };
                 if let Some(old) = old.filter(|old| Some(*old) != *target) {
-                    self.remove_ime(old);
-                    self.mark(old, DirtyMask::STATE);
-                    if !self.record(old).style.interaction.focused.is_empty() {
-                        self.mark(old, DirtyMask::STYLE | DirtyMask::RENDER);
-                    }
-                    self.mark_focus_changed(old);
+                    self.release_focus(old);
                 }
                 if let Some(target) = target {
                     self.mark(*target, DirtyMask::STATE);
@@ -2021,10 +2023,12 @@ impl UiWorld {
                     .unwrap_or_default();
                 // The same text (a selection-only write, or a component's copy
                 // of these bytes) leaves the content alone: only what the
-                // edit state draws changed.
+                // edit state draws changed. A `SetText` since then wrote the
+                // node something else, and this write puts the value back.
                 if previous
                     .as_ref()
                     .is_some_and(|previous| previous.same_identity(&next))
+                    && self.record(*id).text.value.same_identity(&next)
                 {
                     self.nodes
                         .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);

@@ -714,6 +714,58 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 }
 
 #[test]
+fn restoring_focus_from_a_removed_overlay_ends_the_composition_it_leaves() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    for (id, parent, tag) in [(2, 1, "div"), (3, 2, "button"), (4, 1, "textarea")] {
+        create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
+        create.insert(node(parent), node(id), None);
+        create.set_interaction(
+            node(id),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    create.set_text_input(node(4), Some(TextInputState::new("value")));
+    // Node 2 hosts a (non-modal) menu, node 3, opened from node 2.
+    create.set_accessibility(
+        node(3),
+        AccessibilityState {
+            role: AccessibilityRole::Menu,
+            ..AccessibilityState::default()
+        },
+    );
+    create.set_overlay_host(
+        node(2),
+        OverlayHostState {
+            active: Some(node(3)),
+            restore_focus: Some(node(2)),
+        },
+    );
+    // The user went on typing elsewhere, mid-composition.
+    create.request_focus(document(1), Some(node(4)));
+    create.set_ime(
+        node(4),
+        Some(ImeComposition {
+            text: "ni".into(),
+            selection: None,
+        }),
+    );
+    world.commit(create).unwrap();
+    assert!(world.ime(node(4)).is_some());
+
+    let mut close = MutationQueue::new();
+    close.despawn_subtree(node(3));
+    world.commit(close).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(2)));
+    assert_eq!(world.ime(node(4)), None, "no composition left behind");
+    assert_eq!(world.text_input(node(4)).unwrap().value, "value");
+}
+
+#[test]
 fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();
@@ -1837,6 +1889,31 @@ fn committed_text_selection_is_unicode_safe_and_batch_atomic() {
         world.text_input(node(1)).unwrap().selection,
         crate::TextSelection::caret("娜".len())
     );
+}
+
+#[test]
+fn a_batch_validates_against_the_cursors_the_session_will_hold() {
+    let mut world = UiWorld::new();
+    let mut queue = MutationQueue::new();
+    queue.create(
+        node(1),
+        document(1),
+        NodeKind::Element {
+            tag: "textarea".into(),
+        },
+    );
+    // The second cursor sits inside "e\u{301}"; the session snaps it to 2.
+    let mut state = TextInputState::new("abe\u{301}");
+    state.selection = crate::TextSelection::caret(0);
+    state.additional_selections = vec![crate::TextSelection::caret(3)];
+    queue.set_text_input(node(1), Some(state));
+    queue.replace_text_selection(node(1), "X");
+    let end = "XabXe\u{301}".len();
+    queue.set_text_selection(node(1), crate::TextSelection::caret(end));
+    world.commit(queue).unwrap();
+    let state = world.text_input(node(1)).unwrap();
+    assert_eq!(state.value, "XabXe\u{301}");
+    assert_eq!(state.selection, crate::TextSelection::caret(end));
 }
 
 #[test]
@@ -3307,8 +3384,14 @@ fn an_empty_preedit_is_not_a_composition_for_the_display() {
     let mut world = UiWorld::default();
     fold_editor_world(&mut world, Arc::from([]), false, None);
     let mut queue = MutationQueue::new();
+    queue.set_highlight_request(node(1), Some(crate::HighlightRequest::highlight("rs")));
     queue.set_text_input_inlays(node(1), Arc::from([crate::TextInlay::new(4, "p:")]));
     queue.request_focus(document(1), Some(node(1)));
+    world.commit(queue).unwrap();
+    world.resolve_presentations(&[node(1)]).unwrap();
+    let highlighted = world.extract_nodes(&[node(1)])[0].text_spans.clone();
+    assert!(!highlighted.is_empty());
+    let mut queue = MutationQueue::new();
     // A platform reporting "nothing composed" between keystrokes.
     queue.set_ime(
         node(1),
@@ -3326,6 +3409,12 @@ fn an_empty_preedit_is_not_a_composition_for_the_display() {
         .text_display_view(node(1))
         .expect("inlays stay while nothing is composed");
     assert!(view.value.contains("p:"));
+    world.resolve_presentations(&[node(1)]).unwrap();
+    assert_eq!(
+        world.extract_nodes(&[node(1)])[0].text_spans,
+        highlighted,
+        "and so do the highlights"
+    );
 }
 
 #[test]

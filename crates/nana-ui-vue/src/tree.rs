@@ -1195,14 +1195,17 @@ impl NanaTreeDocument {
         let Ok(id) = StableNodeId::try_from(node) else {
             return false;
         };
+        // The editor fuses touching cursors (and snaps further ones onto
+        // graphemes); success is holding that, not the set as asked.
+        let mut expected = state.clone();
+        expected.normalize_selections();
         if self
             .runtime
             .text_input(id)
-            .is_some_and(|current| current == state)
+            .is_some_and(|current| current == expected)
         {
             return false;
         }
-        let expected = state.clone();
         self.commit_pending_with(|mutations| mutations.set_text_input(id, Some(state)))
             .ok();
         self.runtime

@@ -1235,6 +1235,28 @@ fn committed_text_replaces_runtime_owned_unicode_selection() {
 }
 
 #[test]
+fn a_state_write_the_editor_fuses_still_reports_success() {
+    let mut host = VueHost::new();
+    let (input, _) = install_input_nodes(&mut host);
+    let document = host.document();
+    let mut doc = document.lock().expect("document");
+    doc.set_attribute(input, "value", "abcdef");
+    doc.set_focus(input);
+    // Two touching selections: the editor holds them as one.
+    assert!(doc.set_text_input_state(
+        input,
+        TextInputState {
+            value: "abcdef".into(),
+            selection: nana_ui_runtime::TextSelection::new(0, 2),
+            additional_selections: vec![nana_ui_runtime::TextSelection::new(2, 4)],
+        }
+    ));
+    let state = doc.text_input_state(input).expect("text input state");
+    assert_eq!(state.selection, nana_ui_runtime::TextSelection::new(0, 4));
+    assert!(state.additional_selections.is_empty());
+}
+
+#[test]
 fn native_ime_commit_updates_runtime_value_and_emits_input() {
     let mut host = VueHost::new();
     host.callbacks.fire_event = Some(JsFunctionId(1));

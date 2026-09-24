@@ -390,7 +390,12 @@ fn measure_paint_text(
 
 impl UiWorld {
     pub(super) fn extracted_text_spans(&self, id: StableNodeId) -> Vec<ExtractedTextSpan> {
-        if self.nodes.ime(id).is_some() {
+        // A preedit shifts every offset after it; an empty one shifts none.
+        if self
+            .nodes
+            .editor(id)
+            .is_some_and(|editor| editor.session.is_composing())
+        {
             return Vec::new();
         }
         if self
