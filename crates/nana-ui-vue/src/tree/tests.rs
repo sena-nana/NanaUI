@@ -1859,7 +1859,7 @@ fn incremental_sync_projects_mutated_widgets_and_cascade_neighbours() {
     );
     assert_eq!(
         doc.runtime.text_input(input_id).map(|t| t.value),
-        Some("hello".into()),
+        Some("hello"),
         "noted input must reach the Runtime text input state"
     );
     assert_eq!(
