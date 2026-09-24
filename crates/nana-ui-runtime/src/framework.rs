@@ -2259,7 +2259,7 @@ impl AppContext {
         // A numeric draft settles before focus leaves it, so a half-typed value
         // never survives as the visible text of an unfocused field.
         if self.world.focused(document) != Some(target) {
-            self.commit_focused_number_input(document)?;
+            self.settle_focused_number_input(document)?;
         }
         if self.is_segmented_option_node(target) {
             let Some(parent) = self.world.node(target).and_then(|node| node.parent) else {
@@ -2324,7 +2324,7 @@ impl AppContext {
         if previous_focus.is_none() {
             return Ok(false);
         }
-        self.commit_focused_number_input(document)?;
+        self.settle_focused_number_input(document)?;
         let mut mutations = MutationQueue::new();
         mutations.request_focus(document, None);
         self.commit_mutations(mutations)?;

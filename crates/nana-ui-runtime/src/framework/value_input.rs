@@ -84,6 +84,10 @@ impl AppContext {
         &mut self,
         entity: Entity<NumberInput>,
     ) -> Result<bool, FrameworkError> {
+        // A composition owns the draft until it commits or cancels.
+        if self.node_composing(entity.stable_id()) {
+            return Ok(false);
+        }
         self.write_number(
             entity,
             TextEditOrigin::Structural,
@@ -152,6 +156,25 @@ impl AppContext {
             TextEditOrigin::Structural,
             NumberInput::revert_draft,
         )
+    }
+
+    /// Settle the focused numeric draft before focus leaves the field.
+    /// Leaving focus cancels an unfinished composition (the world drops it on
+    /// blur), so it is cancelled first and the draft beneath it committed,
+    /// rather than committed under a live preedit.
+    pub(super) fn settle_focused_number_input(
+        &mut self,
+        document: DocumentId,
+    ) -> Result<bool, FrameworkError> {
+        let Some(entity) = self.focused_number_input(document) else {
+            return Ok(false);
+        };
+        if self.node_composing(entity.stable_id()) {
+            let mut mutations = MutationQueue::new();
+            mutations.set_ime(entity.stable_id(), None);
+            self.world.commit(mutations)?;
+        }
+        self.commit_number_input(entity)
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {

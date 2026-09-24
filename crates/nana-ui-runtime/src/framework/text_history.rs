@@ -854,6 +854,14 @@ mod editor_tests {
         );
         assert_eq!(draft_of(&cx, input), "15");
         assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
+        // Nor does an explicit commit write under the live preedit.
+        assert!(!cx.commit_focused_number_input(document()).unwrap());
+        assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
+        // Leaving the field cancels the composition and settles the draft.
+        assert!(cx.clear_focus(document()).unwrap());
+        assert!(cx.world().ime(input.stable_id()).is_none());
+        assert_eq!(draft_of(&cx, input), "15");
+        assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 15.0);
     }
 
     #[test]
