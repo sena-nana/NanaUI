@@ -30,8 +30,8 @@ pub enum ScenePaintError {
     /// A host texture still samples a texture from a replaced device.
     StaleHostTexture(PrimitiveId),
     /// An earlier frame painted this target and is neither submitted nor
-    /// dropped yet.
-    TargetInFlight(super::RenderTargetId),
+    /// dropped yet. `None` is the state behind `SceneWgpuPainter::paint`.
+    TargetInFlight(Option<super::RenderTargetId>),
 }
 
 impl fmt::Display for ScenePaintError {
@@ -68,11 +68,14 @@ impl fmt::Display for ScenePaintError {
                 id.node.get(),
                 id.slot
             ),
-            Self::TargetInFlight(id) => write!(
+            Self::TargetInFlight(Some(id)) => write!(
                 formatter,
                 "render target {} is still held by an unsubmitted frame",
                 id.0
             ),
+            Self::TargetInFlight(None) => {
+                formatter.write_str("the painter's target is still held by an unsubmitted frame")
+            }
         }
     }
 }

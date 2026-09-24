@@ -92,7 +92,11 @@ pub struct SceneWgpuPainter {
     gpu: GpuContext,
     /// Targets whose retained GPU state was recorded into a frame that was
     /// later dropped instead of submitted; rebuilt before their next paint.
-    retained: RetainedWrites,
+    /// Keyed by [`RenderTargetId`].
+    retained_targets: RetainedWrites,
+    /// The same for the state [`Self::paint`] keeps in the painter itself, in
+    /// a ledger of its own so no host id can alias it.
+    retained_default: RetainedWrites,
     device: wgpu::Device,
     queue: wgpu::Queue,
     format: wgpu::TextureFormat,
@@ -144,12 +148,11 @@ struct PaintedDest {
 }
 
 /// Host-owned identity for a window or offscreen presentation target.
-/// `u64::MAX` is reserved for the state [`SceneWgpuPainter::paint`] uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RenderTargetId(pub u64);
 
-/// Ledger key of the state behind [`SceneWgpuPainter::paint`].
-const DEFAULT_TARGET: u64 = u64::MAX;
+/// The one key of the ledger behind [`SceneWgpuPainter::paint`].
+const DEFAULT_TARGET: u64 = 0;
 
 #[derive(Default)]
 struct TargetState {
@@ -251,7 +254,8 @@ impl SceneWgpuPainter {
             targets: std::collections::HashMap::new(),
             prepared_batch: None,
             gpu: gpu.clone(),
-            retained: RetainedWrites::new(),
+            retained_targets: RetainedWrites::new(),
+            retained_default: RetainedWrites::new(),
             device: device.clone(),
             queue: queue.clone(),
             format,
@@ -452,8 +456,7 @@ impl SceneWgpuPainter {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
-        debug_assert_ne!(id.0, DEFAULT_TARGET, "RenderTargetId(u64::MAX) is reserved");
-        self.begin_frame(id.0, frame, target)?;
+        self.begin_frame(Some(id), frame, target)?;
         let mut state = self.targets.remove(&id).unwrap_or_default();
         if state.image_revision != self.image_revision {
             state.painted = None;
@@ -473,7 +476,7 @@ impl SceneWgpuPainter {
         state.image_revision = self.image_revision;
         self.targets.insert(id, state);
         if result.is_ok() {
-            frame.record_retained_writes(&self.retained, id.0);
+            frame.record_retained_writes(&self.retained_targets, id.0);
         }
         result
     }
@@ -490,40 +493,59 @@ impl SceneWgpuPainter {
         self.host_textures.swap_target(&mut state.host_textures);
     }
 
-    /// Refuse a frame or target from another device, rebuild targets whose
-    /// retained writes were rolled back by a dropped frame, and refuse to
-    /// record on top of writes an unsubmitted frame still holds.
+    /// Refuse a frame or target from another device, refuse to record on top
+    /// of writes an unsubmitted frame still holds, and rebuild targets whose
+    /// retained writes were rolled back by a dropped frame. `None` is the
+    /// state behind [`Self::paint`].
     fn begin_frame(
         &mut self,
-        key: u64,
+        target_id: Option<RenderTargetId>,
         frame: &FrameContext,
         target: &GpuRenderTarget,
     ) -> Result<(), ScenePaintError> {
+        // A rejected frame must not report a previous target's successful work.
+        self.last_gpu_work = None;
+        self.last_gpu_timings = None;
+        self.last_dest_pass_counts = None;
         let expected = self.gpu.generation();
         for found in [frame.generation(), target.generation()] {
             if found != expected {
                 return Err(ScenePaintError::DeviceMismatch { expected, found });
             }
         }
-        if self.retained.has_rolled_back() {
+        // Before the drain: a frame dropped on another thread in between
+        // releases the key and records its rollback in one step, so checking
+        // in this order never paints over a rollback the drain missed.
+        let in_flight = match target_id {
+            Some(id) => self.retained_targets.in_flight(id.0, frame.id()),
+            None => self.retained_default.in_flight(DEFAULT_TARGET, frame.id()),
+        };
+        if in_flight {
+            return Err(ScenePaintError::TargetInFlight(target_id));
+        }
+        if self.retained_default.has_rolled_back() {
+            self.retained_default.drain_rolled_back(|_| {});
+            self.reset_default_target();
+        }
+        if self.retained_targets.has_rolled_back() {
             let mut rolled_back = Vec::new();
-            self.retained.drain_rolled_back(|key| rolled_back.push(key));
-            for key in rolled_back {
-                if key == DEFAULT_TARGET {
-                    self.reset_default_target();
-                } else {
-                    self.remove_target(RenderTargetId(key));
+            self.retained_targets
+                .drain_rolled_back(|key| rolled_back.push(RenderTargetId(key)));
+            for id in rolled_back {
+                // Not `remove_target`: the window is still open, so its fetch
+                // host and image caches stay.
+                if let Some(mut state) = self.targets.remove(&id)
+                    && let Some(text) = state.text.take()
+                {
+                    self.text.close_target(text);
                 }
             }
-        }
-        if self.retained.in_flight(key, frame.id()) {
-            return Err(ScenePaintError::TargetInFlight(RenderTargetId(key)));
         }
         Ok(())
     }
 
-    /// [`Self::remove_target`] for the state [`Self::paint`] keeps in the
-    /// painter itself.
+    /// Start the state [`Self::paint`] keeps in the painter itself over, as a
+    /// rolled-back target's is.
     fn reset_default_target(&mut self) {
         let mut state = TargetState::default();
         self.swap_target_state(&mut state);
@@ -551,7 +573,7 @@ impl SceneWgpuPainter {
         host_textures: Option<&HostTextureRegistry>,
         gpu_renderers: Option<&SceneGpuRendererRegistry>,
     ) -> Result<(), ScenePaintError> {
-        self.begin_frame(DEFAULT_TARGET, frame, target)?;
+        self.begin_frame(None, frame, target)?;
         let result = self.paint_recorded(
             scene,
             __framework::encoder(frame),
@@ -561,7 +583,7 @@ impl SceneWgpuPainter {
             gpu_renderers,
         );
         if result.is_ok() {
-            frame.record_retained_writes(&self.retained, DEFAULT_TARGET);
+            frame.record_retained_writes(&self.retained_default, DEFAULT_TARGET);
         }
         result
     }

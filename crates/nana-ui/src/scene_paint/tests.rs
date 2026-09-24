@@ -10268,7 +10268,7 @@ fn a_target_held_by_an_unsubmitted_frame_is_not_painted_again() {
             None,
             None
         ),
-        Err(ScenePaintError::TargetInFlight(id))
+        Err(ScenePaintError::TargetInFlight(Some(id)))
     );
     painter
         .paint_target(
@@ -10382,5 +10382,39 @@ fn frames_targets_and_host_textures_from_another_device_are_refused() {
             None
         ),
         Err(ScenePaintError::StaleHostTexture(id))
+    );
+}
+
+/// Rebuilding a rolled-back window is not closing it: the fetch host the host
+/// installed once keeps serving the window's remote images.
+#[test]
+fn a_rolled_back_target_keeps_the_fetch_host() {
+    let probe = FrameProbe::new();
+    let scene = label_scene("Fetch");
+    let mut painter = probe.painter();
+    let host = super::image_url::loopback_fetch_host();
+    painter.set_resource_fetch_host(Some(host.clone()));
+    let id = RenderTargetId(5);
+    let paint = |painter: &mut SceneWgpuPainter, label| {
+        let mut frame = probe.gpu.begin_frame(label);
+        painter
+            .paint_target(
+                id,
+                &scene,
+                &mut frame,
+                &probe.target,
+                probe.viewport,
+                None,
+                None,
+            )
+            .unwrap();
+        frame
+    };
+    paint(&mut painter, "painted").submit();
+    drop(paint(&mut painter, "dropped"));
+    paint(&mut painter, "rebuilt").submit();
+    assert!(
+        egress_of(painter.fetch_host.as_ref()) == egress_of(Some(&host)),
+        "the rollback must not release the window's fetch host"
     );
 }
