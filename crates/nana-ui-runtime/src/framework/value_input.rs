@@ -84,15 +84,11 @@ impl AppContext {
         &mut self,
         entity: Entity<NumberInput>,
     ) -> Result<bool, FrameworkError> {
-        let changed = self.write_number(
+        self.write_number(
             entity,
             TextEditOrigin::Structural,
             NumberInput::commit_draft,
-        )?;
-        // A commit ends a run of steps even when the draft already read the
-        // number: steps before and after it are two undo steps.
-        self.seal_editor_history(entity.stable_id());
-        Ok(changed)
+        )
     }
 
     /// Rewrite a numeric field's draft through the undo journal, emitting
@@ -104,9 +100,15 @@ impl AppContext {
         origin: TextEditOrigin,
         write: impl FnOnce(&mut NumberInput) -> bool,
     ) -> Result<bool, FrameworkError> {
-        self.journal_editor_edit(entity, origin, |input, cx| {
+        let changed = self.journal_editor_edit(entity, origin, |input, cx| {
             write_number_field(input, cx, write)
-        })
+        })?;
+        // A commit or a revert ends a run of steps even when it rewrote
+        // nothing: steps before and after it are two undo steps.
+        if origin == TextEditOrigin::Structural {
+            self.seal_editor_history(entity.stable_id());
+        }
+        Ok(changed)
     }
 
     /// Step the focused numeric field, if any. Returns whether it moved.
@@ -145,15 +147,11 @@ impl AppContext {
         if self.node_composing(entity.stable_id()) {
             return Ok(false);
         }
-        let changed = self.write_number(
+        self.write_number(
             entity,
             TextEditOrigin::Structural,
             NumberInput::revert_draft,
-        )?;
-        // Like a commit, Escape ends a run of steps even when the draft
-        // already showed the committed value.
-        self.seal_editor_history(entity.stable_id());
-        Ok(changed)
+        )
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {

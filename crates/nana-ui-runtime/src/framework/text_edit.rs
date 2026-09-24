@@ -94,27 +94,6 @@ impl FocusedTextEditor {
     }
 }
 
-/// Evaluate `$body` with `$C` naming the component type behind an editor
-/// kind, so each generic editor operation dispatches in this one place.
-macro_rules! with_editor_type {
-    ($kind:expr, $C:ident => $body:expr) => {
-        match $kind {
-            TextEditorKind::Area => {
-                type $C = TextArea;
-                $body
-            }
-            TextEditorKind::Field => {
-                type $C = TextInput;
-                $body
-            }
-            TextEditorKind::Number => {
-                type $C = NumberInput;
-                $body
-            }
-        }
-    };
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextEditorKind {
     Area,
@@ -571,7 +550,7 @@ impl AppContext {
 
     /// The one probe for which plain editor is focused, composition or not.
     /// Reads no component state.
-    fn focused_plain_editor_kind(
+    pub(super) fn focused_plain_editor_kind(
         &self,
         document: DocumentId,
     ) -> Option<(StableNodeId, TextEditorKind)> {

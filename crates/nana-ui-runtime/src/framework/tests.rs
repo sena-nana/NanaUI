@@ -1862,6 +1862,51 @@ fn a_step_that_snaps_back_onto_its_base_is_no_step_and_the_spinner_agrees() {
 }
 
 #[test]
+fn an_infinite_bound_publishes_no_bound() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(5.0).range(f64::NEG_INFINITY, f64::INFINITY),
+        )
+        .unwrap();
+    let state = context.world().accessibility(input.stable_id()).unwrap();
+    assert_eq!((state.numeric_minimum, state.numeric_maximum), (None, None));
+    assert!(context.step_number_input(input, 1).unwrap());
+    assert!(context.step_number_input(input, -3).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+}
+
+#[test]
+fn find_and_replace_cannot_put_a_control_character_in_a_number_draft() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(document, crate::NumberInput::new(15.0))
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    assert!(
+        !context
+            .replace_focused_text_match(
+                document,
+                "15",
+                crate::TextSearchOptions::default(),
+                "15\n",
+                false,
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        context
+            .read(input, |input| input.state.value.to_string())
+            .unwrap(),
+        "15"
+    );
+}
+
+#[test]
 fn a_hover_card_keeps_a_focused_number_input_editing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

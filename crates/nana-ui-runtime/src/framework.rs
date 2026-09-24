@@ -1,3 +1,24 @@
+/// Evaluate `$body` with `$C` naming the component type behind a plain
+/// editor kind, so each generic editor operation dispatches in one place.
+macro_rules! with_editor_type {
+    ($kind:expr, $C:ident => $body:expr) => {
+        match $kind {
+            $crate::framework::text_edit::TextEditorKind::Area => {
+                type $C = $crate::TextArea;
+                $body
+            }
+            $crate::framework::text_edit::TextEditorKind::Field => {
+                type $C = $crate::TextInput;
+                $body
+            }
+            $crate::framework::text_edit::TextEditorKind::Number => {
+                type $C = $crate::NumberInput;
+                $body
+            }
+        }
+    };
+}
+
 #[cfg(feature = "charts")]
 mod charts;
 mod choice;
@@ -232,6 +253,12 @@ impl EditableText for NumberInput {
 
     fn commit_ime_text(&mut self, text: &str) -> bool {
         number_text(text).is_some_and(|text| self.state.replace_primary_selection(&text))
+    }
+
+    /// Whole-value edits (find and replace, transforms) are refused when
+    /// they would put a control character in the draft.
+    fn accepts_edit_value(&self, value: &str) -> bool {
+        !value.chars().any(char::is_control)
     }
 
     fn state(&self) -> &TextInputState {

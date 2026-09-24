@@ -1557,7 +1557,6 @@ impl RuntimeInputAdapter {
         };
         let mut typed = text.chars();
         if let (Some(single), None) = (typed.next(), typed.next())
-            && !single.is_control()
             && focused.code_editing.is_some()
             && context.code_edit_typed(document, single)?
         {

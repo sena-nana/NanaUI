@@ -1940,8 +1940,17 @@ impl NumberInput {
     /// exactly where a step can no longer move.
     fn reachable_spec(&self) -> nana_ui_core::NumberFieldSpec {
         nana_ui_core::NumberFieldSpec {
-            minimum: self.spec.minimum.map(|minimum| self.normalize(minimum)),
-            maximum: self.spec.maximum.map(|maximum| self.normalize(maximum)),
+            // A non-finite bound is no bound, as the spec itself reads it.
+            minimum: self
+                .spec
+                .minimum
+                .filter(|minimum| minimum.is_finite())
+                .map(|minimum| self.normalize(minimum)),
+            maximum: self
+                .spec
+                .maximum
+                .filter(|maximum| maximum.is_finite())
+                .map(|maximum| self.normalize(maximum)),
             ..self.spec
         }
     }

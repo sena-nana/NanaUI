@@ -79,17 +79,11 @@ impl AppContext {
     }
 
     pub fn commit_ime(&mut self, document: DocumentId, text: &str) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
         // Every component editor commits through its component: the world
         // path alone would leave the component's value behind, and its next
         // projection would write the commit away.
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.commit_editable_ime(entity, text);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.commit_editable_ime(entity, text);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.commit_editable_ime(Entity::<C>::from_stable_id(node), text));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.commit_editable_ime(entity, text);
@@ -113,14 +107,8 @@ impl AppContext {
         before_bytes: usize,
         after_bytes: usize,
     ) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.delete_editable_surrounding(Entity::<C>::from_stable_id(node), before_bytes, after_bytes));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
@@ -270,14 +258,8 @@ impl AppContext {
         {
             return Ok(false);
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.replace_editable_selection(entity, text, origin);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.replace_editable_selection(entity, text, origin);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.replace_editable_selection(entity, text, origin);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.replace_editable_selection(Entity::<C>::from_stable_id(node), text, origin));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.replace_editable_selection(entity, text, origin);
@@ -298,14 +280,8 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.delete_editable_backward(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.delete_editable_backward(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.delete_editable_backward(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.delete_editable_backward(entity);
@@ -326,14 +302,8 @@ impl AppContext {
     /// the pasteboard with an empty string. The Runtime does not touch the OS
     /// pasteboard; the host writes what this returns.
     pub fn focused_selected_text(&self, document: DocumentId) -> Option<String> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.editable_selected_text(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.editable_selected_text(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.editable_selected_text(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.editable_selected_text(entity);
@@ -391,14 +361,8 @@ impl AppContext {
         &mut self,
         document: DocumentId,
     ) -> Result<bool, FrameworkError> {
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.select_all_editable(entity);
-        }
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.select_all_editable(entity);
+        if let Some((node, kind)) = self.focused_plain_editor_kind(document) {
+            return with_editor_type!(kind, C => self.select_all_editable(Entity::<C>::from_stable_id(node)));
         }
         if let Some(entity) = self.focused_editor::<SearchDropdown>(document) {
             return self.select_all_editable(entity);
