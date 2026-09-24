@@ -3,9 +3,13 @@
 //!
 //! Every framework path that writes editor text — typing, deletion, paste,
 //! an IME commit, a line transform, a snippet, assistive technology setting a
-//! value, an application edit made on the user's behalf — goes through [`AppContext::commit_editor_edit`]. Concerns that apply to
+//! value, an application edit made on the user's behalf — goes through
+//! [`AppContext::commit_editor_edit`]; a built-in control's own write that is
+//! not an edit of the selection (a number field's stepper, commit or revert)
+//! goes through [`AppContext::commit_control_write`]. Concerns that apply to
 //! *all* edits live there once instead of in each caller: emitting the change
-//! event, refusing a read-only editor, and recording undo.
+//! event and recording undo. Whether the editor accepts input at all is the
+//! caller's check, made before it builds the edit.
 //!
 //! Any other write that changes an editor's text replaces its value, and
 //! clears its journal as a [`TextEditOrigin::Program`] edit does: the
@@ -13,17 +17,20 @@
 //! keyed `mount`) or committing `SetTextInput` to the world directly. Undo
 //! after loading another document therefore does not walk back into the
 //! previous one. The journal notices by the text's [`TextStamp`], which
-//! changes only with the bytes: each journal keeps the stamp of the text its
-//! last edit left, and drops itself on its next use if the editor's stamp
-//! moved. A write that leaves the bytes as they were — the value the editor
-//! reported, or the same text rebuilt — keeps the stamp and the journal.
+//! changes only with the bytes: each journal keeps the stamp of the text the
+//! last write it saw left. A commit through [`AppContext::commit_mutations`]
+//! checks the editors it wrote as soon as it lands, so a replaced document's
+//! snapshots are freed at once; a write straight to the world is caught on
+//! the journal's next use. A write that leaves the bytes as they were — the
+//! value the editor reported, or the same text rebuilt — keeps the stamp and
+//! the journal.
 //!
 //! An application edit meant to be undone like the user's own — a format
 //! shortcut, a completion — goes through
 //! [`crate::AppContext::edit_text_area`] or
 //! [`crate::AppContext::edit_text_input`] with the origin it should record
-//! as. Rebinding an editor to another object whose text happens to be
-//! identical changes no byte; call
+//! as; it is always a step of its own. Rebinding an editor to another object
+//! whose text happens to be identical changes no byte; call
 //! [`crate::AppContext::clear_text_history`] for that.
 //!
 //! Composition is deliberately invisible here. IME preedit lives in the
@@ -99,9 +106,10 @@ pub(super) struct TextHistory {
     steps: Vec<TextEditStep>,
     /// Steps before this index are undoable; steps from it on are redoable.
     cursor: usize,
-    /// The stamp of the editor's text when the journal last wrote or read
-    /// it. A stamp changes only with the bytes, so a different one means
-    /// something outside the journal wrote the text since.
+    /// The stamp of the editor's text after the last write the journal saw
+    /// (see [`TextHistories::witness`]). Reads never move it. A stamp changes
+    /// only with the bytes, so a different one means something outside the
+    /// journal wrote the text since.
     held: Option<TextStamp>,
 }
 
@@ -217,6 +225,9 @@ impl TextHistory {
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
+    /// Editors a journaled write is in flight for. Their text changes before
+    /// the write can witness it, so the commit leaves them to the write.
+    writing: Vec<StableNodeId>,
 }
 
 impl TextHistories {
@@ -278,6 +289,12 @@ impl TextHistories {
         }
     }
 
+    /// Whether a commit writing `node`'s text should check its journal: one
+    /// exists, and no journaled write of `node` will witness the result.
+    fn verifies(&self, node: StableNodeId) -> bool {
+        self.entries.contains_key(&node) && !self.writing.contains(&node)
+    }
+
     /// Releases the journal of a node that no longer exists.
     pub(super) fn forget(&mut self, node: StableNodeId) {
         self.entries.remove(&node);
@@ -301,9 +318,13 @@ impl crate::AppContext {
     /// Edits a [`crate::TextArea`]'s text on the user's behalf -- a format
     /// shortcut, an auto-completion, an application command -- as one undo
     /// step of `origin`, where writing the component would clear the journal.
+    /// The step stands alone: it neither extends the typing before it nor is
+    /// extended by the typing after it, whatever `origin` it records as.
     ///
-    /// `apply` returns whether it changed anything. Emits the editor's change
-    /// event like any other edit. [`TextEditOrigin::History`] is refused:
+    /// Refused, like the user's own edits, while the editor is read-only or
+    /// disabled. `apply` returns whether it changed anything; an edit that
+    /// leaves the state as it was is no edit. Emits the editor's change
+    /// event like any other edit. [`TextEditOrigin::History`] is an error:
     /// only undo and redo restore a state without recording it.
     pub fn edit_text_area(
         &mut self,
@@ -311,17 +332,21 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut TextInputState) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        self.edit_editable_on_behalf(entity, origin, apply)
+        self.edit_editable_on_behalf(entity, origin, apply, |_, _| true)
     }
 
-    /// [`Self::edit_text_area`] for a [`crate::TextInput`].
+    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. A value the field
+    /// would refuse from the keyboard (a line break, past its length limit) is
+    /// refused here too.
     pub fn edit_text_input(
         &mut self,
         entity: crate::Entity<crate::TextInput>,
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut TextInputState) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        self.edit_editable_on_behalf(entity, origin, apply)
+        self.edit_editable_on_behalf(entity, origin, apply, |field, value| {
+            field.accepts_edit_value(value)
+        })
     }
 
     fn edit_editable_on_behalf<C: super::EditableText>(
@@ -329,17 +354,33 @@ impl crate::AppContext {
         entity: crate::Entity<C>,
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut TextInputState) -> bool,
+        accepts: impl FnOnce(&C, &str) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
         if origin == TextEditOrigin::History {
             return Err(crate::FrameworkError::InvalidInput);
         }
-        self.commit_editor_edit(entity, origin, |editable: &mut C, _| {
-            let changed = apply(editable.state_mut());
-            if changed {
-                editable.state_mut().normalize_selections();
+        if !self.read(entity, super::EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        let node = entity.stable_id();
+        self.seal_editor_history(node);
+        let changed = self.commit_editor_edit(entity, origin, |editable: &mut C, _| {
+            let mut next = editable.state().clone();
+            if !apply(&mut next) {
+                return false;
             }
-            changed
-        })
+            next.normalize_selections();
+            // Judged against the value it replaces, which is still in place.
+            if next == *editable.state() || !accepts(editable, &next.value) {
+                return false;
+            }
+            *editable.state_mut() = next;
+            true
+        })?;
+        if changed {
+            self.seal_editor_history(node);
+        }
+        Ok(changed)
     }
 
     /// The stamp of the text the world holds for an editor.
@@ -347,6 +388,37 @@ impl crate::AppContext {
         self.world
             .text_input(node)
             .map(|input| input.session().text().stamp())
+    }
+
+    /// Editors a batch writes the text of, whose journals the commit checks
+    /// once it lands. Read before the commit; the check itself is
+    /// [`Self::verify_text_histories`].
+    pub(super) fn text_histories_written_by(
+        &self,
+        mutations: &crate::MutationQueue,
+    ) -> Vec<StableNodeId> {
+        mutations
+            .as_slice()
+            .iter()
+            .filter_map(|mutation| match mutation {
+                crate::UiMutation::SetTextInput { id, state: Some(_) }
+                    if self.text_histories.verifies(*id) =>
+                {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Drops, as soon as the write lands, the journals an outside write left
+    /// stale, rather than holding their snapshots until the editor is next
+    /// edited -- which a document loaded for reading never is.
+    pub(super) fn verify_text_histories(&mut self, written: Vec<StableNodeId>) {
+        for node in written {
+            self.text_histories
+                .follow(node, self.editor_text_stamp(node));
+        }
     }
 
     /// The single place an editor's text state changes.
@@ -363,27 +435,71 @@ impl crate::AppContext {
         origin: TextEditOrigin,
         apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        let node = entity.stable_id();
+        self.follow_text_history(entity.stable_id());
+        self.commit_followed_editor_edit(entity, origin, apply)
+    }
+
+    /// [`Self::commit_editor_edit`] for a caller that already brought the
+    /// journal up to date with [`Self::follow_text_history`].
+    fn commit_followed_editor_edit<C: super::EditableText>(
+        &mut self,
+        entity: crate::Entity<C>,
+        origin: TextEditOrigin,
+        apply: impl FnOnce(&mut C, &mut crate::ViewContext<'_, C>) -> bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        self.journaled_write(entity, origin, |cx| {
+            cx.update_component(entity, |editable: &mut C, view| {
+                if !apply(editable, view) {
+                    return false;
+                }
+                view.emit(editable.change());
+                true
+            })
+        })
+    }
+
+    /// A write of an editor's text the framework makes for the user outside
+    /// [`Self::commit_editor_edit`] -- a number field's stepper, commit or
+    /// revert -- journaled as a step of `origin` rather than taken for an
+    /// outside write that clears the journal.
+    pub(super) fn commit_control_write<C: super::EditableText, R>(
+        &mut self,
+        entity: crate::Entity<C>,
+        origin: TextEditOrigin,
+        write: impl FnOnce(&mut Self) -> Result<R, crate::FrameworkError>,
+    ) -> Result<R, crate::FrameworkError> {
+        self.follow_text_history(entity.stable_id());
+        self.journaled_write(entity, origin, write)
+    }
+
+    /// Drops `node`'s journal if its text changed since the journal saw it.
+    fn follow_text_history(&mut self, node: StableNodeId) {
         self.text_histories
             .follow(node, self.editor_text_stamp(node));
+    }
+
+    /// Runs `write` and records what it changed in the editor's journal, then
+    /// witnesses the text it left.
+    fn journaled_write<C: super::EditableText, R>(
+        &mut self,
+        entity: crate::Entity<C>,
+        origin: TextEditOrigin,
+        write: impl FnOnce(&mut Self) -> Result<R, crate::FrameworkError>,
+    ) -> Result<R, crate::FrameworkError> {
+        let node = entity.stable_id();
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
-        let changed = self.update_component(entity, |editable: &mut C, cx| {
-            if !apply(editable, cx) {
-                return false;
-            }
-            cx.emit(editable.change());
-            true
-        })?;
-        if !changed {
-            return Ok(false);
-        }
+        self.text_histories.writing.push(node);
+        let written = write(self);
+        let popped = self.text_histories.writing.pop();
+        debug_assert_eq!(popped, Some(node), "journaled writes nest");
+        let written = written?;
         let after = self.read(entity, |editable: &C| editable.state().clone())?;
         if after.value != before.value {
             self.text_histories.record(node, before, after, origin);
         }
         self.text_histories
             .witness(node, self.editor_text_stamp(node));
-        Ok(true)
+        Ok(written)
     }
 
     /// Undoes the focused editor's last edit. Returns whether anything moved.
@@ -419,8 +535,7 @@ impl crate::AppContext {
             return Ok(false);
         }
         let node = focused.node;
-        self.text_histories
-            .follow(node, self.editor_text_stamp(node));
+        self.follow_text_history(node);
         let Some(target) = (if undo {
             self.text_histories.undo(node)
         } else {
@@ -431,7 +546,7 @@ impl crate::AppContext {
         // `History` keeps the restore from becoming a step of its own.
         let restore = move |state: &mut crate::TextInputState| *state = target;
         match focused.kind {
-            super::text_edit::TextEditorKind::Area => self.commit_editor_edit(
+            super::text_edit::TextEditorKind::Area => self.commit_followed_editor_edit(
                 crate::Entity::<crate::TextArea>::from_stable_id(node),
                 TextEditOrigin::History,
                 move |area: &mut crate::TextArea, _| {
@@ -439,7 +554,7 @@ impl crate::AppContext {
                     true
                 },
             ),
-            super::text_edit::TextEditorKind::Field => self.commit_editor_edit(
+            super::text_edit::TextEditorKind::Field => self.commit_followed_editor_edit(
                 crate::Entity::<crate::TextInput>::from_stable_id(node),
                 TextEditOrigin::History,
                 move |field: &mut crate::TextInput, _| {
@@ -989,6 +1104,115 @@ mod editor_tests {
             cx.edit_text_area(area, crate::TextEditOrigin::History, |_| true),
             Err(crate::FrameworkError::InvalidInput)
         ));
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_is_its_own_step_whatever_its_origin() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "fo").unwrap();
+        // A completion recorded as typing: not merged into the prefix the user
+        // typed, and the typing after it is not merged into it.
+        assert!(
+            cx.edit_text_area(area, crate::TextEditOrigin::Typing, |state| {
+                state.value = "foo()".into();
+                state.selection = crate::TextSelection::caret(5);
+                true
+            })
+            .unwrap()
+        );
+        cx.replace_focused_text(document(), ";").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "foo()");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "fo", "the completion came off alone");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "");
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_is_refused_where_the_users_would_be() {
+        let changes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "text");
+        let counted = std::sync::Arc::clone(&changes);
+        cx.on(area, move |_area, _: &crate::TextChanged, _cx| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+        // An apply that reports a change but makes none is no edit.
+        assert!(
+            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, |_| true)
+                .unwrap()
+        );
+        assert_eq!(changes.load(std::sync::atomic::Ordering::Relaxed), 0);
+        // Read-only: refused, and nothing recorded.
+        cx.update_component(area, |area, _| area.read_only = true)
+            .unwrap();
+        let replace = |state: &mut crate::TextInputState| {
+            state.replace_value("other");
+            true
+        };
+        assert!(
+            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, replace)
+                .unwrap()
+        );
+        assert_eq!(value_of(&cx, area), "text");
+        assert!(!cx.can_undo_text(area.stable_id()));
+        assert_eq!(changes.load(std::sync::atomic::Ordering::Relaxed), 0);
+
+        // A field's length limit holds as it does for typing.
+        let field = cx
+            .create_component(document(), TextInput::new("abc").max_length(3))
+            .unwrap();
+        assert!(
+            !cx.edit_text_input(field, crate::TextEditOrigin::Structural, |state| {
+                state.replace_value("abcd");
+                true
+            })
+            .unwrap()
+        );
+        assert_eq!(
+            cx.read(field, |field| field.state.value.to_string())
+                .unwrap(),
+            "abc"
+        );
+    }
+
+    #[test]
+    fn a_journal_an_application_write_replaced_is_freed_at_once() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "draft").unwrap();
+        assert!(cx.text_histories.entries.contains_key(&area.stable_id()));
+        cx.set_component(area, TextArea::new("loaded")).unwrap();
+        assert!(
+            !cx.text_histories.entries.contains_key(&area.stable_id()),
+            "the old document's snapshots are not kept until the next edit"
+        );
+    }
+
+    #[test]
+    fn a_number_fields_own_stepper_and_commit_keep_its_journal() {
+        let mut cx = AppContext::new();
+        let input = cx
+            .create_component(document(), crate::NumberInput::new(1.0))
+            .unwrap();
+        let node = input.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "12").unwrap();
+        assert!(cx.can_undo_text(node));
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert!(
+            cx.can_undo_text(node),
+            "a step is the user's, not a replacement"
+        );
+        cx.commit_focused_number_input(document()).unwrap();
+        assert!(cx.can_undo_text(node));
+        // The application setting the number is a replacement.
+        cx.set_number_value(input, 40.0).unwrap();
+        assert!(!cx.can_undo_text(node));
     }
 
     #[test]

@@ -715,11 +715,18 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 
 #[test]
 fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
-    for focus_in_menu in [true, false] {
+    // Focus on the menu, on an item inside it, or on an editor elsewhere.
+    for focus in [3, 5, 4] {
+        let focus_in_menu = focus != 4;
         let mut world = UiWorld::new();
         let mut create = MutationQueue::new();
         create.create(node(1), document(1), NodeKind::Document);
-        for (id, parent, tag) in [(2, 1, "div"), (3, 2, "button"), (4, 1, "textarea")] {
+        for (id, parent, tag) in [
+            (2, 1, "div"),
+            (3, 2, "button"),
+            (4, 1, "textarea"),
+            (5, 3, "button"),
+        ] {
             create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
             create.insert(node(parent), node(id), None);
             create.set_interaction(
@@ -746,11 +753,9 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
                 restore_focus: Some(node(2)),
             },
         );
-        if focus_in_menu {
-            create.request_focus(document(1), Some(node(3)));
-        } else {
+        create.request_focus(document(1), Some(node(focus)));
+        if !focus_in_menu {
             // The user went on typing elsewhere, mid-composition.
-            create.request_focus(document(1), Some(node(4)));
             create.set_ime(
                 node(4),
                 Some(ImeComposition {
@@ -768,7 +773,7 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
             assert_eq!(
                 world.focused(document(1)),
                 Some(node(2)),
-                "focus leaving with the menu returns to where it came from"
+                "focus leaving with the menu (from {focus}) returns to where it came from"
             );
         } else {
             assert_eq!(

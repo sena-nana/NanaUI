@@ -2369,7 +2369,7 @@ impl UiWorld {
             .flatten()
             .copied()
             .collect::<HashSet<_>>();
-        let updates = hosts
+        let mut updates = hosts
             .into_iter()
             .filter_map(|host| {
                 (!removed.contains(&host))
@@ -2377,12 +2377,9 @@ impl UiWorld {
                     .flatten()
                     .and_then(|mut state| {
                         let previous = state;
-                        let restore_focus = state
-                            .active
-                            .is_some_and(|active| removed.contains(&active))
-                            .then_some(state.restore_focus)
-                            .flatten();
-                        if state.active.is_some_and(|active| removed.contains(&active)) {
+                        let closed = state.active.filter(|active| removed.contains(active));
+                        let restore_focus = closed.and(state.restore_focus);
+                        if closed.is_some() {
                             state.active = None;
                             state.restore_focus = None;
                         }
@@ -2392,25 +2389,45 @@ impl UiWorld {
                         {
                             state.restore_focus = None;
                         }
-                        (state != previous).then_some((host, state, restore_focus))
+                        (state != previous).then_some((host, state, closed, restore_focus))
                     })
             })
+            .map(|(host, state, closed, restore_focus)| {
+                let document = self.record(host).document;
+                // Read before any host below writes its restore target.
+                let focused = self.input.focused.get(&document).copied();
+                // Focus inside the closed overlay (not yet removed when a
+                // subtree is despawned root first) left with it.
+                let held_focus = closed.zip(focused).is_some_and(|(overlay, focused)| {
+                    removed.contains(&focused)
+                        || !self.contains(focused)
+                        || self.is_descendant_or_self(focused, overlay)
+                });
+                // Focus the user already moved to another node stays there,
+                // with whatever composition it has going.
+                let focus_left = focused.is_none() || held_focus;
+                (
+                    host,
+                    document,
+                    state,
+                    focus_left.then_some(restore_focus).flatten(),
+                    held_focus,
+                )
+            })
             .collect::<Vec<_>>();
-        for (host, state, restore_focus) in updates {
+        // Several overlays closing at once: the one that held focus gives it
+        // back; otherwise the lowest host does, not whichever a hash visits
+        // first.
+        updates.sort_by_key(|(host, _, _, _, held_focus)| (!*held_focus, *host));
+        let mut restored = HashSet::new();
+        for (host, document, state, restore_focus, _) in updates {
             self.write_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
-            let document = self.record(host).document;
-            // Focus goes back only if it left with the overlay. Focus the
-            // user already moved to another node stays there, with whatever
-            // composition it has going.
-            let focus_left = self
-                .input
-                .focused
-                .get(&document)
-                .is_none_or(|focused| removed.contains(focused) || !self.contains(*focused));
+            if restored.contains(&document) {
+                continue;
+            }
             if let Some(restore_focus) = restore_focus.filter(|id| {
-                focus_left
-                    && self.contains(*id)
+                self.contains(*id)
                     && self.is_mounted(*id)
                     && self.record(*id).document == document
                     && self.record(*id).interaction.focusable
@@ -2419,6 +2436,7 @@ impl UiWorld {
             }) {
                 self.input.focused.insert(document, restore_focus);
                 self.mark_focus_changed(restore_focus);
+                restored.insert(document);
             }
         }
     }

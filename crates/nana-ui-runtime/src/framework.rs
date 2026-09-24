@@ -1363,10 +1363,12 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
+        let written_editors = self.text_histories_written_by(&mutations);
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations)
             .map_err(FrameworkError::from)?;
+        self.verify_text_histories(written_editors);
         for (document, root, previous, restore) in hover_restore {
             // Other focus owners (including overlay and scope restoration) win.
             if self

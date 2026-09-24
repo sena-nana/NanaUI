@@ -920,12 +920,12 @@ impl EditSession {
             self.state.composition = None;
             self.bump_composition();
         }
-        let composing = self.is_composing();
+        // `Some` exactly while composing.
         let before = self.composed_primary();
         match self.text.splice(edits) {
             Ok(Some(edit)) => {
                 self.record_splice(&changing);
-                if composing {
+                if before.is_some() {
                     self.shift_composition(&changing);
                 }
                 self.state.goal_x_px = None;
@@ -938,7 +938,7 @@ impl EditSession {
                 EditChange::Text(edit)
             }
             _ if cancelled => EditChange::Composition,
-            Ok(None) if composing => EditChange::None,
+            Ok(None) if before.is_some() => EditChange::None,
             Ok(None) => {
                 let (primary, additional) = self.normalized(primary, additional);
                 self.set_selections_state(primary, additional)
@@ -1083,9 +1083,6 @@ impl EditSession {
     /// while composing. Not the whole state: the preedit and every other
     /// cursor would be copied for nothing.
     fn composed_primary(&self) -> Option<(EditSelection, Range<usize>)> {
-        if !self.is_composing() {
-            return None;
-        }
         let composition = self.state.composition.as_ref()?;
         Some((self.state.selection, composition.replaced.clone()))
     }
