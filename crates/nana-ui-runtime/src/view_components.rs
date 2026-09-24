@@ -1914,11 +1914,10 @@ impl NumberInput {
     }
 
     /// Whether `value` lies within the field's bounds, so the field can take
-    /// it without clamping (snapping to the grid aside). A millionth of a
-    /// step of float noise past a bound still counts as on it: an assistive
-    /// client asking for 0.2 + 0.1 means the maximum of 0.3.
+    /// it without clamping (snapping to the grid aside), allowing each bound
+    /// its float noise.
     pub(crate) fn within_bounds(&self, value: f64) -> bool {
-        (self.spec.clamp(value) - value).abs() <= self.spec.effective_step() * 1e-6
+        self.spec.within_bounds(value)
     }
 
     /// Put back a committed number the undo journal recorded, leaving the
