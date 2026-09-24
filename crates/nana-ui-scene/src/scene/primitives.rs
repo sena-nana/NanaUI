@@ -91,33 +91,30 @@ impl UiScene {
             parent_opacity * local_opacity
         };
         let style = node.source_style.layout.as_ref();
+        let overflow = overflow_clip_region(style, bounds, transform);
+        let clip_path = clip_path_region(style, bounds, transform);
         let clips: Arc<[ClipRegion]> = {
-            let mut chain = if let Some((x, y, w, h)) = node.source_style.layout.overflow_clip_box(
-                bounds.x,
-                bounds.y,
-                bounds.width,
-                bounds.height,
-            ) {
-                let mut own = parent_clips.to_vec();
-                own.push(ClipRegion::axis_aligned(
-                    SceneRect {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    transform,
-                ));
-                own
-            } else {
-                parent_clips.to_vec()
-            };
-            if let Some(region) = clip_path_region(style, bounds, transform) {
-                chain.push(region);
-            }
+            let mut chain = parent_clips.to_vec();
+            chain.extend(overflow.clone());
+            chain.extend(clip_path.clone());
             chain.into()
         };
-        let surface_clips: Arc<[ClipRegion]> = Arc::clone(&clips);
+        // The overflow clip's rounding is for what the box contains. The box's
+        // own fill and border already have that shape, and cutting them with
+        // it again would fade their anti-aliased corners, so they keep the
+        // plain border-box rectangle.
+        let surface_clips: Arc<[ClipRegion]> = match &overflow {
+            Some(region) if region.corner_radius > 0.0 => {
+                let mut chain = parent_clips.to_vec();
+                chain.push(ClipRegion {
+                    corner_radius: 0.0,
+                    ..region.clone()
+                });
+                chain.extend(clip_path);
+                chain.into()
+            }
+            _ => Arc::clone(&clips),
+        };
         let empty_state_content_clips: Arc<[ClipRegion]> =
             if let Some(ComponentGeometry::EmptyState { content_clip, .. }) =
                 node.component_geometry.as_deref()

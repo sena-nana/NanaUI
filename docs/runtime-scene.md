@@ -62,6 +62,7 @@ Layout-class（`width` / `height` / `padding` / `margin`）走 CPU：每帧采�
 - **`clip-path: inset(... round R)`**：圆角半径写入 `FragmentClip.corner_radius`；非平移 transform 下仍保留 SDF 圆角（不再在旋转时清零 radius）。
 - **`clip-path: polygon(...)`**：Scene 存 AABB + 局部顶点；**自身 quad** 在 fragment 做点内多边形测试；**子项 / 文本 / HostTexture** 通过 dest-group 在合成 pass 做 winding 多边形测试（非 AABB-only）。
 - **HostTexture**：祖先 inset-round overflow clip 的 `corner_radius` 经 `clip_inv_ef.z` 传入 host-texture shader，与 quad 共用 rounded-box SDF。
+- **圆角 `overflow`**：两轴都裁剪的祖先按自身 `border-radius`（四角取最小）生成带 `corner_radius` 的 `ClipRegion`，后代的 Quad / Text / Mesh / HostTexture 都走同一条 fragment clip；节点自己的表面（slot 0）只挂直角版本，避免对已经是圆角的填充和边框再做一次抗锯齿。只有一层圆角时留在顶点属性里，多层嵌套才进 dest 合成组。
 
 ### CSS filter drop-shadow
 

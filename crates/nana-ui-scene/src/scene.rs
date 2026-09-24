@@ -1387,24 +1387,18 @@ impl UiScene {
             if ancestor.source_style.layout.fails_closed_3d_context() {
                 blocks_3d = true;
             }
-            if let Some((x, y, w, h)) = ancestor.source_style.layout.overflow_clip_box(
-                layout.x,
-                layout.y,
-                layout.width,
-                layout.height,
+            if let Some(region) = overflow_clip_region(
+                ancestor.source_style.layout.as_ref(),
+                SceneRect {
+                    x: layout.x,
+                    y: layout.y,
+                    width: layout.width,
+                    height: layout.height,
+                },
+                transform,
             ) && !(is_workspace_resize_handle(node) && Some(ancestor.id) == node.parent)
             {
-                clips.push(ClipRegion {
-                    bounds: SceneRect {
-                        x,
-                        y,
-                        width: w,
-                        height: h,
-                    },
-                    transform,
-                    corner_radius: 0.0,
-                    polygon_clip: None,
-                });
+                clips.push(region);
             }
             if let Some(ComponentGeometry::EmptyState { root_clip, .. }) =
                 ancestor.component_geometry.as_deref()
@@ -2107,6 +2101,47 @@ fn dest_group(nodes: &SceneNodes, id: StableNodeId, candidate: &ExtractedNode) -
         mix_blend: candidate.source_style.layout.paint.mix_blend,
         inset_shadow: inset_shadow_overlay(candidate),
     }
+}
+
+/// The clip an `overflow` other than `visible` puts on a node's descendants.
+///
+/// It is the border box with the box's own rounding, as in CSS: a child
+/// cannot paint past the rounded corners of an `overflow: hidden` parent.
+/// The scene carries one radius per clip, so corners of unequal radius clip
+/// with the smallest — never cutting away paint a corner should keep. With
+/// only one axis clipped the open axis extends far past the box and there is
+/// no corner to round.
+fn overflow_clip_region(
+    style: &nana_ui_core::LayoutStyle,
+    bounds: SceneRect,
+    transform: AffineTransform,
+) -> Option<ClipRegion> {
+    let (x, y, width, height) =
+        style.overflow_clip_box(bounds.x, bounds.y, bounds.width, bounds.height)?;
+    let corner_radius = if style.overflow_x.clips() && style.overflow_y.clips() {
+        style
+            .resolved_border_radii(bounds.width, bounds.height)
+            .into_iter()
+            .fold(f32::INFINITY, f32::min)
+            .min(bounds.width.min(bounds.height) * 0.5)
+    } else {
+        0.0
+    };
+    Some(ClipRegion {
+        bounds: SceneRect {
+            x,
+            y,
+            width,
+            height,
+        },
+        transform,
+        corner_radius: if corner_radius.is_finite() {
+            corner_radius.max(0.0)
+        } else {
+            0.0
+        },
+        polygon_clip: None,
+    })
 }
 
 fn clip_path_region(

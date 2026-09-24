@@ -1276,6 +1276,91 @@ fn parent_perspective_fail_closes_child_3d() {
     assert_eq!(primitive.transform, AffineTransform::IDENTITY);
 }
 
+/// `overflow: hidden` on a rounded box clips its children to the rounding,
+/// as in CSS — a host texture inside a rounded frame must not paint into the
+/// frame's corners. One open axis leaves nothing to round.
+#[test]
+fn rounded_overflow_clips_children_to_its_corners() {
+    let clip_of = |overflow_y: nana_ui_core::OverflowSpec, radius: f32| {
+        let mut frame = node(1, None, &[2]);
+        frame.layout = LayoutBox {
+            x: 10.0,
+            y: 20.0,
+            width: 60.0,
+            height: 40.0,
+        };
+        let layout = Arc::make_mut(&mut frame.source_style.layout);
+        layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+        layout.overflow_y = overflow_y;
+        layout.border_radius = Some(radius);
+        let mut picture = node(2, Some(1), &[]);
+        picture.layout = frame.layout;
+        picture.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+        let mut scene = UiScene::new();
+        scene.apply_delta([frame, picture], []);
+        let custom = scene
+            .primitives()
+            .find(|primitive| primitive.node == id(2))
+            .expect("picture");
+        assert_eq!(custom.clips.len(), 1);
+        custom.clips[0].clone()
+    };
+    let clip = clip_of(nana_ui_core::OverflowSpec::Hidden, 12.0);
+    assert_eq!(
+        (
+            clip.bounds.x,
+            clip.bounds.y,
+            clip.bounds.width,
+            clip.bounds.height
+        ),
+        (10.0, 20.0, 60.0, 40.0)
+    );
+    assert_eq!(clip.corner_radius, 12.0);
+    // A radius past half the short side rounds no further than the box can.
+    assert_eq!(
+        clip_of(nana_ui_core::OverflowSpec::Hidden, 100.0).corner_radius,
+        20.0
+    );
+    assert_eq!(
+        clip_of(nana_ui_core::OverflowSpec::Visible, 12.0).corner_radius,
+        0.0
+    );
+}
+
+/// The rounding cuts what a box contains, not the box's own fill and border:
+/// those already have its shape, and a second rounded cut would thin their
+/// anti-aliased corners.
+#[test]
+fn rounded_overflow_leaves_the_boxs_own_surface_square_clipped() {
+    let mut frame = node(1, None, &[]);
+    frame.layout = LayoutBox {
+        x: 0.0,
+        y: 0.0,
+        width: 60.0,
+        height: 40.0,
+    };
+    let layout = Arc::make_mut(&mut frame.source_style.layout);
+    layout.overflow_x = nana_ui_core::OverflowSpec::Hidden;
+    layout.overflow_y = nana_ui_core::OverflowSpec::Hidden;
+    layout.border_radius = Some(8.0);
+    style_mut(&mut frame).background = Some([1.0, 1.0, 1.0, 1.0]);
+    frame.custom_render = Some(CustomRenderNode::new("test", "resource", 0));
+    let mut scene = UiScene::new();
+    scene.apply_delta([frame], []);
+    let clips = |slot| {
+        scene
+            .primitives()
+            .find(|primitive| primitive.id.slot == slot)
+            .expect("primitive")
+            .clips
+            .iter()
+            .map(|clip| clip.corner_radius)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(clips(0), vec![0.0], "own fill");
+    assert_eq!(clips(1), vec![8.0], "own content");
+}
+
 #[test]
 fn ancestor_clip_transform_and_opacity_are_composed() {
     let mut root = node(1, None, &[2]);
