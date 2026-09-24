@@ -194,7 +194,9 @@ impl Thumbnail {
         style.foreground = Some(SemanticColorRole::Muted);
         let unset_width = style.layout.width.is_none();
         let unset_height = style.layout.height.is_none();
-        let unset_radius = style.layout.border_radius.is_none();
+        // A host that names a tier or a length keeps it; only an unrounded
+        // thumbnail takes the compact default.
+        let unset_radius = style.layout.border_radius.is_none() && style.radius.is_none();
         let aspect = sanitize_aspect(self.aspect);
         {
             let layout = Arc::make_mut(&mut style.layout);
@@ -477,6 +479,24 @@ mod tests {
     /// for a slot, so a fixed one makes this control unable to share a slot
     /// with any re-bound view. Pixel evidence for that is in
     /// `nana-ui-devtools/tests/host_texture_paint.rs`.
+    /// A frame that rounds its picture with the frame's own tier must get
+    /// that tier, or the picture's corners stand outside the frame's.
+    #[test]
+    fn host_radius_tier_is_kept() {
+        let (world, id) = mount(Thumbnail::empty());
+        assert_eq!(world.node_style(id).unwrap().radius, Some(RadiusTier::Xs));
+        let mut style = NodeStyle::default();
+        style.radius = Some(RadiusTier::Md);
+        let (world, id) = mount(Thumbnail::new("stage.thumb").style(style));
+        assert_eq!(world.node_style(id).unwrap().radius, Some(RadiusTier::Md));
+        let mut style = NodeStyle::default();
+        Arc::make_mut(&mut style.layout).border_radius = Some(6.0);
+        let (world, id) = mount(Thumbnail::empty().style(style));
+        let node = world.node_style(id).unwrap();
+        assert_eq!(node.radius, None);
+        assert_eq!(node.layout.border_radius, Some(6.0));
+    }
+
     #[test]
     fn late_host_texture_moves_the_scene_revision() {
         let mut control = Thumbnail::new("cover:a");
