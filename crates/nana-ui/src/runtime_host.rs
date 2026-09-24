@@ -231,7 +231,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         &self.store
     }
 
-    pub const fn surface_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+    pub const fn surface_alpha_mode(&self) -> crate::SurfaceAlphaMode {
         self.presentation.alpha_mode()
     }
 

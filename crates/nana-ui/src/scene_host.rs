@@ -81,9 +81,9 @@ use crate::runtime_host::{
 };
 use crate::scene_paint::{ScenePaintViewport, SceneWgpuPainter};
 use crate::{
-    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, HostedSurfaceFrame,
-    RuntimeAnimationClock, RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction,
-    WindowChromeEvent, WindowChromeState, apply_title_bar_pointer,
+    HostTextureRegistry, HostedGpuError, HostedGpuSurface, HostedRunError, RuntimeAnimationClock,
+    RuntimeInputAdapter, TitleBarDragTracker, WindowChromeAction, WindowChromeEvent,
+    WindowChromeState, apply_title_bar_pointer,
     title_bar_hits_window_control as pointer_hits_window_control,
     window_commands_for_chrome_action,
 };
@@ -247,9 +247,9 @@ struct WindowManager<Program: RuntimeProgram> {
     /// This says the path *exists*, not that any window is on it: each window
     /// asks for its own target from its descriptor.
     composition: crate::presentation::CompositionAvailability,
-    painters: HashMap<wgpu::TextureFormat, SceneWgpuPainter>,
+    painters: HashMap<nana_gpu::GpuTextureFormat, SceneWgpuPainter>,
     native_renderers:
-        HashMap<wgpu::TextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
+        HashMap<nana_gpu::GpuTextureFormat, Arc<crate::native_content::NativeContentRenderer>>,
     text: NanaTextShaper,
     proxy: EventLoopProxy,
     message_tx: Sender<Program::Message>,
@@ -1146,7 +1146,7 @@ fn complete_startup<Program: RuntimeProgram>(
         &settings,
         requested_material,
         applied_material,
-        surface.alpha_mode(),
+        surface.wgpu_alpha_mode(),
         graphics.adapter_info().backend,
         target,
         non_client,
@@ -1209,7 +1209,7 @@ fn complete_startup<Program: RuntimeProgram>(
         &settings,
         requested_material,
         applied,
-        surface.alpha_mode(),
+        surface.wgpu_alpha_mode(),
         graphics.adapter_info().backend,
         target,
         non_client,

@@ -227,12 +227,16 @@ impl HostedGpuSurface {
         &self.window
     }
 
-    pub const fn format(&self) -> wgpu::TextureFormat {
-        self.format
+    pub const fn format(&self) -> GpuTextureFormat {
+        __framework::format_from_wgpu(self.format)
     }
 
     /// Alpha composition mode selected from the native surface capabilities.
-    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+    pub const fn alpha_mode(&self) -> crate::SurfaceAlphaMode {
+        crate::SurfaceAlphaMode::from_wgpu(self.configuration.alpha_mode)
+    }
+
+    pub(crate) const fn wgpu_alpha_mode(&self) -> wgpu::CompositeAlphaMode {
         self.configuration.alpha_mode
     }
 
@@ -411,9 +415,9 @@ impl HostedGpuSurface {
         &mut self,
         instance: &wgpu::Instance,
         gpu: &GpuContext,
-    ) -> Result<HostedSurfaceFrame, HostedGpuError> {
+    ) -> Result<SurfaceFrame, HostedGpuError> {
         if !self.is_drawable() {
-            return Ok(HostedSurfaceFrame::Skipped);
+            return Ok(SurfaceFrame::Skipped);
         }
         if self.needs_recovery {
             self.recover(instance, gpu)?;
@@ -423,10 +427,10 @@ impl HostedGpuSurface {
         }
         self.commit_target()?;
         let result = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => Ok(HostedSurfaceFrame::Ready(frame)),
+            wgpu::CurrentSurfaceTexture::Success(frame) => Ok(SurfaceFrame::Ready(frame)),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 self.needs_reconfigure = true;
-                Ok(HostedSurfaceFrame::Ready(frame))
+                Ok(SurfaceFrame::Ready(frame))
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_OUTDATED);
@@ -435,30 +439,28 @@ impl HostedGpuSurface {
                 // its redraw to the next event-loop iteration.
                 self.reconfigure(gpu);
                 match self.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(frame) => {
-                        Ok(HostedSurfaceFrame::Ready(frame))
-                    }
+                    wgpu::CurrentSurfaceTexture::Success(frame) => Ok(SurfaceFrame::Ready(frame)),
                     wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                         self.needs_reconfigure = true;
-                        Ok(HostedSurfaceFrame::Ready(frame))
+                        Ok(SurfaceFrame::Ready(frame))
                     }
                     wgpu::CurrentSurfaceTexture::Validation => {
                         Err(HostedGpuError::SurfaceValidation)
                     }
-                    _ => Ok(HostedSurfaceFrame::Retry),
+                    _ => Ok(SurfaceFrame::Retry),
                 }
             }
             wgpu::CurrentSurfaceTexture::Lost => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_LOST);
                 nana_diagnostics::event!(nana_diagnostics::framework::gpu::SURFACE_LOST_EVENT);
                 self.recover(instance, gpu)?;
-                Ok(HostedSurfaceFrame::Retry)
+                Ok(SurfaceFrame::Retry)
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_TIMEOUT);
-                Ok(HostedSurfaceFrame::Skipped)
+                Ok(SurfaceFrame::Skipped)
             }
-            wgpu::CurrentSurfaceTexture::Occluded => Ok(HostedSurfaceFrame::Skipped),
+            wgpu::CurrentSurfaceTexture::Occluded => Ok(SurfaceFrame::Skipped),
             wgpu::CurrentSurfaceTexture::Validation => Err(HostedGpuError::SurfaceValidation),
         };
         self.commit_target()?;
@@ -496,6 +498,7 @@ impl HostedGpuContext {
         (self.shared, self.primary)
     }
 
+    #[cfg(feature = "wgpu-interop")]
     pub async fn new(
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
@@ -510,6 +513,7 @@ impl HostedGpuContext {
         .await
     }
 
+    #[cfg(feature = "wgpu-interop")]
     pub async fn new_with_surface_mode(
         window: Arc<dyn winit::window::Window>,
         required_features: wgpu::Features,
@@ -526,6 +530,7 @@ impl HostedGpuContext {
     /// place (see [`HostedGpuSurface::rebind`]). Other surfaces follow with
     /// [`HostedGpuShared::recreate_surface`]. An error leaves the context
     /// unchanged.
+    #[cfg(feature = "wgpu-interop")]
     pub async fn recreate(
         &mut self,
         required_features: wgpu::Features,
@@ -550,12 +555,12 @@ impl HostedGpuContext {
         self.primary.windows_composition()
     }
 
-    pub const fn format(&self) -> wgpu::TextureFormat {
+    pub const fn format(&self) -> GpuTextureFormat {
         self.primary.format()
     }
 
     /// Alpha composition mode used by the primary native surface.
-    pub const fn alpha_mode(&self) -> wgpu::CompositeAlphaMode {
+    pub const fn alpha_mode(&self) -> crate::SurfaceAlphaMode {
         self.primary.alpha_mode()
     }
 
@@ -589,15 +594,18 @@ impl HostedGpuContext {
         self.primary.is_drawable()
     }
 
+    #[cfg(feature = "wgpu-interop")]
     pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
         self.primary
             .acquire_frame(&self.shared.instance, &self.shared.gpu)
+            .map(Into::into)
     }
 
     /// Abandon an acquired primary frame after encoding fails. Drop all views
     /// and unfinished encoders referencing it before calling this method.
     /// The next acquisition recreates only this surface: on DX12, dropping a
     /// frame does not restore the consumed frame-latency waitable signal.
+    #[cfg(feature = "wgpu-interop")]
     pub fn discard_frame(&mut self, frame: wgpu::SurfaceTexture) {
         drop(frame);
         self.primary.needs_recovery = true;
@@ -742,14 +750,25 @@ impl HostedGpuShared {
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
         surface.resize(&self.gpu);
     }
+    pub(crate) fn acquire(
+        &self,
+        surface: &mut HostedGpuSurface,
+    ) -> Result<SurfaceFrame, HostedGpuError> {
+        surface.acquire_frame(&self.instance, &self.gpu)
+    }
+    #[cfg(feature = "wgpu-interop")]
     pub fn acquire_surface_frame(
         &self,
         surface: &mut HostedGpuSurface,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        surface.acquire_frame(&self.instance, &self.gpu)
+        self.acquire(surface).map(Into::into)
     }
-    pub fn present(&self, frame: wgpu::SurfaceTexture) {
+    pub(crate) fn present_frame(&self, frame: wgpu::SurfaceTexture) {
         __framework::queue(&self.gpu).present(frame);
+    }
+    #[cfg(feature = "wgpu-interop")]
+    pub fn present(&self, frame: wgpu::SurfaceTexture) {
+        self.present_frame(frame);
     }
     /// Apply a reconfiguration deferred by a suboptimal frame once that frame
     /// has been presented, without waiting for another redraw.
@@ -758,13 +777,21 @@ impl HostedGpuShared {
             surface.reconfigure(&self.gpu);
         }
     }
-    pub fn discard_surface_frame(
+    pub(crate) fn abandon_frame(
         &self,
         surface: &mut HostedGpuSurface,
         frame: wgpu::SurfaceTexture,
     ) {
         drop(frame);
         surface.needs_recovery = true;
+    }
+    #[cfg(feature = "wgpu-interop")]
+    pub fn discard_surface_frame(
+        &self,
+        surface: &mut HostedGpuSurface,
+        frame: wgpu::SurfaceTexture,
+    ) {
+        self.abandon_frame(surface, frame);
     }
 }
 
@@ -952,10 +979,30 @@ impl DeviceRequest {
     }
 }
 
+/// What acquiring a surface texture produced.
+pub(crate) enum SurfaceFrame {
+    Ready(wgpu::SurfaceTexture),
+    Retry,
+    Skipped,
+}
+
+/// [`SurfaceFrame`] for hosts that drive a surface themselves.
+#[cfg(feature = "wgpu-interop")]
 pub enum HostedSurfaceFrame {
     Ready(wgpu::SurfaceTexture),
     Retry,
     Skipped,
+}
+
+#[cfg(feature = "wgpu-interop")]
+impl From<SurfaceFrame> for HostedSurfaceFrame {
+    fn from(frame: SurfaceFrame) -> Self {
+        match frame {
+            SurfaceFrame::Ready(texture) => Self::Ready(texture),
+            SurfaceFrame::Retry => Self::Retry,
+            SurfaceFrame::Skipped => Self::Skipped,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

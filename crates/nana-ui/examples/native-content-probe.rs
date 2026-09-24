@@ -343,7 +343,7 @@ mod windows_probe {
                 );
                 assert_eq!(
                     context.surface_alpha_mode(),
-                    wgpu::CompositeAlphaMode::PreMultiplied
+                    nana_ui::SurfaceAlphaMode::PreMultiplied
                 );
                 assert_eq!(
                     context.gpu().capabilities().backend(),
@@ -743,7 +743,7 @@ mod windows_probe {
                 );
                 assert_eq!(
                     graphics.alpha_mode(),
-                    wgpu::CompositeAlphaMode::PreMultiplied
+                    nana_ui::SurfaceAlphaMode::PreMultiplied
                 );
                 let mut presented = 0;
                 for auxiliary in [false, true] {

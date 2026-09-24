@@ -40,7 +40,7 @@ pub(super) struct MotionGpuResources {
 }
 
 impl MotionGpuResources {
-    pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Self {
         let bind_layout = layout.clone();
         let dummy_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("nana-ui.scene.motion.dummy.layout"),
@@ -110,11 +110,11 @@ impl MotionGpuResources {
     }
 
     #[allow(dead_code)]
-    pub fn bind_layout(&self) -> &wgpu::BindGroupLayout {
+    pub(crate) fn bind_layout(&self) -> &wgpu::BindGroupLayout {
         &self.bind_layout
     }
 
-    pub fn bind_group(&self) -> &wgpu::BindGroup {
+    pub(crate) fn bind_group(&self) -> &wgpu::BindGroup {
         &self.bind_group
     }
 
@@ -122,7 +122,7 @@ impl MotionGpuResources {
         self.last_work
     }
 
-    pub fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &UiScene) {
+    pub(crate) fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, scene: &UiScene) {
         self.last_work = MotionWorkCounters::default();
         let surface = scene.surface_generation();
         let epoch = scene.motion_gpu_structure_epoch();
@@ -193,7 +193,7 @@ impl MotionGpuResources {
 
     /// Test/devtools only. Product present must not call this.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub fn evaluate_readback(
+    pub(crate) fn evaluate_readback(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,

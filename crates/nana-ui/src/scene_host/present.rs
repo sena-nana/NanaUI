@@ -3,6 +3,7 @@
 use super::*;
 #[cfg(target_os = "windows")]
 use crate::SceneGpuRendererRegistry;
+use crate::hosted_context::SurfaceFrame;
 
 impl<Program: RuntimeProgram> WindowManager<Program> {
     /// `true` when prepare ran (encode may have been skipped). `false` on abort.
@@ -177,12 +178,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let frame = match self.acquire_frame(id) {
-            Ok(HostedSurfaceFrame::Ready(frame)) => frame,
-            Ok(HostedSurfaceFrame::Retry) => {
+            Ok(SurfaceFrame::Ready(frame)) => frame,
+            Ok(SurfaceFrame::Retry) => {
                 self.request_redraw(id);
                 return;
             }
-            Ok(HostedSurfaceFrame::Skipped) => {
+            Ok(SurfaceFrame::Skipped) => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_SKIPPED);
                 self.rearm_frame_demand(id);
                 return;
@@ -304,7 +305,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let opaque = self
             .window_contexts
             .get(&id)
-            .is_some_and(|host| host.surface.alpha_mode() == wgpu::CompositeAlphaMode::Opaque);
+            .is_some_and(|host| host.surface.alpha_mode() == crate::SurfaceAlphaMode::Opaque);
         let painter = self.painter_mut(format);
         // Painters are shared per format, so every window supplies its own
         // egress, including none, and its own surface's text mode.
@@ -353,7 +354,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let painter = self.painter_mut(format);
         painter.record_submit(&submission);
         let gpu_work = painter.last_gpu_work();
-        self.graphics.present(frame);
+        self.graphics.present_frame(frame);
         crate::host_diagnostics::frame_presented(frame_started, submit, gpu_work);
         if let Some(host) = self.window_contexts.get_mut(&id) {
             self.graphics.apply_pending_reconfigure(&mut host.surface);
@@ -456,20 +457,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
 
     fn discard_frame(&mut self, id: WindowId, frame: wgpu::SurfaceTexture) {
         if let Some(host) = self.window_contexts.get_mut(&id) {
-            self.graphics
-                .discard_surface_frame(&mut host.surface, frame);
+            self.graphics.abandon_frame(&mut host.surface, frame);
         }
     }
 
-    pub(super) fn acquire_frame(
-        &mut self,
-        id: WindowId,
-    ) -> Result<HostedSurfaceFrame, HostedGpuError> {
+    pub(super) fn acquire_frame(&mut self, id: WindowId) -> Result<SurfaceFrame, HostedGpuError> {
         let host = self
             .window_contexts
             .get_mut(&id)
             .ok_or(HostedGpuError::SurfaceValidation)?;
-        self.graphics.acquire_surface_frame(&mut host.surface)
+        self.graphics.acquire(&mut host.surface)
     }
     pub(super) fn recover_device(&mut self, _event_loop: &dyn ActiveEventLoop) {
         // Present only on the first attempt after a loss; retries find none.
@@ -621,7 +618,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     }
     /// Painters are created lazily per surface format and own their image waker
     /// from creation, so the per-frame lookup does no allocation.
-    pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
+    pub(super) fn painter_mut(
+        &mut self,
+        format: nana_gpu::GpuTextureFormat,
+    ) -> &mut SceneWgpuPainter {
         // A device switch clears the map; a painter that still names another
         // device would only refuse every frame.
         let current = self.graphics.gpu().generation();
@@ -633,10 +633,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.painters.remove(&format);
         }
         if !self.painters.contains_key(&format) {
-            let painter = SceneWgpuPainter::new(
-                self.graphics.gpu(),
-                nana_gpu::__framework::format_from_wgpu(format),
-            );
+            let painter = SceneWgpuPainter::new(self.graphics.gpu(), format);
             self.adopt_painter(format, painter);
         }
         self.painters
@@ -648,7 +645,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// one alongside the device) with this host's image waker.
     pub(super) fn adopt_painter(
         &mut self,
-        format: wgpu::TextureFormat,
+        format: nana_gpu::GpuTextureFormat,
         mut painter: SceneWgpuPainter,
     ) {
         let (targets, redraws, proxy) = (

@@ -171,7 +171,7 @@ required-features = ["gpu", "wgpu-interop"]
 
 [[example]]
 name = "desktop-overlay-probe"
-required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
+required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "native-content-probe"
