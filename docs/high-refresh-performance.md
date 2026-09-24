@@ -1290,7 +1290,7 @@ cargo test -p nana-ui --lib --features hosted,bundled-fonts --locked --target-di
 cargo rustc -p nana-ui --example accessibility-hidden-probe --features hosted,bundled-fonts --locked --target-dir E:/codex-build/nanaui-high-refresh -- -C debuginfo=0
 powershell.exe -NoProfile -Mta -ExecutionPolicy Bypass -File scripts/validate-hidden-accessibility.ps1 -ExePath E:/codex-build/nanaui-high-refresh/debug/examples/accessibility-hidden-probe.exe -Mode Semantics -Retry
 # Repeat in a fresh shell with WGPU_BACKEND=dx12; each report includes the actual adapter backend.
-cargo clippy -p nana-ui --lib --example accessibility-hidden-probe --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop,wgpu-interop --locked --target-dir E:/codex-build/nanaui-high-refresh --no-deps -- -D warnings
+cargo clippy -p nana-ui --lib --example accessibility-hidden-probe --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop --locked --target-dir E:/codex-build/nanaui-high-refresh --no-deps -- -D warnings
 ```
 
 证据归档于 `performance-data/high-refresh-2026-09-06/high-refresh-a11y-retry-*`。

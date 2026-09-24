@@ -116,7 +116,9 @@ WGPU stays the only backend, but it is no longer the extension contract. The new
 
 ### Who needs `wgpu-interop`
 
-Turn it on (`nana-ui/wgpu-interop`) only where you touch WGPU objects: a host that brings its own device (`GpuContext::from_wgpu`, `HostedGpuShared::from_device`), a renderer or producer that records its own pipelines, tooling that reads back. Uploading CPU pixels (`create_texture` + `write_texture`), handing `GpuTexture` frames to `FrameExchange`, and registering `HostTexture` slots do not need it. `nana-ui-vue/hosted` turns it on (the JS WebGPU facade records on the host device). In this repository `hosted-gpu-demo`, `embedded-window-lifecycle`, `native-content-probe`, the `text_device_recreation` / `text_lost_device` tests, devtools `offscreen`, the Gallery benchmark and the Android host enable it.
+Turn it on (`nana-ui/wgpu-interop`) only where you touch WGPU objects: a host that brings its own device (`GpuContext::from_wgpu`, `HostedGpuShared::from_device`), a renderer or producer that records its own pipelines, tooling that reads back. Uploading CPU pixels (`create_texture` + `write_texture`), handing `GpuTexture` frames to `FrameExchange`, and registering `HostTexture` slots do not need it. The framework's own crates (nana-ui, nana-frame-exchange, nana-ui-vue with its JS WebGPU facade, nana-ui-devtools with snapshot readback) do not turn it on, so a Vue app does not get it by accident. In this repository `hosted-gpu-demo`, `embedded-window-lifecycle`, `native-content-probe`, the `text_device_recreation` / `text_lost_device` tests, `examples/runtime-host-fixture`, `examples/vue-hosted-acceptance`, the `nana-js-v8` WebGPU test, the Gallery benchmark and the Android host enable it.
+
+The submission guard is not reentrant: while holding `lock_submission()`, do not call `FrameContext::submit`, `GpuContext::write_texture` or `FrameExchange::copy_from`, which take it themselves.
 
 ### Behavior changes
 
@@ -124,9 +126,12 @@ Turn it on (`nana-ui/wgpu-interop`) only where you touch WGPU objects: a host th
 - **Resources from a replaced device are refused.** A `HostTexture` still sampling a texture from a replaced device fails the frame with `StaleHostTexture` instead of reaching WGPU validation; frames and targets from another device fail with `DeviceMismatch`. Rebuild device resources in `rebuild_gpu`, as before.
 - **Off-thread copies no longer race surface reconfiguration.** `FrameExchange::copy_from` submitted without the guard documented for off-thread submits, and could hit `GpuWaitTimeout` while a window resized. It now holds it.
 - **Renderer caches follow the device.** `DefaultGpuViewRenderer` keyed its pipeline by format only: a registry kept across a device replacement drew with the old device's pipeline, and windows of different formats rebuilt it on every alternation. It now keys by device generation and format.
-- **Embedded loss is visible to everyone.** `EmbeddedRuntime::notify_device_lost` marks the `GpuContext` lost, so producer threads and the JS runtime see `is_lost()`.
+- **Embedded loss is recorded on the context.** `EmbeddedRuntime::notify_device_lost` marks the `GpuContext` lost, so producer threads can query `is_lost()`.
+- **A device lost with no window open recovers with the next window.** Before, the loss was consumed with nothing to rebuild from and the next window kept presenting on the lost device.
 - **Diagnostics:** `framework::gpu` appends counter `FRAMES_DISCARDED` (`gpu.frames_discarded`, metric id 11) and warn event `RETAINED_FRAME_DISCARDED` (`gpu.retained_frame_discarded`, event id 6, field `target`, once per painter). The `gpu.submit` histogram now measures finish plus submit only, without producer `submitted` callbacks.
 
 ### Checked by the boundary script
 
-`python3 scripts/check-engine-boundary.py` fails when a public signature, field, re-export, alias, enum payload or trait method of nana-gpu, nana-frame-exchange or nana-ui names `wgpu` outside `wgpu-interop`, and when anything but those crates' own sources uses `nana_gpu::__framework`.
+`python3 scripts/check-engine-boundary.py` fails when a public signature, field, re-export, type alias, `use wgpu::..` alias used in a public item, type header (generic defaults, `where`), enum payload, trait method or associated type, or trait impl on a public type of nana-gpu, nana-frame-exchange, nana-ui, nana-ui-vue or nana-ui-devtools names `wgpu` outside `cfg(feature = "wgpu-interop")` (`not(..)` / `any(..)` do not count), and when anything but those crates' own sources uses `nana_gpu::__framework`.
+
+`nana_ui_devtools::offscreen::FORMAT` is now a `GpuTextureFormat`, and `offscreen::readback(&GpuContext, &GpuTexture, Size)` replaces `readback(&Device, &Queue, CommandEncoder, &Texture, Size)`. `nana_frame_exchange` re-exports `GpuContext`, `GpuTexture`, `GpuTextureFormat` and `DeviceGeneration`.

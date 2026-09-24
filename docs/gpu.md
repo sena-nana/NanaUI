@@ -88,11 +88,15 @@ WGPU 是唯一的后端，但不是扩展合同。普通路径只用 `nana-gpu` 
 | `GpuTexture` / `GpuRenderTarget` | 带设备代次的纹理与渲染目标。别的设备上的资源被拒绝，不会进后端 |
 | `GpuTextureFormat` / `GpuTextureUsages` | 不透明的格式与 usage |
 
-自带 shader 的 renderer、自己持有设备的宿主、需要 CPU 回读的工具走显式的 `wgpu-interop` feature：`GpuContext::from_wgpu` / `wgpu()`（adapter、device、queue、`lock_submission()`）、`FrameContext::wgpu_encoder()`、`GpuTexture::from_wgpu` / `wgpu_view()`、`ScenePass::wgpu()`、`SceneGpuRenderContext::wgpu_encoder()`，以及 `nana_ui::wgpu` 再导出。它交出的是合同背后同一份对象，不会创建第二套设备。Cargo feature 会跨依赖图统一：Vue hosted（JS WebGPU 门面直接在宿主设备上录制）会连带打开它，所以真正守门的是 `scripts/check-engine-boundary.py`——nana-gpu / nana-frame-exchange / nana-ui 的公开签名出现 `wgpu` 必须在 `wgpu-interop` 之下。
+自带 shader 的 renderer、自己持有设备的宿主、需要 CPU 回读的工具走显式的 `wgpu-interop` feature：`GpuContext::from_wgpu` / `wgpu()`（adapter、device、queue、`lock_submission()`）、`FrameContext::wgpu_encoder()`、`GpuTexture::from_wgpu` / `wgpu_view()`、`ScenePass::wgpu()`、`SceneGpuRenderContext::wgpu_encoder()`，以及 `nana_ui::wgpu` 再导出。它交出的是合同背后同一份对象，不会创建第二套设备。
+
+框架自己的 crate（nana-ui、nana-frame-exchange，以及 JS WebGPU 门面所在的 nana-ui-vue、快照回读所在的 nana-ui-devtools）经隐藏的 `nana_gpu::__framework` 取后端，不打开 `wgpu-interop`，所以 Vue 应用不会被连带获得逃生口。Cargo feature 仍会跨依赖图统一——依赖图里任何一个 crate 打开它，整棵图都能用——所以守门的是 `scripts/check-engine-boundary.py`：这些 crate 的公开签名、字段、再导出、别名、类型头、trait 的方法与关联类型、公开类型的 trait impl 出现 `wgpu`，必须在 `wgpu-interop` 之下；`__framework` 只允许这些 crate 自己的源码使用。
+
+提交守卫不可重入：持着 `lock_submission()` 时不要再调用 `FrameContext::submit`、`GpuContext::write_texture`、`FrameExchange::copy_from` 这些会自己取守卫的方法。
 
 ## 跨线程最新帧
 
-画面在另一个线程上产出（模型渲染、导播合成、解码）时，用 `FrameExchange` 把完成的帧交给窗口，用 `FrameBinding` 把它绑到 slot。两者都在宿主那一个 `GpuContext` 上，生产端 crate `nana-frame-exchange` 只依赖 `nana-gpu`，渲染库不必依赖 `nana-ui`。
+画面在另一个线程上产出（模型渲染、导播合成、解码）时，用 `FrameExchange` 把完成的帧交给窗口，用 `FrameBinding` 把它绑到 slot。两者都在宿主那一个 `GpuContext` 上。生产端 crate `nana-frame-exchange` 建在 `nana-gpu` 上并再导出 `GpuContext` / `GpuTexture` / `DeviceGeneration`，渲染库不必依赖 `nana-ui`。
 
 ```rust
 // 生产线程：每个 tick 都 poll，复制只在有新帧时做
@@ -277,4 +281,4 @@ slot 的目标。不要为纹理内容更新改写 Runtime 节点。
 - 把 `GpuTextureView` 或 `<iframe>` 当成能加载的浏览器
 - 在 UI 画完之后把原生 WebView 盖在窗口上，或让控件拿 HWND / NSView 去挂引擎
 
-设备丢失的唯一记录是 `GpuContext::is_lost()`（粘性，丢失后不会恢复，宿主换一个新的 `GpuContext`）与 `lost_report()`。`run_runtime` 自己请求的设备由 NanaUI 安装丢失回调写入它。外部 GPU 的丢失回调归宿主所有：通过 `HostedGpuShared::from_device(instance, GpuContext::from_wgpu(..))` 注入时，NanaUI 不会安装或覆盖该回调；宿主应把通知转发到窗口线程，调用 `EmbeddedRuntime::notify_device_lost()`（它同样把上下文标为丢失，持有该上下文的生产线程与 JS runtime 都能看到）后暂停原设备上的其他工作，并在新 GPU 就绪后调用 `replace_gpu()`。管理器在通知与替换之间保持挂起，不退出宿主事件循环。
+设备丢失的唯一记录是 `GpuContext::is_lost()`（粘性，丢失后不会恢复，宿主换一个新的 `GpuContext`）与 `lost_report()`。设备在没有任何窗口时丢失，恢复等到下一个窗口的第一帧，用它的 Surface 选新设备。`run_runtime` 自己请求的设备由 NanaUI 安装丢失回调写入它。外部 GPU 的丢失回调归宿主所有：通过 `HostedGpuShared::from_device(instance, GpuContext::from_wgpu(..))` 注入时，NanaUI 不会安装或覆盖该回调；宿主应把通知转发到窗口线程，调用 `EmbeddedRuntime::notify_device_lost()`（它同样把上下文标为丢失，持有该上下文的生产线程可以查询 `is_lost()`，据此停下）后暂停原设备上的其他工作，并在新 GPU 就绪后调用 `replace_gpu()`。管理器在通知与替换之间保持挂起，不退出宿主事件循环。

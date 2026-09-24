@@ -15,7 +15,7 @@ nana-ui                 宿主适配器：run_runtime、控件再导出、SceneW
     ├── nana-gpu        GPU 后端合同：GpuContext（设备、代次、能力、丢失、
     │                   纹理与提交守卫）、FrameContext（独占 encoder 的一帧）、
     │                   GpuTexture。WGPU 是唯一后端，wgpu-interop 是显式逃生口
-    ├── nana-frame-exchange  跨线程最新帧（只依赖 nana-gpu）。生产端 crate，
+    ├── nana-frame-exchange  跨线程最新帧（建在 nana-gpu 上，再导出它的类型）。生产端 crate，
     │                       渲染库不必依赖 nana-ui
     ├── nana-ui-runtime 保留树权威（UiWorld）、内建控件、Shell、Workspace、
     │                   Dock、GPU 槽。不依赖 WGPU
