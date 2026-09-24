@@ -4,10 +4,13 @@
 use super::geometry::{CaretRect, EditorGeometry};
 use super::ime;
 use super::navigation;
-use super::state::{Composition, EditRevisions, EditSelection};
+use super::state::{
+    Composition, EditRevisions, EditSelection, normalize_selections, remap_selection,
+};
 use super::text::{EditableText, TextEdit};
 use crate::counters::TextWorkCounters;
 use crate::edit::Affinity;
+use crate::shared::SharedText;
 use std::borrow::Cow;
 use std::ops::Range;
 
@@ -77,9 +80,16 @@ pub struct SurroundingText<'a> {
 }
 
 /// Editor state that is not text.
+///
+/// `selection` is the primary selection: the one a platform IME composes
+/// over, accessibility reports and a vertical run keeps its goal column for.
+/// `additional` holds any further cursors or selections, in document order;
+/// together with the primary they never overlap or touch
+/// ([`normalize_selections`](super::normalize_selections) keeps it so).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct EditState {
     pub selection: EditSelection,
+    pub additional: Vec<EditSelection>,
     pub composition: Option<Composition>,
     /// The x a run of vertical moves keeps returning to, in geometry space.
     pub goal_x_px: Option<f32>,
@@ -123,6 +133,28 @@ impl EditSession {
         }
     }
 
+    /// A session over `text` adopted without a copy, with `selection` as its
+    /// primary selection and `additional` as further cursors. Every offset is
+    /// snapped back onto a grapheme boundary and the set is normalized.
+    pub fn with_selections(
+        text: SharedText,
+        selection: EditSelection,
+        additional: impl IntoIterator<Item = EditSelection>,
+    ) -> Self {
+        let mut session = Self {
+            id: next_session_id(),
+            text: EditableText::from_shared(text),
+            state: EditState::default(),
+            selection_revision: 0,
+            composition_revision: 0,
+            work: TextWorkCounters::default(),
+        };
+        let (primary, additional) = session.normalized(selection, additional);
+        session.state.selection = primary;
+        session.state.additional = additional;
+        session
+    }
+
     pub fn text(&self) -> &EditableText {
         &self.text
     }
@@ -131,12 +163,52 @@ impl EditSession {
         self.text.as_str()
     }
 
+    /// An O(1) copy of the committed text; see [`EditableText::snapshot`].
+    pub fn snapshot(&self) -> SharedText {
+        self.text.snapshot()
+    }
+
     pub fn state(&self) -> &EditState {
         &self.state
     }
 
+    /// The primary selection.
     pub fn selection(&self) -> EditSelection {
         self.state.selection
+    }
+
+    /// The selections besides the primary, in document order.
+    pub fn additional_selections(&self) -> &[EditSelection] {
+        &self.state.additional
+    }
+
+    pub fn has_additional_selections(&self) -> bool {
+        !self.state.additional.is_empty()
+    }
+
+    /// Every selection in document order, the primary among them.
+    pub fn selections(&self) -> Cow<'_, [EditSelection]> {
+        if self.state.additional.is_empty() {
+            return Cow::Borrowed(std::slice::from_ref(&self.state.selection));
+        }
+        let mut all = Vec::with_capacity(self.state.additional.len() + 1);
+        all.push(self.state.selection);
+        all.extend_from_slice(&self.state.additional);
+        all.sort_by_key(|selection| {
+            let range = selection.range();
+            (range.start, range.end)
+        });
+        Cow::Owned(all)
+    }
+
+    /// Position of the primary within [`Self::selections`].
+    pub fn primary_index(&self) -> usize {
+        let start = self.state.selection.range().start;
+        self.state
+            .additional
+            .iter()
+            .filter(|selection| selection.range().start < start)
+            .count()
     }
 
     pub fn composition(&self) -> Option<&Composition> {
@@ -186,7 +258,20 @@ impl EditSession {
             .map_or(display, |composition| composition.committed_offset(display))
     }
 
-    /// The selected committed text, when the selection is not empty.
+    /// The text of every non-empty selection in document order, joined with
+    /// line feeds — what a copy puts on the pasteboard with several cursors.
+    /// `None` when every selection is a bare caret.
+    pub fn selected_texts(&self) -> Option<String> {
+        let parts: Vec<&str> = self
+            .selections()
+            .iter()
+            .filter(|selection| !selection.is_collapsed())
+            .filter_map(|selection| self.text.slice(selection.range()))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    }
+
+    /// The selected committed text, when the primary selection is not empty.
     pub fn selected_text(&self) -> Option<&str> {
         let selection = self.state.selection;
         (!selection.is_collapsed())
@@ -210,27 +295,80 @@ impl EditSession {
         geometry.caret_rect(offset, affinity)
     }
 
-    /// Moves the selection as a consequence of a text edit: its revision moves,
-    /// but it is not a selection-only update.
-    fn place_selection(&mut self, selection: EditSelection) {
-        if self.state.selection != selection {
-            self.state.selection = selection;
+    /// `selection` with both ends snapped back onto grapheme boundaries of
+    /// the committed text. A focus the snap moved loses its affinity.
+    fn snapped(&self, selection: EditSelection) -> EditSelection {
+        let focus = self.text.snap_to_grapheme(selection.focus, false);
+        EditSelection {
+            anchor: self.text.snap_to_grapheme(selection.anchor, false),
+            focus,
+            affinity: if focus == selection.focus {
+                selection.affinity
+            } else {
+                Affinity::Downstream
+            },
+        }
+    }
+
+    fn normalized(
+        &self,
+        primary: EditSelection,
+        additional: impl IntoIterator<Item = EditSelection>,
+    ) -> (EditSelection, Vec<EditSelection>) {
+        normalize_selections(
+            self.snapped(primary),
+            additional
+                .into_iter()
+                .map(|selection| self.snapped(selection)),
+        )
+    }
+
+    /// Moves the selections as a consequence of a text edit: their revision
+    /// moves, but it is not a selection-only update.
+    fn place_selections(&mut self, primary: EditSelection, additional: Vec<EditSelection>) {
+        let (primary, additional) = normalize_selections(primary, additional);
+        if self.state.selection != primary || self.state.additional != additional {
+            self.state.selection = primary;
+            self.state.additional = additional;
             self.selection_revision += 1;
         }
     }
 
-    fn set_selection_state(&mut self, selection: EditSelection) -> EditChange {
-        if self.state.selection == selection {
+    fn place_selection(&mut self, selection: EditSelection) {
+        self.place_selections(selection, Vec::new());
+    }
+
+    /// A selection-only change. Counted as a caret update only when every
+    /// cursor is a bare caret, so a live multi-cursor selection is never
+    /// reported as a caret move.
+    fn set_selections_state(
+        &mut self,
+        primary: EditSelection,
+        additional: Vec<EditSelection>,
+    ) -> EditChange {
+        let (primary, additional) = normalize_selections(primary, additional);
+        if self.state.selection == primary && self.state.additional == additional {
             return EditChange::None;
         }
-        self.state.selection = selection;
+        self.state.selection = primary;
+        self.state.additional = additional;
         self.selection_revision += 1;
-        if selection.is_collapsed() {
+        let collapsed = self.state.selection.is_collapsed()
+            && self
+                .state
+                .additional
+                .iter()
+                .all(EditSelection::is_collapsed);
+        if collapsed {
             self.work.caret_only_updates += 1;
         } else {
             self.work.selection_only_updates += 1;
         }
         EditChange::Selection
+    }
+
+    fn set_selection_state(&mut self, selection: EditSelection) -> EditChange {
+        self.set_selections_state(selection, Vec::new())
     }
 
     fn record_edit(&mut self, edit: &TextEdit) {
@@ -244,19 +382,66 @@ impl EditSession {
         self.work.composition_updates += 1;
     }
 
-    /// Selects `anchor..focus`, each snapped back onto a grapheme boundary.
-    /// Refused while composing.
+    /// Selects `anchor..focus`, each snapped back onto a grapheme boundary,
+    /// as the only selection: any further cursors go. Refused while
+    /// composing.
     pub fn set_selection(&mut self, anchor: usize, focus: usize, affinity: Affinity) -> EditChange {
         if self.is_composing() {
             return EditChange::None;
         }
         self.state.goal_x_px = None;
-        let selection = EditSelection {
-            anchor: self.text.snap_to_grapheme(anchor, false),
-            focus: self.text.snap_to_grapheme(focus, false),
+        let selection = self.snapped(EditSelection {
+            anchor,
+            focus,
             affinity,
-        };
+        });
         self.set_selection_state(selection)
+    }
+
+    /// Replaces the whole selection set: `primary` plus `additional`, snapped
+    /// onto grapheme boundaries and normalized. Refused while composing.
+    pub fn set_selections(
+        &mut self,
+        primary: EditSelection,
+        additional: impl IntoIterator<Item = EditSelection>,
+    ) -> EditChange {
+        if self.is_composing() {
+            return EditChange::None;
+        }
+        self.state.goal_x_px = None;
+        let (primary, additional) = self.normalized(primary, additional);
+        self.set_selections_state(primary, additional)
+    }
+
+    /// Adds cursors or selections to the set, fusing any that overlap or
+    /// touch. Refused while composing.
+    pub fn add_selections(
+        &mut self,
+        candidates: impl IntoIterator<Item = EditSelection>,
+    ) -> EditChange {
+        if self.is_composing() {
+            return EditChange::None;
+        }
+        let additional: Vec<EditSelection> = self
+            .state
+            .additional
+            .iter()
+            .copied()
+            .chain(
+                candidates
+                    .into_iter()
+                    .map(|selection| self.snapped(selection)),
+            )
+            .collect();
+        self.set_selections_state(self.state.selection, additional)
+    }
+
+    /// Drops every selection but the primary.
+    pub fn collapse_selections(&mut self) -> EditChange {
+        if self.state.additional.is_empty() {
+            return EditChange::None;
+        }
+        self.set_selections_state(self.state.selection, Vec::new())
     }
 
     pub fn select_all(&mut self) -> EditChange {
@@ -281,6 +466,7 @@ impl EditSession {
         motion: Motion,
         from: (usize, Affinity),
         geometry: Option<&EditorGeometry>,
+        goal_x_px: Option<f32>,
     ) -> Option<(usize, Affinity)> {
         let text = self.text.as_str();
         let (offset, affinity) = from;
@@ -321,7 +507,7 @@ impl EditSession {
                 let lines = if motion == Motion::LineUp { -1 } else { 1 };
                 match geometry {
                     Some(geometry) => {
-                        let goal = self.state.goal_x_px.or_else(|| {
+                        let goal = goal_x_px.or_else(|| {
                             geometry
                                 .caret_rect(offset, affinity)
                                 .map(|caret| caret.x_px)
@@ -335,11 +521,13 @@ impl EditSession {
         }
     }
 
-    /// Moves the caret, or the selection's focus when `extend`.
+    /// Moves the caret, or the selection's focus when `extend` — every
+    /// selection by the same motion, the fused result normalized.
     ///
     /// Without `extend`, a horizontal motion over a non-empty selection
     /// collapses it onto the edge in that direction instead of moving from the
-    /// focus. Refused while composing.
+    /// focus ([`collapse_edge`]). A vertical run keeps the primary's goal
+    /// column; the other cursors aim at their own. Refused while composing.
     pub fn move_caret(
         &mut self,
         motion: Motion,
@@ -350,79 +538,85 @@ impl EditSession {
             return EditChange::None;
         }
         let geometry = self.usable(geometry);
-        let selection = self.state.selection;
-        if !extend && !selection.is_collapsed() {
-            let range = selection.range();
-            let visual_edge = |rightwards: bool| {
-                // On screen the left edge of a selection is not always its
-                // logical start: in RTL text it is the end.
-                // Across lines x says nothing about which end is which: the
-                // logical order is the reading order then.
-                let caret = |offset: usize, affinity| {
-                    geometry.and_then(|geometry| geometry.caret_rect(offset, affinity))
-                };
-                let (start, end) = (
-                    caret(range.start, Affinity::Downstream),
-                    caret(range.end, Affinity::Upstream),
-                );
-                match (start, end) {
-                    (Some(start), Some(end))
-                        if (start.y_px - end.y_px).abs() <= f32::EPSILON
-                            && (end.x_px < start.x_px) == rightwards =>
-                    {
-                        range.start
-                    }
-                    (Some(start), Some(end)) if (start.y_px - end.y_px).abs() <= f32::EPSILON => {
-                        range.end
-                    }
-                    // Reading order: forwards is rightwards unless the
-                    // paragraph reads right to left.
-                    _ => {
-                        let rtl = geometry
-                            .and_then(|geometry| {
-                                geometry.line_direction(range.start, Affinity::Downstream)
-                            })
-                            .is_some_and(|direction| direction.is_rtl());
-                        if rightwards != rtl {
-                            range.end
-                        } else {
-                            range.start
-                        }
-                    }
-                }
-            };
-            let collapsed = match motion {
-                Motion::GraphemeBackward => Some(range.start),
-                Motion::GraphemeForward => Some(range.end),
-                Motion::Left => Some(visual_edge(false)),
-                Motion::Right => Some(visual_edge(true)),
-                _ => None,
-            };
-            if let Some(offset) = collapsed {
-                self.state.goal_x_px = None;
-                return self.set_selection_state(EditSelection::caret(offset));
-            }
-        }
-        let from = (selection.focus, selection.affinity);
+        let primary = self.state.selection;
         if motion.is_vertical() {
             if self.state.goal_x_px.is_none()
-                && let Some(caret) =
-                    geometry.and_then(|geometry| geometry.caret_rect(from.0, from.1))
+                && let Some(caret) = geometry
+                    .and_then(|geometry| geometry.caret_rect(primary.focus, primary.affinity))
             {
                 self.state.goal_x_px = Some(caret.x_px);
             }
         } else {
             self.state.goal_x_px = None;
         }
-        let Some((focus, affinity)) = self.target(motion, from, geometry) else {
+        let goal = self.state.goal_x_px;
+        let moved_primary = self.moved(primary, motion, extend, geometry, goal);
+        let mut any = moved_primary.is_some();
+        let additional: Vec<EditSelection> = self
+            .state
+            .additional
+            .iter()
+            .map(
+                |&selection| match self.moved(selection, motion, extend, geometry, None) {
+                    Some(next) => {
+                        any = true;
+                        next
+                    }
+                    None => selection,
+                },
+            )
+            .collect();
+        if !any {
             return EditChange::None;
-        };
-        let next = EditSelection {
+        }
+        self.set_selections_state(moved_primary.unwrap_or(primary), additional)
+    }
+
+    /// Where one selection goes under `motion`; `None` when it stays.
+    fn moved(
+        &self,
+        selection: EditSelection,
+        motion: Motion,
+        extend: bool,
+        geometry: Option<&EditorGeometry>,
+        goal_x_px: Option<f32>,
+    ) -> Option<EditSelection> {
+        if !extend && !selection.is_collapsed() {
+            let range = selection.range();
+            let caret = |offset: usize, affinity| {
+                geometry.and_then(|geometry| geometry.caret_rect(offset, affinity))
+            };
+            let visual = |rightwards: bool| {
+                collapse_edge(
+                    range.clone(),
+                    rightwards,
+                    caret(range.start, Affinity::Downstream).map(|caret| (caret.x_px, caret.y_px)),
+                    caret(range.end, Affinity::Upstream).map(|caret| (caret.x_px, caret.y_px)),
+                    geometry
+                        .and_then(|geometry| {
+                            geometry.line_direction(range.start, Affinity::Downstream)
+                        })
+                        .is_some_and(|direction| direction.is_rtl()),
+                )
+            };
+            let collapsed = match motion {
+                Motion::GraphemeBackward => Some(range.start),
+                Motion::GraphemeForward => Some(range.end),
+                Motion::Left => Some(visual(false)),
+                Motion::Right => Some(visual(true)),
+                _ => None,
+            };
+            if let Some(offset) = collapsed {
+                return Some(EditSelection::caret(offset));
+            }
+        }
+        let from = (selection.focus, selection.affinity);
+        let (focus, affinity) = self.target(motion, from, geometry, goal_x_px)?;
+        Some(EditSelection {
             anchor: if extend { selection.anchor } else { focus },
             focus,
             affinity,
-        };
-        self.set_selection_state(next)
+        })
     }
 
     /// The caret after inserting `text` at `start`. It belongs to what was
@@ -437,63 +631,175 @@ impl EditSession {
         }
     }
 
+    /// Replaces the primary's `range` with `text` and puts the primary caret
+    /// after it; every other cursor moves through the edit.
     fn replace(&mut self, range: Range<usize>, text: &str) -> EditChange {
+        let caret = Self::caret_after(range.start, text);
         match self.text.replace(range.clone(), text) {
             Ok(Some(edit)) => {
                 self.record_edit(&edit);
                 self.state.goal_x_px = None;
-                self.place_selection(Self::caret_after(range.start, text));
+                let additional = self
+                    .state
+                    .additional
+                    .iter()
+                    .map(|&selection| {
+                        remap_selection(selection, range.start, range.len(), text.len())
+                    })
+                    .collect();
+                self.place_selections(caret, additional);
                 EditChange::Text(edit)
             }
-            Ok(None) => self.set_selection_state(Self::caret_after(range.start, text)),
+            Ok(None) => self.set_selections_state(caret, self.state.additional.clone()),
             Err(_) => EditChange::None,
         }
     }
 
-    /// Replaces the selection with `text` and puts the caret after it: typing
-    /// and pasting. Refused while composing.
+    /// Replaces every one of `ranges` with `text` in one edit, a caret after
+    /// each insertion. Overlapping ranges fuse (the primary flag rides along),
+    /// so two cursors deleting into each other delete the union once.
+    fn replace_each(&mut self, mut ranges: Vec<(Range<usize>, bool)>, text: &str) -> EditChange {
+        ranges.sort_by_key(|(range, _)| (range.start, range.end));
+        let mut fused: Vec<(Range<usize>, bool)> = Vec::with_capacity(ranges.len());
+        for (range, primary) in ranges {
+            match fused.last_mut() {
+                Some((last, last_primary)) if range.start < last.end => {
+                    last.end = last.end.max(range.end);
+                    *last_primary |= primary;
+                }
+                _ => fused.push((range, primary)),
+            }
+        }
+        let mut primary = None;
+        let mut additional = Vec::with_capacity(fused.len());
+        let mut shift = 0isize;
+        for (range, is_primary) in &fused {
+            let start = (range.start as isize + shift) as usize;
+            let caret = Self::caret_after(start, text);
+            if *is_primary && primary.is_none() {
+                primary = Some(caret);
+            } else {
+                additional.push(caret);
+            }
+            shift += text.len() as isize - range.len() as isize;
+        }
+        let primary = primary.unwrap_or_else(|| additional.remove(0));
+        let edits: Vec<(Range<usize>, &str)> = fused
+            .iter()
+            .map(|(range, _)| (range.clone(), text))
+            .collect();
+        let changing = self.changing(&edits);
+        match self.text.splice(&edits) {
+            Ok(Some(edit)) => {
+                self.record_splice(&changing);
+                self.state.goal_x_px = None;
+                self.place_selections(primary, additional);
+                EditChange::Text(edit)
+            }
+            Ok(None) => self.set_selections_state(primary, additional),
+            Err(_) => EditChange::None,
+        }
+    }
+
+    /// The edits of `edits` that would change a byte: the rest rewrite what
+    /// is already there, and are neither work nor a reach into a preedit.
+    fn changing<'e>(&self, edits: &[(Range<usize>, &'e str)]) -> Vec<(Range<usize>, &'e str)> {
+        edits
+            .iter()
+            .filter(|(range, text)| self.text.slice(range.clone()) != Some(*text))
+            .cloned()
+            .collect()
+    }
+
+    /// Counts a batch of edits as one mutation of their summed bytes.
+    fn record_splice(&mut self, edits: &[(Range<usize>, &str)]) {
+        self.work.editable_mutations += 1;
+        for (range, text) in edits {
+            self.work.editable_bytes_inserted += text.len();
+            self.work.editable_bytes_deleted += range.len();
+        }
+    }
+
+    /// Replaces every selection with `text` and puts a caret after each
+    /// insertion: typing and pasting. Refused while composing.
     pub fn insert(&mut self, text: &str) -> EditChange {
         if self.is_composing() {
             return EditChange::None;
         }
-        self.replace(self.state.selection.range(), text)
+        if self.state.additional.is_empty() {
+            return self.replace(self.state.selection.range(), text);
+        }
+        let primary = self.state.selection;
+        let ranges = self
+            .selections()
+            .iter()
+            .map(|selection| (selection.range(), *selection == primary))
+            .collect();
+        self.replace_each(ranges, text)
     }
 
-    /// Deletes the selection, or when it is empty the text between the caret
-    /// and where `motion` would move it — so [`Motion::LineStart`] with
-    /// geometry deletes to the start of the visual line. Left and right
-    /// delete logically. Refused while composing.
+    /// Deletes each selection, or for a bare caret the text between it and
+    /// where `motion` would move it — so [`Motion::LineStart`] with geometry
+    /// deletes to the start of the visual line. Left and right delete
+    /// logically. Refused while composing.
     pub fn delete(&mut self, motion: Motion, geometry: Option<&EditorGeometry>) -> EditChange {
         if self.is_composing() {
             return EditChange::None;
         }
         let geometry = self.usable(geometry);
-        let selection = self.state.selection;
-        if !selection.is_collapsed() {
-            return self.replace(selection.range(), "");
-        }
         let motion = match motion {
             Motion::Left => Motion::GraphemeBackward,
             Motion::Right => Motion::GraphemeForward,
             other => other,
         };
-        let Some((target, _)) =
-            self.target(motion, (selection.focus, selection.affinity), geometry)
-        else {
-            return EditChange::None;
+        let primary = self.state.selection;
+        let span = |selection: EditSelection| -> Option<Range<usize>> {
+            if !selection.is_collapsed() {
+                return Some(selection.range());
+            }
+            // A vertical run's goal column is the primary's.
+            let goal = (selection == primary)
+                .then_some(self.state.goal_x_px)
+                .flatten();
+            let (target, _) = self.target(
+                motion,
+                (selection.focus, selection.affinity),
+                geometry,
+                goal,
+            )?;
+            Some(selection.focus.min(target)..selection.focus.max(target))
         };
-        let range = selection.focus.min(target)..selection.focus.max(target);
-        self.replace(range, "")
+        if self.state.additional.is_empty() {
+            let Some(range) = span(self.state.selection) else {
+                return EditChange::None;
+            };
+            return self.replace(range, "");
+        }
+        let mut any = false;
+        let ranges: Vec<(Range<usize>, bool)> = self
+            .selections()
+            .iter()
+            .map(|&selection| {
+                let range = span(selection).unwrap_or(selection.focus..selection.focus);
+                any |= !range.is_empty();
+                (range, selection == primary)
+            })
+            .collect();
+        if !any {
+            return EditChange::None;
+        }
+        self.replace_each(ranges, "")
     }
 
-    /// The selected text, removed.
+    /// The selected text of every selection, removed. Several selections
+    /// come back joined with line feeds, as [`Self::selected_texts`].
     pub fn cut(&mut self) -> Option<String> {
-        let text = self.selected_text()?.to_owned();
+        let text = self.selected_texts()?;
         (!self.insert("").is_none()).then_some(text)
     }
 
     /// Replaces the whole text. Cancels any composition; the selection is
-    /// clamped into the new text.
+    /// clamped into the new text and further cursors go.
     pub fn set_text(&mut self, text: &str) -> EditChange {
         let cancelled = self.state.composition.take().is_some();
         if cancelled {
@@ -514,6 +820,168 @@ impl EditSession {
         );
         self.state.goal_x_px = None;
         self.place_selection(selection);
+        EditChange::Text(edit)
+    }
+
+    /// Whether any of `edits` (committed ranges) reaches into the text a
+    /// preedit stands in for: overlaps it, or inserts strictly inside it.
+    /// An insertion at its start lands before the preedit and one at its end
+    /// after it; a deletion next to it leaves it alone.
+    fn edits_reach_composition(&self, edits: &[(Range<usize>, &str)]) -> bool {
+        let Some(composition) = &self.state.composition else {
+            return false;
+        };
+        let replaced = &composition.replaced;
+        edits.iter().any(|(range, _)| {
+            (range.start < replaced.end && range.end > replaced.start)
+                || (range.is_empty() && range.start > replaced.start && range.start < replaced.end)
+        })
+    }
+
+    /// Moves the composition's replaced range through `edits` that stay clear
+    /// of it ([`Self::edits_reach_composition`]).
+    fn shift_composition(&mut self, edits: &[(Range<usize>, &str)]) {
+        let Some(composition) = &mut self.state.composition else {
+            return;
+        };
+        let replaced = composition.replaced.clone();
+        let delta = |before: &dyn Fn(&Range<usize>) -> bool| -> isize {
+            edits
+                .iter()
+                .filter(|(range, _)| before(range))
+                .map(|(range, text)| text.len() as isize - range.len() as isize)
+                .sum()
+        };
+        // Everything ending at or before the start comes before the preedit,
+        // an insertion at its start included.
+        let start_shift = delta(&|range| range.end <= replaced.start);
+        // An empty preedit is one point: what goes before its start goes
+        // before its end too. Otherwise an insertion at the end lands after.
+        let end_shift = if replaced.is_empty() {
+            start_shift
+        } else {
+            delta(&|range| range.end <= replaced.end && range.start < replaced.end)
+        };
+        let next = (replaced.start as isize + start_shift) as usize
+            ..(replaced.end as isize + end_shift) as usize;
+        if next != composition.replaced {
+            composition.replaced = next;
+            self.composition_revision += 1;
+        }
+    }
+
+    /// Applies `edits` — committed ranges of the current text, sorted and
+    /// disjoint — as one edit, and leaves the selection set at `primary` plus
+    /// `additional` (offsets of the text after the edit).
+    ///
+    /// The caller computed the edit and where its cursors go; a multi-cursor
+    /// transform is exactly that. While composing, edits clear of the
+    /// preedit's range keep the composition (it moves with them); one that
+    /// reaches into it cancels the composition first.
+    pub fn splice(
+        &mut self,
+        edits: &[(Range<usize>, &str)],
+        primary: EditSelection,
+        additional: impl IntoIterator<Item = EditSelection>,
+    ) -> EditChange {
+        if !self.valid_edits(edits) {
+            return EditChange::None;
+        }
+        let changing = self.changing(edits);
+        let cancelled = self.edits_reach_composition(&changing);
+        if cancelled {
+            self.state.composition = None;
+            self.bump_composition();
+        }
+        let composing = self.is_composing();
+        match self.text.splice(edits) {
+            Ok(Some(edit)) => {
+                self.record_splice(&changing);
+                if composing {
+                    self.shift_composition(&changing);
+                }
+                self.state.goal_x_px = None;
+                let (primary, additional) = self.normalized(primary, additional);
+                self.place_selections(primary, additional);
+                EditChange::Text(edit)
+            }
+            _ if cancelled => EditChange::Composition,
+            Ok(None) if composing => EditChange::None,
+            Ok(None) => {
+                let (primary, additional) = self.normalized(primary, additional);
+                self.set_selections_state(primary, additional)
+            }
+            Err(_) => EditChange::None,
+        }
+    }
+
+    /// Whether `edits` are in bounds, on character boundaries, sorted and
+    /// disjoint: what [`EditableText::splice`] accepts.
+    fn valid_edits(&self, edits: &[(Range<usize>, &str)]) -> bool {
+        let mut previous_end = 0;
+        edits.iter().all(|(range, _)| {
+            let valid = range.start >= previous_end
+                && range.start <= range.end
+                && self.text.slice(range.clone()).is_some();
+            previous_end = range.end;
+            valid
+        })
+    }
+
+    /// Makes the committed text `text` as the one edit that differs from it,
+    /// so offsets and layouts outside the change survive. A [`SharedText`]
+    /// snapshot of these very bytes is recognised by its stamp in O(1).
+    ///
+    /// The selection set becomes `selections` when given; otherwise every
+    /// cursor moves through the edit ([`remap_selection`](super::remap_selection)).
+    /// A composition clear of the change survives it, as with [`Self::splice`].
+    pub fn assign(
+        &mut self,
+        text: &SharedText,
+        selections: Option<(EditSelection, Vec<EditSelection>)>,
+    ) -> EditChange {
+        let changed = if text.stamp() == Some(self.text.stamp()) {
+            None
+        } else {
+            super::diff::changed_range(self.text.as_str(), text)
+        };
+        let Some((start, old_end, new_end)) = changed else {
+            return match selections {
+                Some((primary, additional)) if !self.is_composing() => {
+                    let (primary, additional) = self.normalized(primary, additional);
+                    self.set_selections_state(primary, additional)
+                }
+                _ => EditChange::None,
+            };
+        };
+        let inserted = &text[start..new_end];
+        let edits = [(start..old_end, inserted)];
+        if self.edits_reach_composition(&edits) {
+            self.state.composition = None;
+            self.bump_composition();
+        }
+        let Some(edit) = self.text.assign_shared(text) else {
+            return EditChange::None;
+        };
+        self.record_edit(&edit);
+        self.shift_composition(&edits);
+        self.state.goal_x_px = None;
+        let (primary, additional) = match selections {
+            Some((primary, additional)) => self.normalized(primary, additional),
+            None => {
+                let remap =
+                    |selection| remap_selection(selection, start, old_end - start, new_end - start);
+                let primary = remap(self.state.selection);
+                let additional: Vec<EditSelection> = self
+                    .state
+                    .additional
+                    .iter()
+                    .map(|&selection| remap(selection))
+                    .collect();
+                self.normalized(primary, additional)
+            }
+        };
+        self.place_selections(primary, additional);
         EditChange::Text(edit)
     }
 
@@ -613,6 +1081,23 @@ impl EditSession {
         self.record_edit(&edit);
         self.work.editable_bytes_inserted -= kept.len();
         self.work.editable_bytes_deleted -= kept.len();
+        let additional: Vec<EditSelection> = self
+            .state
+            .additional
+            .iter()
+            .map(|selection| {
+                let focus = deletion.map_offset(selection.focus);
+                EditSelection {
+                    anchor: deletion.map_offset(selection.anchor),
+                    focus,
+                    affinity: if focus == selection.focus {
+                        selection.affinity
+                    } else {
+                        Affinity::Downstream
+                    },
+                }
+            })
+            .collect();
         match &mut self.state.composition {
             Some(composition) => {
                 composition.replaced =
@@ -620,9 +1105,9 @@ impl EditSession {
                 self.composition_revision += 1;
                 let selection =
                     EditSelection::new(composition.replaced.start, composition.replaced.end);
-                self.place_selection(selection);
+                self.place_selections(selection, additional);
             }
-            None => self.place_selection(EditSelection::caret(deletion.before.start)),
+            None => self.place_selections(EditSelection::caret(deletion.before.start), additional),
         }
         self.state.goal_x_px = None;
         EditChange::Text(edit)
@@ -660,6 +1145,39 @@ impl Clone for EditSession {
             composition_revision: self.composition_revision,
             work: self.work,
         }
+    }
+}
+
+/// Where a non-extending Left or Right lands on a non-empty selection: the
+/// selection's edge on that side of the screen, not a step from its focus.
+///
+/// `start` and `end` are the carets drawn at the selection's logical start
+/// (downstream) and end (upstream), as `(x, y)`. On one line x decides — in
+/// RTL text the left edge is the logical end. Across lines, or without
+/// geometry, x says nothing about which end is which, so the reading order
+/// does: forwards is rightwards unless the paragraph reads right to left.
+///
+/// One rule for [`EditSession::move_caret`] and for hosts that keep their own
+/// motion code and read carets through probes.
+pub fn collapse_edge(
+    range: Range<usize>,
+    rightwards: bool,
+    start: Option<(f32, f32)>,
+    end: Option<(f32, f32)>,
+    paragraph_rtl: bool,
+) -> usize {
+    match (start, end) {
+        (Some((start_x, start_y)), Some((end_x, end_y)))
+            if (start_y - end_y).abs() <= f32::EPSILON =>
+        {
+            if (end_x < start_x) == rightwards {
+                range.start
+            } else {
+                range.end
+            }
+        }
+        _ if rightwards != paragraph_rtl => range.end,
+        _ => range.start,
     }
 }
 

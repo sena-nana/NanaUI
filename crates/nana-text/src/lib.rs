@@ -56,6 +56,7 @@ pub mod metrics;
 pub mod parity;
 pub mod shape;
 pub mod shaping;
+pub mod shared;
 pub mod source;
 pub mod style;
 
@@ -76,5 +77,6 @@ pub use layout::{
 };
 pub use metrics::{LineMetrics, RunMetrics};
 pub use shape::{GlyphFlags, RunDirection, RunOrientation, ScriptTag, ShapedGlyph, ShapedRun};
+pub use shared::{SharedText, TextStamp};
 pub use source::{CompositionSegment, TextSource, TextSpan};
 pub use style::{TextKind, TextStyle};

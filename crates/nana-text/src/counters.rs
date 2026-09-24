@@ -101,6 +101,12 @@ pub struct TextWorkCounters {
     /// Carets placed against retained editor geometry.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub caret_geometry_queries: usize,
+    /// Bytes of editor text compared to learn whether retained editor
+    /// geometry still lays it out (Issue #182). A host that names its text by
+    /// stamp answers that without looking at a byte, so a caret move, a click
+    /// or a probe of unchanged text keeps this at zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub editor_text_bytes_compared: usize,
 }
 
 impl TextWorkCounters {
@@ -155,6 +161,7 @@ impl TextWorkCounters {
         self.paragraphs_relayout_from_edit += other.paragraphs_relayout_from_edit;
         self.hit_test_queries += other.hit_test_queries;
         self.caret_geometry_queries += other.caret_geometry_queries;
+        self.editor_text_bytes_compared += other.editor_text_bytes_compared;
     }
 
     /// True when no pass has touched any field.

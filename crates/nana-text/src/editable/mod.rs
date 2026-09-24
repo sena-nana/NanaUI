@@ -32,6 +32,7 @@
 //! convert. [`EditableText::utf16_offset`] serves platform APIs that count
 //! UTF-16 units.
 
+pub mod diff;
 mod geometry;
 pub mod ime;
 pub mod navigation;
@@ -40,6 +41,8 @@ mod state;
 mod text;
 
 pub use geometry::{CaretRect, CompositionMarks, EditHit, EditorGeometry, GeometrySync};
-pub use session::{EditChange, EditSession, EditState, Motion, SurroundingText};
-pub use state::{Composition, EditRevisions, EditSelection};
+pub use session::{EditChange, EditSession, EditState, Motion, SurroundingText, collapse_edge};
+pub use state::{
+    Composition, EditRevisions, EditSelection, normalize_selections, remap_offset, remap_selection,
+};
 pub use text::{EditError, EditableText, TextEdit};

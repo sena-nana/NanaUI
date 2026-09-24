@@ -35,6 +35,7 @@ use crate::edit::{Affinity, CaretPosition, CaretStop};
 use crate::engine::{NativeTextEngine, TextEngine, TextEngineEpoch};
 use crate::layout::{LineBox, LineBreakCause, TextLayout, TextRect};
 use crate::shape::RunDirection;
+use crate::shared::TextStamp;
 use crate::source::{CompositionSegment, TextSource, TextSpan};
 use crate::style::{TextKind, TextStyle};
 use std::cell::Cell;
@@ -166,6 +167,10 @@ pub struct EditorGeometry {
     /// last synced from. Selection is not part of it: the display text does
     /// not depend on it.
     revisions: Option<(u64, crate::TextRevision, u64)>,
+    /// The stamp of the display text last synced through
+    /// [`Self::sync_stamped`], and the composition marks laid out with it,
+    /// while the layouts still lay those bytes out with those marks.
+    stamp: Option<(TextStamp, Option<CompositionMarks>)>,
     hit_test_queries: Cell<usize>,
     caret_geometry_queries: Cell<usize>,
 }
@@ -179,6 +184,7 @@ impl Clone for EditorGeometry {
             epoch: self.epoch,
             text_len: self.text_len,
             revisions: self.revisions,
+            stamp: self.stamp.clone(),
             hit_test_queries: Cell::new(0),
             caret_geometry_queries: Cell::new(0),
         }
@@ -239,6 +245,53 @@ impl EditorGeometry {
         sync
     }
 
+    /// Brings the layouts up to date with `text`, recognising text it already
+    /// lays out by `stamp` without comparing a byte.
+    ///
+    /// For a host that is handed an editor's display text rather than its
+    /// session: the stamp names those exact bytes, so a probe of unchanged
+    /// text is an integer comparison. `composition` is part of what is laid
+    /// out: the fast path also requires the same marks, which are a few
+    /// ranges, not text. A `None` stamp syncs by content, as [`Self::sync`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn sync_stamped(
+        &mut self,
+        engine: &mut NativeTextEngine,
+        stamp: Option<TextStamp>,
+        text: &str,
+        composition: Option<&CompositionMarks>,
+        style: &TextStyle,
+        constraints: &TextConstraints,
+        counters: &mut TextWorkCounters,
+    ) -> GeometrySync {
+        let named = match (&self.stamp, stamp) {
+            (Some((current, marks)), Some(stamp)) => {
+                *current == stamp && marks.as_ref() == composition
+            }
+            _ => false,
+        };
+        if named
+            && self.text_len == text.len()
+            && self.is_current(engine.epoch(), style, constraints)
+        {
+            return GeometrySync {
+                paragraphs_kept: self.paragraphs.len(),
+                incremental: true,
+                unchanged: true,
+                ..GeometrySync::default()
+            };
+        }
+        let sync = self.sync(engine, text, composition, style, constraints, counters);
+        self.stamp = stamp.map(|stamp| (stamp, composition.cloned()));
+        sync
+    }
+
+    /// The stamp the layouts were last synced to, while they still lay those
+    /// bytes out.
+    pub fn stamp(&self) -> Option<TextStamp> {
+        self.stamp.as_ref().map(|(stamp, _)| *stamp)
+    }
+
     /// Whether the last sync was from a session at these text and
     /// composition revisions, under this engine epoch, style and constraints.
     pub fn is_synced_with(
@@ -282,11 +335,13 @@ impl EditorGeometry {
     ) -> GeometrySync {
         let epoch = engine.epoch();
         // The layouts already lay this text out. A caller without a session's
-        // revisions -- a host answering probes -- syncs before every probe, so
-        // recognising it here is what keeps an unchanged probe a comparison
-        // instead of a rebuild of every paragraph. The last sync's revisions
+        // revisions or a stamp syncs before every probe, so recognising it
+        // here is what keeps an unchanged probe a comparison instead of a
+        // rebuild of every paragraph. The last sync's revisions and stamp
         // still describe these layouts, so they survive.
-        if self.lays_out(text, composition, epoch, style, constraints) {
+        let (same, compared) = self.lays_out(text, composition, epoch, style, constraints);
+        counters.editor_text_bytes_compared += compared;
+        if same {
             return GeometrySync {
                 paragraphs_kept: self.paragraphs.len(),
                 incremental: true,
@@ -295,6 +350,7 @@ impl EditorGeometry {
             };
         }
         self.revisions = None;
+        self.stamp = None;
         let current = self.is_current(epoch, style, constraints) && !self.paragraphs.is_empty();
         let split = splits_paragraphs(constraints);
 
@@ -313,9 +369,14 @@ impl EditorGeometry {
         // Paragraphs that still start the text.
         let mut prefix = 0;
         let mut prefix_end = 0;
+        let mut compared = 0;
         while let Some(paragraph) = old.get(prefix) {
             let end = paragraph.end();
-            let same = text.get(paragraph.start..end) == Some(paragraph.text())
+            let slice = text.get(paragraph.start..end);
+            if slice.is_some() {
+                compared += paragraph.text().len();
+            }
+            let same = slice == Some(paragraph.text())
                 && if paragraph.newline {
                     text.as_bytes().get(end) == Some(&b'\n')
                 } else {
@@ -340,9 +401,13 @@ impl EditorGeometry {
                     break;
                 };
                 let end = start + paragraph.text().len();
-                let same = start >= prefix_end
-                    && (start == 0 || text.as_bytes().get(start - 1) == Some(&b'\n'))
-                    && text.get(start..end) == Some(paragraph.text())
+                let boundary = start >= prefix_end
+                    && (start == 0 || text.as_bytes().get(start - 1) == Some(&b'\n'));
+                let slice = boundary.then(|| text.get(start..end)).flatten();
+                if slice.is_some() {
+                    compared += paragraph.text().len();
+                }
+                let same = slice == Some(paragraph.text())
                     && if paragraph.newline {
                         text.as_bytes().get(end) == Some(&b'\n')
                     } else {
@@ -357,6 +422,7 @@ impl EditorGeometry {
             }
         }
 
+        counters.editor_text_bytes_compared += compared;
         let finished = prefix > 0 && !old[prefix - 1].newline;
 
         // The bytes in between, as fresh paragraphs.
@@ -445,18 +511,24 @@ impl EditorGeometry {
         epoch: TextEngineEpoch,
         style: &TextStyle,
         constraints: &TextConstraints,
-    ) -> bool {
+    ) -> (bool, usize) {
         if self.text_len != text.len()
             || self.paragraphs.is_empty()
             || !self.is_current(epoch, style, constraints)
         {
-            return false;
+            return (false, 0);
         }
         let mut next = 0;
+        let mut compared = 0;
         for paragraph in &self.paragraphs {
             let end = paragraph.end();
-            let same = paragraph.start == next
-                && text.get(paragraph.start..end) == Some(paragraph.text())
+            let slice = (paragraph.start == next)
+                .then(|| text.get(paragraph.start..end))
+                .flatten();
+            if slice.is_some() {
+                compared += paragraph.text().len();
+            }
+            let same = slice == Some(paragraph.text())
                 && if paragraph.newline {
                     text.as_bytes().get(end) == Some(&b'\n')
                 } else {
@@ -465,11 +537,11 @@ impl EditorGeometry {
                 && composition.and_then(|marks| marks.within(paragraph.start..end))
                     == paragraph.marks;
             if !same {
-                return false;
+                return (false, compared);
             }
             next = paragraph.next_start();
         }
-        next == text.len()
+        (next == text.len(), compared)
     }
 
     /// The text and composition revisions of the session last synced from.

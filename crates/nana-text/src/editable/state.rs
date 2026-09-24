@@ -48,6 +48,104 @@ impl EditSelection {
     pub fn range(&self) -> Range<usize> {
         self.anchor.min(self.focus)..self.anchor.max(self.focus)
     }
+
+    /// [`Self::range`], by value.
+    pub fn ordered(self) -> Range<usize> {
+        self.range()
+    }
+
+    /// Whether both ends lie on grapheme cluster boundaries of `text`.
+    ///
+    /// Scans the logical line around each end, not the whole text: this runs
+    /// on every edit and caret move.
+    pub fn is_valid_for(self, text: &str) -> bool {
+        self.anchor <= text.len()
+            && self.focus <= text.len()
+            && text.is_char_boundary(self.anchor)
+            && text.is_char_boundary(self.focus)
+            && super::navigation::is_grapheme_boundary(text, self.anchor)
+            && super::navigation::is_grapheme_boundary(text, self.focus)
+    }
+}
+
+/// Restores the multi-selection invariants over a primary selection and any
+/// number of others: sorted by span, overlapping or touching spans fused into
+/// one forward selection, and the primary's identity carried through a fusion
+/// — the span a fusion with the primary produces is the primary.
+///
+/// Returns the primary and the remaining spans in document order, none of
+/// which overlaps or touches another or the primary.
+pub fn normalize_selections(
+    primary: EditSelection,
+    others: impl IntoIterator<Item = EditSelection>,
+) -> (EditSelection, Vec<EditSelection>) {
+    let mut flagged: Vec<(EditSelection, bool)> = std::iter::once((primary, true))
+        .chain(others.into_iter().map(|selection| (selection, false)))
+        .collect();
+    if flagged.len() == 1 {
+        return (primary, Vec::new());
+    }
+    flagged.sort_by_key(|(selection, _)| {
+        let range = selection.range();
+        (range.start, range.end)
+    });
+    let mut merged: Vec<(EditSelection, bool)> = Vec::with_capacity(flagged.len());
+    for (next, is_primary) in flagged {
+        match merged.last_mut() {
+            Some((last, last_is_primary)) if last.range().end >= next.range().start => {
+                let start = last.range().start;
+                let end = last.range().end.max(next.range().end);
+                *last = EditSelection::new(start, end);
+                *last_is_primary |= is_primary;
+            }
+            _ => merged.push((next, is_primary)),
+        }
+    }
+    let mut primary = None;
+    let mut others = Vec::with_capacity(merged.len().saturating_sub(1));
+    for (selection, is_primary) in merged {
+        if is_primary && primary.is_none() {
+            primary = Some(selection);
+        } else {
+            others.push(selection);
+        }
+    }
+    (primary.unwrap_or_default(), others)
+}
+
+/// Where an offset lands after `removed` bytes at `start` became `inserted`
+/// bytes: before the edit it stays, after it it shifts, and inside the
+/// replaced span it moves to the end of what was inserted — a cursor inside
+/// deleted text ends up where the edit left off.
+pub fn remap_offset(offset: usize, start: usize, removed: usize, inserted: usize) -> usize {
+    let end = start + removed;
+    if offset <= start {
+        offset
+    } else if offset >= end {
+        offset - removed + inserted
+    } else {
+        start + inserted
+    }
+}
+
+/// [`remap_offset`] for a selection. A focus the edit moved no longer knows
+/// which side of a soft wrap it was resolved on, so its affinity resets.
+pub fn remap_selection(
+    selection: EditSelection,
+    start: usize,
+    removed: usize,
+    inserted: usize,
+) -> EditSelection {
+    let focus = remap_offset(selection.focus, start, removed, inserted);
+    EditSelection {
+        anchor: remap_offset(selection.anchor, start, removed, inserted),
+        focus,
+        affinity: if focus == selection.focus {
+            selection.affinity
+        } else {
+            Affinity::Downstream
+        },
+    }
 }
 
 /// An IME composition (preedit): transient text standing in for a committed

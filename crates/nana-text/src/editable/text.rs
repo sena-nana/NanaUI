@@ -2,6 +2,7 @@
 
 use super::navigation;
 use crate::id::TextRevision;
+use crate::shared::{SharedText, TextStamp};
 use std::ops::Range;
 
 /// Why an edit was refused. A refused edit changes nothing.
@@ -69,27 +70,55 @@ impl TextEdit {
 
 /// Committed editable text.
 ///
-/// The storage is private and every change goes through [`Self::replace`],
-/// which bumps the revision and reports the [`TextEdit`]. Callers read the
-/// text as `&str` and never name the storage type, so it can become a rope or
-/// a piece table without an API change once a large-document benchmark asks
-/// for one.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The storage is private and every change goes through [`Self::replace`] or
+/// [`Self::splice`], which bump the revision and report the [`TextEdit`].
+/// Callers read the text as `&str` and never name the storage type, so it can
+/// become a rope or a piece table without an API change once a large-document
+/// benchmark asks for one.
+///
+/// The bytes live in a [`SharedText`]: [`Self::snapshot`] hands out an O(1)
+/// copy that keeps naming these exact bytes by their [`TextStamp`], and the
+/// next edit copies the buffer only if such a snapshot is still held.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditableText {
-    storage: String,
+    storage: SharedText,
     revision: TextRevision,
+}
+
+impl Default for EditableText {
+    fn default() -> Self {
+        Self::from_shared(SharedText::default())
+    }
 }
 
 impl EditableText {
     pub fn new(text: impl Into<String>) -> Self {
+        Self::from_shared(SharedText::from(text.into()))
+    }
+
+    /// Adopts `text` without copying it, keeping its stamp (drawing one for
+    /// an anonymous value).
+    pub fn from_shared(text: SharedText) -> Self {
         Self {
-            storage: text.into(),
+            storage: text.into_stamped(),
             revision: TextRevision::INITIAL,
         }
     }
 
     pub fn as_str(&self) -> &str {
         &self.storage
+    }
+
+    /// An O(1) copy of the current bytes, stamped.
+    pub fn snapshot(&self) -> SharedText {
+        self.storage.clone()
+    }
+
+    /// Names the current bytes; changes with every edit that changed a byte.
+    pub fn stamp(&self) -> TextStamp {
+        self.storage
+            .stamp()
+            .expect("editable text is always stamped")
     }
 
     pub fn len(&self) -> usize {
@@ -133,6 +162,65 @@ impl EditableText {
         }))
     }
 
+    /// Replaces several ranges at once: one pass over the text, one revision.
+    ///
+    /// `edits` are sorted and disjoint (an edit may start where the previous
+    /// one ends). The reported [`TextEdit`] spans from the first edit's start
+    /// to the last one's end, which is what a consumer holding per-paragraph
+    /// results needs; offsets between the edits are the caller's to map.
+    /// `Ok(None)` when no byte changed.
+    pub fn splice(
+        &mut self,
+        edits: &[(Range<usize>, &str)],
+    ) -> Result<Option<TextEdit>, EditError> {
+        let mut previous_end = 0;
+        for (range, _) in edits {
+            self.check(range)?;
+            if range.start < previous_end {
+                return Err(EditError::OutOfBounds);
+            }
+            previous_end = range.end;
+        }
+        let changed: Vec<&(Range<usize>, &str)> = edits
+            .iter()
+            .filter(|(range, text)| &self.storage[range.clone()] != *text)
+            .collect();
+        let (Some(first), Some(last)) = (changed.first(), changed.last()) else {
+            return Ok(None);
+        };
+        let range = first.0.start..last.0.end;
+        let grown: isize = changed
+            .iter()
+            .map(|(range, text)| text.len() as isize - range.len() as isize)
+            .sum();
+        let inserted_len = (range.len() as isize + grown) as usize;
+        if changed.len() == 1 {
+            self.storage.replace_range(first.0.clone(), first.1);
+        } else {
+            let before = self.storage.clone();
+            let changed: Vec<(Range<usize>, &str)> = changed
+                .iter()
+                .map(|(range, text)| (range.clone(), *text))
+                .collect();
+            self.storage.splice(&changed);
+            // Edits that each change a byte can still cancel out ("a" deleted
+            // before an "a" inserted): the text is what it was, so nothing
+            // changed and nothing that names these bytes should move.
+            if inserted_len == range.len()
+                && before[range.clone()] == self.storage[range.start..range.start + inserted_len]
+            {
+                self.storage = before;
+                return Ok(None);
+            }
+        }
+        self.revision = self.revision.next();
+        Ok(Some(TextEdit {
+            range,
+            inserted_len,
+            revision: self.revision,
+        }))
+    }
+
     pub fn insert(&mut self, at: usize, text: &str) -> Result<Option<TextEdit>, EditError> {
         self.replace(at..at, text)
     }
@@ -145,6 +233,33 @@ impl EditableText {
     pub fn set_text(&mut self, text: &str) -> Option<TextEdit> {
         self.replace(0..self.len(), text)
             .expect("the whole text is always a valid range")
+    }
+
+    /// Makes the text `text`, as the one edit that differs: the reported
+    /// range is what actually changed, not the whole text, so offsets and
+    /// per-paragraph results outside it survive.
+    pub fn assign(&mut self, text: &str) -> Option<TextEdit> {
+        let (start, old_end, new_end) = super::diff::changed_range(self.as_str(), text)?;
+        self.replace(start..old_end, &text[start..new_end])
+            .expect("a changed range lies on character boundaries")
+    }
+
+    /// Adopts `text` wholesale when it names other bytes, reporting the
+    /// changed range. A snapshot of these very bytes is recognised by its
+    /// stamp and changes nothing.
+    pub fn assign_shared(&mut self, text: &SharedText) -> Option<TextEdit> {
+        if self.storage.same_identity(text) {
+            return None;
+        }
+        let (start, old_end, new_end) = super::diff::changed_range(self.as_str(), text)?;
+        let edit = TextEdit {
+            range: start..old_end,
+            inserted_len: new_end - start,
+            revision: self.revision.next(),
+        };
+        self.storage = text.clone().into_stamped();
+        self.revision = edit.revision;
+        Some(edit)
     }
 
     pub fn is_char_boundary(&self, offset: usize) -> bool {
