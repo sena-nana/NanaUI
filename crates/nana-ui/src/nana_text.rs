@@ -1121,13 +1121,29 @@ mod tests {
                         natural.width
                     );
                 } else {
+                    // A cut single line asks layout for its whole line
+                    // (docs/text-engine.md); what it paints is the retained
+                    // layout, cut to the box.
                     assert!(
-                        metrics.width <= bounds.width + 0.5,
-                        "narrow segment {label:?} must fit its box: metrics={} box={}",
+                        (metrics.width - natural.width).abs() < 0.5,
+                        "narrow segment {label:?} must still ask for its whole line: metrics={} natural={}",
                         metrics.width,
+                        natural.width
+                    );
+                    let (_, painted) = context
+                        .world()
+                        .text_layout(segment)
+                        .expect("segment retains its layout");
+                    assert!(
+                        painted.bounds.width <= bounds.width + 0.5,
+                        "narrow segment {label:?} must paint inside its box: painted={} box={}",
+                        painted.bounds.width,
                         bounds.width
                     );
-                    truncated |= metrics.width + 0.5 < natural.width;
+                    truncated |= painted
+                        .overflow
+                        .contains(nana_text::OverflowFlags::ELLIPSIZED)
+                        && painted.bounds.width + 0.5 < natural.width;
                 }
             }
             if center_width < 440.0 {
