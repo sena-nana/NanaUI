@@ -1,3 +1,4 @@
+use crate::InputModifiers;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -182,11 +183,16 @@ pub enum WindowEvent {
         id: WindowId,
         paths: Vec<PathBuf>,
         position: Option<(f32, f32)>,
+        /// Modifier keys held at this moment. The drag source keeps keyboard
+        /// focus, so the host samples the system state where it can.
+        modifiers: InputModifiers,
     },
     FileDropped {
         id: WindowId,
         paths: Vec<PathBuf>,
         position: Option<(f32, f32)>,
+        /// Modifier keys held when the files were released.
+        modifiers: InputModifiers,
     },
     FileHoverCancelled {
         id: WindowId,

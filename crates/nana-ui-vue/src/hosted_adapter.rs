@@ -698,11 +698,13 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                 id,
                 paths,
                 position,
+                ..
             } => self.emit_file_drag(id, FileDragEventKind::Hover, &paths, position)?,
             WindowEvent::FileDropped {
                 id,
                 paths,
                 position,
+                ..
             } => self.emit_file_drag(id, FileDragEventKind::Drop, &paths, position)?,
             WindowEvent::FileHoverCancelled { id } => {
                 self.emit_file_drag(id, FileDragEventKind::Cancel, &[], None)?

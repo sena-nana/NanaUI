@@ -267,11 +267,13 @@ impl<State: ApplicationState> RuntimeProgram for RuntimeApplication<State> {
                 id,
                 paths,
                 position,
+                ..
             } => self.dispatch_file_drag(id, FileDragKind::Hover, &paths, position),
             WindowEvent::FileDropped {
                 id,
                 paths,
                 position,
+                ..
             } => self.dispatch_file_drag(id, FileDragKind::Drop, &paths, position),
             WindowEvent::FileHoverCancelled { id } => {
                 self.dispatch_file_drag(id, FileDragKind::Cancel, &[], None)

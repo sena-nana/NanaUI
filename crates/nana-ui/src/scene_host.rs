@@ -3057,6 +3057,20 @@ impl InputTracker {
         }
     }
 
+    /// Keys held during an OS drag. The target window gets no modifier
+    /// events while the source owns the keyboard, so prefer the system state
+    /// and fall back to the last tracked one where it cannot be sampled.
+    fn drag_modifiers(&self) -> InputModifiers {
+        nana_window::keyboard_modifiers()
+            .map(|keys| InputModifiers {
+                alt: keys.alt,
+                control: keys.control,
+                meta: keys.meta,
+                shift: keys.shift,
+            })
+            .unwrap_or_else(|| platform_input_modifiers(self.modifiers))
+    }
+
     fn begin_file_drag(&mut self, transfer: DataTransferId, serial: Option<AsyncRequestSerial>) {
         self.pending_file_paths.clear();
         self.file_drop_emitted = false;
@@ -3100,12 +3114,14 @@ impl InputTracker {
                 id,
                 paths: std::mem::take(&mut self.pending_file_paths),
                 position: Some(self.cursor),
+                modifiers: self.drag_modifiers(),
             });
         }
         Some(WindowEvent::FileHovered {
             id,
             paths: self.pending_file_paths.clone(),
             position: Some(self.cursor),
+            modifiers: self.drag_modifiers(),
         })
     }
 
@@ -3260,6 +3276,7 @@ impl InputTracker {
                     id,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             WinitWindowEvent::DragPosition { id: transfer, .. } => {
@@ -3270,6 +3287,7 @@ impl InputTracker {
                     id,
                     paths: self.pending_file_paths.clone(),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             WinitWindowEvent::DragLeft { .. } => {
@@ -3292,6 +3310,7 @@ impl InputTracker {
                     id,
                     paths: std::mem::take(&mut self.pending_file_paths),
                     position: Some(self.cursor),
+                    modifiers: self.drag_modifiers(),
                 })
             }
             _ => None,
@@ -3480,9 +3499,9 @@ mod tests {
     };
     use nana_ui_platform::host::WindowCommand;
     use nana_ui_platform::{
-        ImeEvent, InputDisposition, InputEvent, MousePassthroughMode, PointerPhase, PointerType,
-        TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent, WindowGeometry,
-        WindowIcon, WindowId, WindowResizeEdge,
+        ImeEvent, InputDisposition, InputEvent, InputModifiers, MousePassthroughMode, PointerPhase,
+        PointerType, TextInputPurpose, TextInputRequest, WindowDescriptor, WindowEvent,
+        WindowGeometry, WindowIcon, WindowId, WindowResizeEdge,
     };
     #[cfg(not(target_os = "android"))]
     use nana_ui_runtime::{AccessibilityDelta, AccessibilityUpdate, FrameworkError};
@@ -4833,6 +4852,41 @@ mod tests {
     }
 
     #[test]
+    fn file_drag_events_carry_the_held_modifiers() {
+        // Without a system sample (Linux) the tracked state is reported.
+        let transfer = winit::data_transfer::DataTransferId::from_raw(3);
+        let mut tracker = InputTracker {
+            modifiers: ModifiersState::CONTROL,
+            ..InputTracker::default()
+        };
+        let expected = nana_window::keyboard_modifiers()
+            .map(|keys| keys.control)
+            .unwrap_or(true);
+        let hovered = tracker.map_file_window_event(
+            &WinitWindowEvent::DragEntered {
+                id: transfer,
+                position: None,
+            },
+            WindowId::PRIMARY,
+        );
+        assert!(matches!(
+            hovered,
+            Some(WindowEvent::FileHovered { modifiers, .. }) if modifiers.control == expected
+        ));
+        let dropped = tracker.map_file_window_event(
+            &WinitWindowEvent::DragDropped {
+                id: transfer,
+                proposed_action: None,
+            },
+            WindowId::PRIMARY,
+        );
+        assert!(matches!(
+            dropped,
+            Some(WindowEvent::FileDropped { modifiers, .. }) if modifiers.control == expected
+        ));
+    }
+
+    #[test]
     fn file_drag_ingests_fetched_paths_before_and_after_drop() {
         let transfer = winit::data_transfer::DataTransferId::from_raw(7);
         let paths = vec![std::path::PathBuf::from("/tmp/nana.txt")];
@@ -4847,6 +4901,7 @@ mod tests {
                 id: WindowId::PRIMARY,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
+                modifiers: InputModifiers::default(),
             })
         );
         assert_eq!(
@@ -4861,6 +4916,7 @@ mod tests {
                 id: WindowId::PRIMARY,
                 paths: paths.clone(),
                 position: Some((8.0, 16.0)),
+                modifiers: InputModifiers::default(),
             })
         );
 
@@ -4872,6 +4928,7 @@ mod tests {
                 id: WindowId::PRIMARY,
                 paths,
                 position: Some((0.0, 0.0)),
+                modifiers: InputModifiers::default(),
             })
         );
         assert!(

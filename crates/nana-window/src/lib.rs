@@ -8,6 +8,7 @@ pub use browser::{
     NativeBrowser,
 };
 mod file_dialog;
+mod keyboard;
 mod material;
 mod menu;
 mod motion_preference;
@@ -36,6 +37,7 @@ pub use file_dialog::{
     FileDialogSupport, FileFilter, describe_configured_dialog, file_dialog_support,
     open_file_dialog,
 };
+pub use keyboard::{KeyboardModifiers, keyboard_modifiers};
 pub use material::{
     Appearance, FallbackColor, MaterialEffect, MaterialFallback, MaterialOutcome,
     PlatformMaterialSupport, apply_hosted_system_material, apply_system_material,

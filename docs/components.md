@@ -140,7 +140,7 @@ Compact + Overlay 适合分离窗底栏（单行加边距约 52px）；Compact +
 
 右键（button 2）派发 `SecondaryPress`，从命中节点往上找到第一个注册了该事件的节点，事件里带命中节点与坐标。框架不开菜单、不塞默认项：要不要弹、弹什么，由应用在 handler 里决定（通常是 `ContextMenu`）。没人注册就什么都不发生。
 
-平台 `FileHovered` / `FileDropped` / `FileHoverCancelled` 由宿主交给 `dispatch_file_drag`，命中目标发 `FileDropEvent::{Hovered, Dropped, Left}` 并画 hover chrome。Vue 用 `<nana-drop-target drop-accepts="files">` / `NanaDropTarget`；未登记节点不接收文件拖放。
+平台 `FileHovered` / `FileDropped` / `FileHoverCancelled` 由宿主交给 `dispatch_file_drag`，命中目标发 `FileDropEvent::{Hovered, Dropped, Left}` 并画 hover chrome。Vue 用 `<nana-drop-target drop-accepts="files">` / `NanaDropTarget`；未登记节点不接收文件拖放。`FileHovered` / `FileDropped` 带 `modifiers`：拖动期间键盘仍归拖动源，宿主在 Windows（`GetAsyncKeyState`）和 macOS（`NSEvent.modifierFlags`）上每次映射都采样系统状态，Linux 退回最近一次跟踪到的修饰键。Windows 的 OLE 循环在按键变化时也会补发位置，所以只按下 Ctrl 不动鼠标也会收到新的 `FileHovered`。
 
 `TextArea` 的行号、诊断沟、minimap、git gutter 是视图属性：`line_numbers` / `diagnostics` / `minimap` / `git_gutter`。buffer revision、LSP、git 状态仍由应用喂入。Vue `NanaTextarea` 对应 `lineNumbers`、`diagnostics`、`minimap`、`gitGutter`。
 
