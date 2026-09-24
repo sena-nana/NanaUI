@@ -1948,6 +1948,19 @@ fn a_read_only_number_input_draws_an_inert_spinner() {
         steppers.increment.y + steppers.increment.height / 2.0,
     );
     assert_eq!(context.number_stepper_at(input.stable_id(), x, y), None);
+
+    // Flipping read-only alone changes no text, yet the spinner repaints.
+    context
+        .update_component(input, |input, _| input.read_only = false)
+        .unwrap();
+    let work = context.world_mut().take_system_work();
+    assert!(work.render_extraction.contains(&input.stable_id()));
+    context.world_mut().resolve_styles(&work.style).unwrap();
+    context
+        .world_mut()
+        .shape_text(&work.text, &mut crate::MeasureTextShaper)
+        .unwrap();
+    assert_eq!(context.number_stepper_at(input.stable_id(), x, y), Some(1));
 }
 
 #[test]
