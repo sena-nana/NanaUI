@@ -370,8 +370,11 @@ pub(crate) fn selection_chrome_style(
         background,
         border,
         control_height: (!vertical).then_some(nana_ui_core::ControlHeight::Exact(size)),
+        // A segmented control is a control, so it takes the controls' step
+        // like Button and TextInput; `Md` is the card and panel step, which
+        // on a compact track reads as a pill beside square-cornered buttons.
         radius: matches!(chrome, SelectionChrome::Segmented)
-            .then_some(nana_ui_core::RadiusTier::Md),
+            .then_some(nana_ui_core::RadiusTier::Sm),
         ..NodeStyle::default()
     }
 }
@@ -518,7 +521,7 @@ impl ComponentView for SegmentedOption {
         let mut effective_style = self.style.clone();
         let metrics = world.theme_metrics();
         let radius = match self.chrome {
-            SelectionChrome::Segmented => (metrics.radius_md - SEGMENTED_PILL_INSET).max(0.0),
+            SelectionChrome::Segmented => (metrics.radius_sm - SEGMENTED_PILL_INSET).max(0.0),
             SelectionChrome::Tabs | SelectionChrome::Radio => metrics.radius_sm,
         };
         {
@@ -633,7 +636,7 @@ mod tests {
                 control.style.control_height,
                 Some(nana_ui_core::ControlHeight::Exact(size))
             );
-            assert_eq!(control.style.radius, Some(nana_ui_core::RadiusTier::Md));
+            assert_eq!(control.style.radius, Some(nana_ui_core::RadiusTier::Sm));
             assert_eq!(control.style.layout.border_width, Some(1.0));
             assert!(control.style.layout.border_radius.is_none());
             assert_eq!(control.style.layout.width, Some(LengthSpec::Shrink));

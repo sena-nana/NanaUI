@@ -2105,9 +2105,18 @@ fn segmented_size_disabled_and_sequential_focus_share_one_authority() {
         context.read(second, |option| option.size).unwrap(),
         nana_ui_core::ControlSize::Large
     );
-    let radius = context.world().theme_metrics().radius_md;
+    // The track is a control and rounds like the buttons beside it, not like
+    // the card it sits on.
+    let radius = context.world().theme_metrics().radius_sm;
     assert_eq!(
         context.world().extract_nodes(&[control.stable_id()])[0]
+            .source_style
+            .layout
+            .border_radius,
+        Some(radius)
+    );
+    assert_eq!(
+        context.world().extract_nodes(&[before.stable_id()])[0]
             .source_style
             .layout
             .border_radius,
