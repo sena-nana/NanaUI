@@ -718,9 +718,11 @@ mod editor_tests {
         let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
         cx.select_all_focused_text(document()).unwrap();
         cx.replace_focused_text(document(), "10").unwrap();
-        // Up from 10 clamps to 10.3 and snaps back to 10: the number commits,
-        // the text stays.
-        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        // Up from 10 would clamp to 10.3 and snap back: no step at all.
+        assert!(!cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!(value(&cx), 5.0);
+        // A commit moves the number and keeps the text.
+        assert!(cx.commit_focused_number_input(document()).unwrap());
         assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
         assert!(cx.step_focused_number_input(document(), -1).unwrap());
         assert!(cx.undo_focused_text(document()).unwrap());
@@ -767,6 +769,16 @@ mod editor_tests {
         cx.set_ime_preedit(document(), "ｘ".into(), None).unwrap();
         assert!(!cx.step_focused_number_input(document(), 1).unwrap());
         assert!(!cx.revert_focused_number_input(document()).unwrap());
+        assert!(
+            !cx.apply_accessibility_action(
+                document(),
+                crate::AccessibilityActionRequest {
+                    target: input.stable_id(),
+                    action: crate::AccessibilityAction::SetValue("7".into()),
+                },
+            )
+            .unwrap()
+        );
         assert_eq!(draft_of(&cx, input), "15");
         assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
     }

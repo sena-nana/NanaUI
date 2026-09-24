@@ -1557,6 +1557,7 @@ impl RuntimeInputAdapter {
         };
         let mut typed = text.chars();
         if let (Some(single), None) = (typed.next(), typed.next())
+            && !single.is_control()
             && focused.code_editing.is_some()
             && context.code_edit_typed(document, single)?
         {
@@ -1608,9 +1609,9 @@ fn caret_intent(key: &str, modifiers: nana_ui_platform::InputModifiers) -> Optio
     }
 }
 
-/// Text a key would type, or `None` for keys that carry none. The runtime's
-/// typing path refuses the control characters command keys carry, so a key
-/// an editor did not claim cannot type them into it.
+/// The text a key carries, or `None` when it carries none. Which characters
+/// may type is the runtime's call: its typing path refuses the control
+/// characters command keys carry.
 fn typed_text(text: Option<&str>) -> Option<&str> {
     text.filter(|text| !text.is_empty())
 }

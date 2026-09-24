@@ -40,9 +40,12 @@ impl AppContext {
         let Some(requested) = nana_ui_core::NumberFieldSpec::parse_unsnapped(text) else {
             return Ok(false);
         };
-        if !self.read(entity, |input| {
-            input.accepts_input() && input.within_bounds(requested)
-        })? {
+        // A composition owns the draft until it commits or cancels.
+        if self.node_composing(entity.stable_id())
+            || !self.read(entity, |input| {
+                input.accepts_input() && input.within_bounds(requested)
+            })?
+        {
             return Ok(false);
         }
         // Unlike `set_number_value`, the field shows what was set even when it

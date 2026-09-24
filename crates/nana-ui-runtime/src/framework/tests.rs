@@ -1820,6 +1820,28 @@ fn a_continuous_draft_publishes_its_clamped_step_base() {
 }
 
 #[test]
+fn a_step_that_snaps_back_onto_its_base_is_no_step_and_the_spinner_agrees() {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let input = context
+        .create_component(
+            document,
+            crate::NumberInput::new(3.0).range(0.0, 10.0).step(3.0),
+        )
+        .unwrap();
+    context.focus_node(document, input.stable_id()).unwrap();
+    context.select_all_focused_text(document).unwrap();
+    context.replace_focused_text(document, "9").unwrap();
+    // 9 + 3 clamps to 10, which snaps back to 9: nothing moves or commits.
+    assert!(!context.step_number_input(input, 1).unwrap());
+    assert_eq!(context.read(input, crate::NumberInput::value).unwrap(), 3.0);
+    // The published maximum is the reachable one, so the up half is inert.
+    let state = context.world().accessibility(input.stable_id()).unwrap();
+    assert_eq!(state.numeric_maximum, Some(9.0));
+    assert_eq!(state.numeric_value, Some(9.0));
+}
+
+#[test]
 fn a_hover_card_keeps_a_focused_number_input_editing() {
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();

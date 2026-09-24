@@ -176,10 +176,7 @@ impl AppContext {
         {
             return Ok(false);
         }
-        let composing = self
-            .world
-            .ime(target)
-            .is_some_and(|composition| !composition.text.is_empty());
+        let composing = self.node_composing(target);
         let mut next = state.to_state();
         if !next.delete_ime_surrounding(before_bytes, after_bytes, composing) {
             return Ok(false);
@@ -199,10 +196,7 @@ impl AppContext {
         if !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let composing = self
-            .world
-            .ime(entity.stable_id())
-            .is_some_and(|composition| !composition.text.is_empty());
+        let composing = self.node_composing(entity.stable_id());
         let snippet = self.world.text_snippet_session(entity.stable_id());
         // Only a snippet session diffs the pre-edit value (to follow its
         // linked placeholders). Cloning the whole value for every keystroke of

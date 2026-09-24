@@ -1885,7 +1885,9 @@ impl NumberInput {
         } else {
             self.spec.step_by(base, steps)
         };
-        if next == base {
+        // Compare where the field would put it: a bound off the grid (10.3
+        // on a whole-number grid) snaps a step back onto its base.
+        if self.normalize(next) == base {
             return false;
         }
         self.assign(next)
@@ -1930,6 +1932,18 @@ impl NumberInput {
             return false;
         }
         self.assign(value)
+    }
+
+    /// The field's rules with its bounds brought onto its grid: the numbers
+    /// it can actually reach. A maximum of 10 on a grid of 3 is 9. Published
+    /// for assistive technology and the spinner, so a half is drawn inert
+    /// exactly where a step can no longer move.
+    fn reachable_spec(&self) -> nana_ui_core::NumberFieldSpec {
+        nana_ui_core::NumberFieldSpec {
+            minimum: self.spec.minimum.map(|minimum| self.normalize(minimum)),
+            maximum: self.spec.maximum.map(|maximum| self.normalize(maximum)),
+            ..self.spec
+        }
     }
 
     /// Where the field puts `value`: clamped to its bounds, and on a
@@ -2023,7 +2037,7 @@ impl ComponentView for NumberInput {
                 multiline: false,
                 style: &effective_style,
                 highlight: None,
-                numeric: Some((self.step_base(), self.spec)),
+                numeric: Some((self.step_base(), self.reachable_spec())),
             },
         );
     }
