@@ -102,6 +102,12 @@ trait EditableText: ComponentView {
     /// Replace the text of every active selection (single cursor replaces its
     /// own selection; multiple cursors each receive an insertion).
     fn replace_selection(&mut self, text: &str) -> bool;
+    /// Whether the editor takes `value` in place of its text as an edit: a
+    /// field with a length limit refuses to grow past it.
+    fn admits_value(&self, value: &str) -> bool {
+        let _ = value;
+        true
+    }
     fn text_atoms(&self) -> &[crate::TextAtomSpan] {
         &[]
     }
@@ -170,6 +176,10 @@ impl EditableText for TextInput {
 
     fn replace_selection(&mut self, text: &str) -> bool {
         self.replace_selection(text)
+    }
+
+    fn admits_value(&self, value: &str) -> bool {
+        self.accepts_edit_value(value)
     }
 
     fn commit_ime_text(&mut self, text: &str) -> bool {

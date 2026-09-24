@@ -799,6 +799,66 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
 }
 
 #[test]
+fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    // Host 2 opens popover 3; its item 5 opened listbox 7, hosted by 6
+    // outside the popover.
+    for (id, parent) in [(2, 1), (3, 2), (5, 3), (6, 1), (7, 6)] {
+        create.create(
+            node(id),
+            document(1),
+            NodeKind::Element { tag: "div".into() },
+        );
+        create.insert(node(parent), node(id), None);
+        create.set_interaction(
+            node(id),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    for id in [3, 7] {
+        create.set_accessibility(
+            node(id),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+    world.commit(create).unwrap();
+    let mut open = MutationQueue::new();
+    open.set_overlay_host(
+        node(2),
+        OverlayHostState {
+            active: Some(node(3)),
+            restore_focus: Some(node(2)),
+        },
+    );
+    open.set_overlay_host(
+        node(6),
+        OverlayHostState {
+            active: Some(node(7)),
+            restore_focus: Some(node(5)),
+        },
+    );
+    open.request_focus(document(1), Some(node(7)));
+    world.commit(open).unwrap();
+
+    let mut close = MutationQueue::new();
+    close.despawn_subtree(node(3));
+    world.commit(close).unwrap();
+    assert_eq!(
+        world.focused(document(1)),
+        Some(node(2)),
+        "focus in the listbox left with the popover it was opened from"
+    );
+}
+
+#[test]
 fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();

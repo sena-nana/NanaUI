@@ -678,28 +678,54 @@ impl AppContext {
         // before it nor is extended by the typing after it.
         let changed =
             self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {
-                let atoms = crate::text_editing::atoms_in(&old, editable.text_atoms());
+                let value = &editable.state().value;
+                let atoms = crate::text_editing::atoms_in(value, editable.text_atoms());
                 let range = crate::text_editing::expand_range_over_atoms(range, &atoms);
-                let original = editable.state().clone();
-                editable.state_mut().selection = TextSelection::new(range.start, range.end);
-                if !editable.commit_ime_text(&text) || editable.state().value == original.value {
-                    // Declined: the component stays exactly as it was, selection
-                    // included, so nothing is committed.
-                    *editable.state_mut() = original;
+                if value[range.clone()] == *text {
                     return false;
                 }
+                let mut next = String::with_capacity(value.len() - range.len() + text.len());
+                next.push_str(&value[..range.start]);
+                next.push_str(&text);
+                next.push_str(&value[range.end..]);
+                // Refused whole, not cut to fit: half a completion is not
+                // the edit that was asked for.
+                if !editable.admits_value(&next) {
+                    return false;
+                }
+                // Every selection, the user's own caret included, moves
+                // through the edit: before the range it stays, after it it
+                // shifts, inside it it lands after the inserted text.
+                let inserted_end = range.start + text.len();
+                let remap = |offset: usize| {
+                    if offset < range.start {
+                        offset
+                    } else if offset >= range.end {
+                        offset - range.end + inserted_end
+                    } else {
+                        inserted_end
+                    }
+                };
+                let remap_selection = |selection: TextSelection| TextSelection {
+                    anchor: remap(selection.anchor),
+                    focus: remap(selection.focus),
+                    affinity: selection.affinity,
+                };
+                let state = editable.state_mut();
+                state.value = next.into();
+                state.selection = remap_selection(state.selection);
+                for selection in &mut state.additional_selections {
+                    *selection = remap_selection(*selection);
+                }
                 if let Some(session) = &snippet
-                    && let Some((value, selection, session)) = session.linked_edit(
-                        &old,
-                        &editable.state().value,
-                        editable.state().selection,
-                    )
+                    && let Some((value, selection, session)) =
+                        session.linked_edit(&old, &state.value, state.selection)
                 {
-                    editable.state_mut().value = value.into();
-                    editable.state_mut().selection = selection;
+                    state.value = value.into();
+                    state.selection = selection;
                     linked = Some(session);
                 }
-                editable.state_mut().normalize_selections();
+                state.normalize_selections();
                 true
             })?;
         if changed && let Some(session) = linked {

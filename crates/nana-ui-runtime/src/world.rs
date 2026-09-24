@@ -2369,6 +2369,33 @@ impl UiWorld {
             .flatten()
             .copied()
             .collect::<HashSet<_>>();
+        // The overlay closing here, if one is: at most one (see below).
+        let closing = hosts
+            .iter()
+            .filter(|host| !removed.contains(host))
+            .filter_map(|host| self.nodes.overlay_host(*host)?.active)
+            .find(|active| removed.contains(active));
+        // Overlays opened from inside it, hosted elsewhere (a dropdown's
+        // listbox hosted outside the popover it opened from): focus in one of
+        // them belongs to the closing overlay too. Their opener is inside it,
+        // though not yet in `removed` when a despawn takes the root first.
+        let opened_from_closing = closing
+            .map(|closing| {
+                self.overlay_host_nodes
+                    .iter()
+                    .filter(|host| !removed.contains(host))
+                    .filter_map(|host| self.nodes.overlay_host(*host))
+                    .filter(|state| {
+                        state.restore_focus.is_some_and(|opener| {
+                            removed.contains(&opener)
+                                || (self.contains(opener)
+                                    && self.is_descendant_or_self(opener, closing))
+                        })
+                    })
+                    .filter_map(|state| state.active.filter(|active| !removed.contains(active)))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
         // An active overlay is its host's child, and a host inside `removed`
         // is skipped: at most one overlay closes here, the removed root.
         let updates = hosts
@@ -2405,7 +2432,8 @@ impl UiWorld {
             // Focus goes back unless the user moved it to another node, which
             // keeps it, with whatever composition it has going. It is still
             // on the overlay or inside it when a despawn removes the root
-            // first. A document with no focus gets the opener back too: the
+            // first, or in an overlay opened from it. An active modal above
+            // still keeps it where it is (checked below). A document with no focus gets the opener back too: the
             // removal may have dropped it, or the framework may have (a
             // disabled or hidden editor), and a keyboard or screen-reader user
             // left with nothing focused is worse off than one whose cleared
@@ -2415,6 +2443,9 @@ impl UiWorld {
                 removed.contains(&focused)
                     || !self.contains(focused)
                     || self.is_descendant_or_self(focused, overlay)
+                    || opened_from_closing
+                        .iter()
+                        .any(|nested| self.is_descendant_or_self(focused, *nested))
             });
             if focus_left
                 && self.contains(restore_focus)

@@ -23,6 +23,13 @@
 //! value the editor reported, or the same text rebuilt — keeps the stamp and
 //! the journal.
 //!
+//! A composite component that writes a child editor's text (a color field's
+//! hex input, a path field's text) replaces that child's value the same way,
+//! and undo could not bring back text the composite's own state no longer
+//! matches. Such a component writes the child only when the value really
+//! changes: [`crate::ColorField`] leaves text that already names its color
+//! as the user typed it.
+//!
 //! An application edit meant to be undone like the user's own — a format
 //! shortcut, a completion — goes through
 //! [`crate::AppContext::edit_text_area`] or
@@ -188,21 +195,35 @@ impl TextHistory {
         }
     }
 
+    /// Moves the cursor one step back (`undo`) or forward, once the state
+    /// [`Self::peek`] showed has been restored. Returns whether it moved.
+    ///
     /// Undo and redo end a merge run too: typing after an undo is a new
     /// step, not more of the one the undo stepped back onto.
-    fn undo(&mut self) -> Option<TextInputState> {
-        let index = self.cursor.checked_sub(1)?;
-        self.cursor = index;
-        self.seal_before_cursor();
-        Some(self.steps[index].before.clone())
+    fn step(&mut self, undo: bool) -> bool {
+        let moved = if undo {
+            self.cursor.checked_sub(1).map(|index| self.cursor = index)
+        } else {
+            (self.cursor < self.steps.len()).then(|| self.cursor += 1)
+        };
+        if moved.is_some() {
+            self.seal_before_cursor();
+        }
+        moved.is_some()
     }
 
+    #[cfg(test)]
+    fn undo(&mut self) -> Option<TextInputState> {
+        let state = self.peek(true).cloned()?;
+        self.step(true);
+        Some(state)
+    }
+
+    #[cfg(test)]
     fn redo(&mut self) -> Option<TextInputState> {
-        let step = self.steps.get(self.cursor)?;
-        let after = step.after.clone();
-        self.cursor += 1;
-        self.seal_before_cursor();
-        Some(after)
+        let state = self.peek(false).cloned()?;
+        self.step(false);
+        Some(state)
     }
 
     /// The state [`Self::undo`] or [`Self::redo`] would restore, without
@@ -278,12 +299,10 @@ impl TextHistories {
         self.entries.get(&node)?.peek(undo).cloned()
     }
 
-    pub(super) fn undo(&mut self, node: StableNodeId) -> Option<TextInputState> {
-        self.entries.get_mut(&node)?.undo()
-    }
-
-    pub(super) fn redo(&mut self, node: StableNodeId) -> Option<TextInputState> {
-        self.entries.get_mut(&node)?.redo()
+    pub(super) fn step(&mut self, node: StableNodeId, undo: bool) {
+        if let Some(history) = self.entries.get_mut(&node) {
+            history.step(undo);
+        }
     }
 
     /// `node`'s journal, if the editor still holds the text it left there.
@@ -607,11 +626,7 @@ impl crate::AppContext {
                 .read(entity, |editable: &C| editable.state().value != shown)
                 .unwrap_or(false);
         if landed {
-            if undo {
-                self.text_histories.undo(node);
-            } else {
-                self.text_histories.redo(node);
-            }
+            self.text_histories.step(node, undo);
         }
         restored
     }
@@ -1332,6 +1347,49 @@ mod editor_tests {
                 .unwrap(),
             "abc"
         );
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_leaves_the_users_caret_where_they_work() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "hello world");
+        cx.select_focused_text_range(document(), 6, 11).unwrap();
+        // A format command at the top of the document.
+        assert!(cx.edit_text_area(area, 0..5, "HELLO!").unwrap());
+        assert_eq!(value_of(&cx, area), "HELLO! world");
+        assert_eq!(
+            cx.read(area, |area| area.state.selection).unwrap(),
+            crate::TextSelection::new(7, 12),
+            "the user's selection moved with the text, not to the edit"
+        );
+    }
+
+    #[test]
+    fn an_edit_on_a_limited_field_is_refused_whole_and_touches_only_its_range() {
+        let text = |cx: &AppContext, field: crate::Entity<TextInput>| {
+            cx.read(field, |field| field.state.value.to_string())
+                .unwrap()
+        };
+        let mut cx = AppContext::new();
+        let field = cx
+            .create_component(document(), TextInput::new("ab").max_length(4))
+            .unwrap();
+        // Half a completion is not the edit asked for.
+        assert!(!cx.edit_text_input(field, 2..2, "foo()").unwrap());
+        assert_eq!(text(&cx, field), "ab");
+
+        let field = cx
+            .create_component(document(), TextInput::new("abcdefgh").max_length(10))
+            .unwrap();
+        cx.update_component(field, |field, _| {
+            field.state.selection = crate::TextSelection::caret(8);
+            field.state.additional_selections = vec![crate::TextSelection::new(3, 6)];
+        })
+        .unwrap();
+        // A further cursor overlapping the range is not fused into it: only
+        // 0..4 is replaced.
+        assert!(cx.edit_text_input(field, 0..4, "X").unwrap());
+        assert_eq!(text(&cx, field), "Xefgh");
     }
 
     #[test]
