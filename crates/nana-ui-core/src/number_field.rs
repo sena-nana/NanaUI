@@ -98,13 +98,21 @@ impl NumberFieldSpec {
             return 0.0;
         };
         let scale = 10f64.powi(i32::from(self.precision));
-        let scaled = minimum * scale;
+        let scaled = (minimum - self.bound_noise(minimum)) * scale;
         if !scaled.is_finite() {
             return minimum;
         }
-        // A hair of tolerance keeps a minimum already at the precision (0.3)
-        // from rounding up past itself through float noise.
-        (scaled - 1e-9).ceil() / scale
+        scaled.ceil() / scale
+    }
+
+    /// Float noise tolerated where a bound meets the grid. Bounds often
+    /// arrive through f32 (0.7 is 0.69999998) and large values carry more
+    /// noise than any fixed epsilon, so it grows with the bound's magnitude,
+    /// but it stays under a thousandth of a display unit and never admits a
+    /// different displayed value.
+    fn bound_noise(self, bound: f64) -> f64 {
+        let unit = 10f64.powi(-i32::from(self.precision));
+        (bound.abs().max(unit) * 1e-7).min(unit * 1e-3)
     }
 
     /// Grid point `k`, rounded to the precision to shed float noise.
@@ -112,14 +120,15 @@ impl NumberFieldSpec {
         round_to(self.grid_origin() + k * self.display_step(), self.precision)
     }
 
-    /// The last grid point inside the maximum, or `None` when unbounded
-    /// above. Rounding shifts a point by less than a step, so the point below
-    /// the estimate is the only other candidate.
+    /// The last grid point inside the maximum (within its float noise), or
+    /// `None` when unbounded above. Rounding shifts a point by less than a
+    /// step, so the point below the estimate is the only other candidate.
     fn grid_maximum(self) -> Option<f64> {
         let maximum = self.maximum.filter(|maximum| maximum.is_finite())?;
-        let last = ((maximum - self.grid_origin()) / self.display_step() + 1e-9).floor();
+        let noise = self.bound_noise(maximum);
+        let last = ((maximum + noise - self.grid_origin()) / self.display_step()).floor();
         let point = self.grid_point(last);
-        Some(if point > maximum {
+        Some(if point > maximum + noise {
             self.grid_point(last - 1.0)
         } else {
             point
@@ -378,6 +387,40 @@ mod tests {
         }
         assert_eq!(value, 1.0);
         assert!(!spec.can_increment(1.0));
+    }
+
+    #[test]
+    fn bounds_carrying_float_noise_keep_their_displayed_ends() {
+        // Bounds and steps that arrived through f32, as a Vue binding's do.
+        let f32_spec = |minimum: f32, maximum: f32, step: f32, precision| NumberFieldSpec {
+            minimum: Some(f64::from(minimum)),
+            maximum: Some(f64::from(maximum)),
+            step: f64::from(step),
+            precision,
+        };
+        for (spec, low, high) in [
+            (f32_spec(0.0, 0.7, 0.1, 1), "0.0", "0.7"),
+            (f32_spec(0.1, 1.0, 0.1, 1), "0.1", "1.0"),
+            (f32_spec(0.0, 2.3, 0.1, 1), "0.0", "2.3"),
+            (f32_spec(0.0, 9.99, 0.01, 2), "0.00", "9.99"),
+        ] {
+            assert_eq!(spec.format(spec.snap(-100.0)), low, "{spec:?}");
+            assert_eq!(spec.format(spec.snap(100.0)), high, "{spec:?}");
+            let top = spec.snap(100.0);
+            assert_eq!(spec.snap(top), top, "{spec:?}");
+            assert_eq!(spec.parse(&spec.format(top)), Some(top), "{spec:?}");
+        }
+        // Large exact bounds at cent precision.
+        let cents = |minimum, maximum| NumberFieldSpec {
+            minimum: Some(minimum),
+            maximum: Some(maximum),
+            step: 0.01,
+            precision: 2,
+        };
+        assert_eq!(cents(0.0, 1_266_142.42).snap(2e6), 1_266_142.42);
+        assert_eq!(cents(0.0, 223_696.36).snap(2e6), 223_696.36);
+        assert_eq!(cents(262_144.03, 3e5).snap(0.0), 262_144.03);
+        assert_eq!(cents(9_099_250.47, 1e7).snap(0.0), 9_099_250.47);
     }
 
     #[test]

@@ -1739,6 +1739,12 @@ pub struct NumberInput {
     pub invalid: bool,
     pub style: NodeStyle,
     pub(crate) value: f64,
+    /// The number the application asked for, before the field's rules
+    /// applied. Each builder call normalizes it again against the rules so
+    /// far, so the finished rules decide: `new(0.0).range(0.1, 5.0)` then
+    /// `.precision(1)` starts at 0.1, not at the 1 a whole-number grid made of
+    /// it halfway through the chain.
+    pub(crate) requested: f64,
     pub(crate) continuous: bool,
     pub(crate) style_override: bool,
 }
@@ -1746,6 +1752,7 @@ pub struct NumberInput {
 impl NumberInput {
     pub fn new(value: f64) -> Self {
         let spec = nana_ui_core::NumberFieldSpec::default();
+        let requested = value;
         let value = spec.snap(value);
         Self {
             state: TextInputState::new(spec.format(value)),
@@ -1758,6 +1765,7 @@ impl NumberInput {
             invalid: false,
             style: text_field_style(false),
             value,
+            requested,
             continuous: false,
             style_override: false,
         }
@@ -1858,6 +1866,7 @@ impl NumberInput {
     /// Publish a value from the application. Values are clamped to bounds;
     /// discrete fields also snap them to their precision and step grid.
     pub fn assign(&mut self, value: f64) -> bool {
+        self.requested = value;
         let next = self.normalize(value);
         let text = if self.continuous {
             next.to_string()
@@ -1918,6 +1927,7 @@ impl NumberInput {
     /// was recorded. Returns whether the number moved.
     pub(crate) fn restore_value(&mut self, value: f64) -> bool {
         let value = self.normalize(value);
+        self.requested = value;
         if value == self.value {
             return false;
         }
@@ -1993,7 +2003,7 @@ impl NumberInput {
     }
 
     fn resync(&mut self) {
-        self.assign(self.value);
+        self.assign(self.requested);
     }
 
     pub(crate) fn formatted_value(&self) -> String {
@@ -2804,6 +2814,20 @@ mod hosted_textarea_tests {
             NumberInput::new(0.5).value(),
             1.0,
             "discrete defaults remain compatible"
+        );
+    }
+
+    #[test]
+    fn a_number_input_builder_normalizes_against_its_finished_rules() {
+        let tenth = NumberInput::new(0.0).range(0.1, 5.0).step(0.1).precision(1);
+        assert_eq!((tenth.value(), tenth.state.value.as_ref()), (0.1, "0.1"));
+        let quarter = NumberInput::new(0.0)
+            .range(0.25, 1.0)
+            .step(0.25)
+            .precision(2);
+        assert_eq!(
+            (quarter.value(), quarter.state.value.as_ref()),
+            (0.25, "0.25")
         );
     }
 
