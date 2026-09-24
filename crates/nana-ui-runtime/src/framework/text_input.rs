@@ -75,6 +75,12 @@ impl AppContext {
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.commit_editable_ime(entity, text);
         }
+        // Every component editor commits through its component: the world
+        // path alone would leave the component's value behind, and its next
+        // projection would write the commit away.
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
+            return self.commit_editable_ime(entity, text);
+        }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
             return self.commit_editable_ime(entity, text);
         }
@@ -101,6 +107,9 @@ impl AppContext {
         after_bytes: usize,
     ) -> Result<bool, FrameworkError> {
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
+            return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
+        }
+        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
             return self.delete_editable_surrounding(entity, before_bytes, after_bytes);
         }
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
@@ -356,7 +365,8 @@ impl AppContext {
         let Some(text) = self.focused_selected_text(document) else {
             return Ok(None);
         };
-        if !self.replace_focused_text(document, "")? {
+        // Its own undo step: typing right after a cut must not merge into it.
+        if !self.insert_focused_text(document, "", TextEditOrigin::Cut)? {
             return Ok(None);
         }
         Ok(Some(text))

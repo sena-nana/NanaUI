@@ -718,6 +718,16 @@ fn a_right_arrow_crosses_a_collapsed_fold_summary_on_the_geometry_path() {
         );
         runtime.flush(viewport(), &mut shaper).unwrap();
         assert_eq!(focus(&runtime), expected, "one press per position");
+        let selection = runtime
+            .context()
+            .world()
+            .text_input(node)
+            .unwrap()
+            .selection;
+        assert_eq!(
+            selection.anchor, selection.focus,
+            "a caret crossing a fold stays a caret, not a selection of the hidden lines"
+        );
     }
 }
 
@@ -776,4 +786,84 @@ fn an_edit_that_adds_a_line_remeasures_the_editor() {
         "and back: {} vs {before}",
         height(&fixture)
     );
+}
+
+/// Issue #182: the host names an editor's text by its stamp, so a probe of
+/// text it already holds geometry for compares none of it — not per caret
+/// move, not per click, not per arrow.
+#[test]
+fn probing_an_unchanged_editor_compares_none_of_its_text() {
+    let mut fixture = Fixture::new(&paragraphs(20));
+    let document = fixture.document;
+    for (intent, extend) in [
+        (TextCaretIntent::DocStart, false),
+        (TextCaretIntent::Right, false),
+        (TextCaretIntent::Right, true),
+        (TextCaretIntent::Left, false),
+        (TextCaretIntent::Down, false),
+        (TextCaretIntent::Up, false),
+        (TextCaretIntent::LineEnd, false),
+    ] {
+        let Fixture {
+            runtime, shaper, ..
+        } = &mut fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, extend, Some(shaper))
+                .unwrap(),
+            "{intent:?}"
+        );
+        let work = fixture.flush();
+        assert_eq!(
+            work.editor_text_bytes_compared, 0,
+            "{intent:?}: the geometry is recognised by stamp"
+        );
+        assert_eq!(work.layouts_created, 0, "{intent:?}");
+    }
+    let content = fixture.content();
+    let line_height = fixture.line_height();
+    fixture.click(content.x + 30.0, content.y + line_height * 3.5);
+    let work = fixture.flush();
+    assert_eq!(
+        work.editor_text_bytes_compared, 0,
+        "a click compares nothing"
+    );
+}
+
+/// Left and Right over a selection collapse it onto its edge on that side of
+/// the screen — in right-to-left text, the logical end is on the left.
+#[test]
+fn left_and_right_collapse_a_selection_onto_its_visual_edge() {
+    let hebrew = "אבג";
+    let text = format!("abc {hebrew} def");
+    let start = "abc ".len();
+    let end = start + hebrew.len();
+    for (intent, landing) in [
+        (TextCaretIntent::Left, end),
+        (TextCaretIntent::Right, start),
+    ] {
+        let mut fixture = Fixture::new(&text);
+        let document = fixture.document;
+        assert!(
+            fixture
+                .runtime
+                .context_mut()
+                .select_focused_text_range(document, start, end)
+                .unwrap()
+        );
+        fixture.settle();
+        let Fixture {
+            runtime, shaper, ..
+        } = &mut fixture;
+        assert!(
+            runtime
+                .context_mut()
+                .move_focused_text_caret(document, intent, false, Some(shaper))
+                .unwrap()
+        );
+        fixture.flush();
+        assert_eq!(fixture.selection().focus, landing, "{intent:?}");
+        assert_eq!(fixture.selection().anchor, landing, "{intent:?} collapses");
+    }
 }

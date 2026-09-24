@@ -212,6 +212,38 @@ impl EditorGeometry<'_> {
         ))
     }
 
+    /// Where a non-extending Left or Right lands on a non-empty selection:
+    /// its edge on that side of the screen, by `nana-text`'s rule
+    /// ([`nana_text::editable::collapse_edge`]), read off the carets the
+    /// backend draws at the selection's two ends.
+    fn collapse_edge(&mut self, selection: TextSelection, rightwards: bool) -> usize {
+        let range = selection.ordered();
+        let (start_x, start_y, _) = self.shaper.text_caret_position(
+            self.node,
+            &self.text,
+            range.start,
+            crate::TextAffinity::Downstream,
+            &self.style,
+            self.constraints,
+        );
+        let (end_x, end_y, _) = self.shaper.text_caret_position(
+            self.node,
+            &self.text,
+            range.end,
+            crate::TextAffinity::Upstream,
+            &self.style,
+            self.constraints,
+        );
+        let rtl = matches!(self.style.direction, nana_ui_core::DirSpec::Rtl);
+        nana_text::editable::collapse_edge(
+            range,
+            rightwards,
+            Some((start_x, start_y)),
+            Some((end_x, end_y)),
+            rtl,
+        )
+    }
+
     /// One visual step left or right, from the backend's own layout: the
     /// caret an arrow key lands on. `None` when the backend has no geometry,
     /// or there is nothing in that direction.
@@ -538,6 +570,25 @@ impl AppContext {
             return caret_focus(value, selection, mapped)
                 .map(|focus| (moved_selection(selection, focus, extend), None));
         }
+        // Left/Right over a non-empty selection collapse it onto its edge
+        // on that side instead of stepping from the focus: the visual edge
+        // with geometry, the logical one without.
+        if !extend
+            && selection.anchor != selection.focus
+            && let Some(rightwards) = horizontal_rightwards(intent)
+        {
+            let edge = match geometry {
+                Some(geometry) => geometry.collapse_edge(selection, rightwards),
+                None => nana_text::editable::collapse_edge(
+                    selection.ordered(),
+                    rightwards,
+                    None,
+                    None,
+                    false,
+                ),
+            };
+            return Some((TextSelection::caret(edge), None));
+        }
         if let Some(geometry) = geometry
             && let Some(rightwards) = horizontal_rightwards(intent)
             && let Some(stepped) = geometry.visual_step(selection, rightwards)
@@ -615,8 +666,16 @@ impl AppContext {
                     } else {
                         view.value_of(moved.focus)
                     };
+                    // A caret stays a caret: its anchor goes where its focus
+                    // went, not back across the fold it just crossed (that
+                    // left an invisible selection over the hidden lines).
+                    let anchor = if moved.anchor == moved.focus {
+                        focus
+                    } else {
+                        view.value_of(moved.anchor)
+                    };
                     TextSelection {
-                        anchor: view.value_of(moved.anchor),
+                        anchor,
                         focus,
                         affinity: moved.affinity,
                     }
@@ -796,25 +855,64 @@ impl AppContext {
             }
         } else {
             self.text_edit.caret_goal_x = None;
-            // Left/Right follow visual order wherever the backend's layout can
-            // say what "left" is; without geometry they are grapheme steps in
-            // logical order, which is all "left" could mean then.
-            let visual = horizontal_rightwards(intent)
-                .filter(|_| editor_draws_its_value(&self.world, focused.node, probe_value))
-                .zip(shaper)
-                .and_then(|(rightwards, shaper)| {
-                    let (style, constraints) = self.world.text_input_shape_context(focused.node)?;
-                    let mut geometry = EditorGeometry {
-                        shaper,
-                        node: focused.node,
-                        text: TextContent {
-                            value: probe_text.clone(),
-                        },
-                        style,
-                        constraints,
-                    };
-                    geometry.visual_step(selection, rightwards)
-                });
+            let draws_value = editor_draws_its_value(&self.world, focused.node, probe_value);
+            // Left/Right over a non-empty selection collapse it onto its
+            // edge on that side of the screen — the one `EditSession` picks —
+            // rather than stepping from the focus. Logical edge without
+            // geometry (a masked or empty field draws something else).
+            let collapse = horizontal_rightwards(intent)
+                .filter(|_| !extend && selection.anchor != selection.focus);
+            let visual = if let Some(rightwards) = collapse {
+                let geometric = draws_value
+                    .then_some(())
+                    .zip(shaper)
+                    .and_then(|((), shaper)| {
+                        let (style, constraints) =
+                            self.world.text_input_shape_context(focused.node)?;
+                        Some(EditorGeometry {
+                            shaper,
+                            node: focused.node,
+                            text: TextContent {
+                                value: probe_text.clone(),
+                            },
+                            style,
+                            constraints,
+                        })
+                    });
+                let edge = match geometric {
+                    Some(mut geometry) => geometry.collapse_edge(selection, rightwards),
+                    None => nana_text::editable::collapse_edge(
+                        selection.ordered(),
+                        rightwards,
+                        None,
+                        None,
+                        false,
+                    ),
+                };
+                Some(TextSelection::caret(edge))
+            } else {
+                // Left/Right follow visual order wherever the backend's
+                // layout can say what "left" is; without geometry they are
+                // grapheme steps in logical order, which is all "left" could
+                // mean then.
+                horizontal_rightwards(intent)
+                    .filter(|_| draws_value)
+                    .zip(shaper)
+                    .and_then(|(rightwards, shaper)| {
+                        let (style, constraints) =
+                            self.world.text_input_shape_context(focused.node)?;
+                        let mut geometry = EditorGeometry {
+                            shaper,
+                            node: focused.node,
+                            text: TextContent {
+                                value: probe_text.clone(),
+                            },
+                            style,
+                            constraints,
+                        };
+                        geometry.visual_step(selection, rightwards)
+                    })
+            };
             match visual {
                 Some(stepped) if extend => stepped,
                 Some(stepped) => {
@@ -3256,23 +3354,22 @@ impl AppContext {
         });
         // 选区落在 $0（缺省为插入文本末尾）。
         next.selection = TextSelection::caret(final_caret);
-        match focused.kind {
-            TextEditorKind::Area => {
-                let entity = Entity::<TextArea>::from_stable_id(node);
-                self.update_component(entity, |area: &mut TextArea, cx| {
-                    area.state = next.clone();
-                    cx.emit(area.change());
-                    true
-                })?;
-            }
-            TextEditorKind::Field => {
-                let entity = Entity::<TextInput>::from_stable_id(node);
-                self.update_component(entity, |field: &mut TextInput, cx| {
-                    field.state = next.clone();
-                    cx.emit(field.change());
-                    true
-                })?;
-            }
+        // 走与其它编辑同一个入口：一次插入是一个撤销步，只读与长度上限
+        // 照常把关。旧会话先结束——新插入不是旧占位的联动编辑。
+        if self.world.text_snippet_session(node).is_some() {
+            let mut mutations = crate::MutationQueue::new();
+            mutations.set_text_input_snippet(node, None);
+            self.world.commit(mutations)?;
+        }
+        if !self.commit_editor_value(
+            node,
+            focused.kind,
+            next.value,
+            next.selection,
+            next.additional_selections,
+            crate::TextEditOrigin::Structural,
+        )? {
+            return Ok(false);
         }
         let mut mutations = crate::MutationQueue::new();
         mutations.set_text_input_snippet(node, session);

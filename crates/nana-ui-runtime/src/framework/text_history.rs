@@ -27,6 +27,9 @@ pub enum TextEditOrigin {
     Paste,
     /// One committed composition is one step.
     Ime,
+    /// Removing the selection to the pasteboard. Its own step, which typing
+    /// after it does not extend.
+    Cut,
     /// A transform over lines or selections: move, sort, case, comment,
     /// snippet. Always its own step.
     Structural,
@@ -360,6 +363,88 @@ mod editor_tests {
 
     fn value_of(cx: &AppContext, area: crate::Entity<TextArea>) -> String {
         cx.read(area, |area| area.state.value.to_string()).unwrap()
+    }
+
+    #[test]
+    fn a_cut_is_its_own_undo_step_that_typing_does_not_extend() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "abc").unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        assert_eq!(
+            cx.cut_focused_text(document()).unwrap().as_deref(),
+            Some("abc")
+        );
+        cx.replace_focused_text(document(), "x").unwrap();
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "", "undo takes back the typing alone");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "abc", "and then the cut");
+    }
+
+    #[test]
+    fn a_snippet_insertion_is_one_undo_step() {
+        let mut cx = AppContext::new();
+        let area = cx
+            .create_component(document(), TextArea::new("tail").code_editor(true))
+            .unwrap();
+        cx.focus_node(document(), area.stable_id()).unwrap();
+        cx.select_focused_text_range(document(), 0, 0).unwrap();
+        let snippet = crate::TextSnippet::new("let", "let $1 = $2;$0");
+        assert!(
+            cx.insert_focused_text_snippet(document(), &snippet)
+                .unwrap()
+        );
+        assert_eq!(value_of(&cx, area), "let  = ;tail");
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "tail");
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "let  = ;tail");
+    }
+
+    #[test]
+    fn a_number_inputs_ime_commit_stays_after_the_next_keystroke() {
+        let mut cx = AppContext::new();
+        let input = cx
+            .create_component(document(), crate::NumberInput::new(1.0))
+            .unwrap();
+        let node = input.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.set_ime_preedit(document(), "２".into(), None).unwrap();
+        assert!(cx.commit_ime(document(), "2").unwrap());
+        cx.replace_focused_text(document(), "5").unwrap();
+        let component = cx
+            .read(input, |input| input.state.value.to_string())
+            .unwrap();
+        assert_eq!(component, "25", "the commit reached the component");
+        assert_eq!(cx.world().text_input(node).unwrap().value, "25");
+    }
+
+    #[test]
+    fn left_and_right_collapse_a_selection_onto_its_edge() {
+        for (intent, landing) in [
+            (crate::TextCaretIntent::Left, 1),
+            (crate::TextCaretIntent::Right, 4),
+        ] {
+            let mut cx = AppContext::new();
+            let input = cx
+                .create_component(document(), TextInput::new("abcdef"))
+                .unwrap();
+            cx.focus_node(document(), input.stable_id()).unwrap();
+            // Focus at the far end from where Left lands, and the near end
+            // for Right: a step from the focus would land elsewhere.
+            cx.select_focused_text_range(document(), 4, 1).unwrap();
+            assert!(
+                cx.move_focused_text_caret(document(), intent, false, None)
+                    .unwrap()
+            );
+            assert_eq!(
+                cx.world().text_input(input.stable_id()).unwrap().selection,
+                crate::TextSelection::caret(landing),
+                "{intent:?}"
+            );
+        }
     }
 
     #[test]
