@@ -8,7 +8,14 @@ impl AppContext {
     pub(super) fn has_focused_ime_composition(&self, document: DocumentId) -> bool {
         self.world
             .focused_text_input(document)
-            .and_then(|(target, _)| self.world.ime(target))
+            .is_some_and(|(target, _)| self.node_composing(target))
+    }
+
+    /// Whether an editor has a composition in progress. An empty preedit
+    /// between keystrokes is not one.
+    pub(super) fn node_composing(&self, node: StableNodeId) -> bool {
+        self.world
+            .ime(node)
             .is_some_and(|composition| !composition.text.is_empty())
     }
 

@@ -1648,8 +1648,10 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
     };
     let before = caret(&context);
     for (x, y) in [(up_x, up_y), (down_x, down_y)] {
+        // The editor owns the press (no document selection starts there),
+        // but places no caret.
         assert!(
-            !context
+            context
                 .text_editor_pointer_press(
                     document,
                     input.stable_id(),
@@ -1750,7 +1752,7 @@ fn the_spinner_follows_the_draft_and_owns_presses_on_its_inert_half() {
     let caret = |context: &AppContext| context.world().text_input(node).unwrap().selection;
     context.select_focused_text_range(document, 0, 0).unwrap();
     assert!(
-        !context
+        context
             .text_editor_pointer_press(
                 document,
                 node,

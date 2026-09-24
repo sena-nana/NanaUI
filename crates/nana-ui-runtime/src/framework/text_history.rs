@@ -122,6 +122,14 @@ impl TextHistory {
             && origin.merges_with(last.origin)
         {
             last.after = after;
+            // A run that ended where it began (ArrowUp then ArrowDown) is no
+            // edit the user can see: an undo onto it would change no text and
+            // still be spent. As with `journal_editor_edit`'s gate, text is
+            // what makes a step; undo past it restores the number too.
+            if last.before.state == last.after.state {
+                self.steps.pop();
+                self.cursor = self.steps.len();
+            }
             return;
         }
         self.steps.push(TextEditStep {
@@ -315,7 +323,10 @@ impl crate::AppContext {
             return Ok(false);
         }
         let after = self.read(entity, snapshot)?;
-        if after.state.value != before.state.value || after.number != before.number {
+        // Text is what the user sees change, so it is what makes a step. A
+        // commit that only moves a `NumberInput`'s number is not one: undo
+        // past it lands on the typing that wrote its draft, number included.
+        if after.state.value != before.state.value {
             self.text_histories
                 .record(entity.stable_id(), before, after, origin);
         }
@@ -616,6 +627,36 @@ mod editor_tests {
             cx.can_redo_text(input.stable_id()),
             "redo survives the echo"
         );
+    }
+
+    #[test]
+    fn undoing_after_a_commit_that_kept_its_text_goes_back_to_the_typing() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.replace_focused_text(document(), "5").unwrap();
+        assert!(cx.commit_focused_number_input(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("15", 15.0));
+        // One undo, visible: the draft and the number both go back.
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("1", 1.0));
+        // Nothing pending is left for a blur to commit over the undo.
+        assert!(!cx.commit_focused_number_input(document()).unwrap());
+        assert_eq!(value(&cx), 1.0);
+    }
+
+    #[test]
+    fn a_step_run_that_ends_where_it_began_leaves_no_undo_step() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        cx.replace_focused_text(document(), "0").unwrap();
+        cx.seal_editor_history(input.stable_id());
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert!(cx.step_focused_number_input(document(), -1).unwrap());
+        assert_eq!(draft_of(&cx, input), "10");
+        // The next undo takes back the typing, not an empty step.
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "1");
     }
 
     #[test]

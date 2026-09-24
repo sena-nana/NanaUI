@@ -1907,10 +1907,11 @@ impl AppContext {
             return Ok(false);
         }
         // A press on a numeric field's spinner steps the value
-        // ([`Self::press_number_stepper`]); it places no caret.
+        // ([`Self::press_number_stepper`]). The editor still owns the press,
+        // so nothing else starts a selection there, but it places no caret.
         if focused.is_numeric() && self.on_number_stepper(node, x, y) {
             self.text_edit.text_pointer_drag = None;
-            return Ok(false);
+            return Ok(true);
         }
         let state = self.editor_state(node, focused.kind)?;
         const DOUBLE_CLICK_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
@@ -2649,9 +2650,6 @@ impl AppContext {
             Entity::<C>::from_stable_id(node),
             crate::TextEditOrigin::History,
             move |editable: &mut C, cx| {
-                if !editable.accepts_input() {
-                    return false;
-                }
                 *editable.state_mut() = state;
                 if let Some(number) = number {
                     editable.restore_committed_number(number, cx);

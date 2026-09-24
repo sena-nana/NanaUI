@@ -64,7 +64,9 @@ impl AppContext {
         steps: i32,
     ) -> Result<bool, FrameworkError> {
         // A composition owns the draft until it commits or cancels.
-        if !self.read(entity, NumberInput::accepts_input)? || self.number_composing(entity) {
+        if !self.read(entity, NumberInput::accepts_input)?
+            || self.node_composing(entity.stable_id())
+        {
             return Ok(false);
         }
         self.write_number(entity, TextEditOrigin::Step, |input| {
@@ -137,7 +139,7 @@ impl AppContext {
             return Ok(false);
         };
         // Escape during a composition belongs to the IME, not the draft.
-        if self.number_composing(entity) {
+        if self.node_composing(entity.stable_id()) {
             return Ok(false);
         }
         let changed = self.write_number(
@@ -149,12 +151,6 @@ impl AppContext {
         // already showed the committed value.
         self.seal_editor_history(entity.stable_id());
         Ok(changed)
-    }
-
-    fn number_composing(&self, entity: Entity<NumberInput>) -> bool {
-        self.world
-            .ime(entity.stable_id())
-            .is_some_and(|composition| !composition.text.is_empty())
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
