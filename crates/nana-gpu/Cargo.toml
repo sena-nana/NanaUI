@@ -1,0 +1,25 @@
+[package]
+name = "nana-gpu"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+description = "NanaUI's backend-neutral GPU contract: GpuContext, FrameContext and textures, implemented on WGPU"
+license = "MIT OR Apache-2.0"
+
+[features]
+default = []
+# Explicit escape hatch to the WGPU objects behind the contract: `GpuContext::wgpu()`,
+# `FrameContext::wgpu_encoder()`, `GpuTexture::from_wgpu()` and the `wgpu` re-export.
+# Ordinary renderers and producers do not need it.
+wgpu-interop = []
+
+[lib]
+name = "nana_gpu"
+path = "src/lib.rs"
+
+[dependencies]
+nana-diagnostics.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true

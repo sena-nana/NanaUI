@@ -2504,6 +2504,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nana-gpu"
+version = "0.1.0"
+dependencies = [
+ "nana-diagnostics",
+ "pollster",
+ "wgpu",
+]
+
+[[package]]
 name = "nana-icons-tabler"
 version = "0.1.0"
 dependencies = [
