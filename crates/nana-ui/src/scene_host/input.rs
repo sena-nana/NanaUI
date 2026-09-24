@@ -244,7 +244,10 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 if !dnd_advertises_files(event_loop, *transfer) {
                     return None;
                 }
-                let _ = event_loop.set_valid_dnd_actions(*transfer, &[DndAction::Copy]);
+                // Copy first; Link too, because AppKit narrows a Control-drag from
+                // Finder to Link and refuses the drop when nothing matches.
+                let _ = event_loop
+                    .set_valid_dnd_actions(*transfer, &[DndAction::Copy, DndAction::Link]);
                 let serial = event_loop
                     .fetch_data_transfer(*transfer, &TypeHint::UriList)
                     .ok();
@@ -288,7 +291,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                     {
                         None
                     }
-                    Err(_) => None,
+                    // A release waiting on these paths would otherwise never end.
+                    Err(_) => self.input_mut(id).abandon_drop(*transfer, id),
                 }
             }
             _ => None,

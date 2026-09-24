@@ -3090,6 +3090,20 @@ impl InputTracker {
         self.drop_modifiers = Some(self.drag_modifiers());
     }
 
+    /// The paths of a release could not be read: end the drag as cancelled.
+    fn abandon_drop(&mut self, transfer: DataTransferId, id: WindowId) -> Option<WindowEvent> {
+        if self.pending_dnd != Some(transfer) || !self.drop_waiting_for_data {
+            return None;
+        }
+        self.pending_file_paths.clear();
+        self.file_drop_emitted = true;
+        self.drop_waiting_for_data = false;
+        self.drop_modifiers = None;
+        self.pending_dnd = None;
+        self.pending_dnd_serial = None;
+        Some(WindowEvent::FileHoverCancelled { id })
+    }
+
     fn accepts_dnd_serial(&self, transfer: DataTransferId, serial: AsyncRequestSerial) -> bool {
         self.pending_dnd == Some(transfer)
             && self
@@ -4859,6 +4873,23 @@ mod tests {
             ),
             Some(WindowEvent::FileHoverCancelled { .. })
         ));
+    }
+
+    #[test]
+    fn an_unreadable_release_ends_the_drag() {
+        let transfer = winit::data_transfer::DataTransferId::from_raw(5);
+        let mut tracker = InputTracker::default();
+        tracker.begin_file_drag(transfer, None);
+        // Hovering, not releasing: nothing to abandon.
+        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
+        tracker.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
+        assert_eq!(
+            tracker.abandon_drop(transfer, WindowId::PRIMARY),
+            Some(WindowEvent::FileHoverCancelled {
+                id: WindowId::PRIMARY
+            })
+        );
+        assert!(tracker.abandon_drop(transfer, WindowId::PRIMARY).is_none());
     }
 
     #[test]
