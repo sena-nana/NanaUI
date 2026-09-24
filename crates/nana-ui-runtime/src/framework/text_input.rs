@@ -620,9 +620,7 @@ impl AppContext {
             // A cut deletes what its copy took, and a bare caret took nothing,
             // even inside an atom. Other edits at such a caret replace the atom.
             let widened = atom_expanded_selections(editable, origin == TextEditOrigin::Cut);
-            let original = widened
-                .as_ref()
-                .map(|widened| std::mem::replace(editable.state_mut(), widened.clone()));
+            let original = widened.map(|widened| std::mem::replace(editable.state_mut(), widened));
             if !editable.replace_selection(text) {
                 // Refused (a length limit, read-only): the carets stay carets.
                 // A staged change is committed even when the edit declines.

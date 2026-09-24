@@ -263,6 +263,11 @@ pub(super) struct TextHistories {
     /// lands before the write can witness it, so a commit leaves these to
     /// the write, which settles them when it finishes (see
     /// [`crate::AppContext::commit_editor_edit`]).
+    ///
+    /// A journaled edit of an editor made from within its own edit is not
+    /// supported, and nothing makes one: only the framework's composites
+    /// run follow-ups with the context during an edit, and none edits the
+    /// editor being edited.
     writing: Vec<StableNodeId>,
 }
 
@@ -504,11 +509,18 @@ impl crate::AppContext {
         // Whether or not the write reported an error: a follow-up that
         // failed after writing the editor still left text the journal did
         // not produce.
-        let world = self
+        let held = self
             .world
             .text_input(node)
-            .map(|input| (input.value_shared(), input.session().text().stamp()));
-        let Some((_, held)) = world.filter(|(shown, _)| *shown == after.value) else {
+            .filter(|input| {
+                // Borrowed, not cloned: the buffer's address first, the bytes
+                // only if it differs.
+                let (shown, edited) = (input.session().text().as_str(), after.value.as_str());
+                (shown.as_ptr() == edited.as_ptr() && shown.len() == edited.len())
+                    || shown == edited
+            })
+            .map(|input| input.session().text().stamp());
+        let Some(held) = held else {
             self.text_histories.forget(node);
             return written;
         };
@@ -1525,6 +1537,18 @@ mod editor_tests {
                 .value
                 .is_char_boundary(component.focus)
         );
+    }
+
+    #[test]
+    fn a_detached_editor_keeps_its_journal() {
+        let mut cx = AppContext::new();
+        let area = cx
+            .create_detached_component(document(), TextArea::new(""))
+            .unwrap();
+        assert!(cx.world().text_input(area.stable_id()).is_some());
+        assert!(cx.edit_text_area(area, 0..0, "a").unwrap());
+        assert!(cx.edit_text_area(area, 1..1, "b").unwrap());
+        assert!(cx.can_undo_text(area.stable_id()));
     }
 
     #[test]
