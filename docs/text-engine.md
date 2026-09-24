@@ -1176,8 +1176,8 @@ caret_geometry_queries          对保留几何的 caret 查询
 | 阶段 | 状态 |
 | --- | --- |
 | 1. 内部 fixture | `EditSession` + `EditorGeometry` 覆盖 Latin 输入删除、拼音组字提交、日文目标段、韩文字母组字、emoji / 肤色修饰删除、组合记号移动、连字内 caret、阿拉伯混排视觉移动 / affinity / 选区、换行多行选区、点击与拖选、组字中失焦、取消组字、剪贴板 |
-| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；文本与 composition 仍存在 `TextInputState` / `ImeComposition` 里（产品合同，Vue / JS 同样读写它们），没有换成 `EditSession`；Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 记入上面的编辑计数（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）各做一次与文本长度成正比的**块比较**以确认几何仍是这份文本（不 shape、不 layout，字节没变时段落一个不动、`revisions` 保留）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；#99 之后产品 `NanaTextShaper` 就是 `NanaTextEngineShaper` 的壳，测量与绘制同源，编辑器几何因此也走这条路 |
-| 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 合同，经 Runtime 生效 |
+| 2–4. TextInput / TextArea / 编辑器 | **语义委托 `nana-text`**：grapheme / word / 行导航、选区合法性、IME 删除周边（组字中保留 preedit 替换的选区）与宿主上报的 surrounding text 窗口（`clip_ime_surrounding`：放得下的选区完整上报，预算两侧互补）都走 `nana-text` 的规则；**存储是 `EditSession`**（#182，见「编辑器的存储：EditSession」）：Runtime 的 `SetTextInput` / `SetTextSelection` / `ReplaceTextSelection` / `SetIme` 都落在会话上，编辑计数直接取自会话（随下一趟文本 pass 上报）。**几何按宿主分阶段**：`NanaTextEngineShaper`（能绘制 retained layout 的引擎宿主）为每个编辑器节点保留一份 `EditorGeometry`，`text_position` / `text_caret_position` / `text_highlights` / 新增的 `TextShaper::text_hit_at_point` 与编辑器度量都由它回答；上下移动与翻页在支持点命中的宿主上用「caret 位置 + 末行位置 + 一次点命中」解析（目标 y 取相邻行内侧 0.5px，行高不同也不跳行），不再对位置探针二分。几何按节点保留：同一份文本快照的探针批次（`with_text_probes`）只同步一次；批次外的单个探针（上下移动、左右视觉移动、点击、每趟度量）凭文本的**印记**（`TextStamp`）确认几何仍是这份文本，一个字节都不比较（`EditorGeometry::sync_stamped`；没有印记的匿名文本才退回逐段比较，`editor_text_bytes_compared` 记下比较了多少）；探针一律按 presentation 的约束提问（`text_input_presentation_constraints`）——问别的约束等于在问编辑器没有被绘制的那份几何，保留几何的宿主还会为一个节点摆两份布局；编辑器的 shape 不经过 Runtime 的内容寻址 layout cache（`retains_measurement`）；`TextShaper::horizontal_offset` 按单行独立排版，不碰编辑器几何；#99 之后产品 `NanaTextShaper` 就是 `NanaTextEngineShaper` 的壳，测量与绘制同源，编辑器几何因此也走这条路 |
+| 5. Vue / NanaVue | 同一 `TextInputState` / `ImeComposition` 写入合同，经 Runtime 落到会话；读回的是会话的视图 |
 
 引擎宿主的保证（`crates/nana-ui-scene/tests/editable_text_node.rs`，走 `RuntimeDocument::flush`）：
 caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；在 30 段 TextArea 中间打一个字只新建
@@ -1232,40 +1232,53 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 组字期间一次 caret 移动都不会发生（`focused_text_editor` 在组字时返回 None），而组字
 **结束**留下的空 preedit 不算组字。
 
-`nana-text` 的 `EditSession` 在 Left/Right 且选区非空时会塌缩到选区的**视觉边缘**；Runtime 这条
-路仍是「从 focus 起步一格」（`moved_selection`）。两边的这条差别留在 IME 后端接 `EditSession`
-那一步一起收，不在本次改。Word/Line 意图按定义是逻辑的，垂直移动走自己的几何路径。
+选区非空、不带 Shift 时，Left/Right 把选区**收拢到屏幕上那一侧的边**，而不是从 focus 起步一格：
+规则只有一份，`nana_text::editable::collapse_edge`，`EditSession::move_caret` 与 Runtime 的探针路径
+同用——同一行上按两端 caret 的 x 决定（RTL 文本里左边是逻辑末尾），跨行或没有几何时按段落
+阅读顺序。secure / 空字段问不到几何，收拢到逻辑边。Word/Line 意图按定义是逻辑的，垂直移动走
+自己的几何路径。
 
-### 为什么文本还没搬进 EditSession
+### 编辑器的存储：EditSession（#182）
 
-Issue #96 的「IME 单一语义后端」目前只兑现了一半，而且是有意的：**规则**已经全部委托给
-`nana-text`（grapheme / word / 行导航、IME 删除周边与 surrounding window、caret 几何与命中、
-视觉序移动），**存储**仍在 `TextInputState` + `ImeComposition`。剩下的这一半不是补几行能收的，
-它要先定三件事：
+编辑器的 committed 文本、选区与 IME 组字**只存一份**，在 world 的 `EditSession` 里
+（`NodeStore.editors`，每个编辑器一个 `EditorRecord`）。#96 留下的三个前提这样定：
 
-1. **多光标**。`EditSession` 是单选区的；Runtime 支持 N 个光标同时编辑，`replace_selection` 是
-   一趟多点 splice。把编辑交给 session 就得先让 session 有多选区，或者接受 Runtime 继续在外面
-   remap 附加光标（现在就是这样）。
-2. **显示文本不只有 composition**。session 的显示文本 = committed + preedit；Runtime 画的那份
-   还叠了折叠摘要、inlay、secure 掩码。几何是按**画出来的那份**同步的，所以要么让 session 认识
-   这些产品概念（产品概念漏进 `nana-text`，不行），要么继续由 world 派生显示文本——那样 session
-   就只是 committed 文本 + 组字的权威，`EditorGeometry::sync_session` 的 revision 快路仍然用不上。
-3. **产品合同**。`TextInputState.value` 是 `pub String`，Vue / JS 直接读写；撤销日志按
-   `TextInputState` 快照存。存储换位置要么保留一份派生视图，要么动公开 API。
+1. **多光标进 `nana-text`。** `EditSession` 持有主选区 + 附加选区，规范化规则（排序、重叠 / 相接的
+   熔成一个正向选区、熔进主选区的仍是主选区）只有 `editable::normalize_selections` 一份，组件侧的
+   `TextInputState` 也调它。组字只挂主选区；提交时其余光标按 `remap_selection` 平移。自带变换逻辑
+   的宿主（Runtime 的逐光标行变换）把算好的多点编辑与落点交给 `EditSession::splice`，一次编辑、
+   一个 revision。
+2. **显示文本由 world 派生，身份靠印记。** 会话的显示文本 = committed + preedit（`display_text`）；
+   折叠摘要、inlay、secure 掩码是 Runtime 的叠加，不进 `nana-text`。每份文本带 `TextStamp`
+   （进程内唯一，字节变就换新的，克隆保留）：会话的快照、折叠 / inlay 视图、组字显示文本各自按
+   「文本印记 + 组字 revision + 折叠 + inlay」记忆化，一次变化建一次，所有消费者拿同一份。宿主的
+   `EditorGeometry::sync_stamped` 凭印记判定未变——批次外探针、光标移动、点击不比较一个字节
+   （`editable_text_node.rs` 的 `probing_an_unchanged_editor_compares_none_of_its_text` 钉住
+   `editor_text_bytes_compared == 0`）。
+3. **产品合同保留、换成共享值。** `TextValue`（`nana_text::SharedText`）是 Arc 缓冲 + 印记：
+   `TextContent.value`、`TextInputState.value`、`display_value`、a11y 的 `value`、场景 Text 图元、
+   `TextChanged.value` 都是它，克隆只是引用计数。`UiWorld::text_input` / `ime` 返回借用会话的
+   `TextInputView` / `ImeView`；`TextInputState` / `ImeComposition` 是写入合同（Vue / JS、应用、
+   `SetTextInput` / `SetIme`）与拥有型快照。
 
-所以这一项的下一步不是「改成 `EditSession`」，而是先挑一条：给 `nana-text` 的 session 加多选区，
-还是把 `TextContent.value` 换成 `Arc<str>`（顺带消掉每帧 3 处整值克隆并给探针一个天然身份）。
-两条都是独立的一块工作，不该混在 #96 的尾巴里做。
+组件（`TextInput` / `TextArea` / …）的 `state` 是会话文本的**共享句柄**：组件编辑写出新值（被共享
+的缓冲这时才复制一次），投影时会话直接收养这份缓冲（`EditSession::assign`，差分只算改动区间），
+之后两边指向同一份字节，投影按身份比较。组字只在会话里；「IME 挂着但 preedit 为空」是 Runtime
+的标记（不是组字，不挡光标与显示，只让提交等 IME 的 commit / cancel）。撤销日志仍按整份状态快照，
+但快照共享缓冲：每步的前后状态不再各复制一次文档。
+
+一次按键（310 KB 文档）从约 8 次整值复制（历史前后、`editor_state`、组件暂存、投影、校验、world
+镜像、`TextChanged`、presentation 三处）降为一次写时复制 + 一次差分；光标移动不复制文本。
 
 ### 本阶段没做的
 
 | 项 | 状态 |
 | --- | --- |
 | caret blink | Runtime 目前没有 blink；它属于 scene overlay 的可见性 / 不透明度（paint），不得推进任何文本 revision。`nana-text` 侧门禁已钉住「只查询几何」零文本工作 |
-| ~~Runtime 视觉序左右移动~~ **已接** | 见「视觉序的左右箭头」：`text_caret_visual_step` 探针 + `EditorGeometry::visual_move`，无几何时退回逻辑步进。选区非空时的塌缩端仍与 `EditSession` 不同 |
+| ~~Runtime 视觉序左右移动~~ **已接** | 见「视觉序的左右箭头」：`text_caret_visual_step` 探针 + `EditorGeometry::visual_move`，无几何时退回逻辑步进；选区非空时收拢到视觉边缘，与 `EditSession` 同一规则（#182） |
 | a11y composition | 现有 a11y 合同只有 value / selection / editable（caret 即 selection focus），AccessKit 没有 composition 范围，不伪造；字符级 geometry 同理 |
 | 局部 cluster splice | 不做；最小失效单位是段落 |
-| IME 语义后端换 `EditSession` | 规则已全部委托，存储没换；三个前提见上一节 |
+| ~~IME 语义后端换 `EditSession`~~ **已接**（#182） | 存储与语义都在会话里，见「编辑器的存储：EditSession」 |
 | 大文档存储 | 仍是 `String`，**基准跑完后确认不换**：310 KB 文档上一次编辑的 memmove 是整帧成本的 0.5%，见「大文档编辑基准」 |
 
 ## 性能与许可证收口（#99）
@@ -2452,13 +2465,13 @@ profile（`/usr/bin/sample`，8,000 行）定位到的按帧 O(文档) 项，按
 左右移动**：方向键现在要问一次几何探针（见「视觉序的左右箭头」），换来的是 BiDi 与换行处
 caret 不再跳位。
 
-还剩下的按帧 O(文档) 项（都已量到，等各自的前提）：
+当时剩下的按帧 O(文档) 项，#182 之后：
 
-| 项 | 8,000 行上的量级 | 为什么还没修 |
+| 项 | 8,000 行上的量级 | 现在 |
 | --- | ---: | --- |
-| a11y / scene primitive / extraction 的整值克隆 | 每帧 3 次 | `TextContent.value` 是 `String`；换成 `Arc<str>` 能一次消掉这三处克隆，并给探针一个天然的身份（指针相等），但那是跨 6 个 crate 的公开 API 变更 |
-| presentation 每帧重建显示文本 | 1 次整值克隆 + 一次 memcmp | 要么按 TextDirty 位缓存（漏一个失效就画出过期文本），要么等编辑路径改成传「编辑」而不是传整值 |
-| 撤销日志按整值快照 | 每步 2 份整值 | 表示法是明确的既有设计（`text_history.rs` 有说明）；已按字节封顶（8 MiB/编辑器，超了丢最老的步，单步再大也保留一步），所以 310 KB 文档不再最坏占到 124 MB |
+| a11y / scene primitive / extraction 的整值克隆 | 每帧 3 次 | **已消**：三处都是 `TextValue` 引用计数；提取层不再深拷贝 `text_input` / `ime`（只剩 `editable` 标记） |
+| presentation 每帧重建显示文本 | 1 次整值克隆 + 一次 memcmp | **已消**：显示文本是会话快照（无叠加时）或按印记记忆化的折叠 / 组字视图；presentation 的相等比较按身份 |
+| 撤销日志按整值快照 | 每步 2 份整值 | 快照共享缓冲，前后状态不再各复制一次；表示法仍是整份状态，字节预算不变 |
 
 ## Phase 0 明确没做的
 
