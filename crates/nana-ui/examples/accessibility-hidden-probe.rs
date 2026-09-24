@@ -76,7 +76,7 @@ impl SceneResourceProducer for RetryProducer {
         }
         Err("injected resource encoding failure".into())
     }
-    fn submitted(&self, _: &CustomRenderNode, _: &wgpu::Device, _: wgpu::SubmissionIndex) {
+    fn submitted(&self, _: &CustomRenderNode, _: &nana_ui::GpuSubmission) {
         println!(
             "{}",
             serde_json::json!({"event":"producer_submitted", "phase":self.phase.load(Ordering::SeqCst)})

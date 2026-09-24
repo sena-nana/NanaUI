@@ -742,7 +742,7 @@ mod tests {
             label: Some("nana-ui.motion.paint.encoder"),
         });
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit(Some(encoder.finish()));
     }
@@ -1055,7 +1055,7 @@ mod tests {
         );
 
         let (device, queue) = test_device();
-        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
         let pixels = paint_scene_rgba(
             &device,
             &queue,
@@ -1080,7 +1080,7 @@ mod tests {
     fn steady_frames_upload_descriptors_once() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (mut world, mut scene, _) = animated_opacity_scene(Duration::from_millis(16));
         paint_once(&device, &queue, &mut painter, &scene);
         let first = painter.last_motion_work();
@@ -1111,7 +1111,7 @@ mod tests {
     fn a_scene_mutation_alone_does_not_reupload_the_descriptor_table() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let spec = opacity_spec(
             MotionCurve::Easing(Easing::Linear),
             MotionTo::Value(MotionValue::Scalar(1.0)),
@@ -1148,7 +1148,7 @@ mod tests {
     fn a_painter_shared_by_windows_uploads_each_documents_descriptors() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let now = Duration::from_millis(200);
         // Two window documents with identical structure epochs but different
         // motion: one fades to opaque, the other stays transparent.
@@ -1204,7 +1204,7 @@ mod tests {
     fn surface_generation_rebuilds_descriptor_upload() {
         let (device, queue) = test_device();
         let format = wgpu::TextureFormat::Rgba8Unorm;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (world, mut scene, _) = animated_opacity_scene(Duration::from_millis(16));
         paint_once(&device, &queue, &mut painter, &scene);
         scene.set_surface_generation(scene.surface_generation().wrapping_add(1));

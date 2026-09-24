@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use nana_gpu::{FrameContext, GpuContext, GpuSubmission};
 use nana_ui_runtime::CustomRenderNode;
 use nana_ui_scene::{PrimitiveId, ScenePrimitiveKind, UiScene};
 
@@ -139,10 +140,19 @@ pub trait SceneGpuRenderer: fmt::Debug + Send + Sync + 'static {
     }
 }
 
+/// One preparation pass of a [`SceneResourceProducer`], recorded into the
+/// host's frame.
 pub struct SceneResourceEncodeContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub gpu: &'a GpuContext,
+    frame: &'a mut FrameContext,
+}
+
+impl SceneResourceEncodeContext<'_> {
+    /// The host frame this pass records into. Never submit it: the host does,
+    /// together with the UI paint.
+    pub fn frame(&mut self) -> &mut FrameContext {
+        self.frame
+    }
 }
 
 /// Advanced graph-scheduled offscreen on the HostTexture path.
@@ -160,13 +170,7 @@ pub trait SceneResourceProducer: fmt::Debug + Send + Sync + 'static {
         context: SceneResourceEncodeContext<'_>,
     ) -> Result<(), String>;
 
-    fn submitted(
-        &self,
-        _node: &CustomRenderNode,
-        _device: &wgpu::Device,
-        _submission: wgpu::SubmissionIndex,
-    ) {
-    }
+    fn submitted(&self, _node: &CustomRenderNode, _submission: &GpuSubmission) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,14 +214,13 @@ impl SceneResourceProducerRegistry {
     }
 
     /// Encode preparation into the host frame. No submission happens here.
-    /// Discard the encoder if this returns an error.
+    /// Drop the frame if this returns an error.
     pub fn encode_scene(
         &self,
         scene: &UiScene,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
+        frame: &mut FrameContext,
     ) -> Result<PreparedSceneResources, SceneResourceProduceError> {
+        let gpu = frame.gpu().clone();
         let plan = scene
             .frame_plan()
             .map_err(|error| SceneResourceProduceError {
@@ -239,9 +242,8 @@ impl SceneResourceProducerRegistry {
                 .encode(
                     node,
                     SceneResourceEncodeContext {
-                        device,
-                        queue,
-                        encoder,
+                        gpu: &gpu,
+                        frame: &mut *frame,
                     },
                 )
                 .map_err(|message| SceneResourceProduceError {
@@ -312,9 +314,9 @@ pub struct PreparedSceneResources {
 
 impl PreparedSceneResources {
     /// The host queued this encode. Hidden ticks call this without presenting.
-    pub fn submitted(self, device: &wgpu::Device, submission: wgpu::SubmissionIndex) {
+    pub fn submitted(self, submission: &GpuSubmission) {
         for (node, producer) in self.nodes {
-            producer.submitted(&node, device, submission.clone());
+            producer.submitted(&node, submission);
         }
     }
 }

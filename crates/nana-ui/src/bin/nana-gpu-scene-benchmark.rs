@@ -610,8 +610,13 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
     let renderers: Option<SceneGpuRendererRegistry> =
         (params.node_count("gpu-view") > 0).then(default_scene_gpu_renderers);
 
-    let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
-    let target = color_target(&device, params.viewport[0], params.viewport[1]);
+    let mut painter = SceneWgpuPainter::new(&gpu, __framework::format_from_wgpu(FORMAT));
+    let target = __framework::render_target(
+        &gpu,
+        color_target(&device, params.viewport[0], params.viewport[1]),
+        FORMAT,
+        params.viewport,
+    );
     let paint_viewport = ScenePaintViewport {
         logical_size: [params.viewport[0] as f32, params.viewport[1] as f32],
         physical_size: params.viewport,
@@ -677,24 +682,23 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         for (index, preview) in previews.iter().enumerate() {
             preview.write_uniform(&queue, frame.wrapping_add(index) as u32);
         }
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("nana-gpu-scene-benchmark"),
-        });
+        let mut recording = gpu.begin_frame("nana-gpu-scene-benchmark");
+        let encoder = __framework::encoder(&mut recording);
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 0);
+            probe.stamp(encoder, 0);
         }
         for preview in &previews {
-            preview.encode(&mut encoder);
+            preview.encode(encoder);
         }
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 1);
+            probe.stamp(encoder, 1);
         }
         let prepare_started = Instant::now();
         let (_, paint_allocations) = allocations::measure(args.allocation_counts, || {
             painter
                 .paint(
                     document.scene(),
-                    &mut encoder,
+                    &mut recording,
                     &target,
                     paint_viewport,
                     Some(&textures),
@@ -704,13 +708,12 @@ fn run_ui_only(scenario: ScenarioFile, args: &Args) -> Report {
         });
         let prepare_elapsed = prepare_started.elapsed() + runtime_elapsed;
         if let Some(probe) = &queries {
-            probe.stamp(&mut encoder, 2);
-            probe.resolve(&mut encoder);
+            let encoder = __framework::encoder(&mut recording);
+            probe.stamp(encoder, 2);
+            probe.resolve(encoder);
         }
-        let submit_started = Instant::now();
-        queue.submit([encoder.finish()]);
-        let submit_elapsed = submit_started.elapsed();
-        painter.record_submit(submit_elapsed);
+        let submission = recording.submit();
+        painter.record_submit(&submission);
         let timings = painter
             .last_gpu_timings()
             .expect("encoded GPU scene frame must time stages");

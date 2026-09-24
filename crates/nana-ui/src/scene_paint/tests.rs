@@ -143,7 +143,13 @@ impl SceneGpuRenderer for FillClipRenderer {
 
 #[test]
 fn empty_scene_validates() {
-    let resolved = validate_scene(&UiScene::new(), None, None).unwrap();
+    let resolved = validate_scene(
+        &UiScene::new(),
+        None,
+        None,
+        crate::test_gpu::context().generation(),
+    )
+    .unwrap();
     assert!(resolved.resources.is_empty());
     assert!(resolved.renderers.is_empty());
     assert!(resolved.cacheable);
@@ -178,11 +184,16 @@ fn validate_scene_rejects_unregistered_host_texture() {
         work.render_removals,
     );
     assert!(matches!(
-        validate_scene(&scene, None, None),
+        validate_scene(&scene, None, None, crate::test_gpu::context().generation()),
         Err(ScenePaintError::CustomPrimitive(_))
     ));
     assert!(matches!(
-        validate_scene(&scene, Some(&HostTextureRegistry::new()), None),
+        validate_scene(
+            &scene,
+            Some(&HostTextureRegistry::new()),
+            None,
+            crate::test_gpu::context().generation()
+        ),
         Err(ScenePaintError::MissingCustomResource(_))
     ));
 }
@@ -191,7 +202,7 @@ fn validate_scene_rejects_unregistered_host_texture() {
 fn paint_records_gpu_work_only_after_encode_and_submit() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     assert!(painter.last_gpu_work().is_none());
 
     let skipped = ScenePaintViewport {
@@ -208,7 +219,7 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
         label: Some("nana-ui gpu work skip"),
     });
     painter
-        .paint(&UiScene::new(), &mut encoder, &target, skipped, None, None)
+        .paint_encoder(&UiScene::new(), &mut encoder, &target, skipped, None, None)
         .unwrap();
     assert!(painter.last_gpu_work().is_none());
     assert!(painter.last_gpu_timings().is_none());
@@ -227,7 +238,7 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
         label: Some("nana-ui gpu work encode"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target,
@@ -249,9 +260,12 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
         .last_gpu_timings()
         .expect("encoded frame times GPU stages");
     assert!(timings.submit.is_zero());
-    let submit_started = std::time::Instant::now();
     queue.submit([encoder.finish()]);
-    painter.record_submit(submit_started.elapsed());
+    painter.record_submit(
+        &crate::test_gpu::context()
+            .begin_frame("record submit")
+            .submit(),
+    );
     let submitted = painter.last_gpu_timings().unwrap();
     assert!(
         !submitted.encode.is_zero()
@@ -268,7 +282,7 @@ fn paint_records_gpu_work_only_after_encode_and_submit() {
 fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = labeled_selected_button_scene();
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -286,7 +300,7 @@ fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
             label: Some("nana-ui shape cache test"),
         });
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit([encoder.finish()]);
         readback_rgba(
@@ -332,7 +346,7 @@ fn text_shape_cache_hits_on_repaint_with_identical_pixels() {
 fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = labeled_selected_button_scene();
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -350,7 +364,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
             label: Some("nana-ui unchanged repaint"),
         });
         painter
-            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit([encoder.finish()]);
         readback_rgba(
@@ -414,7 +428,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
         label: Some("nana-ui changed repaint"),
     });
     painter
-        .paint(&changed, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&changed, &mut encoder, &view, viewport, None, None)
         .unwrap();
     queue.submit([encoder.finish()]);
     let repainted = painter
@@ -442,7 +456,7 @@ fn repaint_of_an_unchanged_scene_reblits_dest_without_rebatching() {
 fn paint_draws_node_inserted_by_in_place_apply_delta() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [colored_quad_node(
@@ -472,7 +486,7 @@ fn paint_draws_node_inserted_by_in_place_apply_delta() {
             label: Some("nana-ui in-place delta paint"),
         });
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         readback_rgba(&device, &queue, encoder, &texture, 64, 64)
     };
@@ -565,7 +579,7 @@ fn graph_canvas_stroke_node(
 fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let background = [0.0, 0.0, 1.0, 1.0];
     scene.apply_delta(
@@ -599,7 +613,7 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
         label: Some("nana-ui articulated stroke"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let midline = pixel(&pixels, 64, 32, 32);
@@ -630,7 +644,7 @@ fn graph_canvas_stroke_paints_capsule_coverage_on_gpu() {
 fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -654,7 +668,7 @@ fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
         label: Some("nana-ui stroke msaa coverage"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -688,7 +702,7 @@ fn graph_canvas_stroke_antialiases_silhouette_on_msaa_dest() {
 fn graph_canvas_stroke_paints_round_end_caps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -739,7 +753,7 @@ fn graph_canvas_stroke_paints_round_end_caps_on_gpu() {
 fn tapered_stroke_paints_uneven_capsule_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -800,7 +814,7 @@ fn tapered_stroke_paints_uneven_capsule_on_gpu() {
 fn non_uniform_affine_stroke_covers_stretched_ellipse_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut canvas = graph_canvas_stroke_node(
         1,
@@ -882,7 +896,7 @@ fn non_uniform_affine_stroke_covers_stretched_ellipse_on_gpu() {
 fn butt_stroke_cuts_round_end_caps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -938,7 +952,7 @@ fn butt_stroke_cuts_round_end_caps_on_gpu() {
 fn square_stroke_extends_flat_caps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -989,7 +1003,7 @@ fn square_stroke_extends_flat_caps_on_gpu() {
 fn dashed_stroke_skips_gaps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -1046,7 +1060,7 @@ fn dashed_stroke_skips_gaps_on_gpu() {
 fn sdf_dashed_border_skips_gaps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [extracted_div(
@@ -1093,7 +1107,7 @@ fn sdf_dashed_border_skips_gaps_on_gpu() {
 fn sdf_dotted_border_skips_gaps_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [extracted_div(
@@ -1138,7 +1152,7 @@ fn sdf_dotted_border_skips_gaps_on_gpu() {
 fn per_point_stroke_colors_paint_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -1201,7 +1215,7 @@ fn per_point_stroke_colors_paint_on_gpu() {
 fn graph_canvas_diagonal_stroke_paints_capsule_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [graph_canvas_stroke_node(
@@ -1242,7 +1256,7 @@ fn graph_canvas_diagonal_stroke_paints_capsule_on_gpu() {
 fn graph_canvas_stroke_respects_ancestor_overflow_clip_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut canvas = graph_canvas_stroke_node(
         3,
@@ -1293,7 +1307,7 @@ fn graph_canvas_stroke_respects_ancestor_overflow_clip_on_gpu() {
 fn spinner_ticks_paint_capsule_coverage_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut spinner = extracted_div(
         2,
@@ -1355,7 +1369,7 @@ fn spinner_ticks_paint_capsule_coverage_on_gpu() {
 fn time_series_line_paints_capsule_coverage_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1439,7 +1453,7 @@ fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
     // Compare cold uploads. Reusing the previous scene's buffers measures only
     // changed byte ranges, so subtracting a cold fill baseline is not valid.
     let cold_work = |scene: UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         encode_scene_gpu_work(&device, &queue, &mut painter, &scene)
     };
     let fill = cold_work(graph_canvas_scene(Vec::new()));
@@ -1484,7 +1498,7 @@ fn graph_canvas_stroke_gpu_upload_scales_with_segment_count() {
 fn graph_canvas_stroke_skips_identical_instance_upload() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = graph_canvas_scene(l_stroke_edges(16));
     let first = encode_scene_gpu_work(&device, &queue, &mut painter, &scene);
     let second = encode_scene_gpu_work(&device, &queue, &mut painter, &scene.clone());
@@ -1548,7 +1562,7 @@ pub(super) fn paint_scene_rgba(
         label: Some("nana-ui articulated stroke probe"),
     });
     painter
-        .paint(scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(
         device,
@@ -1583,7 +1597,7 @@ fn encode_scene_gpu_work(
         label: Some("nana-ui articulated stroke work"),
     });
     painter
-        .paint(scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     queue.submit([encoder.finish()]);
     painter
@@ -1595,7 +1609,7 @@ fn encode_scene_gpu_work(
 fn rotated_clip_does_not_paint_sibling_in_aabb_outside_rect() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1621,7 +1635,7 @@ fn rotated_clip_does_not_paint_sibling_in_aabb_outside_rect() {
         label: Some("nana-ui rotated clip sibling"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let sibling = pixel(&pixels, 64, probe_x, probe_y);
@@ -1641,7 +1655,7 @@ fn rotated_clip_does_not_paint_sibling_in_aabb_outside_rect() {
 fn rotated_clip_does_not_paint_text_sibling_in_aabb_outside_rect() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1666,7 +1680,7 @@ fn rotated_clip_does_not_paint_text_sibling_in_aabb_outside_rect() {
         label: Some("nana-ui rotated clip text sibling"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let sibling = pixel(&pixels, 64, probe_x, probe_y);
@@ -1686,7 +1700,7 @@ fn rotated_clip_does_not_paint_text_sibling_in_aabb_outside_rect() {
 fn rotated_clip_does_not_paint_host_texture_sibling_in_aabb_outside_rect() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1713,7 +1727,7 @@ fn rotated_clip_does_not_paint_host_texture_sibling_in_aabb_outside_rect() {
         label: Some("nana-ui rotated clip host texture sibling"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -1741,7 +1755,7 @@ fn rotated_clip_does_not_paint_host_texture_sibling_in_aabb_outside_rect() {
 fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut inner = overflow_parent(3, &[4], 0.0, 0.0, 64.0, 64.0, None);
     inner.parent = Some(StableNodeId::new(2).unwrap());
@@ -1792,7 +1806,7 @@ fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
         label: Some("nana-ui nested rotated clip"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -1819,7 +1833,7 @@ fn nested_rotated_clips_reject_quad_inside_inner_outside_outer() {
 fn rotated_clip_does_not_paint_custom_in_aabb_outside_rect() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1849,7 +1863,7 @@ fn rotated_clip_does_not_paint_custom_in_aabb_outside_rect() {
         label: Some("nana-ui rotated clip custom"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &view,
@@ -1942,7 +1956,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -1965,7 +1979,7 @@ fn axis_aligned_clips_do_not_dest_wrap() {
         label: Some("nana-ui axis-aligned clip no dest wrap"),
     });
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -2055,7 +2069,7 @@ fn mesh_polygon_clip_stays_in_gpu_clip_not_dest() {
 fn translucent_parent_composites_overlapping_children_as_a_group() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -2091,7 +2105,7 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
         label: Some("nana-ui group opacity paint"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -2128,7 +2142,7 @@ fn translucent_parent_composites_overlapping_children_as_a_group() {
 fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let shadow_srgb = [0.5, 0.5, 0.5, 1.0];
     scene.apply_delta(
@@ -2180,7 +2194,7 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
         label: Some("nana-ui drop-shadow dest-group paint"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -2220,7 +2234,7 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
 fn drop_shadow_dest_group_follows_scene_origin() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [extracted_div(
@@ -2266,7 +2280,7 @@ fn drop_shadow_dest_group_follows_scene_origin() {
         label: Some("nana-ui drop-shadow scene origin"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let fill = pixel(&pixels, 64, 16, 16);
@@ -2286,7 +2300,7 @@ fn drop_shadow_dest_group_follows_scene_origin() {
 fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [extracted_div(
@@ -2371,7 +2385,7 @@ fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
 fn host_texture_paints_in_document_order_with_runtime_button() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (scene, registry, texture, overlay_fill) =
         runtime_button_over_host_texture_scene(&device, &queue, format);
     assert!(
@@ -2392,7 +2406,7 @@ fn host_texture_paints_in_document_order_with_runtime_button() {
         label: Some("nana-ui runtime button order paint"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -2438,7 +2452,7 @@ fn host_texture_paints_in_document_order_with_runtime_button() {
 fn two_host_texture_layers_paint_with_opaque_chrome_between() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (scene, registry, layers) =
         two_host_texture_layers_with_chrome_scene(&device, &queue, format);
     let (target, target_view) = test_copy_target(&device, format, 64, 64);
@@ -2455,7 +2469,7 @@ fn two_host_texture_layers_paint_with_opaque_chrome_between() {
         label: Some("nana-ui layered host texture paint"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -2493,7 +2507,7 @@ fn two_host_texture_layers_paint_with_opaque_chrome_between() {
 fn geometry_and_text_keep_msaa_then_text_after_resolve() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = labeled_selected_button_scene();
     let has_text = scene
         .primitives()
@@ -2523,7 +2537,7 @@ fn geometry_and_text_keep_msaa_then_text_after_resolve() {
         label: Some("nana-ui msaa then text"),
     });
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -2551,7 +2565,7 @@ fn geometry_and_text_keep_msaa_then_text_after_resolve() {
 fn paint_accepts_rotation_and_letter_spacing() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let button = context
@@ -2581,7 +2595,8 @@ fn paint_accepts_rotation_and_letter_spacing() {
     layout.set_style(button.stable_id(), style);
     context.commit_mutations(layout).unwrap();
     let scene = commit_scene(&mut context);
-    validate_scene(&scene, None, None).expect("rotation and tracking must validate");
+    validate_scene(&scene, None, None, crate::test_gpu::context().generation())
+        .expect("rotation and tracking must validate");
     let target = test_target(&device, format, 64, 64);
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -2596,7 +2611,7 @@ fn paint_accepts_rotation_and_letter_spacing() {
         label: Some("nana-ui affine tracking paint"),
     });
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .expect("supported affine and tracking must paint");
     queue.submit([encoder.finish()]);
 }
@@ -2605,7 +2620,7 @@ fn paint_accepts_rotation_and_letter_spacing() {
 fn letter_spacing_changes_painted_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let tight = labeled_selected_button_scene();
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
@@ -2642,7 +2657,7 @@ fn letter_spacing_changes_painted_pixels() {
             label: Some("nana-ui tracking paint"),
         });
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         readback_rgba(&device, &queue, encoder, &texture, 64, 64)
     };
@@ -2662,7 +2677,7 @@ fn painted_extent_reports_the_fitted_device_pixels_not_the_layout_box() {
     // 放进 64x64 的盒子里,缩放因子还要再乘一遍。
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let preview = context
@@ -2693,7 +2708,7 @@ fn painted_extent_reports_the_fitted_device_pixels_not_the_layout_box() {
         label: Some("nana-ui host texture painted extent"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -2720,7 +2735,7 @@ fn painted_extent_reports_the_fitted_device_pixels_not_the_layout_box() {
 fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut context = AppContext::new();
     let document = DocumentId::new(1).unwrap();
     let preview = context
@@ -2751,7 +2766,7 @@ fn host_texture_rounded_clip_matches_sibling_quad_not_fitted_dest() {
         label: Some("nana-ui host texture rounded clip"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -2846,7 +2861,7 @@ fn beside_a_gpu_view(
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let painter = SceneWgpuPainter::new(&device, &queue, format);
+    let painter = SceneWgpuPainter::for_test(format);
     let mut registry = SceneGpuRendererRegistry::new();
     registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
     let mut view = host_texture_child(2, 1, 0.0, 0.0, 32.0, 32.0, "0");
@@ -2876,7 +2891,7 @@ fn beside_a_gpu_view(
         let before = painter.text_glyph_counters();
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 &scene,
                 &mut encoder,
                 &target,
@@ -3056,7 +3071,7 @@ fn rotated_label_scene() -> UiScene {
 fn text_counters_see_every_window_and_survive_one_closing() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = rotated_label_scene();
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -3072,7 +3087,7 @@ fn text_counters_see_every_window_and_survive_one_closing() {
     let paint = |painter: &mut SceneWgpuPainter, id: u64, view: &wgpu::TextureView| {
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint_target(
+            .paint_target_encoder(
                 RenderTargetId(id),
                 &scene.clone(),
                 &mut encoder,
@@ -3125,7 +3140,7 @@ fn text_counters_see_every_window_and_survive_one_closing() {
 fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scene = rotated_label_scene();
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -3143,7 +3158,7 @@ fn affine_text_allocates_no_gpu_resources_across_repaints_with_identical_pixels(
             label: Some("nana-ui affine cache test"),
         });
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit([encoder.finish()]);
         readback_rgba(
@@ -4153,7 +4168,7 @@ fn frost_quad_node_with_fill_and_transform(
 fn backdrop_blurs_content_behind_frost_panel() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let frost = nana_ui_core::BackdropFilter {
         blur_radius: 8.0,
@@ -4181,7 +4196,7 @@ fn backdrop_blurs_content_behind_frost_panel() {
         label: Some("nana-ui frost blur split"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 128);
     let center = pixel(&pixels, 256, 64, 64);
@@ -4201,7 +4216,7 @@ fn backdrop_blurs_content_behind_frost_panel() {
 fn backdrop_two_frost_panels_use_independent_regions() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let desaturate = nana_ui_core::BackdropFilter {
         blur_radius: 4.0,
@@ -4230,7 +4245,7 @@ fn backdrop_two_frost_panels_use_independent_regions() {
         label: Some("nana-ui frost independent regions"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 64);
     let left = pixel(&pixels, 256, 32, 32);
@@ -4254,7 +4269,7 @@ fn backdrop_two_frost_panels_use_independent_regions() {
 fn backdrop_first_dest_command_survives_transparent_quad() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let desaturate = nana_ui_core::BackdropFilter {
         blur_radius: 6.0,
@@ -4281,7 +4296,7 @@ fn backdrop_first_dest_command_survives_transparent_quad() {
         label: Some("nana-ui frost survives transparent quad"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let center = pixel(&pixels, 64, 32, 32);
@@ -4301,9 +4316,9 @@ fn backdrop_first_dest_command_survives_transparent_quad() {
 
 #[test]
 fn backdrop_filter_forces_sample_count_one_dest_path() {
-    let (device, queue) = test_device();
+    let (device, _queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [frost_quad_node_with_fill(
@@ -4334,7 +4349,7 @@ fn backdrop_filter_forces_sample_count_one_dest_path() {
         label: Some("nana-ui frost dest path"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -4351,7 +4366,7 @@ fn backdrop_filter_forces_sample_count_one_dest_path() {
 fn inset_round_clip_corners_are_transparent_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -4374,7 +4389,7 @@ fn inset_round_clip_corners_are_transparent_on_gpu() {
         label: Some("nana-ui inset round clip"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let corner = pixel(&pixels, 64, 2, 2);
@@ -4395,7 +4410,7 @@ fn inset_round_clip_corners_are_transparent_on_gpu() {
 fn circle_clip_path_cuts_child_corners_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -4418,7 +4433,7 @@ fn circle_clip_path_cuts_child_corners_on_gpu() {
         label: Some("nana-ui circle clip"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let corner = pixel(&pixels, 64, 2, 2);
@@ -4438,7 +4453,7 @@ fn circle_clip_path_cuts_child_corners_on_gpu() {
 fn polygon_clip_path_cuts_child_corners_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -4474,7 +4489,7 @@ fn polygon_clip_path_cuts_child_corners_on_gpu() {
         label: Some("nana-ui polygon ancestor clip"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let lower_left = pixel(&pixels, 64, 4, 60);
@@ -4507,7 +4522,7 @@ fn perspective_rotate_y_paints_trapezoid_on_gpu() {
     Arc::make_mut(&mut node.source_style.layout).transform_3d = Some(mat);
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta([node], []);
     let viewport = ScenePaintViewport {
@@ -4524,7 +4539,7 @@ fn perspective_rotate_y_paints_trapezoid_on_gpu() {
         label: Some("nana-ui perspective rotateY trapezoid"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .expect("planar 3D must paint in the existing quad pass");
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 256, 160);
     let pivoted = mat.around_origin(x, y, width * 0.5, height * 0.5);
@@ -4565,7 +4580,7 @@ fn painted_column_span(pixels: &[u8], width: u32, height: u32, x: u32) -> u32 {
 fn rotated_inset_round_clip_keeps_corner_radius_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let k = std::f32::consts::FRAC_1_SQRT_2;
     scene.apply_delta(
@@ -4616,7 +4631,7 @@ fn rotated_inset_round_clip_keeps_corner_radius_on_gpu() {
         label: Some("nana-ui rotated inset round clip"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 96, 96);
     let cutlet = pixel(&pixels, 96, 48, 8);
@@ -4636,7 +4651,7 @@ fn rotated_inset_round_clip_keeps_corner_radius_on_gpu() {
 fn host_texture_under_inset_round_ancestor_clips_corners() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [
@@ -4661,7 +4676,7 @@ fn host_texture_under_inset_round_ancestor_clips_corners() {
         label: Some("nana-ui host texture inset round ancestor"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -4684,7 +4699,7 @@ fn host_texture_under_inset_round_ancestor_clips_corners() {
 fn rotated_backdrop_filter_mixes_dest_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let k = std::f32::consts::FRAC_1_SQRT_2;
     let frost = nana_ui_core::BackdropFilter {
@@ -4728,7 +4743,7 @@ fn rotated_backdrop_filter_mixes_dest_on_gpu() {
         label: Some("nana-ui rotated frost"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let counts = painter
         .last_dest_pass_counts
@@ -4759,7 +4774,7 @@ fn rotated_backdrop_filter_mixes_dest_on_gpu() {
 fn scrolled_backdrop_filter_samples_where_the_quad_is_drawn() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let mut scroller = overflow_parent(2, &[3], 0.0, 0.0, 64.0, 64.0, None);
     scroller.scroll_offset = nana_ui_runtime::ScrollOffset { x: 0.0, y: 24.0 };
@@ -4811,7 +4826,7 @@ fn scrolled_backdrop_filter_samples_where_the_quad_is_drawn() {
 fn frost_under_ancestor_polygon_clips_outside_triangle_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let frost = nana_ui_core::BackdropFilter {
         blur_radius: 8.0,
@@ -4839,7 +4854,7 @@ fn frost_under_ancestor_polygon_clips_outside_triangle_on_gpu() {
         label: Some("nana-ui frost ancestor polygon"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let inside = pixel(&pixels, 64, 32, 24);
@@ -4859,7 +4874,7 @@ fn frost_under_ancestor_polygon_clips_outside_triangle_on_gpu() {
 fn gradient_white_to_transparent_source_over_red() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let gradient_surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
@@ -4908,7 +4923,7 @@ fn gradient_white_to_transparent_source_over_red() {
         label: Some("nana-ui gradient source-over"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let center = pixel(&pixels, 64, 32, 32);
@@ -4923,7 +4938,7 @@ fn gradient_white_to_transparent_source_over_red() {
 fn mask_linear_fade_scales_rgb_with_alpha() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
@@ -4993,7 +5008,7 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
         label: Some("nana-ui mask fade"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let left = pixel(&pixels, 64, 4, 32);
@@ -5013,7 +5028,7 @@ fn mask_linear_fade_scales_rgb_with_alpha() {
 fn host_texture_mask_linear_fade_samples_in_document_order() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut node = extracted_div(
         1,
         &[],
@@ -5073,7 +5088,7 @@ fn host_texture_mask_linear_fade_samples_in_document_order() {
         label: Some("nana-ui host texture mask fade"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -5122,7 +5137,7 @@ fn alpha_split_mask_png_data_url() -> String {
 fn mask_url_alpha_scales_quad_in_document_order() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -5163,7 +5178,7 @@ fn mask_url_alpha_scales_quad_in_document_order() {
         label: Some("nana-ui mask url alpha"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let left = pixel(&pixels, 64, 4, 32);
@@ -5192,7 +5207,7 @@ fn async_host_texture_mask_rebinds_after_image_completion() {
 fn check_host_texture_url_mask(remote: bool) {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let mask = alpha_split_mask_png_data_url();
     let server = remote.then(|| {
@@ -5243,7 +5258,7 @@ fn check_host_texture_url_mask(remote: bool) {
         label: Some("nana-ui host texture mask url"),
     });
     painter
-        .paint(
+        .paint_encoder(
             &scene,
             &mut encoder,
             &target_view,
@@ -5266,7 +5281,7 @@ fn check_host_texture_url_mask(remote: bool) {
                 .expect("every pending image fetch wakes the painter");
             encoder = device.create_command_encoder(&Default::default());
             painter
-                .paint(
+                .paint_encoder(
                     &scene,
                     &mut encoder,
                     &target_view,
@@ -5299,7 +5314,7 @@ fn check_host_texture_url_mask(remote: bool) {
 fn mask_url_unloadable_is_ignored_not_gradient() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -5342,7 +5357,7 @@ fn mask_url_unloadable_is_ignored_not_gradient() {
         label: Some("nana-ui mask url ignored"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let left = pixel(&pixels, 64, 4, 32);
@@ -5362,7 +5377,7 @@ fn mask_url_unloadable_is_ignored_not_gradient() {
 fn mask_linear_six_stops_uses_stop_five_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let masked_surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -5433,7 +5448,7 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
         label: Some("nana-ui six-stop mask"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let upper = pixel(&pixels, 64, 32, 8);
@@ -5453,7 +5468,7 @@ fn mask_linear_six_stops_uses_stop_five_on_gpu() {
 fn radial_gradient_center_differs_from_linear_edge() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let radial = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Radial(nana_ui_core::RadialGradient {
@@ -5519,7 +5534,7 @@ fn radial_gradient_center_differs_from_linear_edge() {
         label: Some("nana-ui radial gradient"),
     });
     painter
-        .paint(&scene, &mut encoder, &radial_view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &radial_view, viewport, None, None)
         .unwrap();
     let radial_pixels = readback_rgba(&device, &queue, encoder, &radial_tex, 64, 64);
     let radial_center = pixel(&radial_pixels, 64, 32, 32);
@@ -5543,7 +5558,7 @@ fn radial_gradient_center_differs_from_linear_edge() {
         label: Some("nana-ui linear gradient"),
     });
     painter
-        .paint(&scene, &mut encoder, &linear_view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &linear_view, viewport, None, None)
         .unwrap();
     let linear_pixels = readback_rgba(&device, &queue, encoder, &linear_tex, 64, 64);
     let linear_left = pixel(&linear_pixels, 64, 4, 32);
@@ -5573,7 +5588,7 @@ fn radial_gradient_center_differs_from_linear_edge() {
 fn linear_gradient_five_stops_uses_stop_five_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::Gradient(
             nana_ui_core::CssGradient::Linear(nana_ui_core::LinearGradient {
@@ -5635,7 +5650,7 @@ fn linear_gradient_five_stops_uses_stop_five_on_gpu() {
         label: Some("nana-ui five-stop gradient"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     let upper = pixel(&pixels, 64, 32, 8);
@@ -5675,7 +5690,7 @@ fn paint_url_quad_and_sample_center(
 ) -> [u8; 4] {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     painter.set_resource_fetch_host(fetch_host);
     let surface = nana_ui_scene::QuadSurfacePaint {
         background_image: Some(nana_ui_core::BackgroundImage::url_with_fit(
@@ -5711,7 +5726,7 @@ fn paint_url_quad_and_sample_center(
         label: Some("nana-ui url png"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     queue.submit([encoder.finish()]);
     let deadline = Instant::now() + std::time::Duration::from_secs(5);
@@ -5720,7 +5735,7 @@ fn paint_url_quad_and_sample_center(
         std::thread::sleep(std::time::Duration::from_millis(5));
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(&scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         queue.submit([encoder.finish()]);
     }
@@ -5743,7 +5758,7 @@ fn closing_a_window_cancels_its_image_requests_and_releases_its_fetch_host() {
     let released = Arc::downgrade(&closing);
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [paint_surface_quad_node(
@@ -5777,7 +5792,7 @@ fn closing_a_window_cancels_its_image_requests_and_releases_its_fetch_host() {
         painter.set_resource_fetch_host(host);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint_target(
+            .paint_target_encoder(
                 RenderTargetId(id),
                 &scene,
                 &mut encoder,
@@ -5867,7 +5882,7 @@ fn url_images_go_only_through_the_fetch_host_of_the_document_being_painted() {
     let permissive = RecordingFetchHost::new(super::image_url::loopback_fetch_host());
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [paint_surface_quad_node(
@@ -5907,7 +5922,7 @@ fn url_images_go_only_through_the_fetch_host_of_the_document_being_painted() {
             painter.set_resource_fetch_host(Some(host.clone()));
             let mut encoder = device.create_command_encoder(&Default::default());
             painter
-                .paint_target(
+                .paint_target_encoder(
                     RenderTargetId(*id),
                     &scene,
                     &mut encoder,
@@ -6052,7 +6067,7 @@ fn more_http_images_than_fetch_slots_eventually_paint() {
     let (_, path) = blue_tile_fixture_png();
     let server = LocalPngServer::serve(std::fs::read(path).unwrap());
     let (device, queue) = test_device();
-    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
     painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = std::sync::mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
@@ -6150,7 +6165,7 @@ fn slow_http_image_returns_before_response_and_invalidates_cached_dest_on_comple
         stream.write_all(&png).unwrap();
     });
     let (device, queue) = test_device();
-    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
     painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
@@ -6249,7 +6264,7 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     painter.set_resource_fetch_host(Some(super::image_url::loopback_fetch_host()));
     let (wake, awoken) = mpsc::channel();
     painter.set_image_waker(Arc::new(move || {
@@ -6288,7 +6303,7 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
     for (id, target) in [(1, &first_view), (2, &second_view)] {
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint_target(
+            .paint_target_encoder(
                 RenderTargetId(id),
                 &scene,
                 &mut encoder,
@@ -6309,7 +6324,7 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
 
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint_target(
+        .paint_target_encoder(
             RenderTargetId(1),
             &scene,
             &mut encoder,
@@ -6324,7 +6339,7 @@ fn async_http_image_rebinds_each_render_target_after_shared_completion() {
 
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint_target(
+        .paint_target_encoder(
             RenderTargetId(2),
             &scene,
             &mut encoder,
@@ -6378,7 +6393,7 @@ fn paint_surface_sample(
 ) -> [u8; 4] {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [paint_surface_quad_node(
@@ -6400,7 +6415,7 @@ fn paint_surface_sample(
         label: Some("nana-ui image layer png"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, physical[0], physical[1]);
     let sample = pixel(&pixels, physical[0], sample_x, sample_y);
@@ -6730,7 +6745,7 @@ fn paint_layout_sample(
     let fill = layout.background.unwrap_or([0.0, 0.0, 0.0, 1.0]);
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         [extracted_div(
@@ -6760,7 +6775,7 @@ fn paint_layout_sample(
         label: Some("nana-ui layout sample"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, physical[0], physical[1]);
     let sample = pixel(&pixels, physical[0], sample_x, sample_y);
@@ -6974,7 +6989,7 @@ fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
     let mut node = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "live");
     node.parent = None;
     scene.apply_delta([node], []);
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (texture, target) = test_copy_target(&device, format, 64, 64);
     let viewport = ScenePaintViewport {
         logical_size: [64.0, 64.0],
@@ -6988,7 +7003,7 @@ fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
     let paint = |painter: &mut SceneWgpuPainter| {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         painter
-            .paint(
+            .paint_encoder(
                 &scene,
                 &mut encoder,
                 &target,
@@ -7031,7 +7046,7 @@ fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
     registry.remove("live");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     assert!(matches!(
-        painter.paint(
+        painter.paint_encoder(
             &scene,
             &mut encoder,
             &target,
@@ -7049,7 +7064,7 @@ fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
 fn same_format_targets_retain_independent_composition() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut red = UiScene::new();
     red.apply_delta(
         [colored_quad_node(
@@ -7092,7 +7107,7 @@ fn same_format_targets_retain_independent_composition() {
     ] {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         painter
-            .paint_target(
+            .paint_target_encoder(
                 RenderTargetId(id),
                 scene,
                 &mut encoder,
@@ -7115,7 +7130,7 @@ fn same_format_targets_retain_independent_composition() {
 fn local_color_update_uploads_changed_ranges_and_paints_latest_pixels() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut scene = UiScene::new();
     scene.apply_delta(
         (1..=100).map(|id| colored_quad_node(id, 0.0, 0.0, 64.0, 64.0, [0.0, 1.0, 0.0, 1.0])),
@@ -7133,7 +7148,7 @@ fn local_color_update_uploads_changed_ranges_and_paints_latest_pixels() {
     };
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     assert!(is_green_slot(pixel(&pixels, 64, 32, 32)));
@@ -7151,7 +7166,7 @@ fn local_color_update_uploads_changed_ranges_and_paints_latest_pixels() {
     );
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     assert!(is_red_slot(pixel(&pixels, 64, 32, 32)));
@@ -7278,7 +7293,7 @@ fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
     }
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut node = host_texture_child(1, 99, 0.0, 0.0, 64.0, 64.0, "resource");
     node.parent = None;
     node.custom_render.as_mut().unwrap().renderer = Arc::from("versioned");
@@ -7300,7 +7315,7 @@ fn custom_preparation_reuse_requires_explicit_version_and_tracks_changes() {
     let mut paint = || {
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 &scene,
                 &mut encoder,
                 &target,
@@ -7329,7 +7344,7 @@ fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut registry = SceneGpuRendererRegistry::new();
     registry.insert("gpu-view", Arc::new(DefaultGpuViewRenderer::new()));
 
@@ -7359,7 +7374,7 @@ fn default_gpu_view_versions_preparation_and_tracks_param_changes() {
         let (texture, target) = test_copy_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 scene,
                 &mut encoder,
                 &target,
@@ -7409,7 +7424,7 @@ fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let renderer = Arc::new(DefaultGpuViewRenderer::new());
     let mut registry = SceneGpuRendererRegistry::new();
     registry.insert("gpu-view", renderer.clone());
@@ -7438,7 +7453,7 @@ fn default_gpu_view_evicts_slots_for_nodes_that_left_the_scene() {
         scene.apply_delta([root, node], []);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 &scene,
                 &mut encoder,
                 &target,
@@ -7529,11 +7544,11 @@ fn adjacent_icons_batch_into_one_draw_whatever_their_glyphs() {
         clear: true,
     };
     let paint = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded icon frame");
         (
@@ -7673,11 +7688,11 @@ fn quad_and_label_rows_keep_a_constant_draw_count() {
         clear: true,
     };
     let paint = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded row frame");
         (
@@ -7773,11 +7788,11 @@ fn a_quad_over_earlier_text_is_not_folded_ahead_of_it() {
         clear_color: [0.0, 0.0, 0.0, 1.0],
         clear: true,
     };
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
     let label_ink = |pixels: &[u8], top: u32, bottom: u32| {
@@ -7848,11 +7863,11 @@ fn batch_merging_does_not_flip_the_dest_sample_count() {
         clear_color: [0.0, 0.0, 0.0, 1.0],
         clear: true,
     };
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let target = test_target(&device, format, SIDE, SIDE);
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint(&scene, &mut encoder, &target, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &target, viewport, None, None)
         .unwrap();
     queue.submit([encoder.finish()]);
     let work = painter.last_gpu_work().expect("encoded frame");
@@ -7917,11 +7932,11 @@ fn open_text_run_survives_shape_cache_eviction() {
         clear_color: [0.0, 0.0, 0.0, 1.0],
         clear: true,
     };
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
     let mut encoder = device.create_command_encoder(&Default::default());
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
     for row in 0..8u32 {
@@ -7974,11 +7989,11 @@ fn merged_text_run_keeps_document_order_between_overlapping_labels() {
         clear: true,
     };
     let paint = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded frame");
         (
@@ -8060,11 +8075,11 @@ fn text_below_the_clip_band_costs_no_draw_and_no_pixels() {
         clear: true,
     };
     let paint = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (texture, view) = test_copy_target(&device, format, SIDE, SIDE);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(scene, &mut encoder, &view, viewport, None, None)
+            .paint_encoder(scene, &mut encoder, &view, viewport, None, None)
             .unwrap();
         let work = painter.last_gpu_work().expect("encoded text frame");
         let pixels = readback_rgba(&device, &queue, encoder, &texture, SIDE, SIDE);
@@ -8175,11 +8190,11 @@ fn batched_gpu_view_run_paints_each_node_like_a_lone_node() {
         scene
     };
     let render = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let (texture, target) = test_copy_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 scene,
                 &mut encoder,
                 &target,
@@ -8274,11 +8289,11 @@ fn ordinary_ui_and_dedicated_passes_split_a_gpu_view_run() {
         scene
     };
     let draws = |scene: &UiScene| {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+        let mut painter = SceneWgpuPainter::for_test(format);
         let target = test_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&Default::default());
         painter
-            .paint(
+            .paint_encoder(
                 scene,
                 &mut encoder,
                 &target,
@@ -8318,14 +8333,13 @@ fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
         fn encode(
             &self,
             node: &CustomRenderNode,
-            context: SceneResourceEncodeContext<'_>,
+            mut context: SceneResourceEncodeContext<'_>,
         ) -> Result<(), String> {
             if node.resource.as_ref() == "second" && self.fail.load(Ordering::Relaxed) {
                 return Err("production failed".into());
             }
-            let _pass = context
-                .encoder
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
+            let _pass = nana_gpu::__framework::encoder(context.frame()).begin_render_pass(
+                &wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &self.view,
                         depth_slice: None,
@@ -8336,10 +8350,11 @@ fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
                         },
                     })],
                     ..Default::default()
-                });
+                },
+            );
             Ok(())
         }
-        fn submitted(&self, _: &CustomRenderNode, _: &wgpu::Device, _: wgpu::SubmissionIndex) {
+        fn submitted(&self, _: &CustomRenderNode, _: &nana_gpu::GpuSubmission) {
             self.submissions.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -8361,24 +8376,19 @@ fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
     second.parent = None;
     let mut scene = UiScene::new();
     scene.apply_delta([first, second], []);
-    let mut encoder = device.create_command_encoder(&Default::default());
-    assert!(
-        registry
-            .encode_scene(&scene, &device, &queue, &mut encoder)
-            .is_err()
-    );
-    drop(encoder);
+    let gpu = crate::test_gpu::context();
+    let mut frame = gpu.begin_frame("producer failure");
+    assert!(registry.encode_scene(&scene, &mut frame).is_err());
+    drop(frame);
     assert_eq!(submissions.load(Ordering::Relaxed), 0);
     let encoder = device.create_command_encoder(&Default::default());
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
     assert!(!is_red_slot(pixel(&pixels, 64, 32, 32)));
     fail.store(false, Ordering::Relaxed);
-    let mut encoder = device.create_command_encoder(&Default::default());
-    let prepared = registry
-        .encode_scene(&scene, &device, &queue, &mut encoder)
-        .unwrap();
+    let mut frame = gpu.begin_frame("producer success");
+    let prepared = registry.encode_scene(&scene, &mut frame).unwrap();
     assert_eq!(submissions.load(Ordering::Relaxed), 0);
-    prepared.submitted(&device, queue.submit([encoder.finish()]));
+    prepared.submitted(&frame.submit());
     assert_eq!(submissions.load(Ordering::Relaxed), 2);
     let encoder = device.create_command_encoder(&Default::default());
     let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
@@ -8390,7 +8400,7 @@ fn resource_encoding_failure_discards_the_whole_unsubmitted_frame() {
 fn native_content_opening_preserves_outside_pixels_and_later_overlays_on_gpu() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let mut native = colored_quad_node(2, 16.0, 16.0, 32.0, 32.0, [0.0; 4]);
     native.custom_render = Some(CustomRenderNode::new(
         nana_ui_runtime::NATIVE_CONTENT_RENDERER,
@@ -8438,7 +8448,7 @@ fn native_content_opening_preserves_outside_pixels_and_later_overlays_on_gpu() {
         let (texture, view) = test_copy_target(&device, format, 64, 64);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         painter
-            .paint(
+            .paint_encoder(
                 &scene,
                 &mut encoder,
                 &view,
@@ -8467,7 +8477,7 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let (template, registry, _source, _) =
         runtime_button_over_host_texture_scene(&device, &queue, format);
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let scenes = (0..16)
         .map(|index| {
             let mut scene = template.clone();
@@ -8554,7 +8564,7 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
             };
             let mut encoder = device.create_command_encoder(&Default::default());
             painter
-                .paint_target(
+                .paint_target_encoder(
                     RenderTargetId(index as u64),
                     scene,
                     &mut encoder,
@@ -8678,7 +8688,7 @@ fn text_follows_ancestor_compositor_opacity_overlay() {
     );
 
     let (device, queue) = test_device();
-    let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+    let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
     let pixels = paint_scene_rgba(
         &device,
         &queue,
@@ -8895,7 +8905,7 @@ fn one_painter_draws_an_outline_a_layer_beneath_it_and_its_shadow() {
 
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     let (width, height) = (420u32, 330u32);
     let viewport = ScenePaintViewport {
         logical_size: [width as f32, height as f32],
@@ -8911,7 +8921,7 @@ fn one_painter_draws_an_outline_a_layer_beneath_it_and_its_shadow() {
         label: Some("nana-ui painted outline"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     let pixels = readback_rgba(&device, &queue, encoder, &texture, width, height);
     if let Ok(path) = std::env::var("NANA_UI_PAINTED_OUTLINE_RGBA") {
@@ -9012,7 +9022,7 @@ fn paint_one_painter_onto(
     let mut scene = UiScene::new();
     scene.apply_delta(context.world().extract_document(document), []);
     let (device, queue) = test_device();
-    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut painter = SceneWgpuPainter::for_test(format);
     configure(&mut painter);
     let viewport = ScenePaintViewport {
         logical_size: [w as f32, h as f32],
@@ -9028,7 +9038,7 @@ fn paint_one_painter_onto(
         label: Some("nana-ui one painter"),
     });
     painter
-        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .paint_encoder(&scene, &mut encoder, &view, viewport, None, None)
         .unwrap();
     readback_rgba(&device, &queue, encoder, &texture, w, h)
 }
@@ -9854,7 +9864,7 @@ fn a_fractional_scroll_moves_quads_text_and_clips_by_the_same_whole_pixels() {
         .into_iter()
         .flat_map(|scale| [(scale, 0.0f32), (scale, 40_000.0)])
     {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
         let logical = [160.0, 48.0];
         let physical = [
             (logical[0] * scale).round() as u32,
@@ -9967,7 +9977,7 @@ fn a_fractional_horizontal_scroll_of_an_editor_keeps_every_glyph() {
     let (device, queue) = test_device();
     for scale in [1.0f32, 1.1, 1.2, 1.75] {
         let (mut context, document, node) = long_line_editor();
-        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
         let logical = [260.0, 80.0];
         let physical = [
             (logical[0] * scale).round() as u32,
@@ -10030,7 +10040,7 @@ fn a_fractional_horizontal_scroll_of_an_editor_keeps_every_glyph() {
 fn a_frozen_row_stays_put_under_a_fractional_scroll() {
     let (device, queue) = test_device();
     for scale in [1.0f32, 1.2, 1.75] {
-        let mut painter = SceneWgpuPainter::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let mut painter = SceneWgpuPainter::for_test(wgpu::TextureFormat::Rgba8Unorm);
         let logical = [160.0, 48.0];
         let physical = [
             (logical[0] * scale).round() as u32,
@@ -10131,4 +10141,272 @@ fn a_custom_node_moves_by_the_scrolls_whole_pixels() {
         let (moved, moved_height, to) = covered(39_800.0 + step as f32 * 0.37);
         assert_eq!((moved, moved_height), (top + to - from, height));
     }
+}
+
+fn label_scene(text: &str) -> UiScene {
+    let mut context = AppContext::new();
+    let document = DocumentId::new(1).unwrap();
+    let button = context
+        .create_component(
+            document,
+            RuntimeButton::new(text)
+                .kind(ButtonKind::Selected)
+                .layout(square_button_layout()),
+        )
+        .unwrap();
+    let mut layout = MutationQueue::new();
+    write_box(&mut layout, button.stable_id(), 8.0, 16.0, 80.0, 32.0);
+    context.commit_mutations(layout).unwrap();
+    commit_scene(&mut context)
+}
+
+struct FrameProbe {
+    gpu: nana_gpu::GpuContext,
+    texture: wgpu::Texture,
+    target: nana_gpu::GpuRenderTarget,
+    viewport: ScenePaintViewport,
+}
+
+impl FrameProbe {
+    const SIZE: [u32; 2] = [96, 64];
+
+    fn new() -> Self {
+        let gpu = crate::test_gpu::context();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let (texture, view) = test_copy_target(
+            __framework::device(&gpu),
+            format,
+            Self::SIZE[0],
+            Self::SIZE[1],
+        );
+        let target = __framework::render_target(&gpu, view, format, Self::SIZE);
+        Self {
+            gpu,
+            texture,
+            target,
+            viewport: ScenePaintViewport {
+                logical_size: [Self::SIZE[0] as f32, Self::SIZE[1] as f32],
+                physical_size: Self::SIZE,
+                scale_factor: 1.0,
+                scene_origin: [0.0, 0.0],
+                target_origin: [0.0, 0.0],
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                clear: true,
+            },
+        }
+    }
+
+    fn painter(&self) -> SceneWgpuPainter {
+        SceneWgpuPainter::new(&self.gpu, GpuTextureFormat::RGBA8_UNORM)
+    }
+
+    fn pixels(&self) -> Vec<u8> {
+        let device = __framework::device(&self.gpu);
+        readback_rgba(
+            device,
+            __framework::queue(&self.gpu),
+            device.create_command_encoder(&Default::default()),
+            &self.texture,
+            Self::SIZE[0],
+            Self::SIZE[1],
+        )
+    }
+
+    fn reference(&self, scene: &UiScene) -> Vec<u8> {
+        let mut painter = self.painter();
+        let mut frame = self.gpu.begin_frame("reference");
+        painter
+            .paint(scene, &mut frame, &self.target, self.viewport, None, None)
+            .unwrap();
+        frame.submit();
+        self.pixels()
+    }
+}
+
+/// A frame dropped after the painter recorded into it never reaches the GPU,
+/// though the painter treated its writes as done: the retained dest and text
+/// state would be reused on the next paint and show what that frame never
+/// drew. Dropping the frame rolls the target back, so the next paint of the
+/// same scene is complete.
+#[test]
+fn a_dropped_frame_rolls_its_targets_back_so_the_next_paint_is_complete() {
+    let probe = FrameProbe::new();
+    let before = label_scene("Alpha");
+    let after = label_scene("Omega wide");
+    let expected = probe.reference(&after);
+    assert_ne!(probe.reference(&before), expected, "the scenes differ");
+
+    for window in [Some(RenderTargetId(7)), None] {
+        let mut painter = probe.painter();
+        let paint = |painter: &mut SceneWgpuPainter, scene: &UiScene, label| {
+            let mut frame = probe.gpu.begin_frame(label);
+            match window {
+                Some(id) => painter.paint_target(
+                    id,
+                    scene,
+                    &mut frame,
+                    &probe.target,
+                    probe.viewport,
+                    None,
+                    None,
+                ),
+                None => painter.paint(scene, &mut frame, &probe.target, probe.viewport, None, None),
+            }
+            .unwrap();
+            frame
+        };
+        paint(&mut painter, &before, "before").submit();
+        drop(paint(&mut painter, &after, "dropped"));
+        paint(&mut painter, &after, "after").submit();
+        assert!(
+            probe.pixels() == expected,
+            "{window:?}: the paint after a dropped frame must not reuse what it recorded"
+        );
+    }
+}
+
+#[test]
+fn a_target_held_by_an_unsubmitted_frame_is_not_painted_again() {
+    let probe = FrameProbe::new();
+    let scene = label_scene("Held");
+    let mut painter = probe.painter();
+    let id = RenderTargetId(3);
+    let mut first = probe.gpu.begin_frame("first");
+    painter
+        .paint_target(
+            id,
+            &scene,
+            &mut first,
+            &probe.target,
+            probe.viewport,
+            None,
+            None,
+        )
+        .unwrap();
+    let mut second = probe.gpu.begin_frame("second");
+    assert_eq!(
+        painter.paint_target(
+            id,
+            &scene,
+            &mut second,
+            &probe.target,
+            probe.viewport,
+            None,
+            None
+        ),
+        Err(ScenePaintError::TargetInFlight(id))
+    );
+    painter
+        .paint_target(
+            RenderTargetId(4),
+            &scene,
+            &mut second,
+            &probe.target,
+            probe.viewport,
+            None,
+            None,
+        )
+        .expect("another target is independent");
+    painter
+        .paint_target(
+            id,
+            &scene,
+            &mut first,
+            &probe.target,
+            probe.viewport,
+            None,
+            None,
+        )
+        .expect("the frame that holds it may paint it again");
+    first.submit();
+    painter
+        .paint_target(
+            id,
+            &scene,
+            &mut second,
+            &probe.target,
+            probe.viewport,
+            None,
+            None,
+        )
+        .expect("a submitted frame releases the target");
+    second.submit();
+}
+
+#[test]
+fn frames_targets_and_host_textures_from_another_device_are_refused() {
+    let probe = FrameProbe::new();
+    let other = __framework::adopt(
+        __framework::adapter(&probe.gpu).clone(),
+        __framework::device(&probe.gpu).clone(),
+        __framework::queue(&probe.gpu).clone(),
+    );
+    let scene = label_scene("Device");
+    let mut painter = probe.painter();
+    let expected = probe.gpu.generation();
+    let found = other.generation();
+    let mut foreign_frame = other.begin_frame("foreign frame");
+    assert_eq!(
+        painter.paint(
+            &scene,
+            &mut foreign_frame,
+            &probe.target,
+            probe.viewport,
+            None,
+            None
+        ),
+        Err(ScenePaintError::DeviceMismatch { expected, found })
+    );
+    let foreign_target = __framework::render_target(
+        &other,
+        __framework::target_view(&probe.target).clone(),
+        wgpu::TextureFormat::Rgba8Unorm,
+        FrameProbe::SIZE,
+    );
+    let mut frame = probe.gpu.begin_frame("foreign target");
+    assert_eq!(
+        painter.paint(
+            &scene,
+            &mut frame,
+            &foreign_target,
+            probe.viewport,
+            None,
+            None
+        ),
+        Err(ScenePaintError::DeviceMismatch { expected, found })
+    );
+
+    let registry = HostTextureRegistry::new();
+    let stale = other
+        .create_texture(&nana_gpu::GpuTextureDescriptor {
+            label: Some("stale host texture"),
+            width: 4,
+            height: 4,
+            format: GpuTextureFormat::RGBA8_UNORM,
+            usage: nana_gpu::GpuTextureUsages::SAMPLED,
+        })
+        .unwrap();
+    registry.register(
+        "preview",
+        crate::HostTexture::new(1, 1, &stale),
+        4,
+        4,
+        crate::HostTextureAlphaMode::Opaque,
+    );
+    let mut child = host_texture_child(1, 99, 0.0, 0.0, 32.0, 32.0, "preview");
+    child.parent = None;
+    let mut scene = UiScene::new();
+    scene.apply_delta([child], []);
+    let id = scene.frame_plan().unwrap().custom_nodes[0];
+    assert_eq!(
+        painter.paint(
+            &scene,
+            &mut frame,
+            &probe.target,
+            probe.viewport,
+            Some(&registry),
+            None
+        ),
+        Err(ScenePaintError::StaleHostTexture(id))
+    );
 }

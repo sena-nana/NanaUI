@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 
 use nana_ui::runtime::UiScene;
 use nana_ui::{
-    GpuContext, HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError, ScenePaintViewport,
-    SceneWgpuPainter,
+    GpuContext, GpuRenderTarget, GpuTextureFormat, HostTextureRegistry, SceneGpuRendererRegistry,
+    ScenePaintError, ScenePaintViewport, SceneWgpuPainter,
 };
 
 /// Physical pixel size for snapshot PNG encode and GPU readback.
@@ -47,7 +47,7 @@ impl OffscreenSnapshots {
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             }))?;
         let gpu = GpuContext::from_wgpu(adapter, raw_device, raw_queue);
-        let mut painter = SceneWgpuPainter::new(gpu.wgpu().device(), gpu.wgpu().queue(), FORMAT);
+        let mut painter = SceneWgpuPainter::new(&gpu, GpuTextureFormat::from_wgpu(FORMAT));
         let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
         painter.set_image_waker(std::sync::Arc::new(move || {
             let _ = wake.try_send(());
@@ -147,6 +147,8 @@ impl OffscreenSnapshots {
                 view_formats: &[],
             });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let target =
+            GpuRenderTarget::from_wgpu(&self.gpu, view.clone(), FORMAT, [size.width, size.height]);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
         loop {
             if std::time::Instant::now() >= deadline {
@@ -187,11 +189,7 @@ impl OffscreenSnapshots {
             }
             let image_revision = self.painter.image_revision();
             for (scene, layer_clear) in layers {
-                let mut encoder = self.gpu.wgpu().device().create_command_encoder(
-                    &wgpu::CommandEncoderDescriptor {
-                        label: Some("nana-ui snapshot paint"),
-                    },
-                );
+                let mut frame = self.gpu.begin_frame("nana-ui snapshot paint");
                 let viewport = ScenePaintViewport {
                     logical_size: [
                         size.width as f32 / scale_factor,
@@ -211,19 +209,19 @@ impl OffscreenSnapshots {
                 self.painter
                     .paint(
                         scene,
-                        &mut encoder,
-                        &view,
+                        &mut frame,
+                        &target,
                         viewport,
                         host_textures,
                         gpu_renderers,
                     )
                     .map_err(paint_error)?;
-                let paint = self.gpu.wgpu().queue().submit([encoder.finish()]);
+                let paint = frame.submit();
                 self.gpu
                     .wgpu()
                     .device()
                     .poll(wgpu::PollType::Wait {
-                        submission_index: Some(paint),
+                        submission_index: Some(paint.wgpu_index().clone()),
                         timeout: None,
                     })
                     .map_err(|error| format!("snapshot paint poll failed: {error:?}"))?;

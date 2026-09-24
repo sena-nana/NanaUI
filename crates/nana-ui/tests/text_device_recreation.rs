@@ -14,7 +14,10 @@
 //! One test in its own binary: it creates two devices, which must not happen
 //! while other test threads come and go (see `test_gpu.rs`).
 
-use nana_ui::{NanaTextShaper, ScenePaintViewport, SceneWgpuPainter, runtime::*, wgpu};
+use nana_ui::{
+    GpuContext, GpuRenderTarget, GpuTextureFormat, NanaTextShaper, ScenePaintViewport,
+    SceneWgpuPainter, runtime::*, wgpu,
+};
 use nana_ui_scene::{ScenePrimitiveKind, UiScene};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -25,7 +28,7 @@ const LABELS: [&str; 3] = [
     "النص المحفوظ",
 ];
 
-fn device() -> (wgpu::Device, wgpu::Queue) {
+fn device() -> GpuContext {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or_default(),
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -34,11 +37,12 @@ fn device() -> (wgpu::Device, wgpu::Queue) {
         &instance, None,
     ))
     .expect("GPU tests require a WGPU adapter");
-    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("text device recreation"),
         ..Default::default()
     }))
-    .expect("GPU tests require a WGPU device")
+    .expect("GPU tests require a WGPU device");
+    GpuContext::from_wgpu(adapter, device, queue)
 }
 
 /// A settled document with a few paragraphs, and the scene it extracts to.
@@ -85,13 +89,8 @@ fn retained_scene() -> UiScene {
 }
 
 /// Paint `scene` once at `scale` and read the pixels back.
-fn paint(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    painter: &mut SceneWgpuPainter,
-    scene: &UiScene,
-    scale: u32,
-) -> Vec<u8> {
+fn paint(gpu: &GpuContext, painter: &mut SceneWgpuPainter, scene: &UiScene, scale: u32) -> Vec<u8> {
+    let device = gpu.wgpu().device();
     let size = [SIZE[0] * scale, SIZE[1] * scale];
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("text device recreation target"),
@@ -108,12 +107,13 @@ fn paint(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let target = GpuRenderTarget::from_wgpu(gpu, view, FORMAT, size);
+    let mut frame = gpu.begin_frame("text device recreation");
     painter
         .paint(
             scene,
-            &mut encoder,
-            &view,
+            &mut frame,
+            &target,
             ScenePaintViewport {
                 logical_size: [SIZE[0] as f32, SIZE[1] as f32],
                 physical_size: size,
@@ -136,7 +136,7 @@ fn paint(
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    encoder.copy_texture_to_buffer(
+    frame.wgpu_encoder().copy_texture_to_buffer(
         texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {
             buffer: &buffer,
@@ -152,7 +152,7 @@ fn paint(
             depth_or_array_layers: 1,
         },
     );
-    queue.submit([encoder.finish()]);
+    frame.submit();
     let slice = buffer.slice(..);
     slice.map_async(wgpu::MapMode::Read, |result| result.expect("map readback"));
     device
@@ -171,9 +171,9 @@ fn paint(
 fn a_replacement_device_draws_the_retained_paragraphs_without_laying_them_out() {
     let scene = retained_scene();
 
-    let (lost, lost_queue) = device();
-    let mut painter = SceneWgpuPainter::new(&lost, &lost_queue, FORMAT);
-    let before = paint(&lost, &lost_queue, &mut painter, &scene, 1);
+    let lost = device();
+    let mut painter = SceneWgpuPainter::new(&lost, GpuTextureFormat::from_wgpu(FORMAT));
+    let before = paint(&lost, &mut painter, &scene, 1);
     let first = painter.text_glyph_counters();
     assert!(
         before.iter().any(|&channel| channel != u8::MAX),
@@ -183,12 +183,12 @@ fn a_replacement_device_draws_the_retained_paragraphs_without_laying_them_out() 
     // survives is exactly what a host keeps across `switch_gpu`: the world,
     // its scene, and the process-wide text engine.
     drop(painter);
-    lost.destroy();
-    drop((lost, lost_queue));
+    lost.wgpu().device().destroy();
+    drop(lost);
 
-    let (replacement, queue) = device();
-    let mut painter = SceneWgpuPainter::new(&replacement, &queue, FORMAT);
-    let after = paint(&replacement, &queue, &mut painter, &scene, 1);
+    let replacement = device();
+    let mut painter = SceneWgpuPainter::new(&replacement, GpuTextureFormat::from_wgpu(FORMAT));
+    let after = paint(&replacement, &mut painter, &scene, 1);
     let second = painter.text_glyph_counters();
     let shape_cache = painter.text_shape_cache_stats();
     assert_eq!(
@@ -214,7 +214,7 @@ fn a_replacement_device_draws_the_retained_paragraphs_without_laying_them_out() 
 
     // The window moves to a 2x display. The layouts are in logical px, so
     // the same paragraphs are drawn again, rasterized for the new scale.
-    paint(&replacement, &queue, &mut painter, &scene, 2);
+    paint(&replacement, &mut painter, &scene, 2);
     let doubled = painter.text_glyph_counters();
     assert_eq!(
         doubled.text_retained_layouts_drawn - second.text_retained_layouts_drawn,

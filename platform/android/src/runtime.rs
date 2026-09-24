@@ -117,9 +117,8 @@ impl HostState {
 
         let gpu = GpuSurface::new(app, w, h)?;
         self.slot = Some(SlotPainter::new(
-            &gpu.device,
-            &gpu.queue,
-            gpu.format,
+            &gpu.gpu,
+            nana_ui::GpuTextureFormat::from_wgpu(gpu.format),
             (gpu.config.width, gpu.config.height),
             scale,
         )?);
@@ -211,9 +210,9 @@ impl HostState {
         let Some(gpu) = gpu.as_mut() else {
             return Ok(());
         };
-        gpu.present_chrome_bands_with_overlay(&bands, |view, encoder| {
+        gpu.present_chrome_bands_with_overlay(&bands, |target, frame| {
             if let Some(painter) = slot.as_mut() {
-                painter.paint_slot(encoder, view, (fw, fh));
+                painter.paint_slot(frame, target, (fw, fh));
             }
             Ok(())
         })?;

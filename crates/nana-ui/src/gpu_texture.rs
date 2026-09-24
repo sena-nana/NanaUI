@@ -377,7 +377,13 @@ impl HostTexture {
     /// The device the current texture lives on. A painter on another device
     /// refuses the frame instead of sampling it.
     pub fn device_generation(&self) -> DeviceGeneration {
-        self.state.texture.snapshot().1.generation()
+        self.state
+            .texture
+            .state
+            .read()
+            .expect("versioned resource lock")
+            .resource
+            .generation()
     }
 
     /// Returns the monotonically increasing content version.

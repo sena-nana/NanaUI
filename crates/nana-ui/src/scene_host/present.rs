@@ -34,20 +34,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         else {
             return false;
         };
-        let gpu = self.graphics.gpu();
-        let device = gpu.raw_device();
-        let queue = gpu.raw_queue();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("NanaUI hidden gpu tick"),
-        });
-        match producers.encode_scene(scene.as_ref(), device, queue, &mut encoder) {
+        let mut frame = self.graphics.gpu().begin_frame("NanaUI hidden gpu tick");
+        match producers.encode_scene(scene.as_ref(), &mut frame) {
             Ok(prepared) => {
-                let submission = queue.submit([encoder.finish()]);
-                prepared.submitted(device, submission);
+                prepared.submitted(&frame.submit());
                 true
             }
             Err(error) => {
-                drop(encoder);
+                drop(frame);
                 self.program
                     .report_host_failure(HostFailure::ResourceProduction {
                         window: id,
@@ -199,24 +193,25 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 return;
             }
         };
-        let target = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.graphics.gpu().raw_device().create_command_encoder(
-            &wgpu::CommandEncoderDescriptor {
-                label: Some("NanaUI scene host frame"),
-            },
+        let target = nana_gpu::__framework::render_target(
+            self.graphics.gpu(),
+            frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default()),
+            frame.texture.format(),
+            [frame.texture.width(), frame.texture.height()],
         );
+        // Everything recorded for this window goes into one frame. On every
+        // failure path it is dropped before the surface texture it targets:
+        // nothing may still reference the texture the surface is asked to
+        // abandon (DX12), and dropping it rolls the painter's retained writes
+        // back.
+        let mut recording = self.graphics.gpu().begin_frame("NanaUI scene host frame");
         let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
-            match producers.encode_scene(
-                scene.as_ref(),
-                self.graphics.gpu().raw_device(),
-                self.graphics.gpu().raw_queue(),
-                &mut encoder,
-            ) {
+            match producers.encode_scene(scene.as_ref(), &mut recording) {
                 Ok(prepared) => Some(prepared),
                 Err(error) => {
-                    drop(encoder);
+                    drop(recording);
                     drop(target);
                     self.discard_frame(id, frame);
                     self.program
@@ -290,7 +285,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    drop(encoder);
+                    drop(recording);
                     drop(target);
                     self.discard_frame(id, frame);
                     self.program
@@ -329,14 +324,14 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let paint = painter.paint_target(
             crate::RenderTargetId(id.0),
             scene.as_ref(),
-            &mut encoder,
+            &mut recording,
             &target,
             scene_paint_viewport(&geometry, material, theme, window_background),
             host_textures.as_ref(),
             gpu_renderers.as_ref(),
         );
         if let Err(error) = paint {
-            drop(encoder);
+            drop(recording);
             drop(target);
             self.discard_frame(id, frame);
             self.program
@@ -347,17 +342,16 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             self.rearm_frame_demand(id);
             return;
         }
-        let submit_started = std::time::Instant::now();
-        let submission = self.graphics.gpu().raw_queue().submit([encoder.finish()]);
+        let submission = recording.submit();
         if frame_started.is_some() {
             crate::host_diagnostics::watch_submission(self.graphics.gpu().raw_queue());
         }
         if let Some(prepared) = prepared {
-            prepared.submitted(self.graphics.gpu().raw_device(), submission);
+            prepared.submitted(&submission);
         }
-        let submit = submit_started.elapsed();
+        let submit = submission.cpu_duration();
         let painter = self.painter_mut(format);
-        painter.record_submit(submit);
+        painter.record_submit(&submission);
         let gpu_work = painter.last_gpu_work();
         self.graphics.present(frame);
         crate::host_diagnostics::frame_presented(frame_started, submit, gpu_work);
@@ -628,9 +622,21 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// Painters are created lazily per surface format and own their image waker
     /// from creation, so the per-frame lookup does no allocation.
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
+        // A device switch clears the map; a painter that still names another
+        // device would only refuse every frame.
+        let current = self.graphics.gpu().generation();
+        if self
+            .painters
+            .get(&format)
+            .is_some_and(|painter| painter.gpu().generation() != current)
+        {
+            self.painters.remove(&format);
+        }
         if !self.painters.contains_key(&format) {
-            let gpu = self.graphics.gpu();
-            let painter = SceneWgpuPainter::new(gpu.raw_device(), gpu.raw_queue(), format);
+            let painter = SceneWgpuPainter::new(
+                self.graphics.gpu(),
+                nana_gpu::__framework::format_from_wgpu(format),
+            );
             self.adopt_painter(format, painter);
         }
         self.painters

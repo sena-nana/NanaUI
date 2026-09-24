@@ -135,7 +135,7 @@ required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "accessibility-hidden-probe"
-required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
+required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "transparent-window"

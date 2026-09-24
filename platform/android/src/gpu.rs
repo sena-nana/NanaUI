@@ -3,8 +3,6 @@
 //! Includes a minimal solid-color fill pipeline for shell chrome bands
 //! (scissor + fullscreen triangle). Not Nana DesktopShell.
 
-use std::sync::Arc;
-
 use android_activity::AndroidApp;
 use raw_window_handle::{AndroidNdkWindowHandle, DisplayHandle, RawWindowHandle, WindowHandle};
 use wgpu::{
@@ -17,6 +15,7 @@ use wgpu::{
 use crate::chrome_fill::{
     FILL_COLOR_SIZE, band_draw_list, fill_color_offset, fill_color_stride, pack_fill_colors,
 };
+use nana_ui::{FrameContext, GpuContext, GpuRenderTarget};
 use crate::shell::ShellChromeBand;
 
 const FILL_SHADER: &str = r#"
@@ -46,8 +45,7 @@ fn fs_main() -> @location(0) vec4<f32> {
 
 pub struct GpuSurface {
     pub surface: Surface<'static>,
-    pub device: Arc<Device>,
-    pub queue: Arc<Queue>,
+    pub gpu: GpuContext,
     pub config: SurfaceConfiguration,
     pub format: TextureFormat,
     _instance: Instance,
@@ -276,8 +274,7 @@ impl GpuSurface {
 
         Ok(Self {
             surface,
-            device: Arc::new(device),
-            queue: Arc::new(queue),
+            gpu: GpuContext::from_wgpu(adapter, device, queue),
             config,
             format,
             _instance: instance,
@@ -293,14 +290,15 @@ impl GpuSurface {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        self.surface
+            .configure(self.gpu.wgpu().device(), &self.config);
     }
 
     /// Chrome fill, then the NanaUI Scene slot, in one encoder submit.
     pub fn present_chrome_bands_with_overlay(
         &mut self,
         bands: &[ShellChromeBand],
-        mut overlay: impl FnMut(&wgpu::TextureView, &mut wgpu::CommandEncoder) -> Result<(), String>,
+        mut overlay: impl FnMut(&GpuRenderTarget, &mut FrameContext) -> Result<(), String>,
     ) -> Result<(), String> {
         let draws = band_draw_list(bands, self.config.width, self.config.height);
 
@@ -312,7 +310,8 @@ impl GpuSurface {
                 return Ok(());
             }
             CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
+                self.surface
+                    .configure(self.gpu.wgpu().device(), &self.config);
                 return Err("surface outdated (reconfigured)".into());
             }
             CurrentSurfaceTexture::Lost => return Err("surface lost".into()),
@@ -321,11 +320,14 @@ impl GpuSurface {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nana-android chrome+slot"),
-            });
+        let target = GpuRenderTarget::from_wgpu(
+            &self.gpu,
+            view.clone(),
+            self.format,
+            [frame.texture.width(), frame.texture.height()],
+        );
+        let mut recording = self.gpu.begin_frame("nana-android chrome+slot");
+        let encoder = recording.wgpu_encoder();
 
         if draws.is_empty() {
             let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -350,8 +352,11 @@ impl GpuSurface {
                 multiview_mask: None,
             });
         } else {
-            self.fill
-                .write_colors(&self.device, &self.queue, draws.iter().map(|d| d.4));
+            self.fill.write_colors(
+                self.gpu.wgpu().device(),
+                self.gpu.wgpu().queue(),
+                draws.iter().map(|d| d.4),
+            );
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("nana-android chrome bands"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -382,9 +387,10 @@ impl GpuSurface {
             }
         }
 
-        overlay(&view, &mut encoder)?;
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(frame);
+        // The frame is dropped before the surface texture on failure.
+        overlay(&target, &mut recording)?;
+        recording.submit();
+        self.gpu.wgpu().queue().present(frame);
         Ok(())
     }
 }
