@@ -26,7 +26,7 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
   - Construction sites add `.into()`: `TextContent { value: label.into() }`.
   - Where a `String` is needed, change `.value.clone()` to `.value.to_string()`.
   - `TextInputState::new` / `replace_value` now take `impl Into<TextValue>`.
-- `nana_text::SharedText::replace_range` is public. Each call draws a fresh stamp, and it copies only when the buffer is shared.
+- `nana_text::SharedText::replace_range` is public. Each call draws a fresh stamp. It edits in place only when this value alone holds an owned buffer; a shared buffer, or one built from an `Arc<str>`, is copied once. A reversed range panics, whichever buffer backs the value.
 
 ### Reading editor state from the world
 
@@ -53,6 +53,8 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
   - `selected_texts`.
 - Batch edits: `splice(edits, primary, additional)` and `assign(&SharedText, selections)`, a minimal-diff replacement.
 - `EditorGeometry::sync_stamped`, `editable::collapse_edge`, `editable::normalize_selections` / `remap_offset` / `remap_selection`, and `editable::diff::changed_range`.
+- `EditSession::assign` while composing: a change the text leaves ambiguous (`"abab"` → `"ab"` lost either `"ab"`) is placed clear of the composition where it can be, so the composition survives, and the primary selection moves with the composition in `assign` and `splice` alike. This is `nana-text` behavior for direct session users; Runtime's value writes re-place the preedit over the selection they write, as before.
+- `EditState` gains a public `additional: Vec<EditSelection>` field; code that builds it with a struct literal or destructures it exhaustively must add it.
 - `TextWorkCounters` gains `editor_text_bytes_compared`.
 
 ## Behavior changes
@@ -62,9 +64,14 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
   - Line numbers, extra cursors, inlays, completions and hover all stay visible.
   - It still blocks form submit until the commit or cancel arrives, as before.
 - **Selection sets:** the world and components normalize selections the same way. Overlapping or touching selections merge, and ends inside a grapheme cluster snap back to the cluster boundary. Before, an extra cursor could sit inside an emoji ZWJ sequence.
+  - A selection that covers the one it merges with keeps its own direction and affinity (the primary's, when both are the same span). Two carets that meet at a soft-wrapped line end stay there, and Shift+Home from two cursors keeps its focus on the line start. Before, every merge produced a forward selection with downstream affinity.
 - **Undo:**
   - A cut is its own step, and typing right after it no longer merges into it.
   - Inserting a snippet is one step, and the single-line length limit now applies to it.
 - **NumberInput IME:** committed and surrounding-deleted text goes through the component. Before, the next keystroke overwrote it.
-- **Android:** the IME buffer is the editor's displayed text. The preedit replaces the selection it stands for; before, it was inserted next to the focus.
+- **Android:** the IME buffer is the session's committed text with the preedit in place of the selection it stands for (`display_text()`, not the masked or folded text the editor draws); before, the preedit was inserted next to the focus.
+  - The selection and composing region cross to GameTextInput in UTF-16 code units, the Java side's indices. Before, UTF-8 byte offsets were passed through as they were, which put the IME's composing region and cursor in the wrong place in any non-ASCII text.
 - **Folding:** pressing Right across a collapsed fold leaves a caret, not a selection covering the hidden lines.
+- **Undo after undo:** typing after an undo or redo starts a new step instead of merging into the step the undo stepped back onto.
+- **Cut and copy over an atom:** a selection that cuts into an atom copies the whole atom, which is what a cut deletes.
+- **Accessibility:** a secure (password) field without a label no longer falls back to its text for its accessible name.

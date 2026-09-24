@@ -1166,6 +1166,7 @@ paragraphs_reshaped_from_edit   增量 sync 重排且 shaping 未命中缓存的
 paragraphs_relayout_from_edit   增量 sync 重排的段
 hit_test_queries                对保留几何的命中查询
 caret_geometry_queries          对保留几何的 caret 查询
+editor_text_bytes_compared      同步几何时为确认文本未变而逐字节比较的字节数（#182；有印记时为 0）
 ```
 
 结构门禁（`crates/nana-text/tests/editable_text.rs`）：caret blink 反复查询 caret 时引擎
@@ -1235,7 +1236,9 @@ caret / 选区移动整帧 `layouts_created == 0` 且引擎 shape miss 不变；
 选区非空、不带 Shift 时，Left/Right 把选区**收拢到屏幕上那一侧的边**，而不是从 focus 起步一格：
 规则只有一份，`nana_text::editable::collapse_edge`，`EditSession::move_caret` 与 Runtime 的探针路径
 同用——同一行上按两端 caret 的 x 决定（RTL 文本里左边是逻辑末尾），跨行或没有几何时按段落
-阅读顺序。secure / 空字段问不到几何，收拢到逻辑边。Word/Line 意图按定义是逻辑的，垂直移动走
+阅读顺序。secure / 空字段问不到几何，收拢到逻辑边。落点是 focus 时保留 focus 原来的 affinity；
+落在锚点那一端时，末端取 Upstream、始端取 Downstream——与判定时探针问的那一侧相同，停在软换行
+处的选区收拢后 caret 仍在它覆盖的那一行行尾。Word/Line 意图按定义是逻辑的，垂直移动走
 自己的几何路径。
 
 ### 编辑器的存储：EditSession（#182）
@@ -2494,7 +2497,7 @@ caret 不再跳位。
 | --- | ---: | --- |
 | a11y / scene primitive / extraction 的整值克隆 | 每帧 3 次 | **已消**：三处都是 `TextValue` 引用计数；提取层不再深拷贝 `text_input` / `ime`（只剩 `editable` 标记） |
 | presentation 每帧重建显示文本 | 1 次整值克隆 + 一次 memcmp | **已消**：显示文本是会话快照（无叠加时）或按印记记忆化的折叠 / 组字视图；presentation 的相等比较按身份 |
-| 撤销日志按整值快照 | 每步 2 份整值 | 快照共享缓冲，前后状态不再各复制一次；表示法仍是整份状态，字节预算不变 |
+| 撤销日志按整值快照 | 每步 2 份整值 | 快照共享缓冲，前后状态不再各复制一次；表示法仍是整份状态。字节预算的上限（8 MiB）不变，计法改为按缓冲去重 |
 
 ## Phase 0 明确没做的
 
