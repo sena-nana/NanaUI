@@ -2710,6 +2710,15 @@ fn platform_input_key(key: &winit::keyboard::Key) -> Option<String> {
     })
 }
 
+fn system_input_modifiers(keys: nana_window::KeyboardModifiers) -> InputModifiers {
+    InputModifiers {
+        alt: keys.alt,
+        control: keys.control,
+        meta: keys.meta,
+        shift: keys.shift,
+    }
+}
+
 fn platform_input_modifiers(value: ModifiersState) -> InputModifiers {
     InputModifiers {
         alt: value.alt_key(),
@@ -3064,12 +3073,7 @@ impl InputTracker {
     /// and fall back to the last tracked one where it cannot be sampled.
     fn drag_modifiers(&self) -> InputModifiers {
         nana_window::keyboard_modifiers()
-            .map(|keys| InputModifiers {
-                alt: keys.alt,
-                control: keys.control,
-                meta: keys.meta,
-                shift: keys.shift,
-            })
+            .map(system_input_modifiers)
             .unwrap_or_else(|| platform_input_modifiers(self.modifiers))
     }
 
@@ -3510,9 +3514,9 @@ mod tests {
         platform_input_modifiers, platform_window_event, remove_image_target_index,
         replace_image_target_index, resolved_scene_ime_request, route_window_command,
         scene_clear_color, scene_runtime_input_update, scene_window_attributes, screen_position,
-        should_deliver_program_ime, surface_image_keys, tablet_pointer_id, window_cursor_override,
-        window_level, window_surface_effect, window_wants_transparent_surface,
-        windows_scene_chrome, windows_to_redraw, winit_icon,
+        should_deliver_program_ime, surface_image_keys, system_input_modifiers, tablet_pointer_id,
+        window_cursor_override, window_level, window_surface_effect,
+        window_wants_transparent_surface, windows_scene_chrome, windows_to_redraw, winit_icon,
     };
     use crate::presentation::{
         ResolvedSurfaceTarget, ResolvedWindowPresentation, WindowSurfaceTarget,
@@ -4973,12 +4977,7 @@ mod tests {
                 control: true,
                 ..InputModifiers::default()
             },
-            |keys| InputModifiers {
-                alt: keys.alt,
-                control: keys.control,
-                meta: keys.meta,
-                shift: keys.shift,
-            },
+            system_input_modifiers,
         );
         assert_eq!(
             delayed.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
