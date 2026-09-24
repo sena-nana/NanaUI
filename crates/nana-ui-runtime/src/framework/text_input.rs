@@ -659,12 +659,11 @@ impl AppContext {
         range: std::ops::Range<usize>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
+        // A range is valid where a selection over it would be: inside the
+        // text, on grapheme boundaries.
         let in_text = self.read(entity, |editable| {
-            let value = &editable.state().value;
             range.start <= range.end
-                && range.end <= value.len()
-                && value.is_char_boundary(range.start)
-                && value.is_char_boundary(range.end)
+                && TextSelection::new(range.start, range.end).is_valid_for(&editable.state().value)
         })?;
         if !in_text {
             return Err(FrameworkError::InvalidInput);
@@ -673,7 +672,11 @@ impl AppContext {
         if self.is_composing(node) || !self.read(entity, EditableText::accepts_input)? {
             return Ok(false);
         }
-        let text = crate::text_editing::normalize_newlines(text);
+        let text: std::borrow::Cow<'_, str> = if text.contains('\r') {
+            crate::text_editing::normalize_newlines(text).into()
+        } else {
+            text.into()
+        };
         // Structural: a step of its own, which neither extends the typing
         // before it nor is extended by the typing after it.
         self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {

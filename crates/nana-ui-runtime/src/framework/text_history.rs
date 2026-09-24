@@ -355,12 +355,14 @@ impl crate::AppContext {
     /// Refused, like the user's own edits, while the editor is read-only or
     /// disabled or the user is composing with an IME. An atom the range
     /// reaches into is replaced whole; every cursor, the user's own included,
-    /// moves through the edit rather than to it. It is not typing into a
+    /// moves through the edit rather than to it, except that a caret right
+    /// where text is inserted goes past it, as typing leaves it (a completion
+    /// at the caret). It is not typing into a
     /// snippet: linked placeholders do not mirror it, and an active snippet
     /// session is remapped through it (or ends) as for any value change.
     /// Emits the
     /// editor's change event. Returns whether the text changed; a range
-    /// outside the text or off a character boundary is an error.
+    /// outside the text or off a grapheme boundary is an error.
     pub fn edit_text_area(
         &mut self,
         entity: crate::Entity<crate::TextArea>,
@@ -487,9 +489,11 @@ impl crate::AppContext {
         // failed and rolled the component back (text as before) is neither.
         let rewritten =
             after.value != before.value && edited.is_some_and(|edited| edited != after.value);
-        // The world takes the component's own buffer as the edit lands, so
-        // text it still holds from this edit compares by identity; a
-        // mismatch means another batch wrote it meanwhile.
+        // The world takes the component's own buffer as the edit lands (or
+        // shares it, for bytes it already held), so text it still holds from
+        // this edit matches by identity, in O(1). Bytes are compared only
+        // when the buffers differ, which only another batch's write causes;
+        // one that wrote the same bytes leaves the journal true, so it stays.
         let foreign = written.is_ok()
             && self
                 .world
