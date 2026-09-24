@@ -91,7 +91,10 @@ impl NumberFieldSpec {
         if let Some(minimum) = self.grid_minimum().filter(|minimum| snapped < *minimum) {
             snapped = minimum;
         }
-        snapped
+        // The raw bounds hold whatever the grid searches found, and `+ 0.0`
+        // turns the -0.0 a point just below zero rounds to into 0.0, which
+        // `format` would otherwise show as "-0.0".
+        self.clamp(snapped) + 0.0
     }
 
     /// Where the step grid starts: the minimum when there is one.
@@ -120,10 +123,14 @@ impl NumberFieldSpec {
         let mut k = ((floor - self.grid_origin()) / self.effective_step() - 1e-9)
             .ceil()
             .max(0.0);
-        while self.grid_point(k) < minimum {
+        for _ in 0..GRID_WALK {
+            let point = self.grid_point(k);
+            if point >= minimum {
+                return Some(point);
+            }
             k += 1.0;
         }
-        Some(self.grid_point(k))
+        Some(minimum)
     }
 
     /// The last displayed grid point inside the maximum, or `None` when
@@ -135,10 +142,14 @@ impl NumberFieldSpec {
         let scale = 10f64.powi(i32::from(self.precision));
         let ceiling = (maximum * scale + 1e-9).floor() / scale;
         let mut k = ((ceiling - self.grid_origin()) / self.effective_step() + 1e-9).floor();
-        while self.grid_point(k) > maximum {
+        for _ in 0..GRID_WALK {
+            let point = self.grid_point(k);
+            if point <= maximum {
+                return Some(point);
+            }
             k -= 1.0;
         }
-        Some(self.grid_point(k))
+        Some(maximum)
     }
 
     /// Move `value` by `steps` grid positions. Zero steps still snaps, so an
@@ -188,10 +199,21 @@ impl NumberFieldSpec {
     }
 }
 
+/// Round to `precision` decimals. A value too large to scale is already
+/// coarser than any decimal place and is returned as it is.
 fn round_to(value: f64, precision: u8) -> f64 {
     let scale = 10f64.powi(i32::from(precision));
-    (value * scale).round() / scale
+    let scaled = value * scale;
+    if !scaled.is_finite() {
+        return value;
+    }
+    scaled.round() / scale
 }
+
+/// How far the bound searches walk from their estimate. Rounding misplaces
+/// a point by at most a few grid steps; past 2^53 a step no longer moves
+/// the index at all, and the walk gives up rather than spin.
+const GRID_WALK: usize = 16;
 
 #[cfg(test)]
 mod tests {
@@ -306,6 +328,48 @@ mod tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_bounds_snap_promptly_and_stay_finite() {
+        for (minimum, maximum, step, precision) in [
+            (0.0, f64::MAX, 0.1, 1),
+            (f64::MIN, f64::MAX, 1.0, 2),
+            (-1e20, 1e20, 0.3, 2),
+            (0.0, 1e17, 0.3, 0),
+        ] {
+            let spec = NumberFieldSpec {
+                minimum: Some(minimum),
+                maximum: Some(maximum),
+                step,
+                precision,
+            };
+            for value in [0.0, 5.0, -5.0, 1e30, -1e30] {
+                let snapped = spec.snap(value);
+                assert!(snapped.is_finite(), "{spec:?} {value}");
+                assert_eq!(spec.clamp(snapped), snapped, "{spec:?} {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn snapping_never_yields_negative_zero() {
+        for minimum in [-0.25, -0.35] {
+            let spec = NumberFieldSpec {
+                minimum: Some(minimum),
+                maximum: Some(2.0),
+                step: 0.1,
+                precision: 1,
+            };
+            for tenth in -5..20 {
+                let snapped = spec.snap(f64::from(tenth) / 10.0);
+                assert!(
+                    snapped != 0.0 || snapped.is_sign_positive(),
+                    "{minimum}: {tenth}"
+                );
+                assert!(!spec.format(snapped).starts_with("-0.0"), "{minimum}");
             }
         }
     }
