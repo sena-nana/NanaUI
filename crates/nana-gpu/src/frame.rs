@@ -123,13 +123,14 @@ impl FrameContext {
 
 impl Drop for FrameContext {
     fn drop(&mut self) {
-        let Some(encoder) = self.encoder.take() else {
-            return;
-        };
         // The encoder goes first: nothing may still reference resources the
-        // owners are about to rebuild.
-        drop(encoder);
-        nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_DISCARDED);
+        // owners are about to rebuild. Without one, either `submit` finished
+        // (and settled every record) or it unwound part-way, in which case
+        // the records are rolled back too: nothing says the work was queued.
+        if let Some(encoder) = self.encoder.take() {
+            drop(encoder);
+            nana_diagnostics::metric!(nana_diagnostics::framework::gpu::FRAMES_DISCARDED);
+        }
         for (owner, key) in self.retained.drain(..) {
             owner.roll_back(key, self.id);
         }

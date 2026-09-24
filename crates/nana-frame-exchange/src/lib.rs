@@ -335,6 +335,7 @@ impl<E: Copy + Eq + Send + Sync + 'static> FrameExchange<E> {
     /// submission guard, so it never races a window's surface reconfiguration.
     pub fn copy_from(&mut self, source: &GpuTexture, epoch: E) -> CopyOutcome {
         if source.generation() != self.gpu.generation() {
+            self.set_epoch(epoch);
             return CopyOutcome::DeviceMismatch;
         }
         self.copy_raw(__framework::texture(source), epoch)

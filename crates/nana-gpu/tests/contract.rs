@@ -64,6 +64,17 @@ fn texture_creation_refuses_extents_the_device_cannot_hold() {
             .expect_err("invalid extent");
         assert_eq!(error, GpuError::InvalidExtent { width, height, max });
     }
+    assert_eq!(
+        gpu.create_texture(&GpuTextureDescriptor {
+            label: None,
+            width: 1,
+            height: 1,
+            format: GpuTextureFormat::RGBA8_UNORM,
+            usage: GpuTextureUsages::empty(),
+        })
+        .expect_err("no usage"),
+        GpuError::EmptyUsage
+    );
     let target = texture(
         &gpu,
         GpuTextureUsages::SAMPLED | GpuTextureUsages::RENDER_TARGET,
@@ -129,13 +140,23 @@ fn uploads_are_validated_before_they_reach_the_queue() {
             width: 2,
             height: 1,
         },
-        GpuTextureRegion::full(0, 2),
+        GpuTextureRegion {
+            x: 5,
+            y: 0,
+            width: 0,
+            height: 1,
+        },
     ] {
         assert_eq!(
             gpu.write_texture(&writable, region, &pixels, 32),
             Err(GpuError::RegionOutOfBounds)
         );
     }
+    assert_eq!(
+        gpu.write_texture(&writable, GpuTextureRegion::full(0, 2), &[], 0),
+        Ok(()),
+        "an empty region inside the texture is a no-op, as in WGPU"
+    );
     assert_eq!(
         gpu.write_texture(&writable, GpuTextureRegion::full(4, 2), &pixels, 12),
         Err(GpuError::RowTooShort {

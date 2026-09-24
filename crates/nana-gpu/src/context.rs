@@ -211,6 +211,9 @@ pub(crate) struct GpuInner {
     pub(crate) queue: wgpu::Queue,
     pub(crate) adapter_info: wgpu::AdapterInfo,
     capabilities: GpuCapabilities,
+    /// Whether WGPU trusts the WebGPU format table on this device, rather
+    /// than asking the adapter (see [`GpuContext::format_features`]).
+    webgpu_format_table: bool,
     /// Serializes queue work against `Surface::configure`, which waits for the
     /// GPU to go idle: a submit racing it from another thread fails with
     /// `GpuWaitTimeout`. Every submit and upload the contract performs holds
@@ -262,6 +265,13 @@ impl GpuContext {
         }
         let capabilities = GpuCapabilities::read(&adapter, &device);
         let adapter_info = adapter.get_info();
+        let webgpu_format_table = !device
+            .features()
+            .contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+            && adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::WEBGPU_TEXTURE_FORMAT_SUPPORT);
         Self {
             inner: Arc::new(GpuInner {
                 generation: DeviceGeneration::next(),
@@ -270,6 +280,7 @@ impl GpuContext {
                 queue,
                 adapter_info,
                 capabilities,
+                webgpu_format_table,
                 submission: RwLock::new(()),
                 loss,
                 next_frame: AtomicU64::new(1),
@@ -317,14 +328,16 @@ impl GpuContext {
                 max,
             });
         }
+        if descriptor.usage == GpuTextureUsages::empty() {
+            return Err(GpuError::EmptyUsage);
+        }
         let usage = descriptor.usage.to_wgpu();
         let format = descriptor.format.to_wgpu();
-        let allowed = self
-            .inner
-            .adapter
-            .get_texture_format_features(format)
-            .allowed_usages;
-        if !allowed.contains(usage) || format.is_depth_stencil_format() {
+        if format.is_depth_stencil_format()
+            || !self
+                .format_features(format)
+                .is_some_and(|features| features.allowed_usages.contains(usage))
+        {
             return Err(GpuError::UnsupportedFormat(descriptor.format));
         }
         let texture = self.inner.device.create_texture(&wgpu::TextureDescriptor {
@@ -362,12 +375,12 @@ impl GpuContext {
         let fits = |start: u32, extent: u32, limit: u32| {
             start.checked_add(extent).is_some_and(|end| end <= limit)
         };
-        if region.width == 0
-            || region.height == 0
-            || !fits(region.x, region.width, width)
-            || !fits(region.y, region.height, height)
-        {
+        if !fits(region.x, region.width, width) || !fits(region.y, region.height, height) {
             return Err(GpuError::RegionOutOfBounds);
+        }
+        // An empty region inside the texture is a no-op, as it is for WGPU.
+        if region.width == 0 || region.height == 0 {
+            return Ok(());
         }
         let format = texture.format();
         let Some(texel) = format.bytes_per_pixel() else {
@@ -430,6 +443,21 @@ impl GpuContext {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
         FrameContext::new(self.clone(), id, encoder)
+    }
+
+    /// What WGPU will allow for `format`, chosen the way WGPU validates it:
+    /// the WebGPU table unless the device asks the adapter. `None` when the
+    /// format needs a feature the device lacks.
+    fn format_features(&self, format: wgpu::TextureFormat) -> Option<wgpu::TextureFormatFeatures> {
+        let features = self.inner.device.features();
+        if !features.contains(format.required_features()) {
+            return None;
+        }
+        Some(if self.inner.webgpu_format_table {
+            format.guaranteed_format_features(features)
+        } else {
+            self.inner.adapter.get_texture_format_features(format)
+        })
     }
 
     pub(crate) fn check_device(&self, found: DeviceGeneration) -> Result<(), GpuError> {

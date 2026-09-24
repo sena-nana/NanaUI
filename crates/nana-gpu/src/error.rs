@@ -15,6 +15,8 @@ pub enum GpuError {
     InvalidExtent { width: u32, height: u32, max: u32 },
     /// The texture was not created with these usages.
     MissingUsage(GpuTextureUsages),
+    /// A texture was requested with no usage at all.
+    EmptyUsage,
     /// The format cannot be created with the requested usages on this adapter,
     /// or has no fixed texel size for a CPU upload.
     UnsupportedFormat(GpuTextureFormat),
@@ -38,6 +40,7 @@ impl fmt::Display for GpuError {
                 "texture extent {width}x{height} is empty or exceeds {max}"
             ),
             Self::MissingUsage(usage) => write!(formatter, "texture lacks usage {usage:?}"),
+            Self::EmptyUsage => formatter.write_str("texture usage must not be empty"),
             Self::UnsupportedFormat(format) => {
                 write!(formatter, "texture format {format:?} is not supported here")
             }

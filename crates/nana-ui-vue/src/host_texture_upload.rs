@@ -118,9 +118,12 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
         if recreate {
             let prior_generation = state
                 .entries
-                .remove(&key)
+                .get(&key)
                 .map(|entry| entry.binding.texture.generation())
                 .unwrap_or_else(|| state.texture_epoch.saturating_sub(1));
+            // Created before the old entry goes: a size the device refuses
+            // keeps the slot the store already tracks (and so still removes
+            // on prune or device replacement) instead of orphaning it.
             let texture = state
                 .gpu
                 .create_texture(&GpuTextureDescriptor {
@@ -136,6 +139,7 @@ impl<K: Eq + Hash + Clone> HostTextureSlotStore<K> {
                 prior_generation.saturating_add(1).max(state.texture_epoch),
                 &texture,
             );
+            state.entries.remove(&key);
             let binding = self.textures.register(
                 upload.slot,
                 host,
