@@ -3028,7 +3028,7 @@ impl<'a> TextInputView<'a> {
 
     pub fn to_state(&self) -> TextInputState {
         TextInputState {
-            value: self.value.to_owned(),
+            value: self.session.snapshot(),
             selection: self.selection,
             additional_selections: self.additional_selections.to_vec(),
         }
@@ -3048,7 +3048,9 @@ impl PartialEq<TextInputState> for TextInputView<'_> {
     fn eq(&self, other: &TextInputState) -> bool {
         self.selection == other.selection
             && self.additional_selections == other.additional_selections.as_slice()
-            && self.value == other.value
+            // By identity first: a state holding the session's own buffer
+            // compares without reading it.
+            && self.value_shared() == other.value
     }
 }
 
@@ -3111,14 +3113,17 @@ fn snapped_selection(value: &str, selection: TextSelection) -> TextSelection {
 /// after every edit with [`TextInputState::normalize_selections`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TextInputState {
-    pub value: String,
+    /// Shared with whatever else holds this text — the world's editor
+    /// session among them (Issue #182): cloning a state copies no text, and
+    /// the first edit of a shared value is the only copy it makes.
+    pub value: TextValue,
     pub selection: TextSelection,
     /// Extra cursors/selections, kept empty for the single-cursor fast path.
     pub additional_selections: Vec<TextSelection>,
 }
 
 impl TextInputState {
-    pub fn new(value: impl Into<String>) -> Self {
+    pub fn new(value: impl Into<TextValue>) -> Self {
         let value = value.into();
         let selection = TextSelection::caret(value.len());
         Self {
@@ -3297,7 +3302,7 @@ impl TextInputState {
         else {
             return false;
         };
-        self.value = next_value;
+        self.value = next_value.into();
         self.selection = next_selections
             .get(primary_index)
             .copied()
@@ -3386,7 +3391,7 @@ impl TextInputState {
     /// possible. If the old offsets no longer land on UTF-8 boundaries, move
     /// the caret to the new end. A wholesale value replacement also drops any
     /// additional cursors: their offsets have no meaning in foreign text.
-    pub fn replace_value(&mut self, value: impl Into<String>) {
+    pub fn replace_value(&mut self, value: impl Into<TextValue>) {
         self.value = value.into();
         if !self.selection.is_valid_for(&self.value) {
             self.selection = TextSelection::caret(self.value.len());
@@ -3420,7 +3425,7 @@ impl TextInputState {
             .map(|(_, character)| character.len_utf8())
             .sum::<usize>();
         let caret = value.len() - suffix;
-        self.value = value;
+        self.value = value.into();
         self.selection = TextSelection::caret(caret);
         // Native editor snapshots carry a single selection; drop the rest.
         self.additional_selections.clear();

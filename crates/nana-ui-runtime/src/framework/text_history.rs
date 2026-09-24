@@ -359,7 +359,7 @@ mod editor_tests {
     }
 
     fn value_of(cx: &AppContext, area: crate::Entity<TextArea>) -> String {
-        cx.read(area, |area| area.state.value.clone()).unwrap()
+        cx.read(area, |area| area.state.value.to_string()).unwrap()
     }
 
     #[test]
@@ -768,10 +768,13 @@ mod tests {
         record(&mut history, "a", "ab", TextEditOrigin::Typing);
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
 
-        assert_eq!(history.undo().map(|state| state.value), Some(String::new()));
+        assert_eq!(
+            history.undo().map(|state| state.value.to_string()),
+            Some(String::new())
+        );
         assert!(!history.can_undo(), "the run collapsed into one step");
         assert_eq!(
-            history.redo().map(|state| state.value),
+            history.redo().map(|state| state.value.to_string()),
             Some("abc".to_owned())
         );
     }
@@ -783,9 +786,18 @@ mod tests {
         record(&mut history, "abc", "ab", TextEditOrigin::Delete);
         record(&mut history, "ab", "ab!", TextEditOrigin::Paste);
 
-        assert_eq!(history.undo().map(|s| s.value), Some("ab".to_owned()));
-        assert_eq!(history.undo().map(|s| s.value), Some("abc".to_owned()));
-        assert_eq!(history.undo().map(|s| s.value), Some(String::new()));
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("ab".to_owned())
+        );
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("abc".to_owned())
+        );
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some(String::new())
+        );
         assert!(!history.can_undo());
     }
 
@@ -796,8 +808,14 @@ mod tests {
         history.seal();
         record(&mut history, "ab", "abcd", TextEditOrigin::Typing);
 
-        assert_eq!(history.undo().map(|s| s.value), Some("ab".to_owned()));
-        assert_eq!(history.undo().map(|s| s.value), Some(String::new()));
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("ab".to_owned())
+        );
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some(String::new())
+        );
     }
 
     #[test]
@@ -810,7 +828,10 @@ mod tests {
 
         record(&mut history, "one", "three", TextEditOrigin::Paste);
         assert!(!history.can_redo(), "the abandoned branch is gone");
-        assert_eq!(history.undo().map(|s| s.value), Some("one".to_owned()));
+        assert_eq!(
+            history.undo().map(|s| s.value.to_string()),
+            Some("one".to_owned())
+        );
     }
 
     #[test]

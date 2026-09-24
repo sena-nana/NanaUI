@@ -1443,7 +1443,7 @@ impl AppContext {
             }
             _ => {
                 self.text_edit.selection_expansions =
-                    Some((focused.node, vec![entry], state.value.clone()));
+                    Some((focused.node, vec![entry], state.value.to_string()));
             }
         }
         self.text_edit.caret_goal_x = None;
@@ -2169,7 +2169,7 @@ impl AppContext {
         self.commit_editor_value(
             drag.node,
             focused.kind,
-            next,
+            next.into(),
             selection,
             Vec::new(),
             crate::TextEditOrigin::Structural,
@@ -2481,7 +2481,7 @@ impl AppContext {
             return Ok(false);
         }
         let EditorEdit { value, selection } = edited;
-        self.commit_editor_value(node, kind, value, selection, Vec::new(), origin)
+        self.commit_editor_value(node, kind, value.into(), selection, Vec::new(), origin)
     }
 
     /// Apply a per-cursor edit closure to every active selection and commit
@@ -2515,7 +2515,14 @@ impl AppContext {
             if value == state.value {
                 return Ok(false);
             }
-            return self.commit_editor_value(node, kind, value, selection, Vec::new(), origin);
+            return self.commit_editor_value(
+                node,
+                kind,
+                value.into(),
+                selection,
+                Vec::new(),
+                origin,
+            );
         }
         let selections = state.selections().into_owned();
         let primary_index = selections
@@ -2551,7 +2558,7 @@ impl AppContext {
             .filter(|(index, _)| *index != primary_index)
             .map(|(_, selection)| *selection)
             .collect();
-        self.commit_editor_value(node, kind, value, primary, additional, origin)
+        self.commit_editor_value(node, kind, value.into(), primary, additional, origin)
     }
 
     /// Commit a value edit together with the rebuilt selection set. The set
@@ -2561,7 +2568,7 @@ impl AppContext {
         &mut self,
         node: StableNodeId,
         kind: TextEditorKind,
-        value: String,
+        value: crate::TextValue,
         selection: TextSelection,
         additional: Vec<TextSelection>,
         origin: crate::TextEditOrigin,
@@ -2571,7 +2578,7 @@ impl AppContext {
             session.linked_edit(&old.value, &value, selection)
         });
         let (value, selection, linked_session) = if let Some((value, selection, session)) = linked {
-            (value, selection, Some(session))
+            (value.into(), selection, Some(session))
         } else {
             (value, selection, None)
         };
@@ -4697,7 +4704,7 @@ mod minimap_tests {
             .join("\n");
         context
             .update_component(area, |area, _| {
-                area.state.value = shorter;
+                area.state.value = shorter.into();
                 true
             })
             .unwrap();

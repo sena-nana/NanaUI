@@ -246,7 +246,7 @@ impl SearchDropdown {
         if !self.state.replace_selection(text) {
             return false;
         }
-        self.query = self.state.value.clone();
+        self.query = self.state.value.to_string();
         self.highlighted = self.first_visible();
         true
     }
@@ -265,7 +265,7 @@ impl SearchDropdown {
         {
             return false;
         }
-        self.query = self.state.value.clone();
+        self.query = self.state.value.to_string();
         self.highlighted = self.first_visible();
         true
     }

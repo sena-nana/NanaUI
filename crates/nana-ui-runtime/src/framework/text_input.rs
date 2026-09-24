@@ -26,7 +26,7 @@ impl AppContext {
         }
         self.update(entity, |input, cx| {
             cx.emit(crate::TextSubmitted {
-                value: input.state.value.clone(),
+                value: input.state.value.to_string(),
             });
         })?;
         Ok(true)
@@ -205,7 +205,7 @@ impl AppContext {
                 && let Some((value, selection, session)) =
                     session.linked_edit(old, &editable.state().value, editable.state().selection)
             {
-                editable.state_mut().value = value;
+                editable.state_mut().value = value.into();
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
@@ -479,7 +479,7 @@ impl AppContext {
                 && let Some((value, selection, session)) =
                     session.linked_edit(&old, &editable.state().value, editable.state().selection)
             {
-                editable.state_mut().value = value;
+                editable.state_mut().value = value.into();
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
@@ -513,7 +513,7 @@ impl AppContext {
                 && let Some((value, selection, session)) =
                     session.linked_edit(&old, &editable.state().value, editable.state().selection)
             {
-                editable.state_mut().value = value;
+                editable.state_mut().value = value.into();
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }
@@ -616,7 +616,7 @@ impl AppContext {
                 && let Some((value, selection, session)) =
                     session.linked_edit(&old, &editable.state().value, editable.state().selection)
             {
-                editable.state_mut().value = value;
+                editable.state_mut().value = value.into();
                 editable.state_mut().selection = selection;
                 linked = Some(session);
             }

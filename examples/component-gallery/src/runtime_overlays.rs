@@ -607,7 +607,7 @@ impl GalleryState {
                 (
                     palette.title.to_string(),
                     palette.query.clone(),
-                    palette.state.value.clone(),
+                    palette.state.value.to_string(),
                     palette.selected,
                 )
             })

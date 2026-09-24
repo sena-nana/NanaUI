@@ -1538,7 +1538,7 @@ impl VueHost {
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(text));
         detail.insert("inputType".into(), HostValue::string(input_type));
-        detail.insert("value".into(), HostValue::string(&next.value));
+        detail.insert("value".into(), HostValue::string(next.value.as_str()));
         detail.insert("isComposing".into(), HostValue::Bool(false));
         if !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
             return Ok(false);
@@ -1699,7 +1699,7 @@ impl VueHost {
             let document = self.document.lock().expect("vue doc");
             document
                 .text_input_state(target)
-                .map(|state| state.value)
+                .map(|state| state.value.to_string())
                 .or_else(|| document.get_attribute(target, "value"))
                 .unwrap_or_default()
         };
@@ -1883,7 +1883,7 @@ impl VueHost {
         let mut detail = BTreeMap::new();
         detail.insert("data".into(), HostValue::string(""));
         detail.insert("inputType".into(), HostValue::string("deleteContent"));
-        detail.insert("value".into(), HostValue::string(&next.value));
+        detail.insert("value".into(), HostValue::string(next.value.as_str()));
         detail.insert("isComposing".into(), HostValue::Bool(false));
         if commit_runtime && !self.fire_dom_event(engine, target, "beforeinput", detail.clone())? {
             return Ok(false);

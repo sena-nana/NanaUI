@@ -3432,7 +3432,7 @@ fn fold_state_survives_host_refeed_and_shift_rescue() {
     queue.set_text_input(
         node(1),
         Some(TextInputState {
-            value: shifted_value.clone(),
+            value: shifted_value.clone().into(),
             selection: crate::TextSelection::caret(0),
             additional_selections: Vec::new(),
         }),
@@ -3509,7 +3509,7 @@ fn fold_unfolds_when_edited_inside_and_shifts_after_edit() {
     queue.set_text_input(
         node(1),
         Some(TextInputState {
-            value: longer,
+            value: longer.into(),
             selection: crate::TextSelection::caret(FOLD_VALUE.len()),
             additional_selections: Vec::new(),
         }),
@@ -3522,7 +3522,7 @@ fn fold_unfolds_when_edited_inside_and_shifts_after_edit() {
     queue.set_text_input(
         node(1),
         Some(TextInputState {
-            value: format!("{}{}", &FOLD_VALUE[..15], &FOLD_VALUE[20..]),
+            value: format!("{}{}", &FOLD_VALUE[..15], &FOLD_VALUE[20..]).into(),
             selection: crate::TextSelection::caret(15),
             additional_selections: Vec::new(),
         }),
@@ -3597,7 +3597,7 @@ fn text_input_edit_shifts_snippet_stops_outside_and_ends_session_inside() {
     queue.set_text_input(
         node(1),
         Some(TextInputState {
-            value: format!("// hi\n{FOLD_VALUE}"),
+            value: format!("// hi\n{FOLD_VALUE}").into(),
             selection: crate::TextSelection::caret(0),
             additional_selections: Vec::new(),
         }),
@@ -3869,7 +3869,7 @@ fn atom_spans_cover_token_glyphs_with_label_and_close_hit() {
     queue.set_text_input(
         node(1),
         Some(TextInputState {
-            value: value.clone(),
+            value: value.clone().into(),
             selection: crate::TextSelection::caret(end),
             additional_selections: Vec::new(),
         }),

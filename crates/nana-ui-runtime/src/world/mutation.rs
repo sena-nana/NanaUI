@@ -499,7 +499,7 @@ impl<'a> ValidationPlan<'a> {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
                     let staged = state.as_ref().map(|state| StagedText {
-                        value: state.value.clone().into(),
+                        value: state.value.clone(),
                         selection: state.selection,
                         additional: state.additional_selections.clone(),
                     });
@@ -516,7 +516,7 @@ impl<'a> ValidationPlan<'a> {
                 UiMutation::ReplaceTextSelection { id, text } => {
                     let staged = self.text_input(*id)?;
                     let mut state = crate::TextInputState {
-                        value: staged.value.to_string(),
+                        value: staged.value,
                         selection: staged.selection,
                         additional_selections: staged.additional,
                     };
@@ -1984,7 +1984,9 @@ impl UiWorld {
                     );
                     return;
                 };
-                let value = crate::TextValue::from(state.value.clone());
+                // The component's own buffer: the session adopts it, so both
+                // hold one copy of the text.
+                let value = state.value.clone();
                 // The text before, for the fold and snippet remaps: a shared
                 // copy, so taking it costs nothing.
                 let previous = self

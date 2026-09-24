@@ -162,7 +162,7 @@ impl CommandPalette {
         if !self.state.replace_selection(text) {
             return false;
         }
-        self.query = self.state.value.clone();
+        self.query = self.state.value.to_string();
         self.selected = 0;
         true
     }
@@ -181,7 +181,7 @@ impl CommandPalette {
         {
             return false;
         }
-        self.query = self.state.value.clone();
+        self.query = self.state.value.to_string();
         self.selected = 0;
         true
     }

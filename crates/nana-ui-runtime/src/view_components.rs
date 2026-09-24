@@ -175,7 +175,7 @@ fn project_text_field(
         // did not change, and mark the node's text content dirty for a move
         // that did not touch a byte of it.
         Some(current)
-            if current.value == field.state.value
+            if current.value_shared() == field.state.value
                 && current.additional_selections == field.state.additional_selections =>
         {
             if current.selection != field.state.selection {
@@ -1543,7 +1543,7 @@ pub struct TextInput {
 impl TextInput {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
-            state: TextInputState::new(value),
+            state: TextInputState::new(Into::<String>::into(value)),
             max_length: None,
             label: None,
             placeholder: Arc::from(""),
@@ -2113,7 +2113,7 @@ pub struct TextArea {
 impl TextArea {
     pub fn new(value: impl Into<String>) -> Self {
         Self {
-            state: TextInputState::new(value),
+            state: TextInputState::new(Into::<String>::into(value)),
             resize_vertical: false,
             resized_height: None,
             resize_drag: None,

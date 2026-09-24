@@ -678,7 +678,7 @@ mod tests {
             .expect("primary")
             .context()
             .read(fixture.name, |input| {
-                (input.state.value.clone(), input.state.selection)
+                (input.state.value.to_string(), input.state.selection)
             })
             .expect("read name")
     }
