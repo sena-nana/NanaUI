@@ -1911,6 +1911,9 @@ impl AppContext {
         // so nothing else starts a selection there, but it places no caret.
         if focused.is_numeric() && self.on_number_stepper(node, x, y) {
             self.text_edit.text_pointer_drag = None;
+            // A spinner press between two text presses breaks their click
+            // run: they are two single clicks, not a double click.
+            self.text_edit.text_pointer_click = None;
             return Ok(true);
         }
         let state = self.editor_state(node, focused.kind)?;

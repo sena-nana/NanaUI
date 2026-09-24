@@ -1686,6 +1686,26 @@ fn pressing_the_spinner_steps_and_pressing_the_text_does_not() {
     assert_eq!(caret(&context), TextSelection::caret(0));
     context.text_editor_pointer_release(1);
 
+    // Text, spinner, text again inside the double-click window: two single
+    // clicks, so the second places a caret rather than selecting a word.
+    for (x, y, at) in [(0.0, 16.0, 2000), (up_x, up_y, 2100), (0.0, 16.0, 2200)] {
+        context
+            .text_editor_pointer_press(
+                document,
+                input.stable_id(),
+                1,
+                x,
+                y,
+                false,
+                false,
+                std::time::Duration::from_millis(at),
+                &mut crate::MeasureTextShaper,
+            )
+            .unwrap();
+        context.text_editor_pointer_release(1);
+    }
+    assert!(caret(&context).is_collapsed());
+
     assert!(
         context
             .press_number_stepper(input.stable_id(), up_x, up_y)

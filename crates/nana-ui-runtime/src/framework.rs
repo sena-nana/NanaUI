@@ -226,8 +226,18 @@ impl EditableText for NumberInput {
         }
     }
 
+    /// A number never holds control characters: the newline or tab a host
+    /// reports with Enter or Tab, or one pasted after a copied cell, is
+    /// dropped and the rest inserted.
     fn replace_selection(&mut self, text: &str) -> bool {
-        self.state.replace_selection(text)
+        if !text.chars().any(char::is_control) {
+            return self.state.replace_selection(text);
+        }
+        let kept: String = text
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        !kept.is_empty() && self.state.replace_selection(&kept)
     }
 
     fn state(&self) -> &TextInputState {
