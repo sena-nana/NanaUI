@@ -327,6 +327,8 @@ let app = mount_vue_as_nana(MountOptions {
 
 控件需要先于默认编辑处理按键时，用 `AppContext::on_key` 或 `on_view_key` 注册一个策略；后者读取当前保留的控件值。返回 `true` 表示消费，重复注册替换旧策略，删除视图会移除策略。`RuntimeInputAdapter` 在浮层处理后、默认编辑前调用 `dispatch_focused_key`，只投递给当前文档中已挂载且未禁用的焦点节点，IME 组合期间跳过业务策略。
 
+应用改写编辑器文本（`update_component`、`set_component`、`mount` 或直接提交 `SetTextInput`）时，只要字节变了，该编辑器的 undo/redo 就在下一次使用时清空：载入另一份文档后 Ctrl+Z 不会退回上一份。写回编辑器自己报告的值、或重建出相同文本，不算改写，日志保留。发送后清空输入框、格式化器写回这类写入同样会清掉用户的撤销历史；要让它成为用户可撤销的一步（格式快捷键、补全），改用 `edit_text_area` / `edit_text_input`，并传入要记录成的 `TextEditOrigin`。
+
 保留编辑器绑定到另一个任务、文件或草稿身份时，即使文本相同也应调用 `clear_text_history(node)`，清除原对象的 undo/redo；它不改变文本、选区或正在进行的 IME。业务对象身份和是否允许重绑定仍由应用判断。
 
 自接指针的组件可用 `UiWorld::pointer_layout_position` 将窗口坐标转换到布局坐标，反向用 `layout_pointer_position`。两者使用当前命中投影，包括祖先滚动和透视变换；无投影、已 park 或不可逆变换返回 `None`。输入之前应由既有帧流程刷新布局与命中投影。

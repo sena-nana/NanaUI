@@ -714,55 +714,72 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 }
 
 #[test]
-fn restoring_focus_from_a_removed_overlay_ends_the_composition_it_leaves() {
-    let mut world = UiWorld::new();
-    let mut create = MutationQueue::new();
-    create.create(node(1), document(1), NodeKind::Document);
-    for (id, parent, tag) in [(2, 1, "div"), (3, 2, "button"), (4, 1, "textarea")] {
-        create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
-        create.insert(node(parent), node(id), None);
-        create.set_interaction(
-            node(id),
-            InteractionState {
-                pointer_events: true,
-                focusable: true,
+fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
+    for focus_in_menu in [true, false] {
+        let mut world = UiWorld::new();
+        let mut create = MutationQueue::new();
+        create.create(node(1), document(1), NodeKind::Document);
+        for (id, parent, tag) in [(2, 1, "div"), (3, 2, "button"), (4, 1, "textarea")] {
+            create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
+            create.insert(node(parent), node(id), None);
+            create.set_interaction(
+                node(id),
+                InteractionState {
+                    pointer_events: true,
+                    focusable: true,
+                },
+            );
+        }
+        create.set_text_input(node(4), Some(TextInputState::new("value")));
+        // Node 2 hosts a (non-modal) menu, node 3, opened from node 2.
+        create.set_accessibility(
+            node(3),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
             },
         );
-    }
-    create.set_text_input(node(4), Some(TextInputState::new("value")));
-    // Node 2 hosts a (non-modal) menu, node 3, opened from node 2.
-    create.set_accessibility(
-        node(3),
-        AccessibilityState {
-            role: AccessibilityRole::Menu,
-            ..AccessibilityState::default()
-        },
-    );
-    create.set_overlay_host(
-        node(2),
-        OverlayHostState {
-            active: Some(node(3)),
-            restore_focus: Some(node(2)),
-        },
-    );
-    // The user went on typing elsewhere, mid-composition.
-    create.request_focus(document(1), Some(node(4)));
-    create.set_ime(
-        node(4),
-        Some(ImeComposition {
-            text: "ni".into(),
-            selection: None,
-        }),
-    );
-    world.commit(create).unwrap();
-    assert!(world.ime(node(4)).is_some());
+        create.set_overlay_host(
+            node(2),
+            OverlayHostState {
+                active: Some(node(3)),
+                restore_focus: Some(node(2)),
+            },
+        );
+        if focus_in_menu {
+            create.request_focus(document(1), Some(node(3)));
+        } else {
+            // The user went on typing elsewhere, mid-composition.
+            create.request_focus(document(1), Some(node(4)));
+            create.set_ime(
+                node(4),
+                Some(ImeComposition {
+                    text: "ni".into(),
+                    selection: None,
+                }),
+            );
+        }
+        world.commit(create).unwrap();
 
-    let mut close = MutationQueue::new();
-    close.despawn_subtree(node(3));
-    world.commit(close).unwrap();
-    assert_eq!(world.focused(document(1)), Some(node(2)));
-    assert_eq!(world.ime(node(4)), None, "no composition left behind");
-    assert_eq!(world.text_input(node(4)).unwrap().value, "value");
+        let mut close = MutationQueue::new();
+        close.despawn_subtree(node(3));
+        world.commit(close).unwrap();
+        if focus_in_menu {
+            assert_eq!(
+                world.focused(document(1)),
+                Some(node(2)),
+                "focus leaving with the menu returns to where it came from"
+            );
+        } else {
+            assert_eq!(
+                world.focused(document(1)),
+                Some(node(4)),
+                "the menu's host does not take focus back from the editor"
+            );
+            assert!(world.ime(node(4)).is_some(), "nor end its composition");
+        }
+        assert_eq!(world.text_input(node(4)).unwrap().value, "value");
+    }
 }
 
 #[test]

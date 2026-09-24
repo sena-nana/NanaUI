@@ -693,7 +693,15 @@ impl AppContext {
                     let focus = if view.crosses_cover(moved.focus, stepping)
                         && view.value_of(moved.focus) == previous_focus
                     {
-                        view.value_of_forward(moved.focus)
+                        // The step the intent takes over the bare text.
+                        view.value_of_forward(moved.focus, |anchor| {
+                            crate::text_editing::caret_focus(
+                                &state.value,
+                                TextSelection::caret(anchor),
+                                intent,
+                            )
+                            .unwrap_or(anchor)
+                        })
                     } else {
                         view.value_of(moved.focus)
                     };
@@ -5167,6 +5175,26 @@ mod atom_tests {
             cut.as_deref(),
             Some("Hi [bob]"),
             "the whole chip, as deleted"
+        );
+    }
+
+    #[test]
+    fn a_cut_leaves_an_atom_its_bare_primary_caret_sits_in() {
+        let value = "Hi [bob]! x";
+        let (mut context, document, area, node) = focused_editor(value);
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                area.state.selection = TextSelection::caret(5);
+                area.state.additional_selections = vec![TextSelection::new(10, 11)];
+            })
+            .unwrap();
+        let cut = context.cut_focused_text(document).unwrap();
+        assert_eq!(cut.as_deref(), Some("x"));
+        assert_eq!(
+            context.world().text_input(node).unwrap().value,
+            "Hi [bob]! ",
+            "the chip the copy did not take stays"
         );
     }
 

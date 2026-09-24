@@ -2400,20 +2400,24 @@ impl UiWorld {
             self.write_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
             let document = self.record(host).document;
+            // Focus goes back only if it left with the overlay. Focus the
+            // user already moved to another node stays there, with whatever
+            // composition it has going.
+            let focus_left = self
+                .input
+                .focused
+                .get(&document)
+                .is_none_or(|focused| removed.contains(focused) || !self.contains(*focused));
             if let Some(restore_focus) = restore_focus.filter(|id| {
-                self.contains(*id)
+                focus_left
+                    && self.contains(*id)
                     && self.is_mounted(*id)
                     && self.record(*id).document == document
                     && self.record(*id).interaction.focusable
                     && self.record(*id).resolved.0.visible
                     && self.active_modal_allows_focus_now(document, *id)
             }) {
-                let old = self.input.focused.insert(document, restore_focus);
-                // Focus leaving a node this removal did not take with it
-                // leaves it as a RequestFocus would: no composition behind.
-                if let Some(old) = old.filter(|old| *old != restore_focus && self.contains(*old)) {
-                    self.release_focus(old);
-                }
+                self.input.focused.insert(document, restore_focus);
                 self.mark_focus_changed(restore_focus);
             }
         }

@@ -623,7 +623,10 @@ impl AppContext {
         let old = self.read(entity, |editable| editable.state().value.clone())?;
         let mut linked = None;
         let changed = self.commit_editor_edit(entity, origin, |editable, _| {
-            if let Some(expanded) = atom_expanded_primary(editable) {
+            // Removing at a bare caret removes nothing, even inside an atom:
+            // a cut deletes what its copy took, and a caret took nothing.
+            let removes_nothing = text.is_empty() && editable.state().selection.is_collapsed();
+            if !removes_nothing && let Some(expanded) = atom_expanded_primary(editable) {
                 editable.state_mut().selection = expanded;
             }
             if !editable.replace_selection(text) {
