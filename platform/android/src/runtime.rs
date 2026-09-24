@@ -208,7 +208,7 @@ impl HostState {
             last_paint,
             ..
         } = self;
-        let Some(gpu) = gpu.as_ref() else {
+        let Some(gpu) = gpu.as_mut() else {
             return Ok(());
         };
         gpu.present_chrome_bands_with_overlay(&bands, |view, encoder| {
