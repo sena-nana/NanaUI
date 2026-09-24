@@ -2736,18 +2736,13 @@ impl AppContext {
         } else {
             (value, selection, None)
         };
-        // The editor's own rule for what it takes (a field's length limit).
-        let admits = match kind {
-            TextEditorKind::Area => self
-                .read(Entity::<TextArea>::from_stable_id(node), |area| {
-                    EditableText::admits_value(area, &value)
-                })?,
-            TextEditorKind::Field => self
-                .read(Entity::<TextInput>::from_stable_id(node), |field| {
-                    EditableText::admits_value(field, &value)
-                })?,
-        };
-        if !admits {
+        // The editor's own rule for what it takes: a field's length limit
+        // (a text area takes any text, so there is nothing to ask it).
+        if matches!(kind, TextEditorKind::Field)
+            && !self.read(Entity::<TextInput>::from_stable_id(node), |field| {
+                EditableText::admits_value(field, &value)
+            })?
+        {
             return Ok(false);
         }
         let mut next = TextInputState {

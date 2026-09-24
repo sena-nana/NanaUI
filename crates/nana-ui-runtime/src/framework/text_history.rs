@@ -155,9 +155,8 @@ impl TextHistory {
             && origin.merges_with(last.origin)
         {
             last.after = after;
-            // A run that ends where it began (the editor's change handler
-            // cleared what was typed, after sending it) leaves nothing to
-            // undo.
+            // A run that ends where it began changes nothing, and is no step
+            // to undo (typing a character a change handler then removed).
             if last.after.value == last.before.value {
                 self.steps.pop();
             }
@@ -494,11 +493,13 @@ impl crate::AppContext {
         // only another batch's write causes, and one that wrote the same
         // bytes leaves the journal true.
         let held = self.editor_text_stamp(node);
-        let foreign = written.is_ok()
-            && self
-                .world
-                .text_input(node)
-                .is_none_or(|input| input.value_shared() != after.value);
+        // Whether or not the write reported an error: a follow-up that
+        // failed after writing the editor still left text the journal did
+        // not produce.
+        let foreign = self
+            .world
+            .text_input(node)
+            .is_none_or(|input| input.value_shared() != after.value);
         if foreign {
             self.text_histories.forget(node);
             return written;
@@ -592,16 +593,22 @@ impl crate::AppContext {
             });
         // A restore that failed may still have landed (the component took
         // the text before a follow-up failed): then the cursor moves too.
-        let landed = match &restored {
-            Ok(restored) => *restored,
-            Err(_) => self
-                .read(entity, |editable: &C| {
-                    editable.state().value == target_value
-                })
-                .unwrap_or(false),
-        };
-        if landed {
-            self.text_histories.step(node, undo);
+        let holds_target = self
+            .read(entity, |editable: &C| {
+                editable.state().value == target_value
+            })
+            .unwrap_or(false);
+        match &restored {
+            // Restored as the journal kept it: the cursor moves with it.
+            Ok(true) if holds_target => self.text_histories.step(node, undo),
+            // Restored, then rewritten by the editor's change handler: the
+            // editor holds a state the journal never had, and no cursor
+            // position matches it.
+            Ok(true) => self.text_histories.forget(node),
+            // A failed restore that landed anyway (the component took the
+            // text before a follow-up failed) moves the cursor too.
+            Err(_) if holds_target => self.text_histories.step(node, undo),
+            _ => {}
         }
         restored
     }
@@ -1164,10 +1171,9 @@ mod editor_tests {
     }
 
     #[test]
-    fn a_change_handler_clearing_what_was_sent_leaves_nothing_to_undo() {
+    fn a_draft_cleared_on_send_stays_undoable_until_the_app_clears_the_history() {
         let mut cx = AppContext::new();
         let area = focused_area(&mut cx, "");
-        cx.replace_focused_text(document(), "hello").unwrap();
         // Clear after send: the handler is given the editor itself.
         cx.on(area, |area, event: &crate::TextChanged, _| {
             if event.value.ends_with('\n') {
@@ -1175,13 +1181,44 @@ mod editor_tests {
             }
         })
         .unwrap();
+        // A one-run draft cleared back to where the run began: a run that
+        // changes nothing is no step.
+        cx.replace_focused_text(document(), "hi").unwrap();
         cx.insert_focused_text_newline(document()).unwrap();
         assert_eq!(value_of(&cx, area), "");
-        assert!(
-            !cx.can_undo_text(area.stable_id()),
-            "the sent draft is not undone back into"
-        );
+        assert!(!cx.can_undo_text(area.stable_id()));
+
+        // A draft of several steps: undoing into it is the application's
+        // call, made by clearing the history when it sends.
+        cx.replace_focused_text(document(), "hello").unwrap();
+        cx.paste_focused_text(document(), " world").unwrap();
+        cx.insert_focused_text_newline(document()).unwrap();
+        assert_eq!(value_of(&cx, area), "");
+        assert!(cx.can_undo_text(area.stable_id()));
+        cx.clear_text_history(area.stable_id()).unwrap();
         assert!(!cx.undo_focused_text(document()).unwrap());
+    }
+
+    #[test]
+    fn an_undo_a_change_handler_rewrites_drops_the_journal() {
+        let rewrite = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        let armed = std::sync::Arc::clone(&rewrite);
+        cx.on(area, move |area, _: &crate::TextChanged, _| {
+            if armed.load(std::sync::atomic::Ordering::Relaxed) && area.state.value.is_empty() {
+                area.state = crate::TextInputState::new("-");
+            }
+        })
+        .unwrap();
+        cx.replace_focused_text(document(), "ab").unwrap();
+        rewrite.store(true, std::sync::atomic::Ordering::Relaxed);
+        // The undo lands "", which the handler turns into "-": a state the
+        // journal never had, so no position in it matches what is shown.
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(value_of(&cx, area), "-");
+        assert!(!cx.can_undo_text(area.stable_id()));
+        assert!(!cx.can_redo_text(area.stable_id()));
     }
 
     #[test]
