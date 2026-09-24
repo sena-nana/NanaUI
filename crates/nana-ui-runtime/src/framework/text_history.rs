@@ -212,20 +212,6 @@ impl TextHistory {
         moved.is_some()
     }
 
-    #[cfg(test)]
-    fn undo(&mut self) -> Option<TextInputState> {
-        let state = self.peek(true).cloned()?;
-        self.step(true);
-        Some(state)
-    }
-
-    #[cfg(test)]
-    fn redo(&mut self) -> Option<TextInputState> {
-        let state = self.peek(false).cloned()?;
-        self.step(false);
-        Some(state)
-    }
-
     /// The state [`Self::undo`] or [`Self::redo`] would restore, without
     /// moving the cursor or sealing anything.
     fn peek(&self, undo: bool) -> Option<&TextInputState> {
@@ -281,9 +267,6 @@ struct Writing {
     node: StableNodeId,
     /// Another batch changed the editor's text meanwhile.
     foreign: bool,
-    /// An edit made from within this one, on the same editor (an assembler
-    /// auto-closing the bracket the user typed): part of this step.
-    nested: bool,
 }
 
 impl TextHistories {
@@ -397,8 +380,7 @@ impl crate::AppContext {
     /// moves through the edit rather than to it. It is not typing into a
     /// snippet: linked placeholders do not mirror it, and an active snippet
     /// session is remapped through it (or ends) as for any value change.
-    /// Made from within an edit of the same editor (an assembler
-    /// auto-closing a bracket), it joins that edit's step. Emits the
+    /// Emits the
     /// editor's change event. Returns whether the text changed; a range
     /// outside the text or off a character boundary is an error.
     pub fn edit_text_area(
@@ -529,26 +511,17 @@ impl crate::AppContext {
             return update(self, &mut edited);
         }
         let node = entity.stable_id();
-        // Made from within an edit of the same editor: the outer edit
-        // records the two as one step.
-        if let Some(outer) = self.text_histories.writing_mut(node) {
-            outer.nested = true;
-            return update(self, &mut edited);
-        }
         self.follow_text_history(node);
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
         self.text_histories.writing.push(Writing {
             node,
             foreign: false,
-            nested: false,
         });
         let written = update(self, &mut edited);
-        let Writing {
-            foreign, nested, ..
-        } = self
+        let foreign = self
             .text_histories
             .finish_writing(node)
-            .expect("the write pushed above");
+            .is_some_and(|writing| writing.foreign);
         if matches!(written, Ok(false)) {
             return written;
         }
@@ -559,9 +532,8 @@ impl crate::AppContext {
         // own delivery (a clear after send, a formatter): it replaced the
         // value the user produced, an application write. A commit that
         // failed and rolled the component back (text as before) is neither.
-        let rewritten = !nested
-            && after.value != before.value
-            && edited.is_some_and(|edited| edited != after.value);
+        let rewritten =
+            after.value != before.value && edited.is_some_and(|edited| edited != after.value);
         if foreign || rewritten {
             self.text_histories.forget(node);
             return written;
@@ -1283,7 +1255,6 @@ mod editor_tests {
             cx.text_histories.writing.push(super::Writing {
                 node,
                 foreign: false,
-                nested: false,
             });
             let mut queue = crate::MutationQueue::new();
             queue.set_text_input(node, Some(crate::TextInputState::new(text)));
@@ -1432,25 +1403,23 @@ mod editor_tests {
     }
 
     #[test]
-    fn an_edit_made_from_within_an_edit_of_the_same_editor_joins_its_step() {
+    fn an_edit_on_the_users_behalf_leaves_the_editor_and_world_on_one_caret() {
         let mut cx = AppContext::new();
-        let area = focused_area(&mut cx, "");
-        let node = area.stable_id();
-        cx.replace_focused_text(document(), "f").unwrap();
-        // Stand in for the outer edit in flight (an assembler reacting to
-        // the "(" the user typed, auto-closing it).
-        cx.text_histories.writing.push(super::Writing {
-            node,
-            foreign: false,
-            nested: false,
-        });
-        assert!(cx.edit_text_area(area, 1..1, "()").unwrap());
-        let outer = cx.text_histories.finish_writing(node).unwrap();
-        assert!(outer.nested, "the outer edit learns it has a nested one");
-        assert!(!outer.foreign, "which is not someone else's write");
-        // The nested edit recorded nothing of its own: the outer records both
-        // as one step when it finishes.
-        assert_eq!(cx.text_histories.entries[&node].steps.len(), 1);
+        let area = focused_area(&mut cx, "e");
+        cx.select_focused_text_range(document(), 1, 1).unwrap();
+        // A combining mark after the caret's base: the caret, now inside the
+        // cluster, snaps the same way in the component and in the world.
+        assert!(cx.edit_text_area(area, 1..1, "\u{301}").unwrap());
+        let component = cx.read(area, |area| area.state.selection).unwrap();
+        let world = cx.world().text_input(area.stable_id()).unwrap().selection;
+        assert_eq!(component, world);
+        assert!(
+            cx.world()
+                .text_input(area.stable_id())
+                .unwrap()
+                .value
+                .is_char_boundary(component.focus)
+        );
     }
 
     #[test]
@@ -1537,6 +1506,20 @@ mod tests {
         history.record(state(from), state(to), origin);
     }
 
+    /// What the editor's undo does: look at the step, then move once the
+    /// restore landed (here it always does).
+    fn undo(history: &mut TextHistory) -> Option<TextInputState> {
+        let state = history.peek(true).cloned()?;
+        history.step(true);
+        Some(state)
+    }
+
+    fn redo(history: &mut TextHistory) -> Option<TextInputState> {
+        let state = history.peek(false).cloned()?;
+        history.step(false);
+        Some(state)
+    }
+
     /// The step count alone bounds the journal only for small documents: a
     /// step holds the value before AND after, so a deep journal of a large
     /// document would be hundreds of megabytes. Past the byte budget the
@@ -1563,7 +1546,7 @@ mod tests {
         assert!(history.steps.len() < 40, "old steps went");
         assert!(history.can_undo(), "the newest edit is still undoable");
         assert_eq!(
-            history.undo().map(|state| state.value.len()),
+            undo(&mut history).map(|state| state.value.len()),
             Some(big.len() + 2),
             "and it undoes to the value that edit started from"
         );
@@ -1590,12 +1573,12 @@ mod tests {
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|state| state.value.to_string()),
+            undo(&mut history).map(|state| state.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo(), "the run collapsed into one step");
         assert_eq!(
-            history.redo().map(|state| state.value.to_string()),
+            redo(&mut history).map(|state| state.value.to_string()),
             Some("abc".to_owned())
         );
     }
@@ -1608,15 +1591,15 @@ mod tests {
         record(&mut history, "ab", "ab!", TextEditOrigin::Paste);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("abc".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo());
@@ -1630,11 +1613,11 @@ mod tests {
         record(&mut history, "ab", "abcd", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some(String::new())
         );
     }
@@ -1644,10 +1627,10 @@ mod tests {
         let mut history = TextHistory::default();
         record(&mut history, "", "abc", TextEditOrigin::Typing);
         record(&mut history, "abc", "ab", TextEditOrigin::Delete);
-        history.undo();
+        undo(&mut history);
         record(&mut history, "abc", "abcd", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("abc".to_owned()),
             "not back through the typing before the undo"
         );
@@ -1655,11 +1638,11 @@ mod tests {
         // After a redo, likewise.
         let mut history = TextHistory::default();
         record(&mut history, "", "ab", TextEditOrigin::Typing);
-        history.undo();
-        history.redo();
+        undo(&mut history);
+        redo(&mut history);
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("ab".to_owned())
         );
     }
@@ -1669,13 +1652,13 @@ mod tests {
         let mut history = TextHistory::default();
         record(&mut history, "", "one", TextEditOrigin::Paste);
         record(&mut history, "one", "two", TextEditOrigin::Paste);
-        history.undo();
+        undo(&mut history);
         assert!(history.can_redo());
 
         record(&mut history, "one", "three", TextEditOrigin::Paste);
         assert!(!history.can_redo(), "the abandoned branch is gone");
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            undo(&mut history).map(|s| s.value.to_string()),
             Some("one".to_owned())
         );
     }

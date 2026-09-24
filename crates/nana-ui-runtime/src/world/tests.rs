@@ -876,6 +876,80 @@ fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
 }
 
 #[test]
+fn focus_returning_from_a_nested_overlay_ends_the_composition_it_leaves() {
+    let mut world = UiWorld::new();
+    let mut create = MutationQueue::new();
+    create.create(node(1), document(1), NodeKind::Document);
+    // Host 2 opens popover 3; its item 5 opened listbox 7 (hosted by 6),
+    // whose filter field 11 the user is composing in.
+    for (id, parent, tag) in [
+        (2, 1, "div"),
+        (3, 2, "div"),
+        (5, 3, "div"),
+        (6, 1, "div"),
+        (7, 6, "div"),
+        (11, 7, "textarea"),
+    ] {
+        create.create(node(id), document(1), NodeKind::Element { tag: tag.into() });
+        create.insert(node(parent), node(id), None);
+        create.set_interaction(
+            node(id),
+            InteractionState {
+                pointer_events: true,
+                focusable: true,
+            },
+        );
+    }
+    for id in [3, 7] {
+        create.set_accessibility(
+            node(id),
+            AccessibilityState {
+                role: AccessibilityRole::Menu,
+                ..AccessibilityState::default()
+            },
+        );
+    }
+    create.set_text_input(node(11), Some(TextInputState::new("fi")));
+    world.commit(create).unwrap();
+    let mut open = MutationQueue::new();
+    open.set_overlay_host(
+        node(2),
+        OverlayHostState {
+            active: Some(node(3)),
+            restore_focus: Some(node(2)),
+        },
+    );
+    open.set_overlay_host(
+        node(6),
+        OverlayHostState {
+            active: Some(node(7)),
+            restore_focus: Some(node(5)),
+        },
+    );
+    open.request_focus(document(1), Some(node(11)));
+    open.set_ime(
+        node(11),
+        Some(ImeComposition {
+            text: "lt".into(),
+            selection: None,
+        }),
+    );
+    world.commit(open).unwrap();
+    assert!(world.ime(node(11)).is_some());
+
+    let mut close = MutationQueue::new();
+    close.despawn_subtree(node(3));
+    world.commit(close).unwrap();
+    assert_eq!(world.focused(document(1)), Some(node(2)));
+    assert!(world.contains(node(11)), "the listbox is still there");
+    assert_eq!(
+        world.ime(node(11)),
+        None,
+        "focus left it, so its composition ended"
+    );
+}
+
+#[test]
 fn parked_subtree_leaves_every_document_projection_and_remounts_intact() {
     let mut world = UiWorld::new();
     let mut create = MutationQueue::new();

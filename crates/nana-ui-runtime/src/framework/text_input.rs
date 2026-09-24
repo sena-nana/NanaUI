@@ -683,10 +683,8 @@ impl AppContext {
             if value[range.clone()] == *text {
                 return false;
             }
-            let mut next = String::with_capacity(value.len() - range.len() + text.len());
-            next.push_str(&value[..range.start]);
-            next.push_str(&text);
-            next.push_str(&value[range.end..]);
+            let mut next = value.clone();
+            next.replace_range(range.clone(), &text);
             // Refused whole, not cut to fit: half a completion is not the
             // edit that was asked for.
             if !editable.admits_value(&next) {
@@ -696,7 +694,7 @@ impl AppContext {
             // the edit rather than to it.
             let (start, removed, inserted) = (range.start, range.len(), text.len());
             let state = editable.state_mut();
-            state.value = next.into();
+            state.value = next;
             state.selection =
                 nana_text::editable::remap_selection(state.selection, start, removed, inserted);
             for selection in &mut state.additional_selections {
