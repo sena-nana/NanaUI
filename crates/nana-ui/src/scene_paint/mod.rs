@@ -842,12 +842,8 @@ impl SceneWgpuPainter {
                                 .backdrop_filter
                                 .filter(|f| f.is_active() && opacity > 0.0)
                             {
-                                let world_bounds = if clip::is_translation_projective(affine, persp)
-                                {
-                                    bounds
-                                } else {
-                                    transformed_aabb_projective(bounds, affine, persp)
-                                };
+                                let world_bounds =
+                                    transformed_aabb_projective(bounds, affine, persp);
                                 let phys = physical_bounds(world_bounds, scale, scissor);
                                 let radii = corner_radius.map(|r| r * scale);
                                 let bidx = self.backdrop.push(
@@ -922,11 +918,7 @@ impl SceneWgpuPainter {
                                     .filter(|f| f.is_active() && opacity > 0.0)
                                 {
                                     let world_bounds =
-                                        if clip::is_translation_projective(affine, persp) {
-                                            item_bounds
-                                        } else {
-                                            transformed_aabb_projective(item_bounds, affine, persp)
-                                        };
+                                        transformed_aabb_projective(item_bounds, affine, persp);
                                     let phys = physical_bounds(world_bounds, scale, scissor);
                                     let radii = corner_radius.map(|r| r * scale);
                                     let bidx = self.backdrop.push(
@@ -1800,8 +1792,8 @@ fn dest_group_slot(
             .map(|bounds| {
                 clip::FragmentClip {
                     rect: [
-                        bounds.x - origin.offset[0] - pad,
-                        bounds.y - origin.offset[1] - pad,
+                        bounds.x + origin.offset[0] - pad,
+                        bounds.y + origin.offset[1] - pad,
                         (bounds.width + pad * 2.0).max(0.0),
                         (bounds.height + pad * 2.0).max(0.0),
                     ],

@@ -2217,6 +2217,72 @@ fn drop_shadow_samples_dest_group_alpha_not_box_shadow_quads() {
 }
 
 #[test]
+fn drop_shadow_dest_group_follows_scene_origin() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut scene = UiScene::new();
+    scene.apply_delta(
+        [extracted_div(
+            1,
+            &[],
+            40.0,
+            8.0,
+            16.0,
+            16.0,
+            nana_ui_core::LayoutStyle {
+                background: Some([1.0, 0.0, 0.0, 1.0]),
+                paint: nana_ui_core::PaintStyle {
+                    filter: Some(nana_ui_core::ColorFilter {
+                        drop_shadow: Some(nana_ui_core::FilterDropShadow {
+                            offset_x: 16.0,
+                            offset_y: 0.0,
+                            blur_radius: 0.0,
+                            color: [0.5, 0.5, 0.5, 1.0],
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            Some([1.0, 0.0, 0.0, 1.0]),
+        )],
+        [],
+    );
+    // A view of the scene from x = 32: the node lands at dest x 8..24 and
+    // its shadow at 24..40.
+    let viewport = ScenePaintViewport {
+        logical_size: [64.0, 64.0],
+        physical_size: [64, 64],
+        scale_factor: 1.0,
+        scene_origin: [32.0, 0.0],
+        target_origin: [0.0, 0.0],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        clear: true,
+    };
+    let (texture, view) = test_copy_target(&device, format, 64, 64);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("nana-ui drop-shadow scene origin"),
+    });
+    painter
+        .paint(&scene, &mut encoder, &view, viewport, None, None)
+        .unwrap();
+    let pixels = readback_rgba(&device, &queue, encoder, &texture, 64, 64);
+    let fill = pixel(&pixels, 64, 16, 16);
+    let shadow = pixel(&pixels, 64, 32, 16);
+    assert!(
+        fill[0] > 200 && fill[1] < 40 && fill[2] < 40,
+        "the filtered node must paint at its dest position, got {fill:?}"
+    );
+    assert!(
+        shadow[1] > 40 && shadow[1] == shadow[2],
+        "its drop-shadow must paint beside it, got {shadow:?}"
+    );
+    drop(texture);
+}
+
+#[test]
 fn outline_and_shadow_spread_stay_css_px_at_hidpi() {
     let (device, queue) = test_device();
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -4571,6 +4637,58 @@ fn rotated_backdrop_filter_mixes_dest_on_gpu() {
              AABB composite would leave a pure dest color, got {tip:?}"
     );
     drop(texture);
+}
+
+#[test]
+fn scrolled_backdrop_filter_samples_where_the_quad_is_drawn() {
+    let (device, queue) = test_device();
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let mut painter = SceneWgpuPainter::new(&device, &queue, format);
+    let mut scene = UiScene::new();
+    let mut scroller = overflow_parent(2, &[3], 0.0, 0.0, 64.0, 64.0, None);
+    scroller.scroll_offset = nana_ui_runtime::ScrollOffset { x: 0.0, y: 24.0 };
+    // saturate(0) turns the red under the panel gray, so the pixels the
+    // backdrop composites are the ones that lose their red.
+    scene.apply_delta(
+        [
+            colored_quad_node(1, 0.0, 0.0, 64.0, 64.0, [1.0, 0.0, 0.0, 1.0]),
+            scroller,
+            frost_quad_child(
+                3,
+                2,
+                8.0,
+                40.0,
+                48.0,
+                16.0,
+                [0.0, 0.0, 0.0, 0.0],
+                nana_ui_core::BackdropFilter {
+                    blur_radius: 4.0,
+                    saturate: 0.0,
+                },
+            ),
+        ],
+        [],
+    );
+    let pixels = paint_scene_rgba(
+        &device,
+        &queue,
+        &mut painter,
+        &scene,
+        [64.0, 64.0],
+        [64, 64],
+        1.0,
+    );
+    // Scrolled up 24, the panel is drawn over y 16..32, not its layout 40..56.
+    let drawn = pixel(&pixels, 64, 32, 24);
+    assert!(
+        drawn[1] > 30 && drawn[2] > 30,
+        "the scrolled panel must gray the red it is drawn over, got {drawn:?}"
+    );
+    let layout = pixel(&pixels, 64, 32, 48);
+    assert!(
+        layout[0] > 200 && layout[1] < 10 && layout[2] < 10,
+        "the panel's unscrolled layout box must stay red, got {layout:?}"
+    );
 }
 
 #[test]
