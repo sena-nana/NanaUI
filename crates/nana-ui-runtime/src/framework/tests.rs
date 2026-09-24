@@ -1975,6 +1975,15 @@ fn accessibility_actions_edit_a_number_input_through_its_numeric_policy() {
         &mut context,
         AccessibilityAction::SetValue("150".into())
     ));
+    // Nor when a pending draft makes the write rewrite the text.
+    context
+        .update_component(input, |input, _| input.state.replace_value("7"))
+        .unwrap();
+    assert!(!act(
+        &mut context,
+        AccessibilityAction::SetValue("150".into())
+    ));
+    assert_eq!(draft(&context), "10.0");
 
     // Text that is not a number changes nothing, draft included.
     assert!(!act(

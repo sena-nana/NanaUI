@@ -21,33 +21,31 @@ impl AppContext {
     }
 
     /// Commit a complete value given as text, as assistive technology sets
-    /// one: parsed by the field's own policy and published through
-    /// [`Self::set_number_value`]. Unparseable text and fields that refuse
-    /// input change nothing.
+    /// one: published through [`Self::set_number_value`], so the field's own
+    /// bounds and grid apply. Unparseable text and fields that refuse input
+    /// change nothing.
     ///
-    /// Reports whether the field took the value: it moved (clamped or snapped
-    /// as its policy requires), or it already held exactly that number. A
-    /// request the bounds refuse outright (150 on a field already at its
-    /// maximum of 10) reports failure.
+    /// Reports whether the field took the value: its committed number moved
+    /// (clamped or snapped as its policy requires), or it already held
+    /// exactly that number. A pending draft does not count: a request the
+    /// bounds refuse outright (150 on a field already at its maximum of 10)
+    /// reports failure even though it rewrites the draft.
     pub(super) fn set_number_text(
         &mut self,
         entity: Entity<NumberInput>,
         text: &str,
     ) -> Result<bool, FrameworkError> {
-        let parsed = self.read(entity, |input| {
-            input
-                .accepts_input()
-                .then(|| input.parse_text(text))
-                .flatten()
-        })?;
-        let Some(parsed) = parsed else {
+        let Some(requested) = crate::view_components::parse_number(text) else {
             return Ok(false);
         };
-        if self.set_number_value(entity, parsed)? {
-            return Ok(true);
-        }
-        let requested = text.trim().parse::<f64>().ok();
-        Ok(requested == Some(self.read(entity, NumberInput::value)?))
+        let Some(before) =
+            self.read(entity, |input| input.accepts_input().then(|| input.value()))?
+        else {
+            return Ok(false);
+        };
+        self.set_number_value(entity, requested)?;
+        let after = self.read(entity, NumberInput::value)?;
+        Ok(after != before || after == requested)
     }
 
     /// Move a numeric field by step increments, from the typed draft when it

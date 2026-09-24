@@ -94,6 +94,27 @@ impl FocusedTextEditor {
     }
 }
 
+/// Evaluate `$body` with `$C` naming the component type behind an editor
+/// kind, so each generic editor operation dispatches in this one place.
+macro_rules! with_editor_type {
+    ($kind:expr, $C:ident => $body:expr) => {
+        match $kind {
+            TextEditorKind::Area => {
+                type $C = TextArea;
+                $body
+            }
+            TextEditorKind::Field => {
+                type $C = TextInput;
+                $body
+            }
+            TextEditorKind::Number => {
+                type $C = NumberInput;
+                $body
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TextEditorKind {
     Area,
@@ -524,6 +545,19 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return None;
         }
+        self.focused_plain_editor(document)
+    }
+
+    /// Whether a plain text editor is focused with an IME composition in
+    /// progress, which hides it from [`Self::focused_text_editor`]. Its
+    /// navigation keys then belong to the composition: a host keeps them
+    /// from reaching enclosing navigation (tables, trees). Composite search
+    /// surfaces are not plain editors and keep their own list navigation.
+    pub fn focused_text_editor_composing(&self, document: DocumentId) -> bool {
+        self.has_focused_ime_composition(document) && self.focused_plain_editor(document).is_some()
+    }
+
+    fn focused_plain_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
         if let Some(entity) = self.focused_editor::<TextArea>(document) {
             return self.editor_info(entity, TextEditorKind::Area);
         }
@@ -2507,11 +2541,7 @@ impl AppContext {
         node: StableNodeId,
         kind: TextEditorKind,
     ) -> Result<TextInputState, FrameworkError> {
-        match kind {
-            TextEditorKind::Area => self.editor_state_of::<TextArea>(node),
-            TextEditorKind::Field => self.editor_state_of::<TextInput>(node),
-            TextEditorKind::Number => self.editor_state_of::<NumberInput>(node),
-        }
+        with_editor_type!(kind, C => self.editor_state_of::<C>(node))
     }
 
     fn editor_state_of<C: EditableText>(
@@ -2534,11 +2564,7 @@ impl AppContext {
         kind: TextEditorKind,
         update: impl FnOnce(&mut TextInputState) -> bool,
     ) -> Result<bool, FrameworkError> {
-        match kind {
-            TextEditorKind::Area => self.update_editor_state_of::<TextArea>(node, update),
-            TextEditorKind::Field => self.update_editor_state_of::<TextInput>(node, update),
-            TextEditorKind::Number => self.update_editor_state_of::<NumberInput>(node, update),
-        }
+        with_editor_type!(kind, C => self.update_editor_state_of::<C>(node, update))
     }
 
     fn update_editor_state_of<C: EditableText>(
@@ -2562,13 +2588,7 @@ impl AppContext {
         origin: crate::TextEditOrigin,
         next: TextInputState,
     ) -> Result<bool, FrameworkError> {
-        match kind {
-            TextEditorKind::Area => self.replace_editor_state_of::<TextArea>(node, origin, next),
-            TextEditorKind::Field => self.replace_editor_state_of::<TextInput>(node, origin, next),
-            TextEditorKind::Number => {
-                self.replace_editor_state_of::<NumberInput>(node, origin, next)
-            }
-        }
+        with_editor_type!(kind, C => self.replace_editor_state_of::<C>(node, origin, next))
     }
 
     fn replace_editor_state_of<C: EditableText>(

@@ -1218,9 +1218,10 @@ impl RuntimeInputAdapter {
                 } else if !primary && !modifiers.alt {
                     match key.as_str() {
                         "Backspace" => context.delete_focused_text_backward(document)?,
-                        _ if text.as_ref().is_some_and(|text| !text.is_empty()) => context
-                            .replace_focused_text(document, text.as_deref().unwrap_or_default())?,
-                        _ => false,
+                        _ => match typed_text(text.as_deref()) {
+                            Some(text) => context.replace_focused_text(document, text)?,
+                            None => false,
+                        },
                     }
                 } else {
                     false
@@ -1235,9 +1236,12 @@ impl RuntimeInputAdapter {
                 && !modifiers.alt
                 && !modifiers.control
                 && !modifiers.meta
-                && text.as_ref().is_some_and(|value| !value.is_empty()) =>
+                && typed_text(text.as_deref()).is_some() =>
             {
-                context.replace_focused_text(document, text.as_deref().unwrap_or_default())?
+                context.replace_focused_text(
+                    document,
+                    typed_text(text.as_deref()).unwrap_or_default(),
+                )?
             }
             _ => false,
         };
@@ -1386,18 +1390,8 @@ impl RuntimeInputAdapter {
             // still belong to it: the composition owns them, and they must
             // not reach an enclosing table, tree or select and carry focus
             // out of the field.
-            return Ok(context.has_focused_ime_composition(document)
-                && matches!(
-                    key,
-                    "ArrowUp"
-                        | "ArrowDown"
-                        | "ArrowLeft"
-                        | "ArrowRight"
-                        | "Home"
-                        | "End"
-                        | "PageUp"
-                        | "PageDown"
-                ));
+            return Ok(caret_intent(key, modifiers).is_some()
+                && context.focused_text_editor_composing(document));
         };
         // A numeric field steps on plain ArrowUp/ArrowDown and commits its
         // draft on Enter. Shift+ArrowUp/Down select like any single-line
@@ -1462,7 +1456,6 @@ impl RuntimeInputAdapter {
         }
         let control = modifiers.control;
         let meta = modifiers.meta;
-        let word_modifier = control || modifiers.alt;
         // Alt+Cmd/Ctrl+Up/Down adds cursors above/below the selection(s)
         // (Zed-style multi-cursor). Multiline editors own the gesture even
         // when every target already holds a cursor; single-line fields
@@ -1500,42 +1493,7 @@ impl RuntimeInputAdapter {
             }
             return Ok(true);
         }
-        let intent = match key {
-            "ArrowLeft" => Some(match (meta, word_modifier) {
-                (true, _) => TextCaretIntent::LineStart,
-                (_, true) => TextCaretIntent::WordLeft,
-                (false, false) => TextCaretIntent::Left,
-            }),
-            "ArrowRight" => Some(match (meta, word_modifier) {
-                (true, _) => TextCaretIntent::LineEnd,
-                (_, true) => TextCaretIntent::WordRight,
-                _ => TextCaretIntent::Right,
-            }),
-            "ArrowUp" => Some(if meta {
-                TextCaretIntent::DocStart
-            } else {
-                TextCaretIntent::Up
-            }),
-            "ArrowDown" => Some(if meta {
-                TextCaretIntent::DocEnd
-            } else {
-                TextCaretIntent::Down
-            }),
-            "Home" => Some(if control || meta {
-                TextCaretIntent::DocStart
-            } else {
-                TextCaretIntent::LineStart
-            }),
-            "End" => Some(if control || meta {
-                TextCaretIntent::DocEnd
-            } else {
-                TextCaretIntent::LineEnd
-            }),
-            "PageUp" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageUp),
-            "PageDown" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageDown),
-            _ => None,
-        };
-        if let Some(intent) = intent {
+        if let Some(intent) = caret_intent(key, modifiers) {
             return context.move_focused_text_caret(document, intent, modifiers.shift, shaper);
         }
         let delete = match (key, control || meta, modifiers.alt) {
@@ -1599,7 +1557,7 @@ impl RuntimeInputAdapter {
             }
             return Ok(false);
         }
-        let Some(text) = text.filter(|text| !text.is_empty() && key != "Escape") else {
+        let Some(text) = typed_text(text).filter(|_| key != "Escape") else {
             return Ok(false);
         };
         let mut typed = text.chars();
@@ -1611,6 +1569,57 @@ impl RuntimeInputAdapter {
         }
         context.replace_focused_text(document, text)
     }
+}
+
+/// The caret move an editor's navigation key asks for, in line space.
+/// `None` for keys that are not caret navigation.
+fn caret_intent(key: &str, modifiers: nana_ui_platform::InputModifiers) -> Option<TextCaretIntent> {
+    let (control, meta) = (modifiers.control, modifiers.meta);
+    let word_modifier = control || modifiers.alt;
+    match key {
+        "ArrowLeft" => Some(match (meta, word_modifier) {
+            (true, _) => TextCaretIntent::LineStart,
+            (_, true) => TextCaretIntent::WordLeft,
+            (false, false) => TextCaretIntent::Left,
+        }),
+        "ArrowRight" => Some(match (meta, word_modifier) {
+            (true, _) => TextCaretIntent::LineEnd,
+            (_, true) => TextCaretIntent::WordRight,
+            _ => TextCaretIntent::Right,
+        }),
+        "ArrowUp" => Some(if meta {
+            TextCaretIntent::DocStart
+        } else {
+            TextCaretIntent::Up
+        }),
+        "ArrowDown" => Some(if meta {
+            TextCaretIntent::DocEnd
+        } else {
+            TextCaretIntent::Down
+        }),
+        "Home" => Some(if control || meta {
+            TextCaretIntent::DocStart
+        } else {
+            TextCaretIntent::LineStart
+        }),
+        "End" => Some(if control || meta {
+            TextCaretIntent::DocEnd
+        } else {
+            TextCaretIntent::LineEnd
+        }),
+        "PageUp" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageUp),
+        "PageDown" if !control && !meta && !modifiers.alt => Some(TextCaretIntent::PageDown),
+        _ => None,
+    }
+}
+
+/// Text a key would type, or `None` for keys that type nothing.
+///
+/// Hosts report the control characters some keys carry (`"\r"` for Enter,
+/// `"\u{1b}"` for Escape, `"\u{8}"` for Backspace); those are commands, never
+/// text, so a key an editor did not claim cannot type them into it.
+fn typed_text(text: Option<&str>) -> Option<&str> {
+    text.filter(|text| !text.is_empty() && !text.chars().any(char::is_control))
 }
 
 /// Reborrow the per-dispatch shaper so sequential uses never alias.
@@ -4621,13 +4630,22 @@ mod tests {
         assert_eq!(textarea_selection(&context, node).0, "100");
 
         // An Enter with nothing to commit is not swallowed: a dialog or form
-        // around the field can still confirm on it.
-        assert!(
-            !adapter
-                .dispatch(&mut context, document, &plain_key("Enter"))
-                .unwrap()
-                .prevent_default
-        );
+        // around the field can still confirm on it. The control text hosts
+        // report with Enter and Escape never lands in the draft.
+        for (key, text) in [("Enter", "\r"), ("Escape", "\u{1b}")] {
+            assert!(
+                !adapter
+                    .dispatch(
+                        &mut context,
+                        document,
+                        &edit_key(key, Some(text), InputModifiers::default()),
+                    )
+                    .unwrap()
+                    .prevent_default,
+                "{key}"
+            );
+            assert_eq!(textarea_selection(&context, node).0, "100", "{key}");
+        }
     }
 
     #[test]
@@ -4654,6 +4672,37 @@ mod tests {
             assert_eq!(context.world().focused(document), Some(node));
             assert_eq!(textarea_selection(&context, node), ("abc".into(), 3, 3));
         }
+    }
+
+    #[test]
+    fn a_composing_search_dropdown_keeps_its_list_navigation() {
+        use nana_ui_runtime::{SearchDropdown, SearchDropdownOption};
+        let mut context = AppContext::new();
+        let document = DocumentId::new(1).unwrap();
+        let search = context
+            .create_component(
+                document,
+                SearchDropdown::new(None::<&str>)
+                    .options([
+                        SearchDropdownOption::new("a", "Alpha"),
+                        SearchDropdownOption::new("b", "Beta"),
+                    ])
+                    .opened(true),
+            )
+            .unwrap();
+        assert!(context.focus_node(document, search.stable_id()).unwrap());
+        context
+            .set_ime_preedit(document, "に".into(), None)
+            .unwrap();
+        let before = context.read(search, |field| field.highlighted).unwrap();
+        RuntimeInputAdapter::default()
+            .dispatch(&mut context, document, &plain_key("ArrowDown"))
+            .unwrap();
+        assert_ne!(
+            context.read(search, |field| field.highlighted).unwrap(),
+            before,
+            "a composite surface is not a plain editor: its list still moves"
+        );
     }
 
     #[test]

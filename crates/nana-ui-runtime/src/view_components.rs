@@ -159,7 +159,8 @@ struct TextFieldProjection<'a> {
     multiline: bool,
     style: &'a NodeStyle,
     highlight: Option<&'a HighlightRequest>,
-    /// Committed numeric value and its rules, for a spinner field.
+    /// The number a spinner field steps from (its parsed draft, else its
+    /// committed value; see `NumberInput::step_base`) and its rules.
     numeric: Option<(f64, nana_ui_core::NumberFieldSpec)>,
 }
 
@@ -1857,11 +1858,7 @@ impl NumberInput {
     /// Publish a value from the application. Values are clamped to bounds;
     /// discrete fields also snap them to their precision and step grid.
     pub fn assign(&mut self, value: f64) -> bool {
-        let next = if self.continuous {
-            self.spec.clamp(value)
-        } else {
-            self.spec.snap(value)
-        };
+        let next = self.normalize(value);
         let text = if self.continuous {
             next.to_string()
         } else {
@@ -1877,6 +1874,7 @@ impl NumberInput {
 
     /// Move by grid positions from the typed draft when it parses, from the
     /// committed value otherwise.
+    ///
     /// A step that cannot move away from its base (a bound) changes nothing,
     /// matching the spinner half drawn inert there.
     pub(crate) fn step_value(&mut self, steps: i32) -> bool {
@@ -1896,29 +1894,26 @@ impl NumberInput {
     /// The number a step starts from: the typed draft when it parses, the
     /// committed value otherwise. It is also the number the field publishes,
     /// so the spinner's enabled halves agree with what a step would do.
-    /// Clamped to the bounds as a commit would clamp it; a continuous draft
-    /// such as `500` over a maximum of 100 is 100 here, not 500.
+    ///
+    /// Normalized as a commit would normalize it: a continuous draft such as
+    /// `500` over a maximum of 100 is 100 here, not 500.
     pub(crate) fn step_base(&self) -> f64 {
-        self.parse_text(&self.state.value)
-            .map_or(self.value, |parsed| self.spec.clamp(parsed))
+        parse_number(&self.state.value).map_or(self.value, |parsed| self.normalize(parsed))
     }
 
-    /// Parse `text` under this field's discrete or continuous policy, before
-    /// clamping or snapping.
-    pub(crate) fn parse_text(&self, text: &str) -> Option<f64> {
+    /// Where the field puts `value`: clamped to its bounds, and on a
+    /// discrete field also snapped to its precision and step grid.
+    fn normalize(&self, value: f64) -> f64 {
         if self.continuous {
-            text.trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|value| value.is_finite())
+            self.spec.clamp(value)
         } else {
-            self.spec.parse(text)
+            self.spec.snap(value)
         }
     }
 
     /// Parse the draft. An unparseable draft restores the committed value.
     pub(crate) fn commit_draft(&mut self) -> bool {
-        match self.parse_text(&self.state.value) {
+        match parse_number(&self.state.value) {
             Some(parsed) => self.assign(parsed),
             None => self.revert_draft(),
         }
@@ -1946,6 +1941,15 @@ impl NumberInput {
             self.spec.format(self.value)
         }
     }
+}
+
+/// The number a draft or a requested value spells, before the field's
+/// bounds, precision or step grid apply. Blank or non-finite text is none.
+pub(crate) fn parse_number(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 impl ComponentView for NumberInput {
