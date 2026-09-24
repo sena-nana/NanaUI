@@ -131,7 +131,7 @@ chunk := kind:u8 len:u32le payload[len] crc32:u32le
 | Runtime | 每次 flush 的 CPU 总耗时与 9 个 Runtime 阶段直方图（复用 `FrameProfiler`，不重复计时）、flush 次数与轮数、不收敛 / 样式与文本布局失败计数 |
 | Layout | 每次布局耗时、调用数、整树布局数、dirty 根数、参与布局的盒子数 |
 | Text | shape / layout 缓存命中与未命中、字形解析数、字形图集开页（含图集总字节）/ 预算拒绝计数（事件每 10 s 至多一条）/ 压缩、驱逐数 |
-| GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll；两次 poll 相隔超过 50 ms（窗口空闲过）时丢弃该样本，所以误差不超过一个活跃 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起；适配器名、后端、类型、驱动写进会话信息 |
+| GPU | submit 耗时、GPU 完成时间上界（submit 到宿主观察到完成；每次 redraw 开头非阻塞 poll；两次 poll 相隔超过 50 ms（窗口空闲过）时丢弃该样本，所以误差不超过一个活跃 redraw 间隔。精确 GPU 时间需要 timestamp query，Metal 不能在 encoder 内写时间戳，未做）、上传字节、draw call、缓冲重分配、呈现 / 跳过帧、surface Outdated / Lost / Timeout、设备丢失（含嵌入式宿主上报的）/ 恢复 / 恢复失败、surface 挂起、未提交就丢弃的帧（`gpu.frames_discarded`），以及 painter 画过的帧被丢弃（`gpu.retained_frame_discarded`，每个 painter 只记第一次）；适配器名、后端、类型、驱动写进会话信息 |
 | Window | 打开（物理尺寸）、关闭、缩放系数变化、遮挡、resize 次数 |
 | Resource | pack 挂载耗时与 TOC 字节、每次打包资源读取的耗时 / 认证 / 解压、读取字节与次数、未命中、完整性失败计数；pack 挂载事件、打开失败与校验失败故障（每个 pack 至多一条）。只在图片、字体、样式表的缓存未命中时发生，不逐帧 |
 | Package | manifest 读取耗时、载入 / 缺失事件、无效与身份不符故障 |

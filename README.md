@@ -76,7 +76,7 @@ Rust `nana_ui::runtime` 是默认作者面。Vue 是一等的 L1/L2 入口，不
 cargo run -p component-gallery
 
 # 界面与实时画面同一窗口
-cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts
+cargo run -p nana-ui --example hosted-gpu-demo --features hosted,bundled-fonts,wgpu-interop
 
 # GpuView 演示（非默认）
 cargo run -p nana-ui --example gpu-view-demo --features hosted,bundled-fonts

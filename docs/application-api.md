@@ -456,10 +456,11 @@ hosted 宿主在布局收敛后暂存无障碍变化，在成功呈现后、应�
 需要当前文档的完整快照，避免中间删除或重挂载使批次拼接失真。空闲重试不会覆盖
 已有变化；各窗口独立保留待发布状态，关闭窗口不会转而修改主窗口的队列。
 
-编码失败后，低层 `HostedGpuContext` 消费者先释放引用 Surface 帧的 view 和未提交
-encoder，再调用 `discard_frame`（主窗口）或 `discard_surface_frame`（辅助窗口）。
-下次获取时仅重建受影响的 Surface，继续使用已有 Device / Queue；不提交失败帧，
-也不通知生产者提交成功。标准 Runtime 宿主自动处理这条路径。
+编码失败后，自驱 surface 的 `HostedGpuContext` 消费者（`wgpu-interop`）先丢弃这一帧的
+`FrameContext` 和引用 Surface 帧的 view，再调用 `discard_frame`（主窗口）或
+`discard_surface_frame`（辅助窗口）。下次获取时仅重建受影响的 Surface，继续使用已有的
+`GpuContext`；不提交失败帧，也不通知生产者提交成功；painter 画过的目标随帧的丢弃自动
+回滚。标准 Runtime 宿主自动处理这条路径。
 
 新建主窗口和辅助窗口的无障碍适配器先只提供稳定的 Window 根，不预先读取文档。
 首次成功呈现后才发布内容；应用在挂载前已经调用 `flush`，也不会使未呈现控件提前

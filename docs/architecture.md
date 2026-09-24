@@ -12,7 +12,10 @@
     ▼
 nana-ui                 宿主适配器：run_runtime、控件再导出、SceneWgpuPainter、
     │                   FrameBinding（gpu feature）
-    ├── nana-frame-exchange  跨线程最新帧（只依赖 wgpu）。生产端 crate，
+    ├── nana-gpu        GPU 后端合同：GpuContext（设备、代次、能力、丢失、
+    │                   纹理与提交守卫）、FrameContext（独占 encoder 的一帧）、
+    │                   GpuTexture。WGPU 是唯一后端，wgpu-interop 是显式逃生口
+    ├── nana-frame-exchange  跨线程最新帧（只依赖 nana-gpu）。生产端 crate，
     │                       渲染库不必依赖 nana-ui
     ├── nana-ui-runtime 保留树权威（UiWorld）、内建控件、Shell、Workspace、
     │                   Dock、GPU 槽。不依赖 WGPU
@@ -45,7 +48,7 @@ Vue + JS L1/L2（可选宿主）
                           链接器剔除未引用图标；不属于产品绘制路径
 ```
 
-依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`。`SceneWgpuPainter` 在 `nana-ui` 里注入宿主 Window / Surface / Device / Queue。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立。
+依赖方向：`nana-ui`（适配器 + painter）→ `nana-ui-runtime` 与 `nana-ui-scene`；`nana-ui-scene` → `nana-ui-runtime`；`nana-ui`、`nana-frame-exchange` → `nana-gpu`。`SceneWgpuPainter` 在 `nana-ui` 里建在宿主的 `GpuContext` 上，每帧画进宿主的 `FrameContext`。`scripts/check-engine-boundary.py` 保持 Runtime / Scene 对绘制后端中立，并守住 GPU 合同：`nana-gpu` / `nana-frame-exchange` / `nana-ui` 的公开签名只有在 `wgpu-interop` 之下才能出现 `wgpu`，`nana_gpu::__framework` 只供框架 crate 自己的源码使用（见 [实时画面](gpu.md#gpu-合同与-wgpu-逃生口)）。
 
 `nana-text` → `nana-ui-core`，且只取排版词汇（变体轴 / kerning / line-break / word-break / text-align / direction / writing-mode / wrap-break / line-height / feature），由同一个脚本按 allowlist 守住。`nana-ui-runtime` 依赖 `nana-text`：保留文本节点的 revision、分级 dirty graph 与 retained `TextLayout` 句柄以它为词汇（#95）。#99 起 Rust、NanaVue 与 Vue/CSS 的文本都由它测量，`NanaRenderer::text` 画 Runtime 保留的那份 layout；cosmic-text 与 cryoglyph（含参照引擎）已从 `Cargo.lock` 删除，脚本按全工作区禁止任何产品 crate 再有通向它们（或它们改名的 fork）的非 dev 边。
 
@@ -90,7 +93,9 @@ FLIP / list-move 是显式策略，不是把 width 动画偷成 scale。
 
 | 对象 | 所有者 |
 | --- | --- |
-| Window、Surface、Device、Queue | 宿主（`run_runtime` 或应用的 `HostedGpuContext`） |
+| Window、Surface | 宿主（`run_runtime`，或 `EmbeddedRuntime` 的嵌入方） |
+| 设备：`GpuContext`（代次、能力、丢失状态、提交守卫） | 宿主；设备丢失只记在 `GpuContext::is_lost()`，替换设备就是换一个新的 `GpuContext` |
+| 帧：`FrameContext`（encoder、提交 / 丢弃） | 宿主；painter 与生产者只往里录，丢弃时 painter 的保留写入自动回滚 |
 | 最新帧槽池（`FrameExchange`） | 生产线程；`FrameInbox` / `FrameBinding` 在窗口侧取样 |
 | 业务状态、配置盘、Region / pane **内容** | 应用 |
 | 树、样式、未滚动布局、命中、焦点、IME、无障碍 | `UiWorld` |
@@ -100,7 +105,7 @@ FLIP / list-move 是显式策略，不是把 width 动画偷成 scale。
 | Workspace 尺寸 / 折叠 | `WorkspaceModel`（`WorkspaceController` 只做指针与时钟转换） |
 | Dock 树 | Runtime `DockWorkspace`（`nana_ui::dock::*` 是宿主适配器） |
 
-GPU 主版本锁定 workspace `wgpu = "30.0.0"`，依赖图里只有一个主版本。禁止第二套 Device / Queue，禁止正式路径 CPU 回读。
+GPU 主版本锁定 workspace `wgpu = "30.0.0"`，依赖图里只有一个主版本。禁止第二套设备，禁止正式路径 CPU 回读。
 
 ## 三种输入，一棵树
 

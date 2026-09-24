@@ -35,7 +35,7 @@ Iced / GPUI 对照——那两个 runner 对 `GpuScene` 一律 unsupported，摆
 
 它**不在** `harness_ids` 里，不是 #8 §8.1 目录 id，也不是 weekly DoD：数字只有 Windows +
 DX12 真机跑得出来，没有合成 target 的机器**不要**写报告——宁可没有，也不要一份全零的假报告。
-产出入口是 `cargo run -p nana-ui --features "hosted bundled-fonts" --example native-content-probe`，
+产出入口是 `cargo run -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe`，
 它把静止期增量写到 `target/performance/windows-composition-steady.json`。判据与实现见
 [`docs/window.md`](../docs/window.md)。
 

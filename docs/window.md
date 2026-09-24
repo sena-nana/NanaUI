@@ -135,8 +135,8 @@ chrome               由 effective 推出来的原生 chrome 策略。system_cap
 真机对照（Windows，同一台机器跑两遍）：
 
 ```bash
-cargo run --release -p nana-ui --features "hosted bundled-fonts" --example native-content-probe -- --hold
-NANA_WINDOWS_NC_STRATEGY=suppress cargo run --release -p nana-ui --features "hosted bundled-fonts" --example native-content-probe -- --hold
+cargo run --release -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe -- --hold
+NANA_WINDOWS_NC_STRATEGY=suppress cargo run --release -p nana-ui --features "hosted bundled-fonts wgpu-interop" --example native-content-probe -- --hold
 ```
 
 两次都读 `PRESENTATION` / `PRESENTATION_TARGET` / `NC_STRATEGY` 三行确认这一遍真的在测目标策略，然后逐项记录：透明客户区有没有透出 caption / 三大键 / 投影、Aero Snap、Snap Layouts 悬停、Alt+Space、任务栏与 Aero Peek、最大化 / 最小化动画、resize、DPI 切换、maximize / restore 往返。只有 `suppress` 在「透明正确性」上失败，才保留 `StripFrameStyles` 作为默认；反之把默认改成 `suppress`，并把这张表写回这一节。

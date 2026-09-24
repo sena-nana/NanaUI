@@ -75,3 +75,58 @@ This round lands Issue #182: nana-text's `EditSession` is now the only storage f
 - **Undo after undo:** typing after an undo or redo starts a new step instead of merging into the step the undo stepped back onto.
 - **Cut and copy over an atom:** a selection that cuts into an atom copies the whole atom, which is what a cut deletes.
 - **Accessibility:** a secure (password) field without a label no longer falls back to its text for its accessible name.
+
+## Issue #183: GPU backend contract isolation
+
+WGPU stays the only backend, but it is no longer the extension contract. The new crate `nana-gpu` (re-exported by `nana-ui`) owns it: `GpuContext` is the device, `FrameContext` one frame's encoder, `GpuTexture` / `GpuRenderTarget` textures that know their device. Raw WGPU objects are behind the new `wgpu-interop` feature. See [GPU contract and the wgpu escape hatch](gpu.md#gpu-合同与-wgpu-逃生口).
+
+### API changes
+
+| Was | Now |
+| --- | --- |
+| `HostedGpuResources` (`RuntimeProgramContext::gpu()`) | `GpuContext`: `generation() -> DeviceGeneration`, `capabilities()`, `is_lost()` / `lost_report()`, `create_texture`, `write_texture`, `begin_frame`. Raw adapter/device/queue: `gpu.wgpu()` (wgpu-interop) |
+| `generation() -> u64` everywhere (context, `FrameToken`, `FrameInbox`) | `DeviceGeneration` (`.get()` for the number) |
+| `HostedGpuResources::submit_lock()` | Gone. `FrameContext::submit`, `write_texture` and `FrameExchange::copy_from` hold the guard themselves; raw submits hold `gpu.wgpu().lock_submission()` |
+| `HostedGpuResources::from_existing(adapter, Arc<Device>, Arc<Queue>)` | `GpuContext::from_wgpu(adapter, device, queue)` (wgpu-interop) |
+| `HostedGpuShared::from_device(instance, adapter, device, queue)` | `HostedGpuShared::from_device(instance, GpuContext)` (wgpu-interop); `resources()` → `gpu()`; `adapter()` / `adapter_info()` → `gpu().capabilities()` or `gpu().wgpu()` |
+| `HostedDeviceLost { reason: String, .. }` | `GpuDeviceLost { reason: GpuLossReason, message }` |
+| `HostTexture::from_wgpu(id, generation, TextureView)` / `replace_view(view)` | `HostTexture::new(id, generation, &GpuTexture)` / `replace_texture(&GpuTexture)`; new `device_generation()` |
+| `FrameExchange::new(generation, Arc<Device>, Arc<Queue>, capacity, epoch, notify)` | `FrameExchange::new(&GpuContext, capacity, epoch, notify)` |
+| `FrameExchange::copy_from(&wgpu::Texture, epoch)` | `copy_from(&GpuTexture, epoch)`, or `copy_from_wgpu(&wgpu::Texture, epoch)` (wgpu-interop). `CopyOutcome` gains `DeviceMismatch` |
+| `FrameLease::view()` / `format() -> wgpu::TextureFormat` | `texture() -> &GpuTexture` / `format() -> GpuTextureFormat` |
+| `FrameBinding::new(&Device, generation, slot, alpha)` | `FrameBinding::new(&GpuContext, slot, alpha)` |
+| `SceneWgpuPainter::new(&Device, &Queue, wgpu::TextureFormat)`, `format()` | `SceneWgpuPainter::new(&GpuContext, GpuTextureFormat)`, `format() -> GpuTextureFormat`, new `gpu()` |
+| `paint` / `paint_target(.., &mut CommandEncoder, &TextureView, ..)` | `paint` / `paint_target(.., &mut FrameContext, &GpuRenderTarget, ..)` |
+| `record_submit(Duration)` | `record_submit(&GpuSubmission)` |
+| `SceneGpuPrepareContext { device, queue, target_format: wgpu::TextureFormat, .. }` and the pass / batch contexts | `{ gpu: &GpuContext, target_format: GpuTextureFormat, .. }` |
+| `SceneGpuRenderContext { encoder, target, .. }` | `with_pass(label, \|pass\| ..)`; raw `wgpu_encoder()` / `wgpu_target()` (wgpu-interop) |
+| `draw_in_pass` / `draw_batch_in_pass(.., &mut wgpu::RenderPass, ..)` | `(.., &mut ScenePass, ..)`: `set_scissor`, `set_viewport`, `restore_viewport`, `dest_size`; raw `wgpu()` (wgpu-interop) |
+| `SceneResourceEncodeContext { device, queue, encoder }` | `{ gpu, .. }` with `frame()`; the encoder is `frame().wgpu_encoder()` (wgpu-interop) |
+| `SceneResourceProducer::submitted(node, &Device, SubmissionIndex)`, `PreparedSceneResources::submitted(&Device, SubmissionIndex)` | `submitted(node, &GpuSubmission)`, `submitted(&GpuSubmission)` |
+| `encode_scene(scene, &Device, &Queue, &mut CommandEncoder)` | `encode_scene(scene, &mut FrameContext)` |
+| `DefaultGpuViewRenderer::with_host` / `with_host_palette`, `default_scene_gpu_renderers_with_host` | Removed: renderers draw on the painter's device. Use `new` / `with_palette` / `default_scene_gpu_renderers` |
+| `RuntimeProgramContext::surface_alpha_mode()`, `ResolvedWindowPresentation::alpha_mode()`, `HostedGpuSurface` / `HostedGpuContext::alpha_mode()` → `wgpu::CompositeAlphaMode` | `SurfaceAlphaMode` (same variant names) |
+| `HostedGpuSurface` / `HostedGpuContext::format()` → `wgpu::TextureFormat` | `GpuTextureFormat` |
+| `HostedGpuError::SurfaceFormatChanged { expected: wgpu::TextureFormat }` | `expected: GpuTextureFormat` |
+| `HostedGpuContext::new` / `new_with_surface_mode` / `recreate` / `acquire_frame` / `discard_frame`, `HostedGpuShared::acquire_surface_frame` / `present` / `discard_surface_frame`, `HostedSurfaceFrame` | Unchanged, but public only with wgpu-interop |
+| `nana_ui::wgpu` | Only with wgpu-interop |
+| `OffscreenSnapshots { device, queue }` (devtools) | `OffscreenSnapshots { gpu: GpuContext }` |
+
+`ScenePaintError` gains `DeviceMismatch`, `StaleHostTexture` and `TargetInFlight`; exhaustive matches need the arms.
+
+### Who needs `wgpu-interop`
+
+Turn it on (`nana-ui/wgpu-interop`) only where you touch WGPU objects: a host that brings its own device (`GpuContext::from_wgpu`, `HostedGpuShared::from_device`), a renderer or producer that records its own pipelines, tooling that reads back. Uploading CPU pixels (`create_texture` + `write_texture`), handing `GpuTexture` frames to `FrameExchange`, and registering `HostTexture` slots do not need it. `nana-ui-vue/hosted` turns it on (the JS WebGPU facade records on the host device). In this repository `hosted-gpu-demo`, `embedded-window-lifecycle`, `native-content-probe`, the `text_device_recreation` / `text_lost_device` tests, devtools `offscreen`, the Gallery benchmark and the Android host enable it.
+
+### Behavior changes
+
+- **Dropping a painted frame is safe.** Before, a `paint` / `paint_target` that returned `Ok` required the encoder to be submitted, or the painter kept drawing from GPU state that never landed. Now dropping the `FrameContext` rolls the painted targets back and their next paint rebuilds them. Painting a target again while an earlier frame that painted it is neither submitted nor dropped returns `TargetInFlight`.
+- **Resources from a replaced device are refused.** A `HostTexture` still sampling a texture from a replaced device fails the frame with `StaleHostTexture` instead of reaching WGPU validation; frames and targets from another device fail with `DeviceMismatch`. Rebuild device resources in `rebuild_gpu`, as before.
+- **Off-thread copies no longer race surface reconfiguration.** `FrameExchange::copy_from` submitted without the guard documented for off-thread submits, and could hit `GpuWaitTimeout` while a window resized. It now holds it.
+- **Renderer caches follow the device.** `DefaultGpuViewRenderer` keyed its pipeline by format only: a registry kept across a device replacement drew with the old device's pipeline, and windows of different formats rebuilt it on every alternation. It now keys by device generation and format.
+- **Embedded loss is visible to everyone.** `EmbeddedRuntime::notify_device_lost` marks the `GpuContext` lost, so producer threads and the JS runtime see `is_lost()`.
+- **Diagnostics:** `framework::gpu` appends counter `FRAMES_DISCARDED` (`gpu.frames_discarded`, metric id 11) and warn event `RETAINED_FRAME_DISCARDED` (`gpu.retained_frame_discarded`, event id 6, field `target`, once per painter). The `gpu.submit` histogram now measures finish plus submit only, without producer `submitted` callbacks.
+
+### Checked by the boundary script
+
+`python3 scripts/check-engine-boundary.py` fails when a public signature, field, re-export, alias, enum payload or trait method of nana-gpu, nana-frame-exchange or nana-ui names `wgpu` outside `wgpu-interop`, and when anything but those crates' own sources uses `nana_gpu::__framework`.
