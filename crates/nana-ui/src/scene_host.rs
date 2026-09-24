@@ -2969,6 +2969,8 @@ struct InputTracker {
     pending_dnd: Option<DataTransferId>,
     pending_dnd_serial: Option<AsyncRequestSerial>,
     drop_waiting_for_data: bool,
+    /// Keys held at the release while its paths are still being fetched.
+    drop_modifiers: Option<InputModifiers>,
 }
 
 impl InputTracker {
@@ -3075,6 +3077,7 @@ impl InputTracker {
         self.pending_file_paths.clear();
         self.file_drop_emitted = false;
         self.drop_waiting_for_data = false;
+        self.drop_modifiers = None;
         self.pending_dnd = Some(transfer);
         self.pending_dnd_serial = serial;
     }
@@ -3083,6 +3086,8 @@ impl InputTracker {
         self.pending_dnd = Some(transfer);
         self.pending_dnd_serial = Some(serial);
         self.drop_waiting_for_data = true;
+        // The keys may be let go before the paths arrive; the drop is now.
+        self.drop_modifiers = Some(self.drag_modifiers());
     }
 
     fn accepts_dnd_serial(&self, transfer: DataTransferId, serial: AsyncRequestSerial) -> bool {
@@ -3110,11 +3115,15 @@ impl InputTracker {
             self.drop_waiting_for_data = false;
             self.pending_dnd = None;
             self.pending_dnd_serial = None;
+            let modifiers = self
+                .drop_modifiers
+                .take()
+                .unwrap_or_else(|| self.drag_modifiers());
             return Some(WindowEvent::FileDropped {
                 id,
                 paths: std::mem::take(&mut self.pending_file_paths),
                 position: Some(self.cursor),
-                modifiers: self.drag_modifiers(),
+                modifiers,
             });
         }
         Some(WindowEvent::FileHovered {
@@ -3294,6 +3303,7 @@ impl InputTracker {
                 self.pending_file_paths.clear();
                 self.file_drop_emitted = false;
                 self.drop_waiting_for_data = false;
+                self.drop_modifiers = None;
                 self.pending_dnd = None;
                 self.pending_dnd_serial = None;
                 Some(WindowEvent::FileHoverCancelled { id })
@@ -4920,15 +4930,32 @@ mod tests {
             })
         );
 
-        let mut delayed = InputTracker::default();
+        let mut delayed = InputTracker {
+            modifiers: ModifiersState::CONTROL,
+            ..InputTracker::default()
+        };
         delayed.wait_for_drop_data(transfer, winit::event_loop::AsyncRequestSerial::get());
+        // Released before the paths arrive: the drop keeps the keys it had.
+        delayed.modifiers = ModifiersState::empty();
+        let held = nana_window::keyboard_modifiers().map_or(
+            InputModifiers {
+                control: true,
+                ..InputModifiers::default()
+            },
+            |keys| InputModifiers {
+                alt: keys.alt,
+                control: keys.control,
+                meta: keys.meta,
+                shift: keys.shift,
+            },
+        );
         assert_eq!(
             delayed.ingest_file_paths(transfer, paths.clone(), WindowId::PRIMARY),
             Some(WindowEvent::FileDropped {
                 id: WindowId::PRIMARY,
                 paths,
                 position: Some((0.0, 0.0)),
-                modifiers: InputModifiers::default(),
+                modifiers: held,
             })
         );
         assert!(
