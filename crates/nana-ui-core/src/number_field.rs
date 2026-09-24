@@ -59,109 +59,82 @@ impl NumberFieldSpec {
         value
     }
 
-    /// Snap to the nearest grid point the field can display, within its
-    /// bounds.
+    /// The step the field moves by: its step, but never finer than one
+    /// unit of its precision, which could not display the difference (a step
+    /// of 0.05 at one decimal place moves by 0.1).
+    pub fn display_step(self) -> f64 {
+        let unit = 10f64.powi(-i32::from(self.precision));
+        self.effective_step().max(unit)
+    }
+
+    /// Snap onto the field's grid, within its bounds.
     ///
-    /// A grid point is `origin + k * step` at the field's precision. A bound
-    /// off the grid (a maximum of 10.3 on a whole-number grid) holds at the
-    /// last point inside it (10), and a grid the precision cannot display
-    /// exactly (a minimum of 0.05 at one decimal place) snaps to the points
-    /// as displayed. Every result is such a point and a point snaps to
-    /// itself, so snapping is idempotent and a field never stores a number
-    /// it cannot display.
+    /// The grid starts at the minimum rounded up to the precision (or zero
+    /// when unbounded below) and moves by [`Self::display_step`], so every
+    /// grid point is a number the field displays exactly and no two points
+    /// display alike. A bound off the grid (a maximum of 10.3 on a
+    /// whole-number grid) holds at the last point inside it (10). Snapping
+    /// is idempotent, and what `format` shows `parse` reads back.
     pub fn snap(self, value: f64) -> f64 {
-        let value = if value.is_finite() {
-            value
-        } else {
-            self.grid_origin()
-        };
-        let nearest = ((value - self.grid_origin()) / self.effective_step()).round();
-        let mut snapped = self.grid_point(nearest);
-        // Rounding to the precision can move a point up to half a display
-        // unit, so a neighbour's displayed point may be nearer.
-        for neighbour in [nearest - 1.0, nearest + 1.0] {
-            let point = self.grid_point(neighbour);
-            if (point - value).abs() < (snapped - value).abs() {
-                snapped = point;
-            }
-        }
+        let origin = self.grid_origin();
+        let value = if value.is_finite() { value } else { origin };
+        let mut snapped = self.grid_point(((value - origin) / self.display_step()).round());
         if let Some(maximum) = self.grid_maximum().filter(|maximum| snapped > *maximum) {
             snapped = maximum;
         }
-        if let Some(minimum) = self.grid_minimum().filter(|minimum| snapped < *minimum) {
-            snapped = minimum;
+        if self.minimum.is_some_and(f64::is_finite) && snapped < origin {
+            snapped = origin;
         }
-        // The raw bounds hold whatever the grid searches found, and `+ 0.0`
-        // turns the -0.0 a point just below zero rounds to into 0.0, which
-        // `format` would otherwise show as "-0.0".
+        // The raw bounds hold for a range narrower than one step, and `+ 0.0`
+        // turns the -0.0 a minimum just below zero rounds up to into 0.0,
+        // which `format` would otherwise show as "-0.0".
         self.clamp(snapped) + 0.0
     }
 
-    /// Where the step grid starts: the minimum when there is one.
+    /// Where the grid starts: the minimum rounded up to the precision, so
+    /// the first point is one the field displays and lies inside the bound.
     fn grid_origin(self) -> f64 {
-        self.minimum
-            .filter(|minimum| minimum.is_finite())
-            .unwrap_or(0.0)
-    }
-
-    /// Grid point `k` as the field displays it.
-    fn grid_point(self, k: f64) -> f64 {
-        round_to(
-            self.grid_origin() + k * self.effective_step(),
-            self.precision,
-        )
-    }
-
-    /// The first displayed grid point inside the minimum, or `None` when
-    /// unbounded below. At a coarse precision several grid points display as
-    /// one value, so the search starts from the minimum rounded up to the
-    /// precision and walks the few points rounding can still misplace.
-    fn grid_minimum(self) -> Option<f64> {
-        let minimum = self.minimum.filter(|minimum| minimum.is_finite())?;
+        let Some(minimum) = self.minimum.filter(|minimum| minimum.is_finite()) else {
+            return 0.0;
+        };
         let scale = 10f64.powi(i32::from(self.precision));
-        let floor = (minimum * scale - 1e-9).ceil() / scale;
-        let mut k = ((floor - self.grid_origin()) / self.effective_step() - 1e-9)
-            .ceil()
-            .max(0.0);
-        for _ in 0..GRID_WALK {
-            let point = self.grid_point(k);
-            if point >= minimum {
-                return Some(point);
-            }
-            k += 1.0;
+        let scaled = minimum * scale;
+        if !scaled.is_finite() {
+            return minimum;
         }
-        Some(minimum)
+        // A hair of tolerance keeps a minimum already at the precision (0.3)
+        // from rounding up past itself through float noise.
+        (scaled - 1e-9).ceil() / scale
     }
 
-    /// The last displayed grid point inside the maximum, or `None` when
-    /// unbounded above. Found as [`Self::grid_minimum`] is, from the maximum
-    /// rounded down to the precision; the tolerance keeps a maximum on the
-    /// grid (0.3 on a grid of 0.1) from losing its last point to division.
+    /// Grid point `k`, rounded to the precision to shed float noise.
+    fn grid_point(self, k: f64) -> f64 {
+        round_to(self.grid_origin() + k * self.display_step(), self.precision)
+    }
+
+    /// The last grid point inside the maximum, or `None` when unbounded
+    /// above. Rounding shifts a point by less than a step, so the point below
+    /// the estimate is the only other candidate.
     fn grid_maximum(self) -> Option<f64> {
         let maximum = self.maximum.filter(|maximum| maximum.is_finite())?;
-        let scale = 10f64.powi(i32::from(self.precision));
-        let ceiling = (maximum * scale + 1e-9).floor() / scale;
-        let mut k = ((ceiling - self.grid_origin()) / self.effective_step() + 1e-9).floor();
-        for _ in 0..GRID_WALK {
-            let point = self.grid_point(k);
-            if point <= maximum {
-                return Some(point);
-            }
-            k -= 1.0;
-        }
-        Some(maximum)
+        let last = ((maximum - self.grid_origin()) / self.display_step() + 1e-9).floor();
+        let point = self.grid_point(last);
+        Some(if point > maximum {
+            self.grid_point(last - 1.0)
+        } else {
+            point
+        })
     }
 
     /// Move `value` by `steps` grid positions. Zero steps still snaps, so an
     /// out-of-grid value settles the first time the control is nudged.
     pub fn step_by(self, value: f64, steps: i32) -> f64 {
-        let step = self.effective_step();
         let base = if value.is_finite() {
             value
         } else {
             self.minimum.unwrap_or(0.0)
         };
-        self.snap(base + f64::from(steps) * step)
+        self.snap(base + f64::from(steps) * self.display_step())
     }
 
     /// Whether stepping up can still change the value.
@@ -209,11 +182,6 @@ fn round_to(value: f64, precision: u8) -> f64 {
     }
     scaled.round() / scale
 }
-
-/// How far the bound searches walk from their estimate. Rounding misplaces
-/// a point by at most a few grid steps; past 2^53 a step no longer moves
-/// the index at all, and the walk gives up rather than spin.
-const GRID_WALK: usize = 16;
 
 #[cfg(test)]
 mod tests {
@@ -372,6 +340,44 @@ mod tests {
                 assert!(!spec.format(snapped).starts_with("-0.0"), "{minimum}");
             }
         }
+    }
+
+    #[test]
+    fn every_value_the_display_can_show_inside_the_bounds_is_reachable() {
+        let spec = |minimum, maximum, step, precision| NumberFieldSpec {
+            minimum: Some(minimum),
+            maximum: Some(maximum),
+            step,
+            precision,
+        };
+        // A minimum off the precision: the first displayable point stays.
+        let half = spec(0.5, 10.0, 1.0, 0);
+        assert_eq!((half.snap(1.0), half.snap(0.5)), (1.0, 1.0));
+        assert!(half.can_decrement(2.0));
+        assert_eq!(half.step_by(2.0, -1), 1.0);
+        assert_eq!(spec(-0.25, 10.0, 1.0, 0).snap(0.0), 0.0);
+        assert_eq!(spec(0.05, 2.0, 0.1, 1).snap(0.1), 0.1);
+        // The top of the range stays reachable.
+        assert_eq!(spec(0.33, 5.4, 0.1, 1).snap(5.4), 5.4);
+        assert_eq!(spec(0.05, 5.12, 1.0, 0).snap(5.0), 5.0);
+    }
+
+    #[test]
+    fn a_step_finer_than_the_precision_still_walks_the_whole_range() {
+        let spec = NumberFieldSpec {
+            minimum: Some(0.0),
+            maximum: Some(1.0),
+            step: 0.05,
+            precision: 1,
+        };
+        let mut value = 0.0;
+        for _ in 0..10 {
+            let next = spec.step_by(value, 1);
+            assert!(next > value, "stuck at {value}");
+            value = next;
+        }
+        assert_eq!(value, 1.0);
+        assert!(!spec.can_increment(1.0));
     }
 
     #[test]

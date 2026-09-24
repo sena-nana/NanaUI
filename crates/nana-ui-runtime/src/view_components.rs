@@ -1939,9 +1939,15 @@ impl NumberInput {
     /// The field's rules with its bounds brought onto its grid: the numbers
     /// it can actually reach. A maximum of 10 on a grid of 3 is 9. Published
     /// for assistive technology and the spinner, so a half is drawn inert
-    /// exactly where a step can no longer move.
+    /// exactly where a step can no longer move. A discrete field publishes
+    /// the step it moves by, never finer than its precision displays.
     fn reachable_spec(&self) -> nana_ui_core::NumberFieldSpec {
         nana_ui_core::NumberFieldSpec {
+            step: if self.continuous {
+                self.spec.step
+            } else {
+                self.spec.display_step()
+            },
             // A non-finite bound is no bound, as the spec itself reads it.
             minimum: self
                 .spec
