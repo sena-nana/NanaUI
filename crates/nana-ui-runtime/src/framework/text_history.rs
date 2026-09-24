@@ -54,6 +54,16 @@ impl TextEditOrigin {
     }
 }
 
+/// What an editor's undo restores: its text state and, for an editor that
+/// keeps one (a `NumberInput`), the committed number behind that text. The
+/// number is journaled, not re-derived from the text: a draft need not
+/// parse, and need not be the number the field held.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct EditorSnapshot {
+    pub(super) state: TextInputState,
+    pub(super) number: Option<f64>,
+}
+
 /// One undoable step: the state before and after.
 ///
 /// Stores whole states rather than diffs. An editor's undo depth is bounded
@@ -61,8 +71,8 @@ impl TextEditOrigin {
 /// representation would buy little and has to be re-derived on every merge.
 #[derive(Debug, Clone, PartialEq)]
 struct TextEditStep {
-    before: TextInputState,
-    after: TextInputState,
+    before: EditorSnapshot,
+    after: EditorSnapshot,
     origin: TextEditOrigin,
 }
 
@@ -100,15 +110,10 @@ impl TextHistory {
     /// which is what a step-count overflow does too.
     const CAPACITY_BYTES: usize = 8 * 1024 * 1024;
 
-    fn record(&mut self, before: TextInputState, after: TextInputState, origin: TextEditOrigin) {
+    /// A program write never reaches here: it clears the journal instead
+    /// (see `AppContext::journal_editor_edit`).
+    fn record(&mut self, before: EditorSnapshot, after: EditorSnapshot, origin: TextEditOrigin) {
         if origin == TextEditOrigin::History {
-            return;
-        }
-        // A programmatic write is not something the user performed, so there
-        // is nothing meaningful to undo back through.
-        if origin == TextEditOrigin::Program {
-            self.steps.clear();
-            self.cursor = 0;
             return;
         }
         // Anything after the cursor was undone; a fresh edit replaces it.
@@ -142,7 +147,7 @@ impl TextHistory {
         let mut seen = std::collections::HashSet::with_capacity(self.steps.len() * 2);
         self.steps
             .iter()
-            .flat_map(|step| [&step.before.value, &step.after.value])
+            .flat_map(|step| [&step.before.state.value, &step.after.state.value])
             .filter(|value| seen.insert((value.as_ptr() as usize, value.len())))
             .map(|value| value.len())
             .sum()
@@ -159,14 +164,14 @@ impl TextHistory {
 
     /// Undo and redo end a merge run too: typing after an undo is a new
     /// step, not more of the one the undo stepped back onto.
-    fn undo(&mut self) -> Option<TextInputState> {
+    fn undo(&mut self) -> Option<EditorSnapshot> {
         let index = self.cursor.checked_sub(1)?;
         self.cursor = index;
         self.seal_before_cursor();
         Some(self.steps[index].before.clone())
     }
 
-    fn redo(&mut self) -> Option<TextInputState> {
+    fn redo(&mut self) -> Option<EditorSnapshot> {
         let step = self.steps.get(self.cursor)?;
         let after = step.after.clone();
         self.cursor += 1;
@@ -204,8 +209,8 @@ impl TextHistories {
     pub(super) fn record(
         &mut self,
         node: StableNodeId,
-        before: TextInputState,
-        after: TextInputState,
+        before: EditorSnapshot,
+        after: EditorSnapshot,
         origin: TextEditOrigin,
     ) {
         self.entries
@@ -220,11 +225,11 @@ impl TextHistories {
         }
     }
 
-    pub(super) fn undo(&mut self, node: StableNodeId) -> Option<TextInputState> {
+    pub(super) fn undo(&mut self, node: StableNodeId) -> Option<EditorSnapshot> {
         self.entries.get_mut(&node)?.undo()
     }
 
-    pub(super) fn redo(&mut self, node: StableNodeId) -> Option<TextInputState> {
+    pub(super) fn redo(&mut self, node: StableNodeId) -> Option<EditorSnapshot> {
         self.entries.get_mut(&node)?.redo()
     }
 
@@ -300,13 +305,17 @@ impl crate::AppContext {
             }
             return Ok(changed);
         }
-        let before = self.read(entity, |editable: &C| editable.state().clone())?;
+        let snapshot = |editable: &C| EditorSnapshot {
+            state: editable.state().clone(),
+            number: editable.committed_number(),
+        };
+        let before = self.read(entity, snapshot)?;
         let changed = self.update_component(entity, apply)?;
         if !changed {
             return Ok(false);
         }
-        let after = self.read(entity, |editable: &C| editable.state().clone())?;
-        if after.value != before.value {
+        let after = self.read(entity, snapshot)?;
+        if after.state.value != before.state.value || after.number != before.number {
             self.text_histories
                 .record(entity.stable_id(), before, after, origin);
         }
@@ -353,15 +362,7 @@ impl crate::AppContext {
         }) else {
             return Ok(false);
         };
-        // `History` keeps the restore from becoming a step of its own.
-        let restored =
-            self.replace_editor_state(node, focused.kind, TextEditOrigin::History, target)?;
-        // A `NumberInput`'s committed number follows the restored draft, so
-        // undoing a step takes the number back too.
-        if restored && focused.is_numeric() {
-            self.adopt_number_draft(crate::Entity::from_stable_id(node))?;
-        }
-        Ok(restored)
+        self.restore_editor_snapshot(node, focused.kind, target)
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -502,9 +503,11 @@ mod editor_tests {
             assert!(cx.redo_focused_text(document()).unwrap());
             assert_eq!(draft(&cx), "42");
 
-            // The number follows the restored draft: nothing left to commit.
+            // Typing never committed a number, so redo restores none: the
+            // draft is still pending until Enter or blur.
+            assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 1.0);
+            assert!(cx.commit_focused_number_input(document()).unwrap());
             assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 42.0);
-            assert!(!cx.commit_focused_number_input(document()).unwrap());
         }
     }
 
@@ -563,6 +566,56 @@ mod editor_tests {
         assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("1", 1.0));
         assert!(cx.redo_focused_text(document()).unwrap());
         assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("4", 4.0));
+    }
+
+    #[test]
+    fn undo_restores_the_number_the_field_held_not_one_read_from_the_draft() {
+        // An empty draft: nothing to read a number from.
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(5.0));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.delete_focused_text(document(), TextDeleteKind::Backward)
+            .unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("6", 6.0));
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("", 5.0));
+
+        // A pending draft the user never committed: undo does not commit it.
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(2.0));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.replace_focused_text(document(), "1").unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!(value(&cx), 22.0);
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("21", 2.0));
+    }
+
+    #[test]
+    fn a_controlled_echo_of_the_held_number_keeps_the_draft_and_its_history() {
+        let mut cx = AppContext::new();
+        let input = focused_number(
+            &mut cx,
+            crate::NumberInput::new(1.0)
+                .range(0.0, 10.0)
+                .step(0.5)
+                .precision(1),
+        );
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "7.3").unwrap();
+        assert!(cx.commit_focused_number_input(document()).unwrap());
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.3");
+        let held = cx.read(input, crate::NumberInput::value).unwrap();
+        // The application writes back the number it was just told about.
+        assert!(!cx.set_number_value(input, held).unwrap());
+        assert_eq!(draft_of(&cx, input), "7.3");
+        assert!(
+            cx.can_redo_text(input.stable_id()),
+            "redo survives the echo"
+        );
     }
 
     #[test]
@@ -1063,8 +1116,11 @@ mod editor_tests {
 mod tests {
     use super::*;
 
-    fn state(value: &str) -> TextInputState {
-        TextInputState::new(value)
+    fn state(value: &str) -> EditorSnapshot {
+        EditorSnapshot {
+            state: TextInputState::new(value),
+            number: None,
+        }
     }
 
     fn record(history: &mut TextHistory, from: &str, to: &str, origin: TextEditOrigin) {
@@ -1097,7 +1153,7 @@ mod tests {
         assert!(history.steps.len() < 40, "old steps went");
         assert!(history.can_undo(), "the newest edit is still undoable");
         assert_eq!(
-            history.undo().map(|state| state.value.len()),
+            history.undo().map(|snapshot| snapshot.state.value.len()),
             Some(big.len() + 2),
             "and it undoes to the value that edit started from"
         );
@@ -1124,12 +1180,16 @@ mod tests {
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|state| state.value.to_string()),
+            history
+                .undo()
+                .map(|snapshot| snapshot.state.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo(), "the run collapsed into one step");
         assert_eq!(
-            history.redo().map(|state| state.value.to_string()),
+            history
+                .redo()
+                .map(|snapshot| snapshot.state.value.to_string()),
             Some("abc".to_owned())
         );
     }
@@ -1142,15 +1202,15 @@ mod tests {
         record(&mut history, "ab", "ab!", TextEditOrigin::Paste);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("abc".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some(String::new())
         );
         assert!(!history.can_undo());
@@ -1164,11 +1224,11 @@ mod tests {
         record(&mut history, "ab", "abcd", TextEditOrigin::Typing);
 
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("ab".to_owned())
         );
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some(String::new())
         );
     }
@@ -1181,7 +1241,7 @@ mod tests {
         history.undo();
         record(&mut history, "abc", "abcd", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("abc".to_owned()),
             "not back through the typing before the undo"
         );
@@ -1193,7 +1253,7 @@ mod tests {
         history.redo();
         record(&mut history, "ab", "abc", TextEditOrigin::Typing);
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("ab".to_owned())
         );
     }
@@ -1209,22 +1269,9 @@ mod tests {
         record(&mut history, "one", "three", TextEditOrigin::Paste);
         assert!(!history.can_redo(), "the abandoned branch is gone");
         assert_eq!(
-            history.undo().map(|s| s.value.to_string()),
+            history.undo().map(|s| s.state.value.to_string()),
             Some("one".to_owned())
         );
-    }
-
-    #[test]
-    fn an_application_write_clears_what_the_user_could_undo_into() {
-        let mut history = TextHistory::default();
-        record(&mut history, "", "typed", TextEditOrigin::Typing);
-        record(&mut history, "typed", "loaded", TextEditOrigin::Program);
-
-        assert!(
-            !history.can_undo(),
-            "a document swap is not the user's edit"
-        );
-        assert!(!history.can_redo());
     }
 
     #[test]

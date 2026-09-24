@@ -4566,7 +4566,7 @@ mod tests {
             .dispatch(&mut context, document, &control("z", true))
             .unwrap();
         assert_eq!(textarea_selection(&context, node).0, "12");
-        assert_eq!(value(&context), 12.0, "the number follows the draft");
+        assert_eq!(value(&context), 2.0, "typing committed no number to redo");
 
         // Enter commits a pending draft instead of submitting a text field.
         adapter

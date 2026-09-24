@@ -104,6 +104,18 @@ trait EditableText: ComponentView {
     fn accepts_edit_value(&self, _value: &str) -> bool {
         true
     }
+    /// The committed number behind the text, for an editor that keeps one
+    /// (`NumberInput`). The undo journal records it with the text.
+    fn committed_number(&self) -> Option<f64> {
+        None
+    }
+    /// Put back a committed number the undo journal recorded, announcing the
+    /// move in the editor's own terms.
+    fn restore_committed_number(&mut self, _number: f64, _cx: &mut ViewContext<'_, Self>)
+    where
+        Self: Sized,
+    {
+    }
     /// IME commit path: replace only the primary selection's text. This is
     /// the documented multi-cursor IME restriction — composition commits to
     /// the primary cursor alone and other cursors survive via offset
@@ -200,6 +212,16 @@ impl EditableText for NumberInput {
     /// A read-only field's draft still selects, so its text can be copied.
     fn accepts_selection(&self) -> bool {
         !self.disabled
+    }
+
+    fn committed_number(&self) -> Option<f64> {
+        Some(self.value())
+    }
+
+    fn restore_committed_number(&mut self, number: f64, cx: &mut ViewContext<'_, Self>) {
+        if self.restore_value(number) {
+            cx.emit(NumberChanged { value: number });
+        }
     }
 
     fn replace_selection(&mut self, text: &str) -> bool {

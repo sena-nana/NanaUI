@@ -558,32 +558,34 @@ impl AppContext {
             && self.focused_plain_editor_node(document).is_some()
     }
 
-    /// The focused plain editor's node, composition or not: a presence check
-    /// that reads no component state.
+    /// The focused plain editor's node, composition or not.
     pub(super) fn focused_plain_editor_node(&self, document: DocumentId) -> Option<StableNodeId> {
-        self.focused_editor::<TextArea>(document)
-            .map(|editor| editor.stable_id())
-            .or_else(|| {
-                self.focused_editor::<TextInput>(document)
-                    .map(|editor| editor.stable_id())
-            })
-            .or_else(|| {
-                self.focused_editor::<NumberInput>(document)
-                    .map(|editor| editor.stable_id())
-            })
+        self.focused_plain_editor_kind(document)
+            .map(|(node, _)| node)
     }
 
     fn focused_plain_editor(&self, document: DocumentId) -> Option<FocusedTextEditor> {
-        if let Some(entity) = self.focused_editor::<TextArea>(document) {
-            return self.editor_info(entity, TextEditorKind::Area);
+        let (node, kind) = self.focused_plain_editor_kind(document)?;
+        with_editor_type!(kind, C => self.editor_info(Entity::<C>::from_stable_id(node), kind))
+    }
+
+    /// The one probe for which plain editor is focused, composition or not.
+    /// Reads no component state.
+    fn focused_plain_editor_kind(
+        &self,
+        document: DocumentId,
+    ) -> Option<(StableNodeId, TextEditorKind)> {
+        let (target, _) = self.world.focused_text_input(document)?;
+        let view = self.views.get(&target)?;
+        if view.is::<TextArea>() {
+            Some((target, TextEditorKind::Area))
+        } else if view.is::<TextInput>() {
+            Some((target, TextEditorKind::Field))
+        } else if view.is::<NumberInput>() {
+            Some((target, TextEditorKind::Number))
+        } else {
+            None
         }
-        if let Some(entity) = self.focused_editor::<TextInput>(document) {
-            return self.editor_info(entity, TextEditorKind::Field);
-        }
-        if let Some(entity) = self.focused_editor::<NumberInput>(document) {
-            return self.editor_info(entity, TextEditorKind::Number);
-        }
-        None
     }
 
     fn editor_info<C: EditableText>(
@@ -2594,9 +2596,7 @@ impl AppContext {
     }
 
     /// Replace an editor's whole state as one journaled edit. Editors that
-    /// refuse input, or the value (a length limit), decline it. Undo and
-    /// redo skip the value check: they restore states the journal already
-    /// took.
+    /// refuse input, or the value (a length limit), decline it.
     pub(super) fn replace_editor_state(
         &mut self,
         node: StableNodeId,
@@ -2617,13 +2617,45 @@ impl AppContext {
             Entity::<C>::from_stable_id(node),
             origin,
             move |editable: &mut C, _| {
-                if !editable.accepts_input()
-                    || (origin != crate::TextEditOrigin::History
-                        && !editable.accepts_edit_value(&next.value))
-                {
+                if !editable.accepts_input() || !editable.accepts_edit_value(&next.value) {
                     return false;
                 }
                 *editable.state_mut() = next;
+                true
+            },
+        )
+    }
+
+    /// Put an editor back to a journaled snapshot (undo/redo): its text
+    /// state and, for a `NumberInput`, the committed number with it. No
+    /// value check: the journal only holds states the editor already took.
+    pub(super) fn restore_editor_snapshot(
+        &mut self,
+        node: StableNodeId,
+        kind: TextEditorKind,
+        snapshot: super::text_history::EditorSnapshot,
+    ) -> Result<bool, FrameworkError> {
+        with_editor_type!(kind, C => self.restore_editor_snapshot_of::<C>(node, snapshot))
+    }
+
+    fn restore_editor_snapshot_of<C: EditableText>(
+        &mut self,
+        node: StableNodeId,
+        snapshot: super::text_history::EditorSnapshot,
+    ) -> Result<bool, FrameworkError> {
+        let super::text_history::EditorSnapshot { state, number } = snapshot;
+        // `History` keeps the restore from becoming a step of its own.
+        self.commit_editor_edit(
+            Entity::<C>::from_stable_id(node),
+            crate::TextEditOrigin::History,
+            move |editable: &mut C, cx| {
+                if !editable.accepts_input() {
+                    return false;
+                }
+                *editable.state_mut() = state;
+                if let Some(number) = number {
+                    editable.restore_committed_number(number, cx);
+                }
                 true
             },
         )

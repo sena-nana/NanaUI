@@ -1908,20 +1908,25 @@ impl NumberInput {
         self.spec.clamp(value) == value
     }
 
-    /// Make the committed value follow the draft, leaving the draft text as
-    /// it is. Undo and redo restore a draft; the number goes with it, so the
-    /// field never shows one number and holds another. Returns whether the
-    /// number moved. A draft that does not parse leaves the number alone.
-    pub(crate) fn adopt_draft(&mut self) -> bool {
-        let Some(parsed) = nana_ui_core::NumberFieldSpec::parse_unsnapped(&self.state.value) else {
-            return false;
-        };
-        let next = self.normalize(parsed);
-        if next == self.value {
+    /// Put back a committed number the undo journal recorded, leaving the
+    /// draft as the journal restored it. Returns whether the number moved.
+    pub(crate) fn restore_value(&mut self, value: f64) -> bool {
+        if value == self.value {
             return false;
         }
-        self.value = next;
+        self.value = value;
         true
+    }
+
+    /// Publish a number from the application: a number the field already
+    /// holds changes nothing, so a draft the user is typing survives a
+    /// controlled field echoing its own value back. Otherwise as
+    /// [`Self::assign`].
+    pub(crate) fn publish(&mut self, value: f64) -> bool {
+        if self.normalize(value) == self.value {
+            return false;
+        }
+        self.assign(value)
     }
 
     /// Where the field puts `value`: clamped to its bounds, and on a

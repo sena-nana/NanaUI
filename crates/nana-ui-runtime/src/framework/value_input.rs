@@ -6,9 +6,11 @@ impl AppContext {
     /// Publish a numeric value using the field's bounds and discrete or
     /// continuous policy; hosts do not reimplement numeric normalization.
     ///
-    /// An application write, not the user's edit: whenever it changes the
-    /// field, including a new number under a draft that already reads it, the
-    /// undo history starts afresh, so undo cannot bring back a draft over it.
+    /// A number the field already holds changes nothing, so a controlled
+    /// field echoing `NumberChanged` back keeps the user's draft and undo
+    /// history. A new number is an application write, not the user's edit:
+    /// the draft shows it and the undo history starts afresh, so undo cannot
+    /// bring back a draft over it.
     pub fn set_number_value(
         &mut self,
         entity: Entity<NumberInput>,
@@ -17,12 +19,14 @@ impl AppContext {
         if !value.is_finite() {
             return Err(FrameworkError::InvalidComponentValue(entity.id));
         }
-        self.write_number(entity, TextEditOrigin::Program, |input| input.assign(value))
+        self.write_number(entity, TextEditOrigin::Program, |input| {
+            input.publish(value)
+        })
     }
 
     /// Commit a complete value given as text, as assistive technology sets
-    /// one: published through [`Self::set_number_value`], so the field's grid
-    /// applies. Returns whether the field took it.
+    /// one: committed as the field's value and shown in place of any draft,
+    /// with the field's grid applied. Returns whether the field took it.
     ///
     /// Unparseable text, a number outside the field's bounds, and a field
     /// that refuses input are refused outright: nothing changes, the pending
@@ -41,7 +45,11 @@ impl AppContext {
         })? {
             return Ok(false);
         }
-        self.set_number_value(entity, requested)?;
+        // Unlike `set_number_value`, the field shows what was set even when it
+        // already held the number: the user asked for this value.
+        self.write_number(entity, TextEditOrigin::Program, |input| {
+            input.assign(requested)
+        })?;
         Ok(true)
     }
 
@@ -147,23 +155,6 @@ impl AppContext {
         self.world
             .ime(entity.stable_id())
             .is_some_and(|composition| !composition.text.is_empty())
-    }
-
-    /// After undo or redo restored a numeric field's draft, bring its
-    /// committed number to the draft and report the move.
-    pub(super) fn adopt_number_draft(
-        &mut self,
-        entity: Entity<NumberInput>,
-    ) -> Result<bool, FrameworkError> {
-        self.update_component(entity, |input, cx| {
-            if !input.adopt_draft() {
-                return false;
-            }
-            cx.emit(NumberChanged {
-                value: input.value(),
-            });
-            true
-        })
     }
 
     pub(super) fn focused_number_input(&self, document: DocumentId) -> Option<Entity<NumberInput>> {
