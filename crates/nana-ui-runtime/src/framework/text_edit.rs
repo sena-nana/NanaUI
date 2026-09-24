@@ -5199,6 +5199,21 @@ mod atom_tests {
     }
 
     #[test]
+    fn deleting_at_a_bare_caret_inside_an_atom_still_takes_the_atom() {
+        // Only a cut keeps the atom: a caret copies nothing. An application
+        // replacing the selection with nothing removes the chip, as before.
+        let (mut context, _document, area, node) = focused_editor("Hi [bob]!");
+        context
+            .update_component(area, |area, _| {
+                area.atom_spans = Arc::from([TextAtomSpan::new(3, 8)]);
+                area.state.selection = TextSelection::caret(5);
+            })
+            .unwrap();
+        assert!(context.replace_text_area_selection(area, "").unwrap());
+        assert_eq!(context.world().text_input(node).unwrap().value, "Hi !");
+    }
+
+    #[test]
     fn left_and_right_collapse_onto_a_selection_edge_that_touches_an_atom() {
         // A selection ending on a chip: collapsing lands on the selection's
         // edge, not where a caret stepping off the chip would.

@@ -715,8 +715,12 @@ fn overlay_validation_walks_hosts_not_every_entity() {
 
 #[test]
 fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
-    // Focus on the menu, on an item inside it, or on an editor elsewhere.
-    for focus in [3, 5, 4] {
+    // Focus on the menu, on an item inside it, or on an editor elsewhere;
+    // the menu despawned (root first) or parked (focus dropped first).
+    for (focus, park) in [3, 5, 4]
+        .into_iter()
+        .flat_map(|focus| [(focus, false), (focus, true)])
+    {
         let focus_in_menu = focus != 4;
         let mut world = UiWorld::new();
         let mut create = MutationQueue::new();
@@ -767,13 +771,17 @@ fn removing_an_overlay_restores_focus_only_if_it_left_with_the_overlay() {
         world.commit(create).unwrap();
 
         let mut close = MutationQueue::new();
-        close.despawn_subtree(node(3));
+        if park {
+            close.park_subtree(node(3));
+        } else {
+            close.despawn_subtree(node(3));
+        }
         world.commit(close).unwrap();
         if focus_in_menu {
             assert_eq!(
                 world.focused(document(1)),
                 Some(node(2)),
-                "focus leaving with the menu (from {focus}) returns to where it came from"
+                "focus leaving with the menu (from {focus}, parked: {park}) returns to where it came from"
             );
         } else {
             assert_eq!(

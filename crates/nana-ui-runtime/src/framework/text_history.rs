@@ -324,8 +324,11 @@ impl crate::AppContext {
     /// Refused, like the user's own edits, while the editor is read-only or
     /// disabled. `apply` returns whether it changed anything; an edit that
     /// leaves the state as it was is no edit. Emits the editor's change
-    /// event like any other edit. [`TextEditOrigin::History`] is an error:
-    /// only undo and redo restore a state without recording it.
+    /// event like any other edit. Declined while the user is composing with
+    /// an IME, as a paste is. [`TextEditOrigin::History`] and
+    /// [`TextEditOrigin::Program`] are errors: neither records a step (undo
+    /// and redo restore without recording, a program write clears the
+    /// journal).
     pub fn edit_text_area(
         &mut self,
         entity: crate::Entity<crate::TextArea>,
@@ -335,9 +338,8 @@ impl crate::AppContext {
         self.edit_editable_on_behalf(entity, origin, apply, |_, _| true)
     }
 
-    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. A value the field
-    /// would refuse from the keyboard (a line break, past its length limit) is
-    /// refused here too.
+    /// [`Self::edit_text_area`] for a [`crate::TextInput`]. A value past the
+    /// field's length limit is refused, as it is from the keyboard.
     pub fn edit_text_input(
         &mut self,
         entity: crate::Entity<crate::TextInput>,
@@ -356,13 +358,17 @@ impl crate::AppContext {
         apply: impl FnOnce(&mut TextInputState) -> bool,
         accepts: impl FnOnce(&C, &str) -> bool,
     ) -> Result<bool, crate::FrameworkError> {
-        if origin == TextEditOrigin::History {
+        if matches!(origin, TextEditOrigin::History | TextEditOrigin::Program) {
             return Err(crate::FrameworkError::InvalidInput);
         }
-        if !self.read(entity, super::EditableText::accepts_input)? {
+        let node = entity.stable_id();
+        let composing = self
+            .world
+            .ime(node)
+            .is_some_and(|composition| !composition.text.is_empty());
+        if composing || !self.read(entity, super::EditableText::accepts_input)? {
             return Ok(false);
         }
-        let node = entity.stable_id();
         self.seal_editor_history(node);
         let changed = self.commit_editor_edit(entity, origin, |editable: &mut C, _| {
             let mut next = editable.state().clone();
@@ -397,11 +403,17 @@ impl crate::AppContext {
         &self,
         mutations: &crate::MutationQueue,
     ) -> Vec<StableNodeId> {
+        // Most batches (layout, scroll, style) run while no editor has a
+        // journal, or touch no editor text at all.
+        if self.text_histories.entries.is_empty() {
+            return Vec::new();
+        }
         mutations
             .as_slice()
             .iter()
             .filter_map(|mutation| match mutation {
                 crate::UiMutation::SetTextInput { id, state: Some(_) }
+                | crate::UiMutation::ReplaceTextSelection { id, .. }
                     if self.text_histories.verifies(*id) =>
                 {
                     Some(*id)
@@ -528,13 +540,42 @@ impl crate::AppContext {
         document: crate::DocumentId,
         undo: bool,
     ) -> Result<bool, crate::FrameworkError> {
-        let Some(focused) = self.focused_text_editor(document) else {
-            return Ok(false);
-        };
-        if !focused.accepts_input {
+        // Undo during preedit would fight the IME.
+        if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
-        let node = focused.node;
+        // Every editor whose edits are journaled, so an undo it offers
+        // (`can_undo_text`) is one it can take.
+        if let Some(entity) = self.focused_editor::<crate::TextArea>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        if let Some(entity) = self.focused_editor::<crate::TextInput>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        if let Some(entity) = self.focused_editor::<crate::NumberInput>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        if let Some(entity) = self.focused_editor::<crate::SearchDropdown>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        if let Some(entity) = self.focused_editor::<crate::CommandPalette>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        if let Some(entity) = self.focused_editor::<crate::ContextMenu>(document) {
+            return self.step_text_history(entity, undo);
+        }
+        Ok(false)
+    }
+
+    fn step_text_history<C: super::EditableText>(
+        &mut self,
+        entity: crate::Entity<C>,
+        undo: bool,
+    ) -> Result<bool, crate::FrameworkError> {
+        if !self.read(entity, super::EditableText::accepts_input)? {
+            return Ok(false);
+        }
+        let node = entity.stable_id();
         self.follow_text_history(node);
         let Some(target) = (if undo {
             self.text_histories.undo(node)
@@ -544,25 +585,10 @@ impl crate::AppContext {
             return Ok(false);
         };
         // `History` keeps the restore from becoming a step of its own.
-        let restore = move |state: &mut crate::TextInputState| *state = target;
-        match focused.kind {
-            super::text_edit::TextEditorKind::Area => self.commit_followed_editor_edit(
-                crate::Entity::<crate::TextArea>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |area: &mut crate::TextArea, _| {
-                    restore(&mut area.state);
-                    true
-                },
-            ),
-            super::text_edit::TextEditorKind::Field => self.commit_followed_editor_edit(
-                crate::Entity::<crate::TextInput>::from_stable_id(node),
-                TextEditOrigin::History,
-                move |field: &mut crate::TextInput, _| {
-                    restore(&mut field.state);
-                    true
-                },
-            ),
-        }
+        self.commit_followed_editor_edit(entity, TextEditOrigin::History, move |editable, _| {
+            *editable.state_mut() = target;
+            true
+        })
     }
 
     /// Ends the current typing or deletion run for an editor, so the next edit
@@ -1213,6 +1239,71 @@ mod editor_tests {
         // The application setting the number is a replacement.
         cx.set_number_value(input, 40.0).unwrap();
         assert!(!cx.can_undo_text(node));
+    }
+
+    #[test]
+    fn a_number_fields_journal_is_one_undo_reaches() {
+        let mut cx = AppContext::new();
+        let input = cx
+            .create_component(document(), crate::NumberInput::new(1.0))
+            .unwrap();
+        let node = input.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "12").unwrap();
+        // A step moves from the committed value, so commit the typing first.
+        cx.commit_focused_number_input(document()).unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        let text = |cx: &AppContext| {
+            cx.read(input, |input| input.state.value.to_string())
+                .unwrap()
+        };
+        assert_eq!(text(&cx), "13");
+        assert!(cx.undo_focused_text(document()).unwrap(), "the step");
+        assert_eq!(text(&cx), "12");
+        assert!(cx.undo_focused_text(document()).unwrap(), "the typing");
+        assert_eq!(text(&cx), "1");
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!(text(&cx), "12");
+    }
+
+    #[test]
+    fn an_edit_on_the_users_behalf_waits_out_a_composition_and_is_never_a_program_write() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "a");
+        let append = |state: &mut crate::TextInputState| {
+            state.replace_value("ab");
+            true
+        };
+        assert!(matches!(
+            cx.edit_text_area(area, crate::TextEditOrigin::Program, append),
+            Err(crate::FrameworkError::InvalidInput)
+        ));
+        cx.set_ime_preedit(document(), "ni".to_owned(), None)
+            .unwrap();
+        assert!(
+            !cx.edit_text_area(area, crate::TextEditOrigin::Structural, append)
+                .unwrap()
+        );
+        assert_eq!(value_of(&cx, area), "a");
+        assert!(
+            cx.world().ime(area.stable_id()).is_some(),
+            "composition intact"
+        );
+    }
+
+    #[test]
+    fn a_selection_replaced_through_the_world_frees_the_journal_at_commit() {
+        let mut cx = AppContext::new();
+        let field = cx.create_component(document(), TextInput::new("")).unwrap();
+        let node = field.stable_id();
+        cx.focus_node(document(), node).unwrap();
+        cx.replace_focused_text(document(), "draft").unwrap();
+        assert!(cx.text_histories.entries.contains_key(&node));
+        let mut queue = crate::MutationQueue::new();
+        queue.replace_text_selection(node, "X");
+        cx.commit_mutations(queue).unwrap();
+        assert!(!cx.text_histories.entries.contains_key(&node));
     }
 
     #[test]

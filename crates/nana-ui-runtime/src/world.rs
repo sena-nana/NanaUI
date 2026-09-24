@@ -2369,7 +2369,9 @@ impl UiWorld {
             .flatten()
             .copied()
             .collect::<HashSet<_>>();
-        let mut updates = hosts
+        // An active overlay is its host's child, and a host inside `removed`
+        // is skipped: at most one overlay closes here, the removed root.
+        let updates = hosts
             .into_iter()
             .filter_map(|host| {
                 (!removed.contains(&host))
@@ -2378,7 +2380,7 @@ impl UiWorld {
                     .and_then(|mut state| {
                         let previous = state;
                         let closed = state.active.filter(|active| removed.contains(active));
-                        let restore_focus = closed.and(state.restore_focus);
+                        let restore_focus = closed.zip(state.restore_focus);
                         if closed.is_some() {
                             state.active = None;
                             state.restore_focus = None;
@@ -2389,54 +2391,37 @@ impl UiWorld {
                         {
                             state.restore_focus = None;
                         }
-                        (state != previous).then_some((host, state, closed, restore_focus))
+                        (state != previous).then_some((host, state, restore_focus))
                     })
             })
-            .map(|(host, state, closed, restore_focus)| {
-                let document = self.record(host).document;
-                // Read before any host below writes its restore target.
-                let focused = self.input.focused.get(&document).copied();
-                // Focus inside the closed overlay (not yet removed when a
-                // subtree is despawned root first) left with it.
-                let held_focus = closed.zip(focused).is_some_and(|(overlay, focused)| {
-                    removed.contains(&focused)
-                        || !self.contains(focused)
-                        || self.is_descendant_or_self(focused, overlay)
-                });
-                // Focus the user already moved to another node stays there,
-                // with whatever composition it has going.
-                let focus_left = focused.is_none() || held_focus;
-                (
-                    host,
-                    document,
-                    state,
-                    focus_left.then_some(restore_focus).flatten(),
-                    held_focus,
-                )
-            })
             .collect::<Vec<_>>();
-        // Several overlays closing at once: the one that held focus gives it
-        // back; otherwise the lowest host does, not whichever a hash visits
-        // first.
-        updates.sort_by_key(|(host, _, _, _, held_focus)| (!*held_focus, *host));
-        let mut restored = HashSet::new();
-        for (host, document, state, restore_focus, _) in updates {
+        for (host, state, restore_focus) in updates {
             self.write_overlay_host(host, Some(state));
             self.mark(host, DirtyMask::ACCESSIBILITY);
-            if restored.contains(&document) {
+            let document = self.record(host).document;
+            let Some((overlay, restore_focus)) = restore_focus else {
                 continue;
-            }
-            if let Some(restore_focus) = restore_focus.filter(|id| {
-                self.contains(*id)
-                    && self.is_mounted(*id)
-                    && self.record(*id).document == document
-                    && self.record(*id).interaction.focusable
-                    && self.record(*id).resolved.0.visible
-                    && self.active_modal_allows_focus_now(document, *id)
-            }) {
+            };
+            // Focus goes back only if it left with the overlay: it is gone
+            // already (a retired subtree drops it first) or still on the
+            // overlay or inside it (a despawn removes the root first). Focus
+            // the user moved to another node stays there, with whatever
+            // composition it has going.
+            let focus_left = self.input.focused.get(&document).is_none_or(|focused| {
+                removed.contains(focused)
+                    || !self.contains(*focused)
+                    || self.is_descendant_or_self(*focused, overlay)
+            });
+            if focus_left
+                && self.contains(restore_focus)
+                && self.is_mounted(restore_focus)
+                && self.record(restore_focus).document == document
+                && self.record(restore_focus).interaction.focusable
+                && self.record(restore_focus).resolved.0.visible
+                && self.active_modal_allows_focus_now(document, restore_focus)
+            {
                 self.input.focused.insert(document, restore_focus);
                 self.mark_focus_changed(restore_focus);
-                restored.insert(document);
             }
         }
     }

@@ -327,7 +327,7 @@ let app = mount_vue_as_nana(MountOptions {
 
 控件需要先于默认编辑处理按键时，用 `AppContext::on_key` 或 `on_view_key` 注册一个策略；后者读取当前保留的控件值。返回 `true` 表示消费，重复注册替换旧策略，删除视图会移除策略。`RuntimeInputAdapter` 在浮层处理后、默认编辑前调用 `dispatch_focused_key`，只投递给当前文档中已挂载且未禁用的焦点节点，IME 组合期间跳过业务策略。
 
-应用改写编辑器文本（`update_component`、`set_component`、`mount` 或直接提交 `SetTextInput`）时，只要字节变了，该编辑器的 undo/redo 随这次提交清空（直接写 `UiWorld` 的，在下一次使用时清空）：载入另一份文档后 Ctrl+Z 不会退回上一份。写回编辑器自己报告的值、或重建出相同文本，不算改写，日志保留。发送后清空输入框、格式化器写回这类写入同样会清掉用户的撤销历史；要让它成为用户可撤销的一步（格式快捷键、补全），改用 `edit_text_area` / `edit_text_input`，并传入要记录成的 `TextEditOrigin`。这一步总是独立的一步，不并入前后的连续输入；编辑器只读或禁用时与用户输入一样被拒绝，`TextInput` 的长度上限照样生效，没有改变任何状态的调用不算编辑、不发变更事件。数字框自带的步进、提交与还原属于用户操作，照常记入日志，不会清空它。
+应用改写编辑器文本（`update_component`、`set_component`、`mount` 或直接提交 `SetTextInput`）时，只要字节变了，该编辑器的 undo/redo 随这次提交清空（直接写 `UiWorld` 的，在下一次使用时清空）：载入另一份文档后 Ctrl+Z 不会退回上一份。写回编辑器自己报告的值、或重建出相同文本，不算改写，日志保留。发送后清空输入框、格式化器写回这类写入同样会清掉用户的撤销历史；要让它成为用户可撤销的一步（格式快捷键、补全），改用 `edit_text_area` / `edit_text_input`，并传入要记录成的 `TextEditOrigin`。这一步总是独立的一步，不并入前后的连续输入；`History` 与 `Program` 不是可记录的一步，传入即报错；编辑器只读、禁用或正在输入法组字时与用户输入一样被拒绝，`TextInput` 的长度上限照样生效，没有改变任何状态的调用不算编辑、不发变更事件。数字框自带的步进、提交与还原属于用户操作，照常记入日志，不会清空它。`undo_focused_text` / `redo_focused_text` 对所有记日志的编辑器生效（文本框、多行文本、数字框、搜索下拉、命令面板、右键菜单的输入框），`can_undo_text` 为真时撤销一定可达。
 
 保留编辑器绑定到另一个任务、文件或草稿身份时，即使文本相同也应调用 `clear_text_history(node)`，清除原对象的 undo/redo；它不改变文本、选区或正在进行的 IME。业务对象身份和是否允许重绑定仍由应用判断。
 
