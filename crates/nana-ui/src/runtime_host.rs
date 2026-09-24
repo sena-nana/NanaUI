@@ -20,7 +20,7 @@ use nana_ui_runtime::{
 use nana_ui_scene::{DocumentAccessError, RuntimeDocument};
 
 use crate::{
-    HostTextureRegistry, HostedGpuResources, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
+    GpuContext, HostTextureRegistry, MaterialOutcome, SceneGpuRendererRegistry, ThemeMode,
 };
 
 pub use nana_ui_platform::WindowDescriptor;
@@ -60,7 +60,7 @@ pub struct RuntimeProgramContext<Message: Send + 'static> {
     window: Option<crate::WindowHandle>,
     window_tag: Option<Arc<str>>,
     geometry: WindowGeometry,
-    gpu: HostedGpuResources,
+    gpu: GpuContext,
     /// What this window presents, the target it reaches the screen through, and
     /// why either of them differs from what was asked for. One value, so a
     /// program cannot read a material and an alpha mode that disagree.
@@ -104,7 +104,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
     pub(crate) fn new(
         window_id: WindowId,
         geometry: WindowGeometry,
-        gpu: HostedGpuResources,
+        gpu: GpuContext,
         presentation: crate::ResolvedWindowPresentation,
         composition_work: crate::CompositionWork,
         dispatch: Arc<dyn Fn(Message) + Send + Sync>,
@@ -184,7 +184,7 @@ impl<Message: Send + 'static> RuntimeProgramContext<Message> {
         self.geometry
     }
 
-    pub fn gpu(&self) -> &HostedGpuResources {
+    pub fn gpu(&self) -> &GpuContext {
         &self.gpu
     }
 

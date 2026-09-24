@@ -603,8 +603,8 @@ fn spawn_device_request(
                 pollster::block_on(request.acquire()).map_err(|error| error.to_string())
             };
             let painter = device.as_ref().ok().map(|device| {
-                let resources = device.resources();
-                SceneWgpuPainter::new(resources.device(), resources.queue(), device.format())
+                let gpu = device.gpu();
+                SceneWgpuPainter::new(gpu.raw_device(), gpu.raw_queue(), device.format())
             });
             if let Err(unsent) = sender.send(DeviceStart { device, painter }) {
                 // The host went away. The surface holds a reference to its
@@ -810,8 +810,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let done = Arc::clone(&latch);
         let proxy = self.proxy.clone();
         self.graphics
-            .resources()
-            .queue()
+            .gpu()
+            .raw_queue()
             .on_submitted_work_done(move || {
                 done.store(true, Ordering::Release);
                 proxy.wake_up();
@@ -829,11 +829,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     ) -> Option<Instant> {
         let latch = self.startup.active.as_ref()?.latch.as_ref()?;
         if !latch.load(Ordering::Acquire) {
-            let _ = self
-                .graphics
-                .resources()
-                .device()
-                .poll(wgpu::PollType::Poll);
+            let _ = self.graphics.gpu().raw_device().poll(wgpu::PollType::Poll);
         }
         if latch.load(Ordering::Acquire) {
             self.startup_handed_off(event_loop);

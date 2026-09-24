@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use nana_ui::runtime::UiScene;
 use nana_ui::{
-    HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError, ScenePaintViewport,
+    GpuContext, HostTextureRegistry, SceneGpuRendererRegistry, ScenePaintError, ScenePaintViewport,
     SceneWgpuPainter,
 };
 
@@ -27,8 +27,9 @@ impl<T> Size<T> {
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
 pub struct OffscreenSnapshots {
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
+    /// The snapshot device. Upload host textures with
+    /// [`GpuContext::create_texture`] / [`GpuContext::write_texture`].
+    pub gpu: GpuContext,
     painter: SceneWgpuPainter,
     image_ready: std::sync::mpsc::Receiver<()>,
 }
@@ -36,7 +37,7 @@ pub struct OffscreenSnapshots {
 impl OffscreenSnapshots {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let (_instance, adapter) = request_adapter()?;
-        let (device, queue) =
+        let (raw_device, raw_queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("nana-ui snapshot device"),
                 required_features: wgpu::Features::empty(),
@@ -45,14 +46,14 @@ impl OffscreenSnapshots {
                 trace: wgpu::Trace::Off,
                 experimental_features: wgpu::ExperimentalFeatures::disabled(),
             }))?;
-        let mut painter = SceneWgpuPainter::new(&device, &queue, FORMAT);
+        let gpu = GpuContext::from_wgpu(adapter, raw_device, raw_queue);
+        let mut painter = SceneWgpuPainter::new(gpu.wgpu().device(), gpu.wgpu().queue(), FORMAT);
         let (wake, image_ready) = std::sync::mpsc::sync_channel(1);
         painter.set_image_waker(std::sync::Arc::new(move || {
             let _ = wake.try_send(());
         }));
         Ok(Self {
-            device,
-            queue,
+            gpu,
             painter,
             image_ready,
         })
@@ -71,8 +72,8 @@ impl OffscreenSnapshots {
     /// content — and cannot tell that from a genuine layout bug.
     pub fn default_gpu_renderers(&self) -> SceneGpuRendererRegistry {
         nana_ui::default_scene_gpu_renderers_with_host(
-            std::sync::Arc::new(self.device.clone()),
-            std::sync::Arc::new(self.queue.clone()),
+            std::sync::Arc::new(self.gpu.wgpu().device().clone()),
+            std::sync::Arc::new(self.gpu.wgpu().queue().clone()),
         )
     }
 
@@ -127,20 +128,24 @@ impl OffscreenSnapshots {
         if size.width == 0 || size.height == 0 {
             return Err("snapshot size must be non-zero".into());
         }
-        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("nana-ui snapshot offscreen"),
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = self
+            .gpu
+            .wgpu()
+            .device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("nana-ui snapshot offscreen"),
+                size: wgpu::Extent3d {
+                    width: size.width,
+                    height: size.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
         loop {
@@ -149,11 +154,11 @@ impl OffscreenSnapshots {
             }
             // Every attempt starts from the same owned target contents.
             if layers.first().is_none_or(|(_, clears)| !clears) {
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("nana-ui snapshot clear"),
-                        });
+                let mut encoder = self.gpu.wgpu().device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor {
+                        label: Some("nana-ui snapshot clear"),
+                    },
+                );
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("nana-ui snapshot clear"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -170,8 +175,10 @@ impl OffscreenSnapshots {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                let clear_submit = self.queue.submit([encoder.finish()]);
-                self.device
+                let clear_submit = self.gpu.wgpu().queue().submit([encoder.finish()]);
+                self.gpu
+                    .wgpu()
+                    .device()
                     .poll(wgpu::PollType::Wait {
                         submission_index: Some(clear_submit),
                         timeout: None,
@@ -180,11 +187,11 @@ impl OffscreenSnapshots {
             }
             let image_revision = self.painter.image_revision();
             for (scene, layer_clear) in layers {
-                let mut encoder =
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some("nana-ui snapshot paint"),
-                        });
+                let mut encoder = self.gpu.wgpu().device().create_command_encoder(
+                    &wgpu::CommandEncoderDescriptor {
+                        label: Some("nana-ui snapshot paint"),
+                    },
+                );
                 let viewport = ScenePaintViewport {
                     logical_size: [
                         size.width as f32 / scale_factor,
@@ -211,8 +218,10 @@ impl OffscreenSnapshots {
                         gpu_renderers,
                     )
                     .map_err(paint_error)?;
-                let paint = self.queue.submit([encoder.finish()]);
-                self.device
+                let paint = self.gpu.wgpu().queue().submit([encoder.finish()]);
+                self.gpu
+                    .wgpu()
+                    .device()
                     .poll(wgpu::PollType::Wait {
                         submission_index: Some(paint),
                         timeout: None,
@@ -232,12 +241,20 @@ impl OffscreenSnapshots {
                 .recv_timeout(remaining)
                 .map_err(|_| "snapshot timed out waiting for URL images")?;
         }
-        let copy = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nana-ui snapshot copy"),
-            });
-        readback(&self.device, &self.queue, copy, &texture, size)
+        let copy =
+            self.gpu
+                .wgpu()
+                .device()
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nana-ui snapshot copy"),
+                });
+        readback(
+            self.gpu.wgpu().device(),
+            self.gpu.wgpu().queue(),
+            copy,
+            &texture,
+            size,
+        )
     }
 }
 

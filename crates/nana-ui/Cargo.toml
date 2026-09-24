@@ -47,7 +47,12 @@ icons-tabler = ["dep:nana-icons-tabler"]
 # manifest, and answer `NANA_PACKAGE_VALIDATE` self-checks. Opt-in: embedded
 # hosts that do their own packaging never link `nana-package`.
 packaged-resources = ["dep:nana-package"]
-gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:swash", "nana-ui-platform/fetch", "dep:wgpu", "dep:windows"]
+gpu = ["dep:bytemuck", "dep:nana-frame-exchange", "dep:nana-gpu", "dep:base64", "dep:etagere", "dep:image", "dep:pollster", "dep:nana-svg-raster", "dep:swash", "nana-ui-platform/fetch", "dep:wgpu", "dep:windows"]
+# Explicit escape hatch to the WGPU objects behind the GPU contract
+# (`GpuContext::wgpu()`, `FrameContext::wgpu_encoder()`, `nana_ui::wgpu`, …).
+# Hosts that bring their own device and renderers that record their own
+# pipelines need it; ordinary HostTexture / FrameExchange use does not.
+wgpu-interop = ["gpu", "nana-gpu/wgpu-interop", "nana-frame-exchange/wgpu-interop"]
 hosted = [
     "gpu",
     "accesskit-tree",
@@ -78,6 +83,7 @@ image = { workspace = true, optional = true }
 pollster = { workspace = true, optional = true }
 nana-svg-raster = { workspace = true, optional = true, features = ["system-fonts"] }
 nana-frame-exchange = { workspace = true, optional = true }
+nana-gpu = { workspace = true, optional = true }
 nana-ui-core.workspace = true
 nana-diagnostics.workspace = true
 nana-package = { workspace = true, optional = true }
@@ -113,7 +119,7 @@ windows = { version = "0.62", optional = true, features = ["Win32_Foundation", "
 
 [[example]]
 name = "hosted-gpu-demo"
-required-features = ["hosted", "bundled-fonts"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 
 [[example]]
 name = "gpu-view-demo"
@@ -129,7 +135,7 @@ required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "accessibility-hidden-probe"
-required-features = ["hosted", "bundled-fonts"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 
 [[example]]
 name = "transparent-window"
@@ -156,16 +162,20 @@ required-features = ["gpu"]
 
 [[test]]
 name = "text_device_recreation"
-required-features = ["gpu"]
+required-features = ["gpu", "wgpu-interop"]
+
+[[test]]
+name = "text_lost_device"
+required-features = ["gpu", "wgpu-interop"]
 
 
 [[example]]
 name = "desktop-overlay-probe"
-required-features = ["hosted", "bundled-fonts"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 
 [[example]]
 name = "native-content-probe"
-required-features = ["hosted", "bundled-fonts"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop"]
 
 [[example]]
 name = "hosted-file-dialog-probe"
@@ -181,4 +191,4 @@ required-features = ["hosted", "bundled-fonts"]
 
 [[example]]
 name = "embedded-window-lifecycle"
-required-features = ["hosted", "bundled-fonts"]
+required-features = ["hosted", "bundled-fonts", "wgpu-interop"]

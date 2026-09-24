@@ -6,7 +6,10 @@
 //! tests therefore assert on painted pixels.
 
 use nana_ui::runtime::{Avatar, DocumentId, GpuTextureView, RuntimeDocument, Thumbnail};
-use nana_ui::{HostTexture, HostTextureAlphaMode, HostTextureRegistry};
+use nana_ui::{
+    GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion, GpuTextureUsages, HostTexture,
+    HostTextureAlphaMode, HostTextureRegistry,
+};
 use nana_ui_devtools::offscreen::{self, OffscreenSnapshots, Size};
 
 const SLOT: &str = "test.cover";
@@ -18,45 +21,21 @@ const FILL: [u8; 4] = [255, 0, 0, 255];
 /// A 1×1 opaque red texture registered under [`SLOT`].
 fn register_fill(gpu: &OffscreenSnapshots, registry: &HostTextureRegistry) {
     let texture = gpu
-        .device
-        .create_texture(&nana_ui::wgpu::TextureDescriptor {
+        .gpu
+        .create_texture(&GpuTextureDescriptor {
             label: Some("host texture paint evidence"),
-            size: nana_ui::wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: nana_ui::wgpu::TextureDimension::D2,
-            format: nana_ui::wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: nana_ui::wgpu::TextureUsages::TEXTURE_BINDING
-                | nana_ui::wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-    gpu.queue.write_texture(
-        nana_ui::wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: nana_ui::wgpu::Origin3d::ZERO,
-            aspect: nana_ui::wgpu::TextureAspect::All,
-        },
-        &FILL,
-        nana_ui::wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        nana_ui::wgpu::Extent3d {
             width: 1,
             height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = texture.create_view(&nana_ui::wgpu::TextureViewDescriptor::default());
+            format: GpuTextureFormat::RGBA8_UNORM_SRGB,
+            usage: GpuTextureUsages::SAMPLED | GpuTextureUsages::COPY_DST,
+        })
+        .unwrap();
+    gpu.gpu
+        .write_texture(&texture, GpuTextureRegion::full(1, 1), &FILL, 4)
+        .unwrap();
     registry.register(
         SLOT,
-        HostTexture::from_wgpu(1, 1, view),
+        HostTexture::new(1, 1, &texture),
         1,
         1,
         HostTextureAlphaMode::Opaque,

@@ -1,6 +1,6 @@
 //! Hosted Canvas/image compositor using stable WGPU textures and dirty uploads.
 
-use nana_ui::{HostTextureBinding, HostTextureRegistry, HostedGpuResources};
+use nana_ui::{GpuContext, HostTextureBinding, HostTextureRegistry};
 use nana_ui_web_api::{CanvasId, SharedCanvasRuntime};
 
 #[path = "host_texture_upload.rs"]
@@ -27,18 +27,18 @@ impl std::fmt::Debug for CanvasGpuBridge {
 
 impl CanvasGpuBridge {
     pub(crate) fn new(
-        resources: HostedGpuResources,
+        gpu: GpuContext,
         canvas: SharedCanvasRuntime,
         textures: HostTextureRegistry,
     ) -> Self {
         Self {
             canvas,
-            store: HostTextureSlotStore::new(resources, textures),
+            store: HostTextureSlotStore::new(gpu, textures),
         }
     }
 
-    pub(crate) fn replace_device(&self, resources: HostedGpuResources) {
-        self.store.replace_device(resources);
+    pub(crate) fn replace_device(&self, gpu: GpuContext) {
+        self.store.replace_device(gpu);
     }
 
     pub(crate) fn sync(&self, id: CanvasId) -> Result<Option<HostTextureBinding>, String> {

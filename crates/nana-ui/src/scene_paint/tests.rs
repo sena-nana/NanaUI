@@ -2810,10 +2810,15 @@ fn hosted_preview_scene(device: &wgpu::Device) -> (UiScene, HostTextureRegistry)
         context.world().extract_nodes(&work.render_extraction),
         work.render_removals,
     );
-    let texture = crate::HostTexture::from_wgpu(
+    let texture = crate::HostTexture::new(
         1,
         1,
-        test_target(device, wgpu::TextureFormat::Rgba8Unorm, 64, 48),
+        &crate::test_gpu::wrap_view(&test_target(
+            device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            64,
+            48,
+        )),
     );
     let registry = HostTextureRegistry::new();
     registry.register(
@@ -3730,7 +3735,7 @@ fn register_into(
 ) {
     registry.register(
         resource,
-        crate::HostTexture::from_wgpu(1, 1, view.clone()),
+        crate::HostTexture::new(1, 1, &crate::test_gpu::wrap_view(view)),
         width,
         height,
         crate::HostTextureAlphaMode::Premultiplied,
@@ -7021,7 +7026,7 @@ fn texture_content_reuses_prepared_ui_and_replacement_rebinds() {
         .get("live")
         .unwrap()
         .texture
-        .replace_view(replacement);
+        .replace_texture(&crate::test_gpu::wrap_view(&replacement));
     assert!(is_green_slot(pixel(&paint(&mut painter), 64, 32, 32)));
     registry.remove("live");
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());

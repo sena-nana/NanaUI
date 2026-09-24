@@ -13,9 +13,9 @@ use nana_ui::runtime::{
 };
 use nana_ui::{
     ButtonKind, CopyOutcome, DEFAULT_CAPACITY, FrameBinding, FrameExchange, FrameExchangeStats,
-    FrameInbox, HostTextureAlphaMode, HostTextureRegistry, HostedGpuResources, HostedRunError,
-    RoutedInput, RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode,
-    WindowDescriptor, WindowHandle, run_runtime,
+    FrameInbox, GpuContext, HostTextureAlphaMode, HostTextureRegistry, HostedRunError, RoutedInput,
+    RuntimeProgram, RuntimeProgramContext, RuntimeProgramUpdate, ThemeMode, WindowDescriptor,
+    WindowHandle, run_runtime,
 };
 use nana_ui_platform::{WindowEvent, WindowId};
 
@@ -46,7 +46,7 @@ struct PreviewProducer {
 
 impl PreviewProducer {
     fn spawn(
-        gpu: &HostedGpuResources,
+        gpu: &GpuContext,
         window: WindowHandle,
         initial: ProducerFrame,
         continuous: bool,
@@ -60,26 +60,19 @@ impl PreviewProducer {
                 drop(window.request_redraw());
             })
         };
-        let mut exchange = FrameExchange::new(
-            gpu.generation(),
-            Arc::clone(gpu.device()),
-            Arc::clone(gpu.queue()),
-            DEFAULT_CAPACITY,
-            0,
-            notify,
-        );
+        let mut exchange = FrameExchange::new(gpu, DEFAULT_CAPACITY, 0, notify);
         let inbox = exchange.inbox();
-        let device = Arc::clone(gpu.device());
-        let queue = Arc::clone(gpu.queue());
+        let gpu = gpu.clone();
         let stop_thread = Arc::clone(&stop);
         let stats_thread = Arc::clone(&stats);
         let join = thread::Builder::new()
             .name("hosted-gpu-demo-producer".into())
             .spawn(move || {
                 let mut frame = initial;
+                let device = gpu.wgpu().device();
                 let mut scene = SharedScene::new(
-                    &device,
-                    &queue,
+                    device,
+                    gpu.wgpu().queue(),
                     SURFACE_FORMAT,
                     [frame.background, frame.accent],
                     frame.revision,
@@ -92,17 +85,26 @@ impl PreviewProducer {
                         dirty = true;
                     }
                     if dirty || continuous {
-                        scene.resize(&device, SURFACE_FORMAT, frame.size.0, frame.size.1);
-                        scene.update(&queue, frame.background, frame.accent, frame.revision);
-                        let mut encoder =
-                            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("hosted gpu demo producer"),
-                            });
-                        scene.render(&mut encoder);
-                        queue.submit([encoder.finish()]);
-                        match exchange.copy_from(scene.texture(), 0) {
+                        scene.resize(device, SURFACE_FORMAT, frame.size.0, frame.size.1);
+                        {
+                            // Raw queue writes off the window thread hold the
+                            // submission guard, like every submit does.
+                            let _submission = gpu.wgpu().lock_submission();
+                            scene.update(
+                                gpu.wgpu().queue(),
+                                frame.background,
+                                frame.accent,
+                                frame.revision,
+                            );
+                        }
+                        let mut producer = gpu.begin_frame("hosted gpu demo producer");
+                        scene.render(producer.wgpu_encoder());
+                        producer.submit();
+                        match exchange.copy_from_wgpu(scene.texture(), 0) {
                             CopyOutcome::Submitted | CopyOutcome::PoolFull => {}
-                            CopyOutcome::EmptySource | CopyOutcome::IncompatibleSource => {}
+                            CopyOutcome::EmptySource
+                            | CopyOutcome::IncompatibleSource
+                            | CopyOutcome::DeviceMismatch => {}
                         }
                         dirty = false;
                     }
@@ -203,8 +205,7 @@ impl DemoProgram {
 
         let textures = HostTextureRegistry::new();
         let binding = FrameBinding::new(
-            context.gpu().device().as_ref(),
-            context.gpu().generation(),
+            context.gpu(),
             textures.slot(PREVIEW_SLOT),
             HostTextureAlphaMode::Opaque,
         );
@@ -336,8 +337,7 @@ impl RuntimeProgram for DemoProgram {
 
     fn rebuild_gpu(&mut self, context: &RuntimeProgramContext<Self::Message>) {
         self.binding = FrameBinding::new(
-            context.gpu().device().as_ref(),
-            context.gpu().generation(),
+            context.gpu(),
             self.textures.slot(PREVIEW_SLOT),
             HostTextureAlphaMode::Opaque,
         );

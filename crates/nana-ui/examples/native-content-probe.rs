@@ -196,7 +196,7 @@ mod windows_probe {
         move_baseline: Option<nana_ui::CompositionWork>,
         phase: Phase,
         /// The one GPU device every window in this process must share.
-        device_generation: u64,
+        device_generation: nana_ui::DeviceGeneration,
         /// Counter deltas across the whole settled stretch, including the
         /// move-only leg. The performance contract judges these, so they are
         /// deltas from the settle point rather than totals: the window did real
@@ -206,7 +206,10 @@ mod windows_probe {
     impl Probe {
         /// `documents` is the only thing the two entry paths disagree on:
         /// `--hold` opens the primary window alone.
-        fn new(documents: BTreeMap<WindowId, RuntimeDocument>, device_generation: u64) -> Self {
+        fn new(
+            documents: BTreeMap<WindowId, RuntimeDocument>,
+            device_generation: nana_ui::DeviceGeneration,
+        ) -> Self {
             Self {
                 documents,
                 visuals: BTreeMap::new(),
@@ -342,7 +345,10 @@ mod windows_probe {
                     context.surface_alpha_mode(),
                     wgpu::CompositeAlphaMode::PreMultiplied
                 );
-                assert_eq!(context.gpu().adapter_info().backend, wgpu::Backend::Dx12);
+                assert_eq!(
+                    context.gpu().capabilities().backend(),
+                    nana_ui::GpuBackend::Dx12
+                );
             }
             if hold() {
                 // Non-client strategy acceptance: the window stays up so an
@@ -754,7 +760,8 @@ mod windows_probe {
                         .texture
                         .create_view(&wgpu::TextureViewDescriptor::default());
                     let mut encoder = graphics
-                        .resources()
+                        .gpu()
+                        .wgpu()
                         .device()
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                     {
@@ -776,7 +783,7 @@ mod windows_probe {
                             ..Default::default()
                         });
                     }
-                    graphics.resources().queue().submit([encoder.finish()]);
+                    graphics.gpu().wgpu().queue().submit([encoder.finish()]);
                     graphics.present(frame);
                     presented += 1;
                 }

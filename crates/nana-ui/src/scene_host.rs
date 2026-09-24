@@ -72,6 +72,7 @@ use winit::window::{
 
 #[cfg(not(target_os = "android"))]
 use crate::accessibility::HostedAccessibility;
+use crate::gpu_raw::GpuRaw;
 use crate::nana_text::NanaTextShaper;
 use crate::runtime_host::{
     HostDocumentAccess, HostFailure, ImeSurroundingSnapshot, ReportHostFailure, RuntimeProgram,
@@ -856,7 +857,7 @@ fn gpu_bootstrap(
     if !policy.wants_composition() {
         return GpuBootstrap::plain();
     }
-    GpuBootstrap::probe(shared_gpu.map(|gpu| gpu.adapter().get_info().backend))
+    GpuBootstrap::probe(shared_gpu.map(|gpu| gpu.adapter_info().backend))
 }
 
 fn composition_availability(
@@ -1562,7 +1563,7 @@ fn program_context<Message: Send + 'static>(
     RuntimeProgramContext::new(
         id,
         geometry,
-        graphics.resources(),
+        graphics.gpu().clone(),
         presentation,
         composition_work,
         Arc::new(move |message| {
@@ -3419,7 +3420,19 @@ impl<Program: RuntimeProgram> EmbeddedRuntime<Program> {
     /// or install/replace the host's device callback.
     pub fn notify_device_lost(&mut self) {
         // Embedded devices never raise the hosted device-lost flag; the
-        // embedder tells us here instead.
+        // embedder tells us here instead. Recording it on the context lets
+        // everything holding it (producer threads, the JS runtime) see the
+        // loss; taking the report right away keeps the fault below the only
+        // one.
+        let graphics = &self.manager.graphics;
+        nana_gpu::__framework::mark_lost(
+            graphics.gpu(),
+            nana_gpu::GpuDeviceLost {
+                reason: nana_gpu::GpuLossReason::Unknown,
+                message: "reported by the embedding host".into(),
+            },
+        );
+        let _ = graphics.take_device_lost_report();
         if !self.manager.render_suspended {
             nana_diagnostics::fault!(
                 nana_diagnostics::framework::gpu::DEVICE_LOST,
@@ -5573,11 +5586,10 @@ mod tests {
     }
 
     fn occupied_host_textures(slot: &str) -> HostTextureRegistry {
-        let (device, _) = test_device();
         let registry = HostTextureRegistry::new();
         registry.register(
             slot,
-            HostTexture::from_wgpu(1, 1, test_texture_view(&device)),
+            HostTexture::new(1, 1, &crate::test_gpu::texture(1, 1)),
             8,
             8,
             HostTextureAlphaMode::Premultiplied,
@@ -5585,28 +5597,6 @@ mod tests {
         registry
     }
 
-    fn test_texture_view(device: &wgpu::Device) -> wgpu::TextureView {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("NanaUI scene host recovery test texture"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    }
-
-    fn test_device() -> (wgpu::Device, wgpu::Queue) {
-        crate::test_gpu::device()
-    }
     #[test]
     fn acknowledged_commands_route_missing_windows_for_failure_reports() {
         for id in [WindowId::PRIMARY, WindowId(20)] {

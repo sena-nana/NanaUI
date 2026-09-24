@@ -74,21 +74,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(output)?;
     let mut gpu = OffscreenSnapshots::new()?;
     let textures = HostTextureRegistry::new();
-    let extent = wgpu::Extent3d {
+    let texture = gpu.gpu.create_texture(&nana_ui::GpuTextureDescriptor {
+        label: Some("intrinsic-size fixture"),
         width: 120,
         height: 72,
-        depth_or_array_layers: 1,
-    };
-    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("intrinsic-size fixture"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
+        format: nana_ui::GpuTextureFormat::RGBA8_UNORM_SRGB,
+        usage: nana_ui::GpuTextureUsages::SAMPLED | nana_ui::GpuTextureUsages::COPY_DST,
+    })?;
     let pixels = (0..72)
         .flat_map(|y| {
             (0..120).flat_map(move |x| {
@@ -101,19 +93,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         })
         .collect::<Vec<_>>();
-    gpu.queue.write_texture(
-        texture.as_image_copy(),
+    gpu.gpu.write_texture(
+        &texture,
+        nana_ui::GpuTextureRegion::full(120, 72),
         &pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(480),
-            rows_per_image: Some(72),
-        },
-        extent,
-    );
+        480,
+    )?;
     textures.register(
         "fixture",
-        HostTexture::from_wgpu(501, 1, texture.create_view(&Default::default())),
+        HostTexture::new(501, 1, &texture),
         120,
         72,
         HostTextureAlphaMode::Opaque,

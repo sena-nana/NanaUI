@@ -35,6 +35,8 @@ offscreen = [
     "dep:nana-ui",
     "dep:nana-ui-scene",
     "nana-ui/gpu",
+    # Snapshot readback records its own copies on the snapshot device.
+    "nana-ui/wgpu-interop",
     "nana-ui/bundled-fonts",
     "dep:image",
     "dep:pollster",

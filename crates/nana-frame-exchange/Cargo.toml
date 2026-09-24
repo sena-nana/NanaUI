@@ -3,14 +3,21 @@ name = "nana-frame-exchange"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-description = "Bounded latest-frame exchange from a producer thread to a consumer on one shared WGPU device"
+description = "Bounded latest-frame exchange from a producer thread to a consumer on one shared NanaUI GPU device"
 license = "MIT OR Apache-2.0"
 
 [lib]
 name = "nana_frame_exchange"
 path = "src/lib.rs"
 
+[features]
+default = []
+# `FrameExchange::copy_from_wgpu` for producers that render into raw WGPU
+# textures; see nana-gpu's `wgpu-interop`.
+wgpu-interop = ["nana-gpu/wgpu-interop"]
+
 [dependencies]
+nana-gpu.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]

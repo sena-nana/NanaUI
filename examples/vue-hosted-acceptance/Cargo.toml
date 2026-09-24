@@ -13,7 +13,7 @@ nana-app-icon = { workspace = true, features = ["embed"] }
 # Demo content is the bundled Vue probe fixture.
 nana-js-engine = { workspace = true, features = ["probe-fixtures"] }
 nana-js-v8 = { workspace = true, features = ["engine"] }
-nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls"] }
+nana-ui = { path = "../../crates/nana-ui", default-features = false, features = ["hosted", "bundled-fonts", "controls", "wgpu-interop"] }
 nana-ui-platform.workspace = true
 nana-ui-runtime.workspace = true
 nana-ui-scene.workspace = true

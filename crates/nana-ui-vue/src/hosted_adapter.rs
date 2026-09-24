@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use nana_js_engine::{HostApiRegistry, JsEngine, JsEngineError, RuntimeArtifact};
 use nana_ui::{
-    HostTextureRegistry, HostedGpuResources, RoutedInput, RuntimeProgram, RuntimeProgramContext,
+    GpuContext, HostTextureRegistry, RoutedInput, RuntimeProgram, RuntimeProgramContext,
     RuntimeProgramUpdate, RuntimeRedraw, ThemeMode, WindowDescriptor, install_theme_tokens,
     window_material_effect,
 };
@@ -236,7 +236,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
             .initialize(&mut self.engine, previous.clone(), &self.application_api);
     }
 
-    pub fn bind_host_gpu(&mut self, resources: HostedGpuResources) -> Result<u64, JsEngineError> {
+    pub fn bind_host_gpu(&mut self, resources: GpuContext) -> Result<u64, JsEngineError> {
         let generation = self.vue.bind_host_gpu(resources)?;
         self.register_complete_host_api()?;
         Ok(generation)
@@ -736,7 +736,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
         Ok(self.runtime_program_update(changed))
     }
 
-    pub fn runtime_rebuild_gpu(&mut self, resources: HostedGpuResources) -> RuntimeProgramUpdate {
+    pub fn runtime_rebuild_gpu(&mut self, resources: GpuContext) -> RuntimeProgramUpdate {
         match self
             .vue
             .replace_host_gpu(&mut self.engine, resources, "hosted GPU device recovered")
@@ -969,7 +969,7 @@ impl<E: JsEngine> VueRuntimeProgram<E> {
     }
 
     fn bootstrap_from_gpu(
-        gpu: HostedGpuResources,
+        gpu: GpuContext,
         physical_width: u32,
         physical_height: u32,
         scale_factor: f32,
@@ -1818,27 +1818,24 @@ mod tests {
 
     #[test]
     fn input_redraw_tracks_consumed_canvas_and_live_texture_handles() {
-        use nana_ui::{HostTexture, HostTextureAlphaMode};
+        use nana_ui::{
+            GpuContext, GpuTextureDescriptor, GpuTextureFormat, GpuTextureUsages, HostTexture,
+            HostTextureAlphaMode,
+        };
         let instance = wgpu::Instance::default();
         let adapter = pollster::block_on(instance.request_adapter(&Default::default())).unwrap();
-        let (device, _) = pollster::block_on(adapter.request_device(&Default::default())).unwrap();
-        let view = || {
-            device
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("input redraw regression"),
-                    size: wgpu::Extent3d {
-                        width: 8,
-                        height: 8,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                    view_formats: &[],
-                })
-                .create_view(&Default::default())
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&Default::default())).unwrap();
+        let gpu = GpuContext::from_wgpu(adapter, device, queue);
+        let gpu_texture = || {
+            gpu.create_texture(&GpuTextureDescriptor {
+                label: Some("input redraw regression"),
+                width: 8,
+                height: 8,
+                format: GpuTextureFormat::RGBA8_UNORM,
+                usage: GpuTextureUsages::SAMPLED,
+            })
+            .unwrap()
         };
         let mut runtime = VueHostedRuntime {
             engine: InputEngine::default(),
@@ -1862,7 +1859,7 @@ mod tests {
         let id = canvas.lock().unwrap().create_canvas(8, 8).unwrap();
         let detached_id = canvas.lock().unwrap().create_canvas(8, 8).unwrap();
         let registry = host.host_textures().clone();
-        let texture = HostTexture::from_wgpu(7, 1, view());
+        let texture = HostTexture::new(7, 1, &gpu_texture());
         registry.register(
             "secondary",
             texture.clone(),
@@ -1946,7 +1943,7 @@ mod tests {
                 .redraw,
             RuntimeRedraw::Window(WindowId(secondary.0))
         );
-        let replacement = HostTexture::from_wgpu(7, 1, view());
+        let replacement = HostTexture::new(7, 1, &gpu_texture());
         replacement.invalidate();
         runtime.engine.on_event = Some(Box::new(move || {
             registry.register("secondary", replacement, 8, 8, HostTextureAlphaMode::Opaque);

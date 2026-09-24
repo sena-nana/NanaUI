@@ -30,6 +30,8 @@ mod font_face_ingest;
 #[cfg(feature = "gpu")]
 mod frame_binding;
 pub mod geometry;
+#[cfg(feature = "hosted")]
+mod gpu_raw;
 #[cfg(feature = "gpu")]
 pub mod gpu_texture;
 #[cfg(feature = "gpu")]
@@ -215,8 +217,8 @@ pub use graph::{
 };
 #[cfg(feature = "hosted")]
 pub use hosted_context::{
-    HostedDeviceLost, HostedGpuContext, HostedGpuError, HostedGpuResources, HostedGpuShared,
-    HostedGpuSurface, HostedRunError, HostedSurfaceFrame, HostedSurfaceMode,
+    HostedGpuContext, HostedGpuError, HostedGpuShared, HostedGpuSurface, HostedRunError,
+    HostedSurfaceFrame, HostedSurfaceMode,
 };
 pub use icons::Icon;
 pub use layout::{
@@ -232,6 +234,22 @@ pub use nana_frame_exchange::{
     self as frame_exchange, CopyOutcome, DEFAULT_CAPACITY, FrameExchange, FrameExchangeStats,
     FrameInbox, FrameLease, FrameToken,
 };
+/// The GPU backend contract: the device, frames and textures every renderer,
+/// producer and host works with. See the `nana-gpu` crate.
+#[cfg(feature = "gpu")]
+pub use nana_gpu::{
+    DeviceGeneration, FrameContext, FrameId, GpuBackend, GpuCapabilities, GpuContext,
+    GpuDeviceLost, GpuDeviceType, GpuError, GpuFeatureSet, GpuLossReason, GpuRenderTarget,
+    GpuSubmission, GpuTexture, GpuTextureDescriptor, GpuTextureFormat, GpuTextureRegion,
+    GpuTextureUsages, RetainedWrites,
+};
+/// The explicit WGPU escape hatch (feature `wgpu-interop`): the exact `wgpu`
+/// the framework links, and the raw objects behind [`GpuContext`]. Hosts that
+/// bring their own device and renderers that record their own pipelines
+/// import through this re-export; a direct `wgpu` dependency silently resolves
+/// to a second copy when the framework moves to a new major version.
+#[cfg(feature = "wgpu-interop")]
+pub use nana_gpu::{WgpuInterop, wgpu};
 /// Full generated Tabler catalog (`icons_tabler::USER`, `::KEYBOARD`, …) as
 /// typed [`Icon`] constants, behind the `icons-tabler` feature. The built-in
 /// catalog only covers shell chrome; reach here before hand-authoring
@@ -357,12 +375,6 @@ pub use virtual_list::{
     VirtualTableMaterializer, VirtualTableWindow, VirtualTreeLayout, VirtualTreeRow,
     VirtualTreeWindow, VirtualViewport,
 };
-/// The exact `wgpu` the framework links. Hosts that upload their own textures
-/// into the shared Device/Queue must import through this re-export: a direct
-/// `wgpu` dependency silently resolves to a second copy when the framework
-/// moves to a new major version.
-#[cfg(feature = "gpu")]
-pub use wgpu;
 pub use widgets::{ButtonKind, ButtonPaintOverride, CardKind};
 pub use window_chrome::{
     TitleBarDragTracker, WindowChrome, WindowChromeAction, WindowChromeEvent, WindowChromeState,

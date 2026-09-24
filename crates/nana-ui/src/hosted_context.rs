@@ -1,10 +1,10 @@
-//! Shared WGPU context for NanaUI hosted applications.
+//! The hosted device and its window surfaces.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-static NEXT_DEVICE_GENERATION: AtomicU64 = AtomicU64::new(1);
+use nana_gpu::{__framework, GpuContext, GpuDeviceLost, GpuTextureFormat};
 
 /// Native presentation mechanism, selected before creating the window surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -184,92 +184,6 @@ fn surface_alpha(
     }
 }
 
-/// Cloneable access to the host's only device and queue pair.
-#[derive(Clone)]
-pub struct HostedGpuResources {
-    generation: u64,
-    adapter: wgpu::Adapter,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
-    // Shared so per-frame context clones do not copy the adapter's strings.
-    adapter_info: Arc<wgpu::AdapterInfo>,
-    /// Serializes off-thread `Queue` work against `Surface::configure`.
-    /// wgpu waits for GPU idle before recreating a configured swapchain; a
-    /// concurrent submit from another thread panics with `GpuWaitTimeout`.
-    submit: Arc<RwLock<()>>,
-}
-
-impl HostedGpuResources {
-    /// Wrap an application-created adapter/device/queue as NanaUI's single
-    /// hosted GPU context. This does not request or duplicate any resource.
-    pub fn from_existing(
-        adapter: wgpu::Adapter,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-    ) -> Self {
-        Self::from_parts(
-            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
-            adapter,
-            device,
-            queue,
-        )
-    }
-
-    fn from_parts(
-        generation: u64,
-        adapter: wgpu::Adapter,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-    ) -> Self {
-        let adapter_info = Arc::new(adapter.get_info());
-        Self {
-            generation,
-            adapter,
-            device,
-            queue,
-            adapter_info,
-            submit: Arc::new(RwLock::new(())),
-        }
-    }
-
-    /// Monotonic identity of this host GPU context. Clones share the same
-    /// generation; successful device recreation gets a fresh generation.
-    /// Applications can fence their device-dependent caches in `rebuild_gpu`.
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub fn adapter(&self) -> &wgpu::Adapter {
-        &self.adapter
-    }
-
-    pub fn device(&self) -> &Arc<wgpu::Device> {
-        &self.device
-    }
-
-    pub fn queue(&self) -> &Arc<wgpu::Queue> {
-        &self.queue
-    }
-
-    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
-        &self.adapter_info
-    }
-
-    /// Off-thread producers hold a read lock around `queue.submit` /
-    /// `write_texture` / `write_buffer`, and drop it before `poll(Wait)`.
-    /// The UI thread must not take a read lock: it configures on this thread
-    /// and `RwLock` is not reentrant.
-    pub fn submit_lock(&self) -> Arc<RwLock<()>> {
-        Arc::clone(&self.submit)
-    }
-
-    fn lock_reconfigure(&self) -> RwLockWriteGuard<'_, ()> {
-        self.submit
-            .write()
-            .unwrap_or_else(|error| error.into_inner())
-    }
-}
-
 /// One window and surface attached to a shared hosted GPU context.
 pub struct HostedGpuSurface {
     surface: wgpu::Surface<'static>,
@@ -332,7 +246,7 @@ impl HostedGpuSurface {
         size.width > 0 && size.height > 0
     }
 
-    pub fn resize(&mut self, resources: &HostedGpuResources) {
+    pub fn resize(&mut self, gpu: &GpuContext) {
         let size = self.window.surface_size();
         if !surface_size_changed(
             (self.configuration.width, self.configuration.height),
@@ -342,11 +256,11 @@ impl HostedGpuSurface {
         }
         self.configuration.width = size.width;
         self.configuration.height = size.height;
-        self.reconfigure(resources);
+        self.reconfigure(gpu);
     }
 
     /// Apply size and live-resize present policy, then configure at most once.
-    pub fn prepare_frame(&mut self, resources: &HostedGpuResources, live: bool) {
+    pub fn prepare_frame(&mut self, gpu: &GpuContext, live: bool) {
         let size = self.window.surface_size();
         let mut changed = self.apply_live_resize_policy(live);
         if surface_size_changed(
@@ -358,7 +272,7 @@ impl HostedGpuSurface {
             changed = true;
         }
         if changed {
-            self.reconfigure(resources);
+            self.reconfigure(gpu);
         }
     }
 
@@ -376,10 +290,10 @@ impl HostedGpuSurface {
         self.configuration.width > 0 && self.configuration.height > 0
     }
 
-    fn reconfigure(&mut self, resources: &HostedGpuResources) {
-        let _gate = resources.lock_reconfigure();
+    fn reconfigure(&mut self, gpu: &GpuContext) {
+        let _gate = __framework::lock_reconfigure(gpu);
         self.surface
-            .configure(resources.device(), &self.configuration);
+            .configure(__framework::device(gpu), &self.configuration);
         self.needs_target_commit = true;
         self.needs_reconfigure = false;
     }
@@ -387,11 +301,10 @@ impl HostedGpuSurface {
     fn apply_alpha_mode(
         &mut self,
         instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        resources: &HostedGpuResources,
+        gpu: &GpuContext,
         want_transparent: bool,
     ) -> Result<(), HostedGpuError> {
-        let capabilities = self.surface.get_capabilities(adapter);
+        let capabilities = self.surface.get_capabilities(__framework::adapter(gpu));
         if self.target.mode() == HostedSurfaceMode::Window
             && alpha_mode_needs_surface_recreate(
                 want_transparent,
@@ -400,7 +313,7 @@ impl HostedGpuSurface {
             )
         {
             self.alpha_recreate_attempted = true;
-            return self.recover_with_alpha(instance, adapter, resources, want_transparent);
+            return self.recover_with_alpha(instance, gpu, want_transparent);
         }
         let alpha_mode = surface_alpha(
             self.target.mode(),
@@ -409,7 +322,7 @@ impl HostedGpuSurface {
         )?;
         if self.configuration.alpha_mode != alpha_mode {
             self.configuration.alpha_mode = alpha_mode;
-            self.reconfigure(resources);
+            self.reconfigure(gpu);
         }
         self.want_transparent = want_transparent;
         Ok(())
@@ -425,10 +338,9 @@ impl HostedGpuSurface {
     fn rebind(
         &mut self,
         surface: wgpu::Surface<'static>,
-        adapter: &wgpu::Adapter,
-        resources: &HostedGpuResources,
+        gpu: &GpuContext,
     ) -> Result<(), HostedGpuError> {
-        let capabilities = surface.get_capabilities(adapter);
+        let capabilities = surface.get_capabilities(__framework::adapter(gpu));
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         let alpha_mode = surface_alpha(
@@ -455,31 +367,29 @@ impl HostedGpuSurface {
         // `alpha_recreate_attempted` survives: the alpha mode above already
         // comes from the incoming surface, and re-granting it would re-arm the
         // rebuild on every `retry_surfaces` pass.
-        self.reconfigure(resources);
+        self.reconfigure(gpu);
         Ok(())
     }
 
     fn recover(
         &mut self,
         instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        resources: &HostedGpuResources,
+        gpu: &GpuContext,
     ) -> Result<(), HostedGpuError> {
-        self.recover_with_alpha(instance, adapter, resources, self.want_transparent)
+        self.recover_with_alpha(instance, gpu, self.want_transparent)
     }
 
     fn recover_with_alpha(
         &mut self,
         instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        resources: &HostedGpuResources,
+        gpu: &GpuContext,
         want_transparent: bool,
     ) -> Result<(), HostedGpuError> {
         let surface = self.target.create_surface(instance, self.window.clone())?;
-        let capabilities = surface.get_capabilities(adapter);
+        let capabilities = surface.get_capabilities(__framework::adapter(gpu));
         if !capabilities.formats.contains(&self.format) {
             return Err(HostedGpuError::SurfaceFormatChanged {
-                expected: self.format,
+                expected: __framework::format_from_wgpu(self.format),
             });
         }
         self.configuration.alpha_mode = surface_alpha(
@@ -490,7 +400,7 @@ impl HostedGpuSurface {
         self.live_present_mode = preferred_live_present_mode(&capabilities.present_modes);
         self.configuration.present_mode = self.live_present_mode;
         self.surface = surface;
-        self.reconfigure(resources);
+        self.reconfigure(gpu);
         self.commit_target()?;
         self.want_transparent = want_transparent;
         self.needs_recovery = false;
@@ -500,17 +410,16 @@ impl HostedGpuSurface {
     fn acquire_frame(
         &mut self,
         instance: &wgpu::Instance,
-        adapter: &wgpu::Adapter,
-        resources: &HostedGpuResources,
+        gpu: &GpuContext,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
         if !self.is_drawable() {
             return Ok(HostedSurfaceFrame::Skipped);
         }
         if self.needs_recovery {
-            self.recover(instance, adapter, resources)?;
+            self.recover(instance, gpu)?;
         }
         if self.needs_reconfigure {
-            self.reconfigure(resources);
+            self.reconfigure(gpu);
         }
         self.commit_target()?;
         let result = match self.surface.get_current_texture() {
@@ -524,7 +433,7 @@ impl HostedGpuSurface {
                 // A stale swapchain is the common resize race. Reconfigure and
                 // retry once in the same frame so a resize step does not drop
                 // its redraw to the next event-loop iteration.
-                self.reconfigure(resources);
+                self.reconfigure(gpu);
                 match self.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(frame) => {
                         Ok(HostedSurfaceFrame::Ready(frame))
@@ -542,7 +451,7 @@ impl HostedGpuSurface {
             wgpu::CurrentSurfaceTexture::Lost => {
                 nana_diagnostics::metric!(nana_diagnostics::framework::gpu::SURFACE_LOST);
                 nana_diagnostics::event!(nana_diagnostics::framework::gpu::SURFACE_LOST_EVENT);
-                self.recover(instance, adapter, resources)?;
+                self.recover(instance, gpu)?;
                 Ok(HostedSurfaceFrame::Retry)
             }
             wgpu::CurrentSurfaceTexture::Timeout => {
@@ -564,13 +473,15 @@ pub struct HostedGpuContext {
     primary: HostedGpuSurface,
 }
 
-/// Shared device resources without ownership of any native window.
+/// The hosted device without ownership of any native window.
 #[derive(Clone)]
 pub struct HostedGpuShared {
     instance: wgpu::Instance,
-    resources: HostedGpuResources,
-    device_lost: Arc<AtomicBool>,
-    device_lost_report: Arc<Mutex<Option<HostedDeviceLost>>>,
+    gpu: GpuContext,
+    /// The host has started recovering from this device's loss.
+    loss_handled: Arc<AtomicBool>,
+    /// This device's loss was reported to diagnostics.
+    loss_reported: Arc<AtomicBool>,
 }
 
 impl std::ops::Deref for HostedGpuContext {
@@ -578,12 +489,6 @@ impl std::ops::Deref for HostedGpuContext {
     fn deref(&self) -> &Self::Target {
         &self.shared
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostedDeviceLost {
-    pub reason: String,
-    pub message: String,
 }
 
 impl HostedGpuContext {
@@ -635,8 +540,7 @@ impl HostedGpuContext {
         )?
         .acquire()
         .await?;
-        self.primary
-            .rebind(surface, shared.resources.adapter(), &shared.resources)?;
+        self.primary.rebind(surface, &shared.gpu)?;
         self.shared = shared;
         Ok(())
     }
@@ -660,32 +564,25 @@ impl HostedGpuContext {
     }
 
     pub fn resize(&mut self) {
-        self.primary.resize(&self.shared.resources);
+        self.primary.resize(&self.shared.gpu);
     }
 
     pub fn prepare_frame(&mut self, live: bool) {
-        self.primary.prepare_frame(&self.shared.resources, live);
+        self.primary.prepare_frame(&self.shared.gpu, live);
     }
 
     pub fn reconfigure(&mut self) {
-        self.primary.reconfigure(&self.shared.resources);
+        self.primary.reconfigure(&self.shared.gpu);
     }
 
     pub fn recover_surface(&mut self) -> Result<(), HostedGpuError> {
-        self.primary.recover(
-            &self.shared.instance,
-            self.shared.resources.adapter(),
-            &self.shared.resources,
-        )
+        self.primary
+            .recover(&self.shared.instance, &self.shared.gpu)
     }
 
     pub fn apply_alpha_mode(&mut self, want_transparent: bool) -> Result<(), HostedGpuError> {
-        self.primary.apply_alpha_mode(
-            &self.shared.instance,
-            self.shared.resources.adapter(),
-            &self.shared.resources,
-            want_transparent,
-        )
+        self.primary
+            .apply_alpha_mode(&self.shared.instance, &self.shared.gpu, want_transparent)
     }
 
     pub fn is_drawable(&self) -> bool {
@@ -693,11 +590,8 @@ impl HostedGpuContext {
     }
 
     pub fn acquire_frame(&mut self) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        self.primary.acquire_frame(
-            &self.shared.instance,
-            self.shared.resources.adapter(),
-            &self.shared.resources,
-        )
+        self.primary
+            .acquire_frame(&self.shared.instance, &self.shared.gpu)
     }
 
     /// Abandon an acquired primary frame after encoding fails. Drop all views
@@ -711,24 +605,21 @@ impl HostedGpuContext {
 }
 
 impl HostedGpuShared {
-    /// Adopt an existing host device without requesting another adapter/device.
-    /// Device-loss notification and replacement remain the embedding host's responsibility.
-    pub fn from_device(
-        instance: wgpu::Instance,
-        adapter: wgpu::Adapter,
-        device: Arc<wgpu::Device>,
-        queue: Arc<wgpu::Queue>,
-    ) -> Self {
+    /// Adopt an existing host device (see `GpuContext::from_wgpu`) and the
+    /// instance its surfaces are created on, without requesting another
+    /// adapter or device. Device-loss notification and replacement remain the
+    /// embedding host's responsibility.
+    #[cfg(feature = "wgpu-interop")]
+    pub fn from_device(instance: wgpu::Instance, gpu: GpuContext) -> Self {
+        Self::adopt(instance, gpu)
+    }
+
+    fn adopt(instance: wgpu::Instance, gpu: GpuContext) -> Self {
         Self {
             instance,
-            resources: HostedGpuResources::from_parts(
-                NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
-                adapter,
-                device,
-                queue,
-            ),
-            device_lost: Arc::new(AtomicBool::new(false)),
-            device_lost_report: Arc::new(Mutex::new(None)),
+            gpu,
+            loss_handled: Arc::new(AtomicBool::new(false)),
+            loss_reported: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -748,43 +639,45 @@ impl HostedGpuShared {
         )?
         .acquire()
         .await?;
-        surface.rebind(raw, shared.resources.adapter(), &shared.resources)?;
+        surface.rebind(raw, &shared.gpu)?;
         Ok(shared)
     }
 
-    pub fn adapter(&self) -> &wgpu::Adapter {
-        self.resources.adapter()
+    /// The device every surface of this host renders with.
+    pub fn gpu(&self) -> &GpuContext {
+        &self.gpu
     }
-    pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
-        self.resources.adapter_info()
+    pub(crate) fn adapter_info(&self) -> &wgpu::AdapterInfo {
+        __framework::adapter_info(&self.gpu)
     }
-    pub fn resources(&self) -> HostedGpuResources {
-        self.resources.clone()
-    }
-    pub fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
-        surface.prepare_frame(&self.resources, live);
+    pub(crate) fn prepare_surface_frame(&self, surface: &mut HostedGpuSurface, live: bool) {
+        surface.prepare_frame(&self.gpu, live);
     }
     pub fn apply_surface_alpha_mode(
         &self,
         surface: &mut HostedGpuSurface,
         want_transparent: bool,
     ) -> Result<(), HostedGpuError> {
-        surface.apply_alpha_mode(
-            &self.instance,
-            self.resources.adapter(),
-            &self.resources,
-            want_transparent,
-        )
+        surface.apply_alpha_mode(&self.instance, &self.gpu, want_transparent)
     }
+    /// `true` once per lost device: the first call after the loss, so the host
+    /// starts recovery once. Loss itself is [`GpuContext::is_lost`].
     pub fn take_device_lost(&self) -> bool {
-        self.device_lost.swap(false, Ordering::AcqRel)
+        self.gpu.is_lost() && !self.loss_handled.swap(true, Ordering::AcqRel)
     }
     pub(crate) fn is_device_lost(&self) -> bool {
-        self.device_lost.load(Ordering::Acquire)
+        self.gpu.is_lost()
     }
-    pub fn take_device_lost_report(&self) -> Option<HostedDeviceLost> {
-        self.device_lost.store(false, Ordering::Release);
-        self.device_lost_report.lock().ok()?.take()
+    /// The loss report, once per lost device. Also counts as handling the loss.
+    pub fn take_device_lost_report(&self) -> Option<GpuDeviceLost> {
+        if !self.gpu.is_lost() {
+            return None;
+        }
+        self.loss_handled.store(true, Ordering::Release);
+        if self.loss_reported.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        self.gpu.lost_report()
     }
     pub fn create_surface(
         &self,
@@ -807,7 +700,7 @@ impl HostedGpuShared {
     pub fn recreate_surface(&self, surface: &mut HostedGpuSurface) -> Result<(), HostedGpuError> {
         #[cfg(target_os = "windows")]
         if surface.target.mode() == HostedSurfaceMode::WindowsComposition
-            && self.resources.adapter_info().backend != wgpu::Backend::Dx12
+            && self.adapter_info().backend != wgpu::Backend::Dx12
         {
             return Err(HostedGpuError::Adapter(
                 "DirectComposition requires the shared DX12 device".into(),
@@ -816,7 +709,7 @@ impl HostedGpuShared {
         let raw = surface
             .target
             .create_surface(&self.instance, surface.window.clone())?;
-        surface.rebind(raw, self.resources.adapter(), &self.resources)
+        surface.rebind(raw, &self.gpu)
     }
     fn create_surface_with_target(
         &self,
@@ -826,14 +719,14 @@ impl HostedGpuShared {
     ) -> Result<HostedGpuSurface, HostedGpuError> {
         #[cfg(target_os = "windows")]
         if target.mode() == HostedSurfaceMode::WindowsComposition
-            && self.resources.adapter_info().backend != wgpu::Backend::Dx12
+            && self.adapter_info().backend != wgpu::Backend::Dx12
         {
             return Err(HostedGpuError::Adapter(
                 "DirectComposition requires the shared DX12 device".into(),
             ));
         }
         let surface = target.create_surface(&self.instance, window.clone())?;
-        let capabilities = surface.get_capabilities(self.resources.adapter());
+        let capabilities = surface.get_capabilities(__framework::adapter(&self.gpu));
         let format = preferred_surface_format(&capabilities.formats)
             .ok_or(HostedGpuError::SurfaceHasNoFormats)?;
         configure_surface(
@@ -841,28 +734,28 @@ impl HostedGpuShared {
             surface,
             format,
             &capabilities,
-            &self.resources,
+            &self.gpu,
             want_transparent,
             target,
         )
     }
     pub fn resize_surface(&self, surface: &mut HostedGpuSurface) {
-        surface.resize(&self.resources);
+        surface.resize(&self.gpu);
     }
     pub fn acquire_surface_frame(
         &self,
         surface: &mut HostedGpuSurface,
     ) -> Result<HostedSurfaceFrame, HostedGpuError> {
-        surface.acquire_frame(&self.instance, self.resources.adapter(), &self.resources)
+        surface.acquire_frame(&self.instance, &self.gpu)
     }
     pub fn present(&self, frame: wgpu::SurfaceTexture) {
-        self.resources.queue().present(frame);
+        __framework::queue(&self.gpu).present(frame);
     }
     /// Apply a reconfiguration deferred by a suboptimal frame once that frame
     /// has been presented, without waiting for another redraw.
     pub(crate) fn apply_pending_reconfigure(&self, surface: &mut HostedGpuSurface) {
         if surface.needs_reconfigure {
-            surface.reconfigure(&self.resources);
+            surface.reconfigure(&self.gpu);
         }
     }
     pub fn discard_surface_frame(
@@ -880,7 +773,7 @@ fn configure_surface(
     surface: wgpu::Surface<'static>,
     format: wgpu::TextureFormat,
     capabilities: &wgpu::SurfaceCapabilities,
-    resources: &HostedGpuResources,
+    gpu: &GpuContext,
     want_transparent: bool,
     target: HostedSurfaceTarget,
 ) -> Result<HostedGpuSurface, HostedGpuError> {
@@ -896,8 +789,8 @@ fn configure_surface(
         view_formats: vec![],
         desired_maximum_frame_latency: 1,
     };
-    let _gate = resources.lock_reconfigure();
-    surface.configure(resources.device(), &configuration);
+    let _gate = __framework::lock_reconfigure(gpu);
+    surface.configure(__framework::device(gpu), &configuration);
     target.commit()?;
     Ok(HostedGpuSurface {
         window,
@@ -933,8 +826,8 @@ pub(crate) struct AcquiredDevice {
 }
 
 impl AcquiredDevice {
-    pub(crate) fn resources(&self) -> &HostedGpuResources {
-        &self.shared.resources
+    pub(crate) fn gpu(&self) -> &GpuContext {
+        &self.shared.gpu
     }
 
     pub(crate) const fn format(&self) -> wgpu::TextureFormat {
@@ -977,7 +870,7 @@ impl PendingPrimarySurface {
             device.surface,
             device.format,
             &device.capabilities,
-            &device.shared.resources,
+            &device.shared.gpu,
             self.want_transparent,
             self.target,
         )?;
@@ -1049,32 +942,9 @@ impl DeviceRequest {
             })
             .await
             .map_err(|error| HostedGpuError::Device(error.to_string()))?;
-        let device_lost = Arc::new(AtomicBool::new(false));
-        let device_lost_callback = Arc::clone(&device_lost);
-        let device_lost_report = Arc::new(Mutex::new(None));
-        let device_lost_report_callback = Arc::clone(&device_lost_report);
-        device.set_device_lost_callback(move |reason, message| {
-            device_lost_callback.store(true, Ordering::Release);
-            if let Ok(mut report) = device_lost_report_callback.lock() {
-                *report = Some(HostedDeviceLost {
-                    reason: format!("{reason:?}"),
-                    message,
-                });
-            }
-        });
-        let resources = HostedGpuResources::from_parts(
-            NEXT_DEVICE_GENERATION.fetch_add(1, Ordering::Relaxed),
-            adapter,
-            Arc::new(device),
-            Arc::new(queue),
-        );
+        let gpu = __framework::adopt_tracking_loss(adapter, device, queue);
         Ok(AcquiredDevice {
-            shared: HostedGpuShared {
-                instance,
-                resources,
-                device_lost,
-                device_lost_report,
-            },
+            shared: HostedGpuShared::adopt(instance, gpu),
             surface,
             capabilities,
             format,
@@ -1094,7 +964,7 @@ pub enum HostedGpuError {
     Adapter(String),
     Device(String),
     SurfaceHasNoFormats,
-    SurfaceFormatChanged { expected: wgpu::TextureFormat },
+    SurfaceFormatChanged { expected: GpuTextureFormat },
     SurfaceValidation,
 }
 
@@ -1242,30 +1112,6 @@ mod tests {
         preferred_alpha_mode, preferred_live_present_mode, preferred_surface_format,
         surface_size_changed,
     };
-    use std::sync::{Arc, RwLock};
-
-    #[test]
-    fn reconfigure_lock_excludes_concurrent_submit() {
-        let lock = Arc::new(RwLock::new(()));
-        let (started, waiting) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel();
-        let writer = Arc::clone(&lock);
-        let thread = std::thread::spawn(move || {
-            let _write = writer.write().unwrap();
-            started.send(()).unwrap();
-            released.recv().unwrap();
-        });
-        waiting
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("reconfigure lock acquired");
-        assert!(
-            lock.try_read().is_err(),
-            "submit must wait while the surface is reconfiguring"
-        );
-        release.send(()).unwrap();
-        thread.join().unwrap();
-        assert!(lock.try_read().is_ok());
-    }
 
     #[cfg(target_os = "windows")]
     #[test]

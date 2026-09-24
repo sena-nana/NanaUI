@@ -31,7 +31,9 @@ dev-reload = []
 # Scene/Runtime adapter. Product paint: UiScene → SceneWgpuPainter.
 scene-view = ["nana-ui/gpu"]
 # Direct adapter into nana-ui's Scene-hosted runtime.
-hosted = ["scene-view", "nana-ui/hosted", "dep:wgpu"]
+# The JS WebGPU facade (`getContext("webgpu")`) records WGPU commands on the
+# host device itself, so it takes the explicit escape hatch.
+hosted = ["scene-view", "nana-ui/hosted", "nana-ui/wgpu-interop", "dep:wgpu"]
 
 [dependencies]
 # `svg_raster` needs a default face and has no system-font fallback.

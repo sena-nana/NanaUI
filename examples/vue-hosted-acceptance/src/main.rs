@@ -126,7 +126,7 @@ fn primary_window_settings(chrome_probe: bool, hybrid: bool) -> WindowDescriptor
 
 #[allow(clippy::too_many_arguments)]
 fn build_runtime(
-    gpu: nana_ui::HostedGpuResources,
+    gpu: nana_ui::GpuContext,
     hybrid: bool,
     auto_windows: bool,
     input_probe: bool,
@@ -490,11 +490,11 @@ impl RuntimeProgram for AcceptanceProgram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nana_ui::HostedGpuResources;
+    use nana_ui::GpuContext;
     use nana_ui_platform::WindowGeometry;
     use nana_ui_vue::{VueWindowCommand, VueWindowId, WidgetKind};
 
-    fn gpu() -> HostedGpuResources {
+    fn gpu() -> GpuContext {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::from_env().unwrap_or_default(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -515,7 +515,7 @@ mod tests {
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
         }))
         .expect("headless WGPU device");
-        HostedGpuResources::from_existing(adapter, Arc::new(device), Arc::new(queue))
+        GpuContext::from_wgpu(adapter, device, queue)
     }
 
     #[test]

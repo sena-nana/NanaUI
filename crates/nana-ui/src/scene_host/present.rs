@@ -34,9 +34,9 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         else {
             return false;
         };
-        let resources = self.graphics.resources();
-        let device = resources.device();
-        let queue = resources.queue();
+        let gpu = self.graphics.gpu();
+        let device = gpu.raw_device();
+        let queue = gpu.raw_queue();
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("NanaUI hidden gpu tick"),
         });
@@ -97,7 +97,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             // Deliver completion callbacks of earlier submissions for
             // `gpu.completion`. Before the device-lost check, so a loss this
             // poll reports is handled in this frame either way.
-            crate::host_diagnostics::poll_completions(self.graphics.resources().device());
+            crate::host_diagnostics::poll_completions(self.graphics.gpu().raw_device());
         }
         if self.graphics.take_device_lost() {
             self.recover_device(event_loop);
@@ -202,7 +202,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.graphics.resources().device().create_command_encoder(
+        let mut encoder = self.graphics.gpu().raw_device().create_command_encoder(
             &wgpu::CommandEncoderDescriptor {
                 label: Some("NanaUI scene host frame"),
             },
@@ -210,8 +210,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         let prepared = if let Some(producers) = self.program.scene_resource_producers(id) {
             match producers.encode_scene(
                 scene.as_ref(),
-                self.graphics.resources().device(),
-                self.graphics.resources().queue(),
+                self.graphics.gpu().raw_device(),
+                self.graphics.gpu().raw_queue(),
                 &mut encoder,
             ) {
                 Ok(prepared) => Some(prepared),
@@ -348,12 +348,12 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
             return;
         }
         let submit_started = std::time::Instant::now();
-        let submission = self.graphics.resources().queue().submit([encoder.finish()]);
+        let submission = self.graphics.gpu().raw_queue().submit([encoder.finish()]);
         if frame_started.is_some() {
-            crate::host_diagnostics::watch_submission(self.graphics.resources().queue());
+            crate::host_diagnostics::watch_submission(self.graphics.gpu().raw_queue());
         }
         if let Some(prepared) = prepared {
-            prepared.submitted(self.graphics.resources().device(), submission);
+            prepared.submitted(self.graphics.gpu().raw_device(), submission);
         }
         let submit = submit_started.elapsed();
         let painter = self.painter_mut(format);
@@ -482,8 +482,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
         if let Some(lost) = self.graphics.take_device_lost_report() {
             nana_diagnostics::fault!(
                 nana_diagnostics::framework::gpu::DEVICE_LOST,
-                reason = u64::from(lost.reason == "Destroyed");
-                "{}: {}",
+                reason = u64::from(lost.reason == nana_gpu::GpuLossReason::Destroyed);
+                "{:?}: {}",
                 lost.reason,
                 lost.message
             );
@@ -574,11 +574,7 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     pub(super) fn suspend_surface(&mut self, id: WindowId, error: HostedGpuError) {
         // WGPU delivers a destroyed device's callback during polling, after its
         // submissions finish. Surface failure alone must not decide its scope.
-        let _ = self
-            .graphics
-            .resources()
-            .device()
-            .poll(wgpu::PollType::Poll);
+        let _ = self.graphics.gpu().raw_device().poll(wgpu::PollType::Poll);
         // A lost device fails every surface; leave it to process-wide recovery
         // instead of reporting per-window surface failures.
         if !self.embedded && self.graphics.is_device_lost() {
@@ -633,8 +629,8 @@ impl<Program: RuntimeProgram> WindowManager<Program> {
     /// from creation, so the per-frame lookup does no allocation.
     pub(super) fn painter_mut(&mut self, format: wgpu::TextureFormat) -> &mut SceneWgpuPainter {
         if !self.painters.contains_key(&format) {
-            let resources = self.graphics.resources();
-            let painter = SceneWgpuPainter::new(resources.device(), resources.queue(), format);
+            let gpu = self.graphics.gpu();
+            let painter = SceneWgpuPainter::new(gpu.raw_device(), gpu.raw_queue(), format);
             self.adopt_painter(format, painter);
         }
         self.painters

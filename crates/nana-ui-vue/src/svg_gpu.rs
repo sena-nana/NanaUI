@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use nana_ui::{HostTextureBinding, HostTextureRegistry, HostedGpuResources};
+use nana_ui::{GpuContext, HostTextureBinding, HostTextureRegistry};
 
 use crate::canvas_gpu::{HostTextureSlotStore, HostTextureUpload};
 use crate::svg_raster::SvgHostUpload;
@@ -23,14 +23,14 @@ impl std::fmt::Debug for SvgGpuBridge {
 }
 
 impl SvgGpuBridge {
-    pub(crate) fn new(resources: HostedGpuResources, textures: HostTextureRegistry) -> Self {
+    pub(crate) fn new(gpu: GpuContext, textures: HostTextureRegistry) -> Self {
         Self {
-            store: HostTextureSlotStore::new(resources, textures),
+            store: HostTextureSlotStore::new(gpu, textures),
         }
     }
 
-    pub(crate) fn replace_device(&self, resources: HostedGpuResources) {
-        self.store.replace_device(resources);
+    pub(crate) fn replace_device(&self, gpu: GpuContext) {
+        self.store.replace_device(gpu);
     }
 
     pub(crate) fn prune_released(&self, live_slots: &HashSet<String>) {

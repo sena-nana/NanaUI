@@ -112,7 +112,7 @@ impl ApplicationState for Probe {
         };
         println!(
             "{}",
-            serde_json::json!({"event":"adapter", "backend":format!("{:?}", context.gpu().adapter_info().backend)})
+            serde_json::json!({"event":"adapter", "backend":format!("{:?}", context.gpu().capabilities().backend())})
         );
         let retry = std::env::args().any(|arg| arg == "--retry").then(|| {
             Arc::new(RetryProducer {

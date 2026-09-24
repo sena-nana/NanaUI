@@ -1,6 +1,6 @@
 //! Upload `<video>` / camera preview frames onto the host Device/Queue.
 
-use nana_ui::{HostTextureBinding, HostTextureRegistry, HostedGpuResources};
+use nana_ui::{GpuContext, HostTextureBinding, HostTextureRegistry};
 use nana_ui_web_api::{MediaId, MediaRuntime, SharedMediaRuntime};
 
 use crate::canvas_gpu::{HostTextureSlotStore, HostTextureUpload};
@@ -24,18 +24,18 @@ impl std::fmt::Debug for MediaGpuBridge {
 
 impl MediaGpuBridge {
     pub(crate) fn new(
-        resources: HostedGpuResources,
+        gpu: GpuContext,
         media: SharedMediaRuntime,
         textures: HostTextureRegistry,
     ) -> Self {
         Self {
             media,
-            store: HostTextureSlotStore::new(resources, textures),
+            store: HostTextureSlotStore::new(gpu, textures),
         }
     }
 
-    pub(crate) fn replace_device(&self, resources: HostedGpuResources) {
-        self.store.replace_device(resources);
+    pub(crate) fn replace_device(&self, gpu: GpuContext) {
+        self.store.replace_device(gpu);
     }
 
     pub(crate) fn prune_released(&self, live_slots: &std::collections::HashSet<String>) {
