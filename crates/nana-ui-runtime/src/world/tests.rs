@@ -804,8 +804,18 @@ fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
     let mut create = MutationQueue::new();
     create.create(node(1), document(1), NodeKind::Document);
     // Host 2 opens popover 3; its item 5 opened listbox 7, hosted by 6
-    // outside the popover.
-    for (id, parent) in [(2, 1), (3, 2), (5, 3), (6, 1), (7, 6)] {
+    // outside the popover; the listbox's item 10 opened submenu 9, hosted
+    // by 8 outside both.
+    for (id, parent) in [
+        (2, 1),
+        (3, 2),
+        (5, 3),
+        (6, 1),
+        (7, 6),
+        (10, 7),
+        (8, 1),
+        (9, 8),
+    ] {
         create.create(
             node(id),
             document(1),
@@ -820,7 +830,7 @@ fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
             },
         );
     }
-    for id in [3, 7] {
+    for id in [3, 7, 9] {
         create.set_accessibility(
             node(id),
             AccessibilityState {
@@ -845,7 +855,14 @@ fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
             restore_focus: Some(node(5)),
         },
     );
-    open.request_focus(document(1), Some(node(7)));
+    open.set_overlay_host(
+        node(8),
+        OverlayHostState {
+            active: Some(node(9)),
+            restore_focus: Some(node(10)),
+        },
+    );
+    open.request_focus(document(1), Some(node(9)));
     world.commit(open).unwrap();
 
     let mut close = MutationQueue::new();
@@ -854,7 +871,7 @@ fn focus_in_an_overlay_opened_from_a_closing_one_goes_back_to_the_opener() {
     assert_eq!(
         world.focused(document(1)),
         Some(node(2)),
-        "focus in the listbox left with the popover it was opened from"
+        "focus two surfaces down left with the popover they were opened from"
     );
 }
 

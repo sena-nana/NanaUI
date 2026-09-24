@@ -267,12 +267,23 @@ pub(super) struct WrittenEditors {
 #[derive(Debug, Default)]
 pub(super) struct TextHistories {
     entries: HashMap<StableNodeId, TextHistory>,
-    /// Editors a journaled write is in flight for, each with whether another
-    /// batch wrote its text meanwhile. The editor's own commit lands before
-    /// the write can witness it, so the commit leaves it to the write; any
-    /// other text write to it during the edit (a follow-up committing to it)
-    /// is foreign, and the write drops the journal rather than adopt it.
-    writing: Vec<(StableNodeId, bool)>,
+    /// Editors a journaled write is in flight for. The editor's own commit
+    /// lands before the write can witness it, so the commit leaves it to the
+    /// write; any other text write to it during the edit (a follow-up
+    /// committing to it) is foreign, and the write drops the journal rather
+    /// than adopt it.
+    writing: Vec<Writing>,
+}
+
+/// A journaled write in flight (see [`TextHistories::writing`]).
+#[derive(Debug, Clone, Copy)]
+struct Writing {
+    node: StableNodeId,
+    /// Another batch changed the editor's text meanwhile.
+    foreign: bool,
+    /// An edit made from within this one, on the same editor (an assembler
+    /// auto-closing the bracket the user typed): part of this step.
+    nested: bool,
 }
 
 impl TextHistories {
@@ -339,13 +350,19 @@ impl TextHistories {
     /// Ends the journaled write of `node` [`crate::AppContext::commit_editor_edit`]
     /// began. By position rather than by popping the top, so a write that
     /// never finished (a caught unwind) cannot leave another node marked.
-    ///
-    /// Returns whether another batch wrote the editor's text meanwhile.
-    fn finish_writing(&mut self, node: StableNodeId) -> bool {
-        self.writing
+    fn finish_writing(&mut self, node: StableNodeId) -> Option<Writing> {
+        let index = self
+            .writing
             .iter()
-            .rposition(|(writing, _)| *writing == node)
-            .is_some_and(|index| self.writing.remove(index).1)
+            .rposition(|writing| writing.node == node)?;
+        Some(self.writing.remove(index))
+    }
+
+    /// The write in flight for `node`, if one is.
+    fn writing_mut(&mut self, node: StableNodeId) -> Option<&mut Writing> {
+        self.writing
+            .iter_mut()
+            .rfind(|writing| writing.node == node)
     }
 
     /// Releases the journal of a node that no longer exists.
@@ -374,10 +391,14 @@ impl crate::AppContext {
     /// would clear the journal. The step neither extends the typing before it
     /// nor is extended by the typing after it.
     ///
-    /// The edit the user's own would be: refused while the editor is
-    /// read-only or disabled or the user is composing with an IME; an atom
-    /// the range reaches into is replaced whole; an active snippet's linked
-    /// placeholders follow; the other cursors move through it. Emits the
+    /// Refused, like the user's own edits, while the editor is read-only or
+    /// disabled or the user is composing with an IME. An atom the range
+    /// reaches into is replaced whole; every cursor, the user's own included,
+    /// moves through the edit rather than to it. It is not typing into a
+    /// snippet: linked placeholders do not mirror it, and an active snippet
+    /// session is remapped through it (or ends) as for any value change.
+    /// Made from within an edit of the same editor (an assembler
+    /// auto-closing a bracket), it joins that edit's step. Emits the
     /// editor's change event. Returns whether the text changed; a range
     /// outside the text or off a character boundary is an error.
     pub fn edit_text_area(
@@ -439,7 +460,7 @@ impl crate::AppContext {
                 .text_histories
                 .writing
                 .iter()
-                .any(|(writing, _)| writing == id);
+                .any(|writing| writing.node == *id);
             if editing {
                 if own != Some(*id) {
                     written.foreign.push((*id, self.editor_text_stamp(*id)));
@@ -464,13 +485,9 @@ impl crate::AppContext {
         // produce.
         for (node, stamp) in written.foreign {
             if self.editor_text_stamp(node) != stamp
-                && let Some((_, foreign)) = self
-                    .text_histories
-                    .writing
-                    .iter_mut()
-                    .rfind(|(writing, _)| *writing == node)
+                && let Some(writing) = self.text_histories.writing_mut(node)
             {
-                *foreign = true;
+                writing.foreign = true;
             }
         }
     }
@@ -512,11 +529,26 @@ impl crate::AppContext {
             return update(self, &mut edited);
         }
         let node = entity.stable_id();
+        // Made from within an edit of the same editor: the outer edit
+        // records the two as one step.
+        if let Some(outer) = self.text_histories.writing_mut(node) {
+            outer.nested = true;
+            return update(self, &mut edited);
+        }
         self.follow_text_history(node);
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
-        self.text_histories.writing.push((node, false));
+        self.text_histories.writing.push(Writing {
+            node,
+            foreign: false,
+            nested: false,
+        });
         let written = update(self, &mut edited);
-        let foreign = self.text_histories.finish_writing(node);
+        let Writing {
+            foreign, nested, ..
+        } = self
+            .text_histories
+            .finish_writing(node)
+            .expect("the write pushed above");
         if matches!(written, Ok(false)) {
             return written;
         }
@@ -527,8 +559,9 @@ impl crate::AppContext {
         // own delivery (a clear after send, a formatter): it replaced the
         // value the user produced, an application write. A commit that
         // failed and rolled the component back (text as before) is neither.
-        let rewritten =
-            after.value != before.value && edited.is_some_and(|edited| edited != after.value);
+        let rewritten = !nested
+            && after.value != before.value
+            && edited.is_some_and(|edited| edited != after.value);
         if foreign || rewritten {
             self.text_histories.forget(node);
             return written;
@@ -1247,11 +1280,17 @@ mod editor_tests {
     #[test]
     fn another_batch_changing_an_editors_text_mid_edit_drops_its_journal() {
         let write = |cx: &mut AppContext, node, own: bool, text: &str| {
-            cx.text_histories.writing.push((node, false));
+            cx.text_histories.writing.push(super::Writing {
+                node,
+                foreign: false,
+                nested: false,
+            });
             let mut queue = crate::MutationQueue::new();
             queue.set_text_input(node, Some(crate::TextInputState::new(text)));
             cx.commit_mutations_of(queue, own.then_some(node)).unwrap();
-            cx.text_histories.finish_writing(node)
+            cx.text_histories
+                .finish_writing(node)
+                .is_some_and(|writing| writing.foreign)
         };
         let mut cx = AppContext::new();
         let node = focused_area(&mut cx, "").stable_id();
@@ -1390,6 +1429,28 @@ mod editor_tests {
         // 0..4 is replaced.
         assert!(cx.edit_text_input(field, 0..4, "X").unwrap());
         assert_eq!(text(&cx, field), "Xefgh");
+    }
+
+    #[test]
+    fn an_edit_made_from_within_an_edit_of_the_same_editor_joins_its_step() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        let node = area.stable_id();
+        cx.replace_focused_text(document(), "f").unwrap();
+        // Stand in for the outer edit in flight (an assembler reacting to
+        // the "(" the user typed, auto-closing it).
+        cx.text_histories.writing.push(super::Writing {
+            node,
+            foreign: false,
+            nested: false,
+        });
+        assert!(cx.edit_text_area(area, 1..1, "()").unwrap());
+        let outer = cx.text_histories.finish_writing(node).unwrap();
+        assert!(outer.nested, "the outer edit learns it has a nested one");
+        assert!(!outer.foreign, "which is not someone else's write");
+        // The nested edit recorded nothing of its own: the outer records both
+        // as one step when it finishes.
+        assert_eq!(cx.text_histories.entries[&node].steps.len(), 1);
     }
 
     #[test]

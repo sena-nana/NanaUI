@@ -2376,26 +2376,38 @@ impl UiWorld {
             .filter_map(|host| self.nodes.overlay_host(*host)?.active)
             .find(|active| removed.contains(active));
         // Overlays opened from inside it, hosted elsewhere (a dropdown's
-        // listbox hosted outside the popover it opened from): focus in one of
-        // them belongs to the closing overlay too. Their opener is inside it,
-        // though not yet in `removed` when a despawn takes the root first.
-        let opened_from_closing = closing
-            .map(|closing| {
-                self.overlay_host_nodes
-                    .iter()
-                    .filter(|host| !removed.contains(host))
-                    .filter_map(|host| self.nodes.overlay_host(*host))
-                    .filter(|state| {
-                        state.restore_focus.is_some_and(|opener| {
-                            removed.contains(&opener)
-                                || (self.contains(opener)
-                                    && self.is_descendant_or_self(opener, closing))
-                        })
-                    })
-                    .filter_map(|state| state.active.filter(|active| !removed.contains(active)))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        // listbox hosted outside the popover it opened from), and those
+        // opened from inside them in turn: focus in any of them belongs to
+        // the closing overlay too. An opener is inside the overlay it was
+        // opened from, though not yet in `removed` when a despawn takes the
+        // root first.
+        let mut opened_from_closing = Vec::new();
+        if let Some(closing) = closing {
+            let open = self
+                .overlay_host_nodes
+                .iter()
+                .filter(|host| !removed.contains(host))
+                .filter_map(|host| self.nodes.overlay_host(*host))
+                .filter_map(|state| {
+                    let active = state.active.filter(|active| !removed.contains(active))?;
+                    Some((active, state.restore_focus?))
+                })
+                .collect::<Vec<_>>();
+            let mut frontier = vec![closing];
+            while let Some(parent) = frontier.pop() {
+                for &(active, opener) in &open {
+                    if opened_from_closing.contains(&active) {
+                        continue;
+                    }
+                    if removed.contains(&opener)
+                        || (self.contains(opener) && self.is_descendant_or_self(opener, parent))
+                    {
+                        opened_from_closing.push(active);
+                        frontier.push(active);
+                    }
+                }
+            }
+        }
         // An active overlay is its host's child, and a host inside `removed`
         // is skipped: at most one overlay closes here, the removed root.
         let updates = hosts

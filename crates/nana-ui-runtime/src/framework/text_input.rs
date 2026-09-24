@@ -646,10 +646,13 @@ impl AppContext {
     }
 
     /// Replaces `range` with `text` for the user, as an undo step of its own
-    /// (see [`AppContext::edit_text_area`]). The write the user's own edits
-    /// take, on this range alone: an atom it reaches into goes whole, the
-    /// snippet's linked placeholders follow, a field's length limit holds,
-    /// and the other cursors move through the edit.
+    /// (see [`AppContext::edit_text_area`]): an atom it reaches into goes
+    /// whole, a field's length limit holds, and every cursor moves through
+    /// the edit.
+    ///
+    /// Not typing into a snippet: linked placeholders do not mirror it. The
+    /// world remaps an active snippet session through the new text as it
+    /// does for any value change, and ends it if a tab stop no longer holds.
     pub(super) fn replace_editable_range<C: EditableText>(
         &mut self,
         entity: Entity<C>,
@@ -671,69 +674,38 @@ impl AppContext {
             return Ok(false);
         }
         let text = crate::text_editing::normalize_newlines(text);
-        let snippet = self.world.text_snippet_session(node);
-        let old = self.read(entity, |editable| editable.state().value.clone())?;
-        let mut linked = None;
         // Structural: a step of its own, which neither extends the typing
         // before it nor is extended by the typing after it.
-        let changed =
-            self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {
-                let value = &editable.state().value;
-                let atoms = crate::text_editing::atoms_in(value, editable.text_atoms());
-                let range = crate::text_editing::expand_range_over_atoms(range, &atoms);
-                if value[range.clone()] == *text {
-                    return false;
-                }
-                let mut next = String::with_capacity(value.len() - range.len() + text.len());
-                next.push_str(&value[..range.start]);
-                next.push_str(&text);
-                next.push_str(&value[range.end..]);
-                // Refused whole, not cut to fit: half a completion is not
-                // the edit that was asked for.
-                if !editable.admits_value(&next) {
-                    return false;
-                }
-                // Every selection, the user's own caret included, moves
-                // through the edit: before the range it stays, after it it
-                // shifts, inside it it lands after the inserted text.
-                let inserted_end = range.start + text.len();
-                let remap = |offset: usize| {
-                    if offset < range.start {
-                        offset
-                    } else if offset >= range.end {
-                        offset - range.end + inserted_end
-                    } else {
-                        inserted_end
-                    }
-                };
-                let remap_selection = |selection: TextSelection| TextSelection {
-                    anchor: remap(selection.anchor),
-                    focus: remap(selection.focus),
-                    affinity: selection.affinity,
-                };
-                let state = editable.state_mut();
-                state.value = next.into();
-                state.selection = remap_selection(state.selection);
-                for selection in &mut state.additional_selections {
-                    *selection = remap_selection(*selection);
-                }
-                if let Some(session) = &snippet
-                    && let Some((value, selection, session)) =
-                        session.linked_edit(&old, &state.value, state.selection)
-                {
-                    state.value = value.into();
-                    state.selection = selection;
-                    linked = Some(session);
-                }
-                state.normalize_selections();
-                true
-            })?;
-        if changed && let Some(session) = linked {
-            let mut mutations = MutationQueue::new();
-            mutations.set_text_input_snippet(node, Some(session));
-            self.world.commit(mutations)?;
-        }
-        Ok(changed)
+        self.commit_editor_edit(entity, TextEditOrigin::Structural, |editable, _| {
+            let value = &editable.state().value;
+            let atoms = crate::text_editing::atoms_in(value, editable.text_atoms());
+            let range = crate::text_editing::expand_range_over_atoms(range, &atoms);
+            if value[range.clone()] == *text {
+                return false;
+            }
+            let mut next = String::with_capacity(value.len() - range.len() + text.len());
+            next.push_str(&value[..range.start]);
+            next.push_str(&text);
+            next.push_str(&value[range.end..]);
+            // Refused whole, not cut to fit: half a completion is not the
+            // edit that was asked for.
+            if !editable.admits_value(&next) {
+                return false;
+            }
+            // Every selection, the user's own caret included, moves through
+            // the edit rather than to it.
+            let (start, removed, inserted) = (range.start, range.len(), text.len());
+            let state = editable.state_mut();
+            state.value = next.into();
+            state.selection =
+                nana_text::editable::remap_selection(state.selection, start, removed, inserted);
+            for selection in &mut state.additional_selections {
+                *selection =
+                    nana_text::editable::remap_selection(*selection, start, removed, inserted);
+            }
+            state.normalize_selections();
+            true
+        })
     }
 }
 
@@ -766,17 +738,23 @@ fn atom_expanded_selections<C: EditableText>(
     // Cloned only when a selection grows: most edits in an editor with
     // atoms touch none. Each selection is widened once.
     let primary = widen(state.selection);
-    let first_grown = state
-        .additional_selections
-        .iter()
-        .position(|selection| widen(*selection) != *selection);
+    let first_grown =
+        state
+            .additional_selections
+            .iter()
+            .enumerate()
+            .find_map(|(index, selection)| {
+                let widened = widen(*selection);
+                (widened != *selection).then_some((index, widened))
+            });
     if primary == state.selection && first_grown.is_none() {
         return None;
     }
     let mut next = state.clone();
     next.selection = primary;
-    if let Some(first) = first_grown {
-        for selection in &mut next.additional_selections[first..] {
+    if let Some((first, widened)) = first_grown {
+        next.additional_selections[first] = widened;
+        for selection in &mut next.additional_selections[first + 1..] {
             *selection = widen(*selection);
         }
     }
