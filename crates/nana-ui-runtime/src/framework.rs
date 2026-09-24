@@ -1316,6 +1316,9 @@ impl AppContext {
         &mut self,
         mut mutations: MutationQueue,
     ) -> Result<crate::CommitReport, FrameworkError> {
+        // First, before any early return: whose own update this batch is
+        // must not carry over to the next commit.
+        let own_update = self.text_histories.take_committing();
         // Re-appending or re-parking what is already in place: the world
         // skips it, and there is no focus, surface or lifecycle to follow.
         // A structural no-op only matches nodes that exist in a consistent
@@ -1371,7 +1374,7 @@ impl AppContext {
             .flat_map(|root| self.retained_subtree(root))
             .filter_map(|id| self.world.document_of(id).map(|document| (document, id)))
             .collect::<HashSet<_>>();
-        let written_editors = self.text_histories_written_by(&mutations);
+        let written_editors = self.text_histories_written_by(&mutations, own_update);
         let (report, parked, inserted) = self
             .world
             .commit_with_mount_lifecycle(mutations)
@@ -2641,8 +2644,10 @@ impl AppContext {
         if delivered.is_ok() && !projected {
             staged.project(entity.id, &self.world, &mut mutations);
         }
-        let commit =
-            delivered.and_then(|observers| self.commit_mutations(mutations).map(|_| observers));
+        let commit = delivered.and_then(|observers| {
+            self.text_histories.commit_of(entity.id);
+            self.commit_mutations(mutations).map(|_| observers)
+        });
         if commit.is_ok() {
             self.views.insert(entity.id, Box::new(staged));
         } else {

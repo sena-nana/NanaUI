@@ -2718,7 +2718,7 @@ impl AppContext {
     /// Commit a value edit together with the rebuilt selection set. The set
     /// is normalized here so overlapping or touching cursors fuse in the
     /// same pass that emits the change event.
-    fn commit_editor_value(
+    pub(super) fn commit_editor_value(
         &mut self,
         node: StableNodeId,
         kind: TextEditorKind,

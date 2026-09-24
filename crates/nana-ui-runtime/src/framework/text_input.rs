@@ -672,16 +672,21 @@ fn atom_expanded_selections<C: EditableText>(
             crate::TextSelection::new(expanded.start, expanded.end)
         }
     };
-    let mut next = state.clone();
-    next.selection = widen(state.selection);
-    next.additional_selections = state
-        .additional_selections
-        .iter()
-        .copied()
-        .map(widen)
-        .collect();
-    if next == *state {
+    // Cloned only when a selection grows: most edits in an editor with
+    // atoms touch none.
+    let primary = widen(state.selection);
+    let grows = primary != state.selection
+        || state
+            .additional_selections
+            .iter()
+            .any(|selection| widen(*selection) != *selection);
+    if !grows {
         return None;
+    }
+    let mut next = state.clone();
+    next.selection = primary;
+    for selection in &mut next.additional_selections {
+        *selection = widen(*selection);
     }
     next.normalize_selections();
     Some(next)
