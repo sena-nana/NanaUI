@@ -220,7 +220,9 @@ impl EditableText for NumberInput {
 
     fn restore_committed_number(&mut self, number: f64, cx: &mut ViewContext<'_, Self>) {
         if self.restore_value(number) {
-            cx.emit(NumberChanged { value: number });
+            cx.emit(NumberChanged {
+                value: self.value(),
+            });
         }
     }
 

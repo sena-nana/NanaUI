@@ -1608,19 +1608,11 @@ fn caret_intent(key: &str, modifiers: nana_ui_platform::InputModifiers) -> Optio
     }
 }
 
-/// Text a key would type, or `None` for keys that type nothing.
-///
-/// Hosts report the control characters some keys carry (`"\r"` for Enter,
-/// `"\u{1b}"` for Escape, `"\u{8}"` for Backspace); those are commands, never
-/// text, so a key an editor did not claim cannot type them into it. Tab and
-/// newline are text an editor can hold, and still type.
+/// Text a key would type, or `None` for keys that carry none. The runtime's
+/// typing path refuses the control characters command keys carry, so a key
+/// an editor did not claim cannot type them into it.
 fn typed_text(text: Option<&str>) -> Option<&str> {
-    text.filter(|text| {
-        !text.is_empty()
-            && !text
-                .chars()
-                .any(|character| character.is_control() && !matches!(character, '\t' | '\n'))
-    })
+    text.filter(|text| !text.is_empty())
 }
 
 /// Reborrow the per-dispatch shaper so sequential uses never alias.
@@ -4682,17 +4674,6 @@ mod tests {
             assert_eq!(context.world().focused(document), Some(node));
             assert_eq!(textarea_selection(&context, node), ("abc".into(), 3, 3));
         }
-    }
-
-    #[test]
-    fn typed_text_drops_command_control_characters_but_keeps_tab_and_newline() {
-        assert_eq!(typed_text(Some("\r")), None);
-        assert_eq!(typed_text(Some("\u{1b}")), None);
-        assert_eq!(typed_text(Some("\u{8}")), None);
-        assert_eq!(typed_text(Some("")), None);
-        assert_eq!(typed_text(Some("\t")), Some("\t"));
-        assert_eq!(typed_text(Some("a\nb")), Some("a\nb"));
-        assert_eq!(typed_text(Some("é")), Some("é"));
     }
 
     #[test]

@@ -265,6 +265,17 @@ impl AppContext {
         if self.has_focused_ime_composition(document) {
             return Ok(false);
         }
+        // Hosts report the control characters command keys carry ("\r" for
+        // Enter, "\u{1b}" for Escape, "\u{8}" for Backspace). Typed, they are
+        // commands, never text; Tab and newline are text an editor holds.
+        // Pasted and cut text is the pasteboard's, and is kept as it is.
+        if origin == TextEditOrigin::Typing
+            && text
+                .chars()
+                .any(|character| character.is_control() && !matches!(character, '\t' | '\n'))
+        {
+            return Ok(false);
+        }
         if let Some(entity) = self.focused_editor::<TextInput>(document) {
             return self.replace_editable_selection(entity, text, origin);
         }

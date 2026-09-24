@@ -1909,8 +1909,11 @@ impl NumberInput {
     }
 
     /// Put back a committed number the undo journal recorded, leaving the
-    /// draft as the journal restored it. Returns whether the number moved.
+    /// draft as the journal restored it. The number is normalized against
+    /// the field's current bounds and grid, which may have changed since it
+    /// was recorded. Returns whether the number moved.
     pub(crate) fn restore_value(&mut self, value: f64) -> bool {
+        let value = self.normalize(value);
         if value == self.value {
             return false;
         }

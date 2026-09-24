@@ -122,13 +122,14 @@ impl TextHistory {
             && origin.merges_with(last.origin)
         {
             last.after = after;
-            // A run that ended where it began (ArrowUp then ArrowDown) is no
-            // edit the user can see: an undo onto it would change no text and
-            // still be spent. As with `journal_editor_edit`'s gate, text is
-            // what makes a step; undo past it restores the number too.
-            if last.before.state == last.after.state {
-                self.steps.pop();
+            // A run whose text ended where it began (ArrowUp then ArrowDown)
+            // is no edit the user can see: an undo onto it would change no
+            // text and still be spent. Text is what makes a step, so the run
+            // goes and what it left behind rides on the step before it.
+            if last.before.state.value == last.after.state.value {
+                let run = self.steps.pop().expect("the merged step is last");
                 self.cursor = self.steps.len();
+                self.amend(run.after);
             }
             return;
         }
@@ -143,6 +144,19 @@ impl TextHistory {
             self.steps.remove(0);
         }
         self.cursor = self.steps.len();
+    }
+
+    /// An edit that left the text alone but moved what rides with it (a
+    /// `NumberInput`'s committed number) is no step of its own. The step the
+    /// editor stands on takes it as its `after`, so redo onto that step and
+    /// undo past it agree with what the field held. Like any edit, it ends
+    /// the redo branch and the merge run.
+    fn amend(&mut self, after: EditorSnapshot) {
+        self.steps.truncate(self.cursor);
+        if let Some(last) = self.steps.last_mut() {
+            last.after = after;
+            last.seal();
+        }
     }
 
     /// Text bytes the steps hold. Both ends of every step: undo restores the
@@ -230,6 +244,14 @@ impl TextHistories {
     pub(super) fn seal(&mut self, node: StableNodeId) {
         if let Some(history) = self.entries.get_mut(&node) {
             history.seal();
+        }
+    }
+
+    /// See [`TextHistory::amend`]. An editor with no journal has nothing to
+    /// amend.
+    pub(super) fn amend(&mut self, node: StableNodeId, after: EditorSnapshot) {
+        if let Some(history) = self.entries.get_mut(&node) {
+            history.amend(after);
         }
     }
 
@@ -324,11 +346,15 @@ impl crate::AppContext {
         }
         let after = self.read(entity, snapshot)?;
         // Text is what the user sees change, so it is what makes a step. A
-        // commit that only moves a `NumberInput`'s number is not one: undo
-        // past it lands on the typing that wrote its draft, number included.
+        // commit that only moves a `NumberInput`'s number is not one: it
+        // rides on the step before it, so undo past it lands on the typing
+        // that wrote its draft, number included.
         if after.state.value != before.state.value {
             self.text_histories
                 .record(entity.stable_id(), before, after, origin);
+        } else if after.number != before.number && origin != TextEditOrigin::History {
+            // Undo and redo restore a snapshot; they never rewrite one.
+            self.text_histories.amend(entity.stable_id(), after);
         }
         Ok(true)
     }
@@ -657,6 +683,80 @@ mod editor_tests {
         // The next undo takes back the typing, not an empty step.
         assert!(cx.undo_focused_text(document()).unwrap());
         assert_eq!(draft_of(&cx, input), "1");
+    }
+
+    #[test]
+    fn a_dropped_step_run_leaves_its_number_on_the_step_before_it() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.replace_focused_text(document(), "0").unwrap();
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert!(cx.step_focused_number_input(document(), -1).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("1", 1.0));
+        // Redo returns to what the field held, number included.
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
+    }
+
+    #[test]
+    fn a_step_run_back_to_its_text_spends_no_undo_even_when_the_caret_moved() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(100.0).range(0.0, 200.0));
+        assert!(cx.step_focused_number_input(document(), -1).unwrap());
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!(draft_of(&cx, input), "100");
+        assert!(!cx.can_undo_text(input.stable_id()));
+    }
+
+    #[test]
+    fn a_number_change_that_keeps_the_text_is_an_undo_boundary() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(5.0).range(0.0, 10.3));
+        let value = |cx: &AppContext| cx.read(input, crate::NumberInput::value).unwrap();
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "10").unwrap();
+        // Up from 10 clamps to 10.3 and snaps back to 10: the number commits,
+        // the text stays.
+        assert!(cx.step_focused_number_input(document(), 1).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
+        assert!(cx.step_focused_number_input(document(), -1).unwrap());
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("10", 10.0));
+        assert!(cx.undo_focused_text(document()).unwrap());
+        assert_eq!((draft_of(&cx, input).as_str(), value(&cx)), ("5", 5.0));
+    }
+
+    #[test]
+    fn a_restored_number_follows_the_fields_current_bounds() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0).range(0.0, 10.0));
+        cx.select_all_focused_text(document()).unwrap();
+        cx.replace_focused_text(document(), "8").unwrap();
+        assert!(cx.commit_focused_number_input(document()).unwrap());
+        assert!(cx.undo_focused_text(document()).unwrap());
+        cx.update_component(input, |input, _| input.spec.maximum = Some(5.0))
+            .unwrap();
+        assert!(cx.redo_focused_text(document()).unwrap());
+        assert_eq!(cx.read(input, crate::NumberInput::value).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn typing_never_inserts_command_control_characters() {
+        let mut cx = AppContext::new();
+        let input = focused_number(&mut cx, crate::NumberInput::new(1.0));
+        for text in ["\r", "\u{1b}", "\u{8}", "2\r"] {
+            assert!(
+                !cx.replace_focused_text(document(), text).unwrap(),
+                "{text:?}"
+            );
+        }
+        assert_eq!(draft_of(&cx, input), "1");
+        let area = focused_area(&mut cx, "");
+        assert!(cx.replace_focused_text(document(), "a\tb\nc").unwrap());
+        assert_eq!(value_of(&cx, area), "a\tb\nc");
     }
 
     #[test]
