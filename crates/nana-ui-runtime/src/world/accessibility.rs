@@ -218,7 +218,7 @@ impl UiWorld {
                 if node.resolved.0.visible {
                     node.text.value.clone()
                 } else {
-                    String::new()
+                    crate::TextValue::default()
                 },
                 node.document,
                 node.resolved.0.visible,
@@ -276,8 +276,8 @@ impl UiWorld {
             } else {
                 self.nodes
                     .text_input(id)
-                    .map(|input| Arc::<str>::from(input.value.as_str()))
-                    .or_else(|| state.value.clone())
+                    .map(|input| input.value_shared())
+                    .or_else(|| state.value.as_ref().map(crate::TextValue::from))
             },
             disabled: visible
                 && (state.disabled

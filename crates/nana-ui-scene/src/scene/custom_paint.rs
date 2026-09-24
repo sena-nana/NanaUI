@@ -495,7 +495,7 @@ fn image_quad(source: &Arc<str>, fit: ImageFit, radii: [f32; 4]) -> ScenePrimiti
 
 fn custom_text(node: &ExtractedNode, text: &TextStyle, color: [f32; 4]) -> ScenePrimitiveKind {
     ScenePrimitiveKind::Text {
-        content: text.content.to_string(),
+        content: text.content.to_string().into(),
         color: Some(color),
         size: text.size,
         weight: text.weight,

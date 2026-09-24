@@ -445,7 +445,7 @@ fn main() {
             cx.mutations().set_text(
                 entity.stable_id(),
                 TextContent {
-                    value: view.0.to_string(),
+                    value: view.0.to_string().into(),
                 },
             );
         })

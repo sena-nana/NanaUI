@@ -579,6 +579,7 @@ impl AppContext {
         // 折叠视图：无折叠态区间时为 None，全部按原始值解析（零成本）。
         let fold_view = self.world.text_display_view(focused.node);
         let probe_value: &str = fold_view.as_ref().map_or(&state.value, |view| &view.value);
+        let probe_text = self.editor_probe_text(focused.node, fold_view.as_ref());
         let to_display = |selection: TextSelection| -> TextSelection {
             match &fold_view {
                 Some(view) => TextSelection {
@@ -648,7 +649,7 @@ impl AppContext {
                         shaper,
                         node: focused.node,
                         text: TextContent {
-                            value: probe_value.to_owned(),
+                            value: probe_text.clone(),
                         },
                         style,
                         constraints,
@@ -725,7 +726,7 @@ impl AppContext {
                     shaper,
                     node: focused.node,
                     text: TextContent {
-                        value: probe_value.to_owned(),
+                        value: probe_text.clone(),
                     },
                     style,
                     constraints,
@@ -807,7 +808,7 @@ impl AppContext {
                         shaper,
                         node: focused.node,
                         text: TextContent {
-                            value: probe_value.to_owned(),
+                            value: probe_text.clone(),
                         },
                         style,
                         constraints,
@@ -1259,7 +1260,7 @@ impl AppContext {
                     shaper,
                     node: focused.node,
                     text: TextContent {
-                        value: value.clone(),
+                        value: self.editor_probe_text(focused.node, None),
                     },
                     style,
                     constraints,
@@ -2047,10 +2048,8 @@ impl AppContext {
             (drag.target, self.world.text_input_shape_context(drag.node))
         {
             // 折叠探测用显示值（无折叠时为编辑器原值）。
-            let value = match self.world.text_display_view(drag.node) {
-                Some(view) => view.value,
-                None => self.editor_state(drag.node, drag.kind)?.value,
-            };
+            let value =
+                self.editor_probe_text(drag.node, self.world.text_display_view(drag.node).as_ref());
             let mut geometry = EditorGeometry {
                 shaper,
                 node: drag.node,
@@ -2223,7 +2222,7 @@ impl AppContext {
             shaper,
             node,
             text: TextContent {
-                value: probe_value.to_owned(),
+                value: self.editor_probe_text(node, fold_view.as_ref()),
             },
             style,
             constraints,
@@ -2320,6 +2319,25 @@ impl AppContext {
                 })
                 .unwrap_or_default(),
             TextEditorKind::Field => Vec::new(),
+        }
+    }
+
+    /// The text an editor's geometry probes ask about: the fold / inlay
+    /// view's when there is one, the committed text otherwise — as the shared,
+    /// stamped values the presentation pass laid out, so the host answers a
+    /// probe without comparing the text it already holds geometry for.
+    fn editor_probe_text(
+        &self,
+        node: StableNodeId,
+        fold_view: Option<&crate::world::TextDisplayView>,
+    ) -> crate::TextValue {
+        match fold_view {
+            Some(view) => view.value.clone(),
+            None => self
+                .world
+                .text_input(node)
+                .map(|input| input.value_shared())
+                .unwrap_or_default(),
         }
     }
 
@@ -4458,7 +4476,7 @@ mod minimap_tests {
         let (mut context, document, area, node) = minimap_editor();
         let state = context.world().text_input(node).unwrap();
         let selection_before = state.selection;
-        let additional_before = state.additional_selections.clone();
+        let additional_before = state.additional_selections.to_vec();
 
         // 条内中部点击：点击行（面板内 50px → 第 25 行）居中。
         let panel = minimap_panel(&context, node);

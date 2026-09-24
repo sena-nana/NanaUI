@@ -576,7 +576,7 @@ fn hover_card_pointer_actions_preserve_active_ime_composition() {
         assert_eq!(
             f.cx.world()
                 .ime(f.editor.stable_id())
-                .map(|ime| (ime.text.as_str(), ime.selection)),
+                .map(|ime| (ime.text, ime.selection)),
             Some(("你", Some((0, 3))))
         );
     }

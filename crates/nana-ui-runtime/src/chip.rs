@@ -131,7 +131,7 @@ impl ComponentView for Chip {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let text = TextContent {
-            value: self.label.to_string(),
+            value: self.label.to_string().into(),
         };
         if world.text(id) != Some(text.value.as_str()) {
             mutations.set_text(id, text);

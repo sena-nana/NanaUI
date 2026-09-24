@@ -406,7 +406,7 @@ impl ComponentView for Text {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let text = TextContent {
-            value: self.value.clone(),
+            value: self.value.clone().into(),
         };
         if world.text(id) != Some(text.value.as_str()) {
             mutations.set_text(id, text);
@@ -612,7 +612,7 @@ impl ComponentView for Button {
 
     fn project(&self, id: StableNodeId, world: &UiWorld, mutations: &mut MutationQueue) {
         let text = TextContent {
-            value: self.label.clone(),
+            value: self.label.clone().into(),
         };
         if world.text(id) != Some(text.value.as_str()) {
             mutations.set_text(id, text);
@@ -834,7 +834,7 @@ impl ComponentView for IconButton {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -985,7 +985,7 @@ impl ComponentView for IconGlyph {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -1100,7 +1100,7 @@ impl ComponentView for Card {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.title.as_deref().unwrap_or_default().to_owned(),
+                    value: self.title.as_deref().unwrap_or_default().to_owned().into(),
                 },
             );
         }
@@ -1388,7 +1388,7 @@ impl ComponentView for ListItem {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: visible_label.to_owned(),
+                    value: visible_label.to_owned().into(),
                 },
             );
         }
@@ -1467,7 +1467,7 @@ pub struct TextSubmitted {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextChanged {
-    pub value: String,
+    pub value: crate::TextValue,
     pub selection: crate::TextSelection,
 }
 
@@ -3012,7 +3012,7 @@ impl ComponentView for Tooltip {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.to_string(),
+                    value: self.label.to_string().into(),
                 },
             );
         }
@@ -3207,7 +3207,7 @@ impl ComponentView for Checkbox {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.clone(),
+                    value: self.label.clone().into(),
                 },
             );
         }
@@ -3471,7 +3471,7 @@ impl ComponentView for Switch {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -3748,7 +3748,7 @@ impl ComponentView for RangeField {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -4458,7 +4458,7 @@ impl ComponentView for TableCell {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.value.clone(),
+                    value: self.value.clone().into(),
                 },
             );
         }

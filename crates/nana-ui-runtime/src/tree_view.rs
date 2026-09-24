@@ -274,7 +274,7 @@ pub(crate) fn tree_view_geometry(
                         width: (bounds.x + bounds.width - cursor - 4.0).max(0.0),
                         height: row_height,
                     },
-                    content: Arc::clone(&row.label),
+                    content: Arc::clone(&row.label).into(),
                     color: Some(if row.disabled {
                         palette.faint.as_rgba_array()
                     } else {

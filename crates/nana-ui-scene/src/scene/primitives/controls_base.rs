@@ -327,7 +327,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                     5,
                     &ComponentTextRegion {
                         bounds: *cancel,
-                        content: Arc::from("×"),
+                        content: nana_ui_runtime::TextValue::from("×"),
                         color: node.style.color,
                         font_size: 15.0,
                         font_weight: None,
@@ -547,7 +547,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                                     width: 16.0,
                                     height: option.bounds.height,
                                 },
-                                content: Arc::from("✓"),
+                                content: nana_ui_runtime::TextValue::from("✓"),
                                 color: node.standard_visual_foreground.or(option.label.color),
                                 font_size: option.label.font_size,
                                 font_weight: Some(700),
@@ -629,7 +629,11 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                         40u64.saturating_add(index),
                         &nana_ui_runtime::ComponentTextRegion {
                             bounds: disclosure,
-                            content: Arc::from(if row.expanded { "▾" } else { "▸" }),
+                            content: nana_ui_runtime::TextValue::from(if row.expanded {
+                                "▾"
+                            } else {
+                                "▸"
+                            }),
                             color: row.label.color,
                             font_size: row.label.font_size,
                             font_weight: None,

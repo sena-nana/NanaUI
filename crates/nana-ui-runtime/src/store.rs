@@ -7,10 +7,10 @@ use std::sync::{Arc, LazyLock};
 use crate::ComputedStyle;
 use crate::component_registry::ComponentTypeId;
 use crate::components::{
-    AccessibilityState, CustomRenderNode, EmptyStateTextPresentation, EventListeners,
-    ImeComposition, InteractionState, LayoutBox, ModalTextPresentation, MountState, NodeStyle,
-    OverlayHostState, ScrollMetrics, ScrollOffset, StandardVisual, TextCodeFold, TextContent,
-    TextInputPresentation, TextInputState, TextMetrics, TextSnippetSession,
+    AccessibilityState, CustomRenderNode, EmptyStateTextPresentation, EventListeners, ImeView,
+    InteractionState, LayoutBox, ModalTextPresentation, MountState, NodeStyle, OverlayHostState,
+    ScrollMetrics, ScrollOffset, StandardVisual, TextCodeFold, TextContent, TextInputPresentation,
+    TextInputView, TextMetrics, TextSnippetSession,
 };
 use crate::presentation::{HighlightRequest, TextPresentation};
 use crate::schedule::DirtyMask;
@@ -190,6 +190,70 @@ pub(crate) struct TextHoverViewState {
     pub diagnostic: bool,
 }
 
+/// One text editor, stored once: the session is the only copy of its
+/// committed text, its selections and its IME composition (Issue #182).
+#[derive(Debug)]
+pub(crate) struct EditorRecord {
+    pub session: nana_text::EditSession,
+    /// An IME attached with nothing composed: the preedit a platform reports
+    /// as empty between keystrokes, or when composition just ended and the
+    /// commit is still on its way. Not a composition — the session has none,
+    /// and caret motion and display do not treat it as one — but it is still
+    /// the IME's turn: a submit waits for its commit or its end. Carries the
+    /// IME's (empty) selection so the state reads back as it was written.
+    pub empty_preedit: Option<Option<(usize, usize)>>,
+    /// What the editor draws, built from the session and the overlays on it
+    /// once per change of those, not once per consumer and pass.
+    pub display: std::cell::RefCell<EditorDisplayMemo>,
+}
+
+/// Memoized display pieces of one editor, each with the inputs it was built
+/// from. The keys are stamps and revisions, not dirty bits: a stale entry
+/// cannot survive a change it did not see.
+#[derive(Debug, Default)]
+pub(crate) struct EditorDisplayMemo {
+    /// The fold / inlay display view.
+    pub view: Option<(DisplayViewKey, Option<crate::world::TextDisplayView>)>,
+    /// The committed text with the preedit spliced in, stamped.
+    pub composed: Option<((nana_text::TextStamp, u64), crate::TextValue)>,
+}
+
+/// What a fold / inlay view is a function of.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DisplayViewKey {
+    pub text: nana_text::TextStamp,
+    pub collapsed: Vec<crate::TextCodeFold>,
+    /// The inlay set, by identity: a new feed is a new `Arc`.
+    pub inlays: Option<(usize, usize)>,
+    pub composing: bool,
+}
+
+impl EditorRecord {
+    pub fn new(session: nana_text::EditSession) -> Self {
+        Self {
+            session,
+            empty_preedit: None,
+            display: Default::default(),
+        }
+    }
+
+    pub fn ime(&self) -> Option<ImeView<'_>> {
+        if let Some(composition) = self.session.composition() {
+            return Some(ImeView {
+                text: &composition.text,
+                selection: composition
+                    .selection
+                    .as_ref()
+                    .map(|range| (range.start, range.end)),
+            });
+        }
+        self.empty_preedit.map(|selection| ImeView {
+            text: "",
+            selection,
+        })
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NodeStore {
     nodes: HashMap<StableNodeId, NodeRecord>,
@@ -199,8 +263,9 @@ pub(crate) struct NodeStore {
     component_types: HashMap<StableNodeId, ComponentTypeId>,
     overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
     scroll_metrics: HashMap<StableNodeId, ScrollMetrics>,
-    ime: HashMap<StableNodeId, ImeComposition>,
-    text_inputs: HashMap<StableNodeId, TextInputState>,
+    /// Every text editor's session: its committed text, selections and IME
+    /// composition, stored once (Issue #182).
+    editors: HashMap<StableNodeId, EditorRecord>,
     highlights: HashMap<StableNodeId, HighlightRequest>,
     text_presentations: HashMap<StableNodeId, TextPresentation>,
     text_input_presentations: HashMap<StableNodeId, TextInputPresentation>,
@@ -289,8 +354,7 @@ impl NodeStore {
         self.component_types.remove(&id);
         self.overlay_hosts.remove(&id);
         self.scroll_metrics.remove(&id);
-        self.ime.remove(&id);
-        self.text_inputs.remove(&id);
+        self.editors.remove(&id);
         self.highlights.remove(&id);
         self.text_presentations.remove(&id);
         self.text_input_presentations.remove(&id);
@@ -360,8 +424,34 @@ impl NodeStore {
         scroll_metrics,
         set_scroll_metrics
     );
-    sparse!(ime, ImeComposition, ime, set_ime);
-    sparse!(text_inputs, TextInputState, text_input, set_text_input);
+    pub fn text_input(&self, id: StableNodeId) -> Option<TextInputView<'_>> {
+        self.editors
+            .get(&id)
+            .map(|editor| TextInputView::of(&editor.session))
+    }
+
+    pub fn ime(&self, id: StableNodeId) -> Option<ImeView<'_>> {
+        self.editors.get(&id)?.ime()
+    }
+
+    pub(crate) fn editor(&self, id: StableNodeId) -> Option<&EditorRecord> {
+        self.editors.get(&id)
+    }
+
+    pub(crate) fn editor_mut(&mut self, id: StableNodeId) -> Option<&mut EditorRecord> {
+        self.editors.get_mut(&id)
+    }
+
+    pub(crate) fn set_editor(&mut self, id: StableNodeId, editor: Option<EditorRecord>) {
+        match editor {
+            Some(editor) => {
+                self.editors.insert(id, editor);
+            }
+            None => {
+                self.editors.remove(&id);
+            }
+        }
+    }
     sparse!(highlights, HighlightRequest, highlight, set_highlight);
     sparse!(
         text_presentations,
@@ -532,10 +622,6 @@ impl NodeStore {
         resolved.chain(measuring)
     }
 
-    pub fn text_input_mut(&mut self, id: StableNodeId) -> Option<&mut TextInputState> {
-        self.text_inputs.get_mut(&id)
-    }
-
     pub(crate) fn text_completion_view_mut(
         &mut self,
         id: StableNodeId,
@@ -621,11 +707,11 @@ mod tests {
             }),
         );
         store.set_component_type(id, Some(ComponentTypeId::new("nana.button").unwrap()));
-        store.set_ime(
+        store.set_editor(
             id,
-            Some(ImeComposition {
-                text: "a".into(),
-                selection: None,
+            Some(EditorRecord {
+                empty_preedit: Some(None),
+                ..EditorRecord::new(nana_text::EditSession::new("a"))
             }),
         );
         assert!(store.scroll_metrics(id).is_some());

@@ -107,7 +107,7 @@ impl SplitPane {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -203,7 +203,7 @@ impl SplitPane {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -269,7 +269,7 @@ impl SplitPane {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -639,7 +639,7 @@ impl ComponentView for SplitHandle {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -676,7 +676,7 @@ impl ComponentView for SplitHandleMark {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -715,7 +715,7 @@ impl ComponentView for SplitPaneSlot {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

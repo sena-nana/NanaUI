@@ -55,7 +55,7 @@ fn measured_text(
     style.font_weight = font_weight;
     let probe = StableNodeId::new(u64::MAX).unwrap();
     let content = TextContent {
-        value: text.to_owned(),
+        value: text.to_owned().into(),
     };
     // The line's width, or the end caret when whitespace hangs past it.
     let width = shaper

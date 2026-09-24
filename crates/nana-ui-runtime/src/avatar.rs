@@ -150,7 +150,7 @@ impl ComponentView for Avatar {
             mutations.set_text(
                 id,
                 crate::TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

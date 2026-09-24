@@ -143,7 +143,7 @@ impl crate::ComponentView for ActionMenuItem {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.to_string(),
+                    value: self.label.to_string().into(),
                 },
             );
         }
@@ -597,7 +597,10 @@ impl crate::ComponentView for ContextMenu {
             mutations.set_standard_visual(id, None);
         }
         if self.searchable && self.open {
-            if world.text_input(id) != Some(&self.state) {
+            if world
+                .text_input(id)
+                .is_none_or(|current| current != self.state)
+            {
                 mutations.set_text_input(id, Some(self.state.clone()));
             }
         } else if world.text_input(id).is_some() {
@@ -693,7 +696,7 @@ pub(crate) fn action_menu_item_geometry(
                 width: (label_right - cursor).max(0.0),
                 height: bounds.height,
             },
-            content: Arc::clone(label),
+            content: Arc::clone(label).into(),
             color: Some(foreground),
             font_size: size.text_size(),
             font_weight: Some(500),
@@ -705,7 +708,7 @@ pub(crate) fn action_menu_item_geometry(
                 width: hint_width,
                 height: bounds.height,
             },
-            content: Arc::clone(hint),
+            content: Arc::clone(hint).into(),
             color: Some(palette.muted.as_rgba_array()),
             font_size: HINT_TEXT_SIZE,
             font_weight: None,
@@ -779,9 +782,9 @@ pub(crate) fn context_menu_geometry(
         ComponentTextRegion {
             bounds: field,
             content: if empty {
-                Arc::from("搜索操作")
+                crate::TextValue::from("搜索操作")
             } else {
-                Arc::clone(query.expect("searchable query"))
+                Arc::clone(query.expect("searchable query")).into()
             },
             color: Some(if empty {
                 palette.faint.as_rgba_array()
@@ -827,7 +830,7 @@ pub(crate) fn context_menu_geometry(
                         width: (label_right - label_x).max(0.0),
                         height: row.height,
                     },
-                    content: crate::select::menu_option_label(option),
+                    content: crate::select::menu_option_label(option).into(),
                     color: Some(if option.disabled {
                         palette.faint.as_rgba_array()
                     } else {
@@ -1221,10 +1224,7 @@ mod tests {
             .unwrap();
         let id = menu.stable_id();
         assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("del")
         );
         assert!(context.world().interaction(id).unwrap().focusable);

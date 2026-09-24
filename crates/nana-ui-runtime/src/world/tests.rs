@@ -1,6 +1,7 @@
 #[cfg(feature = "graph-canvas")]
 use super::geometry::*;
 use super::*;
+use crate::TextInputState;
 use crate::{
     AnimatableProperty, AnimationClass, AnimationEventKind, AnimationFillMode, AnimationId,
     AnimationPlayback, AnimationSpec, Easing, MeasureTextShaper, MotionCurve,
@@ -1831,12 +1832,9 @@ fn committed_text_selection_is_unicode_safe_and_batch_atomic() {
 
     let accessibility = world.project_accessibility(document(1));
     assert_eq!(accessibility[0].value.as_deref(), Some("娜好ab"));
+    assert!(world.extract_document(document(1))[0].editable);
     assert_eq!(
-        world.extract_document(document(1))[0]
-            .text_input
-            .as_ref()
-            .unwrap()
-            .selection,
+        world.text_input(node(1)).unwrap().selection,
         crate::TextSelection::caret("娜".len())
     );
 }
@@ -1909,13 +1907,14 @@ fn text_input_presentation_masks_graphemes_and_replaces_selection_with_preedit()
         additional_selections: Vec::new(),
     };
     let masked = build_text_input_presentation_source(
-        &state,
+        crate::TextInputView::of(&state.to_session()),
         None,
         "",
         true,
         false,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -1924,16 +1923,20 @@ fn text_input_presentation_masks_graphemes_and_replaces_selection_with_preedit()
     assert_eq!(masked.selection, Some(("•".len(), "••".len())));
 
     let preedit = build_text_input_presentation_source(
-        &state,
-        Some(&ImeComposition {
-            text: "输入".into(),
-            selection: Some((0, "输".len())),
-        }),
+        crate::TextInputView::of(&state.to_session()),
+        Some(
+            ImeComposition {
+                text: "输入".into(),
+                selection: Some((0, "输".len())),
+            }
+            .view(),
+        ),
         "",
         true,
         false,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -4812,7 +4815,7 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
             additional_selections: Vec::new(),
         };
         let source = build_text_input_presentation_source(
-            &state,
+            crate::TextInputView::of(&state.to_session()),
             None,
             "",
             false,
@@ -4826,6 +4829,7 @@ fn occurrence_highlight_requires_word_single_line_selection_option_and_caps() {
                 ..TextInputEditorExtras::default()
             },
             true,
+            None,
             None,
             None,
             None,
@@ -4887,7 +4891,7 @@ fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
             additional_selections: Vec::new(),
         };
         let source = build_text_input_presentation_source(
-            &state,
+            crate::TextInputView::of(&state.to_session()),
             None,
             "",
             false,
@@ -4897,6 +4901,7 @@ fn occurrence_geometry_updates_without_reshaping_unchanged_text() {
                 ..TextInputEditorExtras::default()
             },
             true,
+            None,
             None,
             None,
             None,
@@ -5154,13 +5159,14 @@ fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
         ..ComputedStyle::default()
     };
     let source = build_text_input_presentation_source(
-        &state,
+        crate::TextInputView::of(&state.to_session()),
         None,
         "",
         false,
         true,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -5204,16 +5210,20 @@ fn multiline_text_presentation_tracks_utf8_lines_selection_and_preedit() {
         additional_selections: Vec::new(),
     };
     let source = build_text_input_presentation_source(
-        &composing,
-        Some(&ImeComposition {
-            text: "输\n入".into(),
-            selection: None,
-        }),
+        crate::TextInputView::of(&composing.to_session()),
+        Some(
+            ImeComposition {
+                text: "输\n入".into(),
+                selection: None,
+            }
+            .view(),
+        ),
         "",
         false,
         true,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -5240,14 +5250,16 @@ fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
         ..ComputedStyle::default()
     };
     let present = |state: &TextInputState, ime: Option<&ImeComposition>| {
+        let session = state.to_session();
         let source = build_text_input_presentation_source(
-            state,
-            ime,
+            crate::TextInputView::of(&session),
+            ime.map(ImeComposition::view),
             "",
             false,
             true,
             TextInputEditorExtras::default(),
             false,
+            None,
             None,
             None,
             None,
@@ -5262,12 +5274,13 @@ fn multi_cursor_presentation_merges_bands_and_paints_additional_carets() {
         )
     };
 
-    // 主选区（第二行）+ 两个收起的附加光标（第二、三行）。
+    // 主选区（第一行到第二行）+ 两个收起的附加光标（第二、三行）。附加
+    // 光标不落在主选区内：多选区集合互不重叠（会话会把重叠的熔成一个）。
     let state = TextInputState {
         value: value.into(),
-        selection: crate::TextSelection::new("甲".len(), "甲乙\nthird\n".len()),
+        selection: crate::TextSelection::new("甲".len(), "甲乙\nth".len()),
         additional_selections: vec![
-            crate::TextSelection::caret("甲乙\n".len()),
+            crate::TextSelection::caret("甲乙\nthird".len()),
             crate::TextSelection::caret(value.len()),
         ],
     };
@@ -5432,13 +5445,14 @@ fn presentation_shaping_uses_resolved_wrap_only_for_multiline_editors() {
     let mut probe = ConstraintProbe::default();
 
     let multiline = build_text_input_presentation_source(
-        &state,
+        crate::TextInputView::of(&state.to_session()),
         None,
         "",
         false,
         true,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -5466,13 +5480,14 @@ fn presentation_shaping_uses_resolved_wrap_only_for_multiline_editors() {
     );
 
     let single_line = build_text_input_presentation_source(
-        &state,
+        crate::TextInputView::of(&state.to_session()),
         None,
         "",
         false,
         false,
         TextInputEditorExtras::default(),
         false,
+        None,
         None,
         None,
         None,
@@ -7501,7 +7516,7 @@ fn layout_scoped_shape_duplicate_and_long_text_skip_without_rebuilding_keys() {
     queue.set_text(
         node(3),
         TextContent {
-            value: "L".repeat(4096),
+            value: "L".repeat(4096).into(),
         },
     );
     world.commit(queue).unwrap();
@@ -8821,7 +8836,8 @@ fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline()
     let input = extracted.iter().find(|entry| entry.id == node(2)).unwrap();
     let text = extracted.iter().find(|entry| entry.id == node(3)).unwrap();
     assert!(input.focused);
-    assert_eq!(input.ime.as_ref().unwrap().text, "拼音");
+    assert!(input.editable);
+    assert_eq!(world.ime(node(2)).unwrap().text, "拼音");
     assert_eq!(text.style.foreground, SemanticColorRole::Accent);
     assert_eq!(text.style.opacity, 0.25);
 
@@ -8837,15 +8853,7 @@ fn style_text_layout_input_focus_ime_hit_test_and_extraction_form_one_pipeline()
     let work = world.take_system_work();
     world.reconcile_focus(&work.focus_ime);
     assert_eq!(world.focused(document(1)), None);
-    assert!(
-        world
-            .extract_document(document(1))
-            .iter()
-            .find(|entry| entry.id == node(2))
-            .unwrap()
-            .ime
-            .is_none()
-    );
+    assert!(world.ime(node(2)).is_none());
 }
 
 #[test]

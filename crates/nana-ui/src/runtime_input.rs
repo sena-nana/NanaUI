@@ -1354,7 +1354,7 @@ impl RuntimeInputAdapter {
                 let leftover = context
                     .world()
                     .focused_text_input(document)
-                    .and_then(|(id, _)| context.world().ime(id).map(|ime| ime.text.clone()))
+                    .and_then(|(id, _)| context.world().ime(id).map(|ime| ime.text.to_owned()))
                     .filter(|text| !text.is_empty());
                 match leftover {
                     Some(text) => context.commit_ime(document, &text)?,
@@ -2489,10 +2489,7 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(
-            context
-                .world()
-                .ime(input.stable_id())
-                .map(|ime| ime.text.as_str()),
+            context.world().ime(input.stable_id()).map(|ime| ime.text),
             Some("你")
         );
         assert!(
@@ -3053,15 +3050,9 @@ mod tests {
                 .unwrap()
                 .prevent_default
         );
+        assert_eq!(context.world().ime(id).map(|ime| ime.text), Some("世"));
         assert_eq!(
-            context.world().ime(id).map(|ime| ime.text.as_str()),
-            Some("世")
-        );
-        assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("Nana")
         );
 
@@ -3072,10 +3063,7 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("Nana世界")
         );
         assert!(context.world().ime(id).is_none());
@@ -3106,10 +3094,7 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("Nana世")
         );
         assert!(context.world().ime(id).is_none());
@@ -3147,14 +3132,11 @@ mod tests {
                 .prevent_default
         );
         assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("你")
         );
         assert_eq!(
-            context.world().ime(id).map(|ime| ime.text.as_str()),
+            context.world().ime(id).map(|ime| ime.text),
             Some("世"),
             "delete surrounding must not clear preedit"
         );
@@ -3174,10 +3156,7 @@ mod tests {
             "focused editable still consumes an un-applicable span"
         );
         assert_eq!(
-            context
-                .world()
-                .text_input(id)
-                .map(|state| state.value.as_str()),
+            context.world().text_input(id).map(|state| state.value),
             Some("你"),
             "invalid byte span must leave committed text unchanged"
         );
@@ -4483,7 +4462,7 @@ mod tests {
     fn textarea_selection(context: &AppContext, node: StableNodeId) -> (String, usize, usize) {
         let state = context.world().text_input(node).unwrap();
         (
-            state.value.clone(),
+            state.value.to_owned(),
             state.selection.anchor,
             state.selection.focus,
         )
@@ -5046,7 +5025,7 @@ mod tests {
         let sink = Arc::clone(&events);
         context
             .on(area, move |_area, event: &TextChanged, _cx| {
-                sink.lock().unwrap().push(event.value.clone());
+                sink.lock().unwrap().push(event.value.to_string());
             })
             .unwrap();
         events
@@ -6056,7 +6035,7 @@ mod tests {
     ) -> (String, (usize, usize), Vec<(usize, usize)>) {
         let state = context.world().text_input(node).unwrap();
         (
-            state.value.clone(),
+            state.value.to_owned(),
             (state.selection.anchor, state.selection.focus),
             state
                 .additional_selections
@@ -7162,7 +7141,7 @@ mod tests {
         let sink = std::sync::Arc::clone(&changes);
         context
             .on(area, move |_view, event: &TextChanged, _cx| {
-                sink.lock().unwrap().push(event.value.clone());
+                sink.lock().unwrap().push(event.value.to_string());
             })
             .unwrap();
         assert!(

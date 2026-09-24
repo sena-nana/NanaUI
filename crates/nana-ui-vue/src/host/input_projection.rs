@@ -1341,7 +1341,7 @@ impl VueHost {
         }
         let supported = {
             let document = self.document.lock().expect("vue doc");
-            document.text_input_state(target).is_some()
+            document.has_text_input_state(target)
                 && document.get_attribute(target, "disabled").is_none()
                 && document.get_attribute(target, "readonly").is_none()
         };
@@ -1619,7 +1619,7 @@ impl VueHost {
         };
         {
             let mut document = self.document.lock().expect("vue doc");
-            if document.text_input_state(target).is_none() {
+            if !document.has_text_input_state(target) {
                 let value = document.get_attribute(target, "value").unwrap_or_default();
                 if !document.set_text_input_state(target, TextInputState::new(value)) {
                     return Err(JsEngineError::new(
@@ -1756,7 +1756,7 @@ impl VueHost {
                 };
                 let started = if commit_runtime {
                     let mut document = self.document.lock().expect("vue doc");
-                    if document.text_input_state(target).is_none() {
+                    if !document.has_text_input_state(target) {
                         let value = document.get_attribute(target, "value").unwrap_or_default();
                         if !document.set_text_input_state(target, TextInputState::new(value)) {
                             return Err(JsEngineError::new(

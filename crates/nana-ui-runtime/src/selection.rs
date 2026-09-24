@@ -502,7 +502,7 @@ impl ComponentView for SegmentedOption {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.to_string(),
+                    value: self.label.to_string().into(),
                 },
             );
         }

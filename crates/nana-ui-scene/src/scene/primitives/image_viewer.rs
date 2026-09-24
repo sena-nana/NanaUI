@@ -87,7 +87,7 @@ pub(super) fn build(context: &GeometryPaintContext<'_>, emit: &mut impl FnMut(Sc
                 17,
                 &ComponentTextRegion {
                     bounds: *close,
-                    content: Arc::from("×"),
+                    content: nana_ui_runtime::TextValue::from("×"),
                     color: node.style.color,
                     font_size: 15.0,
                     font_weight: None,

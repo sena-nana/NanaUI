@@ -1879,7 +1879,7 @@ pub(crate) fn paint_text_request(
         ..crate::TextShapeConstraints::default()
     };
     let content = crate::TextContent {
-        value: text.content.to_string(),
+        value: text.content.to_string().into(),
     };
     (style, constraints, content)
 }

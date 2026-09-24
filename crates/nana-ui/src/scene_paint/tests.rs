@@ -3374,8 +3374,7 @@ fn overflow_parent(
         text_preserve_lines: false,
         z_index: 0,
         focused: false,
-        ime: None,
-        text_input: None,
+        editable: false,
         text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
@@ -3431,8 +3430,7 @@ fn translucent_parent(
         text_preserve_lines: false,
         z_index: 0,
         focused: false,
-        ime: None,
-        text_input: None,
+        editable: false,
         text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
@@ -3482,8 +3480,7 @@ fn overflowing_text_child(
         text_preserve_lines: false,
         z_index: 0,
         focused: false,
-        ime: None,
-        text_input: None,
+        editable: false,
         text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
@@ -3541,8 +3538,7 @@ fn host_texture_child(
         text_preserve_lines: false,
         z_index: 0,
         focused: false,
-        ime: None,
-        text_input: None,
+        editable: false,
         text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
@@ -3613,8 +3609,7 @@ fn extracted_div(
         text_preserve_lines: false,
         z_index: 0,
         focused: false,
-        ime: None,
-        text_input: None,
+        editable: false,
         text_spans: Vec::new(),
         standard_visual: None,
         component_geometry: None,
@@ -7643,7 +7638,7 @@ fn quad_and_label_rows_keep_a_constant_draw_count() {
                 ..ComputedStyle::default()
             });
             label.text = Some(TextContent {
-                value: format!("Row {row}"),
+                value: format!("Row {row}").into(),
             });
             children.push(StableNodeId::new(id).unwrap());
             nodes.push(label);
@@ -7899,7 +7894,7 @@ fn open_text_run_survives_shape_cache_eviction() {
             ..ComputedStyle::default()
         });
         node.text = Some(TextContent {
-            value: format!("row-{index}"),
+            value: format!("row-{index}").into(),
         });
         nodes.push(node);
     }
@@ -8495,7 +8490,7 @@ fn alternating_live_targets_keep_prepared_geometry_text_and_bindings() {
             icon.standard_visual_foreground = Some([1.0; 4]);
             let mut label = colored_quad_node(1001, 20.0, 2.0, 40.0, 20.0, [0.0; 4]);
             label.text = Some(TextContent {
-                value: format!("T{index}"),
+                value: format!("T{index}").into(),
             });
             Arc::make_mut(&mut label.source_style.layout).transform = Some(PaintTransform {
                 a: 0.94,

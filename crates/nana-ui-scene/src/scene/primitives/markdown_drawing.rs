@@ -123,7 +123,7 @@ pub(super) fn build(
                 );
                 let region = ComponentTextRegion {
                     bounds: *bounds,
-                    content: text.clone(),
+                    content: text.clone().into(),
                     color: Some(color),
                     font_size: *size,
                     font_weight: Some(*weight),

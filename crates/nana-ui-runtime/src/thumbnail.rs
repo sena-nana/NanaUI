@@ -243,7 +243,7 @@ impl ComponentView for Thumbnail {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

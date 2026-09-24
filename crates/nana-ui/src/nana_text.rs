@@ -1103,7 +1103,7 @@ mod tests {
                 let natural = shaper.shape(
                     segment,
                     &TextContent {
-                        value: label.clone(),
+                        value: label.clone().into(),
                     },
                     &style,
                     TextShapeConstraints {

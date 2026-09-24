@@ -434,7 +434,7 @@ impl UiScene {
                         wrap: style.text_wraps(),
                         ellipsis: style.uses_text_ellipsis(),
                         max_lines: style.resolved_line_clamp(),
-                        shaping: if node.text_input.is_some() {
+                        shaping: if node.editable {
                             TextShaping::Advanced
                         } else {
                             TextShaping::Auto
@@ -798,7 +798,9 @@ impl UiScene {
                                             width: (gutter_width - 4.0).max(0.0),
                                             height: label.height,
                                         },
-                                        content: Arc::from(label.number.to_string().as_str()),
+                                        content: nana_ui_runtime::TextValue::from(
+                                            label.number.to_string().as_str(),
+                                        ),
                                         color: Some(*line_labels_color),
                                         font_size: *line_labels_font_size,
                                         font_weight: None,

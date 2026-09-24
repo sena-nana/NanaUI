@@ -140,7 +140,7 @@ impl ComponentView for FormField {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

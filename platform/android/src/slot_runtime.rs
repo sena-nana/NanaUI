@@ -96,7 +96,7 @@ impl SlotRuntime {
                     });
                     ui.on(field, move |field, event: &TextChanged, _cx| {
                         field.state.replace_value(event.value.clone());
-                        lock_state(&inputs).input_value = event.value.clone();
+                        lock_state(&inputs).input_value = event.value.to_string();
                     });
                     (button, field)
                 })
@@ -357,29 +357,28 @@ impl SlotRuntime {
         {
             return None;
         }
-        let mut text = state.value.clone();
-        let mut selection_start = state.selection.anchor.min(text.len());
-        let mut selection_end = state.selection.focus.min(text.len());
-        let compose = self.document.context().world().ime(target).and_then(|ime| {
-            if ime.text.is_empty() {
-                return None;
-            }
-            let at = selection_end.min(text.len());
-            if !text.is_char_boundary(at) {
-                return None;
-            }
-            text.insert_str(at, &ime.text);
-            let start = at;
-            let end = at + ime.text.len();
-            if let Some((rel_start, rel_end)) = ime.selection {
-                selection_start = (start + rel_start).min(end);
-                selection_end = (start + rel_end).min(end);
-            } else {
-                selection_start = end;
-                selection_end = end;
-            }
-            Some((start, end))
-        });
+        // What the editor draws: the preedit in place of the committed range
+        // it stands in for (the session's display text), not inserted beside
+        // a selection that is still on screen.
+        let session = state.session();
+        let Some(composition) = session.composition() else {
+            return Some(SlotImeBuffer {
+                text: state.value.to_owned(),
+                selection_start: state.selection.anchor,
+                selection_end: state.selection.focus,
+                compose: None,
+            });
+        };
+        let text = session.display_text().into_owned();
+        let preedit = composition.display_range();
+        let (selection_start, selection_end) = match &composition.selection {
+            Some(selection) => (
+                preedit.start + selection.start,
+                preedit.start + selection.end,
+            ),
+            None => (preedit.end, preedit.end),
+        };
+        let compose = Some((preedit.start, preedit.end));
         Some(SlotImeBuffer {
             text,
             selection_start,
@@ -922,5 +921,45 @@ mod tests {
         assert_eq!(buffer.text, "你");
         assert_eq!(buffer.compose, Some((0, "你".len())));
         assert!(slot.input_value().is_empty());
+    }
+
+    #[test]
+    fn ime_buffer_puts_the_preedit_in_place_of_the_selection_it_replaces() {
+        let mut slot = runtime();
+        let field = field_id(&slot);
+        tap_entity(&mut slot, field);
+        let nodes = slot.accessibility_nodes();
+        let target = node_with_role(&nodes, AccessibilityRole::TextInput).id;
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::SetValue("abcd".into()),
+            })
+            .expect("set value")
+        );
+        assert!(
+            slot.apply_accessibility_action(AccessibilityActionRequest {
+                target,
+                action: AccessibilityAction::SetSelection(nana_ui::runtime::TextSelection::new(
+                    1, 3
+                )),
+            })
+            .expect("set selection")
+        );
+        assert!(
+            slot.push_ime(&ImeEvent::Preedit {
+                text: "你".into(),
+                selection: None,
+            })
+            .expect("preedit")
+        );
+        let buffer = slot.ime_buffer().expect("focused buffer");
+        assert_eq!(buffer.text, "a你d", "the preedit replaces bc, as drawn");
+        assert_eq!(buffer.compose, Some((1, 1 + "你".len())));
+        assert_eq!(
+            (buffer.selection_start, buffer.selection_end),
+            (1 + "你".len(), 1 + "你".len())
+        );
+        assert_eq!(slot.input_value(), "abcd", "nothing committed");
     }
 }

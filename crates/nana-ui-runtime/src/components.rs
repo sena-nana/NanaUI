@@ -1089,7 +1089,7 @@ pub struct TriggeredMenuOverlay {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComponentTextRegion {
     pub bounds: LayoutBox,
-    pub content: Arc<str>,
+    pub content: TextValue,
     pub color: Option<[f32; 4]>,
     pub font_size: f32,
     pub font_weight: Option<u16>,
@@ -1912,9 +1912,26 @@ impl Default for ComputedStyle {
     }
 }
 
+/// Text a node shows or a shaper measures.
+///
+/// The value is a [`TextValue`]: cloning it is a reference count, and one
+/// taken from an editor's session carries the stamp that names its bytes, so
+/// a host that retained geometry for it recognises it without comparing
+/// (Issue #182).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TextContent {
-    pub value: String,
+    pub value: TextValue,
+}
+
+/// Shared, cheaply cloned text; see [`nana_text::SharedText`].
+pub type TextValue = nana_text::SharedText;
+
+impl TextContent {
+    pub fn new(value: impl Into<TextValue>) -> Self {
+        Self {
+            value: value.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -2071,7 +2088,7 @@ pub trait TextShaper {
         self.shape(
             id,
             &TextContent {
-                value: text.value[..byte_offset].to_owned(),
+                value: text.value[..byte_offset].to_owned().into(),
             },
             style,
             TextShapeConstraints {
@@ -2104,7 +2121,7 @@ pub trait TextShaper {
         let (line, line_start, line_end) = explicit_line_at(&text.value, byte_offset);
         let line_height = resolved_text_line_height(style);
         let line_text = TextContent {
-            value: text.value[line_start..line_end].to_owned(),
+            value: text.value[line_start..line_end].to_owned().into(),
         };
         (
             self.horizontal_offset(id, &line_text, byte_offset - line_start, style),
@@ -2510,7 +2527,7 @@ pub struct LineLabel {
 pub struct TextInputPresentation {
     /// Full shaped text extent, including visual soft-wrapped rows.
     pub content_size: TextMetrics,
-    pub display_value: String,
+    pub display_value: TextValue,
     pub placeholder: bool,
     pub selection: Option<(f32, f32)>,
     /// 选区条带（文本空间）：主选区与附加光标选区的视觉行矩形合并在同一
@@ -2807,7 +2824,7 @@ pub struct AccessibilityNode {
     pub children: Vec<StableNodeId>,
     pub role: AccessibilityRole,
     pub label: Option<Arc<str>>,
-    pub value: Option<Arc<str>>,
+    pub value: Option<TextValue>,
     pub description: Option<Arc<str>>,
     pub disabled: bool,
     pub checked: Option<bool>,
@@ -2927,6 +2944,120 @@ pub struct ImeComposition {
     pub selection: Option<(usize, usize)>,
 }
 
+impl ImeComposition {
+    pub fn view(&self) -> ImeView<'_> {
+        ImeView {
+            text: &self.text,
+            selection: self.selection,
+        }
+    }
+}
+
+impl PartialEq<ImeView<'_>> for ImeComposition {
+    fn eq(&self, other: &ImeView<'_>) -> bool {
+        other == self
+    }
+}
+
+/// An editor's IME state as the world holds it: the preedit text and the
+/// IME's own cursor or selection inside it, in bytes of that text.
+///
+/// Derived from the editor's [`nana_text::EditSession`]; an IME that is
+/// attached with nothing composed reads as an empty `text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImeView<'a> {
+    pub text: &'a str,
+    pub selection: Option<(usize, usize)>,
+}
+
+impl ImeView<'_> {
+    pub fn to_composition(&self) -> ImeComposition {
+        ImeComposition {
+            text: self.text.to_owned(),
+            selection: self.selection,
+        }
+    }
+}
+
+impl PartialEq<ImeComposition> for ImeView<'_> {
+    fn eq(&self, other: &ImeComposition) -> bool {
+        self.text == other.text && self.selection == other.selection
+    }
+}
+
+/// An editor's committed text and selections as the world holds them: a
+/// read-only view of its [`nana_text::EditSession`], the one storage of that
+/// text (Issue #182). Nothing is copied to read it; [`Self::to_state`] makes
+/// an owned [`TextInputState`] for code that wants to edit a copy.
+#[derive(Debug, Clone, Copy)]
+pub struct TextInputView<'a> {
+    pub value: &'a str,
+    pub selection: TextSelection,
+    /// The cursors besides `selection`, in document order.
+    pub additional_selections: &'a [TextSelection],
+    session: &'a nana_text::EditSession,
+}
+
+impl<'a> TextInputView<'a> {
+    pub fn of(session: &'a nana_text::EditSession) -> Self {
+        Self {
+            value: session.as_str(),
+            selection: session.selection(),
+            additional_selections: session.additional_selections(),
+            session,
+        }
+    }
+
+    pub fn session(&self) -> &'a nana_text::EditSession {
+        self.session
+    }
+
+    /// The committed text as an O(1) shared copy that names its bytes.
+    pub fn value_shared(&self) -> TextValue {
+        self.session.snapshot()
+    }
+
+    pub fn has_additional_selections(&self) -> bool {
+        !self.additional_selections.is_empty()
+    }
+
+    /// Every selection in document order, the primary among them.
+    pub fn selections(&self) -> std::borrow::Cow<'a, [TextSelection]> {
+        self.session.selections()
+    }
+
+    pub fn to_state(&self) -> TextInputState {
+        TextInputState {
+            value: self.value.to_owned(),
+            selection: self.selection,
+            additional_selections: self.additional_selections.to_vec(),
+        }
+    }
+}
+
+impl PartialEq for TextInputView<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.selection == other.selection
+            && self.additional_selections == other.additional_selections
+            && (self.value_shared().same_identity(&other.value_shared())
+                || self.value == other.value)
+    }
+}
+
+impl PartialEq<TextInputState> for TextInputView<'_> {
+    fn eq(&self, other: &TextInputState) -> bool {
+        self.selection == other.selection
+            && self.additional_selections == other.additional_selections.as_slice()
+            && self.value == other.value
+    }
+}
+
+impl PartialEq<TextInputView<'_>> for TextInputState {
+    fn eq(&self, other: &TextInputView<'_>) -> bool {
+        other == self
+    }
+}
+
 /// A caret (`anchor == focus`) or a selection, in committed-value bytes.
 ///
 /// `affinity` belongs to `focus` — the caret end. One byte offset can be two
@@ -2935,54 +3066,15 @@ pub struct ImeComposition {
 /// ([`TextAffinity::Downstream`]), and either side of a BiDi boundary. Only a
 /// pointer hit and visual motion know which one the user meant, so they carry
 /// it here; everything that derives a selection from bytes alone
-/// ([`TextSelection::new`], [`TextSelection::caret`], every edit) leaves the
-/// default, and text that does not wrap draws both the same.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct TextSelection {
-    pub anchor: usize,
-    pub focus: usize,
-    /// Which side of `focus` the caret draws on. Equality counts it: the same
-    /// offset with the other affinity is a different place on screen.
-    pub affinity: TextAffinity,
-}
+/// (`TextSelection::new`, `TextSelection::caret`, every edit) leaves the
+/// default, and text that does not wrap draws both the same. Equality counts
+/// the affinity: the same offset on the other side is another place on screen.
+///
+/// The editor session's own selection type (Issue #182): the value a Runtime
+/// editor reports is the one its [`nana_text::EditSession`] holds.
+pub type TextSelection = nana_text::EditSelection;
 
-impl TextSelection {
-    pub const fn caret(offset: usize) -> Self {
-        Self::new(offset, offset)
-    }
-
-    /// A selection whose caret draws downstream — the affinity every offset
-    /// derived from bytes alone gets.
-    pub const fn new(anchor: usize, focus: usize) -> Self {
-        Self {
-            anchor,
-            focus,
-            affinity: TextAffinity::Downstream,
-        }
-    }
-
-    /// The same span with the caret on `affinity`'s side of `focus`.
-    pub const fn with_affinity(mut self, affinity: TextAffinity) -> Self {
-        self.affinity = affinity;
-        self
-    }
-
-    pub fn ordered(self) -> std::ops::Range<usize> {
-        self.anchor.min(self.focus)..self.anchor.max(self.focus)
-    }
-
-    pub fn is_valid_for(self, value: &str) -> bool {
-        self.anchor <= value.len()
-            && self.focus <= value.len()
-            && value.is_char_boundary(self.anchor)
-            && value.is_char_boundary(self.focus)
-            && is_grapheme_boundary(value, self.anchor)
-            && is_grapheme_boundary(value, self.focus)
-    }
-}
-
-/// Scans the logical line around `offset`, not the whole value: validating a
-/// selection runs on every edit and caret move.
+/// Scans the logical line around `offset`, not the whole value.
 fn is_grapheme_boundary(value: &str, offset: usize) -> bool {
     nana_text::editable::navigation::is_grapheme_boundary(value, offset)
 }
@@ -3050,6 +3142,16 @@ impl TextInputState {
             selection,
             additional_selections: Vec::new(),
         }
+    }
+
+    /// A session holding this state: what the world stores for an editor.
+    /// Copies the value.
+    pub fn to_session(&self) -> nana_text::EditSession {
+        nana_text::EditSession::with_selections(
+            self.value.clone().into(),
+            self.selection,
+            self.additional_selections.iter().copied(),
+        )
     }
 
     /// Whether more than one cursor/selection is active. Hot paths check this
@@ -3503,8 +3605,9 @@ pub struct ExtractedNode {
     pub text_preserve_lines: bool,
     pub z_index: i32,
     pub focused: bool,
-    pub ime: Option<ImeComposition>,
-    pub text_input: Option<TextInputState>,
+    /// Whether the node is a text editor: its text is shaped as one and
+    /// drawn from the editor presentation, not as plain text.
+    pub editable: bool,
     pub text_spans: Vec<ExtractedTextSpan>,
     pub standard_visual: Option<StandardVisual>,
     /// Boxed: the `TextInput` variant alone is ~1.8 KB, which would otherwise

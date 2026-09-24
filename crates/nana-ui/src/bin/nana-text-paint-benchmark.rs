@@ -489,7 +489,7 @@ fn run(
         build.set_text(
             label,
             TextContent {
-                value: label_text(workload, index),
+                value: label_text(workload, index).into(),
             },
         );
         build.set_style(label, label_style(cell));
@@ -778,7 +778,7 @@ fn mutate(
             queue.set_text(
                 ticker,
                 TextContent {
-                    value: ".".repeat(1 + frame % 3),
+                    value: ".".repeat(1 + frame % 3).into(),
                 },
             );
         }
@@ -828,7 +828,7 @@ fn mutate(
                 queue.set_text(
                     *row,
                     TextContent {
-                        value: format!("Tick {frame}"),
+                        value: format!("Tick {frame}").into(),
                     },
                 );
             }
@@ -843,7 +843,7 @@ fn mutate(
                 queue.set_text(
                     row,
                     TextContent {
-                        value: format!("Item {}", &HEX_TWICE[start..start + length]),
+                        value: format!("Item {}", &HEX_TWICE[start..start + length]).into(),
                     },
                 );
             }
@@ -855,8 +855,13 @@ fn mutate(
                 let first = ((frame * 131 + turn * 7) as u32 * 4) % PRESSURE_POOL;
                 let value = (0..4)
                     .filter_map(|offset| char::from_u32(0x4e00 + (first + offset) % PRESSURE_POOL))
-                    .collect();
-                queue.set_text(*row, TextContent { value });
+                    .collect::<String>();
+                queue.set_text(
+                    *row,
+                    TextContent {
+                        value: value.into(),
+                    },
+                );
                 let mut style = label_style(LABEL);
                 Arc::make_mut(&mut style.layout).font_size = Some(size);
                 queue.set_style(*row, style);

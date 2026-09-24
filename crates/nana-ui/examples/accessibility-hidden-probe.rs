@@ -362,7 +362,7 @@ impl ApplicationState for Probe {
                 .text_input(self.primary_editor.unwrap())
                 .unwrap()
                 .value
-                .clone();
+                .to_owned();
             if self.primary_last.as_ref() != Some(&value) {
                 println!(
                     "{}",
@@ -391,7 +391,7 @@ impl ApplicationState for Probe {
                 world.focused(window.document.document()) == Some(editor),
                 world
                     .text_input(editor)
-                    .map(|input| input.value.clone())
+                    .map(|input| input.value.to_owned())
                     .unwrap_or_default(),
             );
             if self.last.as_ref() != Some(&current) {

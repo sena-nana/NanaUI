@@ -303,7 +303,7 @@ impl ComponentView for HoverCard {
             mutations.set_text(
                 id,
                 crate::TextContent {
-                    value: text.to_string(),
+                    value: text.to_string().into(),
                 },
             );
         }

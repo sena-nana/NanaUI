@@ -163,7 +163,7 @@ pub use components::{
     AccessibilityRole, AccessibilityState, AccessibilityUpdate, CalendarHoverGeometry,
     ComponentElevation, ComponentGeometry, ComponentTextRegion, ComponentTriggerSurface,
     ComputedStyle, CustomRenderNode, DocumentTextSelection, DropHoverOverlay, EventListeners,
-    EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan, ImeComposition,
+    EventRoute, ExtractedCompositor, ExtractedNode, ExtractedTextSpan, ImeComposition, ImeView,
     InteractionState, InteractionStyle, LayoutBox, LayoutInput, LineLabel, MeasureTextShaper,
     MenuSurfaceKind, ModalLayoutInput, MountState, NodeStyle, NumberSteppers, OverlayHostState,
     PointerCaptureChange, RadioIndicator, ScrollMetrics, ScrollOffset, ScrollbarBar,
@@ -173,9 +173,9 @@ pub use components::{
     TextCompletionSnapshot, TextContent, TextDiagnosticSeverity, TextDiagnosticSpan,
     TextEditorRenderOptions, TextFoldGeometry, TextFoldGutter, TextGitGutterGeometry, TextGitMark,
     TextGitMarkKind, TextHit, TextHorizontalAlignment, TextHover, TextHoverPopup, TextInlay,
-    TextInputScroll, TextInputState, TextMatchMarker, TextMatchSpan, TextMetrics,
+    TextInputScroll, TextInputState, TextInputView, TextMatchMarker, TextMatchSpan, TextMetrics,
     TextMinimapGeometry, TextSelection, TextShapeConstraints, TextShaper, TextShaping,
-    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry,
+    TextSignatureHelp, TextSignaturePopup, TextSnippet, TextStickyLineGeometry, TextValue,
     TextVerticalAlignment, TextWhitespaceKind, TooltipVisual, TriggeredMenuOverlay,
 };
 pub use custom_paint::{

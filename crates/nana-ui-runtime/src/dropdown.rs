@@ -394,7 +394,7 @@ impl ComponentView for Dropdown {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: label.to_string(),
+                    value: label.to_string().into(),
                 },
             );
         }

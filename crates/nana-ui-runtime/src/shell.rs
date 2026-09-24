@@ -348,7 +348,7 @@ impl ComponentView for AppTitleBar {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: root_text.to_owned(),
+                    value: root_text.to_owned().into(),
                 },
             );
         }
@@ -408,7 +408,7 @@ impl ComponentView for AppTitleBarSlot {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -550,7 +550,7 @@ impl ComponentView for AppTitleBarControls {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -715,7 +715,7 @@ impl ComponentView for AppShell {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -1419,7 +1419,7 @@ fn ensure_title_label(
             mutations.set_text(
                 existing,
                 TextContent {
-                    value: title.to_owned(),
+                    value: title.to_owned().into(),
                 },
             );
             context.commit_mutations(mutations)?;
@@ -1987,7 +1987,7 @@ fn project_window_control(
         mutations.set_text(
             id,
             TextContent {
-                value: String::new(),
+                value: String::new().into(),
             },
         );
     }

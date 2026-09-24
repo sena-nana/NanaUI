@@ -930,10 +930,10 @@ fn project_node(
     {
         projected.set_label(label.to_string());
     }
-    let value = if node.role == AccessibilityRole::Text {
-        node.label.as_ref().or(node.value.as_ref())
+    let value: Option<&str> = if node.role == AccessibilityRole::Text {
+        node.label.as_deref().or(node.value.as_deref())
     } else {
-        node.value.as_ref()
+        node.value.as_deref()
     };
     if let Some(value) = value {
         projected.set_value(value.to_string());

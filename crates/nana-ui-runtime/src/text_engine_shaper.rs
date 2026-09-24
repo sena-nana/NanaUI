@@ -76,10 +76,14 @@ impl NanaTextEngineShaper {
     /// One entry per node: a node probed under new style or constraints — a
     /// resize — lays its paragraphs out again in the entry it has, rather
     /// than growing a second entry that would push other editors out.
+    ///
+    /// Text that carries a stamp (an editor's display text, Issue #182) is
+    /// recognised by it: probing text the geometry already lays out is an
+    /// integer comparison, not a comparison of every byte.
     fn editor_geometry(
         &mut self,
         id: StableNodeId,
-        text: &str,
+        text: &crate::TextValue,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
         synced: bool,
@@ -119,8 +123,9 @@ impl NanaTextEngineShaper {
             entry.style = nana_style;
             entry.constraints = nana_constraints;
             let mut engine = nana_text::lock_text_engine(&self.engine);
-            let sync = entry.geometry.sync(
+            let sync = entry.geometry.sync_stamped(
                 &mut engine,
+                text.stamp(),
                 text,
                 None,
                 &entry.style,
@@ -140,7 +145,7 @@ impl NanaTextEngineShaper {
     fn editor_metrics(
         &mut self,
         id: StableNodeId,
-        text: &str,
+        text: &crate::TextValue,
         style: &ComputedStyle,
         constraints: TextShapeConstraints,
     ) -> Option<TextMetrics> {

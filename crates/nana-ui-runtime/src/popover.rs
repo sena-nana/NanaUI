@@ -305,7 +305,7 @@ pub(crate) fn project_menu_surface(
         mutations.set_text(
             id,
             crate::TextContent {
-                value: trigger_text.to_string(),
+                value: trigger_text.to_string().into(),
             },
         );
     }
@@ -565,7 +565,7 @@ pub(crate) fn menu_surface_geometry(
                     .max(0.0),
                 ..trigger_bounds
             },
-            content: Arc::clone(value),
+            content: Arc::clone(value).into(),
             color: Some(style.color.unwrap_or_else(|| palette.text.as_rgba_array())),
             font_size: nana_ui_core::type_scale::BODY,
             font_weight: None,

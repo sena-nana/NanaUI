@@ -409,7 +409,7 @@ impl ComponentView for ImageViewer {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: text.to_owned(),
+                    value: text.to_owned().into(),
                 },
             );
         }

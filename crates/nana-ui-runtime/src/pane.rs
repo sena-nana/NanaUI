@@ -174,7 +174,7 @@ impl PaneChrome {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -285,7 +285,7 @@ impl ComponentView for PaneChrome {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -330,7 +330,7 @@ fn project_chrome_action(
         mutations.set_text(
             id,
             TextContent {
-                value: action.label.to_string(),
+                value: action.label.to_string().into(),
             },
         );
     }
@@ -649,7 +649,7 @@ impl ComponentView for PaneTree {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

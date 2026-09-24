@@ -1181,26 +1181,39 @@ impl NanaTreeDocument {
     pub(crate) fn text_input_state(&self, node: NodeHandle) -> Option<TextInputState> {
         self.runtime
             .text_input(StableNodeId::try_from(node).ok()?)
-            .cloned()
+            .map(|input| input.to_state())
+    }
+
+    /// Whether the node has a Runtime editor, without copying its text.
+    pub(crate) fn has_text_input_state(&self, node: NodeHandle) -> bool {
+        StableNodeId::try_from(node)
+            .ok()
+            .is_some_and(|id| self.runtime.text_input(id).is_some())
     }
 
     pub(crate) fn set_text_input_state(&mut self, node: NodeHandle, state: TextInputState) -> bool {
         let Ok(id) = StableNodeId::try_from(node) else {
             return false;
         };
-        if self.runtime.text_input(id) == Some(&state) {
+        if self
+            .runtime
+            .text_input(id)
+            .is_some_and(|current| current == state)
+        {
             return false;
         }
         let expected = state.clone();
         self.commit_pending_with(|mutations| mutations.set_text_input(id, Some(state)))
             .ok();
-        self.runtime.text_input(id) == Some(&expected)
+        self.runtime
+            .text_input(id)
+            .is_some_and(|current| current == expected)
     }
 
     pub(crate) fn ime_composition(&self, node: NodeHandle) -> Option<ImeComposition> {
         self.runtime
             .ime(StableNodeId::try_from(node).ok()?)
-            .cloned()
+            .map(|ime| ime.to_composition())
     }
 
     pub(crate) fn set_ime_composition(
@@ -1214,7 +1227,10 @@ impl NanaTreeDocument {
         let expected = composition.clone();
         self.commit_pending_with(|mutations| mutations.set_ime(id, composition))
             .ok();
-        self.runtime.ime(id) == expected.as_ref()
+        match (self.runtime.ime(id), expected.as_ref()) {
+            (Some(current), Some(expected)) => current == *expected,
+            (current, expected) => current.is_none() && expected.is_none(),
+        }
     }
 
     pub fn scene(&self) -> &UiScene {
@@ -1586,16 +1602,18 @@ impl NanaTreeDocument {
                     | crate::WidgetKind::NumberInput
                     | crate::WidgetKind::Textarea
             ) {
-                let mut next = self
-                    .runtime
-                    .text_input(id)
-                    .cloned()
-                    .unwrap_or_else(|| TextInputState::new(&widget.props.value));
-                if next.value != widget.props.value {
-                    next.replace_value(&widget.props.value);
-                }
-                if self.runtime.text_input(id) != Some(&next) {
-                    mutations.set_text_input(id, Some(next));
+                // Only a value that differs is written: the editor's own
+                // text and selection are left as they are otherwise.
+                match self.runtime.text_input(id) {
+                    Some(current) if current.value == widget.props.value => {}
+                    Some(current) => {
+                        let mut next = current.to_state();
+                        next.replace_value(&widget.props.value);
+                        mutations.set_text_input(id, Some(next));
+                    }
+                    None => {
+                        mutations.set_text_input(id, Some(TextInputState::new(&widget.props.value)))
+                    }
                 }
             } else if self.runtime.text_input(id).is_some() {
                 mutations.set_text_input(id, None);

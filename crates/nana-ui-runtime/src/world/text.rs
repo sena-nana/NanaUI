@@ -494,7 +494,7 @@ pub(super) fn shape_empty_state_text(
         title: shaper.shape(
             id,
             &TextContent {
-                value: title.to_string(),
+                value: title.to_string().into(),
             },
             &title_style,
             constraints,
@@ -503,7 +503,7 @@ pub(super) fn shape_empty_state_text(
             shaper.shape(
                 id,
                 &TextContent {
-                    value: message.to_string(),
+                    value: message.to_string().into(),
                 },
                 &message_style,
                 constraints,
@@ -550,7 +550,7 @@ pub(super) fn shape_modal_text(
         title: shaper.shape(
             id,
             &TextContent {
-                value: title.to_string(),
+                value: title.to_string().into(),
             },
             &title_style,
             constraints,
@@ -559,7 +559,7 @@ pub(super) fn shape_modal_text(
             shaper.shape(
                 id,
                 &TextContent {
-                    value: value.to_string(),
+                    value: value.to_string().into(),
                 },
                 &description_style,
                 constraints,
@@ -569,7 +569,7 @@ pub(super) fn shape_modal_text(
             shaper.shape(
                 id,
                 &TextContent {
-                    value: value.to_string(),
+                    value: value.to_string().into(),
                 },
                 &body_style,
                 constraints,
@@ -616,7 +616,7 @@ pub(super) fn progress_geometry(
             width: label_width,
             height: nana_ui_core::type_scale::META.min(bounds.height),
         },
-        content: Arc::clone(label),
+        content: Arc::clone(label).into(),
         color: Some(style.color.unwrap_or(default_label_color)),
         font_size: nana_ui_core::type_scale::META,
         font_weight: Some(nana_ui_core::type_scale::MEDIUM),
@@ -696,7 +696,7 @@ pub(super) fn form_field_geometry(
                 width: bounds.width,
                 height: label_height.min(bounds.height),
             },
-            content: Arc::clone(label),
+            content: Arc::clone(label).into(),
             color: Some(model.color(label_role).as_rgba_array()),
             font_size: label_size,
             font_weight: Some(label_weight),
@@ -708,7 +708,7 @@ pub(super) fn form_field_geometry(
                 width: (bounds.x + bounds.width - support_x).max(0.0),
                 height: support_height,
             },
-            content: Arc::clone(message),
+            content: Arc::clone(message).into(),
             color: Some(model.color(support_role).as_rgba_array()),
             font_size: nana_ui_core::type_scale::HINT,
             font_weight: None,
@@ -761,10 +761,15 @@ pub(crate) struct TextDisplaySpan {
 /// 锚点处插入装饰文本后的显示文本；`spans` 按值空间顺序列出每个映射
 /// 片段（折叠替换与纯插入两类）。几何、点击命中、光标移动都以显示
 /// 视图为准；编辑命令仍按原始值语义处理（折叠与 inlay 都不改值）。
+///
+/// Cloning is O(1): the view is built once per change of what it is built
+/// from (Issue #182) and handed to every consumer — presentation, geometry,
+/// extraction, caret motion — rather than rebuilt by each. `value` carries a
+/// stamp, so a host that laid it out recognises it without comparing.
 #[derive(Debug, Clone)]
 pub(crate) struct TextDisplayView {
-    pub value: String,
-    pub spans: Vec<TextDisplaySpan>,
+    pub value: crate::TextValue,
+    pub spans: Arc<[TextDisplaySpan]>,
 }
 
 impl TextDisplayView {
@@ -773,7 +778,7 @@ impl TextDisplayView {
     /// 起点（插入文本渲染在锚点字符之前），锚点之后的偏移平移插入长度。
     pub fn display_of(&self, offset: usize) -> usize {
         let mut delta = 0isize;
-        for span in &self.spans {
+        for span in self.spans.iter() {
             if offset <= span.value_start {
                 break;
             }
@@ -791,7 +796,7 @@ impl TextDisplayView {
     /// （插入区间内部无 caret 边界，点击穿透吸附锚点处的缓冲字符）。
     pub fn value_of(&self, display: usize) -> usize {
         let mut delta = 0isize;
-        for span in &self.spans {
+        for span in self.spans.iter() {
             let display_end = span.display_start + span.display_len;
             if display <= span.display_start {
                 break;
@@ -838,7 +843,7 @@ impl TextDisplayView {
             TextDisplaySpanKind::Fold { .. } => self.value_of(end),
             TextDisplaySpanKind::Inlay => {
                 // 紧邻的同锚点插入（多条标签背靠背）一并跨过。
-                for next in &self.spans {
+                for next in self.spans.iter() {
                     if matches!(next.kind, TextDisplaySpanKind::Inlay) && next.display_start == end
                     {
                         end = next.display_start + next.display_len;
@@ -991,8 +996,8 @@ pub(super) fn build_text_display_view(
     }
     display.push_str(&value[cursor..]);
     Some(TextDisplayView {
-        value: display,
-        spans,
+        value: crate::TextValue::stamped(display),
+        spans: spans.into(),
     })
 }
 
@@ -1012,7 +1017,7 @@ pub(super) fn remap_span_to_display(
     /// 显示起点越过紧邻其后的 inlay 插入区间（同锚点连续多条时链式
     /// 前进；spans 按显示顺序排列）。
     fn skip_inlay_prefix(view: &TextDisplayView, mut start: usize) -> usize {
-        for span in &view.spans {
+        for span in view.spans.iter() {
             if matches!(span.kind, TextDisplaySpanKind::Inlay) && span.display_start == start {
                 start = span.display_start + span.display_len;
             }
@@ -1021,7 +1026,7 @@ pub(super) fn remap_span_to_display(
     }
     let mut pieces = Vec::new();
     let mut cursor = span.0;
-    for region in &view.spans {
+    for region in view.spans.iter() {
         if span.1 <= region.value_start {
             break;
         }
@@ -1273,8 +1278,8 @@ pub(super) struct TextInputEditorExtras {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_text_input_presentation_source(
-    state: &TextInputState,
-    ime: Option<&ImeComposition>,
+    state: crate::TextInputView<'_>,
+    ime: Option<crate::ImeView<'_>>,
     placeholder: &str,
     secure: bool,
     multiline: bool,
@@ -1283,6 +1288,7 @@ pub(super) fn build_text_input_presentation_source(
     fold: Option<TextDisplayView>,
     completions: Option<Arc<[crate::TextCompletion]>>,
     hover: Option<crate::TextHover>,
+    composed_display: Option<crate::TextValue>,
 ) -> TextInputPresentationSource {
     use unicode_segmentation::UnicodeSegmentation;
 
@@ -1315,7 +1321,7 @@ pub(super) fn build_text_input_presentation_source(
     if state.value.is_empty() && ime.is_none() && !placeholder.is_empty() {
         return TextInputPresentationSource {
             text: TextContent {
-                value: placeholder.to_owned(),
+                value: placeholder.to_owned().into(),
             },
             placeholder: true,
             selection: None,
@@ -1346,9 +1352,15 @@ pub(super) fn build_text_input_presentation_source(
 
     // 折叠视图：secure 掩码与折叠互斥（折叠是代码编辑器特性）；诊断/
     // 匹配 span 完全落在隐藏区间内时随行隐藏（丢弃，不强制展开）。
-    let (fold_view, base_value): (Option<TextDisplayView>, String) = match fold {
-        Some(view) if !secure => (Some(view.clone()), mask(&view.value)),
-        _ => (None, mask(&state.value)),
+    // What is drawn when nothing is composing: the committed text itself —
+    // a shared copy naming its bytes, not a copy of them — unless masked.
+    let (fold_view, base_value): (Option<TextDisplayView>, crate::TextValue) = match fold {
+        Some(view) if !secure => {
+            let value = view.value.clone();
+            (Some(view), value)
+        }
+        _ if secure => (None, mask(state.value).into()),
+        _ => (None, state.value_shared()),
     };
     let map_offset = |offset: usize| -> usize {
         match &fold_view {
@@ -1361,21 +1373,43 @@ pub(super) fn build_text_input_presentation_source(
     } else {
         crate::TextSelection::caret(state.value.len())
     };
-    if let Some(ime) = ime {
-        let replaced = selection.ordered();
-        // 折叠态：组合拼接在显示视图上进行；普通态保持原语义（先切片后
-        // 掩码，安全输入的显示偏移按字形重算）。
-        let (prefix, suffix) = if let Some(view) = &fold_view {
+    // An IME attached with nothing composed (the empty preedit between a
+    // platform's keystrokes) draws the committed text: it is not a
+    // composition, and treating it as one dropped line numbers and cursors.
+    if let Some(ime) = ime.filter(|ime| !ime.text.is_empty()) {
+        // The committed range the preedit stands in for, as the session keeps
+        // it (the primary selection when the composition started, moved by
+        // any edit since); the selection for a state that is not a session's.
+        let replaced = state
+            .session()
+            .composition()
+            .map(|composition| composition.replaced.clone())
+            .filter(|replaced| replaced.end <= state.value.len())
+            .unwrap_or_else(|| selection.ordered());
+        // Unmasked and unfolded, the display is the session's own display
+        // text (`composed_display`, kept by the world). Folds and masks are
+        // Runtime overlays: the preedit is spliced into them here — 折叠态
+        // 组合拼接在显示视图上进行；安全输入先切片后掩码，显示偏移按字形重算。
+        let (composed, preedit_start): (crate::TextValue, usize) = if let Some(view) = &fold_view {
             let start = view.display_of(replaced.start).min(base_value.len());
             let end = view.display_of(replaced.end).min(base_value.len());
-            (base_value[..start].to_owned(), base_value[end..].to_owned())
+            let composed = format!("{}{}{}", &base_value[..start], ime.text, &base_value[end..]);
+            (composed.into(), start)
+        } else if secure {
+            let prefix = mask(&state.value[..replaced.start]);
+            let composed = format!("{prefix}{}{}", ime.text, mask(&state.value[replaced.end..]));
+            (composed.into(), prefix.len())
         } else {
-            (
-                mask(&state.value[..replaced.start]),
-                mask(&state.value[replaced.end..]),
-            )
+            let composed = composed_display.unwrap_or_else(|| {
+                let mut composed =
+                    String::with_capacity(state.value.len() - replaced.len() + ime.text.len());
+                composed.push_str(&state.value[..replaced.start]);
+                composed.push_str(ime.text);
+                composed.push_str(&state.value[replaced.end..]);
+                composed.into()
+            });
+            (composed, replaced.start)
         };
-        let preedit_start = prefix.len();
         let preedit_end = preedit_start + ime.text.len();
         let ime_focus = ime
             .selection
@@ -1383,7 +1417,6 @@ pub(super) fn build_text_input_presentation_source(
             .filter(|focus| *focus <= ime.text.len() && ime.text.is_char_boundary(*focus))
             .unwrap_or(ime.text.len());
         // 多光标限制：组合输入只挂在主光标上，组合期隐藏附加光标。
-        let composed = format!("{prefix}{}{suffix}", ime.text);
         return TextInputPresentationSource {
             text: TextContent {
                 value: composed.clone(),
@@ -1487,7 +1520,7 @@ pub(super) fn build_text_input_presentation_source(
         .collect::<Vec<_>>();
     // git gutter 标记：宿主行号校验 + 折叠隐藏行剔除后映射为显示行索引。
     let git_marks = map_git_marks(
-        &state.value,
+        state.value,
         &base_value,
         extras.git_marks,
         fold_view.as_ref(),
@@ -2206,7 +2239,7 @@ fn shape_text_input_probes(
     // （'0' 是单字符键，文档键与光标/高亮探针共享）。
     let wrap_guides = if source.multiline && !source.editor.wrap_guides.is_empty() {
         let unit = TextContent {
-            value: "0".to_owned(),
+            value: "0".to_owned().into(),
         };
         let char_width = shaper.horizontal_offset(id, &unit, 1, style).max(1.0);
         let text_width = shaper
@@ -2231,7 +2264,7 @@ fn shape_text_input_probes(
             .as_deref()
             .map(|unit| {
                 let unit_content = TextContent {
-                    value: unit.to_owned(),
+                    value: unit.to_owned().into(),
                 };
                 let unit_width = shaper
                     .horizontal_offset(id, &unit_content, unit.len(), style)
@@ -2571,7 +2604,7 @@ fn layout_atom_chip(rect: LayoutBox, atom: &crate::TextAtomSpan) -> crate::TextA
                 width: label_width,
                 height: bounds.height,
             },
-            content: Arc::clone(&atom.label),
+            content: Arc::clone(&atom.label).into(),
             color: None,
             font_size: ATOM_CHIP_LABEL,
             font_weight: Some(650),
@@ -2784,7 +2817,7 @@ pub(super) fn completion_popup_geometry(
                         width: metrics.detail_width,
                         height: row_height,
                     },
-                    content: Arc::from(item.detail.as_str()),
+                    content: crate::TextValue::from(item.detail.as_str()),
                     color: Some(palette.muted.as_rgba_array()),
                     font_size,
                     font_weight: None,
@@ -2801,7 +2834,7 @@ pub(super) fn completion_popup_geometry(
                         width: metrics.kind_width,
                         height: row_height,
                     },
-                    content: Arc::from(item.kind_label.as_str()),
+                    content: crate::TextValue::from(item.kind_label.as_str()),
                     color: Some(palette.faint.as_rgba_array()),
                     font_size,
                     font_weight: None,
@@ -2813,7 +2846,7 @@ pub(super) fn completion_popup_geometry(
                     width: content,
                     height: row_height,
                 },
-                content: Arc::from(item.doc.as_str()),
+                content: crate::TextValue::from(item.doc.as_str()),
                 color: Some(palette.muted.as_rgba_array()),
                 font_size,
                 font_weight: None,
@@ -2832,7 +2865,7 @@ pub(super) fn completion_popup_geometry(
                         width: label_rect_w,
                         height: row_height,
                     },
-                    content: Arc::from(item.label.as_str()),
+                    content: crate::TextValue::from(item.label.as_str()),
                     color: Some(palette.text.as_rgba_array()),
                     font_size,
                     font_weight: None,
@@ -2894,7 +2927,7 @@ pub(super) fn hover_popup_geometry(
             width: content_width,
             height: title_height,
         },
-        content: Arc::from(state.doc.title.as_str()),
+        content: crate::TextValue::from(state.doc.title.as_str()),
         color: Some(palette.text.as_rgba_array()),
         font_size,
         font_weight: Some(600),
@@ -2909,7 +2942,7 @@ pub(super) fn hover_popup_geometry(
                 width: content_width,
                 height: line_height,
             },
-            content: Arc::from(*line),
+            content: crate::TextValue::from(*line),
             color: Some(palette.muted.as_rgba_array()),
             font_size,
             font_weight: None,
@@ -3011,7 +3044,7 @@ pub(super) fn signature_popup_geometry(
                     width,
                     height: line_height,
                 },
-                content: Arc::from(content),
+                content: crate::TextValue::from(content),
                 color: Some(color),
                 font_size,
                 font_weight: weight,
@@ -3091,7 +3124,7 @@ pub(super) fn completion_popup_metrics(
         shaper.horizontal_offset(
             id,
             &TextContent {
-                value: value.to_owned(),
+                value: value.to_owned().into(),
             },
             value.len(),
             style,
@@ -3442,15 +3475,17 @@ impl UiWorld {
 impl UiWorld {
     /// minimap 行长的单条缓存：值未变（纯光标/选区同步）时复用上一次
     /// O(文档) 单趟扫描结果，避免每趟 shape 全文档重扫。
-    pub(super) fn minimap_line_lengths_cached(&self, value: &str) -> Vec<u32> {
+    pub(super) fn minimap_line_lengths_cached(&self, value: &crate::TextValue) -> Vec<u32> {
         let mut cache = self.minimap_line_lengths_cache.borrow_mut();
+        // The same text is recognised by its stamp: a caret move compares
+        // nothing, and the cache holds a shared copy, not a second one.
         if let Some((cached_value, cached_lengths)) = cache.as_ref()
             && cached_value == value
         {
             return cached_lengths.clone();
         }
         let lengths = collect_non_whitespace_line_lengths(value);
-        *cache = Some((value.to_owned(), lengths.clone()));
+        *cache = Some((value.clone(), lengths.clone()));
         lengths
     }
 }
@@ -3464,9 +3499,15 @@ impl UiWorld {
     ///
     /// 平移是 O(括号数)；重扫是 O(文档)，在 310 KB 文档上是 ~0.37 ms，
     /// 以前每次编辑都要付一次。
-    pub(super) fn bracket_color_spans_cached(&self, value: &str) -> Arc<[(usize, usize, usize)]> {
+    pub(super) fn bracket_color_spans_cached(
+        &self,
+        value: &crate::TextValue,
+    ) -> Arc<[(usize, usize, usize)]> {
         let mut cache = self.bracket_color_spans_cache.borrow_mut();
         if let Some((cached_value, cached_spans)) = cache.as_mut() {
+            if cached_value.same_identity(value) {
+                return Arc::clone(cached_spans);
+            }
             match crate::text_editing::changed_byte_range(cached_value, value) {
                 None => return Arc::clone(cached_spans),
                 Some((start, previous_end, next_end))
@@ -3475,9 +3516,9 @@ impl UiWorld {
                     ) && !crate::text_editing::contains_bracket(&value[start..next_end]) =>
                 {
                     let spans = shifted_bracket_spans(cached_spans, previous_end, next_end);
-                    // The cached text follows the same splice, so the next
-                    // edit still diffs against what the spans describe.
-                    cached_value.replace_range(start..previous_end, &value[start..next_end]);
+                    // The cache now describes this text: the next edit diffs
+                    // against what the spans describe.
+                    *cached_value = value.clone();
                     *cached_spans = Arc::clone(&spans);
                     return spans;
                 }
@@ -3498,7 +3539,7 @@ impl UiWorld {
         }));
         spans.sort_unstable_by_key(|&(start, _, _)| start);
         let spans: Arc<[(usize, usize, usize)]> = spans.into();
-        *cache = Some((value.to_owned(), Arc::clone(&spans)));
+        *cache = Some((value.clone(), Arc::clone(&spans)));
         spans
     }
 }
@@ -3608,11 +3649,12 @@ impl UiWorld {
             fold,
             completions,
             hover,
+            self.composed_display(id),
         );
         // minimap 行长：编辑器选项归默认（占位符/IME 组合态）或多行关闭
         // 时零扫描短路；开启时按原始值收集并走值等值缓存。
         if source.multiline && source.editor.minimap {
-            source.minimap_line_lengths = self.minimap_line_lengths_cached(&state.value);
+            source.minimap_line_lengths = self.minimap_line_lengths_cached(&state.value_shared());
         }
         // 括号配对着色：占位符与 IME 组合态没有真实可着色文档（组合期
         // 偏移漂移），保持空表；其余多行态按显示值收集并走值等值缓存。
@@ -4585,7 +4627,7 @@ impl UiWorld {
         let style = self.computed_style(node).cloned().unwrap_or_default();
         shaper.text_highlights(
             node,
-            &TextContent { value: text },
+            &TextContent { value: text.into() },
             (start, end),
             &style,
             self.text_shape_constraints(node),
@@ -4972,8 +5014,11 @@ impl UiWorld {
 impl UiWorld {
     /// 折叠/inlay 后的显示视图；没有折叠态区间与行内提示时 `None`
     /// （零分配短路）。
+    /// The fold / inlay display view, built once per change of the text, the
+    /// folds, the inlay feed or composing, and shared (O(1) clones) by every
+    /// caller after that.
     pub(crate) fn text_display_view(&self, id: StableNodeId) -> Option<TextDisplayView> {
-        let state = self.nodes.text_input(id)?;
+        let editor = self.nodes.editor(id)?;
         let inlays = self.nodes.text_inlays(id);
         let entry = self.nodes.text_fold_view(id);
         if inlays.is_none() && entry.is_none() {
@@ -4981,7 +5026,8 @@ impl UiWorld {
         }
         // IME 组合期 inlay 整体退场（同 swatch 先例：组合拼接改变显示
         // 字节布局，值空间锚点漂移）；折叠照常参与组合拼接。
-        let inlays: &[crate::TextInlay] = match (self.nodes.ime(id).is_some(), inlays) {
+        let composing = editor.ime().is_some();
+        let inlays: &[crate::TextInlay] = match (composing, inlays) {
             (false, Some(fed)) => fed,
             _ => &[],
         };
@@ -4989,7 +5035,37 @@ impl UiWorld {
             .as_ref()
             .map(|entry| entry.collapsed.as_slice())
             .unwrap_or(&[]);
-        build_text_display_view(&state.value, collapsed, inlays)
+        let key = crate::store::DisplayViewKey {
+            text: editor.session.text().stamp(),
+            collapsed: collapsed.to_vec(),
+            inlays: (!inlays.is_empty()).then(|| (inlays.as_ptr() as usize, inlays.len())),
+            composing,
+        };
+        if let Some((cached, view)) = &editor.display.borrow().view
+            && *cached == key
+        {
+            return view.clone();
+        }
+        let view = build_text_display_view(editor.session.as_str(), collapsed, inlays);
+        editor.display.borrow_mut().view = Some((key, view.clone()));
+        view
+    }
+
+    /// The committed text with the preedit in place of what it replaces, as
+    /// the session defines it, built once per text or composition change.
+    fn composed_display(&self, id: StableNodeId) -> Option<crate::TextValue> {
+        let editor = self.nodes.editor(id)?;
+        let session = &editor.session;
+        session.composition()?;
+        let key = (session.text().stamp(), session.revisions().composition);
+        if let Some((cached, text)) = &editor.display.borrow().composed
+            && *cached == key
+        {
+            return Some(text.clone());
+        }
+        let text = crate::TextValue::stamped(session.display_text().into_owned());
+        editor.display.borrow_mut().composed = Some((key, text.clone()));
+        Some(text)
     }
 
     /// 当前喂入的行内提示集（供组件投影做喂入去重）。
@@ -5145,14 +5221,13 @@ impl UiWorld {
         let presentation = self.nodes.text_input_presentation(id)?;
         let line_height = presentation.line_height.max(1.0);
         let offset = offset.min(state.value.len());
-        let value = state.value.as_str();
         // 折叠态：显示视图内的行号才是渲染行号；隐藏偏移钳到折叠起始行。
         let (display_value, display_offset) = match self.text_display_view(id) {
             Some(view) => {
                 let display_offset = view.display_of(offset).min(view.value.len());
                 (view.value, display_offset)
             }
-            None => (value.to_owned(), offset),
+            None => (state.value_shared(), offset),
         };
         let line_index = display_value[..display_offset]
             .bytes()

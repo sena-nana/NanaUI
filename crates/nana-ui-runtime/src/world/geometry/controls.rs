@@ -31,7 +31,7 @@ pub(in crate::world) fn reorder_list_geometry(
                     width: (row_bounds.width - pad * 2.0).max(0.0),
                     height: row_bounds.height,
                 },
-                content: Arc::clone(&row.label),
+                content: Arc::clone(&row.label).into(),
                 color: Some(if row.disabled {
                     palette.muted.as_rgba_array()
                 } else {

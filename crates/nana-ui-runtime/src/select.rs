@@ -335,7 +335,7 @@ impl crate::ComponentView for Select {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: label.to_string(),
+                    value: label.to_string().into(),
                 },
             );
         }
@@ -421,7 +421,7 @@ pub(crate) fn select_geometry(
                 width: label_width,
                 height: content.height,
             },
-            content: Arc::clone(label),
+            content: Arc::clone(label).into(),
             color: Some(text_color),
             font_size: size.text_size(),
             font_weight: None,
@@ -488,7 +488,7 @@ fn select_menu_geometry(
                             .max(0.0),
                         height: bounds.height,
                     },
-                    content: menu_option_label(option),
+                    content: menu_option_label(option).into(),
                     color: Some(if option.disabled {
                         palette.faint.as_rgba_array()
                     } else {

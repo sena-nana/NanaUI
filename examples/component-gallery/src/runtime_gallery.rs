@@ -1378,7 +1378,7 @@ fn mount_controls(
                     .invalid(state.input.trim().is_empty()),
             );
             bind_event_ui(ui, input, Arc::clone(pending), |event: &TextChanged| {
-                GalleryMessage::InputChanged(event.value.clone())
+                GalleryMessage::InputChanged(event.value.to_string())
             });
             inputs[index] = Some(input);
         }
@@ -1388,7 +1388,7 @@ fn mount_controls(
                 .secure(true),
         );
         bind_event_ui(ui, secure, Arc::clone(pending), |event: &TextChanged| {
-            GalleryMessage::InputChanged(event.value.clone())
+            GalleryMessage::InputChanged(event.value.to_string())
         });
 
         let mut dropdowns = [None; 3];
@@ -1434,7 +1434,7 @@ fn mount_controls(
 
         let textarea = ui.parked(gallery_textarea(state));
         bind_event_ui(ui, textarea, Arc::clone(pending), |event: &TextChanged| {
-            GalleryMessage::SetEditorText(event.value.clone())
+            GalleryMessage::SetEditorText(event.value.to_string())
         });
         let editor_status = ui.parked(editor_status_text(state));
         let xy_pad = ui.parked(XYPad::new(state.xy_pad).step(0.01));

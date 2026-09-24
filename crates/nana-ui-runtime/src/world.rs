@@ -13,6 +13,7 @@ mod scroll_bounds;
 mod style;
 mod text;
 use hit_test::*;
+pub(crate) use text::TextDisplayView;
 pub(crate) use text::text_visual_key;
 use text::*;
 
@@ -42,8 +43,8 @@ use crate::{
     EventRoute, ExtractedNode, ExtractedTextSpan, HighlightRequest, ImeComposition,
     InteractionState, LayoutBox, LayoutInput, MotionWorkCounters, MountState, MutationQueue,
     NodeStyle, OverlayHostState, PointerCaptureChange, ScrollMetrics, ScrollOffset, StandardVisual,
-    TextContent, TextInputState, TextMetrics, TextPresentation, TextPresenter, TextShaper,
-    TextVerticalAlignment, UiMutation, WorkCounters,
+    TextContent, TextMetrics, TextPresentation, TextPresenter, TextShaper, TextVerticalAlignment,
+    UiMutation, WorkCounters,
     animation::ActiveAnimation,
     components::{
         EmptyStateTextPresentation, ModalTextPresentation, TextColorSwatchSpan,
@@ -714,11 +715,11 @@ pub struct UiWorld {
     structural_change_parents: Vec<StableNodeId>,
     /// minimap 行长单条缓存（原始值 → 每逻辑行非空白字符数）。存于
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
-    minimap_line_lengths_cache: RefCell<Option<(String, Vec<u32>)>>,
+    minimap_line_lengths_cache: RefCell<Option<(crate::TextValue, Vec<u32>)>>,
     /// 括号配对着色单条缓存（原始值 → 配对/未配对 span 表）。值未变
     /// （纯光标/选区同步）时复用上一次 O(n) 单趟栈扫描结果。存于
     /// `RefCell` 供 `&self` 的 presentation 构建路径读写。
-    bracket_color_spans_cache: RefCell<Option<(String, Arc<[(usize, usize, usize)]>)>>,
+    bracket_color_spans_cache: RefCell<Option<(crate::TextValue, Arc<[(usize, usize, usize)]>)>>,
 }
 
 impl Default for UiWorld {
@@ -1302,7 +1303,7 @@ impl UiWorld {
     pub fn focused_text_input(
         &self,
         document: DocumentId,
-    ) -> Option<(StableNodeId, &TextInputState)> {
+    ) -> Option<(StableNodeId, crate::TextInputView<'_>)> {
         let id = self.focused(document)?;
         Some((id, self.text_input(id)?))
     }
@@ -1503,7 +1504,9 @@ impl UiWorld {
         self.nodes.get(id).map(|node| node.interaction)
     }
 
-    pub fn text_input(&self, id: StableNodeId) -> Option<&TextInputState> {
+    /// The editor's committed text and selections, read from its session
+    /// without a copy.
+    pub fn text_input(&self, id: StableNodeId) -> Option<crate::TextInputView<'_>> {
         self.nodes.text_input(id)
     }
 
@@ -1597,15 +1600,17 @@ impl UiWorld {
     fn committed_presentation_text(&self, id: StableNodeId) -> String {
         self.nodes
             .text_input(id)
-            .map(|state| state.value.clone())
-            .unwrap_or_else(|| self.record(id).text.value.clone())
+            .map(|state| state.value.to_owned())
+            .unwrap_or_else(|| self.record(id).text.value.to_string())
     }
 
     pub fn text_metrics(&self, id: StableNodeId) -> Option<TextMetrics> {
         self.nodes.get(id).map(|node| node.text_metrics)
     }
 
-    pub fn ime(&self, id: StableNodeId) -> Option<&ImeComposition> {
+    /// The editor's IME state: its preedit, or an empty one while an IME is
+    /// attached with nothing composed.
+    pub fn ime(&self, id: StableNodeId) -> Option<crate::ImeView<'_>> {
         self.nodes.ime(id)
     }
 
@@ -2320,11 +2325,18 @@ impl UiWorld {
     /// Cancels a node's composition. The editor presentation was built with
     /// the preedit spliced in, so it is re-derived rather than left drawing
     /// text that is no longer there.
+    /// Focus left the editor, or it is going away: an unfinished composition
+    /// is cancelled and an attached IME detached.
     fn remove_ime(&mut self, id: StableNodeId) {
-        if self.nodes.ime(id).is_none() {
+        let Some(editor) = self.nodes.editor_mut(id) else {
+            return;
+        };
+        if editor.ime().is_none() {
             return;
         }
-        self.nodes.set_ime(id, None);
+        editor.session.blur();
+        editor.empty_preedit = None;
+        let _ = editor.session.take_work();
         self.pending_edit_work.composition_updates += 1;
         self.nodes
             .invalidate_text(id, crate::text_node::TextDirty::EDIT_STATE);

@@ -49,7 +49,7 @@ impl AppContext {
             return Ok(false);
         }
         let composition = crate::ImeComposition { text, selection };
-        if self.world.ime(target) == Some(&composition) {
+        if self.world.ime(target).is_some_and(|ime| ime == composition) {
             return Ok(false);
         }
         let mut mutations = MutationQueue::new();
@@ -126,7 +126,7 @@ impl AppContext {
         let Some((target, state)) = self.world.focused_text_input(document) else {
             return Ok(false);
         };
-        let mut next = state.clone();
+        let mut next = state.to_state();
         if !self
             .world
             .accessibility(target)
@@ -164,7 +164,7 @@ impl AppContext {
             .world
             .ime(target)
             .is_some_and(|composition| !composition.text.is_empty());
-        let mut next = state.clone();
+        let mut next = state.to_state();
         if !next.delete_ime_surrounding(before_bytes, after_bytes, composing) {
             return Ok(false);
         }
@@ -434,7 +434,7 @@ impl AppContext {
             // Select-all is a wholesale replacement of the selection set.
             state.additional_selections.clear();
             cx.emit(TextChanged {
-                value: editable.state().value.clone(),
+                value: editable.state().value.clone().into(),
                 selection,
             });
             true
@@ -556,7 +556,7 @@ impl AppContext {
             }
             editable.state_mut().selection = selection;
             cx.emit(TextChanged {
-                value: editable.state().value.clone(),
+                value: editable.state().value.clone().into(),
                 selection,
             });
             true
@@ -648,8 +648,8 @@ mod composition_tests {
             context
                 .set_ime_preedit(document, "ni".into(), None)
                 .unwrap();
-            let before = context.world().text_input(node).unwrap().clone();
-            let preedit = context.world().ime(node).unwrap().clone();
+            let before = context.world().text_input(node).unwrap().to_state();
+            let preedit = context.world().ime(node).unwrap().to_composition();
             assert!(
                 !context
                     .move_focused_text_caret(document, crate::TextCaretIntent::Left, false, None)
@@ -667,8 +667,8 @@ mod composition_tests {
             );
             assert!(!context.delete_focused_text_backward(document).unwrap());
             assert!(!context.replace_focused_text(document, "raw-key").unwrap());
-            assert_eq!(context.world().text_input(node), Some(&before));
-            assert_eq!(context.world().ime(node), Some(&preedit));
+            assert!(context.world().text_input(node).unwrap() == before);
+            assert!(context.world().ime(node).unwrap() == preedit);
             assert!(context.commit_ime(document, "你").unwrap());
             assert_eq!(context.world().text_input(node).unwrap().value, "ab你");
             assert!(context.world().ime(node).is_none());

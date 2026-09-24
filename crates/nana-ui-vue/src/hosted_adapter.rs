@@ -525,7 +525,7 @@ impl<E: JsEngine> VueHostedRuntime<E> {
                         .document()
                         .lock()
                         .ok()
-                        .is_some_and(|document| document.text_input_state(target).is_some());
+                        .is_some_and(|document| document.has_text_input_state(target));
                     if is_text {
                         let _ = host.emit_text_events_from_runtime(
                             &mut self.engine,

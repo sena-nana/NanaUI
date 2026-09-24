@@ -138,7 +138,7 @@ trait EditableText: ComponentView {
 
 fn text_changed(state: &TextInputState) -> TextChanged {
     TextChanged {
-        value: state.value.clone(),
+        value: state.value.clone().into(),
         selection: state.selection,
     }
 }
@@ -1517,7 +1517,7 @@ impl AppContext {
     pub fn focused_text_input(
         &self,
         document: DocumentId,
-    ) -> Option<(StableNodeId, &TextInputState)> {
+    ) -> Option<(StableNodeId, crate::TextInputView<'_>)> {
         self.world.focused_text_input(document)
     }
 

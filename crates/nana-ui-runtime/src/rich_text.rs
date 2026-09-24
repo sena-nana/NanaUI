@@ -883,7 +883,7 @@ impl ComponentView for NativeMarkdown {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: plain.clone(),
+                    value: plain.clone().into(),
                 },
             );
         }
@@ -938,7 +938,7 @@ impl ComponentView for MarkdownFenceChild {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.source.clone(),
+                    value: self.source.clone().into(),
                 },
             );
         }
@@ -1408,7 +1408,7 @@ impl ComponentView for SelectableRichText {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: plain.clone(),
+                    value: plain.clone().into(),
                 },
             );
         }

@@ -223,7 +223,7 @@ pub enum ScenePrimitiveKind {
         corner_radius: [f32; 4],
     },
     Text {
-        content: String,
+        content: nana_ui_runtime::TextValue,
         color: Option<[f32; 4]>,
         size: f32,
         weight: Option<u16>,
@@ -2498,7 +2498,7 @@ fn component_text_primitive(
         z_index: node.z_index,
         document_order,
         kind: ScenePrimitiveKind::Text {
-            content: region.content.to_string(),
+            content: region.content.clone(),
             color: region.color.or(node.style.color),
             size: region.font_size,
             weight: region.font_weight,
@@ -2508,7 +2508,7 @@ fn component_text_primitive(
             wrap: multiline || intrinsic_multiline,
             ellipsis,
             max_lines: None,
-            shaping: if node.text_input.is_some() {
+            shaping: if node.editable {
                 TextShaping::Advanced
             } else {
                 TextShaping::Auto
@@ -2917,7 +2917,7 @@ fn overlay_text_primitive(
         z_index: node.z_index,
         document_order,
         kind: ScenePrimitiveKind::Text {
-            content: region.content.to_string(),
+            content: region.content.clone(),
             color: region.color.or(node.style.color),
             size: region.font_size,
             weight: region.font_weight,
@@ -2927,7 +2927,7 @@ fn overlay_text_primitive(
             wrap: false,
             ellipsis: true,
             max_lines: None,
-            shaping: if node.text_input.is_some() {
+            shaping: if node.editable {
                 TextShaping::Advanced
             } else {
                 TextShaping::Auto

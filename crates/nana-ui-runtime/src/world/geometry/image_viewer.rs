@@ -37,7 +37,7 @@ pub(in crate::world) fn image_viewer_geometry(
             .zip(geometry.name)
             .map(|(text, region)| crate::ComponentTextRegion {
                 bounds: region,
-                content: Arc::clone(text),
+                content: Arc::clone(text).into(),
                 color: Some(palette.text.as_rgba_array()),
                 font_size: nana_ui_core::type_scale::META,
                 font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
@@ -45,7 +45,7 @@ pub(in crate::world) fn image_viewer_geometry(
         metadata: metadata.zip(geometry.metadata).map(|(text, region)| {
             crate::ComponentTextRegion {
                 bounds: region,
-                content: Arc::clone(text),
+                content: Arc::clone(text).into(),
                 color: Some(palette.muted.as_rgba_array()),
                 font_size: nana_ui_core::type_scale::HINT,
                 font_weight: None,

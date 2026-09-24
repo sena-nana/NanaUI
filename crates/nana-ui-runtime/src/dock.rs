@@ -1829,7 +1829,7 @@ impl ComponentView for DockTitle {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.label.to_string(),
+                    value: self.label.to_string().into(),
                 },
             );
         }
@@ -2213,7 +2213,7 @@ impl ComponentView for DockPanel {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

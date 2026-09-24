@@ -655,7 +655,7 @@ fn typed_view_update_delivers_closure_events_and_commits_one_batch() {
             cx.mutations().set_text(
                 id,
                 TextContent {
-                    value: view.value.to_string(),
+                    value: view.value.to_string().into(),
                 },
             );
             cx.emit(Cascade);
@@ -6182,7 +6182,7 @@ fn builtin_and_plugin_components_share_one_registry() {
                 mutations.set_text(
                     id,
                     crate::TextContent {
-                        value: self.title.clone(),
+                        value: self.title.clone().into(),
                     },
                 );
             }
@@ -6998,7 +6998,12 @@ fn project_child_count(id: StableNodeId, world: &UiWorld, mutations: &mut Mutati
     let count = world.node(id).map(|node| node.children.len()).unwrap_or(0);
     let value = count.to_string();
     if world.text(id) != Some(value.as_str()) {
-        mutations.set_text(id, crate::TextContent { value });
+        mutations.set_text(
+            id,
+            crate::TextContent {
+                value: value.into(),
+            },
+        );
     }
 }
 
@@ -7406,7 +7411,11 @@ fn retained_child_reconciliation_extracts_live_editor_before_parking_ancestor() 
     context
         .set_ime_preedit(document, "输入".into(), Some((0, 3)))
         .unwrap();
-    let ime = context.world.ime(first.id).cloned().unwrap();
+    let ime = context
+        .world
+        .ime(first.id)
+        .map(|ime| ime.to_composition())
+        .unwrap();
     context.reconcile_children(parent.id, &[first.id]).unwrap();
     assert!(!context.world.is_mounted(parked.id));
     assert_eq!(
@@ -7414,7 +7423,12 @@ fn retained_child_reconciliation_extracts_live_editor_before_parking_ancestor() 
         Some(parent.id)
     );
     assert_eq!(context.world.focused(document), Some(first.id));
-    assert_eq!(context.world.ime(first.id), Some(&ime));
+    assert!(
+        context
+            .world
+            .ime(first.id)
+            .is_some_and(|current| current == ime)
+    );
     assert_eq!(
         context.read(first, |input| input.state.clone()).unwrap(),
         edited
@@ -7626,7 +7640,7 @@ fn a_secure_field_never_probes_its_plaintext_for_a_visual_caret_step() {
             _style: &crate::ComputedStyle,
             _constraints: crate::TextShapeConstraints,
         ) -> Option<crate::TextHit> {
-            self.probed.push(text.value.clone());
+            self.probed.push(text.value.to_string());
             let next = if rightwards {
                 crate::text_editing::next_grapheme(&text.value, offset)
             } else {
@@ -7963,7 +7977,7 @@ impl ComponentView for CountingProbe {
             mutations.set_text(
                 id,
                 crate::TextContent {
-                    value: self.value.clone(),
+                    value: self.value.clone().into(),
                 },
             );
         }

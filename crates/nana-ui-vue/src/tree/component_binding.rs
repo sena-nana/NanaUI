@@ -1147,7 +1147,7 @@ pub(crate) fn try_bind_registered_component(
                 && crate::widget_map::is_search_dropdown(&widget.props)))
         && let Some(state) = context.world().text_input(id)
     {
-        extra_attrs.push(("query".into(), state.value.clone()));
+        extra_attrs.push(("query".into(), state.value.to_owned()));
     }
     let attr_pairs: Vec<(&str, &str)> = widget
         .props
@@ -1274,7 +1274,7 @@ pub(crate) fn try_bind_registered_component(
         widget.kind,
         crate::WidgetKind::Input | crate::WidgetKind::NumberInput | crate::WidgetKind::Textarea
     )
-    .then(|| context.world().text_input(id).cloned())
+    .then(|| context.world().text_input(id).map(|input| input.to_state()))
     .flatten();
     #[cfg(feature = "benchmark")]
     let _bind_timer = crate::frame_profile::ScopeTimer::new(29);

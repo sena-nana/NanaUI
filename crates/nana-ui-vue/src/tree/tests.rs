@@ -202,7 +202,7 @@ impl ComponentView for ProbeCard {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.title.clone(),
+                    value: self.title.clone().into(),
                 },
             );
         }
@@ -1858,7 +1858,7 @@ fn incremental_sync_projects_mutated_widgets_and_cascade_neighbours() {
         "patched label must reach the accessibility projection"
     );
     assert_eq!(
-        doc.runtime.text_input(input_id).map(|t| t.value.clone()),
+        doc.runtime.text_input(input_id).map(|t| t.value),
         Some("hello".into()),
         "noted input must reach the Runtime text input state"
     );
@@ -2647,9 +2647,7 @@ fn qualified_candidate_leaves_project_runtime_visuals() {
         Some(nana_ui_runtime::StandardVisual::TextInput { invalid: true, .. })
     ));
     assert_eq!(
-        doc.runtime
-            .text_input(area_id)
-            .map(|state| state.value.as_str()),
+        doc.runtime.text_input(area_id).map(|state| state.value),
         Some("line\nbreak")
     );
     let select_id = StableNodeId::try_from(select).unwrap();
@@ -2714,9 +2712,7 @@ fn highlighted_textarea_binds_language_and_restores_input() {
         Some((nana_ui_runtime::HIGHLIGHT_PRESENTER, "rs"))
     );
     assert_eq!(
-        doc.runtime
-            .text_input(area_id)
-            .map(|state| state.value.as_str()),
+        doc.runtime.text_input(area_id).map(|state| state.value),
         Some("fn main() {}")
     );
     assert!(matches!(

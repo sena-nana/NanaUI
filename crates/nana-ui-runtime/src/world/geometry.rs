@@ -102,7 +102,7 @@ pub(super) fn key_badge_region(
             width: (measure.width(label, font_size, Some(FONT_WEIGHT)) + PAD * 2.0).max(MIN_WIDTH),
             height: height.min(origin.height.max(height)),
         },
-        content: Arc::from(label),
+        content: crate::TextValue::from(label),
         color: Some(if muted {
             palette.color(SemanticColorRole::Muted).as_rgba_array()
         } else {
@@ -172,7 +172,7 @@ impl UiWorld {
         let text_region = |bounds, content: Arc<str>, muted: bool, size: f32, weight| {
             crate::ComponentTextRegion {
                 bounds,
-                content,
+                content: content.into(),
                 color: Some(if muted {
                     secondary
                 } else {
@@ -536,7 +536,7 @@ impl UiWorld {
                             width: label.rect.width,
                             height: label.rect.height,
                         },
-                        content: std::sync::Arc::from(label.text.as_str()),
+                        content: crate::TextValue::from(label.text.as_str()),
                         color: Some(marker_color(label.severity)),
                         font_size: size.text_size(),
                         font_weight: None,
@@ -971,7 +971,9 @@ impl UiWorld {
                                     width: content.width,
                                     height: line_height,
                                 },
-                                content: Arc::from(&value[head_line_start..head_line_end]),
+                                content: crate::TextValue::from(
+                                    &value[head_line_start..head_line_end],
+                                ),
                                 color: Some(caret_color),
                                 font_size: size.text_size(),
                                 font_weight: style.font_weight,
@@ -1054,7 +1056,7 @@ impl UiWorld {
                             presentation.content_size.height,
                             multiline,
                         ),
-                        content: Arc::from(presentation.display_value.as_str()),
+                        content: presentation.display_value.clone(),
                         color: Some(if presentation.placeholder {
                             text_input_placeholder_color(
                                 &source.layout,
@@ -1687,7 +1689,7 @@ impl UiWorld {
                                     width: detail_width,
                                     height: detail_height,
                                 },
-                                content: detail,
+                                content: detail.into(),
                                 color: Some(secondary),
                                 font_size: detail_size,
                                 font_weight: None,
@@ -1742,7 +1744,7 @@ impl UiWorld {
                                 .max(0.0),
                             height: bounds.height,
                         },
-                        content: Arc::clone(label),
+                        content: Arc::clone(label).into(),
                         color: Some(foreground),
                         font_size: text_size,
                         font_weight: Some(nana_ui_core::type_scale::MEDIUM),
@@ -1791,7 +1793,7 @@ impl UiWorld {
                             width: (bounds.width - indicator_slot - gap).max(0.0),
                             height: bounds.height,
                         },
-                        content: Arc::clone(message),
+                        content: Arc::clone(message).into(),
                         color: Some(foreground),
                         font_size: text_size,
                         font_weight: None,
@@ -1864,7 +1866,7 @@ impl UiWorld {
                 });
                 let title_region = crate::ComponentTextRegion {
                     bounds: text_bounds(presentation.title, y),
-                    content: Arc::clone(title),
+                    content: Arc::clone(title).into(),
                     color: Some(if *compact {
                         secondary
                     } else {
@@ -1880,7 +1882,7 @@ impl UiWorld {
                     y += spacing;
                     crate::ComponentTextRegion {
                         bounds: text_bounds(presentation.message.unwrap_or_default(), y),
-                        content: Arc::clone(message),
+                        content: Arc::clone(message).into(),
                         color: Some(secondary),
                         font_size: message_size,
                         font_weight: None,
@@ -1952,7 +1954,7 @@ impl UiWorld {
                             width: label_width,
                             height: label_height,
                         },
-                        content: Arc::clone(label),
+                        content: Arc::clone(label).into(),
                         color: Some(
                             self.style_model
                                 .color(SemanticColorRole::Faint)
@@ -1968,7 +1970,7 @@ impl UiWorld {
                             width: value_width,
                             height: value_height,
                         },
-                        content: Arc::clone(value),
+                        content: Arc::clone(value).into(),
                         color: Some(self.style_model.color(*value_role).as_rgba_array()),
                         font_size: value_size,
                         font_weight: Some(*value_weight),
@@ -2191,7 +2193,7 @@ impl UiWorld {
                             width: copy_width,
                             height: title_height,
                         },
-                        content: Arc::clone(title),
+                        content: Arc::clone(title).into(),
                         color: Some(
                             self.style_model
                                 .color(SemanticColorRole::Text)
@@ -2208,7 +2210,7 @@ impl UiWorld {
                                 width: copy_width,
                                 height: desc_height,
                             },
-                            content: Arc::clone(description),
+                            content: Arc::clone(description).into(),
                             color: Some(secondary),
                             font_size: nana_ui_core::type_scale::HINT,
                             font_weight: None,

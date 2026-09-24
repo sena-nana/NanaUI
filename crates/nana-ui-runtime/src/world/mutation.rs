@@ -25,7 +25,7 @@ pub(super) struct ValidationPlan<'a> {
     pub(super) pointer_captures: Option<HashMap<(DocumentId, u64), StableNodeId>>,
     /// Cloned from `source` on first animation mutation, same rationale.
     pub(super) animations: Option<HashMap<AnimationId, AnimationSpec>>,
-    pub(super) text_inputs: HashMap<StableNodeId, Option<TextInputState>>,
+    pub(super) text_inputs: HashMap<StableNodeId, Option<StagedText>>,
     pub(super) surface_open: HashMap<StableNodeId, bool>,
     pub(super) overlay_hosts: HashMap<StableNodeId, OverlayHostState>,
     pub(super) accessibility: HashMap<StableNodeId, AccessibilityState>,
@@ -35,6 +35,16 @@ pub(super) struct ValidationPlan<'a> {
     /// `UiWorld::validation_nodes_scanned` so a reintroduced world scan fails a
     /// test instead of silently costing a frame.
     pub(super) scanned: usize,
+}
+
+/// An editor's text and selections as a batch leaves them, for validating
+/// what follows in the same batch. The text is a shared copy: staging a caret
+/// move copies no text.
+#[derive(Debug, Clone)]
+pub(super) struct StagedText {
+    pub value: crate::TextValue,
+    pub selection: crate::TextSelection,
+    pub additional: Vec<crate::TextSelection>,
 }
 
 impl<'a> ValidationPlan<'a> {
@@ -488,22 +498,39 @@ impl<'a> ValidationPlan<'a> {
                     {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
-                    self.text_inputs.insert(*id, state.clone());
+                    let staged = state.as_ref().map(|state| StagedText {
+                        value: state.value.clone().into(),
+                        selection: state.selection,
+                        additional: state.additional_selections.clone(),
+                    });
+                    self.text_inputs.insert(*id, staged);
                 }
                 UiMutation::SetTextSelection { id, selection } => {
-                    let mut state = self.text_input(*id)?;
-                    if !selection.is_valid_for(&state.value) {
+                    let mut staged = self.text_input(*id)?;
+                    if !selection.is_valid_for(&staged.value) {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
-                    state.selection = *selection;
-                    self.text_inputs.insert(*id, Some(state));
+                    staged.selection = *selection;
+                    self.text_inputs.insert(*id, Some(staged));
                 }
                 UiMutation::ReplaceTextSelection { id, text } => {
-                    let mut state = self.text_input(*id)?;
+                    let staged = self.text_input(*id)?;
+                    let mut state = crate::TextInputState {
+                        value: staged.value.to_string(),
+                        selection: staged.selection,
+                        additional_selections: staged.additional,
+                    };
                     if !state.replace_selection(text) {
                         return Err(UiWorldError::InvalidTextInput(*id));
                     }
-                    self.text_inputs.insert(*id, Some(state));
+                    self.text_inputs.insert(
+                        *id,
+                        Some(StagedText {
+                            value: state.value.into(),
+                            selection: state.selection,
+                            additional: state.additional_selections,
+                        }),
+                    );
                 }
                 UiMutation::SetHighlightRequest { id, request } => {
                     self.require_exists(*id)?;
@@ -860,14 +887,18 @@ impl<'a> ValidationPlan<'a> {
         !self.removed.contains(&id) && (self.nodes.contains_key(&id) || self.source.contains(id))
     }
 
-    pub(super) fn text_input(&mut self, id: StableNodeId) -> Result<TextInputState, UiWorldError> {
+    pub(super) fn text_input(&mut self, id: StableNodeId) -> Result<StagedText, UiWorldError> {
         self.node(id)?;
         if let Some(state) = self.text_inputs.get(&id) {
             return state.clone().ok_or(UiWorldError::MissingTextInput(id));
         }
         self.source
             .text_input(id)
-            .cloned()
+            .map(|view| StagedText {
+                value: view.value_shared(),
+                selection: view.selection,
+                additional: view.additional_selections.to_vec(),
+            })
             .ok_or(UiWorldError::MissingTextInput(id))
     }
 
@@ -1895,10 +1926,36 @@ impl UiWorld {
                 }
             }
             UiMutation::SetIme { id, composition } => {
-                if self.nodes.ime(*id) != composition.as_ref() {
-                    self.pending_edit_work.composition_updates += 1;
+                if let Some(editor) = self.nodes.editor_mut(*id) {
+                    let before = editor.ime().map(|ime| ime.to_composition());
+                    match composition {
+                        Some(composition) if !composition.text.is_empty() => {
+                            editor.empty_preedit = None;
+                            editor.session.set_preedit(
+                                &composition.text,
+                                composition.selection.map(|(start, end)| start..end),
+                            );
+                        }
+                        Some(composition) => {
+                            editor.session.cancel_composition();
+                            editor.empty_preedit = Some(composition.selection);
+                        }
+                        None => {
+                            editor.session.cancel_composition();
+                            editor.empty_preedit = None;
+                        }
+                    }
+                    // One update per change of what the IME shows, the
+                    // empty preedit included: the session counts only its
+                    // compositions.
+                    let mut work = editor.session.take_work();
+                    work.composition_updates = 0;
+                    let changed = editor.ime().map(|ime| ime.to_composition()) != before;
+                    self.pending_edit_work.accumulate(work);
+                    if changed {
+                        self.pending_edit_work.composition_updates += 1;
+                    }
                 }
-                self.nodes.set_ime(*id, composition.clone());
                 self.nodes
                     .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 self.mark(
@@ -1907,48 +1964,71 @@ impl UiWorld {
                 );
             }
             UiMutation::SetTextInput { id, state } => {
-                // 旧值只用于折叠态与 snippet 会话的编辑重映射；不存在这两类
-                // 视图状态时跳过克隆，普通文本输入的值变更不再复制整个旧值。
-                let previous_value = match state {
-                    Some(_)
-                        if self.nodes.text_fold_view(*id).is_some()
-                            || self.nodes.text_snippet_session(*id).is_some() =>
-                    {
-                        self.nodes.text_input(*id).map(|input| input.value.clone())
-                    }
-                    _ => None,
-                };
-                if let Some(state) = state {
-                    record_editable_change(
-                        &mut self.pending_edit_work,
-                        self.nodes.text_input(*id),
-                        state,
-                    );
-                    self.nodes.set_text_input(*id, Some(state.clone()));
-                    self.record_mut(*id).text = TextContent {
-                        value: state.value.clone(),
-                    };
-                    self.invalidate_text_content(*id);
-                } else {
-                    self.nodes.set_text_input(*id, None);
+                let Some(state) = state else {
+                    self.remove_ime(*id);
+                    self.nodes.set_editor(*id, None);
                     self.record_mut(*id).text = TextContent::default();
                     self.invalidate_text_content(*id);
-                    self.remove_ime(*id);
-                }
-                // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
-                // 展开，跳位失效即结束会话。
-                if let (Some(previous), Some(next)) = (&previous_value, &state)
-                    && previous != &next.value
-                {
-                    self.reconcile_text_view_state(*id, previous, &next.value);
-                }
-                if state.is_none() {
                     self.nodes.set_text_fold_view(*id, None);
                     self.nodes.set_text_inlays(*id, None);
                     self.nodes.set_text_snippet_session(*id, None);
                     self.nodes.set_text_completion_view(*id, None);
                     self.nodes.set_text_hover_view(*id, None);
                     self.nodes.set_text_signature(*id, None);
+                    self.mark(
+                        *id,
+                        DirtyMask::TEXT
+                            | DirtyMask::FOCUS_IME
+                            | DirtyMask::RENDER
+                            | DirtyMask::ACCESSIBILITY,
+                    );
+                    return;
+                };
+                let value = crate::TextValue::from(state.value.clone());
+                // The text before, for the fold and snippet remaps: a shared
+                // copy, so taking it costs nothing.
+                let previous = self
+                    .nodes
+                    .editor(*id)
+                    .map(|editor| editor.session.snapshot());
+                match self.nodes.editor_mut(*id) {
+                    // Mounting an editor puts its value in place; nobody
+                    // edited it.
+                    None => self.nodes.set_editor(
+                        *id,
+                        Some(crate::store::EditorRecord::new(
+                            nana_text::EditSession::with_selections(
+                                value,
+                                state.selection,
+                                state.additional_selections.iter().copied(),
+                            ),
+                        )),
+                    ),
+                    Some(editor) => {
+                        let additional = state.additional_selections.clone();
+                        let work = edit_keeping_preedit(editor, |session| {
+                            session.assign(&value, Some((state.selection, additional)));
+                        });
+                        self.pending_edit_work.accumulate(work);
+                    }
+                }
+                let next = self
+                    .nodes
+                    .editor(*id)
+                    .map(|editor| editor.session.snapshot())
+                    .unwrap_or_default();
+                self.record_mut(*id).text = TextContent {
+                    value: next.clone(),
+                };
+                self.invalidate_text_content(*id);
+                // 值变化后重映射折叠态与 snippet 会话：受影响的折叠自动
+                // 展开，跳位失效即结束会话。
+                if let Some(previous) = previous
+                    && (self.nodes.text_fold_view(*id).is_some()
+                        || self.nodes.text_snippet_session(*id).is_some())
+                    && previous != next
+                {
+                    self.reconcile_text_view_state(*id, &previous, &next);
                 }
                 self.mark(
                     *id,
@@ -1959,18 +2039,15 @@ impl UiWorld {
                 );
             }
             UiMutation::SetTextSelection { id, selection } => {
-                let state = self
+                let editor = self
                     .nodes
-                    .text_input_mut(*id)
+                    .editor_mut(*id)
                     .expect("entity must have runtime component");
-                if state.selection != *selection {
-                    record_selection_change(
-                        &mut self.pending_edit_work,
-                        *selection,
-                        &state.additional_selections,
-                    );
-                }
-                state.selection = *selection;
+                let additional = editor.session.additional_selections().to_vec();
+                let work = edit_keeping_preedit(editor, |session| {
+                    session.set_selections(*selection, additional);
+                });
+                self.pending_edit_work.accumulate(work);
                 self.nodes
                     .invalidate_text(*id, crate::text_node::TextDirty::EDIT_STATE);
                 self.mark(
@@ -1982,26 +2059,15 @@ impl UiWorld {
                 );
             }
             UiMutation::ReplaceTextSelection { id, text } => {
-                let (replaced, value) = {
-                    let state = self
-                        .nodes
-                        .text_input_mut(*id)
-                        .expect("entity must have runtime component");
-                    let deleted = state
-                        .selections()
-                        .iter()
-                        .map(|selection| selection.ordered().len())
-                        .sum::<usize>();
-                    let cursors = 1 + state.additional_selections.len();
-                    let replaced = state.replace_selection(text);
-                    if replaced && (deleted > 0 || !text.is_empty()) {
-                        self.pending_edit_work.editable_mutations += 1;
-                        self.pending_edit_work.editable_bytes_deleted += deleted;
-                        self.pending_edit_work.editable_bytes_inserted += text.len() * cursors;
-                    }
-                    (replaced, state.value.clone())
-                };
-                debug_assert!(replaced, "validated selection must remain valid");
+                let editor = self
+                    .nodes
+                    .editor_mut(*id)
+                    .expect("entity must have runtime component");
+                let work = edit_keeping_preedit(editor, |session| {
+                    replace_every_selection(session, text);
+                });
+                let value = editor.session.snapshot();
+                self.pending_edit_work.accumulate(work);
                 self.record_mut(*id).text = TextContent { value };
                 self.invalidate_text_content(*id);
                 self.mark(
@@ -2056,7 +2122,7 @@ impl UiWorld {
                 let value = self
                     .nodes
                     .text_input(*id)
-                    .map(|state| state.value.clone())
+                    .map(|state| state.value_shared())
                     .unwrap_or_default();
                 let normalized = normalize_text_inlays(&value, inlays);
                 let changed = self
@@ -2627,56 +2693,60 @@ impl UiWorld {
     }
 }
 
-/// Editable work (#96) of replacing an editor's state: an edit when the value
-/// changed, otherwise a caret- or selection-only update when the selection
-/// set did.
-fn record_editable_change(
-    work: &mut nana_text::TextWorkCounters,
-    previous: Option<&crate::TextInputState>,
-    next: &crate::TextInputState,
-) {
-    // Mounting an editor puts its value in place; nobody edited it.
-    let Some(previous) = previous else {
-        return;
-    };
-    let previous_value = previous.value.as_str();
-    if let Some((start, previous_end, next_end)) =
-        crate::text_editing::changed_byte_range(previous_value, &next.value)
-    {
-        work.editable_mutations += 1;
-        work.editable_bytes_deleted += previous_end - start;
-        work.editable_bytes_inserted += next_end - start;
-        return;
-    }
-    if previous.selection != next.selection
-        || previous.additional_selections != next.additional_selections
-    {
-        let collapsed = next
-            .additional_selections
-            .iter()
-            .all(|selection| selection.anchor == selection.focus);
-        if collapsed && next.selection.anchor == next.selection.focus {
-            work.caret_only_updates += 1;
+/// Replaces the text of every selection with `text` as one edit, a caret
+/// after each insertion. The carets draw downstream: a Runtime selection
+/// derived from bytes — every edit's included — does (see `TextSelection`).
+fn replace_every_selection(session: &mut nana_text::EditSession, text: &str) {
+    let primary = session.selection();
+    let selections = session.selections().into_owned();
+    let mut edits = Vec::with_capacity(selections.len());
+    let mut carets = Vec::with_capacity(selections.len());
+    let mut primary_caret = None;
+    let mut shift = 0isize;
+    for selection in selections {
+        let range = selection.range();
+        let start = (range.start as isize + shift) as usize;
+        let caret = crate::TextSelection::caret(start + text.len());
+        if selection == primary && primary_caret.is_none() {
+            primary_caret = Some(caret);
         } else {
-            work.selection_only_updates += 1;
+            carets.push(caret);
         }
+        shift += text.len() as isize - range.len() as isize;
+        edits.push((range, text));
     }
+    let primary = primary_caret.unwrap_or_else(|| carets.remove(0));
+    session.splice(&edits, primary, carets);
 }
 
-/// Counts a selection-only change the way [`record_editable_change`] does: a
-/// caret update means EVERY cursor is collapsed, so an editor with a live
-/// multi-cursor selection is never reported as a bare caret move.
-fn record_selection_change(
-    work: &mut nana_text::TextWorkCounters,
-    selection: crate::TextSelection,
-    additional: &[crate::TextSelection],
-) {
-    let collapsed = additional
-        .iter()
-        .all(|selection| selection.anchor == selection.focus);
-    if collapsed && selection.anchor == selection.focus {
-        work.caret_only_updates += 1;
-    } else {
-        work.selection_only_updates += 1;
+/// Applies `edit` to a composing session as Runtime's contract has it: the
+/// preedit stands over the editor's current primary selection, so a write of
+/// the text or selection moves it along instead of being refused (the
+/// session refuses selection changes while composing) or cancelling it. The
+/// preedit is lifted, the write applied, and the same preedit put back over
+/// the resulting selection. Its lifting and restoring are not composition
+/// updates: what the IME shows did not change.
+///
+/// Returns the session's work for the whole write.
+fn edit_keeping_preedit(
+    editor: &mut crate::store::EditorRecord,
+    edit: impl FnOnce(&mut nana_text::EditSession),
+) -> nana_text::TextWorkCounters {
+    let preedit = editor
+        .session
+        .composition()
+        .map(|composition| (composition.text.clone(), composition.selection.clone()));
+    if preedit.is_some() {
+        editor.session.cancel_composition();
     }
+    edit(&mut editor.session);
+    let restored = preedit.is_some();
+    if let Some((text, selection)) = preedit {
+        editor.session.set_preedit(&text, selection);
+    }
+    let mut work = editor.session.take_work();
+    if restored {
+        work.composition_updates = 0;
+    }
+    work
 }

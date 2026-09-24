@@ -351,7 +351,10 @@ impl ComponentView for SearchDropdown {
         // While open the query input owns the node text; `SetTextInput`
         // rewrites it either way, so the label goes in after the input is gone.
         if self.opened && !self.inactive() {
-            if world.text_input(id) != Some(&self.state) {
+            if world
+                .text_input(id)
+                .is_none_or(|current| current != self.state)
+            {
                 mutations.set_text_input(id, Some(self.state.clone()));
             }
         } else {
@@ -363,7 +366,7 @@ impl ComponentView for SearchDropdown {
                 mutations.set_text(
                     id,
                     TextContent {
-                        value: label.to_string(),
+                        value: label.to_string().into(),
                     },
                 );
             }

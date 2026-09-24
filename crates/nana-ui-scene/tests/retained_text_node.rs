@@ -92,7 +92,12 @@ fn document(labels: impl IntoIterator<Item = String>) -> (RuntimeDocument, usize
         queue.create(label_id(row), document, NodeKind::Text);
         queue.insert(id(COLUMN), row_id(row), None);
         queue.insert(row_id(row), label_id(row), None);
-        queue.set_text(label_id(row), TextContent { value: label });
+        queue.set_text(
+            label_id(row),
+            TextContent {
+                value: label.into(),
+            },
+        );
         queue.set_style(
             row_id(row),
             NodeStyle {
@@ -995,7 +1000,7 @@ fn a_font_set_change_also_remeasures_text_that_is_never_stamped() {
             style: &nana_ui_runtime::ComputedStyle,
             constraints: nana_ui_runtime::TextShapeConstraints,
         ) -> nana_ui_runtime::TextMetrics {
-            self.shaped.push(text.value.clone());
+            self.shaped.push(text.value.to_string());
             MeasureTextShaper.shape(id, text, style, constraints)
         }
 
@@ -1055,7 +1060,7 @@ fn a_failed_pass_stamps_nothing_so_the_retry_resolves_every_node_again() {
             style: &nana_ui_runtime::ComputedStyle,
             constraints: nana_ui_runtime::TextShapeConstraints,
         ) -> nana_ui_runtime::TextMetrics {
-            self.shaped.push(text.value.clone());
+            self.shaped.push(text.value.to_string());
             let mut metrics = MeasureTextShaper.shape(id, text, style, constraints);
             if text.value == "second" && !self.failed {
                 self.failed = true;

@@ -187,7 +187,7 @@ impl ComponentView for Toast {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: self.title.to_string(),
+                    value: self.title.to_string().into(),
                 },
             );
         }

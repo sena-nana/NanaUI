@@ -235,7 +235,10 @@ impl ComponentView for CommandPalette {
         if world.standard_visual(id) != Some(visual.clone()) {
             mutations.set_standard_visual(id, Some(visual));
         }
-        if world.text_input(id) != Some(&self.state) {
+        if world
+            .text_input(id)
+            .is_none_or(|current| current != self.state)
+        {
             mutations.set_text_input(id, Some(self.state.clone()));
         }
         project_common(
@@ -295,7 +298,7 @@ pub(crate) fn command_palette_geometry(
             width: (surface.width - MODAL_PAD_X * 2.0).max(0.0),
             height: nana_ui_core::space::PAGE_TIGHT + nana_ui_core::space::XXS,
         },
-        content: Arc::clone(title),
+        content: Arc::clone(title).into(),
         color: Some(palette.text.as_rgba_array()),
         font_size: nana_ui_core::type_scale::HEADING,
         font_weight: Some(nana_ui_core::type_scale::SEMIBOLD),
@@ -309,9 +312,9 @@ pub(crate) fn command_palette_geometry(
             height: input_height,
         },
         content: if query.is_empty() {
-            Arc::clone(placeholder)
+            Arc::clone(placeholder).into()
         } else {
-            Arc::clone(query)
+            Arc::clone(query).into()
         },
         color: Some(if query.is_empty() {
             palette.faint.as_rgba_array()
@@ -329,7 +332,7 @@ pub(crate) fn command_palette_geometry(
             width: (surface.width - MODAL_PAD_X * 2.0).max(0.0),
             height: row_height,
         },
-        content: Arc::clone(label),
+        content: Arc::clone(label).into(),
         color: Some(palette.muted.as_rgba_array()),
         font_size: nana_ui_core::type_scale::META,
         font_weight: None,
@@ -353,7 +356,7 @@ pub(crate) fn command_palette_geometry(
                         width: shortcut_width,
                         height: nana_ui_core::type_scale::LINE,
                     },
-                    content: Arc::clone(shortcut),
+                    content: Arc::clone(shortcut).into(),
                     color: Some(palette.muted.as_rgba_array()),
                     font_size: SHORTCUT_TEXT_SIZE,
                     font_weight: None,
@@ -372,7 +375,7 @@ pub(crate) fn command_palette_geometry(
                     width: (label_right - bounds.x - ROW_PAD_X).max(0.0),
                     height: nana_ui_core::type_scale::LINE,
                 },
-                content: Arc::clone(&row.label),
+                content: Arc::clone(&row.label).into(),
                 color: Some(palette.text.as_rgba_array()),
                 font_size: nana_ui_core::type_scale::META,
                 font_weight: Some(nana_ui_core::type_scale::MEDIUM),
@@ -384,7 +387,7 @@ pub(crate) fn command_palette_geometry(
                     width: (bounds.width - ROW_PAD_X * 2.0).max(0.0),
                     height: nana_ui_core::type_scale::META,
                 },
-                content: Arc::clone(category),
+                content: Arc::clone(category).into(),
                 color: Some(palette.muted.as_rgba_array()),
                 font_size: SHORTCUT_TEXT_SIZE,
                 font_weight: None,

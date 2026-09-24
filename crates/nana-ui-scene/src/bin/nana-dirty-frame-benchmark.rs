@@ -303,7 +303,7 @@ fn build(shape: Shape, rows: usize) -> RuntimeDocument {
         queue.set_text(
             label,
             TextContent {
-                value: format!("row {row}"),
+                value: format!("row {row}").into(),
             },
         );
         queue.set_style(

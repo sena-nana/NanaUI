@@ -4251,7 +4251,7 @@ fn diff_tree(shape: &DiffShape, rows: usize) -> (UiWorld, DocumentId) {
         queue.set_text(
             label_id,
             TextContent {
-                value: format!("r{row}"),
+                value: format!("r{row}").into(),
             },
         );
         queue.set_style(

@@ -220,7 +220,7 @@ impl AppContext {
         }
         let style = self.world.computed_style(node)?.clone();
         let constraints = self.world.text_shape_constraints(node);
-        let shaped = TextContent { value: text };
+        let shaped = TextContent { value: text.into() };
         let (layout_x, layout_y) = self
             .world
             .pointer_layout_position(node, x, y)

@@ -76,7 +76,7 @@ fn live_sidebar_rows_paint_their_label_exactly_once() {
             if let Some(entry) = counts.iter_mut().find(|(label, _)| label == content) {
                 entry.1 += 1;
             } else {
-                counts.push((content.clone(), 1));
+                counts.push((content.to_string(), 1));
             }
         }
     }
@@ -186,7 +186,7 @@ fn relabeled_and_reflowed_rows_never_keep_stale_label_primitives() {
                 if let Some(entry) = counts.iter_mut().find(|(label, _)| label == content) {
                     entry.1 += 1;
                 } else {
-                    counts.push((content.clone(), 1));
+                    counts.push((content.to_string(), 1));
                 }
             }
         }

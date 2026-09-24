@@ -35,7 +35,7 @@ pub(in crate::world) fn graph_canvas_geometry(
             ) {
                 edge_labels.push(crate::ComponentTextRegion {
                     bounds: label_bounds,
-                    content: Arc::clone(label),
+                    content: Arc::clone(label).into(),
                     color: Some(palette.muted.as_rgba_array()),
                     font_size: nana_ui_core::type_scale::HINT,
                     font_weight: None,
@@ -85,7 +85,7 @@ pub(in crate::world) fn graph_canvas_geometry(
                     width: 0.0,
                     height: 0.0,
                 }),
-                content: Arc::clone(&node.label),
+                content: Arc::clone(&node.label).into(),
                 color: Some(palette.text.as_rgba_array()),
                 font_size: (nana_ui_core::type_scale::META * viewport_zoom).clamp(
                     crate::graph_canvas::NODE_TITLE_SIZE_MIN,
@@ -356,7 +356,7 @@ pub(in crate::world) fn port_label_region(
                 width,
                 height,
             },
-            content: Arc::clone(&port.label),
+            content: Arc::clone(&port.label).into(),
             color: Some(color),
             font_size: crate::graph_canvas::PORT_LABEL_SIZE,
             font_weight: None,

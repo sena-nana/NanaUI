@@ -234,7 +234,7 @@ impl ComponentView for SettingsRow {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: visible_label.to_owned(),
+                    value: visible_label.to_owned().into(),
                 },
             );
         }
@@ -1111,7 +1111,7 @@ impl ComponentView for SettingsSidebarLeading {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }

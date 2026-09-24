@@ -213,8 +213,7 @@ impl UiWorld {
             // Paint's question, so paint's answer: a control put into focus
             // by a click is focused and does not draw a ring about it.
             focused: self.focus_visible(document) == Some(id),
-            ime: self.nodes.ime(id).cloned(),
-            text_input: self.nodes.text_input(id).cloned(),
+            editable: self.nodes.text_input(id).is_some(),
             text_spans,
             standard_visual,
             component_geometry,

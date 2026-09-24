@@ -84,7 +84,7 @@ impl ComponentView for WorkspaceResizeHandle {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -265,7 +265,7 @@ impl Workspace {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -306,7 +306,7 @@ impl Workspace {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -410,7 +410,7 @@ impl Workspace {
                 mutations.set_text(
                     handle,
                     TextContent {
-                        value: String::new(),
+                        value: String::new().into(),
                     },
                 );
             }

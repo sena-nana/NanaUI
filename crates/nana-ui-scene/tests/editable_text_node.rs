@@ -100,7 +100,7 @@ impl Fixture {
             .text_input(self.area.stable_id())
             .unwrap()
             .value
-            .clone()
+            .to_owned()
     }
 
     fn caret(&self) -> (f32, f32) {

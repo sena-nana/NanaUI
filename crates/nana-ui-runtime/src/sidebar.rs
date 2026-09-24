@@ -323,7 +323,7 @@ impl ComponentView for SidebarFrame {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -637,7 +637,7 @@ impl ComponentView for SidebarRowIcon {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -959,7 +959,7 @@ impl SidebarSection {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -1032,7 +1032,7 @@ impl SidebarSection {
             mutations.set_text(
                 body,
                 TextContent {
-                    value: text.to_owned(),
+                    value: text.to_owned().into(),
                 },
             );
         }
@@ -1229,7 +1229,7 @@ impl ComponentView for SidebarSection {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: root_text.to_owned(),
+                    value: root_text.to_owned().into(),
                 },
             );
         }
@@ -1315,7 +1315,7 @@ impl ComponentView for SidebarFooter {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
@@ -1455,7 +1455,7 @@ impl ComponentView for SidebarFooterButton {
             mutations.set_text(
                 id,
                 TextContent {
-                    value: String::new(),
+                    value: String::new().into(),
                 },
             );
         }
