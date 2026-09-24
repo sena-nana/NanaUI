@@ -691,15 +691,40 @@ impl AppContext {
                 return false;
             }
             // Every selection, the user's own caret included, moves through
-            // the edit rather than to it.
-            let (start, removed, inserted) = (range.start, range.len(), text.len());
+            // the edit rather than to it: before the range it stays, after it
+            // it shifts, inside it it lands after the inserted text. A caret
+            // right where text is inserted goes past it, as typing leaves it
+            // (a completion at the caret); one at the start of replaced text
+            // stays in front.
+            let (start, end, inserted_end) = (range.start, range.end, range.start + text.len());
+            let remap = |offset: usize| {
+                if offset < start || (offset == start && start < end) {
+                    offset
+                } else if offset >= end {
+                    offset - end + inserted_end
+                } else {
+                    inserted_end
+                }
+            };
+            let remap_selection = |selection: TextSelection| {
+                let focus = remap(selection.focus);
+                TextSelection {
+                    anchor: remap(selection.anchor),
+                    focus,
+                    // A moved focus no longer knows which side of a soft wrap
+                    // it was resolved on.
+                    affinity: if focus == selection.focus {
+                        selection.affinity
+                    } else {
+                        crate::TextAffinity::Downstream
+                    },
+                }
+            };
             let state = editable.state_mut();
             state.value = next;
-            state.selection =
-                nana_text::editable::remap_selection(state.selection, start, removed, inserted);
+            state.selection = remap_selection(state.selection);
             for selection in &mut state.additional_selections {
-                *selection =
-                    nana_text::editable::remap_selection(*selection, start, removed, inserted);
+                *selection = remap_selection(*selection);
             }
             state.normalize_selections();
             true
@@ -733,29 +758,20 @@ fn atom_expanded_selections<C: EditableText>(
             crate::TextSelection::new(expanded.start, expanded.end)
         }
     };
-    // Cloned only when a selection grows: most edits in an editor with
-    // atoms touch none. Each selection is widened once.
     let primary = widen(state.selection);
-    let first_grown =
-        state
-            .additional_selections
-            .iter()
-            .enumerate()
-            .find_map(|(index, selection)| {
-                let widened = widen(*selection);
-                (widened != *selection).then_some((index, widened))
-            });
-    if primary == state.selection && first_grown.is_none() {
+    let additional: Vec<_> = state
+        .additional_selections
+        .iter()
+        .map(|selection| widen(*selection))
+        .collect();
+    // Cloned only when a selection grows: most edits in an editor with atoms
+    // touch none.
+    if primary == state.selection && additional == state.additional_selections {
         return None;
     }
     let mut next = state.clone();
     next.selection = primary;
-    if let Some((first, widened)) = first_grown {
-        next.additional_selections[first] = widened;
-        for selection in &mut next.additional_selections[first + 1..] {
-            *selection = widen(*selection);
-        }
-    }
+    next.additional_selections = additional;
     next.normalize_selections();
     Some(next)
 }

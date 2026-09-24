@@ -196,20 +196,23 @@ impl TextHistory {
     }
 
     /// Moves the cursor one step back (`undo`) or forward, once the state
-    /// [`Self::peek`] showed has been restored. Returns whether it moved.
+    /// [`Self::peek`] showed has been restored.
     ///
     /// Undo and redo end a merge run too: typing after an undo is a new
     /// step, not more of the one the undo stepped back onto.
-    fn step(&mut self, undo: bool) -> bool {
-        let moved = if undo {
-            self.cursor.checked_sub(1).map(|index| self.cursor = index)
+    fn step(&mut self, undo: bool) {
+        if undo {
+            if self.cursor == 0 {
+                return;
+            }
+            self.cursor -= 1;
         } else {
-            (self.cursor < self.steps.len()).then(|| self.cursor += 1)
-        };
-        if moved.is_some() {
-            self.seal_before_cursor();
+            if self.cursor == self.steps.len() {
+                return;
+            }
+            self.cursor += 1;
         }
-        moved.is_some()
+        self.seal_before_cursor();
     }
 
     /// The state [`Self::undo`] or [`Self::redo`] would restore, without
@@ -511,7 +514,10 @@ impl crate::AppContext {
             return update(self, &mut edited);
         }
         let node = entity.stable_id();
-        self.follow_text_history(node);
+        // Undo and redo followed already, before looking at the journal.
+        if origin != TextEditOrigin::History {
+            self.follow_text_history(node);
+        }
         let before = self.read(entity, |editable: &C| editable.state().clone())?;
         self.text_histories.writing.push(Writing {
             node,
@@ -1400,6 +1406,24 @@ mod editor_tests {
         // 0..4 is replaced.
         assert!(cx.edit_text_input(field, 0..4, "X").unwrap());
         assert_eq!(text(&cx, field), "Xefgh");
+    }
+
+    #[test]
+    fn a_completion_inserted_at_the_caret_leaves_the_caret_after_it() {
+        let mut cx = AppContext::new();
+        let area = focused_area(&mut cx, "");
+        cx.replace_focused_text(document(), "foo").unwrap();
+        assert!(cx.edit_text_area(area, 3..3, "()").unwrap());
+        cx.replace_focused_text(document(), ";").unwrap();
+        assert_eq!(value_of(&cx, area), "foo();", "typing goes on after it");
+
+        // Replaced text with the caret at its start: the caret stays in front.
+        cx.select_focused_text_range(document(), 0, 0).unwrap();
+        assert!(cx.edit_text_area(area, 0..3, "bar").unwrap());
+        assert_eq!(
+            cx.read(area, |area| area.state.selection).unwrap(),
+            crate::TextSelection::caret(0)
+        );
     }
 
     #[test]
